@@ -1,0 +1,26 @@
+{
+  auto_https disable_redirects
+}
+
+https://localhost, https://127.0.0.1, https://[::1] {
+  tls internal
+  encode gzip
+
+  @api path /api*
+  reverse_proxy @api api:8000
+
+  reverse_proxy web:80
+}
+
+http://localhost, http://127.0.0.1, http://[::1] {
+  redir https://{host}{uri}
+}
+
+http:// {
+  encode gzip
+
+  @api path /api*
+  reverse_proxy @api api:8000
+
+  reverse_proxy web:80
+}

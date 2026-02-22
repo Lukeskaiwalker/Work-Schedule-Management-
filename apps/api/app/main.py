@@ -1,0 +1,94 @@
+from __future__ import annotations
+from collections import defaultdict, deque
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
+
+from fastapi import Depends, FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy import select
+
+from app.core.config import get_settings
+from app.core.db import Base, SessionLocal, engine
+from app.core.security import get_password_hash
+from app.core.time import utcnow
+from app.models.entities import User
+from app.routers import admin, auth, time_tracking, workflow
+
+settings = get_settings()
+
+
+def _initialize_runtime_data() -> None:
+    Base.metadata.create_all(bind=engine)
+    with SessionLocal() as db:
+        normalized_admin_email = settings.initial_admin_email.strip().lower()
+        existing = db.scalars(select(User).where(User.email == normalized_admin_email)).first()
+        if not existing:
+            admin_user = User(
+                email=normalized_admin_email,
+                password_hash=get_password_hash(settings.initial_admin_password),
+                full_name=settings.initial_admin_name,
+                role="admin",
+                is_active=True,
+            )
+            db.add(admin_user)
+            db.commit()
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    _initialize_runtime_data()
+    yield
+
+
+app = FastAPI(title=settings.app_name, lifespan=lifespan)
+
+origins = [origin.strip() for origin in settings.cors_origins.split(",") if origin.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+_rate_bucket: dict[str, deque[datetime]] = defaultdict(deque)
+
+
+def _rate_scope(path: str) -> tuple[str, int]:
+    if path.startswith("/api/dav/"):
+        return ("dav", 2400)
+    if path.startswith("/api/time/"):
+        return ("time", 900)
+    return ("default", 480)
+
+
+@app.middleware("http")
+async def basic_rate_limit(request: Request, call_next):
+    # Simple in-memory per-IP limiter for baseline OWASP hardening.
+    # WebDAV clients can burst aggressively, so keep separate, higher buckets.
+    if request.method == "OPTIONS":
+        return await call_next(request)
+    ip = request.client.host if request.client else "unknown"
+    scope, limit = _rate_scope(request.url.path)
+    bucket_key = f"{ip}:{scope}"
+    now = utcnow()
+    window = timedelta(minutes=1)
+    bucket = _rate_bucket[bucket_key]
+    while bucket and now - bucket[0] > window:
+        bucket.popleft()
+    if len(bucket) >= limit:
+        return JSONResponse(status_code=429, content={"detail": "Too many requests"}, headers={"Retry-After": "60"})
+    bucket.append(now)
+    return await call_next(request)
+
+
+app.include_router(auth.router, prefix="/api")
+app.include_router(admin.router, prefix="/api")
+app.include_router(workflow.router, prefix="/api")
+app.include_router(time_tracking.router, prefix="/api")
+
+
+@app.get("/api")
+def root():
+    return {"service": settings.app_name, "status": "ok"}

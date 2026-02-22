@@ -1,0 +1,281 @@
+# Setup
+
+## One-command bring-up
+1. (Optional) create local override file:
+   - `cp apps/api/.env.example apps/api/.env`
+2. Start stack:
+   - `docker compose up --build -d`
+3. Trust local TLS root on macOS (Safari/Chrome):
+   - `./scripts/trust_caddy_root_macos.sh`
+4. Open app:
+   - `https://localhost`
+   - Use `localhost` (not `127.0.0.1`) for browser access.
+
+## Local Wiki Source Folder
+- Put wiki files under repo folder:
+  - `local wiki/<brand>/<folder>/...`
+- Docker mounts this folder read-only into API:
+  - host `./local wiki` -> container `/data/wiki`
+- Wiki tab now reads from this folder (brand/folder explorer with searchable files and in-browser preview for HTML/PDF/text/image files).
+
+## Share on Local Network (Demo Mode)
+- Print LAN URL:
+  - `./scripts/show_lan_url.sh`
+- Share the displayed URL (example: `http://192.168.2.180`) with users on the same local network.
+- Keep using `https://localhost` on your own machine.
+- Note: LAN demo URL uses HTTP (no TLS) for easier device compatibility; use only on trusted local networks.
+
+## Project Files as OS Drive (WebDAV)
+- WebDAV URL pattern:
+  - `https://localhost/api/dav/projects/` (all accessible projects)
+  - `https://localhost/api/dav/projects/general-projects/` (reports without project)
+  - `https://localhost/api/dav/projects/archive/` (archived projects)
+  - `https://localhost/api/dav/projects/<project_id>/`
+  - LAN demo option (all projects): `http://<LAN-IP>/api/dav/projects/` (trusted network only)
+  - LAN demo option: `http://<LAN-IP>/api/dav/projects/<project_id>/` (trusted network only)
+- Credentials:
+  - App email + app password (same as login)
+- Quick mount:
+  - macOS Finder: `Go` -> `Connect to Server` (`Cmd+K`) -> paste URL with trailing `/`
+  - If HTTPS trust fails on another device, use the LAN HTTP URL only on trusted local networks
+  - Windows Explorer: `Map network drive` with WebDAV client -> paste URL
+- Folder labels in all-projects mount include customer/project identity and internal project ID (`... | ID <id>`) for easier lookup.
+- WebDAV root now separates lifecycle buckets:
+  - active projects appear directly under `/api/dav/projects/`,
+  - archived projects are grouped under `/api/dav/projects/archive/`,
+  - no-project report files are grouped under `/api/dav/projects/general-projects/`.
+- Default per-project folder structure is auto-created:
+  - `Bilder`, `Anträge`, `Berichte`, `Tickets`, `Verwaltung`.
+- `Verwaltung` is protected and visible/usable only for elevated roles (`admin`, `ceo`, `accountant`, `planning`).
+- Users can create additional folders in the Files UI or through WebDAV folder creation (`MKCOL`).
+
+Compose uses `apps/api/.env.example` by default. If you need custom values (new secret key, Telegram credentials), update that file or inject env vars through your deployment method.
+Wiki source root can be changed with `WIKI_ROOT_DIR` in API env (default `/data/wiki`).
+The provided legacy logo is bundled into both web and API assets (`apps/web/public/logo.jpeg`, `apps/api/app/assets/logo.jpeg`).
+Time tracking day/week boundaries follow `APP_TIMEZONE` (default: `Europe/Berlin`).
+
+## One-command validation
+- `./scripts/test.sh`
+- In Docker mode this rebuilds API image before running API tests to keep container code in sync.
+
+## Default login
+- Email: `admin@example.com`
+- Password: `ChangeMe123!`
+- Override with `INITIAL_ADMIN_EMAIL` and `INITIAL_ADMIN_PASSWORD` in API env.
+
+## Import projects from Excel
+- Place the `.xlsx` file in repo root (or pass any path).
+- Run:
+  - `./scripts/import_projects_excel.sh "<path-to-file.xlsx>"`
+  - optional sheet name: `./scripts/import_projects_excel.sh "<path-to-file.xlsx>" "<sheet-name>"`
+- Behavior:
+  - when no sheet is specified, all workbook sheets are processed
+  - known columns are mapped into typed project fields (`project_number`, `name`, customer fields, `status`, `last_state`, `last_status_at`, `description`)
+  - all source columns are preserved in `project.extra_attributes`
+  - multi-table duplicates are collapsed during import
+  - missing project numbers are auto-filled with temporary markers prefixed by `T` only when no reusable fallback identity exists.
+
+## Import projects from CSV (Admin Center)
+- Open `Profile & settings` -> `Admin tools`.
+- Use:
+  - `Download CSV template`
+  - `Import CSV`
+- API equivalents:
+  - `GET /api/admin/projects/import-template.csv`
+  - `POST /api/admin/projects/import-csv` (multipart file upload)
+- CSV import follows the same mapping behavior as Excel import and preserves unknown columns in project extra attributes.
+
+## Backup
+- `export BACKUP_PASSPHRASE='replace-with-strong-passphrase'`
+- `./scripts/backup.sh`
+- Output artifact is placed under `backups/*.tar.enc`.
+- Script auto-starts `db` + `api` if needed and waits for DB readiness.
+
+## Admin In-App Encrypted DB Backup (Key File)
+- Open `Profile & settings` -> `Admin tools` -> `Export database backup`.
+- Upload a local key file (for example `backup.key`) and click download.
+- The generated `.smplbak` artifact is encrypted and tied to that key file material.
+- Keep the key file in secure storage; without the correct key file the backup cannot be decrypted.
+
+## Restore into fresh environment
+1. `export BACKUP_PASSPHRASE='your-passphrase'`
+2. `./scripts/restore.sh backups/<artifact>.tar.enc`
+3. By default, script restores DB/uploads and then starts full stack (`web` + `caddy`).
+4. Optional: set `RESTORE_START_FULL_STACK=false` to skip web/caddy startup.
+
+## Telegram Bot Config (optional)
+- Copy `config/telegram.env.example` to `config/telegram.env` (local only).
+- Populate `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`.
+- Mirror values into API env (never commit real secrets).
+
+## Local SMTP + Invite/Reset Links (optional but recommended)
+- Configure in `apps/api/.env.example` (or your deployment env):
+  - `APP_PUBLIC_URL` (for generated invite/reset links)
+  - `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`
+  - `SMTP_STARTTLS`, `SMTP_SSL`
+- Sender address is fixed for invite/reset emails:
+  - `technik@smpl-energy.de`
+  - `MAIL_FROM` is not used for these admin-auth mails.
+- If SMTP is not configured:
+  - admin invite/reset actions still work,
+  - API returns generated local links for manual delivery.
+- Link targets:
+  - `https://localhost/invite?token=...`
+  - `https://localhost/reset-password?token=...`
+
+## Profile Settings (user self-service)
+- Open `Profile & settings` (from sidebar user card).
+- In the profile block, users can update:
+  - name,
+  - email address,
+  - password.
+- Security behavior:
+  - email/password change requires current password.
+  - newly created users default to role `employee` unless admin explicitly changes role.
+  - Admin Center user actions are in each user row’s 3-dot menu (`invite`, `reset password`, `delete user`).
+  - `Delete user` deactivates account access but preserves historical data for exports/reporting.
+
+## Operational Notes (Current MVP)
+- Navigation model:
+  - `Overview` is now the left-side dashboard entry (status + assigned projects + project overview).
+  - `My Tasks` is a dedicated left-nav module; each task links into its project context and project view offers a back action to return to `My Tasks`.
+  - Weekly planning is a global main module, not a project tab.
+  - Weekly planning page body is calendar-only; use the header `Add task` action to open the task-planning modal.
+  - Construction report is a global main module:
+    - selecting a project auto-fills customer/project master data.
+    - if no project is selected, reports can still be created and are stored in the general reports folder.
+  - Wiki is a global main module for local technical guides; all users can read, `admin/ceo/planning` can edit.
+  - Project-specific actions open after selecting a project in the sidebar and then using top tabs (`tasks`, `tickets`, `files`).
+  - Project creation is available in the left sidebar at the project list header (`Create new`) and opens a modal with full project/customer fields.
+  - Sidebar footer (left-bottom) contains the compact language switch (`DE/EN`) and current-user identity card.
+  - Sidebar footer now shows live date/time under the user card and places `DE/EN` + `Sign out` in one compact row.
+  - Clicking the sidebar user identity card opens `Profile & settings`; admin users can access user administration there.
+  - In `Profile & settings`, users can upload/change their profile picture with an in-browser crop step (zoom + framing) before save.
+  - Projects use a user-defined `project_number` (business ID) and editable customer master data.
+  - Existing projects can be edited from project header action (`Edit project` / `Projekt bearbeiten`) for authorized roles.
+  - Task creation now supports assigning one task to multiple employees.
+- Time tracking UI includes live status, clock-out, break controls, and weekly entry edits.
+- Time tracking now includes absence workflows:
+  - all users can submit vacation requests,
+  - elevated roles can approve/reject requests,
+  - approved vacations are visible in weekly planning and in the requester’s time view.
+- School dates (recurring weekdays or date-range blocks) can be managed by accountant+ in `Admin tools` and are rendered in weekly planning.
+- Recurring school intervals now support multi-day selection via Monday-Friday checkboxes.
+- Default German-law break deduction is applied in time totals/export (`>6h=30m`, `>9h=45m`).
+- Chat module supports:
+  - compact messenger-style thread/message layout
+  - per-thread icon/picture upload
+  - creator-managed thread edits (or chat-manager override)
+  - unread badges derived from server-side read tracking
+  - composer row with left `+` attachment control and right arrow send button
+  - attachment draft chip before send (remove with `x`, optional text can still be edited)
+  - send arrow stays gray while message input is empty and switches to active blue when text is present
+  - attachment-only messages are supported (file can be sent without text)
+  - fixed-height message pane with internal scroll for older messages
+  - newest-message auto-follow after sending (pauses when user scrolls up in history)
+- Construction report form supports image uploads in one submit; report images are stored encrypted and included in generated PDF output.
+- Construction report files panel reads from:
+  - selected project report files when a project is chosen.
+  - general report folder when no project is selected.
+- Construction report and file sorting defaults:
+  - generated report PDFs are automatically stored under `Berichte`,
+  - report images are automatically stored under `Bilder`,
+  - project file uploads with no selected folder auto-route images to `Bilder` and PDFs to `Berichte`.
+- Files tab supports in-browser preview (image/PDF/text) via protected preview endpoint, plus explicit download action.
+- In project files, `Preview` opens in a separate browser tab/window (no inline modal overlay).
+- Project files upload uses a compact upload icon in the file explorer header that opens a small upload modal.
+- Project list header create action is a compact plus-icon trigger for the project-create modal.
+- Weekly planning header shows calendar week (`KW/CW`) and previous/next week arrows; selected week start is normalized to Monday.
+- Weekly planning keeps a fixed Monday-Sunday row:
+  - narrow screens scroll horizontally for days,
+  - each day scrolls vertically when many tasks are present.
+- Task start-time fields in German UI (`DE`) use explicit 24h `HH:MM` format.
+- Task/report time fields now use explicit `HH:MM` entry across all task create/edit surfaces and construction-report worker rows (same format in `DE` and `EN`).
+- Weekly planning cards assigned to the logged-in user can be clicked to jump directly into `My Tasks` with the selected task auto-expanded.
+- Project edit modal now includes manager-only lifecycle actions: `Archive` and permanent `Delete`.
+- Desktop shell uses independent sidebar/content scrolling so each side can overflow without blocking the other.
+- Compose services use `restart: unless-stopped`; `api`/`web` use healthchecks and health-gated startup ordering.
+- Sidebar behavior:
+  - with many projects, only the project list scrolls; user/profile footer remains visible at bottom.
+- Project import behavior:
+  - `Aktueller Status` values from Excel are stored as-is in project status (full source vocabulary).
+  - `Notiz` is imported into `last_state` and shown in project summary as `Last state`.
+  - `Letzter Status Datum` is imported into `last_status_at` and shown in project summary.
+  - repeated imports are idempotent (no repeated temp-project creation for the same fallback identity).
+
+## Admin Role Recovery (Emergency)
+- If the initial admin role was changed accidentally and UI access is blocked, restore it directly in DB:
+  - `docker compose exec -T db psql -U smpl -d smpl -c "UPDATE users SET role='admin' WHERE email='admin@example.com';"`
+  - Verify:
+    - `docker compose exec -T db psql -U smpl -d smpl -c "SELECT id,email,role FROM users WHERE email='admin@example.com';"`
+
+## Restore Smoke Test
+- Run: `BACKUP_PASSPHRASE='strong-pass' ./scripts/restore_smoke_test.sh`
+- The smoke test now:
+  - creates DB and uploads marker data
+  - creates encrypted backup
+  - deletes marker data
+  - restores from backup
+  - verifies marker data returned
+  - verifies `https://localhost/api` returns `200`
+
+## Release Verification Checklist
+Run this sequence before tagging/releasing:
+1. `./scripts/test.sh`
+2. `BACKUP_PASSPHRASE='strong-pass' ./scripts/restore_smoke_test.sh`
+3. `docker compose up -d --build && docker compose ps`
+4. `curl -sk -I https://localhost/`
+5. `curl -sk https://localhost/api`
+
+Expected:
+- API tests + web build pass.
+- Restore smoke passes.
+- Compose services are healthy (`db/api/web/caddy`).
+- HTTPS UI returns `HTTP/2 200` and API returns `{"status":"ok"}`.
+
+## Local dev smoke without Docker (optional)
+1. API:
+   - `source .venv/bin/activate && cd apps/api && DATABASE_URL='sqlite:///./smoke.db' SECURE_COOKIES=false PYTHONPATH=. uvicorn app.main:app --host 127.0.0.1 --port 8000`
+2. Web:
+   - `cd apps/web && VITE_API_PROXY_TARGET='http://127.0.0.1:8000' npm run dev -- --host 127.0.0.1 --port 5173`
+
+## Iteration UI Notes (2026-02-22)
+- `My Tasks` details now expand/collapse by clicking the task header row.
+- Opening `Construction Report`, `Time Tracking`, or `Wiki` from overview shortcut cards shows a header back button (icon + text) to return to overview.
+- Left-nav `Chat` now displays a blue dot when any thread has unread messages.
+- Chat timeline now shows:
+  - centered day separators,
+  - message times in `HH:MM`,
+  - incoming sender avatar grouping by consecutive sender messages.
+- Assignable-user API includes `avatar_updated_at` metadata for consistent identity/avatar display in non-admin views.
+
+## Iteration UI Notes (2026-02-22, task report shortcut + ticket simplification + project search)
+- In `My Tasks`, each own task now has `Report from task`:
+  - open task: marks complete first, then opens `Construction Report` with task/project prefill,
+  - completed task: opens prefilled report directly.
+- `Project > Job Tickets` is simplified for current operations:
+  - no standalone site/location creation segment,
+  - ticket create form uses selected project defaults for address and date.
+- Sidebar project navigation now supports quick search:
+  - click magnifier next to `Projects`,
+  - search field appears under header and filters by customer, project number, or project name.
+
+## Iteration UI Notes (2026-02-22, archive + task back-navigation + task indicators)
+- `Project archive` is available at the bottom of the sidebar project list (after divider).
+- Archive page supports:
+  - unarchive project,
+  - permanent delete project (manager roles only).
+- In project task list, clicking an assigned own task opens `My Tasks` with that task expanded.
+- `My Tasks` now shows a contextual `Back to project` button for this drilldown flow.
+- Left-nav now shows a blue change indicator on:
+  - `My Tasks`,
+  - `Weekly Planning`,
+  when assigned-task data changes in background polling.
+- Task edit modal includes manager-only `Delete task`.
+
+## Iteration UI Notes (2026-02-22, project/my-task flow + chat pane sizing + thread project mapping)
+- `My Tasks` spacing under header is aligned with weekly-planning spacing for visual consistency.
+- Drilldown flow `Project -> assigned task -> My Tasks -> Back to project` no longer creates a back-button loop.
+- Sidebar project search reveal now pushes project rows down cleanly (search input remains visible).
+- Chat right pane now uses viewport-based height so message history has full usable screen height.
+- Thread create/edit modal again supports optional project selection; thread edits can move between project-linked and general thread context.

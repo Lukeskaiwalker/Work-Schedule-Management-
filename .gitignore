@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+apps/api/test.db
+apps/api/smoke.db
+
+# Node
+node_modules/
+apps/web/dist/
+
+# Env / secrets
+.env
+apps/api/.env
+config/telegram.env
+
+# Data
+backups/
+data/
+*.tar
+*.tar.enc
+*.xlsx
+
+# OS
+.DS_Store
+
+# Local tooling / generated
+.mcp/
+.playwright-cli/
+output/
+
+# Large local content (mount at runtime)
+local wiki/*
+!local wiki/.gitkeep
