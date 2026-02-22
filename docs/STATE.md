@@ -1335,3 +1335,15 @@
   - Push repo to GitHub remote and provision server clone/bootstrap from `docs/SETUP.md`.
 - Blockers:
   - GitHub remote URL/auth not yet confirmed in this workspace.
+
+## Compacted Update (2026-02-22, GitHub publish complete)
+- Changed:
+  - Added GitHub remote `origin` to `https://github.com/Lukeskaiwalker/Work-Schedule-Management-.git`.
+  - Published release-ready `main` branch to GitHub (initial codebase push).
+  - Kept repository clean from runtime DB/data/secrets via `.gitignore` policy already applied.
+- Verified:
+  - `./scripts/test.sh` pass (`32 passed` API tests + web build).
+  - `docker compose up -d --build && docker compose ps` pass; `db/api/web/caddy` healthy.
+- Next:
+  - Server install: clone repo on target host, configure env/secrets, run `docker compose up -d --build`, then run restore/import as needed.
+- Blockers: none.
