@@ -190,3 +190,97 @@
 - Soft-delete invalidates unused action tokens, reducing risk of stale invite/reset links being used after deactivation.
 - Admin self-delete is blocked server-side to prevent accidental lockout.
 - Invite/reset emails now use enforced sender identity `technik@smpl-energy.de` for consistent operational mailbox handling.
+
+## Iteration Security Notes (2026-02-22, bootstrap login hardening on live restore)
+- Removed frontend hardcoded login defaults so credentials are never prefilled in the login form.
+- Added API setting `INITIAL_ADMIN_BOOTSTRAP` and set it to `false` on production host to prevent automatic recreation of bootstrap admin user.
+- After restoring DB backup, verified bootstrap account was still active and then explicitly deactivated `admin@example.com` to block known default credentials.
+- Validation result:
+  - `admin@example.com / ChangeMe123!` login now returns `401` (`Inactive user`).
+
+## Iteration Security Notes (2026-02-22, bootstrap lifecycle hardening)
+- Added server-side persistent bootstrap completion marker (`app_settings.initial_admin_bootstrap_completed`).
+- Bootstrap user auto-creation now stops permanently once initial admin credentials are changed.
+- This reduces risk of default-admin credential reintroduction after restarts/restores.
+- Emergency access recovery runbook was executed once on live host by resetting an existing active admin account password (no DB history deletion, no destructive reset).
+
+## Iteration Security Notes (2026-02-22, live lockout recovery + bootstrap de-risking)
+- Access was restored using an existing active admin account password reset, not by re-enabling default bootstrap credentials.
+- On live DB, bootstrap completion is explicitly set and default bootstrap account remains inactive with rotated random password hash.
+- Deployment process now requires excluding macOS metadata (`._*`) to avoid code execution/migration failures during container startup.
+
+## Iteration Security Notes (2026-02-23, project finance + activity timeline)
+- Added server-side finance write control:
+  - `PATCH /api/projects/{id}/finance` is limited to elevated roles (`admin`, `ceo`, `accountant`) and project-access checks.
+- Added immutable project activity events for operational traceability:
+  - task lifecycle, project state changes, file/ticket/report updates, and finance changes are now captured in `project_activities`.
+- `projects.last_updated_at` is now server-maintained from activity-producing actions, reducing frontend-derived timestamp ambiguity.
+- WebDAV writes (`PUT`/`DELETE`) now also emit project activity events, so filesystem-originated updates are tracked identically to UI/API uploads.
+
+## Iteration Security Notes (2026-02-23, map query data minimization)
+- Project overview map lookup now uses only the project address field (`customer_address`).
+- Customer name and project title are no longer appended to external map query strings.
+- This reduces outbound metadata exposure while preserving required navigation behavior.
+
+## Iteration Security Notes (2026-02-23, weather placeholder)
+- Added UI-only weather placeholder card in project overview.
+- No outbound weather API calls are performed yet.
+- No changes to authN/authZ, storage, backup encryption, or secret handling in this iteration.
+
+## Iteration Security Notes (2026-02-23, OpenWeather integration)
+- Weather provider key management is server-side only:
+  - key is set/read via admin-protected endpoints (`admin`/`ceo`),
+  - frontend never receives raw API key values (masked value only).
+- Weather API calls are executed by backend only; project clients never call external weather provider directly.
+- Per-project cache + 15-minute throttle limits outbound request burst risk when users switch projects frequently.
+- On weather provider outage/network failure, cached forecast is returned (`stale`) to preserve UI availability.
+
+## Iteration Security Notes (2026-02-23, project site-access metadata)
+- Added two project metadata fields (`site_access_type`, `site_access_note`) for operational access instructions.
+- Validation is server-side for allowed access-type values; invalid values are rejected on project create/update.
+- No permission model changes:
+  - existing `projects:manage` checks still gate writes,
+  - existing project access checks still gate reads.
+- Data classification note:
+  - `site_access_note` can contain sensitive operational details (codes/locations), so treat project exports/backups with the same handling as other internal project data.
+
+## Iteration Security Notes (2026-02-23, avatar deletion + archived user visibility model)
+- Avatar privacy control:
+  - Added authenticated endpoint `DELETE /api/users/me/avatar` so users can remove stored profile images.
+  - Endpoint clears avatar metadata and removes stored encrypted file path from user record.
+- User archive visibility:
+  - Soft-deleted users (`is_active=false`) are now separated in admin UI archive sections instead of mixed into active operational lists.
+  - Authorization model is unchanged: only admin-authenticated flows can delete/restore users.
+
+## Iteration Security Notes (2026-02-23, materials queue from report office material need)
+- Added dedicated persisted queue model for office procurement items (`project_material_needs`) to avoid mutating historical report payloads.
+- Access control for material queue:
+  - list endpoint (`GET /materials`) is scoped to projects visible to current user,
+  - update endpoint (`PATCH /materials/{id}`) validates project visibility before status changes.
+- Status updates are auditable:
+  - each material-status change records a project activity event (`material.status_updated`) with `from`/`to` state and item context.
+- Data handling note:
+  - material entries originate from free-text `office_material_need`; treat content as internal operational data in the same scope as project notes/reports.
+
+## Iteration Security Notes (2026-02-23, WebDAV project-number references + upload-folder semantics)
+- WebDAV authentication/authorization model is unchanged:
+  - still HTTP Basic with app user credentials,
+  - project access enforcement still uses `assert_project_access`.
+- WebDAV active project routes now resolve by project number (plus numeric-ID compatibility), reducing operator mistakes caused by mixing visible project number with internal DB ID.
+- Project display labels in WebDAV no longer expose internal DB IDs by default.
+- File upload folder handling now supports explicit root marker (`folder=/`) while preserving legacy auto-folder behavior (`folder=""`), with the same protected-folder permission checks applied.
+
+## Iteration Security Notes (2026-02-23, construction report mobile upload/time resilience)
+- Authorization model is unchanged:
+  - report creation still requires existing report/project permissions.
+- Multipart report file intake now accepts image uploads from multiple form fields (`images`, `camera_images`) and missing-filename cases by generating safe fallback names.
+- File ingestion remains constrained to image-like uploads in this flow (`content_type`-based check), reducing accidental ingestion of unrelated multipart fields.
+- Worker-time parsing accepts compact numeric input in addition to `HH:MM`; this changes parsing robustness only and does not expand access scope or data visibility.
+
+## Iteration Security Notes (2026-02-23, admin update status/install controls)
+- Update endpoints are admin/ceo protected (`_require_admin_or_ceo`) and are not exposed to employee roles.
+- Automatic install is guarded:
+  - only enabled when a valid local git repository path can be detected,
+  - default container deployments without git checkout stay in manual mode.
+- Install workflow uses `git pull --ff-only` to avoid implicit merge commits in production update paths.
+- GitHub API auth token support is optional and server-side only (`GITHUB_API_TOKEN`); token value is never returned to the frontend.

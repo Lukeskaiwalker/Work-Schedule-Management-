@@ -14,6 +14,7 @@ from app.core.security import create_access_token, get_password_hash, verify_pas
 from app.core.time import utcnow
 from app.models.entities import User, UserActionToken
 from app.schemas.api import InviteAccept, LoginRequest, PasswordResetConfirm, ProfileUpdate, UserOut
+from app.services.runtime_settings import mark_initial_admin_bootstrap_completed
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 settings = get_settings()
@@ -95,6 +96,8 @@ def update_profile(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    original_email = current_user.email
+    initial_admin_email = settings.initial_admin_email.strip().lower()
     incoming_name = payload.full_name.strip() if payload.full_name is not None else None
     incoming_email = payload.email.strip().lower() if payload.email is not None else None
     requires_password_check = incoming_email is not None or payload.new_password is not None
@@ -115,6 +118,16 @@ def update_profile(
 
     if payload.new_password is not None:
         current_user.password_hash = get_password_hash(payload.new_password)
+
+    changed_initial_admin_credentials = (
+        original_email == initial_admin_email
+        and (
+            payload.new_password is not None
+            or (incoming_email is not None and incoming_email != original_email)
+        )
+    )
+    if changed_initial_admin_credentials:
+        mark_initial_admin_bootstrap_completed(db)
 
     db.add(current_user)
     db.commit()

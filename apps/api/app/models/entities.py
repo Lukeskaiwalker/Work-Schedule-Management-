@@ -50,14 +50,60 @@ class Project(Base):
     status: Mapped[str] = mapped_column(String(64), default="active", nullable=False)
     last_state: Mapped[str | None] = mapped_column(Text)
     last_status_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_updated_at: Mapped[datetime | None] = mapped_column(DateTime, default=utcnow, nullable=True)
     customer_name: Mapped[str | None] = mapped_column(String(255))
     customer_address: Mapped[str | None] = mapped_column(String(500))
     customer_contact: Mapped[str | None] = mapped_column(String(255))
     customer_email: Mapped[str | None] = mapped_column(String(255))
     customer_phone: Mapped[str | None] = mapped_column(String(128))
+    site_access_type: Mapped[str | None] = mapped_column(String(64))
+    site_access_note: Mapped[str | None] = mapped_column(String(500))
     extra_attributes: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
+class ProjectFinance(Base):
+    __tablename__ = "project_finances"
+
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True)
+    order_value_net: Mapped[float | None] = mapped_column(Float)
+    down_payment_35: Mapped[float | None] = mapped_column(Float)
+    main_components_50: Mapped[float | None] = mapped_column(Float)
+    final_invoice_15: Mapped[float | None] = mapped_column(Float)
+    planned_costs: Mapped[float | None] = mapped_column(Float)
+    actual_costs: Mapped[float | None] = mapped_column(Float)
+    contribution_margin: Mapped[float | None] = mapped_column(Float)
+    reported_hours_total: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    planned_hours_total: Mapped[float | None] = mapped_column(Float)
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class ProjectActivity(Base):
+    __tablename__ = "project_activities"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True, nullable=False)
+    actor_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    message: Mapped[str] = mapped_column(String(255), nullable=False)
+    details: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
+class ProjectWeatherCache(Base):
+    __tablename__ = "project_weather_cache"
+
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(64), default="openweather", nullable=False)
+    query_address: Mapped[str] = mapped_column(String(500), nullable=False)
+    latitude: Mapped[float | None] = mapped_column(Float)
+    longitude: Mapped[float | None] = mapped_column(Float)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    fetched_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_error: Mapped[str | None] = mapped_column(String(500))
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
 
 
 class ProjectMember(Base):
@@ -70,6 +116,28 @@ class ProjectMember(Base):
     can_manage: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
+class ProjectClassTemplate(Base):
+    __tablename__ = "project_class_templates"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False, unique=True, index=True)
+    materials_required: Mapped[str | None] = mapped_column(Text)
+    tools_required: Mapped[str | None] = mapped_column(Text)
+    task_templates: Mapped[list[dict]] = mapped_column(JSON, default=list, nullable=False)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
+class ProjectClassAssignment(Base):
+    __tablename__ = "project_class_assignments"
+    __table_args__ = (UniqueConstraint("project_id", "class_template_id", name="uq_project_class_assignment"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    class_template_id: Mapped[int] = mapped_column(ForeignKey("project_class_templates.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
 class Task(Base):
     __tablename__ = "tasks"
 
@@ -79,6 +147,10 @@ class Task(Base):
     description: Mapped[str | None] = mapped_column(Text)
     materials_required: Mapped[str | None] = mapped_column(Text)
     storage_box_number: Mapped[int | None] = mapped_column(Integer)
+    task_type: Mapped[str] = mapped_column(String(32), default="construction", nullable=False)
+    class_template_id: Mapped[int | None] = mapped_column(
+        ForeignKey("project_class_templates.id", ondelete="SET NULL"), index=True
+    )
     status: Mapped[str] = mapped_column(String(64), default="open", nullable=False)
     due_date: Mapped[date | None] = mapped_column(Date)
     start_time: Mapped[time | None] = mapped_column(Time)
@@ -165,6 +237,22 @@ class ConstructionReport(Base):
     payload: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     telegram_sent: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
+class ProjectMaterialNeed(Base):
+    __tablename__ = "project_material_needs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True, nullable=False)
+    construction_report_id: Mapped[int | None] = mapped_column(
+        ForeignKey("construction_reports.id", ondelete="SET NULL"), index=True
+    )
+    item: Mapped[str] = mapped_column(String(500), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), default="order", nullable=False, index=True)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
 
 
 class WikiPage(Base):
@@ -270,6 +358,14 @@ class UserActionToken(Base):
     used_at: Mapped[datetime | None] = mapped_column(DateTime)
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
+class AppSetting(Base):
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(128), primary_key=True)
+    value: Mapped[str] = mapped_column(String(2048), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
 
 
 class AuditLog(Base):

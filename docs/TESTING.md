@@ -218,6 +218,20 @@
   - `test_time_tracking_daily_uses_local_timezone_boundaries` verifies daily totals use local day boundaries (default `Europe/Berlin`) instead of raw UTC day cuts.
 - Runtime check:
   - `docker compose up -d --build`: pass.
+
+## Latest Result (2026-02-23)
+- `./scripts/test.sh`: pass.
+- API tests: pass (`37 passed`) in Docker mode.
+- Web build: pass (`vite build`).
+- Transfer/handoff docs created for workspace migration continuity:
+  - `docs/HANDOFF_CONTEXT.md`
+  - `docs/CHANGELOG_HANDOFF.md`
+
+## Latest Result (2026-02-23, weather localization + overview header styling)
+- `./scripts/test.sh`: pass.
+- API tests: pass (`37 passed`) in Docker mode.
+- Web build: pass (`vite build`).
+- Weather API tests updated for localized fetch signature (`lang`) and DE path assertions.
   - `docker compose ps`: `db/api/web/caddy` healthy.
 
 ## Iteration Result (2026-02-21, circular gauge + projects-all navigation)
@@ -244,6 +258,18 @@
 ## Iteration Result (2026-02-21, gauge full at/over target)
 - Command run:
   - `./scripts/test.sh`
+
+## Latest Result (2026-02-23, project classes + class-template import)
+- `./scripts/test.sh`: pass.
+- API tests: pass (`38 passed`) in Docker mode.
+- Web build: pass (`vite build`).
+- New targeted API coverage:
+  - `test_project_class_templates_import_and_autocreate_tasks`
+    - validates admin class-template CSV import/export flow,
+    - validates project class assignment endpoint behavior,
+    - validates auto-created class tasks (unassigned, undated),
+    - validates class-based materials/tools prefill for manual task creation,
+    - validates rejection when class is not assigned to the project.
 - Result:
   - API tests: pass (`15 passed`).
   - Web build: pass (`vite build`).
@@ -653,3 +679,243 @@
     - validates elevated-user read path remains functional.
   - Existing auth test still validates new-user default role:
     - `test_new_user_defaults_to_employee_role`.
+
+## Iteration Result (2026-02-22, server hotfix + restore + wiki sync)
+- Commands run:
+  - Local: `./scripts/test.sh`
+  - Server deploy: `docker compose up -d --build && docker compose ps`
+  - Server restore: `BACKUP_PASSPHRASE="$(cat config/backup-test-db.key)" ./scripts/restore.sh backups/backup-20260222-211743.tar.enc`
+  - Server health: `curl -sk https://smpl-office.duckdns.org/api`
+  - Server auth check: `POST /api/auth/login` with bootstrap creds
+- Results:
+  - Local API tests: pass (`32 passed`).
+  - Local web build: pass.
+  - Server stack healthy (`db/api/web/caddy`).
+  - API health endpoint returned `status=ok`.
+  - Bootstrap credentials blocked post-fix (`401`, inactive user).
+  - Wiki payload synced and visible in mount (`2364` files).
+
+## Iteration Result (2026-02-22, bootstrap completion guard)
+- Commands run:
+  - `./scripts/test.sh`
+- Results:
+  - API tests: pass (`33 passed`).
+  - Web build: pass (`vite build`).
+- Coverage added/updated:
+  - `test_initial_admin_credential_change_disables_bootstrap_recreation` validates that after initial admin credential change and runtime re-init:
+    - old bootstrap login fails,
+    - changed credentials continue to work,
+    - bootstrap admin is not recreated.
+- Live ops check:
+  - Server login recovery validated with active admin account on `smpl-office.duckdns.org`.
+
+## Iteration Result (2026-02-22, live deployment + auth recovery verification)
+- Commands run:
+  - Server: `docker compose up -d --build`, `docker compose ps`, `curl -ksS https://smpl-office.duckdns.org/api`
+  - Server auth checks: `POST /api/auth/login` for emergency admin and bootstrap credentials.
+- Results:
+  - Server stack healthy after rebuild and migration.
+  - Emergency admin login succeeds (`200`).
+  - Default bootstrap login fails (`401`).
+  - Uploaded fresh encrypted backup artifact to server (`backup-20260222-224157.tar.enc`).
+
+## Iteration Result (2026-02-23, project overview/finances/activity)
+- Commands run:
+  - `./scripts/test.sh`
+- Results:
+  - API tests: pass (`33 passed`).
+  - Web build: pass (`vite build`).
+- Coverage added/updated:
+  - `test_project_task_planning_ticket_file_and_report_flow` now validates:
+    - `GET /api/projects/{id}/overview` payload shape and activity presence,
+    - `PATCH /api/projects/{id}/finance` persistence,
+    - finance update event visibility in overview change feed.
+
+## Iteration Result (2026-02-23, map/address and overview task list UX)
+- Commands run:
+  - `./scripts/test.sh`
+- Results:
+  - API tests: pass (`33 passed`).
+  - Web build: pass (`vite build`).
+- Manual UI checks performed:
+  - project overview map opens external maps when clicking the map itself,
+  - no standalone map-open button rendered,
+  - overview open-task card shows task rows and scrolls when task count exceeds card height.
+
+## Iteration Result (2026-02-23, simplified overview card + weather placeholder)
+- Commands run:
+  - `./scripts/test.sh`
+- Results:
+  - API tests: pass (`33 passed`).
+  - Web build: pass (`vite build`).
+- Manual UI checks performed:
+  - open-task card shows only subheading plus scrollable task list (no counters),
+  - subheading spacing under main header reduced,
+  - weather placeholder card renders in project overview and spans two grid columns on desktop width.
+
+## Iteration Result (2026-02-23, weather API + cache/throttle)
+- Commands run:
+  - `./scripts/test.sh`
+- Results:
+  - API tests: pass (`35 passed`).
+  - Web build: pass (`vite build`).
+- Coverage added/updated:
+  - `test_admin_can_manage_weather_settings`:
+    - validates admin weather settings read/update and employee access denial.
+  - `test_project_weather_cache_throttle_and_offline_fallback`:
+    - validates first refresh fetches provider data,
+    - repeated refresh inside 15 minutes uses cache,
+    - refresh after cooldown with provider failure falls back to cached values.
+
+## Iteration Result (2026-02-23, weather switched to 5-day forecast)
+- Commands run:
+  - `./scripts/test.sh`
+  - `docker compose up -d`
+- Results:
+  - API tests: pass (`35 passed`).
+  - Web build: pass (`vite build`).
+  - Compose stack: services healthy (`db`, `api`, `web`, `caddy`).
+- Coverage updated:
+  - `test_project_weather_cache_throttle_and_offline_fallback` now validates 5 forecast days in cached/live responses.
+
+## Iteration Result (2026-02-23, weather geocode resilience + address input normalization)
+- Commands run:
+  - `./scripts/test.sh`
+  - `docker compose up -d`
+- Results:
+  - API tests: pass (`36 passed`).
+  - Web build: pass (`vite build`).
+  - Compose stack: services healthy (`db`, `api`, `web`, `caddy`).
+- Coverage updated:
+  - `test_weather_address_candidates_normalize_and_add_country_fallbacks` validates:
+    - multiline/comma-heavy address normalization,
+    - candidate fallback list with `Deutschland`/`Germany` suffixes.
+
+## Iteration Result (2026-02-23, weather ZIP fallback)
+- Commands run:
+  - `./scripts/test.sh`
+- Results:
+  - API tests: pass (`37 passed`).
+  - Web build: pass (`vite build`).
+- Coverage updated:
+  - `test_weather_zip_candidates_extracts_postal_code` validates extraction of DE ZIP fallback candidate from multiline project addresses.
+
+## Iteration Result (2026-02-23, task timestamp refresh + customer appointment planning view)
+- Commands run:
+  - `docker compose run --rm api sh -lc 'cd /app && PYTHONPATH=/app pytest -q tests/test_workflows.py::test_planning_week_calendar_view'`
+  - `cd apps/web && npm run build`
+  - `./scripts/test.sh`
+- Results:
+  - Targeted planning-week test: pass (`1 passed`).
+  - Full API tests: pass (`38 passed`).
+  - Web build: pass (`vite build`).
+- Coverage updated:
+  - `test_planning_week_calendar_view` now validates `customer_appointment` tasks and task-type filtering via `task_type=customer_appointment`.
+
+## Iteration Result (2026-02-23, construction report hours -> project totals)
+- Commands run:
+  - `docker compose run --rm api sh -lc 'cd /app && PYTHONPATH=/app pytest -q tests/test_workflows.py::test_project_task_planning_ticket_file_and_report_flow'`
+  - `cd apps/web && npm run build`
+  - `./scripts/test.sh`
+- Results:
+  - Targeted workflow test: pass (`1 passed`).
+  - Full API tests: pass (`38 passed`).
+  - Web build: pass (`vite build`).
+- Coverage updated:
+  - `test_project_task_planning_ticket_file_and_report_flow` now validates `reported_hours_total` accumulation from construction report worker times and exposure via:
+    - `GET /api/projects/{id}/finance`
+    - `GET /api/projects/{id}/overview`
+
+## Iteration Result (2026-02-23, project site-access create/edit + overview display)
+- Commands run:
+  - `docker compose run --rm api sh -lc 'cd /app && PYTHONPATH=/app pytest -q tests/test_workflows.py::test_project_task_planning_ticket_file_and_report_flow'`
+  - `./scripts/test.sh`
+  - `docker compose up -d --build`
+- Results:
+  - Targeted workflow test: pass (`1 passed`).
+  - Full API tests: pass (`38 passed`).
+  - Web build: pass (`vite build`).
+  - Local compose stack: healthy (`db`, `api`, `web`, `caddy`).
+- Coverage updated:
+  - `test_project_task_planning_ticket_file_and_report_flow` now validates:
+    - project create persists `site_access_type` + `site_access_note`,
+    - project update can switch to a non-note access type and clears note.
+
+## Iteration Result (2026-02-23, avatar delete + admin user archive separation)
+- Commands run:
+  - `docker compose run --rm api sh -lc 'cd /app && PYTHONPATH=/app pytest -q tests/test_workflows.py::test_profile_avatar_upload_and_preview'`
+  - `./scripts/test.sh`
+- Results:
+  - Targeted avatar test: pass (`1 passed`).
+  - Full API tests: pass (`38 passed`).
+  - Web build: pass (`vite build`).
+- Coverage updated:
+  - `test_profile_avatar_upload_and_preview` now validates:
+    - avatar delete endpoint success,
+    - avatar metadata reset on `/api/auth/me`,
+    - avatar preview returns `404` after deletion,
+    - repeated delete remains successful (`deleted=false`).
+
+## Iteration Result (2026-02-23, materials side menu + office material need status flow)
+- Commands run:
+  - `docker compose run --rm api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_workflows.py -k "project_task_planning_ticket_file_and_report_flow"'`
+  - `docker compose run --rm api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_workflows.py'`
+  - `cd apps/web && npm run build`
+  - `./scripts/test.sh`
+  - `docker compose up -d --build api web`
+- Results:
+  - Targeted workflow test: pass (`1 passed`).
+  - Full workflow suite: pass (`23 passed`).
+  - Full API suite + web build wrapper: pass (`38 passed`, web build successful).
+  - Direct web production build: pass (`vite build`).
+  - API container startup confirmed Alembic migration applied: `20260224_0022 -> 20260224_0023`.
+- Coverage updated:
+  - `test_project_task_planning_ticket_file_and_report_flow` now validates:
+    - report `office_material_need` auto-creates `/api/materials` queue entries,
+    - default material state is `order`,
+    - state update endpoint persists `on_the_way`,
+    - material entry includes originating project/report context (`project_id`, `report_date`).
+
+## Iteration Result (2026-02-23, WebDAV project-number links + root upload support)
+- Commands run:
+  - `docker compose run --rm api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_workflows.py -k "webdav_mount_flow or webdav_projects_root_respects_project_access or webdav_projects_root_includes_archive_and_general_collections or project_files_folder_visibility_and_webdav_structure"'`
+  - `cd apps/web && npm run build`
+  - `./scripts/test.sh`
+- Results:
+  - Focused WebDAV/file workflow tests: pass (`4 passed`, `19 deselected`).
+  - Full API suite + web build wrapper: pass (`38 passed`, web build successful).
+  - Direct web production build: pass (`vite build`).
+- Coverage updated:
+  - `test_project_files_webdav_mount_flow` now validates:
+    - WebDAV root advertises project-number-based href,
+    - project-number path access works for a second project member,
+    - numeric-ID path remains backward-compatible.
+  - `test_project_files_folder_visibility_and_webdav_structure` now validates explicit base-folder upload via `folder=/`.
+
+## Iteration Result (2026-02-23, construction report mobile worker/time/photo flow)
+- Commands run:
+  - `docker compose run --rm --build api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_workflows.py -k project_task_planning_ticket_file_and_report_flow'`
+  - `cd apps/web && npm run build`
+  - `./scripts/test.sh`
+- Results:
+  - Targeted workflow test: pass (`1 passed`).
+  - Direct web production build: pass (`vite build`).
+  - Full API + web wrapper checks: pass (`38 passed`, web build successful).
+- Coverage updated:
+  - `test_project_task_planning_ticket_file_and_report_flow` now validates:
+    - multipart construction report accepts both `images` and `camera_images`,
+    - compact worker times (`730`/`1600`) are parsed and included in `reported_hours_total`,
+    - reported-hours total reflects cumulative value after multipart report (`17.0`).
+
+## Iteration Result (2026-02-23, admin update menu + update status/install endpoints)
+- Commands run:
+  - `docker compose run --rm --build api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_auth_rbac.py'`
+  - `cd apps/web && npm run build`
+  - `./scripts/test.sh`
+- Results:
+  - Admin auth/rbac test file: pass (`9 passed`).
+  - Direct web production build: pass (`vite build`).
+  - Full API + web wrapper checks: pass (`40 passed`, web build successful).
+- Coverage updated:
+  - `test_admin_can_read_update_status` validates release-status payload mapping and update-available detection.
+  - `test_admin_install_update_returns_manual_when_auto_install_unavailable` validates safe manual fallback when auto-install cannot run.

@@ -259,6 +259,13 @@
 - Tradeoffs:
   - Pros: cleaner visual rhythm and fewer alignment regressions across mobile/desktop.
 
+## 2026-02-23 - Project classes are template-driven and assigned per project
+- Status: accepted
+- Decision: Introduce reusable project-class templates (materials, tools, and default task templates), importable via admin CSV template, with many-to-many assignment to projects.
+- Tradeoffs:
+  - Pros: consistent project bootstrap, reusable standard task/material definitions, and faster planning setup.
+  - Cons: adds template lifecycle governance and extra schema/API complexity (assignment and class-aware task creation).
+
 ## 2026-02-22 - User deletion is soft-delete only; admin user actions moved into contextual menu
 - Status: accepted
 - Decision: In Admin Center, user-level actions (`send invite`, `send password reset`, `delete user`) are grouped into a per-user 3-dot contextual menu. `Delete user` sets `users.is_active=false` (soft delete) and invalidates open action tokens instead of removing DB rows.
@@ -964,3 +971,202 @@
 - Tradeoffs:
   - Pros: removes core framework/runtime deprecations, reduces upgrade risk, and centralizes timestamp behavior.
   - Cons: test bootstrap and monkeypatch paths needed small updates due changed initialization/time callsites.
+
+## 2026-02-22 - Production bootstrap-admin creation must be explicitly disabled after first setup
+- Status: accepted
+- Decision:
+  - Introduce `INITIAL_ADMIN_BOOTSTRAP` setting (default `true` for bootstrap/test convenience).
+  - In production runtime `.env`, set `INITIAL_ADMIN_BOOTSTRAP=false` after first admin provisioning.
+  - Keep startup behavior as "create bootstrap admin only when enabled and missing".
+- Tradeoffs:
+  - Pros: prevents accidental recreation of predictable bootstrap credentials in restored/fresh environments.
+  - Cons: a fresh environment with bootstrap disabled and no active admin requires manual DB/API admin provisioning.
+
+## 2026-02-22 - Bootstrap admin completion persisted in DB runtime settings
+- Status: accepted
+- Decision:
+  - Added `app_settings` table for runtime flags.
+  - Added `initial_admin_bootstrap_completed` flag used during startup bootstrap checks.
+  - Startup now avoids creating/recreating default bootstrap admin once completion flag is set.
+  - Changing initial admin credentials through `PATCH /auth/me` auto-marks bootstrap completion.
+- Tradeoffs:
+  - Pros: prevents default credential resurrection after restore/restart without requiring manual env edits each time.
+  - Cons: introduces a small new persistence surface (`app_settings`) and migration dependency.
+
+## 2026-02-23 - Project overview uses server-side activity log + finance domain model
+- Status: accepted
+- Decision:
+  - Added dedicated backend entities for project observability and finance:
+    - `project_activities` for immutable project-level change events,
+    - `project_finances` for structured financial fields,
+    - `projects.last_updated_at` as canonical "last edited" timestamp.
+  - Added `GET /projects/{id}/overview` to provide a single server-validated snapshot for project overview UI (open tasks, my tasks, finance, recent changes).
+  - Kept task/ticket/files/report workflows as event producers that append activity rows and touch `last_updated_at`.
+- Tradeoffs:
+  - Pros: deterministic project timeline, consistent "last update" semantics, and cleaner UI composition with one overview payload.
+  - Cons: additional write operations on common project actions and one extra schema/migration surface.
+
+## 2026-02-23 - Project page tab model normalized to Overview/Tasks/Tickets/Files/Finances
+- Status: accepted
+- Decision:
+  - Standardized selected-project navigation to five tabs: `overview`, `tasks`, `tickets`, `files`, `finances`.
+  - Moved map preview, contact/meta glance, internal note editing, and recent change feed into `Overview`.
+  - Restricted `Tasks` tab scope to task creation + task lists (my/open) only.
+- Tradeoffs:
+  - Pros: clearer IA per project and reduced cross-tab clutter.
+  - Cons: users coming from older flows need one click to reach map/context now located in `Overview`.
+
+## 2026-02-23 - Project overview map uses address-only query and map-as-link interaction
+- Status: accepted
+- Decision:
+  - Build map query only from `project.customer_address` to keep map lookup deterministic and reduce unnecessary context leakage.
+  - Remove standalone "open in maps" button and make the map area itself the single navigation target.
+  - Show open tasks as a scrollable list in overview instead of counter-only summary for better operational scanning.
+- Tradeoffs:
+  - Pros: cleaner UI, fewer controls, better privacy by data minimization in map query, and more useful task-at-a-glance visibility.
+  - Cons: embedded map is no longer interactive for panning/zoom before opening external maps.
+
+## 2026-02-23 - Open-task card simplified and weather slot reserved in project overview
+- Status: accepted
+- Decision:
+  - Keep the project overview task glance card list-focused (no counters in the card body).
+  - Add dedicated two-column weather placeholder card in overview grid to reserve layout for future weather feature.
+- Tradeoffs:
+  - Pros: less visual noise, clearer scanning of real tasks, and stable layout target for upcoming weather integration.
+  - Cons: task totals are no longer visible in that card and must be inferred from list content or other views.
+
+## 2026-02-23 - Project weather uses server-side OpenWeather fetch with per-project cache/throttle
+- Status: accepted
+- Decision:
+  - Implemented weather retrieval on backend (`/projects/{id}/weather`) using OpenWeather geocoding + 5-day forecast.
+  - Added persistent per-project cache (`project_weather_cache`) with 15-minute refresh cooldown per project.
+  - On provider/network failure, API returns last cached values (`stale=true`) instead of failing hard.
+  - Weather API key is managed through admin endpoints (`/admin/settings/weather`) and configured via Admin tools UI.
+- Tradeoffs:
+  - Pros: avoids frontend secret exposure, prevents call spikes when users switch projects, supports offline/stale fallback.
+  - Cons: adds one more external dependency and operational key-management responsibility.
+
+## 2026-02-23 - Weather geocoding retries multiple address candidates
+- Status: accepted
+- Decision:
+  - Keep weather lookup source as project `customer_address`, but geocode with ordered candidates:
+    - normalized base address,
+    - base + `Deutschland`,
+    - base + `Germany`.
+  - Normalize project address input on save (comma/whitespace cleanup) and show a format hint in the project form.
+- Tradeoffs:
+  - Pros: fewer false geocode failures for valid German addresses and less manual reformatting for users.
+  - Cons: fallback suffixes are country-biased and may be less ideal for non-DE projects until country is explicit in data model.
+
+## 2026-02-23 - Weather geocoding falls back to ZIP for difficult street matches
+- Status: accepted
+- Decision:
+  - Added geocode fallback to OpenWeather ZIP endpoint when direct geocoding returns empty results.
+  - ZIP candidates are parsed from project `customer_address` and sent as `ZIP,DE`.
+- Tradeoffs:
+  - Pros: recovers forecasts for addresses not recognized at street granularity; robust for German project data.
+  - Cons: ZIP geocoding is less precise than full street geocoding.
+
+## 2026-02-23 - Task typing extended with customer appointments and UTC-naive timestamp parsing normalized in web UI
+- Status: accepted
+- Decision:
+  - Added third task type `customer_appointment` to canonical task-type aliases in API/admin import flow and exposed it in weekly planning + task forms.
+  - Weekly planning view filter now includes a dedicated customer-appointments subview beside construction and office views.
+  - Frontend datetime parsing now treats server timestamps without explicit timezone as UTC to avoid local-time drift (1-hour offset in DE locale).
+  - Project overview load now merges returned `project` payload into local project list state so "Last update" reacts immediately to task creation.
+- Tradeoffs:
+  - Pros: supports appointment planning workflow without overloading office tasks; consistent timezone rendering; improved perceived data freshness in project detail.
+  - Cons: task-type taxonomy grows (more filter options) and requires users to classify tasks correctly for planning views.
+
+## 2026-02-23 - Construction report worker times are persisted as project-level reported hours
+- Status: accepted
+- Decision:
+  - Added `project_finances.reported_hours_total` as persistent accumulator for hours reported in construction reports.
+  - On each project-bound construction report create, backend parses worker `start_time`/`end_time` rows and adds valid durations to the project total.
+  - Exposed this total through existing finance/overview payloads and surfaced it in project overview as an at-a-glance metric.
+- Tradeoffs:
+  - Pros: stable and fast project-hour glance value without re-aggregating every report on each UI load.
+  - Cons: accumulator model assumes append-only reports; if report edit/delete is introduced later, compensating adjustments must be implemented.
+
+## 2026-02-23 - Project site access is modeled as controlled option + optional detail note
+- Status: accepted
+- Decision:
+  - Added explicit project-level fields for site entry handling:
+    - `site_access_type` (controlled set of values),
+    - `site_access_note` (free-text detail).
+  - `site_access_note` is used only for access types that operationally require detail (`key_pickup`, `code_access`, `key_box`).
+  - Exposed the selected access option in the project overview contact card for at-a-glance dispatch context.
+- Tradeoffs:
+  - Pros: structured, consistent data for common access workflows while keeping flexibility for codes/pickup details.
+  - Cons: single-option model does not capture multiple simultaneous access methods per project.
+
+## 2026-02-23 - User lifecycle UX aligned with project archive pattern + self-service avatar deletion
+- Status: accepted
+- Decision:
+  - Keep backend user soft-delete semantics (`is_active=false`) as archive state.
+  - In admin UI, render only active users in main tables and move inactive users to dedicated archive sections with explicit restore action.
+  - Add profile self-service avatar removal endpoint (`DELETE /users/me/avatar`) and UI action so users can fully clear profile images.
+- Tradeoffs:
+  - Pros: cleaner admin operational list, archive consistency with project behavior, and full user control over profile picture presence.
+  - Cons: archived users still share the same table/model (no separate archive entity), so very large user sets may later need server-side filtered list endpoints.
+
+## 2026-02-23 - Office material demand is tracked as a dedicated cross-project queue with status workflow
+- Status: accepted
+- Decision:
+  - Added dedicated `project_material_needs` persistence model instead of deriving queue state directly from raw report payload each time.
+  - On project-bound construction report creation, parse `office_material_need` text into distinct queue items and auto-create rows with default status `order`.
+  - Exposed queue via `GET /materials` and mutable status via `PATCH /materials/{id}`.
+  - Canonical status workflow is:
+    - `order`,
+    - `on_the_way`,
+    - `available`.
+  - Queue list is scoped to active projects visible to the current user.
+- Tradeoffs:
+  - Pros: status is durable and editable independently of immutable report payloads; supports shared office procurement workflow across projects.
+  - Cons: free-text parsing from report field can be ambiguous; advanced quantity/article extraction remains out of scope for now.
+
+## 2026-02-23 - WebDAV project paths are canonicalized to project number while keeping numeric-ID compatibility
+- Status: accepted
+- Decision:
+  - Keep active WebDAV project path shape as `/api/dav/projects/{project_ref}` but resolve `project_ref` by:
+    - exact `project_number`,
+    - fallback numeric `id` (backward compatibility).
+  - Emit project links in WebDAV root listings using `project_number` as canonical reference.
+  - Remove internal DB ID from WebDAV display labels to reduce operator confusion between visible project number and technical row ID.
+- Tradeoffs:
+  - Pros: mounted file shares align with project identifiers users operate with; existing numeric-ID links continue to work.
+  - Cons: if a legacy project has no project number, canonical path still falls back to numeric ID.
+
+## 2026-02-23 - Root-folder uploads use explicit marker instead of empty-folder auto routing
+- Status: accepted
+- Decision:
+  - Preserve existing upload behavior where empty `folder` means “auto route by file type”.
+  - Add explicit root marker (`folder=/`) to force upload into project base folder.
+  - Keep server-side folder auto-registration so inline new-folder upload does not require a separate create-folder call.
+- Tradeoffs:
+  - Pros: unambiguous user intent for base-folder uploads; enables one-step upload into newly specified folder paths.
+  - Cons: API now has two “empty-ish” folder semantics (`""` auto, `"/"` root) that must be documented clearly.
+
+## 2026-02-23 - Construction report mobile entry accepts numeric times and resilient photo metadata
+- Status: accepted
+- Decision:
+  - Normalize construction report worker times from either `HH:MM` or compact numeric input (`HMM`/`HHMM`) before validation and hour accumulation.
+  - Keep worker payload shape unchanged (`name`, `start_time`, `end_time`) to avoid API contract breakage.
+  - Expand multipart report image intake to include both picker and camera-origin files and generate fallback file names when client metadata is incomplete.
+  - Add report-form user search affordance using assignable-user suggestions instead of introducing a new worker-assignment entity.
+- Tradeoffs:
+  - Pros: better mobile usability (no colon requirement), fewer lost photo uploads from mobile capture flows, and backward compatibility with existing reports.
+  - Cons: worker entries remain name-based free text (not user-ID-bound), so historical consistency still depends on entered names.
+
+## 2026-02-23 - Admin update management uses release-status API with guarded auto-install and manual fallback
+- Status: accepted
+- Decision:
+  - Added admin-protected update status endpoint (`GET /api/admin/updates/status`) that checks GitHub releases/commits for the configured repository and compares against locally configured release metadata.
+  - Added admin install endpoint (`POST /api/admin/updates/install`) supporting:
+    - dry run (no command execution),
+    - guarded auto-install command chain (`git fetch`, `git pull --ff-only`, `alembic upgrade head`) only when a valid local git checkout is detectable,
+    - manual fallback response with explicit update commands when auto-install is unavailable.
+  - Exposed update controls in admin UI so update checks are discoverable without shell access.
+- Tradeoffs:
+  - Pros: operational visibility into update availability directly in-app; safer update execution with explicit fallback in Docker/self-hosted setups where in-container git checkout is absent.
+  - Cons: automatic install is environment-dependent and typically unavailable in immutable container deployments unless explicitly configured with a repository path.

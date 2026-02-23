@@ -61,7 +61,10 @@ class ProjectCreate(BaseModel):
     customer_contact: str | None = None
     customer_email: str | None = None
     customer_phone: str | None = None
+    site_access_type: str | None = None
+    site_access_note: str | None = None
     extra_attributes: dict[str, Any] = Field(default_factory=dict)
+    class_template_ids: list[int] = Field(default_factory=list)
 
 
 class ProjectUpdate(BaseModel):
@@ -76,7 +79,10 @@ class ProjectUpdate(BaseModel):
     customer_contact: str | None = None
     customer_email: str | None = None
     customer_phone: str | None = None
+    site_access_type: str | None = None
+    site_access_note: str | None = None
     extra_attributes: dict[str, Any] | None = None
+    class_template_ids: list[int] | None = None
 
 
 class ProjectOut(BaseModel):
@@ -87,12 +93,121 @@ class ProjectOut(BaseModel):
     status: str
     last_state: str | None = None
     last_status_at: datetime | None = None
+    last_updated_at: datetime | None = None
     customer_name: str | None = None
     customer_address: str | None = None
     customer_contact: str | None = None
     customer_email: str | None = None
     customer_phone: str | None = None
+    site_access_type: str | None = None
+    site_access_note: str | None = None
     extra_attributes: dict[str, Any] = Field(default_factory=dict)
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ProjectFinanceUpdate(BaseModel):
+    order_value_net: float | None = None
+    down_payment_35: float | None = None
+    main_components_50: float | None = None
+    final_invoice_15: float | None = None
+    planned_costs: float | None = None
+    actual_costs: float | None = None
+    contribution_margin: float | None = None
+    planned_hours_total: float | None = Field(default=None, ge=0)
+
+
+class ProjectFinanceOut(BaseModel):
+    project_id: int
+    order_value_net: float | None = None
+    down_payment_35: float | None = None
+    main_components_50: float | None = None
+    final_invoice_15: float | None = None
+    planned_costs: float | None = None
+    actual_costs: float | None = None
+    contribution_margin: float | None = None
+    reported_hours_total: float = 0
+    planned_hours_total: float | None = None
+    updated_by: int | None = None
+    updated_at: datetime | None = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ProjectActivityOut(BaseModel):
+    id: int
+    project_id: int
+    actor_user_id: int | None = None
+    actor_name: str | None = None
+    event_type: str
+    message: str
+    details: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class ProjectOverviewOut(BaseModel):
+    project: ProjectOut
+    open_tasks: int = 0
+    my_open_tasks: int = 0
+    finance: ProjectFinanceOut
+    recent_changes: list[ProjectActivityOut] = Field(default_factory=list)
+
+
+class ProjectMaterialNeedOut(BaseModel):
+    id: int
+    project_id: int
+    project_number: str
+    project_name: str
+    customer_name: str | None = None
+    construction_report_id: int | None = None
+    report_date: date | None = None
+    item: str
+    status: str
+    created_by: int | None = None
+    updated_by: int | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ProjectMaterialNeedUpdate(BaseModel):
+    status: str = Field(min_length=1, max_length=32)
+
+
+class ProjectWeatherDayOut(BaseModel):
+    date: date
+    temp_min: float | None = None
+    temp_max: float | None = None
+    description: str | None = None
+    icon: str | None = None
+    precipitation_probability: float | None = None
+    wind_speed: float | None = None
+
+
+class ProjectWeatherOut(BaseModel):
+    project_id: int
+    provider: str = "openweather"
+    query_address: str
+    fetched_at: datetime | None = None
+    next_refresh_at: datetime | None = None
+    stale: bool = False
+    from_cache: bool = False
+    can_refresh: bool = False
+    message: str | None = None
+    days: list[ProjectWeatherDayOut] = Field(default_factory=list)
+
+
+class ProjectClassTaskTemplateOut(BaseModel):
+    title: str
+    description: str | None = None
+    task_type: str = "construction"
+
+
+class ProjectClassTemplateOut(BaseModel):
+    id: int
+    name: str
+    materials_required: str | None = None
+    tools_required: str | None = None
+    task_templates: list[ProjectClassTaskTemplateOut] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -103,6 +218,8 @@ class TaskCreate(BaseModel):
     description: str | None = None
     materials_required: str | None = None
     storage_box_number: int | None = Field(default=None, ge=1)
+    task_type: str = "construction"
+    class_template_id: int | None = None
     status: str = "open"
     due_date: date | None = None
     start_time: time | None = None
@@ -116,6 +233,8 @@ class TaskUpdate(BaseModel):
     description: str | None = None
     materials_required: str | None = None
     storage_box_number: int | None = Field(default=None, ge=1)
+    task_type: str | None = None
+    class_template_id: int | None = None
     status: str | None = None
     due_date: date | None = None
     start_time: time | None = None
@@ -131,6 +250,8 @@ class TaskOut(BaseModel):
     description: str | None = None
     materials_required: str | None = None
     storage_box_number: int | None = None
+    task_type: str = "construction"
+    class_template_id: int | None = None
     status: str
     due_date: date | None = None
     start_time: time | None = None
@@ -489,3 +610,41 @@ class InviteAccept(BaseModel):
 class PasswordResetConfirm(BaseModel):
     token: str
     new_password: str = Field(min_length=8)
+
+
+class WeatherSettingsOut(BaseModel):
+    provider: str = "openweather"
+    configured: bool = False
+    masked_api_key: str = ""
+
+
+class WeatherSettingsUpdate(BaseModel):
+    api_key: str = ""
+
+
+class UpdateStatusOut(BaseModel):
+    repository: str
+    branch: str
+    current_version: str | None = None
+    current_commit: str | None = None
+    latest_version: str | None = None
+    latest_commit: str | None = None
+    latest_published_at: datetime | None = None
+    latest_url: str | None = None
+    update_available: bool | None = None
+    install_supported: bool = False
+    install_mode: str = "manual"
+    install_steps: list[str] = Field(default_factory=list)
+    message: str | None = None
+
+
+class UpdateInstallRequest(BaseModel):
+    dry_run: bool = False
+
+
+class UpdateInstallOut(BaseModel):
+    ok: bool = False
+    mode: str = "manual"
+    detail: str
+    ran_steps: list[str] = Field(default_factory=list)
+    dry_run: bool = False

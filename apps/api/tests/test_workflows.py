@@ -5,6 +5,7 @@ import os
 from urllib.parse import quote
 from fastapi.testclient import TestClient
 from app.main import _rate_bucket
+from app.routers import workflow as workflow_router
 
 
 def auth_headers(token: str) -> dict[str, str]:
@@ -63,12 +64,18 @@ def test_project_task_planning_ticket_file_and_report_flow(client: TestClient, a
             "customer_contact": "Max Mustermann",
             "customer_email": "office@acme.example",
             "customer_phone": "+49 123 456789",
+            "site_access_type": "code_access",
+            "site_access_note": "4711#",
         },
     )
     assert project.status_code == 200
     project_id = project.json()["id"]
     assert project.json()["project_number"] == "2026-1001"
     assert project.json()["customer_name"] == "ACME GmbH"
+    assert project.json()["site_access_type"] == "code_access"
+    assert project.json()["site_access_note"] == "4711#"
+    assert project.json().get("last_updated_at")
+    project_created_last_updated = datetime.fromisoformat(project.json()["last_updated_at"])
 
     member = client.post(
         f"/api/projects/{project_id}/members",
@@ -92,6 +99,7 @@ def test_project_task_planning_ticket_file_and_report_flow(client: TestClient, a
             "description": "Mount inverter in technical room",
             "materials_required": "Inverter, cable set",
             "storage_box_number": 7,
+            "task_type": "office",
             "status": "open",
             "due_date": "2026-02-17",
             "start_time": "08:30",
@@ -102,9 +110,47 @@ def test_project_task_planning_ticket_file_and_report_flow(client: TestClient, a
     assert created_task.status_code == 200
     assert created_task.json()["materials_required"] == "Inverter, cable set"
     assert created_task.json()["storage_box_number"] == 7
+    assert created_task.json()["task_type"] == "office"
     assert created_task.json()["start_time"] == "08:30:00"
     assert len(created_task.json()["assignee_ids"]) == 3
     created_task_id = created_task.json()["id"]
+
+    project_overview = client.get(f"/api/projects/{project_id}/overview", headers=auth_headers(admin_token))
+    assert project_overview.status_code == 200
+    overview_payload = project_overview.json()
+    assert overview_payload["open_tasks"] >= 1
+    assert overview_payload["my_open_tasks"] >= 0
+    assert overview_payload["finance"]["project_id"] == project_id
+    assert any(change["event_type"] == "task.created" for change in overview_payload["recent_changes"])
+    overview_last_updated = datetime.fromisoformat(overview_payload["project"]["last_updated_at"])
+    assert overview_last_updated >= project_created_last_updated
+
+    finance_update = client.patch(
+        f"/api/projects/{project_id}/finance",
+        headers=auth_headers(admin_token),
+        json={
+            "order_value_net": 100000.0,
+            "down_payment_35": 35000.0,
+            "main_components_50": 50000.0,
+            "final_invoice_15": 15000.0,
+            "planned_costs": 70000.0,
+            "actual_costs": 65000.0,
+            "contribution_margin": 35000.0,
+            "planned_hours_total": 120.0,
+        },
+    )
+    assert finance_update.status_code == 200
+    assert finance_update.json()["order_value_net"] == 100000.0
+    assert finance_update.json()["planned_hours_total"] == 120.0
+    assert finance_update.json()["updated_by"] == 1
+
+    project_overview_after_finance = client.get(f"/api/projects/{project_id}/overview", headers=auth_headers(admin_token))
+    assert project_overview_after_finance.status_code == 200
+    assert project_overview_after_finance.json()["finance"]["planned_hours_total"] == 120.0
+    assert any(
+        change["event_type"] == "finance.updated"
+        for change in project_overview_after_finance.json()["recent_changes"]
+    )
 
     planned = client.post(
         "/api/planning/week/2026-02-16",
@@ -114,6 +160,7 @@ def test_project_task_planning_ticket_file_and_report_flow(client: TestClient, a
                 "project_id": project_id,
                 "title": "Plan weekly task",
                 "description": "",
+                "task_type": "construction",
                 "status": "open",
                 "due_date": None,
                 "assignee_id": employee["id"],
@@ -166,6 +213,17 @@ def test_project_task_planning_ticket_file_and_report_flow(client: TestClient, a
     )
     assert mark_done.status_code == 200
     assert mark_done.json()["status"] == "done"
+
+    my_tasks_after_done = client.get("/api/tasks?view=my", headers=auth_headers(employee_token))
+    assert my_tasks_after_done.status_code == 200
+    assert all(task["id"] != task_id for task in my_tasks_after_done.json())
+
+    completed_tasks = client.get(
+        f"/api/tasks?view=completed&project_id={project_id}",
+        headers=auth_headers(admin_token),
+    )
+    assert completed_tasks.status_code == 200
+    assert any(task["id"] == task_id and task["status"] == "done" for task in completed_tasks.json())
 
     outsider_denied = client.patch(
         f"/api/tasks/{task_id}",
@@ -223,11 +281,14 @@ def test_project_task_planning_ticket_file_and_report_flow(client: TestClient, a
             "customer_name": "ACME Berlin",
             "customer_address": "Berlin 7",
             "customer_contact": "Erika Muster",
+            "site_access_type": "call_before_departure",
         },
     )
     assert update_project.status_code == 200
     assert update_project.json()["project_number"] == "2026-1001A"
     assert update_project.json()["customer_name"] == "ACME Berlin"
+    assert update_project.json()["site_access_type"] == "call_before_departure"
+    assert update_project.json()["site_access_note"] is None
 
     site = client.post(
         f"/api/projects/{project_id}/sites",
@@ -483,6 +544,43 @@ def test_project_task_planning_ticket_file_and_report_flow(client: TestClient, a
     assert data["telegram_mode"] == "stub"
     assert data["attachment_file_name"].endswith(".pdf")
 
+    materials_queue = client.get("/api/materials", headers=auth_headers(employee_token))
+    assert materials_queue.status_code == 200
+    project_material_items = [entry for entry in materials_queue.json() if entry["project_id"] == project_id]
+    assert any(entry["item"] == "Need 20m cable" and entry["status"] == "order" for entry in project_material_items)
+    material_item = next(entry for entry in project_material_items if entry["item"] == "Need 20m cable")
+
+    material_status_update = client.patch(
+        f"/api/materials/{material_item['id']}",
+        headers=auth_headers(employee_token),
+        json={"status": "on_the_way"},
+    )
+    assert material_status_update.status_code == 200
+    assert material_status_update.json()["status"] == "on_the_way"
+    assert material_status_update.json()["project_id"] == project_id
+    assert material_status_update.json()["report_date"] == "2026-02-17"
+
+    materials_queue_after_update = client.get("/api/materials", headers=auth_headers(employee_token))
+    assert materials_queue_after_update.status_code == 200
+    assert any(
+        entry["id"] == material_item["id"] and entry["status"] == "on_the_way"
+        for entry in materials_queue_after_update.json()
+    )
+
+    project_finance_after_report = client.get(
+        f"/api/projects/{project_id}/finance",
+        headers=auth_headers(employee_token),
+    )
+    assert project_finance_after_report.status_code == 200
+    assert project_finance_after_report.json()["reported_hours_total"] == 8.5
+
+    project_overview_after_report = client.get(
+        f"/api/projects/{project_id}/overview",
+        headers=auth_headers(employee_token),
+    )
+    assert project_overview_after_report.status_code == 200
+    assert project_overview_after_report.json()["finance"]["reported_hours_total"] == 8.5
+
     project_files = client.get(f"/api/projects/{project_id}/files", headers=auth_headers(employee_token))
     assert project_files.status_code == 200
     report_file = next((entry for entry in project_files.json() if entry["file_name"] == data["attachment_file_name"]), None)
@@ -505,17 +603,20 @@ def test_project_task_planning_ticket_file_and_report_flow(client: TestClient, a
                     "customer": "ACME GmbH",
                     "project_name": "Project A",
                     "project_number": "2026-001",
-                    "workers": [{"name": "Max"}],
+                    "workers": [{"name": "Max", "start_time": "730", "end_time": "1600"}],
                     "materials": [],
                     "extras": [],
                     "work_done": "Wall prep",
                 }
             ),
         },
-        files=[("images", ("site-photo.jpg", b"photo-data", "image/jpeg"))],
+        files=[
+            ("images", ("site-photo.jpg", b"photo-data", "image/jpeg")),
+            ("camera_images", ("mobile-capture.jpg", b"mobile-photo-data", "image/jpeg")),
+        ],
     )
     assert multipart_report.status_code == 200
-    assert len(multipart_report.json()["report_images"]) == 1
+    assert len(multipart_report.json()["report_images"]) == 2
 
     project_report_files = client.get(
         f"/api/construction-reports/files?project_id={project_id}",
@@ -527,6 +628,17 @@ def test_project_task_planning_ticket_file_and_report_flow(client: TestClient, a
         entry["file_name"] == "site-photo.jpg" and str(entry.get("folder") or "").startswith("Bilder")
         for entry in project_report_files.json()
     )
+    assert any(
+        entry["file_name"] == "mobile-capture.jpg" and str(entry.get("folder") or "").startswith("Bilder")
+        for entry in project_report_files.json()
+    )
+
+    project_finance_after_multipart_report = client.get(
+        f"/api/projects/{project_id}/finance",
+        headers=auth_headers(employee_token),
+    )
+    assert project_finance_after_multipart_report.status_code == 200
+    assert project_finance_after_multipart_report.json()["reported_hours_total"] == 17.0
 
     global_report = client.post(
         "/api/construction-reports",
@@ -654,6 +766,99 @@ def test_time_tracking_timesheet_and_csv(client: TestClient, admin_token: str):
     assert "deducted_break_hours" in csv_export.text
 
 
+def test_project_class_templates_import_and_autocreate_tasks(client: TestClient, admin_token: str):
+    template_download = client.get("/api/admin/project-classes/template.csv", headers=auth_headers(admin_token))
+    assert template_download.status_code == 200
+    assert "class_name" in template_download.text
+
+    csv_payload = (
+        "class_name,materials_required,tools_required,task_title,task_description,task_type\n"
+        "PV Standard,\"PV modules\\nDC cable set\",\"Crimp tool\\nCable cutter\","
+        "Mount modules,Install modules on roof,construction\n"
+        "PV Standard,\"PV modules\\nDC cable set\",\"Crimp tool\\nCable cutter\","
+        "Commissioning,Prepare handover checklist,office\n"
+        "Heat Pump Retrofit,\"Heat pump unit\",\"Vacuum pump\","
+        "Install heat pump,Install and pressure test the new unit,construction\n"
+    )
+    template_import = client.post(
+        "/api/admin/project-classes/import-csv",
+        headers=auth_headers(admin_token),
+        files={"file": ("project-classes.csv", csv_payload.encode("utf-8"), "text/csv")},
+    )
+    assert template_import.status_code == 200
+    assert template_import.json()["classes"] == 2
+    assert template_import.json()["task_templates"] == 3
+
+    templates = client.get("/api/project-class-templates", headers=auth_headers(admin_token))
+    assert templates.status_code == 200
+    template_by_name = {entry["name"]: entry for entry in templates.json()}
+    assert "PV Standard" in template_by_name
+    assert "Heat Pump Retrofit" in template_by_name
+    pv_template_id = template_by_name["PV Standard"]["id"]
+    heat_template_id = template_by_name["Heat Pump Retrofit"]["id"]
+
+    project = client.post(
+        "/api/projects",
+        headers=auth_headers(admin_token),
+        json={
+            "project_number": "2026-CLS-1",
+            "name": "Class based project",
+            "status": "active",
+            "class_template_ids": [pv_template_id],
+        },
+    )
+    assert project.status_code == 200
+    project_id = project.json()["id"]
+
+    assigned = client.get(f"/api/projects/{project_id}/class-templates", headers=auth_headers(admin_token))
+    assert assigned.status_code == 200
+    assert [row["id"] for row in assigned.json()] == [pv_template_id]
+
+    project_tasks = client.get(
+        f"/api/tasks?view=all_open&project_id={project_id}",
+        headers=auth_headers(admin_token),
+    )
+    assert project_tasks.status_code == 200
+    titles = {task["title"] for task in project_tasks.json()}
+    assert "Mount modules" in titles
+    assert "Commissioning" in titles
+    for row in project_tasks.json():
+        if row["title"] not in {"Mount modules", "Commissioning"}:
+            continue
+        assert row["due_date"] is None
+        assert row["assignee_id"] is None
+        assert row["assignee_ids"] == []
+        assert row["class_template_id"] == pv_template_id
+
+    class_based_task = client.post(
+        "/api/tasks",
+        headers=auth_headers(admin_token),
+        json={
+            "project_id": project_id,
+            "title": "Manual class task",
+            "description": "Created manually from class",
+            "class_template_id": pv_template_id,
+            "status": "open",
+        },
+    )
+    assert class_based_task.status_code == 200
+    assert class_based_task.json()["class_template_id"] == pv_template_id
+    assert "Materials:" in (class_based_task.json()["materials_required"] or "")
+    assert "Tools:" in (class_based_task.json()["materials_required"] or "")
+
+    class_not_assigned = client.post(
+        "/api/tasks",
+        headers=auth_headers(admin_token),
+        json={
+            "project_id": project_id,
+            "title": "Wrong class task",
+            "class_template_id": heat_template_id,
+            "status": "open",
+        },
+    )
+    assert class_not_assigned.status_code == 400
+
+
 def test_time_tracking_counts_overnight_shift_in_daily_current(client: TestClient, admin_token: str):
     employee = _create_user(client, admin_token, "employee-night@example.com", "employee")
     employee_token = _login(client, "employee-night@example.com")
@@ -729,6 +934,15 @@ def test_project_files_webdav_mount_flow(client: TestClient, admin_token: str):
     )
     assert project.status_code == 200
     project_id = project.json()["id"]
+    project_number = project.json()["project_number"]
+
+    employee = _create_user(client, admin_token, "employee-dav-mount@example.com", "employee")
+    member = client.post(
+        f"/api/projects/{project_id}/members",
+        headers=auth_headers(admin_token),
+        data={"user_id": employee["id"], "can_manage": "false"},
+    )
+    assert member.status_code == 200
 
     put_response = client.put(
         f"/api/dav/projects/{project_id}/spec.txt",
@@ -754,9 +968,8 @@ def test_project_files_webdav_mount_flow(client: TestClient, admin_token: str):
         headers={"Depth": "1"},
     )
     assert propfind_projects_root.status_code == 207
-    assert f"/api/dav/projects/{project_id}/" in propfind_projects_root.text
+    assert f"/api/dav/projects/{project_number}/" in propfind_projects_root.text
     assert "Musterkunde" in propfind_projects_root.text
-    assert f"ID {project_id}" in propfind_projects_root.text
 
     propfind_trailing_slash = client.request(
         "PROPFIND",
@@ -773,6 +986,30 @@ def test_project_files_webdav_mount_flow(client: TestClient, admin_token: str):
     )
     assert get_response.status_code == 200
     assert get_response.content == b"shared spec"
+
+    employee_propfind_number = client.request(
+        "PROPFIND",
+        f"/api/dav/projects/{project_number}/",
+        auth=("employee-dav-mount@example.com", "Password123!"),
+        headers={"Depth": "1"},
+    )
+    assert employee_propfind_number.status_code == 207
+    assert "spec.txt" in employee_propfind_number.text
+
+    employee_put_by_number = client.put(
+        f"/api/dav/projects/{project_number}/crew-note.txt",
+        auth=("employee-dav-mount@example.com", "Password123!"),
+        data=b"crew-visible",
+        headers={"Content-Type": "text/plain"},
+    )
+    assert employee_put_by_number.status_code == 201
+
+    admin_get_by_id = client.get(
+        f"/api/dav/projects/{project_id}/crew-note.txt",
+        auth=("admin@example.com", "ChangeMe123!"),
+    )
+    assert admin_get_by_id.status_code == 200
+    assert admin_get_by_id.content == b"crew-visible"
 
 
 def test_preview_falls_back_to_octet_stream_for_invalid_stored_content_type(client: TestClient, admin_token: str):
@@ -832,6 +1069,7 @@ def test_webdav_projects_root_respects_project_access(client: TestClient, admin_
     )
     assert visible_project.status_code == 200
     visible_project_id = visible_project.json()["id"]
+    visible_project_number = visible_project.json()["project_number"]
 
     hidden_project = client.post(
         "/api/projects",
@@ -839,7 +1077,7 @@ def test_webdav_projects_root_respects_project_access(client: TestClient, admin_
         json={"project_number": "2026-2102", "name": "DAV Hidden", "description": "hidden", "status": "active"},
     )
     assert hidden_project.status_code == 200
-    hidden_project_id = hidden_project.json()["id"]
+    hidden_project_number = hidden_project.json()["project_number"]
 
     member_response = client.post(
         f"/api/projects/{visible_project_id}/members",
@@ -855,8 +1093,8 @@ def test_webdav_projects_root_respects_project_access(client: TestClient, admin_
         headers={"Depth": "1"},
     )
     assert propfind.status_code == 207
-    assert f"/api/dav/projects/{visible_project_id}/" in propfind.text
-    assert f"/api/dav/projects/{hidden_project_id}/" not in propfind.text
+    assert f"/api/dav/projects/{visible_project_number}/" in propfind.text
+    assert f"/api/dav/projects/{hidden_project_number}/" not in propfind.text
 
 
 def test_webdav_projects_root_includes_archive_and_general_collections(client: TestClient, admin_token: str):
@@ -867,6 +1105,7 @@ def test_webdav_projects_root_includes_archive_and_general_collections(client: T
     )
     assert active_project.status_code == 200
     active_project_id = active_project.json()["id"]
+    active_project_number = active_project.json()["project_number"]
 
     archived_project = client.post(
         "/api/projects",
@@ -875,6 +1114,7 @@ def test_webdav_projects_root_includes_archive_and_general_collections(client: T
     )
     assert archived_project.status_code == 200
     archived_project_id = archived_project.json()["id"]
+    archived_project_number = archived_project.json()["project_number"]
 
     archived_status = client.patch(
         f"/api/projects/{archived_project_id}",
@@ -917,8 +1157,8 @@ def test_webdav_projects_root_includes_archive_and_general_collections(client: T
     assert root_propfind.status_code == 207
     assert "/api/dav/projects/general-projects/" in root_propfind.text
     assert "/api/dav/projects/archive/" in root_propfind.text
-    assert f"/api/dav/projects/{active_project_id}/" in root_propfind.text
-    assert f"/api/dav/projects/{archived_project_id}/" not in root_propfind.text
+    assert f"/api/dav/projects/{active_project_number}/" in root_propfind.text
+    assert f"/api/dav/projects/{archived_project_number}/" not in root_propfind.text
 
     archive_propfind = client.request(
         "PROPFIND",
@@ -978,6 +1218,7 @@ def test_planning_week_calendar_view(client: TestClient, admin_token: str):
                 "project_id": project_id,
                 "title": "Monday task",
                 "description": "",
+                "task_type": "construction",
                 "status": "open",
                 "due_date": "2026-02-16",
                 "assignee_id": None,
@@ -987,8 +1228,19 @@ def test_planning_week_calendar_view(client: TestClient, admin_token: str):
                 "project_id": project_id,
                 "title": "Wednesday task",
                 "description": "",
+                "task_type": "office",
                 "status": "open",
                 "due_date": "2026-02-18",
+                "assignee_id": None,
+                "week_start": "2026-02-16",
+            },
+            {
+                "project_id": project_id,
+                "title": "Friday appointment",
+                "description": "",
+                "task_type": "customer_appointment",
+                "status": "open",
+                "due_date": "2026-02-20",
                 "assignee_id": None,
                 "week_start": "2026-02-16",
             },
@@ -1004,9 +1256,52 @@ def test_planning_week_calendar_view(client: TestClient, admin_token: str):
     assert len(payload["days"]) == 7
     monday_tasks = payload["days"][0]["tasks"]
     wednesday_tasks = payload["days"][2]["tasks"]
+    friday_tasks = payload["days"][4]["tasks"]
     assert any(task["title"] == "Monday task" for task in monday_tasks)
     assert any(task["title"] == "Wednesday task" for task in wednesday_tasks)
+    assert any(task["title"] == "Friday appointment" for task in friday_tasks)
     assert "absences" in payload["days"][0]
+
+    construction_week = client.get(
+        f"/api/planning/week/2026-02-16?project_id={project_id}&task_type=construction",
+        headers=auth_headers(planner_token),
+    )
+    assert construction_week.status_code == 200
+    construction_tasks = [
+        task["title"]
+        for day in construction_week.json()["days"]
+        for task in day["tasks"]
+    ]
+    assert "Monday task" in construction_tasks
+    assert "Wednesday task" not in construction_tasks
+
+    office_week = client.get(
+        f"/api/planning/week/2026-02-16?project_id={project_id}&task_type=office",
+        headers=auth_headers(planner_token),
+    )
+    assert office_week.status_code == 200
+    office_tasks = [
+        task["title"]
+        for day in office_week.json()["days"]
+        for task in day["tasks"]
+    ]
+    assert "Wednesday task" in office_tasks
+    assert "Monday task" not in office_tasks
+    assert "Friday appointment" not in office_tasks
+
+    appointment_week = client.get(
+        f"/api/planning/week/2026-02-16?project_id={project_id}&task_type=customer_appointment",
+        headers=auth_headers(planner_token),
+    )
+    assert appointment_week.status_code == 200
+    appointment_tasks = [
+        task["title"]
+        for day in appointment_week.json()["days"]
+        for task in day["tasks"]
+    ]
+    assert "Friday appointment" in appointment_tasks
+    assert "Monday task" not in appointment_tasks
+    assert "Wednesday task" not in appointment_tasks
 
 
 def test_project_files_folder_visibility_and_webdav_structure(client: TestClient, admin_token: str):
@@ -1067,6 +1362,16 @@ def test_project_files_folder_visibility_and_webdav_structure(client: TestClient
     )
     assert auto_pdf_upload.status_code == 200
     assert auto_pdf_upload.json()["folder"] == "Berichte"
+
+    root_upload = client.post(
+        f"/api/projects/{project_id}/files",
+        headers=auth_headers(admin_token),
+        data={"folder": "/"},
+        files={"file": ("root-note.txt", b"root", "text/plain")},
+    )
+    assert root_upload.status_code == 200
+    assert root_upload.json()["folder"] == ""
+    assert root_upload.json()["path"] == "root-note.txt"
 
     protected_upload = client.post(
         f"/api/projects/{project_id}/files",
@@ -1411,6 +1716,23 @@ def test_profile_avatar_upload_and_preview(client: TestClient, admin_token: str)
     )
     assert invalid_upload.status_code == 400
 
+    delete_avatar = client.delete("/api/users/me/avatar", headers=auth_headers(token))
+    assert delete_avatar.status_code == 200
+    assert delete_avatar.json()["ok"] is True
+    assert delete_avatar.json()["deleted"] is True
+    assert delete_avatar.json()["avatar_updated_at"] is None
+
+    me_without_avatar = client.get("/api/auth/me", headers=auth_headers(token))
+    assert me_without_avatar.status_code == 200
+    assert me_without_avatar.json().get("avatar_updated_at") is None
+
+    preview_after_delete = client.get(f"/api/users/{created['id']}/avatar", headers=auth_headers(token))
+    assert preview_after_delete.status_code == 404
+
+    delete_avatar_again = client.delete("/api/users/me/avatar", headers=auth_headers(token))
+    assert delete_avatar_again.status_code == 200
+    assert delete_avatar_again.json()["deleted"] is False
+
 
 def test_profile_settings_update_name_email_password(client: TestClient, admin_token: str):
     _create_user(client, admin_token, "profile-user@example.com", "employee")
@@ -1503,3 +1825,101 @@ def test_admin_invite_and_password_reset_links(client: TestClient, admin_token: 
         json={"email": "reset-user-updated@example.com", "password": "ResetDone123!"},
     )
     assert login_after_reset.status_code == 200
+
+
+def test_project_weather_cache_throttle_and_offline_fallback(client: TestClient, admin_token: str, monkeypatch):
+    from app.core.db import SessionLocal
+    from app.models.entities import ProjectWeatherCache
+
+    settings_update = client.patch(
+        "/api/admin/settings/weather",
+        headers=auth_headers(admin_token),
+        json={"api_key": "owm-weather-key-for-tests"},
+    )
+    assert settings_update.status_code == 200
+
+    project = client.post(
+        "/api/projects",
+        headers=auth_headers(admin_token),
+        json={
+            "project_number": "2026-WEATHER-1",
+            "name": "Weather Project",
+            "status": "active",
+            "customer_name": "Weather GmbH",
+            "customer_address": "Alexanderplatz 1, 10178 Berlin",
+        },
+    )
+    assert project.status_code == 200
+    project_id = project.json()["id"]
+
+    call_counter = {"count": 0}
+
+    def fake_fetch_openweather_forecast(*, api_key: str, query_address: str, language: str = "en"):
+        call_counter["count"] += 1
+        assert api_key == "owm-weather-key-for-tests"
+        assert query_address == "Alexanderplatz 1, 10178 Berlin"
+        assert language == "de"
+        return (
+            52.520008,
+            13.404954,
+            [
+                {
+                    "date": "2026-02-23",
+                    "temp_min": 2.1,
+                    "temp_max": 7.8,
+                    "description": "leicht bewoelkt",
+                    "icon": "03d",
+                    "precipitation_probability": 20.0,
+                    "wind_speed": 3.7,
+                }
+            ]
+            * 5,
+        )
+
+    monkeypatch.setattr(workflow_router, "_fetch_openweather_forecast", fake_fetch_openweather_forecast)
+
+    first = client.get(f"/api/projects/{project_id}/weather?refresh=true&lang=de", headers=auth_headers(admin_token))
+    assert first.status_code == 200
+    first_payload = first.json()
+    assert first_payload["from_cache"] is False
+    assert first_payload["stale"] is False
+    assert len(first_payload["days"]) == 5
+
+    second = client.get(f"/api/projects/{project_id}/weather?refresh=true&lang=de", headers=auth_headers(admin_token))
+    assert second.status_code == 200
+    second_payload = second.json()
+    assert second_payload["from_cache"] is True
+    assert call_counter["count"] == 1
+
+    with SessionLocal() as db:
+        cache_row = db.get(ProjectWeatherCache, project_id)
+        assert cache_row is not None
+        cache_row.fetched_at = datetime.now(timezone.utc) - timedelta(minutes=16)
+        db.add(cache_row)
+        db.commit()
+
+    def failing_fetch_openweather_forecast(*, api_key: str, query_address: str, language: str = "en"):
+        raise RuntimeError("network offline")
+
+    monkeypatch.setattr(workflow_router, "_fetch_openweather_forecast", failing_fetch_openweather_forecast)
+
+    third = client.get(f"/api/projects/{project_id}/weather?refresh=true&lang=de", headers=auth_headers(admin_token))
+    assert third.status_code == 200
+    third_payload = third.json()
+    assert third_payload["from_cache"] is True
+    assert third_payload["stale"] is True
+    assert len(third_payload["days"]) == 5
+    assert "cached" in (third_payload.get("message") or "").lower()
+
+
+def test_weather_address_candidates_normalize_and_add_country_fallbacks():
+    candidates = workflow_router._weather_address_candidates("Nolsenstr. 62,\n58452   Witten")
+    assert candidates
+    assert candidates[0] == "Nolsenstr. 62, 58452 Witten"
+    assert "Nolsenstr. 62, 58452 Witten, Deutschland" in candidates
+    assert "Nolsenstr. 62, 58452 Witten, Germany" in candidates
+
+
+def test_weather_zip_candidates_extracts_postal_code():
+    candidates = workflow_router._weather_zip_candidates("Stockumer Straße 65, Annen, 58453 Witten, Germany")
+    assert candidates == ["58453,DE"]

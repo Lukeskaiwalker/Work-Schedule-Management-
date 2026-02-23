@@ -279,3 +279,127 @@ Expected:
 - Sidebar project search reveal now pushes project rows down cleanly (search input remains visible).
 - Chat right pane now uses viewport-based height so message history has full usable screen height.
 - Thread create/edit modal again supports optional project selection; thread edits can move between project-linked and general thread context.
+
+## Ops Addendum (2026-02-22, production bootstrap hardening + data sync)
+- After first successful admin provisioning, set in `apps/api/.env`:
+  - `INITIAL_ADMIN_BOOTSTRAP=false`
+- Rebuild/restart:
+  - `docker compose up -d --build`
+- If restoring a legacy backup, verify default bootstrap account is not active:
+  - `docker compose exec -T db psql -U smpl -d smpl -c "SELECT id,email,is_active FROM users WHERE email='admin@example.com';"`
+  - If needed, deactivate:
+  - `docker compose exec -T db psql -U smpl -d smpl -c "UPDATE users SET is_active=false WHERE email='admin@example.com';"`
+- Upload local wiki payload to mount path:
+  - copy/extract into `./local wiki` on host, then `docker compose up -d` (api volume already mounts that path read-only to `/data/wiki`).
+
+## Bootstrap Auto-Disable (2026-02-22)
+- Bootstrap creation is controlled by:
+  - env: `INITIAL_ADMIN_BOOTSTRAP`
+  - DB runtime flag: `app_settings.initial_admin_bootstrap_completed`
+- Expected flow:
+  1. First setup may create bootstrap admin from env credentials.
+  2. Change bootstrap admin credentials in profile settings.
+  3. System auto-marks bootstrap completed; startup no longer recreates default bootstrap admin.
+- Access recovery (if locked out):
+  - Reset password for an existing active admin user via API container script (`docker compose exec -T api python ...`) instead of re-enabling default bootstrap admin.
+
+## macOS File Sync Note
+- When creating tar archives on macOS for server sync, disable AppleDouble metadata to avoid `._*` files in source directories:
+  - `COPYFILE_DISABLE=1 tar czf /tmp/sync.tgz <paths>`
+- If `._*` files were copied accidentally, remove before rebuild:
+  - `find apps -name '._*' -type f -delete`
+
+## Iteration Setup Notes (2026-02-23)
+- New DB migration added:
+  - `20260223_0016_project_finance_and_activity`
+- Bring-up remains unchanged:
+  - `docker compose up -d --build`
+- The API now exposes additional project endpoints used by the UI:
+  - `GET /api/projects/{id}/overview`
+  - `GET /api/projects/{id}/finance`
+  - `PATCH /api/projects/{id}/finance`
+
+## Iteration Setup Notes (2026-02-23, project overview UI refinement)
+- No setup command changes required for this iteration.
+- After pulling latest code, refresh local stack as usual:
+  - `docker compose up -d --build`
+- Project overview now reads open-task list data via existing endpoint usage:
+  - `GET /api/tasks?view=all_open&project_id=<id>`
+
+## Iteration Setup Notes (2026-02-23, weather placeholder)
+- No additional setup required.
+- Weather card currently ships as layout placeholder only (no external provider configuration yet).
+
+## Iteration Setup Notes (2026-02-23, OpenWeather setup)
+- Project weather now uses OpenWeather (5-day forecast) via backend endpoint:
+  - `GET /api/projects/{id}/weather`
+- API key setup options:
+  - preferred: `Profile & settings` -> `Admin tools` -> `OpenWeather API`,
+  - fallback env: set `OPENWEATHER_API_KEY` in `apps/api/.env.example` (or deployment env).
+- Runtime behavior:
+  - refresh is triggered on project selection,
+  - backend enforces max one refresh per project every 15 minutes,
+  - cached values are used when provider is unavailable.
+
+## Iteration Setup Notes (2026-02-23, project site-access fields)
+- New DB migration added:
+  - `20260224_0021_project_site_access_fields`
+- Standard refresh is sufficient:
+  - `docker compose up -d --build`
+- Migration status check (optional):
+  - `docker compose exec -T api sh -lc 'cd /app && alembic current'`
+
+## Iteration Setup Notes (2026-02-23, avatar deletion + user archive UI)
+- No new migrations required.
+- Standard refresh is sufficient:
+  - `docker compose up -d --build`
+- New API route available:
+  - `DELETE /api/users/me/avatar` (authenticated user removes own profile picture).
+
+## Iteration Setup Notes (2026-02-23, materials queue side menu + status workflow)
+- New DB migration added:
+  - `20260224_0023_project_material_needs`
+- Standard refresh applies migration automatically:
+  - `docker compose up -d --build api web`
+- New API routes available:
+  - `GET /api/materials`
+  - `PATCH /api/materials/{id}` with body `{ "status": "order|on_the_way|available" }`
+
+## Iteration Setup Notes (2026-02-23, WebDAV project-number reference + file upload base folder)
+- No new migration required for this iteration.
+- Standard refresh is sufficient:
+  - `docker compose up -d --build`
+- Updated WebDAV usage:
+  - current-project mount links can now use project number directly:
+    - `/api/dav/projects/<PROJECT_NUMBER>/`
+  - numeric-ID links remain valid for backward compatibility.
+- Updated upload folder semantics:
+  - `folder=/` uploads to project base folder,
+  - empty `folder` keeps existing auto-folder behavior by file type.
+
+## Iteration Setup Notes (2026-02-23, construction report mobile worker/time/photo improvements)
+- No new migration required for this iteration.
+- Standard refresh is sufficient:
+  - `docker compose up -d --build api web`
+- Construction report form updates:
+  - worker names support assignable-user search suggestions,
+  - worker times accept digit-only entry (`0730` -> `07:30`),
+  - mobile camera capture can be submitted through additional `camera_images` input.
+
+## Iteration Setup Notes (2026-02-23, admin update menu)
+- No migration required for this iteration.
+- Standard refresh is sufficient:
+  - `docker compose up -d --build api web`
+- Optional update metadata/env for accurate comparison in admin update menu:
+  - `APP_RELEASE_VERSION`
+  - `APP_RELEASE_COMMIT`
+  - `UPDATE_REPO_OWNER`
+  - `UPDATE_REPO_NAME`
+  - `UPDATE_REPO_BRANCH`
+  - `UPDATE_REPO_PATH` (set only if auto-install should run against a local git checkout)
+  - `GITHUB_API_TOKEN` (optional, helps avoid GitHub API rate limits)
+- Manual safe update commands shown in admin menu are:
+  - `git fetch --tags --prune`
+  - `git pull --ff-only origin main`
+  - `docker compose up -d --build`
+  - `docker compose exec api alembic upgrade head`

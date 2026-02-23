@@ -1,6 +1,7 @@
 from __future__ import annotations
 from fastapi.testclient import TestClient
 
+from app.main import _initialize_runtime_data
 from app.routers import admin as admin_router
 
 
@@ -116,3 +117,131 @@ def test_admin_can_export_encrypted_database_backup(client: TestClient, admin_to
     assert "attachment; filename=" in (response.headers.get("content-disposition") or "")
     assert response.headers.get("x-backup-encryption") == "aes-256-gcm+pbkdf2"
     assert captured["key_material"] == b"very-secret-key-material"
+
+
+def test_initial_admin_credential_change_disables_bootstrap_recreation(client: TestClient, admin_token: str):
+    update_profile = client.patch(
+        "/api/auth/me",
+        headers=auth_headers(admin_token),
+        json={
+            "email": "owner@example.com",
+            "current_password": "ChangeMe123!",
+            "new_password": "OwnerPass123!A",
+        },
+    )
+    assert update_profile.status_code == 200
+    assert update_profile.json()["email"] == "owner@example.com"
+
+    _initialize_runtime_data()
+
+    old_login = client.post("/api/auth/login", json={"email": "admin@example.com", "password": "ChangeMe123!"})
+    assert old_login.status_code == 401
+
+    new_login = client.post("/api/auth/login", json={"email": "owner@example.com", "password": "OwnerPass123!A"})
+    assert new_login.status_code == 200
+
+
+def test_admin_can_manage_weather_settings(client: TestClient, admin_token: str):
+    before = client.get("/api/admin/settings/weather", headers=auth_headers(admin_token))
+    assert before.status_code == 200
+    assert before.json()["provider"] == "openweather"
+
+    update = client.patch(
+        "/api/admin/settings/weather",
+        headers=auth_headers(admin_token),
+        json={"api_key": "owm_test_api_key_12345"},
+    )
+    assert update.status_code == 200
+    payload = update.json()
+    assert payload["configured"] is True
+    assert payload["masked_api_key"].endswith("2345")
+
+    after = client.get("/api/admin/settings/weather", headers=auth_headers(admin_token))
+    assert after.status_code == 200
+    assert after.json()["configured"] is True
+
+    create_employee = client.post(
+        "/api/admin/users",
+        headers=auth_headers(admin_token),
+        json={
+            "email": "weather-employee@example.com",
+            "password": "Password123!",
+            "full_name": "Weather Employee",
+            "role": "employee",
+        },
+    )
+    assert create_employee.status_code == 200
+    employee_login = client.post(
+        "/api/auth/login",
+        json={"email": "weather-employee@example.com", "password": "Password123!"},
+    )
+    assert employee_login.status_code == 200
+    employee_token = employee_login.headers["X-Access-Token"]
+
+    forbidden = client.get("/api/admin/settings/weather", headers=auth_headers(employee_token))
+    assert forbidden.status_code == 403
+
+
+def test_admin_can_read_update_status(client: TestClient, admin_token: str, monkeypatch):
+    monkeypatch.setattr(admin_router.settings, "app_release_version", "1.0.0", raising=False)
+    monkeypatch.setattr(admin_router.settings, "app_release_commit", "1111111111111111111111111111111111111111", raising=False)
+    monkeypatch.setattr(admin_router.settings, "update_repo_owner", "example", raising=False)
+    monkeypatch.setattr(admin_router.settings, "update_repo_name", "repo", raising=False)
+    monkeypatch.setattr(admin_router.settings, "update_repo_branch", "main", raising=False)
+    monkeypatch.setattr(admin_router, "_can_auto_install_updates", lambda: False)
+
+    def fake_github_api_json(path: str):
+        if path.endswith("/releases"):
+            return [
+                {
+                    "tag_name": "v1.1.0",
+                    "html_url": "https://github.com/example/repo/releases/tag/v1.1.0",
+                    "published_at": "2026-02-20T10:00:00Z",
+                    "target_commitish": "main",
+                }
+            ]
+        if path.endswith("/commits/main"):
+            return {"sha": "2222222222222222222222222222222222222222"}
+        raise AssertionError(f"Unexpected path: {path}")
+
+    monkeypatch.setattr(admin_router, "_github_api_json", fake_github_api_json)
+
+    response = client.get("/api/admin/updates/status", headers=auth_headers(admin_token))
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["repository"] == "example/repo"
+    assert payload["current_version"] == "1.0.0"
+    assert payload["latest_version"] == "v1.1.0"
+    assert payload["update_available"] is True
+    assert payload["install_supported"] is False
+    assert payload["install_mode"] == "manual"
+    assert len(payload["install_steps"]) >= 2
+
+
+def test_admin_install_update_returns_manual_when_auto_install_unavailable(
+    client: TestClient,
+    admin_token: str,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        admin_router,
+        "_fetch_update_status",
+        lambda: admin_router.UpdateStatusOut(
+            repository="example/repo",
+            branch="main",
+            install_supported=False,
+            install_mode="manual",
+            install_steps=["git fetch --tags --prune"],
+        ),
+    )
+
+    response = client.post(
+        "/api/admin/updates/install",
+        headers=auth_headers(admin_token),
+        json={"dry_run": False},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["mode"] == "manual"
+    assert "Automatic install is unavailable" in payload["detail"]

@@ -3,6 +3,8 @@ import { ChangeEvent, FormEvent, PointerEvent, useEffect, useMemo, useRef, useSt
 import { apiFetch } from "./api/client";
 
 type Language = "en" | "de";
+type TaskView = "my" | "all_open" | "completed";
+type TaskType = "construction" | "office" | "customer_appointment";
 
 type User = {
   id: number;
@@ -25,12 +27,104 @@ type Project = {
   status: string;
   last_state?: string | null;
   last_status_at?: string | null;
+  last_updated_at?: string | null;
   customer_name?: string | null;
   customer_address?: string | null;
   customer_contact?: string | null;
   customer_email?: string | null;
   customer_phone?: string | null;
+  site_access_type?: string | null;
+  site_access_note?: string | null;
   extra_attributes?: Record<string, any> | null;
+};
+
+type ProjectClassTaskTemplate = {
+  title: string;
+  description?: string | null;
+  task_type: string;
+};
+
+type ProjectClassTemplate = {
+  id: number;
+  name: string;
+  materials_required?: string | null;
+  tools_required?: string | null;
+  task_templates: ProjectClassTaskTemplate[];
+};
+
+type ProjectFinance = {
+  project_id: number;
+  order_value_net?: number | null;
+  down_payment_35?: number | null;
+  main_components_50?: number | null;
+  final_invoice_15?: number | null;
+  planned_costs?: number | null;
+  actual_costs?: number | null;
+  contribution_margin?: number | null;
+  reported_hours_total?: number | null;
+  planned_hours_total?: number | null;
+  updated_by?: number | null;
+  updated_at?: string | null;
+};
+
+type ProjectActivity = {
+  id: number;
+  project_id: number;
+  actor_user_id?: number | null;
+  actor_name?: string | null;
+  event_type: string;
+  message: string;
+  details?: Record<string, any>;
+  created_at: string;
+};
+
+type ProjectOverviewDetails = {
+  project: Project;
+  open_tasks: number;
+  my_open_tasks: number;
+  finance: ProjectFinance;
+  recent_changes: ProjectActivity[];
+};
+
+type ProjectWeatherDay = {
+  date: string;
+  temp_min?: number | null;
+  temp_max?: number | null;
+  description?: string | null;
+  icon?: string | null;
+  precipitation_probability?: number | null;
+  wind_speed?: number | null;
+};
+
+type ProjectWeather = {
+  project_id: number;
+  provider: string;
+  query_address: string;
+  fetched_at?: string | null;
+  next_refresh_at?: string | null;
+  stale: boolean;
+  from_cache: boolean;
+  can_refresh: boolean;
+  message?: string | null;
+  days: ProjectWeatherDay[];
+};
+
+type MaterialNeedStatus = "order" | "on_the_way" | "available";
+
+type ProjectMaterialNeed = {
+  id: number;
+  project_id: number;
+  project_number: string;
+  project_name: string;
+  customer_name?: string | null;
+  construction_report_id?: number | null;
+  report_date?: string | null;
+  item: string;
+  status: MaterialNeedStatus | string;
+  created_by?: number | null;
+  updated_by?: number | null;
+  created_at: string;
+  updated_at: string;
 };
 
 type Task = {
@@ -40,6 +134,8 @@ type Task = {
   description?: string | null;
   materials_required?: string | null;
   storage_box_number?: number | null;
+  task_type?: string | null;
+  class_template_id?: number | null;
   status: string;
   due_date?: string | null;
   start_time?: string | null;
@@ -243,6 +339,36 @@ type PasswordResetDispatchResponse = {
   expires_at: string;
 };
 
+type WeatherSettings = {
+  provider: string;
+  configured: boolean;
+  masked_api_key: string;
+};
+
+type UpdateStatus = {
+  repository: string;
+  branch: string;
+  current_version?: string | null;
+  current_commit?: string | null;
+  latest_version?: string | null;
+  latest_commit?: string | null;
+  latest_published_at?: string | null;
+  latest_url?: string | null;
+  update_available?: boolean | null;
+  install_supported: boolean;
+  install_mode: string;
+  install_steps: string[];
+  message?: string | null;
+};
+
+type UpdateInstallResponse = {
+  ok: boolean;
+  mode: string;
+  detail: string;
+  ran_steps: string[];
+  dry_run: boolean;
+};
+
 type ReportWorker = {
   name: string;
   start_time: string;
@@ -279,6 +405,9 @@ type ProjectFormState = {
   customer_contact: string;
   customer_email: string;
   customer_phone: string;
+  site_access_type: string;
+  site_access_note: string;
+  class_template_ids: number[];
 };
 
 type ProjectTaskFormState = {
@@ -287,10 +416,22 @@ type ProjectTaskFormState = {
   materials_required: string;
   has_storage_box: boolean;
   storage_box_number: string;
+  task_type: TaskType;
+  class_template_id: string;
   due_date: string;
   start_time: string;
   assignee_query: string;
   assignee_ids: number[];
+};
+
+type ProjectFinanceFormState = {
+  order_value_net: string;
+  down_payment_35: string;
+  main_components_50: string;
+  final_invoice_15: string;
+  planned_costs: string;
+  actual_costs: string;
+  contribution_margin: string;
 };
 
 type TaskModalState = {
@@ -299,6 +440,8 @@ type TaskModalState = {
   materials_required: string;
   has_storage_box: boolean;
   storage_box_number: string;
+  task_type: TaskType;
+  class_template_id: string;
   project_id: string;
   project_query: string;
   due_date: string;
@@ -312,11 +455,14 @@ type TaskModalState = {
 
 type TaskEditFormState = {
   id: number | null;
+  project_id: number | null;
   title: string;
   description: string;
   materials_required: string;
   has_storage_box: boolean;
   storage_box_number: string;
+  task_type: TaskType;
+  class_template_id: string;
   status: string;
   due_date: string;
   start_time: string;
@@ -327,10 +473,12 @@ type TaskEditFormState = {
 
 type MainView =
   | "overview"
+  | "materials"
   | "projects_all"
   | "projects_archive"
   | "my_tasks"
   | "project"
+  | "calendar"
   | "planning"
   | "construction"
   | "wiki"
@@ -338,15 +486,17 @@ type MainView =
   | "time"
   | "profile"
   | "admin";
-type ProjectTab = "tasks" | "tickets" | "files";
+type ProjectTab = "overview" | "tasks" | "hours" | "tickets" | "files" | "finances";
 
 const MAIN_LABELS: Record<Language, Record<MainView, string>> = {
   en: {
     overview: "Overview",
+    materials: "Materials",
     projects_all: "All Projects",
     projects_archive: "Project Archive",
     my_tasks: "My Tasks",
     project: "Project",
+    calendar: "Calendar",
     planning: "Weekly Planning",
     construction: "Construction Report",
     wiki: "Wiki",
@@ -357,10 +507,12 @@ const MAIN_LABELS: Record<Language, Record<MainView, string>> = {
   },
   de: {
     overview: "Übersicht",
+    materials: "Material",
     projects_all: "Alle Projekte",
     projects_archive: "Projektarchiv",
     my_tasks: "Meine Aufgaben",
     project: "Projekt",
+    calendar: "Kalender",
     planning: "Wochenplanung",
     construction: "Baustellenbericht",
     wiki: "Wiki",
@@ -373,14 +525,20 @@ const MAIN_LABELS: Record<Language, Record<MainView, string>> = {
 
 const TAB_LABELS: Record<Language, Record<ProjectTab, string>> = {
   en: {
+    overview: "Overview",
     tasks: "Tasks",
+    hours: "Project Hours",
     tickets: "Job Tickets",
     files: "Files",
+    finances: "Finances",
   },
   de: {
+    overview: "Übersicht",
     tasks: "Aufgaben",
+    hours: "Projektstunden",
     tickets: "Job Tickets",
     files: "Dateien",
+    finances: "Finanzen",
   },
 };
 
@@ -399,6 +557,16 @@ const PROJECT_STATUS_PRESETS = [
   "Rechnung erstellen",
   "Rückfragen klären",
 ];
+const PROJECT_SITE_ACCESS_PRESETS = [
+  "customer_on_site",
+  "freely_accessible",
+  "key_in_office",
+  "key_pickup",
+  "code_access",
+  "key_box",
+  "call_before_departure",
+] as const;
+const PROJECT_SITE_ACCESS_WITH_NOTE = new Set<string>(["key_pickup", "code_access", "key_box"]);
 
 const HHMM_PATTERN = "^([01]\\d|2[0-3]):[0-5]\\d$";
 const HHMM_REGEX = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -413,15 +581,33 @@ function initialsFromName(name: string, fallback: string) {
   return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
 }
 
+function parseServerDateTime(value?: string | null) {
+  if (!value) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  const hasTimePart = raw.includes("T");
+  const hasTimezone = /(?:[zZ]|[+\-]\d{2}:\d{2})$/.test(raw);
+  const normalized = hasTimePart && !hasTimezone ? `${raw}Z` : raw;
+  const parsed = new Date(normalized);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed;
+}
+
+function formatServerDateTime(value: string | null | undefined, language: Language) {
+  const parsed = parseServerDateTime(value);
+  if (!parsed) return value ? String(value) : "";
+  return parsed.toLocaleString(language === "de" ? "de-DE" : "en-US");
+}
+
 function chatDayKey(value: string, index: number) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return `unknown-${index}`;
+  const date = parseServerDateTime(value);
+  if (!date) return `unknown-${index}`;
   return date.toISOString().slice(0, 10);
 }
 
 function formatChatDayLabel(value: string, language: Language) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
+  const date = parseServerDateTime(value);
+  if (!date) return value;
   return date.toLocaleDateString(language === "de" ? "de-DE" : "en-US", {
     weekday: "short",
     day: "2-digit",
@@ -431,8 +617,8 @@ function formatChatDayLabel(value: string, language: Language) {
 }
 
 function formatChatTimeLabel(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "--:--";
+  const date = parseServerDateTime(value);
+  if (!date) return "--:--";
   return date.toLocaleTimeString("de-DE", {
     hour: "2-digit",
     minute: "2-digit",
@@ -449,6 +635,13 @@ function SidebarNavIcon({ view }: { view: MainView }) {
       </svg>
     );
   }
+  if (view === "materials") {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true" className="nav-icon">
+        <path d="M4.5 7.5h15v11h-15zM4.5 7.5 12 3l7.5 4.5M12 12.2v6.3" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    );
+  }
   if (view === "my_tasks") {
     return (
       <svg viewBox="0 0 24 24" aria-hidden="true" className="nav-icon">
@@ -462,6 +655,15 @@ function SidebarNavIcon({ view }: { view: MainView }) {
       <svg viewBox="0 0 24 24" aria-hidden="true" className="nav-icon">
         <rect x="3.5" y="5.5" width="17" height="15" rx="2.4" fill="none" stroke="currentColor" strokeWidth="1.8" />
         <path d="M8 3.5v4M16 3.5v4M3.5 10h17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      </svg>
+    );
+  }
+  if (view === "calendar") {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true" className="nav-icon">
+        <rect x="3.5" y="4.5" width="17" height="16" rx="2.4" fill="none" stroke="currentColor" strokeWidth="1.8" />
+        <path d="M8 2.5v4M16 2.5v4M3.5 9.3h17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+        <path d="M8 12.6h2.4M13.8 12.6h2.4M8 16.4h2.4M13.8 16.4h2.4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
       </svg>
     );
   }
@@ -544,9 +746,8 @@ function parseListLines(value: string) {
 }
 
 function isoToLocalDateTimeInput(value?: string | null) {
-  if (!value) return "";
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return "";
+  const d = parseServerDateTime(value);
+  if (!d) return "";
   const offset = d.getTimezoneOffset();
   const local = new Date(d.getTime() - offset * 60_000);
   return local.toISOString().slice(0, 16);
@@ -557,6 +758,18 @@ function localDateTimeInputToIso(value: string) {
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return null;
   return d.toISOString();
+}
+
+function normalizeAddressInput(value: string) {
+  if (!value) return "";
+  return value
+    .replace(/\r/g, " ")
+    .replace(/\n/g, ", ")
+    .replace(/,\s*/g, ", ")
+    .replace(/(,\s*){2,}/g, ", ")
+    .replace(/\s{2,}/g, " ")
+    .trim()
+    .replace(/^[,\s]+|[,\s]+$/g, "");
 }
 
 function formatDateISOLocal(date: Date) {
@@ -677,6 +890,112 @@ function formatHours(hours: number) {
   return `${hours.toFixed(2)}h`;
 }
 
+function parseNullableDecimalInput(value: string): number | null {
+  const normalized = value.trim().replace(",", ".");
+  if (!normalized) return null;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+const WEATHER_DESCRIPTION_DE_LABELS: Record<string, string> = {
+  clear: "Klar",
+  "clear sky": "Klarer Himmel",
+  clouds: "Bewoelkt",
+  "few clouds": "Leicht bewoelkt",
+  "scattered clouds": "Aufgelockerte Bewoelkung",
+  "broken clouds": "Stark bewoelkt",
+  "overcast clouds": "Bedeckt",
+  rain: "Regen",
+  "light rain": "Leichter Regen",
+  "moderate rain": "Maessiger Regen",
+  "heavy intensity rain": "Starker Regen",
+  "very heavy rain": "Sehr starker Regen",
+  "extreme rain": "Extremer Regen",
+  drizzle: "Nieselregen",
+  "light intensity drizzle": "Leichter Nieselregen",
+  "drizzle rain": "Nieselregen",
+  "shower rain": "Schauer",
+  thunderstorm: "Gewitter",
+  snow: "Schnee",
+  "light snow": "Leichter Schneefall",
+  mist: "Dunst",
+  haze: "Dunst",
+  fog: "Nebel",
+  smoke: "Rauch",
+  dust: "Staub",
+  sand: "Sand",
+  ash: "Asche",
+  squall: "Boeen",
+  tornado: "Tornado",
+  "thunderstorm with light rain": "Gewitter mit leichtem Regen",
+  "thunderstorm with rain": "Gewitter mit Regen",
+  "thunderstorm with heavy rain": "Gewitter mit starkem Regen",
+  "light thunderstorm": "Leichtes Gewitter",
+  "heavy thunderstorm": "Starkes Gewitter",
+  "ragged thunderstorm": "Unregelmaessiges Gewitter",
+  "thunderstorm with light drizzle": "Gewitter mit leichtem Nieselregen",
+  "thunderstorm with drizzle": "Gewitter mit Nieselregen",
+  "thunderstorm with heavy drizzle": "Gewitter mit starkem Nieselregen",
+  "heavy intensity drizzle": "Starker Nieselregen",
+  "light intensity drizzle rain": "Leichter Nieselregen",
+  "heavy intensity drizzle rain": "Starker Nieselregen",
+  "shower rain and drizzle": "Regenschauer mit Nieselregen",
+  "heavy shower rain and drizzle": "Starke Regenschauer mit Nieselregen",
+  "shower drizzle": "Nieselregen-Schauer",
+  "freezing rain": "Gefrierender Regen",
+  "light intensity shower rain": "Leichter Regenschauer",
+  "heavy intensity shower rain": "Starker Regenschauer",
+  "ragged shower rain": "Unregelmaessige Regenschauer",
+  "heavy snow": "Starker Schneefall",
+  sleet: "Schneeregen",
+  "light shower sleet": "Leichter Schneeregen-Schauer",
+  "shower sleet": "Schneeregen-Schauer",
+  "light rain and snow": "Leichter Regen und Schnee",
+  "rain and snow": "Regen und Schnee",
+  "light shower snow": "Leichter Schneeschauer",
+  "shower snow": "Schneeschauer",
+  "heavy shower snow": "Starker Schneeschauer",
+  "sand/dust whirls": "Sand-/Staubwirbel",
+  "volcanic ash": "Vulkanasche",
+  squalls: "Boeen",
+  light: "Leicht",
+  moderate: "Maessig",
+  heavy: "Stark",
+  very: "Sehr",
+  extreme: "Extrem",
+  intensity: "",
+  with: "mit",
+  and: "und",
+  few: "Wenige",
+  scattered: "Aufgelockerte",
+  broken: "Stark",
+  overcast: "Bedeckt",
+  shower: "Schauer",
+  whirls: "Wirbel",
+  volcanic: "Vulkan",
+};
+
+function weatherDescriptionLabel(description: string | null | undefined, language: Language) {
+  const raw = String(description ?? "").trim();
+  if (!raw) return "";
+  if (language !== "de") return raw;
+  const normalized = raw.toLowerCase();
+  const direct = WEATHER_DESCRIPTION_DE_LABELS[normalized];
+  if (direct) return direct;
+  return raw
+    .split(/\s+/)
+    .map((part) => {
+      const leading = part.match(/^[^a-zA-Z0-9]+/)?.[0] ?? "";
+      const trailing = part.match(/[^a-zA-Z0-9]+$/)?.[0] ?? "";
+      const core = part.replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$/g, "");
+      if (!core) return part;
+      const translated = WEATHER_DESCRIPTION_DE_LABELS[core.toLowerCase()] ?? core;
+      return `${leading}${translated}${trailing}`;
+    })
+    .filter((part) => part.trim().length > 0)
+    .join(" ");
+}
+
 function statusLabel(value: string, language: Language) {
   const raw = String(value || "").trim();
   const normalized = raw
@@ -686,6 +1005,167 @@ function statusLabel(value: string, language: Language) {
   if (normalized === "on_hold") return language === "de" ? "Pausiert" : "On hold";
   if (normalized === "completed") return language === "de" ? "Abgeschlossen" : "Completed";
   return raw || (language === "de" ? "Aktiv" : "Active");
+}
+
+function normalizeMaterialNeedStatus(value?: string | null): MaterialNeedStatus {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (
+    normalized === "on_the_way" ||
+    normalized === "on-the-way" ||
+    normalized === "on the way" ||
+    normalized === "on its way" ||
+    normalized === "unterwegs"
+  ) {
+    return "on_the_way";
+  }
+  if (normalized === "available" || normalized === "verfuegbar" || normalized === "verfügbar") {
+    return "available";
+  }
+  return "order";
+}
+
+function materialNeedStatusLabel(status: MaterialNeedStatus, language: Language) {
+  if (status === "on_the_way") return language === "de" ? "Unterwegs" : "On its way";
+  if (status === "available") return language === "de" ? "Verfügbar" : "Available";
+  return language === "de" ? "Bestellen" : "Order";
+}
+
+function materialNeedStatusClass(status: MaterialNeedStatus) {
+  if (status === "on_the_way") return "on-the-way";
+  if (status === "available") return "available";
+  return "order";
+}
+
+function normalizeTaskTypeValue(value?: string | null): TaskType {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (
+    normalized === "customer_appointment" ||
+    normalized === "customer-appointment" ||
+    normalized === "customer appointment" ||
+    normalized === "appointment" ||
+    normalized === "kundentermin" ||
+    normalized === "kundentermine" ||
+    normalized === "termin"
+  ) {
+    return "customer_appointment";
+  }
+  if (normalized === "office" || normalized === "buero" || normalized === "büro") return "office";
+  return "construction";
+}
+
+function taskTypeLabel(taskType: TaskType, language: Language) {
+  if (taskType === "customer_appointment") {
+    return language === "de" ? "Kundentermin" : "Customer appointment";
+  }
+  if (taskType === "office") {
+    return language === "de" ? "Büroaufgabe" : "Office task";
+  }
+  return language === "de" ? "Baustellenaufgabe" : "Construction task";
+}
+
+function normalizeProjectSiteAccessType(value?: string | null) {
+  const normalized = String(value || "").trim();
+  if (!normalized) return "";
+  return PROJECT_SITE_ACCESS_PRESETS.includes(normalized as (typeof PROJECT_SITE_ACCESS_PRESETS)[number]) ? normalized : "";
+}
+
+function projectSiteAccessRequiresNote(value?: string | null) {
+  return PROJECT_SITE_ACCESS_WITH_NOTE.has(normalizeProjectSiteAccessType(value));
+}
+
+function projectSiteAccessLabel(value: string | null | undefined, language: Language) {
+  const normalized = normalizeProjectSiteAccessType(value);
+  if (normalized === "customer_on_site") {
+    return language === "de" ? "Kunde ist Vorort" : "Customer is on site";
+  }
+  if (normalized === "freely_accessible") {
+    return language === "de" ? "frei zugänglich" : "Freely accessible";
+  }
+  if (normalized === "key_in_office") {
+    return language === "de" ? "Schlüssel im Büro" : "Key in office";
+  }
+  if (normalized === "key_pickup") {
+    return language === "de" ? "Schlüssel abholen bei" : "Pick up key at";
+  }
+  if (normalized === "code_access") {
+    return language === "de" ? "Zugang über Code" : "Access via code";
+  }
+  if (normalized === "key_box") {
+    return language === "de" ? "Schlüsselbox" : "Key box";
+  }
+  if (normalized === "call_before_departure") {
+    return language === "de" ? "Anrufen vor Abfahrt" : "Call before departure";
+  }
+  return "";
+}
+
+function projectSiteAccessDisplay(value: string | null | undefined, note: string | null | undefined, language: Language) {
+  const label = projectSiteAccessLabel(value, language);
+  if (!label) return "-";
+  const normalizedNote = (note ?? "").trim();
+  if (projectSiteAccessRequiresNote(value) && normalizedNote) return `${label}: ${normalizedNote}`;
+  return label;
+}
+
+function classTemplateMaterialsText(template: ProjectClassTemplate | null, language: Language): string {
+  if (!template) return "";
+  const materials = (template.materials_required ?? "").trim();
+  const tools = (template.tools_required ?? "").trim();
+  const sections: string[] = [];
+  if (materials) {
+    sections.push(`${language === "de" ? "Materialien" : "Materials"}:\n${materials}`);
+  }
+  if (tools) {
+    sections.push(`${language === "de" ? "Werkzeuge" : "Tools"}:\n${tools}`);
+  }
+  return sections.join("\n\n").trim();
+}
+
+function financeLabel(field: keyof ProjectFinanceFormState, language: Language) {
+  const labels: Record<keyof ProjectFinanceFormState, { de: string; en: string }> = {
+    order_value_net: { de: "Auftragswert netto", en: "Order value (net)" },
+    down_payment_35: { de: "35% Anzahlung", en: "35% down payment" },
+    main_components_50: { de: "50% Hauptkomponenten", en: "50% main components" },
+    final_invoice_15: { de: "15% Schlussrechnung", en: "15% final invoice" },
+    planned_costs: { de: "Geplante Kosten", en: "Planned costs" },
+    actual_costs: { de: "Tatsächliche Kosten", en: "Actual costs" },
+    contribution_margin: { de: "Deckungsbeitrag", en: "Contribution margin" },
+  };
+  return language === "de" ? labels[field].de : labels[field].en;
+}
+
+function activityEventLabel(eventType: string, language: Language) {
+  const map: Record<string, { de: string; en: string }> = {
+    "project.created": { de: "Projekt erstellt", en: "Project created" },
+    "project.classes_updated": { de: "Projektklassen aktualisiert", en: "Project classes updated" },
+    "project.state_changed": { de: "Status geändert", en: "State changed" },
+    "project.note_updated": { de: "Notiz aktualisiert", en: "Note updated" },
+    "task.created": { de: "Aufgabe erstellt", en: "Task created" },
+    "task.updated": { de: "Aufgabe aktualisiert", en: "Task updated" },
+    "task.deleted": { de: "Aufgabe gelöscht", en: "Task deleted" },
+    "ticket.created": { de: "Ticket erstellt", en: "Ticket created" },
+    "ticket.updated": { de: "Ticket aktualisiert", en: "Ticket updated" },
+    "file.uploaded": { de: "Datei hochgeladen", en: "File uploaded" },
+    "file.deleted": { de: "Datei gelöscht", en: "File deleted" },
+    "report.created": { de: "Bericht erstellt", en: "Report created" },
+    "material.status_updated": { de: "Materialstatus aktualisiert", en: "Material status updated" },
+    "finance.updated": { de: "Finanzen aktualisiert", en: "Finances updated" },
+  };
+  return map[eventType] ? (language === "de" ? map[eventType].de : map[eventType].en) : eventType;
+}
+
+function formatMoney(value: number | null | undefined, language: Language) {
+  if (value == null || Number.isNaN(value)) return "-";
+  const locale = language === "de" ? "de-DE" : "en-US";
+  return new Intl.NumberFormat(locale, {
+    style: "currency",
+    currency: "EUR",
+    maximumFractionDigits: 2,
+  }).format(value);
 }
 
 function formatTaskStartTime(value?: string | null) {
@@ -699,18 +1179,47 @@ function isValidTimeHHMM(value: string) {
   return HHMM_REGEX.test(value.trim());
 }
 
+function formatTimeInputForTyping(value?: string | null) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  if (raw.includes(":")) {
+    const [leftRaw, rightRaw] = raw.split(":", 2);
+    const left = leftRaw.replace(/\D/g, "").slice(0, 2);
+    const right = rightRaw.replace(/\D/g, "").slice(0, 2);
+    if (!rightRaw && raw.endsWith(":")) return `${left}:`;
+    return right.length > 0 ? `${left}:${right}` : left;
+  }
+  const digits = raw.replace(/\D/g, "").slice(0, 4);
+  if (digits.length <= 2) return digits;
+  if (digits.length === 3) return `${digits.slice(0, 1)}:${digits.slice(1)}`;
+  return `${digits.slice(0, 2)}:${digits.slice(2)}`;
+}
+
 function normalizeTimeHHMM(value?: string | null) {
-  return String(value || "")
-    .trim()
-    .slice(0, 5);
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const compact = raw.replace(/\D/g, "");
+  if (compact.length === 3) {
+    return `0${compact[0]}:${compact.slice(1)}`;
+  }
+  if (compact.length >= 4) {
+    return `${compact.slice(0, 2)}:${compact.slice(2, 4)}`;
+  }
+  const match = raw.match(/^(\d{1,2}):(\d{1,2})$/);
+  if (match) {
+    return `${match[1].padStart(2, "0").slice(0, 2)}:${match[2].padStart(2, "0").slice(0, 2)}`;
+  }
+  return raw.slice(0, 5);
 }
 
 function projectUpdatedTimestamp(project: Project) {
-  const direct = project.last_status_at ? Date.parse(project.last_status_at) : Number.NaN;
+  const byLastUpdate = project.last_updated_at ? parseServerDateTime(project.last_updated_at)?.getTime() : Number.NaN;
+  if (Number.isFinite(byLastUpdate)) return byLastUpdate;
+  const direct = project.last_status_at ? parseServerDateTime(project.last_status_at)?.getTime() : Number.NaN;
   if (Number.isFinite(direct)) return direct;
   const fromExtra = project.extra_attributes?.["Letzter Status Datum"];
   if (typeof fromExtra === "string") {
-    const parsed = Date.parse(fromExtra);
+    const parsed = parseServerDateTime(fromExtra)?.getTime();
     if (Number.isFinite(parsed)) return parsed;
   }
   return 0;
@@ -718,7 +1227,7 @@ function projectUpdatedTimestamp(project: Project) {
 
 function parseTimestampValue(value: unknown) {
   if (typeof value !== "string") return 0;
-  const parsed = Date.parse(value);
+  const parsed = parseServerDateTime(value)?.getTime();
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
@@ -864,6 +1373,70 @@ function WorkHoursGauge({
   );
 }
 
+function ProjectHoursGauge({
+  language,
+  plannedHours,
+  workedHours,
+}: {
+  language: Language;
+  plannedHours: number;
+  workedHours: number;
+}) {
+  const planned = plannedHours > 0 ? plannedHours : 0;
+  const worked = Math.max(workedHours, 0);
+  const progressPercent = planned > 0 ? (worked / planned) * 100 : 0;
+  const ringPercent = clamp(progressPercent, 0, 100);
+  const overtimeBlend = clamp((progressPercent - 100) / 100, 0, 1);
+  const overtimeColor = `rgb(${Math.round(47 + (180 - 47) * overtimeBlend)}, ${Math.round(111 + (54 - 111) * overtimeBlend)}, ${Math.round(127 + (65 - 127) * overtimeBlend)})`;
+  const ringFillBackground =
+    planned <= 0
+      ? "conic-gradient(#f1ece3 0% 100%)"
+      : progressPercent > 100
+        ? `conic-gradient(from -90deg, #2f6f7f 0%, ${overtimeColor} 100%)`
+        : `conic-gradient(#2f6f7f ${ringPercent}%, #f1ece3 ${ringPercent}% 100%)`;
+  const remaining = planned > 0 ? Math.max(planned - worked, 0) : 0;
+  const overtime = planned > 0 ? Math.max(worked - planned, 0) : 0;
+
+  return (
+    <div className="work-gauge">
+      <div className="work-gauge-head">
+        <b>{language === "de" ? "Projektstunden" : "Project hours"}</b>
+        <span>{planned > 0 ? `${progressPercent.toFixed(0)}%` : "-"}</span>
+      </div>
+      <div
+        className="work-gauge-ring"
+        role="meter"
+        aria-valuemin={0}
+        aria-valuenow={progressPercent}
+        aria-valuetext={planned > 0 ? `${progressPercent.toFixed(0)}%` : "not set"}
+        style={{ background: ringFillBackground }}
+      >
+        <div className="work-gauge-ring-inner">
+          <strong className="work-gauge-value">{formatHours(worked)}</strong>
+          <small>{language === "de" ? "berichtet" : "reported"}</small>
+        </div>
+      </div>
+      <div className="work-gauge-meta">
+        <small>
+          {language === "de" ? "Geplant" : "Planned"}: {planned > 0 ? formatHours(planned) : "-"}
+        </small>
+        <small>
+          {language === "de" ? "Ist" : "Actual"}: {formatHours(worked)}
+        </small>
+        <small>
+          {planned <= 0
+            ? language === "de"
+              ? "Keine geplanten Stunden gesetzt"
+              : "No planned hours set"
+            : overtime > 0
+              ? `${language === "de" ? "Ueber Plan" : "Over plan"}: ${formatHours(overtime)}`
+              : `${language === "de" ? "Rest" : "Remaining"}: ${formatHours(remaining)}`}
+        </small>
+      </div>
+    </div>
+  );
+}
+
 function WeeklyHoursGauge({
   language,
   row,
@@ -960,6 +1533,9 @@ const EMPTY_PROJECT_FORM: ProjectFormState = {
   customer_contact: "",
   customer_email: "",
   customer_phone: "",
+  site_access_type: "",
+  site_access_note: "",
+  class_template_ids: [],
 };
 
 function buildEmptyProjectTaskFormState(): ProjectTaskFormState {
@@ -969,6 +1545,8 @@ function buildEmptyProjectTaskFormState(): ProjectTaskFormState {
     materials_required: "",
     has_storage_box: false,
     storage_box_number: "",
+    task_type: "construction",
+    class_template_id: "",
     due_date: "",
     start_time: "",
     assignee_query: "",
@@ -976,10 +1554,34 @@ function buildEmptyProjectTaskFormState(): ProjectTaskFormState {
   };
 }
 
+const EMPTY_PROJECT_FINANCE_FORM: ProjectFinanceFormState = {
+  order_value_net: "",
+  down_payment_35: "",
+  main_components_50: "",
+  final_invoice_15: "",
+  planned_costs: "",
+  actual_costs: "",
+  contribution_margin: "",
+};
+
+function projectFinanceToFormState(finance: ProjectFinance | null): ProjectFinanceFormState {
+  if (!finance) return { ...EMPTY_PROJECT_FINANCE_FORM };
+  return {
+    order_value_net: finance.order_value_net == null ? "" : String(finance.order_value_net),
+    down_payment_35: finance.down_payment_35 == null ? "" : String(finance.down_payment_35),
+    main_components_50: finance.main_components_50 == null ? "" : String(finance.main_components_50),
+    final_invoice_15: finance.final_invoice_15 == null ? "" : String(finance.final_invoice_15),
+    planned_costs: finance.planned_costs == null ? "" : String(finance.planned_costs),
+    actual_costs: finance.actual_costs == null ? "" : String(finance.actual_costs),
+    contribution_margin: finance.contribution_margin == null ? "" : String(finance.contribution_margin),
+  };
+}
+
 function buildTaskModalFormState(defaults?: {
   projectId?: number | null;
   dueDate?: string;
   projectQuery?: string;
+  taskType?: TaskType;
 }): TaskModalState {
   return {
     title: "",
@@ -987,6 +1589,8 @@ function buildTaskModalFormState(defaults?: {
     materials_required: "",
     has_storage_box: false,
     storage_box_number: "",
+    task_type: defaults?.taskType ?? "construction",
+    class_template_id: "",
     project_id: defaults?.projectId ? String(defaults.projectId) : "",
     project_query: defaults?.projectQuery ?? "",
     due_date: defaults?.dueDate ?? "",
@@ -1008,11 +1612,14 @@ function buildTaskEditFormState(task?: Task | null): TaskEditFormState {
         : [];
   return {
     id: task?.id ?? null,
+    project_id: task?.project_id ?? null,
     title: task?.title ?? "",
     description: task?.description ?? "",
     materials_required: task?.materials_required ?? "",
     has_storage_box: task?.storage_box_number != null,
     storage_box_number: task?.storage_box_number != null ? String(task.storage_box_number) : "",
+    task_type: normalizeTaskTypeValue(task?.task_type),
+    class_template_id: task?.class_template_id != null ? String(task.class_template_id) : "",
     status: task?.status ?? "open",
     due_date: task?.due_date ?? "",
     start_time: task?.start_time ? formatTaskStartTime(task.start_time) : "",
@@ -1039,6 +1646,12 @@ type ThreadModalState = {
 
 type AvatarUploadResponse = {
   ok: boolean;
+  avatar_updated_at?: string | null;
+};
+
+type AvatarDeleteResponse = {
+  ok: boolean;
+  deleted: boolean;
   avatar_updated_at?: string | null;
 };
 
@@ -1188,20 +1801,18 @@ function ThreadIconBadge({
 
 export function App() {
   const [token, setToken] = useState<string | null>(() => readStoredToken());
-  const [language, setLanguage] = useState<Language>(() =>
-    localStorage.getItem("smpl_language") === "de" ? "de" : "en",
-  );
+  const [language, setLanguage] = useState<Language>("de");
   const [now, setNow] = useState<Date>(new Date());
 
   const [user, setUser] = useState<User | null>(null);
   const [mainView, setMainView] = useState<MainView>("overview");
   const [overviewShortcutBackVisible, setOverviewShortcutBackVisible] = useState(false);
-  const [projectTab, setProjectTab] = useState<ProjectTab>("tasks");
+  const [projectTab, setProjectTab] = useState<ProjectTab>("overview");
   const [error, setError] = useState<string>("");
   const [notice, setNotice] = useState<string>("");
 
-  const [email, setEmail] = useState("admin@example.com");
-  const [password, setPassword] = useState("ChangeMe123!");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [publicAuthMode, setPublicAuthMode] = useState<"invite" | "reset" | null>(() => detectPublicAuthMode());
   const [publicToken, setPublicToken] = useState(() => readPublicTokenParam());
   const [publicFullName, setPublicFullName] = useState("");
@@ -1212,6 +1823,12 @@ export function App() {
   const [users, setUsers] = useState<User[]>([]);
   const [assignableUsers, setAssignableUsers] = useState<AssignableUser[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
+  const [materialNeeds, setMaterialNeeds] = useState<ProjectMaterialNeed[]>([]);
+  const [materialNeedUpdating, setMaterialNeedUpdating] = useState<Record<number, boolean>>({});
+  const [projectClassTemplates, setProjectClassTemplates] = useState<ProjectClassTemplate[]>([]);
+  const [projectClassTemplatesByProjectId, setProjectClassTemplatesByProjectId] = useState<
+    Record<number, ProjectClassTemplate[]>
+  >({});
   const [projectSidebarSearchOpen, setProjectSidebarSearchOpen] = useState(false);
   const [projectSidebarSearchQuery, setProjectSidebarSearchQuery] = useState("");
   const [overview, setOverview] = useState<any[]>([]);
@@ -1220,7 +1837,7 @@ export function App() {
   const [projectsAllStateFilter, setProjectsAllStateFilter] = useState<string>("all");
   const [projectsAllEditedFilter, setProjectsAllEditedFilter] = useState<string>("all");
 
-  const [taskView, setTaskView] = useState<"my" | "all_open">("my");
+  const [taskView, setTaskView] = useState<TaskView>("my");
   const [tasks, setTasks] = useState<Task[]>([]);
   const [expandedMyTaskId, setExpandedMyTaskId] = useState<number | null>(null);
   const [myTasksBackProjectId, setMyTasksBackProjectId] = useState<number | null>(null);
@@ -1229,6 +1846,18 @@ export function App() {
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [files, setFiles] = useState<ProjectFile[]>([]);
   const [projectFolders, setProjectFolders] = useState<ProjectFolder[]>([]);
+  const [projectOverviewDetails, setProjectOverviewDetails] = useState<ProjectOverviewDetails | null>(null);
+  const [projectOverviewOpenTasks, setProjectOverviewOpenTasks] = useState<Task[]>([]);
+  const [projectWeather, setProjectWeather] = useState<ProjectWeather | null>(null);
+  const [projectWeatherLoading, setProjectWeatherLoading] = useState(false);
+  const [projectFinance, setProjectFinance] = useState<ProjectFinance | null>(null);
+  const [projectHoursPlannedInput, setProjectHoursPlannedInput] = useState("");
+  const [projectFinanceEditing, setProjectFinanceEditing] = useState(false);
+  const [projectFinanceForm, setProjectFinanceForm] = useState<ProjectFinanceFormState>(() => ({
+    ...EMPTY_PROJECT_FINANCE_FORM,
+  }));
+  const [projectNoteEditing, setProjectNoteEditing] = useState(false);
+  const [projectNoteDraft, setProjectNoteDraft] = useState("");
   const [fileUploadFolder, setFileUploadFolder] = useState("");
   const [newProjectFolderPath, setNewProjectFolderPath] = useState("");
   const [wikiFiles, setWikiFiles] = useState<WikiLibraryFile[]>([]);
@@ -1236,7 +1865,11 @@ export function App() {
   const [activeWikiPath, setActiveWikiPath] = useState<string | null>(null);
 
   const [planningWeekStart, setPlanningWeekStart] = useState<string>(() => startOfWeekISO(new Date()));
+  const [planningTaskTypeView, setPlanningTaskTypeView] = useState<TaskType>("construction");
   const [planningWeek, setPlanningWeek] = useState<PlanningWeek | null>(null);
+  const [calendarWeekStart, setCalendarWeekStart] = useState<string>(() => startOfWeekISO(new Date()));
+  const [calendarWeeks, setCalendarWeeks] = useState<PlanningWeek[]>([]);
+  const [calendarLoading, setCalendarLoading] = useState(false);
 
   const [threads, setThreads] = useState<Thread[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -1274,6 +1907,12 @@ export function App() {
     role: "employee" as User["role"],
   });
   const [backupExporting, setBackupExporting] = useState(false);
+  const [weatherSettings, setWeatherSettings] = useState<WeatherSettings | null>(null);
+  const [weatherApiKeyInput, setWeatherApiKeyInput] = useState("");
+  const [weatherSettingsSaving, setWeatherSettingsSaving] = useState(false);
+  const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
+  const [updateStatusLoading, setUpdateStatusLoading] = useState(false);
+  const [updateInstallRunning, setUpdateInstallRunning] = useState(false);
   const [timeMonthCursor, setTimeMonthCursor] = useState<Date>(() => {
     const current = new Date();
     return new Date(current.getFullYear(), current.getMonth(), 1);
@@ -1283,6 +1922,7 @@ export function App() {
   const [requiredHoursDrafts, setRequiredHoursDrafts] = useState<Record<number, string>>({});
 
   const [activeProjectId, setActiveProjectId] = useState<number | null>(null);
+  const [highlightedArchivedProjectId, setHighlightedArchivedProjectId] = useState<number | null>(null);
   const [activeThreadId, setActiveThreadId] = useState<number | null>(null);
   const [fileQuery, setFileQuery] = useState("");
   const [projectModalMode, setProjectModalMode] = useState<"create" | "edit" | null>(null);
@@ -1347,6 +1987,7 @@ export function App() {
   const canManageSchoolAbsences = user ? ["admin", "ceo", "accountant"].includes(user.role) : false;
   const canManageProjectImport = user ? ["admin", "ceo"].includes(user.role) : false;
   const canUseProtectedFolders = user ? ["admin", "ceo", "planning", "accountant"].includes(user.role) : false;
+  const canManageFinance = user ? ["admin", "ceo", "accountant"].includes(user.role) : false;
   const mainLabels = MAIN_LABELS[language];
   const tabLabels = TAB_LABELS[language];
 
@@ -1354,6 +1995,16 @@ export function App() {
     () => projects.find((project) => project.id === activeProjectId) ?? null,
     [projects, activeProjectId],
   );
+  const activeProjectDavRef = useMemo(() => {
+    const projectNumber = (activeProject?.project_number ?? "").trim();
+    if (projectNumber) return projectNumber;
+    if (activeProjectId) return String(activeProjectId);
+    return "";
+  }, [activeProject?.project_number, activeProjectId]);
+  const activeProjectDavUrl = useMemo(() => {
+    if (!activeProjectDavRef) return `${window.location.origin}/api/dav/projects/`;
+    return `${window.location.origin}/api/dav/projects/${encodeURIComponent(activeProjectDavRef)}/`;
+  }, [activeProjectDavRef]);
   const activeProjectHeaderTitle = useMemo(() => {
     if (!activeProject) return "";
     const customer = (activeProject.customer_name ?? "").trim();
@@ -1368,11 +2019,13 @@ export function App() {
     return typeof fallback === "string" ? fallback.trim() : "";
   }, [activeProject]);
   const activeProjectLastStatusAtLabel = useMemo(() => {
-    if (!activeProject?.last_status_at) return "";
-    const parsed = new Date(activeProject.last_status_at);
-    if (Number.isNaN(parsed.getTime())) return String(activeProject.last_status_at);
-    return parsed.toLocaleString(language === "de" ? "de-DE" : "en-US");
-  }, [activeProject?.last_status_at, language]);
+    const raw = projectOverviewDetails?.project?.last_status_at ?? activeProject?.last_status_at ?? "";
+    return formatServerDateTime(raw, language);
+  }, [projectOverviewDetails?.project?.last_status_at, activeProject?.last_status_at, language]);
+  const activeProjectLastUpdatedLabel = useMemo(() => {
+    const raw = projectOverviewDetails?.project?.last_updated_at ?? activeProject?.last_updated_at ?? "";
+    return formatServerDateTime(raw, language);
+  }, [projectOverviewDetails?.project?.last_updated_at, activeProject?.last_updated_at, language]);
   const activeProjectAddress = useMemo(() => {
     if (!activeProject) return "";
     const address = (activeProject.customer_address ?? "").trim();
@@ -1381,13 +2034,8 @@ export function App() {
   }, [activeProject]);
   const activeProjectMapQuery = useMemo(() => {
     if (!activeProjectAddress) return "";
-    const parts = [
-      activeProjectAddress,
-      (activeProject.customer_name ?? "").trim(),
-      (activeProject.name ?? "").trim(),
-    ].filter((part) => part.length > 0);
-    return parts.join(", ");
-  }, [activeProjectAddress, activeProject?.customer_name, activeProject?.name]);
+    return activeProjectAddress;
+  }, [activeProjectAddress]);
   const activeProjectMapEmbedUrl = useMemo(() => {
     if (!activeProjectMapQuery) return "";
     return `https://maps.google.com/maps?q=${encodeURIComponent(activeProjectMapQuery)}&z=14&output=embed`;
@@ -1428,10 +2076,17 @@ export function App() {
     () => new Map<number, Project>(projects.map((project) => [project.id, project])),
     [projects],
   );
+  const materialNeedRows = useMemo(
+    () => materialNeeds.filter((entry) => projectsById.has(entry.project_id)),
+    [materialNeeds, projectsById],
+  );
+  const activeProjects = useMemo(
+    () => projects.filter((project) => !isArchivedProjectStatus(project.status)),
+    [projects],
+  );
   const filteredSidebarProjects = useMemo(() => {
     const query = projectSidebarSearchQuery.trim().toLowerCase();
-    if (!query) return projects;
-    return projects.filter((project) => {
+    const matchesQuery = (project: Project) => {
       const searchable = [
         project.project_number,
         project.name,
@@ -1440,8 +2095,23 @@ export function App() {
         .join(" ")
         .toLowerCase();
       return searchable.includes(query);
-    });
-  }, [projects, projectSidebarSearchQuery]);
+    };
+
+    if (!query) {
+      return activeProjects.map((project) => ({ project, isArchived: false }));
+    }
+
+    const archivedMatches = projects
+      .filter((project) => isArchivedProjectStatus(project.status))
+      .filter((project) => matchesQuery(project))
+      .map((project) => ({ project, isArchived: true }));
+
+    const activeMatches = activeProjects
+      .filter((project) => matchesQuery(project))
+      .map((project) => ({ project, isArchived: false }));
+
+    return [...activeMatches, ...archivedMatches];
+  }, [activeProjects, projects, projectSidebarSearchQuery]);
   const archivedProjects = useMemo(
     () => projects.filter((project) => isArchivedProjectStatus(project.status)),
     [projects],
@@ -1456,6 +2126,10 @@ export function App() {
         const projectNumber = String(row.project_number ?? project?.project_number ?? row.project_id ?? "-");
         const lastState =
           String(row.last_state ?? project?.last_state ?? project?.extra_attributes?.Notiz ?? "").trim() || "-";
+        const lastUpdatedRaw =
+          String(row.last_updated_at ?? project?.last_updated_at ?? row.last_status_at ?? project?.last_status_at ?? "").trim() ||
+          null;
+        const lastUpdatedTimestamp = parseTimestampValue(lastUpdatedRaw);
         const lastStatusRaw =
           String(
             row.last_status_at ??
@@ -1471,12 +2145,14 @@ export function App() {
           project_number: projectNumber,
           customer_name: customerName,
           last_state: lastState,
+          last_updated_at: lastUpdatedRaw,
+          last_updated_timestamp: lastUpdatedTimestamp,
           last_status_at: lastStatusRaw,
           last_status_timestamp: lastStatusTimestamp,
         };
       })
       .sort((a, b) => {
-        const tsDiff = b.last_status_timestamp - a.last_status_timestamp;
+        const tsDiff = b.last_updated_timestamp - a.last_updated_timestamp;
         if (tsDiff !== 0) return tsDiff;
         return Number(b.project_id || 0) - Number(a.project_id || 0);
       });
@@ -1492,7 +2168,7 @@ export function App() {
       const status = String(row.status ?? "").trim();
       if (projectsAllStateFilter !== "all" && status !== projectsAllStateFilter) return false;
       if (projectsAllEditedFilter !== "all") {
-        const ts = Number(row.last_status_timestamp ?? 0);
+        const ts = Number(row.last_updated_timestamp ?? 0);
         if (projectsAllEditedFilter === "missing") {
           if (ts > 0) return false;
         } else {
@@ -1605,6 +2281,20 @@ export function App() {
     () => projects.find((project) => String(project.id) === taskModalForm.project_id) ?? null,
     [projects, taskModalForm.project_id],
   );
+  const activeProjectClassTemplates = useMemo(() => {
+    if (!activeProjectId) return [];
+    return projectClassTemplatesByProjectId[activeProjectId] ?? [];
+  }, [activeProjectId, projectClassTemplatesByProjectId]);
+  const taskModalProjectClassTemplates = useMemo(() => {
+    const projectId = Number(taskModalForm.project_id);
+    if (!projectId) return [];
+    return projectClassTemplatesByProjectId[projectId] ?? [];
+  }, [taskModalForm.project_id, projectClassTemplatesByProjectId]);
+  const taskEditProjectClassTemplates = useMemo(() => {
+    const projectId = Number(taskEditForm.project_id);
+    if (!projectId) return [];
+    return projectClassTemplatesByProjectId[projectId] ?? [];
+  }, [taskEditForm.project_id, projectClassTemplatesByProjectId]);
   const activeThread = useMemo(
     () => threads.find((thread) => thread.id === activeThreadId) ?? null,
     [threads, activeThreadId],
@@ -1621,6 +2311,8 @@ export function App() {
     () => new Map(users.map((entry) => [entry.id, entry])),
     [users],
   );
+  const activeAdminUsers = useMemo(() => users.filter((entry) => entry.is_active), [users]);
+  const archivedAdminUsers = useMemo(() => users.filter((entry) => !entry.is_active), [users]);
   const hasMessageText = messageBody.trim().length > 0;
   const canSendMessage = hasMessageText || Boolean(messageAttachment);
   const chatRenderRows = useMemo<ChatRenderRow[]>(() => {
@@ -1679,11 +2371,11 @@ export function App() {
   }, [tasks, taskEditForm.status]);
 
   const navViews = useMemo<MainView[]>(() => {
-    const views: MainView[] = ["overview", "my_tasks", "planning", "messages"];
+    const views: MainView[] = ["overview", "materials", "my_tasks", "planning", "calendar", "messages"];
     return views;
   }, []);
 
-  const projectTabs = useMemo<ProjectTab[]>(() => ["tasks", "tickets", "files"], []);
+  const projectTabs = useMemo<ProjectTab[]>(() => ["overview", "tasks", "hours", "tickets", "files", "finances"], []);
 
   const fileRows = useMemo(
     () =>
@@ -1794,8 +2486,8 @@ export function App() {
   );
   const activeProjectTicketDate = useMemo(() => {
     if (!activeProject?.last_status_at) return formatDateISOLocal(new Date());
-    const parsed = new Date(activeProject.last_status_at);
-    if (Number.isNaN(parsed.getTime())) return formatDateISOLocal(new Date());
+    const parsed = parseServerDateTime(activeProject.last_status_at);
+    if (!parsed) return formatDateISOLocal(new Date());
     return formatDateISOLocal(parsed);
   }, [activeProject?.last_status_at]);
   const activeProjectTicketAddress = useMemo(() => {
@@ -1806,8 +2498,33 @@ export function App() {
       .join(", ");
     return fallback || "-";
   }, [activeProject?.customer_address, activeProject?.customer_name, activeProject?.name]);
+  const projectReportedHoursTotal = useMemo(() => {
+    const raw = projectOverviewDetails?.finance?.reported_hours_total ?? projectFinance?.reported_hours_total ?? 0;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) ? Math.max(parsed, 0) : 0;
+  }, [projectOverviewDetails?.finance?.reported_hours_total, projectFinance?.reported_hours_total]);
+  const projectPlannedHoursTotal = useMemo(() => {
+    const raw = projectFinance?.planned_hours_total ?? projectOverviewDetails?.finance?.planned_hours_total;
+    const parsed = Number(raw);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  }, [projectFinance?.planned_hours_total, projectOverviewDetails?.finance?.planned_hours_total]);
+  const projectHoursUsagePercent = useMemo(() => {
+    if (projectPlannedHoursTotal <= 0) return 0;
+    return (projectReportedHoursTotal / projectPlannedHoursTotal) * 100;
+  }, [projectPlannedHoursTotal, projectReportedHoursTotal]);
   const userInitials = useMemo(() => initialsFromName(user?.full_name ?? "", "U"), [user?.full_name]);
   const todayIso = useMemo(() => formatDateISOLocal(now), [now]);
+  const calendarRangeLabel = useMemo(() => {
+    const firstDayIso = calendarWeeks[0]?.week_start ?? calendarWeekStart;
+    const lastDayIso = calendarWeeks[calendarWeeks.length - 1]?.week_end ?? addDaysISO(calendarWeekStart, 27);
+    const locale = language === "de" ? "de-DE" : "en-US";
+    const firstDate = new Date(`${firstDayIso}T00:00:00`);
+    const lastDate = new Date(`${lastDayIso}T00:00:00`);
+    if (Number.isNaN(firstDate.getTime()) || Number.isNaN(lastDate.getTime())) {
+      return `${firstDayIso} - ${lastDayIso}`;
+    }
+    return `${firstDate.toLocaleDateString(locale, { day: "2-digit", month: "2-digit" })} - ${lastDate.toLocaleDateString(locale, { day: "2-digit", month: "2-digit" })}`;
+  }, [calendarWeekStart, calendarWeeks, language]);
   const timeTargetUser = useMemo(
     () => assignableUsers.find((entry) => String(entry.id) === timeTargetUserId) ?? null,
     [assignableUsers, timeTargetUserId],
@@ -1889,10 +2606,6 @@ export function App() {
       return next;
     });
   }, [assignableUsers]);
-
-  useEffect(() => {
-    localStorage.setItem("smpl_language", language);
-  }, [language]);
 
   useEffect(() => {
     if (!notice) return;
@@ -2082,19 +2795,40 @@ export function App() {
     if (mainView !== "project") return;
     if (!activeProjectId) return;
 
+    if (projectTab === "overview") void loadProjectOverview(activeProjectId);
     if (projectTab === "tasks") void loadTasks(taskView, activeProjectId);
     if (projectTab === "tickets") void loadSitesAndTickets(activeProjectId);
     if (projectTab === "files") {
       void loadFiles(activeProjectId);
       void loadProjectFolders(activeProjectId);
     }
+    if (projectTab === "finances" || projectTab === "hours") void loadProjectFinance(activeProjectId);
   }, [mainView, projectTab, activeProjectId, token, user, taskView]);
 
   useEffect(() => {
     if (!token || !user) return;
+    if (mainView !== "project") return;
+    if (!activeProjectId) return;
+    void loadProjectWeather(activeProjectId, true);
+  }, [token, user, mainView, activeProjectId, language]);
+
+  useEffect(() => {
+    if (!token || !user) return;
     if (mainView !== "planning") return;
-    void loadPlanningWeek(null, planningWeekStart);
-  }, [mainView, token, user, planningWeekStart]);
+    void loadPlanningWeek(null, planningWeekStart, planningTaskTypeView);
+  }, [mainView, token, user, planningWeekStart, planningTaskTypeView]);
+
+  useEffect(() => {
+    if (!token || !user) return;
+    if (mainView !== "materials") return;
+    void loadMaterialNeeds();
+  }, [mainView, token, user]);
+
+  useEffect(() => {
+    if (!token || !user) return;
+    if (mainView !== "calendar") return;
+    void loadPlanningWindow(null, calendarWeekStart, 4);
+  }, [mainView, token, user, calendarWeekStart]);
 
   useEffect(() => {
     if (!token || !user) return;
@@ -2128,7 +2862,62 @@ export function App() {
 
   useEffect(() => {
     setProjectTaskForm(buildEmptyProjectTaskFormState());
+    setProjectOverviewDetails(null);
+    setProjectOverviewOpenTasks([]);
+    setProjectWeather(null);
+    setProjectWeatherLoading(false);
+    setProjectFinance(null);
+    setProjectFinanceEditing(false);
+    setProjectFinanceForm({ ...EMPTY_PROJECT_FINANCE_FORM });
+    setProjectNoteEditing(false);
+    setProjectNoteDraft("");
   }, [activeProjectId]);
+
+  useEffect(() => {
+    if (!token || !user) return;
+    if (!activeProjectId) return;
+    void loadProjectClassTemplates(activeProjectId);
+  }, [token, user, activeProjectId]);
+
+  useEffect(() => {
+    if (!token || !user || !taskModalOpen) return;
+    const projectId = Number(taskModalForm.project_id);
+    if (!projectId) return;
+    void loadProjectClassTemplates(projectId);
+  }, [token, user, taskModalOpen, taskModalForm.project_id]);
+
+  useEffect(() => {
+    if (!token || !user || !taskEditModalOpen) return;
+    const projectId = Number(taskEditForm.project_id);
+    if (!projectId) return;
+    void loadProjectClassTemplates(projectId);
+  }, [token, user, taskEditModalOpen, taskEditForm.project_id]);
+
+  useEffect(() => {
+    const availableIds = new Set(activeProjectClassTemplates.map((row) => String(row.id)));
+    if (!projectTaskForm.class_template_id) return;
+    if (availableIds.has(projectTaskForm.class_template_id)) return;
+    setProjectTaskForm((current) => ({ ...current, class_template_id: "" }));
+  }, [activeProjectClassTemplates, projectTaskForm.class_template_id]);
+
+  useEffect(() => {
+    const availableIds = new Set(taskModalProjectClassTemplates.map((row) => String(row.id)));
+    if (!taskModalForm.class_template_id) return;
+    if (availableIds.has(taskModalForm.class_template_id)) return;
+    setTaskModalForm((current) => ({ ...current, class_template_id: "" }));
+  }, [taskModalProjectClassTemplates, taskModalForm.class_template_id]);
+
+  useEffect(() => {
+    const availableIds = new Set(taskEditProjectClassTemplates.map((row) => String(row.id)));
+    if (!taskEditForm.class_template_id) return;
+    if (availableIds.has(taskEditForm.class_template_id)) return;
+    setTaskEditForm((current) => ({ ...current, class_template_id: "" }));
+  }, [taskEditProjectClassTemplates, taskEditForm.class_template_id]);
+
+  useEffect(() => {
+    if (projectNoteEditing) return;
+    setProjectNoteDraft(activeProject?.description ?? "");
+  }, [activeProject?.description, projectNoteEditing]);
 
   useEffect(() => {
     if (expandedMyTaskId === null) return;
@@ -2143,9 +2932,14 @@ export function App() {
   }, [mainView, token, user]);
 
   useEffect(() => {
-    if (mainView === "my_tasks" || mainView === "planning") {
+    if (mainView === "my_tasks" || mainView === "planning" || mainView === "calendar") {
       setHasTaskNotifications(false);
     }
+  }, [mainView]);
+
+  useEffect(() => {
+    if (mainView === "projects_archive") return;
+    setHighlightedArchivedProjectId(null);
   }, [mainView]);
 
   useEffect(() => {
@@ -2160,7 +2954,13 @@ export function App() {
         if (canceled) return;
         const nextDigest = taskNotificationDigest(taskRows);
         const currentDigest = taskNotificationSnapshotRef.current;
-        if (currentDigest && currentDigest !== nextDigest && mainView !== "my_tasks" && mainView !== "planning") {
+        if (
+          currentDigest &&
+          currentDigest !== nextDigest &&
+          mainView !== "my_tasks" &&
+          mainView !== "planning" &&
+          mainView !== "calendar"
+        ) {
           setHasTaskNotifications(true);
         }
         taskNotificationSnapshotRef.current = nextDigest;
@@ -2250,12 +3050,30 @@ export function App() {
       setProjects(projectData);
       setOverview(projectOverview);
       if (projectData.length > 0) {
-        const hasActive = activeProjectId ? projectData.some((project) => project.id === activeProjectId) : false;
-        if (!hasActive) setActiveProjectId(projectData[0].id);
+        const visibleProjects = projectData.filter((project) => !isArchivedProjectStatus(project.status));
+        const hasVisibleActive = activeProjectId
+          ? visibleProjects.some((project) => project.id === activeProjectId)
+          : false;
+        if (!hasVisibleActive) {
+          setActiveProjectId(visibleProjects[0]?.id ?? null);
+        }
       }
       setReportProjectId((current) => {
         if (current && projectData.some((project) => String(project.id) === current)) return current;
         return "";
+      });
+      try {
+        const classTemplates = await apiFetch<ProjectClassTemplate[]>("/project-class-templates", token);
+        setProjectClassTemplates(classTemplates);
+      } catch {
+        setProjectClassTemplates([]);
+      }
+      setProjectClassTemplatesByProjectId((current) => {
+        const next: Record<number, ProjectClassTemplate[]> = {};
+        projectData.forEach((project) => {
+          if (current[project.id]) next[project.id] = current[project.id];
+        });
+        return next;
       });
       try {
         const assignables = await apiFetch<AssignableUser[]>("/users/assignable", token);
@@ -2263,19 +3081,55 @@ export function App() {
       } catch {
         setAssignableUsers([]);
       }
+      if (canManageProjectImport) {
+        try {
+          const settingsRow = await apiFetch<WeatherSettings>("/admin/settings/weather", token);
+          setWeatherSettings(settingsRow);
+          setWeatherApiKeyInput("");
+        } catch {
+          setWeatherSettings(null);
+        }
+      } else {
+        setWeatherSettings(null);
+      }
       if (isAdmin) {
         const userData = await apiFetch<User[]>("/admin/users", token);
         setUsers(userData);
+        try {
+          const statusRow = await apiFetch<UpdateStatus>("/admin/updates/status", token);
+          setUpdateStatus(statusRow);
+        } catch {
+          setUpdateStatus(null);
+        }
+      } else {
+        setUpdateStatus(null);
       }
       if (mainView === "project" && activeProjectId) {
+        if (projectTab === "overview") await loadProjectOverview(activeProjectId);
         if (projectTab === "tasks") await loadTasks(taskView, activeProjectId);
+        if (projectTab === "finances" || projectTab === "hours") await loadProjectFinance(activeProjectId);
+      }
+      if (mainView === "materials") {
+        await loadMaterialNeeds();
       }
     } catch (err: any) {
       setError(err.message ?? "Failed to load data");
     }
   }
 
-  async function loadTasks(mode: "my" | "all_open", projectId: number | null) {
+  async function loadProjectClassTemplates(projectId: number) {
+    try {
+      const rows = await apiFetch<ProjectClassTemplate[]>(`/projects/${projectId}/class-templates`, token);
+      setProjectClassTemplatesByProjectId((current) => ({ ...current, [projectId]: rows }));
+      return rows;
+    } catch (err: any) {
+      setProjectClassTemplatesByProjectId((current) => ({ ...current, [projectId]: [] }));
+      setError(err.message ?? "Failed to load project classes");
+      return [];
+    }
+  }
+
+  async function loadTasks(mode: TaskView, projectId: number | null) {
     const projectQuery = projectId ? `&project_id=${projectId}` : "";
     try {
       const taskData = await apiFetch<Task[]>(`/tasks?view=${mode}${projectQuery}`, token);
@@ -2285,13 +3139,178 @@ export function App() {
     }
   }
 
-  async function loadPlanningWeek(projectId: number | null, weekStart: string) {
-    const query = projectId ? `?project_id=${projectId}` : "";
+  async function loadMaterialNeeds() {
+    try {
+      const rows = await apiFetch<ProjectMaterialNeed[]>("/materials", token);
+      setMaterialNeeds(rows);
+    } catch (err: any) {
+      setMaterialNeeds([]);
+      setError(err.message ?? "Failed to load materials");
+    }
+  }
+
+  async function updateMaterialNeedState(materialNeedId: number, nextStatus: MaterialNeedStatus) {
+    setMaterialNeedUpdating((current) => ({ ...current, [materialNeedId]: true }));
+    try {
+      const updated = await apiFetch<ProjectMaterialNeed>(`/materials/${materialNeedId}`, token, {
+        method: "PATCH",
+        body: JSON.stringify({ status: nextStatus }),
+      });
+      setMaterialNeeds((current) =>
+        current.map((entry) => (entry.id === materialNeedId ? updated : entry)),
+      );
+      setNotice(language === "de" ? "Materialstatus aktualisiert" : "Material status updated");
+    } catch (err: any) {
+      setError(err.message ?? "Failed to update material status");
+    } finally {
+      setMaterialNeedUpdating((current) => {
+        const next = { ...current };
+        delete next[materialNeedId];
+        return next;
+      });
+    }
+  }
+
+  async function loadProjectOverview(projectId: number) {
+    try {
+      const [details, openTasks] = await Promise.all([
+        apiFetch<ProjectOverviewDetails>(`/projects/${projectId}/overview`, token),
+        apiFetch<Task[]>(`/tasks?view=all_open&project_id=${projectId}`, token).catch(() => []),
+      ]);
+      setProjectOverviewDetails(details);
+      setProjects((current) =>
+        current.map((entry) => (entry.id === details.project.id ? { ...entry, ...details.project } : entry)),
+      );
+      setProjectOverviewOpenTasks(openTasks);
+      setProjectFinance(details.finance ?? null);
+      setProjectFinanceForm(projectFinanceToFormState(details.finance ?? null));
+      setProjectHoursPlannedInput(
+        details.finance?.planned_hours_total == null ? "" : String(details.finance.planned_hours_total),
+      );
+      const baseNote = details.project.description ?? "";
+      setProjectNoteDraft(baseNote);
+    } catch (err: any) {
+      setProjectOverviewDetails(null);
+      setProjectOverviewOpenTasks([]);
+      setProjectHoursPlannedInput("");
+      setError(err.message ?? "Failed to load project overview");
+    }
+  }
+
+  async function loadProjectWeather(projectId: number, refresh: boolean) {
+    setProjectWeatherLoading(true);
+    try {
+      const query = `?refresh=${refresh ? "true" : "false"}&lang=${encodeURIComponent(language)}`;
+      const payload = await apiFetch<ProjectWeather>(`/projects/${projectId}/weather${query}`, token);
+      setProjectWeather(payload);
+    } catch (err: any) {
+      setProjectWeather(null);
+      setError(err.message ?? "Failed to load project weather");
+    } finally {
+      setProjectWeatherLoading(false);
+    }
+  }
+
+  async function loadProjectFinance(projectId: number) {
+    try {
+      const finance = await apiFetch<ProjectFinance>(`/projects/${projectId}/finance`, token);
+      setProjectFinance(finance);
+      setProjectFinanceForm(projectFinanceToFormState(finance));
+      setProjectHoursPlannedInput(finance.planned_hours_total == null ? "" : String(finance.planned_hours_total));
+    } catch (err: any) {
+      setProjectFinance(null);
+      setProjectHoursPlannedInput("");
+      setError(err.message ?? "Failed to load project finance");
+    }
+  }
+
+  async function saveWeatherSettings(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!canManageProjectImport) return;
+    setWeatherSettingsSaving(true);
+    try {
+      const payload = await apiFetch<WeatherSettings>("/admin/settings/weather", token, {
+        method: "PATCH",
+        body: JSON.stringify({ api_key: weatherApiKeyInput.trim() }),
+      });
+      setWeatherSettings(payload);
+      setWeatherApiKeyInput("");
+      setNotice(
+        language === "de"
+          ? "Wetter-API Einstellungen gespeichert"
+          : "Weather API settings saved",
+      );
+    } catch (err: any) {
+      setError(err.message ?? "Failed to save weather settings");
+    } finally {
+      setWeatherSettingsSaving(false);
+    }
+  }
+
+  async function loadUpdateStatus(showNotice = false) {
+    if (!isAdmin) return;
+    setUpdateStatusLoading(true);
+    try {
+      const statusRow = await apiFetch<UpdateStatus>("/admin/updates/status", token);
+      setUpdateStatus(statusRow);
+      if (showNotice) {
+        setNotice(
+          language === "de" ? "Update-Status aktualisiert" : "Update status refreshed",
+        );
+      }
+    } catch (err: any) {
+      setError(err.message ?? "Failed to load update status");
+    } finally {
+      setUpdateStatusLoading(false);
+    }
+  }
+
+  async function installSystemUpdate(dryRun: boolean) {
+    if (!isAdmin) return;
+    setUpdateInstallRunning(true);
+    try {
+      const result = await apiFetch<UpdateInstallResponse>("/admin/updates/install", token, {
+        method: "POST",
+        body: JSON.stringify({ dry_run: dryRun }),
+      });
+      setNotice(result.detail || (language === "de" ? "Update ausgeführt" : "Update completed"));
+      await loadUpdateStatus(false);
+    } catch (err: any) {
+      setError(err.message ?? "Failed to run update");
+    } finally {
+      setUpdateInstallRunning(false);
+    }
+  }
+
+  async function loadPlanningWeek(projectId: number | null, weekStart: string, taskType?: TaskType | null) {
+    const params: string[] = [];
+    if (projectId) params.push(`project_id=${projectId}`);
+    if (taskType) params.push(`task_type=${encodeURIComponent(taskType)}`);
+    const query = params.length > 0 ? `?${params.join("&")}` : "";
     try {
       const week = await apiFetch<PlanningWeek>(`/planning/week/${weekStart}${query}`, token);
       setPlanningWeek(week);
     } catch (err: any) {
       setError(err.message ?? "Failed to load weekly planning");
+    }
+  }
+
+  async function loadPlanningWindow(projectId: number | null, weekStart: string, weekCount: number) {
+    const query = projectId ? `?project_id=${projectId}` : "";
+    const starts = Array.from({ length: Math.max(weekCount, 1) }, (_, index) =>
+      normalizeWeekStartISO(addDaysISO(weekStart, index * 7)),
+    );
+    setCalendarLoading(true);
+    try {
+      const weeks = await Promise.all(
+        starts.map((weekStartValue) => apiFetch<PlanningWeek>(`/planning/week/${weekStartValue}${query}`, token)),
+      );
+      setCalendarWeeks(weeks);
+    } catch (err: any) {
+      setCalendarWeeks([]);
+      setError(err.message ?? "Failed to load calendar");
+    } finally {
+      setCalendarLoading(false);
     }
   }
 
@@ -2317,9 +3336,10 @@ export function App() {
       const rows = await apiFetch<ProjectFolder[]>(`/projects/${projectId}/folders`, token);
       setProjectFolders(rows);
       setFileUploadFolder((current) => {
+        if (current === "/") return current;
         if (current && rows.some((folder) => folder.path === current)) return current;
         const fallback = rows.find((folder) => canUseProtectedFolders || !folder.is_protected);
-        return fallback?.path ?? "";
+        return fallback?.path ?? "/";
       });
     } catch (err: any) {
       setProjectFolders([]);
@@ -2554,6 +3574,7 @@ export function App() {
   }
 
   function openEditProjectModal(project: Project) {
+    const assignedClassTemplateIds = (projectClassTemplatesByProjectId[project.id] ?? []).map((row) => row.id);
     setProjectForm({
       project_number: project.project_number ?? "",
       name: project.name ?? "",
@@ -2568,8 +3589,19 @@ export function App() {
       customer_contact: project.customer_contact ?? "",
       customer_email: project.customer_email ?? "",
       customer_phone: project.customer_phone ?? "",
+      site_access_type: normalizeProjectSiteAccessType(project.site_access_type),
+      site_access_note: project.site_access_note ?? "",
+      class_template_ids: assignedClassTemplateIds,
     });
     setProjectModalMode("edit");
+    if (!projectClassTemplatesByProjectId[project.id]) {
+      void loadProjectClassTemplates(project.id).then((rows) => {
+        setProjectForm((current) => {
+          if (current.project_number !== (project.project_number ?? "")) return current;
+          return { ...current, class_template_ids: rows.map((entry) => entry.id) };
+        });
+      });
+    }
   }
 
   function closeProjectModal() {
@@ -2705,7 +3737,7 @@ export function App() {
     return Boolean(assignableUsersById.get(userId)?.avatar_updated_at || adminUsersById.get(userId)?.avatar_updated_at);
   }
 
-  function openTaskModal(defaults?: { projectId?: number | null; dueDate?: string }) {
+  function openTaskModal(defaults?: { projectId?: number | null; dueDate?: string; taskType?: TaskType }) {
     const fallbackProjectId = defaults?.projectId ?? activeProjectId ?? projects[0]?.id ?? null;
     const fallbackDueDate = defaults?.dueDate ?? planningWeekStart;
     const fallbackProject = projects.find((project) => project.id === fallbackProjectId) ?? null;
@@ -2714,6 +3746,7 @@ export function App() {
         projectId: fallbackProjectId,
         dueDate: fallbackDueDate,
         projectQuery: fallbackProject ? projectSearchLabel(fallbackProject) : "",
+        taskType: defaults?.taskType,
       }),
     );
     setTaskModalOpen(true);
@@ -2725,6 +3758,17 @@ export function App() {
 
   function updateTaskModalField<K extends keyof TaskModalState>(field: K, value: TaskModalState[K]) {
     setTaskModalForm((current) => ({ ...current, [field]: value }));
+  }
+
+  function selectTaskModalClassTemplate(classTemplateId: string) {
+    const normalized = classTemplateId.trim();
+    const selected = taskModalProjectClassTemplates.find((entry) => String(entry.id) === normalized) ?? null;
+    const importedMaterials = selected ? classTemplateMaterialsText(selected, language) : "";
+    setTaskModalForm((current) => ({
+      ...current,
+      class_template_id: normalized,
+      materials_required: selected ? importedMaterials : current.materials_required,
+    }));
   }
 
   function addTaskModalAssignee(assigneeId: number) {
@@ -2767,6 +3811,17 @@ export function App() {
     setTaskEditForm((current) => ({ ...current, [field]: value }));
   }
 
+  function selectTaskEditClassTemplate(classTemplateId: string) {
+    const normalized = classTemplateId.trim();
+    const selected = taskEditProjectClassTemplates.find((entry) => String(entry.id) === normalized) ?? null;
+    const importedMaterials = selected ? classTemplateMaterialsText(selected, language) : "";
+    setTaskEditForm((current) => ({
+      ...current,
+      class_template_id: normalized,
+      materials_required: selected ? importedMaterials : current.materials_required,
+    }));
+  }
+
   function addTaskEditAssignee(assigneeId: number) {
     setTaskEditForm((current) => {
       if (current.assignee_ids.includes(assigneeId)) {
@@ -2798,14 +3853,58 @@ export function App() {
       ...current,
       project_id: String(project.id),
       project_query: projectSearchLabel(project),
+      class_template_id: "",
       create_project_from_task: false,
       new_project_name: "",
       new_project_number: "",
     }));
   }
 
-  function updateProjectFormField(field: keyof ProjectFormState, value: string) {
+  function updateProjectFormField<K extends keyof ProjectFormState>(field: K, value: ProjectFormState[K]) {
     setProjectForm((current) => ({ ...current, [field]: value }));
+  }
+
+  function updateProjectSiteAccessType(value: string) {
+    const normalized = normalizeProjectSiteAccessType(value);
+    setProjectForm((current) => ({
+      ...current,
+      site_access_type: normalized,
+      site_access_note: projectSiteAccessRequiresNote(normalized) ? current.site_access_note : "",
+    }));
+  }
+
+  function toggleProjectClassTemplate(templateId: number, checked: boolean) {
+    setProjectForm((current) => {
+      const currentIds = new Set(current.class_template_ids);
+      if (checked) {
+        currentIds.add(templateId);
+      } else {
+        currentIds.delete(templateId);
+      }
+      return { ...current, class_template_ids: [...currentIds] };
+    });
+  }
+
+  function updateProjectFinanceFormField(field: keyof ProjectFinanceFormState, value: string) {
+    setProjectFinanceForm((current) => ({ ...current, [field]: value }));
+  }
+
+  function financeFormPayload(): Record<string, number | null> {
+    const toNumberOrNull = (value: string): number | null => {
+      const normalized = value.trim().replace(",", ".");
+      if (!normalized) return null;
+      const parsed = Number(normalized);
+      return Number.isFinite(parsed) ? parsed : null;
+    };
+    return {
+      order_value_net: toNumberOrNull(projectFinanceForm.order_value_net),
+      down_payment_35: toNumberOrNull(projectFinanceForm.down_payment_35),
+      main_components_50: toNumberOrNull(projectFinanceForm.main_components_50),
+      final_invoice_15: toNumberOrNull(projectFinanceForm.final_invoice_15),
+      planned_costs: toNumberOrNull(projectFinanceForm.planned_costs),
+      actual_costs: toNumberOrNull(projectFinanceForm.actual_costs),
+      contribution_margin: toNumberOrNull(projectFinanceForm.contribution_margin),
+    };
   }
 
   function validateTimeInputOrSetError(value: string, required: boolean): string | null {
@@ -2828,6 +3927,17 @@ export function App() {
     value: ProjectTaskFormState[K],
   ) {
     setProjectTaskForm((current) => ({ ...current, [field]: value }));
+  }
+
+  function selectProjectTaskClassTemplate(classTemplateId: string) {
+    const normalized = classTemplateId.trim();
+    const selected = activeProjectClassTemplates.find((entry) => String(entry.id) === normalized) ?? null;
+    const importedMaterials = selected ? classTemplateMaterialsText(selected, language) : "";
+    setProjectTaskForm((current) => ({
+      ...current,
+      class_template_id: normalized,
+      materials_required: selected ? importedMaterials : current.materials_required,
+    }));
   }
 
   function addProjectTaskAssignee(assigneeId: number) {
@@ -2858,6 +3968,7 @@ export function App() {
 
   async function submitProjectForm(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const normalizedSiteAccessType = normalizeProjectSiteAccessType(projectForm.site_access_type);
     const payload = {
       project_number: projectForm.project_number.trim(),
       name: projectForm.name.trim(),
@@ -2866,10 +3977,15 @@ export function App() {
       last_state: projectForm.last_state.trim() || null,
       last_status_at: localDateTimeInputToIso(projectForm.last_status_at),
       customer_name: projectForm.customer_name.trim(),
-      customer_address: projectForm.customer_address.trim(),
+      customer_address: normalizeAddressInput(projectForm.customer_address),
       customer_contact: projectForm.customer_contact.trim(),
       customer_email: projectForm.customer_email.trim(),
       customer_phone: projectForm.customer_phone.trim(),
+      site_access_type: normalizedSiteAccessType || null,
+      site_access_note: projectSiteAccessRequiresNote(normalizedSiteAccessType)
+        ? projectForm.site_access_note.trim() || null
+        : null,
+      class_template_ids: projectForm.class_template_ids,
     };
     if (!payload.project_number || !payload.name) {
       setError(language === "de" ? "Projektnummer und Name sind erforderlich" : "Project number and name are required");
@@ -2885,7 +4001,7 @@ export function App() {
         setActiveProjectId(createdProject.id);
         setProjectBackView(null);
         setMainView("project");
-        setProjectTab("tasks");
+        setProjectTab("overview");
         setNotice(language === "de" ? "Projekt erstellt" : "Project created");
       } else if (projectModalMode === "edit" && activeProjectId) {
         await apiFetch<Project>(`/projects/${activeProjectId}`, token, {
@@ -2899,6 +4015,70 @@ export function App() {
       await loadBaseData();
     } catch (err: any) {
       setError(err.message ?? "Failed to save project");
+    }
+  }
+
+  async function saveProjectInternalNote() {
+    if (!activeProjectId) return;
+    try {
+      await apiFetch<Project>(`/projects/${activeProjectId}`, token, {
+        method: "PATCH",
+        body: JSON.stringify({ description: projectNoteDraft }),
+      });
+      setProjectNoteEditing(false);
+      await loadBaseData();
+      await loadProjectOverview(activeProjectId);
+      setNotice(language === "de" ? "Notiz aktualisiert" : "Note updated");
+    } catch (err: any) {
+      setError(err.message ?? "Failed to save note");
+    }
+  }
+
+  async function saveProjectFinance() {
+    if (!activeProjectId) return;
+    try {
+      const updated = await apiFetch<ProjectFinance>(`/projects/${activeProjectId}/finance`, token, {
+        method: "PATCH",
+        body: JSON.stringify(financeFormPayload()),
+      });
+      setProjectFinance(updated);
+      setProjectFinanceForm(projectFinanceToFormState(updated));
+      setProjectHoursPlannedInput(updated.planned_hours_total == null ? "" : String(updated.planned_hours_total));
+      setProjectFinanceEditing(false);
+      await loadBaseData();
+      await loadProjectOverview(activeProjectId);
+      setNotice(language === "de" ? "Finanzen aktualisiert" : "Finances updated");
+    } catch (err: any) {
+      setError(err.message ?? "Failed to save finances");
+    }
+  }
+
+  async function saveProjectHours() {
+    if (!activeProjectId) return;
+    const normalizedInput = projectHoursPlannedInput.trim();
+    const parsed = parseNullableDecimalInput(projectHoursPlannedInput);
+    if (normalizedInput && parsed == null) {
+      setError(language === "de" ? "Bitte gueltige Stunden eintragen" : "Please enter valid hours");
+      return;
+    }
+    if (parsed != null && parsed < 0) {
+      setError(language === "de" ? "Geplante Stunden muessen >= 0 sein" : "Planned hours must be >= 0");
+      return;
+    }
+
+    try {
+      const updated = await apiFetch<ProjectFinance>(`/projects/${activeProjectId}/finance`, token, {
+        method: "PATCH",
+        body: JSON.stringify({ planned_hours_total: parsed }),
+      });
+      setProjectFinance(updated);
+      setProjectFinanceForm(projectFinanceToFormState(updated));
+      setProjectHoursPlannedInput(updated.planned_hours_total == null ? "" : String(updated.planned_hours_total));
+      await loadBaseData();
+      await loadProjectOverview(activeProjectId);
+      setNotice(language === "de" ? "Projektstunden aktualisiert" : "Project hours updated");
+    } catch (err: any) {
+      setError(err.message ?? "Failed to save project hours");
     }
   }
 
@@ -2945,6 +4125,7 @@ export function App() {
         method: "PATCH",
         body: JSON.stringify({ status: "active" }),
       });
+      setHighlightedArchivedProjectId((current) => (current === projectId ? null : current));
       setNotice(language === "de" ? "Projekt wiederhergestellt" : "Project restored");
       await loadBaseData();
     } catch (err: any) {
@@ -2997,6 +4178,8 @@ export function App() {
         ? validateTimeInputOrSetError(projectTaskForm.start_time, false)
         : null;
     if (projectTaskForm.start_time.trim().length > 0 && !startTime) return;
+    const classTemplateId =
+      projectTaskForm.class_template_id.trim().length > 0 ? Number(projectTaskForm.class_template_id) : null;
     try {
       await apiFetch("/tasks", token, {
         method: "POST",
@@ -3006,6 +4189,8 @@ export function App() {
           description: projectTaskForm.description.trim() || null,
           materials_required: projectTaskForm.materials_required.trim() || null,
           storage_box_number: storageBoxNumber,
+          task_type: projectTaskForm.task_type,
+          class_template_id: classTemplateId,
           status: "open",
           due_date: dueDate,
           start_time: startTime,
@@ -3015,8 +4200,9 @@ export function App() {
       });
       setProjectTaskForm(buildEmptyProjectTaskFormState());
       await loadTasks(taskView, activeProjectId);
+      await loadProjectOverview(activeProjectId);
       if (mainView === "planning") {
-        await loadPlanningWeek(null, planningWeekStart);
+        await loadPlanningWeek(null, planningWeekStart, planningTaskTypeView);
       }
       setOverview(await apiFetch<any[]>("/projects-overview", token));
       setNotice(language === "de" ? "Aufgabe gespeichert" : "Task saved");
@@ -3049,6 +4235,8 @@ export function App() {
     const startTime = validateTimeInputOrSetError(taskModalForm.start_time, true);
     if (!startTime) return;
     const targetWeekStart = normalizeWeekStartISO(dueDate);
+    const classTemplateId =
+      taskModalForm.class_template_id.trim().length > 0 ? Number(taskModalForm.class_template_id) : null;
 
     let projectId = Number(taskModalForm.project_id);
     try {
@@ -3097,6 +4285,8 @@ export function App() {
             description: taskModalForm.description.trim() || null,
             materials_required: taskModalForm.materials_required.trim() || null,
             storage_box_number: storageBoxNumber,
+            task_type: taskModalForm.task_type,
+            class_template_id: classTemplateId,
             status: "open",
             assignee_ids: taskModalForm.assignee_ids,
             due_date: dueDate,
@@ -3108,7 +4298,7 @@ export function App() {
       closeTaskModal();
       await loadBaseData();
       setPlanningWeekStart(targetWeekStart);
-      await loadPlanningWeek(null, targetWeekStart);
+      await loadPlanningWeek(null, targetWeekStart, planningTaskTypeView);
       setNotice(
         language === "de"
           ? `Wochenaufgabe gespeichert (${formatDayLabel(dueDate, "de")})`
@@ -3144,6 +4334,8 @@ export function App() {
         : null;
     if (taskEditForm.start_time.trim().length > 0 && !startTime) return;
     const weekStartValue = taskEditForm.week_start.trim() || (dueDate ? normalizeWeekStartISO(dueDate) : null);
+    const classTemplateId =
+      taskEditForm.class_template_id.trim().length > 0 ? Number(taskEditForm.class_template_id) : null;
     try {
       await apiFetch(`/tasks/${taskEditForm.id}`, token, {
         method: "PATCH",
@@ -3152,6 +4344,8 @@ export function App() {
           description: taskEditForm.description.trim() || null,
           materials_required: taskEditForm.materials_required.trim() || null,
           storage_box_number: storageBoxNumber,
+          task_type: taskEditForm.task_type,
+          class_template_id: classTemplateId,
           status: taskEditForm.status.trim() || "open",
           due_date: dueDate,
           start_time: startTime,
@@ -3162,12 +4356,13 @@ export function App() {
       closeTaskEditModal();
       if (mainView === "project" && activeProjectId) {
         await loadTasks(taskView, activeProjectId);
+        await loadProjectOverview(activeProjectId);
       }
       if (mainView === "my_tasks" || mainView === "overview") {
         await loadTasks("my", null);
       }
       if (mainView === "planning") {
-        await loadPlanningWeek(null, planningWeekStart);
+        await loadPlanningWeek(null, planningWeekStart, planningTaskTypeView);
       }
       setOverview(await apiFetch<any[]>("/projects-overview", token));
       setNotice(language === "de" ? "Aufgabe aktualisiert" : "Task updated");
@@ -3224,12 +4419,13 @@ export function App() {
       });
       if (mainView === "project" && activeProjectId) {
         await loadTasks(taskView, activeProjectId);
+        await loadProjectOverview(activeProjectId);
       }
       if (mainView === "my_tasks" || mainView === "overview") {
         await loadTasks("my", null);
       }
       if (mainView === "planning") {
-        await loadPlanningWeek(null, planningWeekStart);
+        await loadPlanningWeek(null, planningWeekStart, planningTaskTypeView);
       }
       if (options?.openReportFromTask) {
         openConstructionReportFromTask(
@@ -3256,12 +4452,13 @@ export function App() {
       closeTaskEditModal();
       if (mainView === "project" && activeProjectId) {
         await loadTasks(taskView, activeProjectId);
+        await loadProjectOverview(activeProjectId);
       }
       if (mainView === "my_tasks" || mainView === "overview") {
         await loadTasks("my", null);
       }
       if (mainView === "planning") {
-        await loadPlanningWeek(null, planningWeekStart);
+        await loadPlanningWeek(null, planningWeekStart, planningTaskTypeView);
       }
       setOverview(await apiFetch<any[]>("/projects-overview", token));
       setNotice(language === "de" ? "Aufgabe gelöscht" : "Task deleted");
@@ -3280,7 +4477,7 @@ export function App() {
   }
 
   function openTaskFromProject(task: Task) {
-    if (!isTaskAssignedToCurrentUser(task)) return;
+    if (!isTaskAssignedToCurrentUser(task) || task.status === "done") return;
     setProjectBackView(null);
     setExpandedMyTaskId(task.id);
     setMyTasksBackProjectId(activeProjectId ?? task.project_id);
@@ -3317,6 +4514,8 @@ export function App() {
       });
       formElement.reset();
       await loadSitesAndTickets(activeProjectId);
+      await loadProjectOverview(activeProjectId);
+      setOverview(await apiFetch<any[]>("/projects-overview", token));
     } catch (err: any) {
       setError(err.message ?? "Failed to create ticket");
     }
@@ -3335,6 +4534,8 @@ export function App() {
         body: form,
       });
       formElement.reset();
+      await loadProjectOverview(activeProjectId);
+      setOverview(await apiFetch<any[]>("/projects-overview", token));
       setNotice(language === "de" ? "Anhang hochgeladen" : "Attachment uploaded");
     } catch (err: any) {
       setError(err.message ?? "Failed to upload ticket attachment");
@@ -3541,16 +4742,23 @@ export function App() {
     if (!activeProjectId) return;
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
-    if (fileUploadFolder) {
-      form.set("folder", fileUploadFolder);
+    const inlineFolderPath = newProjectFolderPath.trim();
+    const selectedFolder = inlineFolderPath || fileUploadFolder;
+    if (selectedFolder) {
+      form.set("folder", selectedFolder);
     }
     try {
       await apiFetch(`/projects/${activeProjectId}/files`, token, { method: "POST", body: form });
       formElement.reset();
       setFileUploadModalOpen(false);
+      if (inlineFolderPath) {
+        setFileUploadFolder(inlineFolderPath);
+      }
       setNewProjectFolderPath("");
       await loadFiles(activeProjectId);
       await loadProjectFolders(activeProjectId);
+      await loadProjectOverview(activeProjectId);
+      setOverview(await apiFetch<any[]>("/projects-overview", token));
     } catch (err: any) {
       setError(err.message ?? "File upload failed");
     }
@@ -3702,6 +4910,23 @@ export function App() {
     }
   }
 
+  async function deleteAvatar() {
+    if (!user.avatar_updated_at) return;
+    const confirmed = window.confirm(
+      language === "de" ? "Profilbild entfernen?" : "Remove profile picture?",
+    );
+    if (!confirmed) return;
+    try {
+      await apiFetch<AvatarDeleteResponse>("/users/me/avatar", token, { method: "DELETE" });
+      setAvatarVersionKey(String(Date.now()));
+      setUser(await apiFetch<User>("/auth/me", token));
+      closeAvatarModal();
+      setNotice(language === "de" ? "Profilbild entfernt" : "Profile picture removed");
+    } catch (err: any) {
+      setError(err.message ?? "Avatar delete failed");
+    }
+  }
+
   function fileDownloadUrl(fileId: number) {
     return `/api/files/${fileId}/download`;
   }
@@ -3791,8 +5016,8 @@ export function App() {
     if (invalidWorkerIndex >= 0) {
       setError(
         language === "de"
-          ? `Bitte Zeiten im Format HH:MM eintragen (Mitarbeiter Zeile ${invalidWorkerIndex + 1}).`
-          : `Please use HH:MM for worker times (worker row ${invalidWorkerIndex + 1}).`,
+          ? `Bitte gültige Zeiten eintragen (HH:MM oder 4 Ziffern, Mitarbeiter Zeile ${invalidWorkerIndex + 1}).`
+          : `Please enter valid times (HH:MM or 4 digits, worker row ${invalidWorkerIndex + 1}).`,
       );
       return;
     }
@@ -3830,10 +5055,21 @@ export function App() {
     multipart.set("payload", JSON.stringify(payload));
     if (targetProjectId) multipart.set("project_id", String(targetProjectId));
 
-    const imageInput = formElement.querySelector<HTMLInputElement>('input[name="images"]');
-    const imageFiles = imageInput?.files ? Array.from(imageInput.files) : [];
-    for (const file of imageFiles) {
-      multipart.append("images", file);
+    const imageInputs = formElement.querySelectorAll<HTMLInputElement>('input[name="images"], input[name="camera_images"]');
+    const imageFiles: File[] = [];
+    const seenFileKeys = new Set<string>();
+    imageInputs.forEach((input) => {
+      const filesFromInput = input.files ? Array.from(input.files) : [];
+      for (const file of filesFromInput) {
+        const fileKey = `${file.name}:${file.size}:${file.lastModified}`;
+        if (seenFileKeys.has(fileKey)) continue;
+        seenFileKeys.add(fileKey);
+        imageFiles.push(file);
+      }
+    });
+    for (const [index, file] of imageFiles.entries()) {
+      const fallbackName = file.name.trim() || `report-photo-${index + 1}.jpg`;
+      multipart.append("images", file, fallbackName);
     }
 
     try {
@@ -3847,6 +5083,10 @@ export function App() {
       setReportWorkers([{ name: "", start_time: "", end_time: "" }]);
       setNotice(language === "de" ? "Baustellenbericht gespeichert" : "Construction report saved");
       await loadConstructionReportFiles(targetProjectId);
+      if (targetProjectId) {
+        await loadProjectOverview(targetProjectId);
+      }
+      setOverview(await apiFetch<any[]>("/projects-overview", token));
     } catch (err: any) {
       setError(err.message ?? "Failed to submit report");
     }
@@ -3996,8 +5236,8 @@ export function App() {
     }
     const confirmed = window.confirm(
       language === "de"
-        ? "Benutzer deaktivieren? Die Daten bleiben für Auswertungen erhalten."
-        : "Deactivate user? Historical data remains available for reporting.",
+        ? "Benutzer archivieren? Die Daten bleiben für Auswertungen erhalten."
+        : "Archive user? Historical data remains available for reporting.",
     );
     if (!confirmed) return;
 
@@ -4015,14 +5255,29 @@ export function App() {
       setNotice(
         result.deleted
           ? language === "de"
-            ? "Benutzer deaktiviert"
-            : "User deactivated"
+            ? "Benutzer archiviert"
+            : "User archived"
           : language === "de"
-            ? "Benutzer war bereits deaktiviert"
-            : "User already deactivated",
+            ? "Benutzer war bereits archiviert"
+            : "User was already archived",
       );
     } catch (err: any) {
       setError(err.message ?? "Failed to delete user");
+    }
+  }
+
+  async function restoreArchivedUser(targetUserId: number) {
+    setAdminUserMenuOpenId(null);
+    try {
+      await apiFetch<User>(`/admin/users/${targetUserId}`, token, {
+        method: "PATCH",
+        body: JSON.stringify({ is_active: true }),
+      });
+      setUsers(await apiFetch<User[]>("/admin/users", token));
+      setAssignableUsers(await apiFetch<AssignableUser[]>("/users/assignable", token));
+      setNotice(language === "de" ? "Benutzer wiederhergestellt" : "User restored");
+    } catch (err: any) {
+      setError(err.message ?? "Failed to restore user");
     }
   }
 
@@ -4272,6 +5527,32 @@ export function App() {
     }
   }
 
+  async function downloadProjectClassTemplateCsv() {
+    try {
+      const response = await fetch("/api/admin/project-classes/template.csv", {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+        credentials: "include",
+      });
+      if (!response.ok) {
+        throw new Error(response.statusText || "Template download failed");
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      try {
+        const anchor = document.createElement("a");
+        anchor.href = url;
+        anchor.download = "project-class-template.csv";
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    } catch (err: any) {
+      setError(err.message ?? "Failed to download project class template");
+    }
+  }
+
   async function importProjectsCsv(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -4302,6 +5583,38 @@ export function App() {
       event.currentTarget.reset();
     } catch (err: any) {
       setError(err.message ?? "Failed to import CSV");
+    }
+  }
+
+  async function importProjectClassTemplateCsv(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const file = form.get("file");
+    if (!(file instanceof File) || file.size <= 0) {
+      setError(language === "de" ? "Bitte eine CSV-Datei auswählen." : "Please select a CSV file.");
+      return;
+    }
+    const payload = new FormData();
+    payload.set("file", file);
+    try {
+      const result = await apiFetch<{
+        created: number;
+        updated: number;
+        classes: number;
+        task_templates: number;
+      }>("/admin/project-classes/import-csv", token, {
+        method: "POST",
+        body: payload,
+      });
+      await loadBaseData();
+      setNotice(
+        language === "de"
+          ? `Klassen-Template importiert: ${result.classes} Klassen (${result.created} neu, ${result.updated} aktualisiert)`
+          : `Class template imported: ${result.classes} classes (${result.created} created, ${result.updated} updated)`,
+      );
+      event.currentTarget.reset();
+    } catch (err: any) {
+      setError(err.message ?? "Failed to import class template CSV");
     }
   }
 
@@ -4454,6 +5767,96 @@ export function App() {
     );
   }
 
+  const renderAdminUpdateMenu = () => {
+    if (!isAdmin) return null;
+    const currentLabel =
+      updateStatus?.current_version || updateStatus?.current_commit || (language === "de" ? "nicht gesetzt" : "not set");
+    const latestLabel =
+      updateStatus?.latest_version || updateStatus?.latest_commit || (language === "de" ? "unbekannt" : "unknown");
+    let statusLabel = language === "de" ? "Status unbekannt" : "Status unknown";
+    if (updateStatus?.update_available === true) {
+      statusLabel = language === "de" ? "Update verfügbar" : "Update available";
+    } else if (updateStatus?.update_available === false) {
+      statusLabel = language === "de" ? "Bereits aktuell" : "Up to date";
+    }
+    return (
+      <div className="metric-stack admin-update-tools">
+        <b>{language === "de" ? "System-Updates" : "System updates"}</b>
+        <small className="muted">
+          {updateStatus?.repository ? `${updateStatus.repository} (${updateStatus.branch})` : "-"}
+        </small>
+        <small className="muted">
+          {language === "de" ? "Aktuell" : "Current"}: {currentLabel}
+        </small>
+        <small className="muted">
+          {language === "de" ? "Neueste Version" : "Latest"}: {latestLabel}
+        </small>
+        <small className="muted">
+          {language === "de" ? "Ergebnis" : "Result"}: {statusLabel}
+        </small>
+        {updateStatus?.message && <small className="muted">{updateStatus.message}</small>}
+        {updateStatus?.latest_url && (
+          <a href={updateStatus.latest_url} target="_blank" rel="noreferrer">
+            {language === "de" ? "Release auf GitHub öffnen" : "Open release on GitHub"}
+          </a>
+        )}
+        <div className="row wrap">
+          <button type="button" disabled={updateStatusLoading || updateInstallRunning} onClick={() => void loadUpdateStatus(true)}>
+            {updateStatusLoading
+              ? language === "de"
+                ? "Prüfe..."
+                : "Checking..."
+              : language === "de"
+                ? "Jetzt prüfen"
+                : "Check now"}
+          </button>
+          <button
+            type="button"
+            disabled={updateInstallRunning}
+            onClick={() => void installSystemUpdate(true)}
+          >
+            {updateInstallRunning
+              ? language === "de"
+                ? "Läuft..."
+                : "Running..."
+              : language === "de"
+                ? "Dry run"
+                : "Dry run"}
+          </button>
+          <button
+            type="button"
+            disabled={!updateStatus?.install_supported || updateInstallRunning}
+            onClick={() => void installSystemUpdate(false)}
+          >
+            {updateInstallRunning
+              ? language === "de"
+                ? "Installiere..."
+                : "Installing..."
+              : language === "de"
+                ? "Update installieren"
+                : "Install update"}
+          </button>
+        </div>
+        {!updateStatus?.install_supported && updateStatus?.install_steps?.length ? (
+          <>
+            <small className="muted">
+              {language === "de"
+                ? "Automatische Installation ist hier nicht verfügbar. Manuelle Schritte:"
+                : "Automatic install is not available here. Manual steps:"}
+            </small>
+            <ul className="admin-update-step-list">
+              {updateStatus.install_steps.map((step) => (
+                <li key={`update-step-${step}`}>
+                  <code>{step}</code>
+                </li>
+              ))}
+            </ul>
+          </>
+        ) : null}
+      </div>
+    );
+  };
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -4483,7 +5886,7 @@ export function App() {
                   <span className="nav-icon-wrap">
                     <SidebarNavIcon view={item} />
                     {item === "messages" && hasUnreadThreads && <span className="nav-unread-dot" />}
-                    {(item === "my_tasks" || item === "planning") && hasTaskNotifications && (
+                    {(item === "my_tasks" || item === "planning" || item === "calendar") && hasTaskNotifications && (
                       <span className="nav-unread-dot" />
                     )}
                   </span>
@@ -4501,10 +5904,11 @@ export function App() {
                   type="button"
                   className={projectSidebarSearchOpen ? "icon-btn project-search-toggle active" : "icon-btn project-search-toggle"}
                   onClick={() => {
-                    setProjectSidebarSearchOpen((current) => !current);
-                    if (projectSidebarSearchOpen) {
-                      setProjectSidebarSearchQuery("");
-                    }
+                    setProjectSidebarSearchOpen((current) => {
+                      const next = !current;
+                      if (!next) setProjectSidebarSearchQuery("");
+                      return next;
+                    });
                   }}
                   aria-label={language === "de" ? "Projekt-Suche" : "Project search"}
                   title={language === "de" ? "Projekt-Suche" : "Project search"}
@@ -4526,6 +5930,7 @@ export function App() {
             </div>
             {projectSidebarSearchOpen && (
               <input
+                autoFocus
                 className="project-sidebar-search-input"
                 value={projectSidebarSearchQuery}
                 onChange={(event) => setProjectSidebarSearchQuery(event.target.value)}
@@ -4534,13 +5939,27 @@ export function App() {
               />
             )}
             <div className={projectSidebarSearchOpen ? "project-list-scroll with-search" : "project-list-scroll"}>
-              {filteredSidebarProjects.map((project) => (
+              {filteredSidebarProjects.map(({ project, isArchived }) => (
                 <button
                   key={project.id}
-                  className={project.id === activeProjectId && mainView === "project" ? "active project-item" : "project-item"}
+                  className={[
+                    "project-item",
+                    project.id === activeProjectId && mainView === "project" ? "active" : "",
+                    isArchived ? "project-item-archived" : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" ")}
                   onClick={() => {
+                    if (isArchived) {
+                      setHighlightedArchivedProjectId(project.id);
+                      setProjectBackView(null);
+                      setOverviewShortcutBackVisible(false);
+                      setConstructionBackView(null);
+                      setMainView("projects_archive");
+                      return;
+                    }
                     setActiveProjectId(project.id);
-                    setProjectTab("tasks");
+                    setProjectTab("overview");
                     setProjectBackView(null);
                     setOverviewShortcutBackVisible(false);
                     setConstructionBackView(null);
@@ -4552,6 +5971,11 @@ export function App() {
                       {(project.customer_name ?? "").trim() || "-"} | {project.project_number}
                     </b>
                     <small>{project.name}</small>
+                    {isArchived && (
+                      <small className="project-item-archive-mark">
+                        {language === "de" ? "Archiviert" : "Archived"}
+                      </small>
+                    )}
                   </span>
                 </button>
               ))}
@@ -4667,14 +6091,18 @@ export function App() {
               {mainView === "project" && activeProject && (
                 <small>
                   #{activeProject.project_number} | {language === "de" ? "Status" : "Status"}:{" "}
-                  {statusLabel(activeProject.status, language)}
+                  {statusLabel(activeProject.status, language)} |{" "}
+                  {language === "de" ? "Letzte Änderung" : "Last update"}: {activeProjectLastUpdatedLabel || "-"}
                 </small>
               )}
             </div>
           </div>
           <div className="header-tools">
             {mainView === "planning" && canManageTasks && (
-              <button type="button" onClick={() => openTaskModal({ dueDate: planningWeekStart })}>
+              <button
+                type="button"
+                onClick={() => openTaskModal({ dueDate: planningWeekStart, taskType: planningTaskTypeView })}
+              >
                 {language === "de" ? "Neue Aufgabe" : "Add task"}
               </button>
             )}
@@ -4737,57 +6165,6 @@ export function App() {
             ))}
           </div>
         )}
-        {mainView === "project" && activeProject && (
-          <section className="card project-summary-card">
-            <div className="project-summary-layout">
-              <div className="project-summary-info">
-                <div className="project-summary-grid">
-                  <small>
-                    {language === "de" ? "Kunde" : "Customer"}: <b>{(activeProject.customer_name ?? "").trim() || "-"}</b>
-                  </small>
-                  <small>
-                    {language === "de" ? "Projektnummer" : "Project number"}: <b>{activeProject.project_number}</b>
-                  </small>
-                  <small>
-                    {language === "de" ? "Status" : "Status"}: <b>{statusLabel(activeProject.status, language)}</b>
-                  </small>
-                </div>
-                <small>
-                  {language === "de" ? "Letzter Stand" : "Last state"}: <b>{activeProjectLastState || "-"}</b>
-                </small>
-                <small>
-                  {language === "de" ? "Letztes Status-Datum" : "Last status update"}: <b>{activeProjectLastStatusAtLabel || "-"}</b>
-                </small>
-              </div>
-              {projectTab === "tasks" && (
-                <aside className="project-map-card">
-                  <div className="project-map-head">
-                    <b>{language === "de" ? "Projektadresse" : "Project location"}</b>
-                  </div>
-                  {activeProjectMapEmbedUrl ? (
-                    <>
-                      <iframe
-                        title={language === "de" ? "Projektkarte" : "Project map"}
-                        className="project-map-frame"
-                        src={activeProjectMapEmbedUrl}
-                        loading="lazy"
-                        referrerPolicy="no-referrer-when-downgrade"
-                      />
-                      <a className="linklike" target="_blank" rel="noreferrer" href={activeProjectMapOpenUrl}>
-                        {language === "de" ? "In Karten öffnen" : "Open in maps"}
-                      </a>
-                    </>
-                  ) : (
-                    <small className="muted">
-                      {language === "de" ? "Keine Projektadresse hinterlegt." : "No project address available."}
-                    </small>
-                  )}
-                </aside>
-              )}
-            </div>
-          </section>
-        )}
-
         {error && (
           <div className="error" onClick={() => setError("")}>
             {error}
@@ -4843,6 +6220,32 @@ export function App() {
                     ))}
                   </select>
                 </label>
+                <div className="project-class-picker">
+                  <b>{language === "de" ? "Projektklassen" : "Project classes"}</b>
+                  {projectClassTemplates.length > 0 ? (
+                    <div className="project-class-grid">
+                      {projectClassTemplates.map((template) => {
+                        const checked = projectForm.class_template_ids.includes(template.id);
+                        return (
+                          <label key={`project-class-template-${template.id}`} className="project-class-option">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(event) => toggleProjectClassTemplate(template.id, event.target.checked)}
+                            />
+                            <span>{template.name}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <small className="muted">
+                      {language === "de"
+                        ? "Keine Klassen-Templates vorhanden. Bitte im Admin-Bereich CSV importieren."
+                        : "No class templates available. Import a CSV in Admin tools."}
+                    </small>
+                  )}
+                </div>
                 <label>
                   {language === "de" ? "Interne Notiz" : "Internal note"}
                   <textarea
@@ -4877,7 +6280,17 @@ export function App() {
                   <textarea
                     value={projectForm.customer_address}
                     onChange={(event) => updateProjectFormField("customer_address", event.target.value)}
+                    placeholder={
+                      language === "de"
+                        ? "Strasse Hausnummer, PLZ Ort, Land"
+                        : "Street and number, ZIP City, Country"
+                    }
                   />
+                  <small className="muted">
+                    {language === "de"
+                      ? "Format: Strasse Hausnummer, PLZ Ort, Land"
+                      : "Format: Street and number, ZIP City, Country"}
+                  </small>
                 </label>
                 <label>
                   {language === "de" ? "Kontaktperson" : "Contact person"}
@@ -4901,6 +6314,42 @@ export function App() {
                     onChange={(event) => updateProjectFormField("customer_phone", event.target.value)}
                   />
                 </label>
+                <label>
+                  {language === "de" ? "Zugang zur Baustelle" : "Construction site access"}
+                  <select
+                    value={projectForm.site_access_type}
+                    onChange={(event) => updateProjectSiteAccessType(event.target.value)}
+                  >
+                    <option value="">{language === "de" ? "Bitte auswählen" : "Please select"}</option>
+                    {PROJECT_SITE_ACCESS_PRESETS.map((entry) => (
+                      <option key={`project-site-access-${entry}`} value={entry}>
+                        {projectSiteAccessLabel(entry, language)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                {projectSiteAccessRequiresNote(projectForm.site_access_type) && (
+                  <label>
+                    {language === "de" ? "Zusätzliche Info" : "Additional info"}
+                    <input
+                      value={projectForm.site_access_note}
+                      onChange={(event) => updateProjectFormField("site_access_note", event.target.value)}
+                      placeholder={
+                        projectForm.site_access_type === "key_pickup"
+                          ? language === "de"
+                            ? "z.B. Hausverwaltung, Nachbar, Adresse"
+                            : "e.g. building management, neighbor, address"
+                          : projectForm.site_access_type === "code_access"
+                            ? language === "de"
+                              ? "z.B. Türcode, Hinweise"
+                              : "e.g. door code, notes"
+                            : language === "de"
+                              ? "z.B. Position, Bedienhinweis"
+                              : "e.g. location, handling note"
+                      }
+                    />
+                  </label>
+                )}
                 <div className="row wrap">
                   <button type="submit">{language === "de" ? "Speichern" : "Save"}</button>
                   {projectModalMode === "edit" && (
@@ -4962,6 +6411,38 @@ export function App() {
                     }
                   />
                 </label>
+                <label>
+                  {language === "de" ? "Aufgabentyp" : "Task type"}
+                  <select
+                    value={taskModalForm.task_type}
+                    onChange={(event) => updateTaskModalField("task_type", normalizeTaskTypeValue(event.target.value))}
+                  >
+                    <option value="construction">{taskTypeLabel("construction", language)}</option>
+                    <option value="office">{taskTypeLabel("office", language)}</option>
+                    <option value="customer_appointment">{taskTypeLabel("customer_appointment", language)}</option>
+                  </select>
+                </label>
+                <label>
+                  {language === "de" ? "Projektklasse (optional)" : "Project class (optional)"}
+                  <select
+                    value={taskModalForm.class_template_id}
+                    onChange={(event) => selectTaskModalClassTemplate(event.target.value)}
+                  >
+                    <option value="">{language === "de" ? "Keine Klasse" : "No class"}</option>
+                    {taskModalProjectClassTemplates.map((entry) => (
+                      <option key={`task-modal-class-template-${entry.id}`} value={String(entry.id)}>
+                        {entry.name}
+                      </option>
+                    ))}
+                  </select>
+                  {Number(taskModalForm.project_id) > 0 && taskModalProjectClassTemplates.length === 0 && (
+                    <small className="muted">
+                      {language === "de"
+                        ? "Dem ausgewählten Projekt sind keine Klassen zugewiesen."
+                        : "No classes are assigned to the selected project."}
+                    </small>
+                  )}
+                </label>
                 <label className="checkbox-inline">
                   <input
                     type="checkbox"
@@ -4998,10 +6479,12 @@ export function App() {
                       setTaskModalForm((current) => {
                         if (!current.project_id) return { ...current, project_query: nextQuery };
                         const currentProject = projects.find((project) => String(project.id) === current.project_id);
-                        if (!currentProject) return { ...current, project_query: nextQuery, project_id: "" };
+                        if (!currentProject) {
+                          return { ...current, project_query: nextQuery, project_id: "", class_template_id: "" };
+                        }
                         return projectSearchLabel(currentProject) === nextQuery
                           ? { ...current, project_query: nextQuery }
-                          : { ...current, project_query: nextQuery, project_id: "" };
+                          : { ...current, project_query: nextQuery, project_id: "", class_template_id: "" };
                       });
                     }}
                     onKeyDown={(event) => {
@@ -5040,6 +6523,7 @@ export function App() {
                             ...current,
                             project_id: "",
                             project_query: "",
+                            class_template_id: "",
                           }))
                         }
                         title={language === "de" ? "Entfernen" : "Remove"}
@@ -5216,6 +6700,31 @@ export function App() {
                         : "e.g. cables, inverter, mounting kit"
                     }
                   />
+                </label>
+                <label>
+                  {language === "de" ? "Aufgabentyp" : "Task type"}
+                  <select
+                    value={taskEditForm.task_type}
+                    onChange={(event) => updateTaskEditField("task_type", normalizeTaskTypeValue(event.target.value))}
+                  >
+                    <option value="construction">{taskTypeLabel("construction", language)}</option>
+                    <option value="office">{taskTypeLabel("office", language)}</option>
+                    <option value="customer_appointment">{taskTypeLabel("customer_appointment", language)}</option>
+                  </select>
+                </label>
+                <label>
+                  {language === "de" ? "Projektklasse (optional)" : "Project class (optional)"}
+                  <select
+                    value={taskEditForm.class_template_id}
+                    onChange={(event) => selectTaskEditClassTemplate(event.target.value)}
+                  >
+                    <option value="">{language === "de" ? "Keine Klasse" : "No class"}</option>
+                    {taskEditProjectClassTemplates.map((entry) => (
+                      <option key={`task-edit-class-template-${entry.id}`} value={String(entry.id)}>
+                        {entry.name}
+                      </option>
+                    ))}
+                  </select>
                 </label>
                 <label className="checkbox-inline">
                   <input
@@ -5401,7 +6910,7 @@ export function App() {
                   <div className="overview-status-running-row">
                     <small className="muted">
                       {language === "de" ? "Schicht seit" : "Shift since"}:{" "}
-                      {new Date(timeCurrent.clock_in || "").toLocaleTimeString(language === "de" ? "de-DE" : "en-US")}
+                      {parseServerDateTime(timeCurrent.clock_in || "")?.toLocaleTimeString(language === "de" ? "de-DE" : "en-US") || "-"}
                     </small>
                     <button onClick={clockOut}>{language === "de" ? "Ausstempeln" : "Clock out"}</button>
                   </div>
@@ -5422,7 +6931,7 @@ export function App() {
                         className="linklike overview-list-item"
                         onClick={() => {
                           setActiveProjectId(project.id);
-                          setProjectTab("tasks");
+                          setProjectTab("overview");
                           setProjectBackView(null);
                           setMainView("project");
                         }}
@@ -5488,7 +6997,7 @@ export function App() {
                           onClick={() => {
                             if (!projectId) return;
                             setActiveProjectId(projectId);
-                            setProjectTab("tasks");
+                            setProjectTab("overview");
                             setProjectBackView(null);
                             setMainView("project");
                           }}
@@ -5513,6 +7022,75 @@ export function App() {
                 </ul>
               </div>
             </div>
+          </section>
+        )}
+
+        {mainView === "materials" && (
+          <section className="card materials-view-card">
+            <div className="materials-view-head">
+              <h3>{language === "de" ? "Materialbedarf aus Berichten" : "Material needs from reports"}</h3>
+              <button type="button" onClick={() => void loadMaterialNeeds()}>
+                {language === "de" ? "Aktualisieren" : "Refresh"}
+              </button>
+            </div>
+            <ul className="materials-list">
+              {materialNeedRows.map((entry) => {
+                const normalizedStatus = normalizeMaterialNeedStatus(entry.status);
+                const statusClass = materialNeedStatusClass(normalizedStatus);
+                const project = projectsById.get(entry.project_id) ?? null;
+                const projectLabel = `${(entry.customer_name ?? "").trim() || "-"} | ${entry.project_number}`;
+                const isUpdating = Boolean(materialNeedUpdating[entry.id]);
+                return (
+                  <li key={`material-need-${entry.id}`} className="materials-item">
+                    <div className="materials-item-main">
+                      <b>{entry.item}</b>
+                      <small>
+                        {language === "de" ? "Projekt" : "Project"}:{" "}
+                        <button
+                          type="button"
+                          className="linklike"
+                          onClick={() => {
+                            if (!project) return;
+                            setActiveProjectId(project.id);
+                            setProjectTab("overview");
+                            setProjectBackView(null);
+                            setMainView("project");
+                          }}
+                        >
+                          {projectLabel}
+                        </button>
+                      </small>
+                      <small>
+                        {language === "de" ? "Berichtdatum" : "Report date"}:{" "}
+                        {entry.report_date ? formatDayLabel(entry.report_date, language) : "-"}
+                      </small>
+                    </div>
+                    <div className="materials-item-actions">
+                      <span className={`materials-status-badge ${statusClass}`}>
+                        {materialNeedStatusLabel(normalizedStatus, language)}
+                      </span>
+                      <select
+                        className={`materials-status-select ${statusClass}`}
+                        value={normalizedStatus}
+                        disabled={isUpdating}
+                        onChange={(event) =>
+                          void updateMaterialNeedState(entry.id, normalizeMaterialNeedStatus(event.target.value))
+                        }
+                      >
+                        <option value="order">{materialNeedStatusLabel("order", language)}</option>
+                        <option value="on_the_way">{materialNeedStatusLabel("on_the_way", language)}</option>
+                        <option value="available">{materialNeedStatusLabel("available", language)}</option>
+                      </select>
+                    </div>
+                  </li>
+                );
+              })}
+              {materialNeedRows.length === 0 && (
+                <li className="muted">
+                  {language === "de" ? "Kein offener Materialbedarf aus Berichten." : "No material needs found in reports."}
+                </li>
+              )}
+            </ul>
           </section>
         )}
 
@@ -5572,8 +7150,8 @@ export function App() {
               {filteredProjectsAll.map((row) => {
                 const projectId = Number(row.project_id);
                 const lastEditedLabel =
-                  row.last_status_at && Number(row.last_status_timestamp) > 0
-                    ? new Date(row.last_status_at).toLocaleString(language === "de" ? "de-DE" : "en-US")
+                  row.last_updated_at && Number(row.last_updated_timestamp) > 0
+                    ? formatServerDateTime(row.last_updated_at, language)
                     : "-";
                 return (
                   <li key={`all-project-${row.project_id}`}>
@@ -5582,7 +7160,7 @@ export function App() {
                       onClick={() => {
                         if (!projectId) return;
                         setActiveProjectId(projectId);
-                        setProjectTab("tasks");
+                        setProjectTab("overview");
                         setProjectBackView("projects_all");
                         setMainView("project");
                       }}
@@ -5618,11 +7196,19 @@ export function App() {
             <ul className="overview-list">
               {archivedProjects.map((project) => {
                 const lastEditedLabel = project.last_status_at
-                  ? new Date(project.last_status_at).toLocaleString(language === "de" ? "de-DE" : "en-US")
+                  ? formatServerDateTime(project.last_status_at, language)
                   : "-";
                 return (
                   <li key={`archive-project-${project.id}`}>
-                    <div className="overview-list-item archive-list-item">
+                    <div
+                      className={[
+                        "overview-list-item",
+                        "archive-list-item",
+                        highlightedArchivedProjectId === project.id ? "archive-list-item-highlighted" : "",
+                      ]
+                        .filter(Boolean)
+                        .join(" ")}
+                    >
                       <b>
                         {project.project_number} | {(project.customer_name ?? "").trim() || "-"}
                       </b>
@@ -5789,6 +7375,253 @@ export function App() {
           </section>
         )}
 
+        {mainView === "project" && activeProject && projectTab === "overview" && (
+          <section className="grid project-overview-grid">
+            <div className="card project-overview-glance">
+              <h3 className="project-overview-title">{language === "de" ? "Projektüberblick" : "Project glance"}</h3>
+              <small className="project-overview-subheading">
+                {language === "de" ? "Offene Aufgaben" : "Open tasks"}
+              </small>
+              <div className="project-overview-open-task-list">
+                <ul className="overview-list">
+                  {projectOverviewOpenTasks.map((task) => (
+                    <li key={`project-overview-open-task-${task.id}`}>
+                      <div className="overview-list-item">
+                        <b>{task.title}</b>
+                        <small>
+                          {task.due_date
+                            ? `${language === "de" ? "Fällig" : "Due"}: ${formatDayLabel(task.due_date, language)}`
+                            : language === "de"
+                              ? "Ohne Fälligkeitsdatum"
+                              : "No due date"}
+                        </small>
+                        <small>
+                          {language === "de" ? "Zugewiesen" : "Assigned"}: {getTaskAssigneeLabel(task)}
+                        </small>
+                      </div>
+                    </li>
+                  ))}
+                  {projectOverviewOpenTasks.length === 0 && (
+                    <li className="muted">
+                      {language === "de" ? "Keine offenen Aufgaben." : "No open tasks."}
+                    </li>
+                  )}
+                </ul>
+              </div>
+            </div>
+
+            <aside className="card project-map-card project-map-card-full">
+              <div className="project-overview-card-head">
+                <h3 className="project-overview-title">{language === "de" ? "Projektadresse" : "Project location"}</h3>
+              </div>
+              {activeProjectMapEmbedUrl ? (
+                <a
+                  className="project-map-link"
+                  target="_blank"
+                  rel="noreferrer"
+                  href={activeProjectMapOpenUrl}
+                  title={language === "de" ? "In Karten öffnen" : "Open in maps"}
+                >
+                  <iframe
+                    title={language === "de" ? "Projektkarte" : "Project map"}
+                    className="project-map-frame"
+                    src={activeProjectMapEmbedUrl}
+                    loading="lazy"
+                    referrerPolicy="no-referrer-when-downgrade"
+                  />
+                </a>
+              ) : (
+                <small className="muted">
+                  {language === "de" ? "Keine Projektadresse hinterlegt." : "No project address available."}
+                </small>
+              )}
+            </aside>
+
+            <div className="card project-overview-meta">
+              <h3 className="project-overview-title">{language === "de" ? "Projektdaten" : "Project data"}</h3>
+              <small>
+                {language === "de" ? "Projekt-ID" : "Project ID"}: <b>{activeProject.project_number}</b>
+              </small>
+              <small>
+                {language === "de" ? "Status" : "State"}: <b>{statusLabel(activeProject.status, language)}</b>
+              </small>
+              <small>
+                {language === "de" ? "Letzte Änderung" : "Last update"}: <b>{activeProjectLastUpdatedLabel || "-"}</b>
+              </small>
+              <small>
+                {language === "de" ? "Gemeldete Stunden (Berichte)" : "Reported hours (reports)"}:{" "}
+                <b>{formatHours(projectReportedHoursTotal)}</b>
+              </small>
+              <small>
+                {language === "de" ? "Geplante Projektstunden" : "Planned project hours"}:{" "}
+                <b>{projectPlannedHoursTotal > 0 ? formatHours(projectPlannedHoursTotal) : "-"}</b>
+              </small>
+              <small>
+                {language === "de" ? "Kunde" : "Customer"}: <b>{(activeProject.customer_name ?? "").trim() || "-"}</b>
+              </small>
+              <small>
+                {language === "de" ? "Letzter Stand" : "Last state"}: <b>{activeProjectLastState || "-"}</b>
+              </small>
+              <small>
+                {language === "de" ? "Projektklassen" : "Project classes"}:{" "}
+                <b>
+                  {activeProjectClassTemplates.length > 0
+                    ? activeProjectClassTemplates.map((entry) => entry.name).join(", ")
+                    : "-"}
+                </b>
+              </small>
+              <small>
+                {language === "de" ? "Letztes Status-Datum" : "Last status update"}: <b>{activeProjectLastStatusAtLabel || "-"}</b>
+              </small>
+            </div>
+
+            <div className="card project-overview-contact">
+              <h3 className="project-overview-title">{language === "de" ? "Kontakt" : "Contact"}</h3>
+              <small>
+                {language === "de" ? "Kontaktperson" : "Contact person"}: <b>{(activeProject.customer_contact ?? "").trim() || "-"}</b>
+              </small>
+              <small>
+                {language === "de" ? "E-Mail" : "E-mail"}: <b>{(activeProject.customer_email ?? "").trim() || "-"}</b>
+              </small>
+              <small>
+                {language === "de" ? "Telefon" : "Phone"}: <b>{(activeProject.customer_phone ?? "").trim() || "-"}</b>
+              </small>
+              <small>
+                {language === "de" ? "Zugang Baustelle" : "Site access"}:{" "}
+                <b>{projectSiteAccessDisplay(activeProject.site_access_type, activeProject.site_access_note, language)}</b>
+              </small>
+            </div>
+
+            <div className="card project-overview-weather">
+              <h3 className="project-overview-title">{language === "de" ? "Wetter" : "Weather"}</h3>
+              {projectWeatherLoading && (
+                <small className="muted">{language === "de" ? "Lade Wetterdaten..." : "Loading weather..."}</small>
+              )}
+              {!projectWeatherLoading && projectWeather?.days?.length ? (
+                <>
+                  <small className="muted">
+                    {(language === "de" ? "Adresse" : "Address")}: {projectWeather.query_address}
+                  </small>
+                  <small className="muted">
+                    {(language === "de" ? "Aktualisiert" : "Updated")}:{" "}
+                    {projectWeather.fetched_at
+                      ? formatServerDateTime(projectWeather.fetched_at, language)
+                      : "-"}
+                    {projectWeather.stale
+                      ? ` • ${language === "de" ? "Zwischenspeicher (offline)" : "Cached (offline)"}`
+                      : ""}
+                  </small>
+                  <div className="project-weather-grid">
+                    {projectWeather.days.map((day, index) => {
+                      const dayDate = new Date(day.date);
+                      const dayDescription = weatherDescriptionLabel(day.description, language);
+                      const dayLabel = Number.isNaN(dayDate.getTime())
+                        ? day.date
+                        : dayDate.toLocaleDateString(language === "de" ? "de-DE" : "en-US", {
+                            weekday: "short",
+                            day: "2-digit",
+                            month: "2-digit",
+                          });
+                      const iconUrl = day.icon
+                        ? `https://openweathermap.org/img/wn/${encodeURIComponent(day.icon)}@2x.png`
+                        : "";
+                      return (
+                        <div key={`project-weather-day-${index}-${day.date}`} className="project-weather-day-card">
+                          <small>{dayLabel}</small>
+                          {iconUrl ? (
+                            <img
+                              src={iconUrl}
+                              alt={dayDescription || (language === "de" ? "Wetter" : "Weather")}
+                              loading="lazy"
+                            />
+                          ) : null}
+                          <b>
+                            {day.temp_min != null && day.temp_max != null
+                              ? `${Math.round(day.temp_min)}° / ${Math.round(day.temp_max)}°`
+                              : "-"}
+                          </b>
+                          <small>{dayDescription || "-"}</small>
+                          <small>
+                            {language === "de" ? "Regen" : "Rain"}:{" "}
+                            {day.precipitation_probability != null ? `${Math.round(day.precipitation_probability)}%` : "-"}
+                          </small>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {projectWeather.message && <small className="muted">{projectWeather.message}</small>}
+                </>
+              ) : null}
+              {!projectWeatherLoading && (!projectWeather || projectWeather.days.length === 0) && (
+                <small className="muted">
+                  {projectWeather?.message ||
+                    (language === "de"
+                      ? "Noch keine Wetterdaten verfügbar."
+                      : "No weather data available yet.")}
+                </small>
+              )}
+            </div>
+
+            <div className="card project-overview-note">
+              <div className="project-overview-card-head">
+                <h3 className="project-overview-title">{language === "de" ? "Interne Notiz" : "Internal note"}</h3>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  onClick={() => {
+                    setProjectNoteDraft(activeProject.description ?? "");
+                    setProjectNoteEditing((open) => !open);
+                  }}
+                  aria-label={language === "de" ? "Notiz bearbeiten" : "Edit note"}
+                  title={language === "de" ? "Notiz bearbeiten" : "Edit note"}
+                >
+                  <PenIcon />
+                </button>
+              </div>
+              {projectNoteEditing ? (
+                <div className="project-note-edit">
+                  <textarea
+                    value={projectNoteDraft}
+                    onChange={(event) => setProjectNoteDraft(event.target.value)}
+                    placeholder={language === "de" ? "Interne Notiz" : "Internal note"}
+                  />
+                  <div className="row wrap">
+                    <button type="button" onClick={() => void saveProjectInternalNote()}>
+                      {language === "de" ? "Speichern" : "Save"}
+                    </button>
+                    <button type="button" onClick={() => setProjectNoteEditing(false)}>
+                      {language === "de" ? "Abbrechen" : "Cancel"}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <small>{(activeProject.description ?? "").trim() || "-"}</small>
+              )}
+            </div>
+
+            <div className="card project-overview-changes">
+              <h3 className="project-overview-title">{language === "de" ? "Letzte Änderungen" : "Recent changes"}</h3>
+              <ul className="overview-list">
+                {(projectOverviewDetails?.recent_changes ?? []).map((change) => (
+                  <li key={`project-change-${change.id}`}>
+                    <div className="project-change-row">
+                      <b>{activityEventLabel(change.event_type, language)}</b>
+                      <small>
+                        {formatServerDateTime(change.created_at, language)}
+                        {change.actor_name ? ` • ${change.actor_name}` : ""}
+                      </small>
+                      <small>{change.message}</small>
+                    </div>
+                  </li>
+                ))}
+                {(projectOverviewDetails?.recent_changes ?? []).length === 0 && (
+                  <li className="muted">{language === "de" ? "Keine Änderungen vorhanden." : "No changes yet."}</li>
+                )}
+              </ul>
+            </div>
+          </section>
+        )}
+
         {mainView === "project" && activeProject && projectTab === "tasks" && (
           <section className="grid">
             {canManageTasks && (
@@ -5812,6 +7645,27 @@ export function App() {
                   />
                 </label>
                 <label>
+                  {language === "de" ? "Projektklasse (optional)" : "Project class (optional)"}
+                  <select
+                    value={projectTaskForm.class_template_id}
+                    onChange={(event) => selectProjectTaskClassTemplate(event.target.value)}
+                  >
+                    <option value="">{language === "de" ? "Keine Klasse" : "No class"}</option>
+                    {activeProjectClassTemplates.map((entry) => (
+                      <option key={`project-task-class-template-${entry.id}`} value={String(entry.id)}>
+                        {entry.name}
+                      </option>
+                    ))}
+                  </select>
+                  {activeProjectClassTemplates.length === 0 && (
+                    <small className="muted">
+                      {language === "de"
+                        ? "Diesem Projekt sind noch keine Klassen zugewiesen."
+                        : "No classes are assigned to this project yet."}
+                    </small>
+                  )}
+                </label>
+                <label>
                   {language === "de" ? "Benötigte Materialien" : "Required materials"}
                   <textarea
                     value={projectTaskForm.materials_required}
@@ -5822,6 +7676,19 @@ export function App() {
                         : "e.g. cables, inverter, mounting kit"
                     }
                   />
+                </label>
+                <label>
+                  {language === "de" ? "Aufgabentyp" : "Task type"}
+                  <select
+                    value={projectTaskForm.task_type}
+                    onChange={(event) =>
+                      updateProjectTaskFormField("task_type", normalizeTaskTypeValue(event.target.value))
+                    }
+                  >
+                    <option value="construction">{taskTypeLabel("construction", language)}</option>
+                    <option value="office">{taskTypeLabel("office", language)}</option>
+                    <option value="customer_appointment">{taskTypeLabel("customer_appointment", language)}</option>
+                  </select>
                 </label>
                 <label className="checkbox-inline">
                   <input
@@ -5953,21 +7820,29 @@ export function App() {
                 >
                   {language === "de" ? "Alle offenen Aufgaben" : "All open tasks"}
                 </button>
+                <button
+                  type="button"
+                  className={taskView === "completed" ? "active" : ""}
+                  onClick={() => setTaskView("completed")}
+                >
+                  {language === "de" ? "Abgeschlossene Aufgaben" : "Completed tasks"}
+                </button>
               </div>
               <ul>
                 {tasks.map((task) => {
                   const isMine = isTaskAssignedToCurrentUser(task);
+                  const canOpenInMyTasks = isMine && task.status !== "done";
                   return (
                     <li
                       key={task.id}
                       className={
-                        isMine
+                        canOpenInMyTasks
                           ? "task-list-item task-list-item-mine task-list-item-clickable"
                           : "task-list-item"
                       }
-                      onClick={isMine ? () => openTaskFromProject(task) : undefined}
+                      onClick={canOpenInMyTasks ? () => openTaskFromProject(task) : undefined}
                       onKeyDown={
-                        isMine
+                        canOpenInMyTasks
                           ? (event) => {
                               if (event.key === "Enter" || event.key === " ") {
                                 event.preventDefault();
@@ -5976,8 +7851,8 @@ export function App() {
                             }
                           : undefined
                       }
-                      role={isMine ? "button" : undefined}
-                      tabIndex={isMine ? 0 : undefined}
+                      role={canOpenInMyTasks ? "button" : undefined}
+                      tabIndex={canOpenInMyTasks ? 0 : undefined}
                     >
                       <div className="task-list-main">
                         <b>
@@ -6042,8 +7917,227 @@ export function App() {
                     </li>
                   );
                 })}
+                {tasks.length === 0 && (
+                  <li className="muted">
+                    {taskView === "completed"
+                      ? language === "de"
+                        ? "Keine abgeschlossenen Aufgaben."
+                        : "No completed tasks."
+                      : taskView === "all_open"
+                        ? language === "de"
+                          ? "Keine offenen Aufgaben."
+                          : "No open tasks."
+                        : language === "de"
+                          ? "Keine Aufgaben."
+                          : "No tasks."}
+                  </li>
+                )}
               </ul>
             </div>
+          </section>
+        )}
+
+        {mainView === "project" && activeProject && projectTab === "hours" && (
+          <section className="grid">
+            <div className="card project-hours-card">
+              <div className="project-overview-card-head">
+                <h3>{language === "de" ? "Projektstunden" : "Project Hours"}</h3>
+              </div>
+              <div className="project-hours-layout">
+                <ProjectHoursGauge
+                  language={language}
+                  plannedHours={projectPlannedHoursTotal}
+                  workedHours={projectReportedHoursTotal}
+                />
+                <div className="project-hours-side">
+                  <div className="project-hours-metrics">
+                    <small>
+                      {language === "de" ? "Gemeldete Stunden (aus Berichten)" : "Reported hours (from reports)"}:{" "}
+                      <b>{formatHours(projectReportedHoursTotal)}</b>
+                    </small>
+                    <small>
+                      {language === "de" ? "Geplante Stunden" : "Planned hours"}:{" "}
+                      <b>{projectPlannedHoursTotal > 0 ? formatHours(projectPlannedHoursTotal) : "-"}</b>
+                    </small>
+                    <small>
+                      {language === "de" ? "Planverbrauch" : "Plan usage"}:{" "}
+                      <b>{projectPlannedHoursTotal > 0 ? `${projectHoursUsagePercent.toFixed(1)}%` : "-"}</b>
+                    </small>
+                  </div>
+                  {canManageFinance ? (
+                    <form
+                      className="project-hours-edit"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        void saveProjectHours();
+                      }}
+                    >
+                      <label>
+                        {language === "de" ? "Geplante Stunden" : "Planned hours"}
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          value={projectHoursPlannedInput}
+                          onChange={(event) => setProjectHoursPlannedInput(event.target.value)}
+                          placeholder="0.00"
+                        />
+                      </label>
+                      <div className="row wrap">
+                        <button type="submit">{language === "de" ? "Speichern" : "Save"}</button>
+                        <button type="button" onClick={() => setProjectHoursPlannedInput("")}>
+                          {language === "de" ? "Leeren" : "Clear"}
+                        </button>
+                      </div>
+                    </form>
+                  ) : (
+                    <small className="muted">
+                      {language === "de"
+                        ? "Nur mit Finanzrechten bearbeitbar."
+                        : "Editable only with finance permissions."}
+                    </small>
+                  )}
+                </div>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {mainView === "calendar" && (
+          <section className="card calendar-overview">
+            <div className="row wrap planning-toolbar">
+              <h3>{language === "de" ? "4-Wochen-Übersicht" : "4-week overview"}</h3>
+              <div
+                className="row planning-week-nav"
+                role="group"
+                aria-label={language === "de" ? "Kalenderzeitraum wechseln" : "Switch calendar range"}
+              >
+                <button
+                  type="button"
+                  className="icon-btn"
+                  aria-label={language === "de" ? "Vier Wochen zurück" : "Back four weeks"}
+                  title={language === "de" ? "Vier Wochen zurück" : "Back four weeks"}
+                  onClick={() => setCalendarWeekStart((current) => normalizeWeekStartISO(addDaysISO(current, -28)))}
+                >
+                  ←
+                </button>
+                <div className="calendar-range-pill">{calendarRangeLabel}</div>
+                <button
+                  type="button"
+                  className="icon-btn"
+                  aria-label={language === "de" ? "Vier Wochen vor" : "Forward four weeks"}
+                  title={language === "de" ? "Vier Wochen vor" : "Forward four weeks"}
+                  onClick={() => setCalendarWeekStart((current) => normalizeWeekStartISO(addDaysISO(current, 28)))}
+                >
+                  →
+                </button>
+              </div>
+              <label className="planning-week-picker">
+                {language === "de" ? "Startwoche (Montag)" : "Start week (Monday)"}
+                <input
+                  type="date"
+                  value={calendarWeekStart}
+                  onChange={(event) => setCalendarWeekStart(normalizeWeekStartISO(event.target.value))}
+                  required
+                />
+              </label>
+            </div>
+
+            {calendarLoading ? (
+              <small className="muted">{language === "de" ? "Lade Kalender..." : "Loading calendar..."}</small>
+            ) : (
+              <div className="calendar-weeks-grid">
+                {calendarWeeks.map((week) => {
+                  const weekInfo = isoWeekInfo(week.week_start);
+                  return (
+                    <section key={`calendar-week-${week.week_start}`} className="calendar-week-card">
+                      <div className="calendar-week-head">
+                        <b>
+                          {language === "de" ? "KW" : "CW"} {weekInfo.week}/{weekInfo.year}
+                        </b>
+                        <small>
+                          {formatDayLabel(week.week_start, language)} - {formatDayLabel(week.week_end, language)}
+                        </small>
+                      </div>
+                      <div className="calendar-week-days">
+                        {week.days.map((day) => (
+                          <article
+                            key={`calendar-day-${week.week_start}-${day.date}`}
+                            className={day.date === todayIso ? "calendar-day-cell today" : "calendar-day-cell"}
+                          >
+                            <div className="calendar-day-head">{formatDayLabel(day.date, language)}</div>
+                            <ul className="calendar-day-list">
+                              {(day.absences ?? []).map((absence, index) => (
+                                <li
+                                  key={`calendar-absence-${day.date}-${absence.type}-${absence.user_id}-${index}`}
+                                  className="calendar-absence"
+                                >
+                                  <b>
+                                    {absence.user_name}: {absence.label}
+                                  </b>
+                                  <small>
+                                    {absence.type === "vacation"
+                                      ? language === "de"
+                                        ? "Urlaub"
+                                        : "Vacation"
+                                      : language === "de"
+                                        ? "Schule"
+                                        : "School"}
+                                  </small>
+                                </li>
+                              ))}
+                              {day.tasks.map((task) => {
+                                const isMine = isTaskAssignedToCurrentUser(task);
+                                const projectLabel =
+                                  projectsById.get(task.project_id)?.project_number ??
+                                  projectsById.get(task.project_id)?.name ??
+                                  String(task.project_id);
+                                return (
+                                  <li
+                                    key={`calendar-task-${day.date}-${task.id}`}
+                                    className={[
+                                      "calendar-task",
+                                      isMine ? "calendar-task-mine calendar-task-clickable" : "",
+                                      task.status === "done" ? "calendar-task-done" : "",
+                                    ]
+                                      .filter(Boolean)
+                                      .join(" ")}
+                                    onClick={isMine ? () => openTaskFromPlanning(task) : undefined}
+                                    onKeyDown={
+                                      isMine
+                                        ? (event) => {
+                                            if (event.key === "Enter" || event.key === " ") {
+                                              event.preventDefault();
+                                              openTaskFromPlanning(task);
+                                            }
+                                          }
+                                        : undefined
+                                    }
+                                    role={isMine ? "button" : undefined}
+                                    tabIndex={isMine ? 0 : undefined}
+                                  >
+                                    <b>{task.title}</b>
+                                    <small>
+                                      #{task.id} | {projectLabel}
+                                      {task.start_time ? ` | ${formatTaskStartTime(task.start_time)}` : ""}
+                                    </small>
+                                  </li>
+                                );
+                              })}
+                              {day.tasks.length === 0 && (day.absences ?? []).length === 0 && (
+                                <li className="muted">-</li>
+                              )}
+                            </ul>
+                          </article>
+                        ))}
+                      </div>
+                    </section>
+                  );
+                })}
+                {calendarWeeks.length === 0 && (
+                  <small className="muted">{language === "de" ? "Keine Kalendereinträge." : "No calendar entries."}</small>
+                )}
+              </div>
+            )}
           </section>
         )}
 
@@ -6083,6 +8177,29 @@ export function App() {
                   required
                 />
               </label>
+            </div>
+            <div className="row wrap task-view-toggle planning-task-type-toggle">
+              <button
+                type="button"
+                className={planningTaskTypeView === "construction" ? "active" : ""}
+                onClick={() => setPlanningTaskTypeView("construction")}
+              >
+                {language === "de" ? "Baustellenaufgaben" : "Construction tasks"}
+              </button>
+              <button
+                type="button"
+                className={planningTaskTypeView === "office" ? "active" : ""}
+                onClick={() => setPlanningTaskTypeView("office")}
+              >
+                {language === "de" ? "Büroaufgaben" : "Office tasks"}
+              </button>
+              <button
+                type="button"
+                className={planningTaskTypeView === "customer_appointment" ? "active" : ""}
+                onClick={() => setPlanningTaskTypeView("customer_appointment")}
+              >
+                {language === "de" ? "Kundentermine" : "Customer appointments"}
+              </button>
             </div>
             <div className="planning-calendar-scroll">
               <div className="planning-calendar">
@@ -6245,7 +8362,7 @@ export function App() {
                     onClick={() => {
                       if (!fileUploadFolder) {
                         const fallback = projectFolders.find((folder) => canUseProtectedFolders || !folder.is_protected);
-                        if (fallback) setFileUploadFolder(fallback.path);
+                        setFileUploadFolder(fallback?.path ?? "/");
                       }
                       setFileUploadModalOpen(true);
                     }}
@@ -6275,17 +8392,20 @@ export function App() {
                       </div>
                       <small>{language === "de" ? "Nur aktuelles Projekt:" : "Current project only:"}</small>
                       <div className="webdav-copy-row">
-                        <code>{`${window.location.origin}/api/dav/projects/${activeProjectId}/`}</code>
+                        <code>{activeProjectDavUrl}</code>
                         <button
                           type="button"
                           className="webdav-copy-btn"
-                          onClick={() =>
-                            void copyToClipboard(`${window.location.origin}/api/dav/projects/${activeProjectId}/`, "project")
-                          }
+                          onClick={() => void copyToClipboard(activeProjectDavUrl, "project")}
                         >
                           {language === "de" ? "Kopieren" : "Copy"}
                         </button>
                       </div>
+                      <small>
+                        {language === "de"
+                          ? "Jede berechtigte Person kann denselben Link mit eigenen App-Zugangsdaten verbinden."
+                          : "Any authorized user can connect the same link with their own app credentials."}
+                      </small>
                       <small>
                         {language === "de"
                           ? "macOS Finder: Gehe zu > Mit Server verbinden (Cmd+K). Anmeldung mit App-E-Mail + Passwort."
@@ -6293,8 +8413,8 @@ export function App() {
                       </small>
                       <small>
                         {language === "de"
-                          ? "Wichtig: URL mit abschließendem / verwenden. Für andere Geräte im LAN: http://<SERVER-LAN-IP>/api/dav/projects/PROJEKT-ID/"
-                          : "Important: use URL with trailing /. For other devices on LAN: http://<SERVER-LAN-IP>/api/dav/projects/PROJECT-ID/"}
+                          ? "Wichtig: URL mit abschließendem / verwenden. Für andere Geräte im LAN: http://<SERVER-LAN-IP>/api/dav/projects/PROJEKTNUMMER/"
+                          : "Important: use URL with trailing /. For other devices on LAN: http://<SERVER-LAN-IP>/api/dav/projects/PROJECT_NUMBER/"}
                       </small>
                       <small>
                         {language === "de"
@@ -6318,7 +8438,7 @@ export function App() {
                     <span>{file.file_name}</span>
                     <small>{file.folder || "/"}</small>
                     <small>{file.content_type}</small>
-                    <small>{new Date(file.created_at).toLocaleString(language === "de" ? "de-DE" : "en-US")}</small>
+                    <small>{formatServerDateTime(file.created_at, language)}</small>
                     <div className="row wrap">
                       {isPreviewable(file) && (
                         <a href={filePreviewUrl(file.id)} target="_blank" rel="noreferrer">
@@ -6336,6 +8456,110 @@ export function App() {
             </div>
           </section>
         )}
+
+        {mainView === "project" && activeProject && projectTab === "finances" && (
+          <section className="grid">
+            <div className="card project-finance-card">
+              <div className="project-overview-card-head">
+                <h3>{language === "de" ? "Finanzen" : "Finances"}</h3>
+                {canManageFinance && (
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    onClick={() => {
+                      if (!projectFinanceEditing) {
+                        setProjectFinanceForm(projectFinanceToFormState(projectFinance));
+                      }
+                      setProjectFinanceEditing((open) => !open);
+                    }}
+                    aria-label={language === "de" ? "Finanzen bearbeiten" : "Edit finances"}
+                    title={language === "de" ? "Finanzen bearbeiten" : "Edit finances"}
+                  >
+                    <PenIcon />
+                  </button>
+                )}
+              </div>
+              {projectFinanceEditing && canManageFinance ? (
+                <form
+                  className="project-finance-form"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void saveProjectFinance();
+                  }}
+                >
+                  {(
+                    [
+                      "order_value_net",
+                      "down_payment_35",
+                      "main_components_50",
+                      "final_invoice_15",
+                      "planned_costs",
+                      "actual_costs",
+                      "contribution_margin",
+                    ] as (keyof ProjectFinanceFormState)[]
+                  ).map((field) => (
+                    <label key={`finance-field-${field}`}>
+                      {financeLabel(field, language)}
+                      <input
+                        type="text"
+                        inputMode="decimal"
+                        value={projectFinanceForm[field]}
+                        onChange={(event) => updateProjectFinanceFormField(field, event.target.value)}
+                        placeholder="0.00"
+                      />
+                    </label>
+                  ))}
+                  <div className="row wrap">
+                    <button type="submit">{language === "de" ? "Speichern" : "Save"}</button>
+                    <button type="button" onClick={() => setProjectFinanceEditing(false)}>
+                      {language === "de" ? "Abbrechen" : "Cancel"}
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <div className="project-finance-grid">
+                  <small>
+                    {language === "de" ? "Auftragswert netto" : "Order value (net)"}:{" "}
+                    <b>{formatMoney(projectFinance?.order_value_net, language)}</b>
+                  </small>
+                  <small>
+                    {language === "de" ? "35% Anzahlung" : "35% down payment"}:{" "}
+                    <b>{formatMoney(projectFinance?.down_payment_35, language)}</b>
+                  </small>
+                  <small>
+                    {language === "de" ? "50% Hauptkomponenten" : "50% main components"}:{" "}
+                    <b>{formatMoney(projectFinance?.main_components_50, language)}</b>
+                  </small>
+                  <small>
+                    {language === "de" ? "15% Schlussrechnung" : "15% final invoice"}:{" "}
+                    <b>{formatMoney(projectFinance?.final_invoice_15, language)}</b>
+                  </small>
+                  <small>
+                    {language === "de" ? "Geplante Kosten" : "Planned costs"}:{" "}
+                    <b>{formatMoney(projectFinance?.planned_costs, language)}</b>
+                  </small>
+                  <small>
+                    {language === "de" ? "Tatsächliche Kosten" : "Actual costs"}:{" "}
+                    <b>{formatMoney(projectFinance?.actual_costs, language)}</b>
+                  </small>
+                  <small>
+                    {language === "de" ? "Deckungsbeitrag" : "Contribution margin"}:{" "}
+                    <b>{formatMoney(projectFinance?.contribution_margin, language)}</b>
+                  </small>
+                  <small>
+                    {language === "de" ? "Zuletzt aktualisiert" : "Last updated"}:{" "}
+                    <b>
+                      {projectFinance?.updated_at
+                        ? formatServerDateTime(projectFinance.updated_at, language)
+                        : "-"}
+                    </b>
+                  </small>
+                </div>
+              )}
+            </div>
+          </section>
+        )}
+
         {fileUploadModalOpen && mainView === "project" && activeProject && projectTab === "files" && (
           <div className="modal-backdrop" onClick={() => setFileUploadModalOpen(false)}>
             <div className="card modal-card modal-card-sm" onClick={(event) => event.stopPropagation()}>
@@ -6344,6 +8568,7 @@ export function App() {
                 <label>
                   {language === "de" ? "Zielordner" : "Target folder"}
                   <select value={fileUploadFolder} onChange={(event) => setFileUploadFolder(event.target.value)}>
+                    <option value="/">{language === "de" ? "Hauptordner (/)" : "Base folder (/)"}</option>
                     {projectFolders
                       .filter((folder) => canUseProtectedFolders || !folder.is_protected)
                       .map((folder) => (
@@ -6357,12 +8582,21 @@ export function App() {
                   <input
                     value={newProjectFolderPath}
                     onChange={(event) => setNewProjectFolderPath(event.target.value)}
-                    placeholder={language === "de" ? "Neuer Ordnerpfad (z.B. Bilder/Tag2)" : "New folder path (e.g. Bilder/Tag2)"}
+                    placeholder={
+                      language === "de"
+                        ? "Neuer Ordnerpfad (optional, z.B. Bilder/Tag2)"
+                        : "New folder path (optional, e.g. Bilder/Tag2)"
+                    }
                   />
                   <button type="button" onClick={() => void createProjectFolderFromInput()}>
                     {language === "de" ? "Ordner anlegen" : "Create folder"}
                   </button>
                 </div>
+                <small className="muted">
+                  {language === "de"
+                    ? "Wenn ein neuer Ordnerpfad gesetzt ist, wird er beim Upload automatisch erstellt und genutzt."
+                    : "If a new folder path is set, upload auto-creates it and uploads there."}
+                </small>
                 <input type="file" name="file" required />
                 <div className="row wrap">
                   <button type="submit">{language === "de" ? "Hochladen" : "Upload"}</button>
@@ -6436,6 +8670,14 @@ export function App() {
                 </div>
               )}
               <div className="row wrap">
+                <button
+                  type="button"
+                  className="danger-btn"
+                  onClick={() => void deleteAvatar()}
+                  disabled={!user.avatar_updated_at}
+                >
+                  {language === "de" ? "Profilbild entfernen" : "Remove profile picture"}
+                </button>
                 <button type="button" onClick={() => void saveAvatar()} disabled={!avatarPreviewDataUrl}>
                   {language === "de" ? "Speichern" : "Save"}
                 </button>
@@ -6635,35 +8877,42 @@ export function App() {
                   <div key={`worker-${index}`} className="worker-grid-row">
                     <input
                       value={worker.name}
-                      placeholder={language === "de" ? "Name" : "Name"}
+                      list="report-worker-options"
+                      placeholder={language === "de" ? "Name suchen" : "Search name"}
                       onChange={(e) => updateReportWorker(index, "name", e.target.value)}
                     />
                     <input
                       value={worker.start_time}
-                      placeholder="07:30"
+                      placeholder="0730"
                       inputMode="numeric"
-                      pattern={HHMM_PATTERN}
-                      title="HH:MM (24h)"
                       maxLength={5}
-                      onChange={(e) => updateReportWorker(index, "start_time", e.target.value)}
+                      onChange={(e) => updateReportWorker(index, "start_time", formatTimeInputForTyping(e.target.value))}
                     />
                     <input
                       value={worker.end_time}
-                      placeholder="16:00"
+                      placeholder="1600"
                       inputMode="numeric"
-                      pattern={HHMM_PATTERN}
-                      title="HH:MM (24h)"
                       maxLength={5}
-                      onChange={(e) => updateReportWorker(index, "end_time", e.target.value)}
+                      onChange={(e) => updateReportWorker(index, "end_time", formatTimeInputForTyping(e.target.value))}
                     />
                     <button type="button" onClick={() => removeReportWorkerRow(index)}>
                       {language === "de" ? "Entfernen" : "Remove"}
                     </button>
                   </div>
                 ))}
+                <datalist id="report-worker-options">
+                  {assignableUsers.map((entry) => (
+                    <option key={`report-worker-option-${entry.id}`} value={entry.full_name} />
+                  ))}
+                </datalist>
                 <button type="button" onClick={addReportWorkerRow}>
                   {language === "de" ? "Mitarbeiter hinzufügen" : "Add worker"}
                 </button>
+                <small className="muted">
+                  {language === "de"
+                    ? "Tipp: Mitarbeitende über Namenssuche wählen, Zeiten als 4 Ziffern eingeben (z. B. 0730)."
+                    : "Tip: search workers by name and enter times as 4 digits (for example 0730)."}
+                </small>
               </div>
 
               <label>
@@ -6689,6 +8938,10 @@ export function App() {
               <label>
                 {language === "de" ? "Fotos" : "Photos"}
                 <input type="file" name="images" accept="image/*" multiple />
+              </label>
+              <label>
+                {language === "de" ? "Foto aufnehmen (mobil)" : "Take photo (mobile)"}
+                <input type="file" name="camera_images" accept="image/*" capture="environment" />
               </label>
               <label className="report-send-option">
                 <span className="report-send-head">
@@ -6827,7 +9080,7 @@ export function App() {
                     <small>{activeWikiFile.path}</small>
                     <small>
                       {formatFileSize(activeWikiFile.size_bytes)} |{" "}
-                      {new Date(activeWikiFile.modified_at).toLocaleString(language === "de" ? "de-DE" : "en-US")}
+                      {formatServerDateTime(activeWikiFile.modified_at, language)}
                     </small>
                   </div>
                   {activeWikiFile.previewable ? (
@@ -7050,7 +9303,7 @@ export function App() {
                         <div><b>{language === "de" ? "Schicht-ID" : "Shift ID"}:</b> {timeCurrent.clock_entry_id}</div>
                         <div>
                           <b>{language === "de" ? "Eingestempelt" : "Clocked in"}:</b>{" "}
-                          {new Date(timeCurrent.clock_in || "").toLocaleString(language === "de" ? "de-DE" : "en-US")}
+                          {formatServerDateTime(timeCurrent.clock_in || "", language)}
                         </div>
                         <div><b>{language === "de" ? "Arbeitszeit" : "Worked"}:</b> {timeCurrent.worked_hours_live}h</div>
                         <div><b>{language === "de" ? "Pause" : "Break"}:</b> {timeCurrent.break_hours_live}h</div>
@@ -7487,6 +9740,7 @@ export function App() {
               {(canManageProjectImport || canManageSchoolAbsences || isAdmin) && (
                 <div className="card">
                   <h3>{language === "de" ? "Admin Werkzeuge" : "Admin tools"}</h3>
+                  {renderAdminUpdateMenu()}
                   {isAdmin && (
                     <div className="metric-stack">
                       <b>{language === "de" ? "Einladung senden" : "Send invite"}</b>
@@ -7553,6 +9807,64 @@ export function App() {
                               ? "Backup herunterladen"
                               : "Download backup"}
                         </button>
+                      </form>
+                    </div>
+                  )}
+                  {canManageProjectImport && (
+                    <div className="metric-stack">
+                      <b>{language === "de" ? "OpenWeather API" : "OpenWeather API"}</b>
+                        <small className="muted">
+                          {language === "de"
+                            ? "Schlüssel für die 5-Tage-Projektwettervorhersage."
+                            : "Key for 5-day project weather forecast."}
+                        </small>
+                      <small className="muted">
+                        {language === "de" ? "Aktuell" : "Current"}:{" "}
+                        {weatherSettings?.configured
+                          ? weatherSettings.masked_api_key || (language === "de" ? "gesetzt" : "configured")
+                          : language === "de"
+                            ? "nicht konfiguriert"
+                            : "not configured"}
+                      </small>
+                      <form className="row wrap" onSubmit={saveWeatherSettings}>
+                        <input
+                          type="password"
+                          value={weatherApiKeyInput}
+                          onChange={(event) => setWeatherApiKeyInput(event.target.value)}
+                          placeholder={
+                            language === "de"
+                              ? "Neuen API-Schlüssel eingeben (leer = entfernen)"
+                              : "Enter new API key (empty = clear)"
+                          }
+                        />
+                        <button type="submit" disabled={weatherSettingsSaving}>
+                          {weatherSettingsSaving
+                            ? language === "de"
+                              ? "Speichern..."
+                              : "Saving..."
+                            : language === "de"
+                              ? "Speichern"
+                              : "Save"}
+                        </button>
+                      </form>
+                    </div>
+                  )}
+                  {canManageProjectImport && (
+                    <div className="metric-stack">
+                      <b>{language === "de" ? "Projektklassen-Template" : "Project class template"}</b>
+                      <small className="muted">
+                        {language === "de"
+                          ? "CSV mit Projektklassen, Standard-Materialien/Werkzeugen und Aufgaben."
+                          : "CSV containing project classes, default materials/tools, and tasks."}
+                      </small>
+                      <div className="row wrap">
+                        <button type="button" onClick={downloadProjectClassTemplateCsv}>
+                          {language === "de" ? "Template herunterladen" : "Download template"}
+                        </button>
+                      </div>
+                      <form className="row wrap" onSubmit={importProjectClassTemplateCsv}>
+                        <input type="file" name="file" accept=".csv,text/csv" required />
+                        <button type="submit">{language === "de" ? "Template importieren" : "Import template"}</button>
                       </form>
                     </div>
                   )}
@@ -7669,15 +9981,12 @@ export function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {users.map((u) => (
-                      <tr key={u.id} className={!u.is_active ? "admin-user-inactive" : undefined}>
+                    {activeAdminUsers.map((u) => (
+                      <tr key={u.id}>
                         <td>{u.id}</td>
                         <td>
                           <div className="metric-stack">
                             <span>{u.full_name}</span>
-                            {!u.is_active && (
-                              <small className="muted">{language === "de" ? "deaktiviert" : "inactive"}</small>
-                            )}
                           </div>
                         </td>
                         <td>{u.email}</td>
@@ -7715,22 +10024,18 @@ export function App() {
                         <td>
                           <small>
                             {u.invite_sent_at
-                              ? new Date(u.invite_sent_at).toLocaleString(language === "de" ? "de-DE" : "en-US")
+                              ? formatServerDateTime(u.invite_sent_at, language)
                               : "-"}
                           </small>
                           <br />
                           <small className="muted">
-                            {!u.is_active
+                            {u.invite_accepted_at
                               ? language === "de"
-                                ? "Gelöscht"
-                                : "Deleted"
-                              : u.invite_accepted_at
-                                ? language === "de"
-                                  ? "Angenommen"
-                                  : "Accepted"
-                                : language === "de"
-                                  ? "Offen"
-                                  : "Pending"}
+                                ? "Angenommen"
+                                : "Accepted"
+                              : language === "de"
+                                ? "Offen"
+                                : "Pending"}
                           </small>
                         </td>
                         <td>
@@ -7752,7 +10057,6 @@ export function App() {
                                 <button
                                   type="button"
                                   role="menuitem"
-                                  disabled={!u.is_active}
                                   onClick={() => void sendInviteToUser(u.id)}
                                 >
                                   {u.invite_sent_at
@@ -7766,7 +10070,6 @@ export function App() {
                                 <button
                                   type="button"
                                   role="menuitem"
-                                  disabled={!u.is_active}
                                   onClick={() => void sendPasswordResetToUser(u.id)}
                                 >
                                   {language === "de" ? "Passwort-Reset senden" : "Send reset link"}
@@ -7775,7 +10078,7 @@ export function App() {
                                   type="button"
                                   role="menuitem"
                                   className="danger"
-                                  disabled={!u.is_active || u.id === user?.id}
+                                  disabled={u.id === user?.id}
                                   onClick={() => void softDeleteUser(u.id)}
                                 >
                                   {language === "de" ? "Benutzer löschen" : "Delete user"}
@@ -7786,8 +10089,37 @@ export function App() {
                         </td>
                       </tr>
                     ))}
+                    {activeAdminUsers.length === 0 && (
+                      <tr>
+                        <td colSpan={8} className="muted">
+                          {language === "de" ? "Keine aktiven Benutzer." : "No active users."}
+                        </td>
+                      </tr>
+                    )}
                   </tbody>
                 </table>
+                <div className="admin-users-archive">
+                  <h4>{language === "de" ? "Benutzerarchiv" : "User archive"}</h4>
+                  <ul className="task-list">
+                    {archivedAdminUsers.map((u) => (
+                      <li key={`admin-archive-${u.id}`} className="archive-list-item admin-user-archive-item">
+                        <div className="metric-stack">
+                          <b>
+                            {u.full_name} (#{u.id})
+                          </b>
+                          <small>{u.email}</small>
+                          <small>{u.role}</small>
+                        </div>
+                        <button type="button" onClick={() => void restoreArchivedUser(u.id)}>
+                          {language === "de" ? "Wiederherstellen" : "Restore"}
+                        </button>
+                      </li>
+                    ))}
+                    {archivedAdminUsers.length === 0 && (
+                      <li className="muted">{language === "de" ? "Keine archivierten Benutzer." : "No archived users."}</li>
+                    )}
+                  </ul>
+                </div>
               </div>
             )}
           </section>
@@ -7796,6 +10128,7 @@ export function App() {
         {mainView === "admin" && isAdmin && (
           <section className="card">
             <h3>{language === "de" ? "Benutzerverwaltung" : "User administration"}</h3>
+            {renderAdminUpdateMenu()}
             <table>
               <thead>
                 <tr>
@@ -7808,7 +10141,7 @@ export function App() {
                 </tr>
               </thead>
               <tbody>
-                {users.map((u) => (
+                {activeAdminUsers.map((u) => (
                   <tr key={u.id}>
                     <td>{u.id}</td>
                     <td>{u.full_name}</td>
@@ -7846,8 +10179,37 @@ export function App() {
                     </td>
                   </tr>
                 ))}
+                {activeAdminUsers.length === 0 && (
+                  <tr>
+                    <td colSpan={6} className="muted">
+                      {language === "de" ? "Keine aktiven Benutzer." : "No active users."}
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
+            <div className="admin-users-archive">
+              <h4>{language === "de" ? "Benutzerarchiv" : "User archive"}</h4>
+              <ul className="task-list">
+                {archivedAdminUsers.map((u) => (
+                  <li key={`admin-view-archive-${u.id}`} className="archive-list-item admin-user-archive-item">
+                    <div className="metric-stack">
+                      <b>
+                        {u.full_name} (#{u.id})
+                      </b>
+                      <small>{u.email}</small>
+                      <small>{u.role}</small>
+                    </div>
+                    <button type="button" onClick={() => void restoreArchivedUser(u.id)}>
+                      {language === "de" ? "Wiederherstellen" : "Restore"}
+                    </button>
+                  </li>
+                ))}
+                {archivedAdminUsers.length === 0 && (
+                  <li className="muted">{language === "de" ? "Keine archivierten Benutzer." : "No archived users."}</li>
+                )}
+              </ul>
+            </div>
           </section>
         )}
       </main>

@@ -10,10 +10,11 @@ from html import escape
 from pathlib import Path, PurePosixPath
 from urllib.parse import quote
 
+import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import case, delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -29,6 +30,12 @@ from app.models.entities import (
     JobTicket,
     Message,
     Project,
+    ProjectActivity,
+    ProjectClassAssignment,
+    ProjectClassTemplate,
+    ProjectFinance,
+    ProjectMaterialNeed,
+    ProjectWeatherCache,
     ProjectFolder,
     ProjectMember,
     SchoolAbsence,
@@ -47,7 +54,15 @@ from app.schemas.api import (
     JobTicketOut,
     MessageOut,
     ProjectCreate,
+    ProjectFinanceOut,
+    ProjectFinanceUpdate,
+    ProjectWeatherDayOut,
+    ProjectWeatherOut,
+    ProjectClassTemplateOut,
+    ProjectMaterialNeedOut,
+    ProjectMaterialNeedUpdate,
     ProjectOut,
+    ProjectOverviewOut,
     ProjectUpdate,
     SiteCreate,
     SiteOut,
@@ -60,6 +75,7 @@ from app.schemas.api import (
     ThreadCreate,
     ThreadOut,
     ThreadUpdate,
+    ProjectActivityOut,
     WikiPageCreate,
     WikiLibraryFileOut,
     WikiPageOut,
@@ -73,12 +89,125 @@ from app.services.construction_report_pdf import (
 from app.services.files import read_encrypted_file, store_encrypted_file
 from app.services.telegram import send_telegram_report, telegram_enabled
 from app.services.audit import log_admin_action
+from app.services.runtime_settings import get_openweather_api_key
 from app.core.security import verify_password
 
 router = APIRouter(prefix="", tags=["workflow"])
 settings = get_settings()
 webdav_security = HTTPBasic(auto_error=False)
 MAX_AVATAR_BYTES = 5 * 1024 * 1024
+WEATHER_PROVIDER = "openweather"
+WEATHER_MIN_REFRESH_SECONDS = 15 * 60
+ADDRESS_COMMA_RE = re.compile(r",\s*")
+ZIP_RE = re.compile(r"\b(\d{5})\b")
+TASK_TYPE_ALIASES = {
+    "construction": "construction",
+    "site": "construction",
+    "baustelle": "construction",
+    "office": "office",
+    "backoffice": "office",
+    "buero": "office",
+    "büro": "office",
+    "customer_appointment": "customer_appointment",
+    "customer-appointment": "customer_appointment",
+    "customer appointment": "customer_appointment",
+    "appointment": "customer_appointment",
+    "kundentermin": "customer_appointment",
+    "kundentermine": "customer_appointment",
+    "termin": "customer_appointment",
+}
+PROJECT_SITE_ACCESS_OPTIONS = {
+    "customer_on_site",
+    "freely_accessible",
+    "key_in_office",
+    "key_pickup",
+    "code_access",
+    "key_box",
+    "call_before_departure",
+}
+PROJECT_SITE_ACCESS_OPTIONS_WITH_NOTE = {"key_pickup", "code_access", "key_box"}
+MATERIAL_NEED_STATUS_ALIASES = {
+    "order": "order",
+    "ordered": "order",
+    "bestellen": "order",
+    "bestellt": "order",
+    "on_the_way": "on_the_way",
+    "on-the-way": "on_the_way",
+    "on the way": "on_the_way",
+    "on its way": "on_the_way",
+    "in_transit": "on_the_way",
+    "unterwegs": "on_the_way",
+    "available": "available",
+    "verfuegbar": "available",
+    "verfügbar": "available",
+}
+
+
+def _normalize_weather_address(raw: str | None) -> str:
+    address = (raw or "").strip()
+    if not address:
+        return ""
+    address = address.replace("\r", " ").replace("\n", ", ")
+    address = ADDRESS_COMMA_RE.sub(", ", address)
+    address = re.sub(r"(,\s*){2,}", ", ", address)
+    address = re.sub(r"\s{2,}", " ", address)
+    return address.strip(" ,")
+
+
+def _weather_address_candidates(query_address: str) -> list[str]:
+    base = _normalize_weather_address(query_address)
+    if not base:
+        return []
+    candidates = [base]
+    lower_base = base.lower()
+    if "deutschland" not in lower_base and "germany" not in lower_base:
+        candidates.append(f"{base}, Deutschland")
+        candidates.append(f"{base}, Germany")
+    unique: list[str] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        key = candidate.strip().lower()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        unique.append(candidate.strip())
+    return unique
+
+
+def _weather_zip_candidates(query_address: str) -> list[str]:
+    base = _normalize_weather_address(query_address).lower()
+    if not base:
+        return []
+    zip_codes = ZIP_RE.findall(base)
+    if not zip_codes:
+        return []
+
+    country_code = "DE"
+    if "deutschland" in base or "germany" in base:
+        country_code = "DE"
+
+    seen: set[str] = set()
+    candidates: list[str] = []
+    for zip_code in zip_codes:
+        key = f"{zip_code},{country_code}"
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append(key)
+    return candidates
+
+
+def _normalize_project_site_access(access_type: str | None, access_note: str | None) -> tuple[str | None, str | None]:
+    normalized_type = (access_type or "").strip()
+    if not normalized_type:
+        return None, None
+    if normalized_type not in PROJECT_SITE_ACCESS_OPTIONS:
+        raise HTTPException(status_code=400, detail="Invalid project site access type")
+    normalized_note = (access_note or "").strip()
+    if normalized_type not in PROJECT_SITE_ACCESS_OPTIONS_WITH_NOTE:
+        normalized_note = ""
+    return normalized_type, (normalized_note or None)
+WEATHER_DAY_COUNT = 5
 
 
 def _attachment_out(attachment: Attachment) -> dict:
@@ -611,8 +740,39 @@ def _projects_visible_to_user(db: Session, user: User) -> list[Project]:
     )
 
 
+def _project_ids_visible_to_user(db: Session, user: User) -> set[int]:
+    return {project.id for project in _projects_visible_to_user(db, user)}
+
+
+def _project_webdav_ref(project: Project) -> str:
+    number = (project.project_number or "").strip()
+    if number:
+        return number
+    return str(project.id)
+
+
+def _resolve_project_by_webdav_ref(db: Session, project_ref: str) -> Project:
+    normalized = (project_ref or "").strip()
+    if not normalized:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    by_number = db.scalars(select(Project).where(Project.project_number == normalized)).first()
+    if by_number:
+        return by_number
+
+    if normalized.isdigit():
+        by_id = db.get(Project, int(normalized))
+        if by_id:
+            return by_id
+
+    raise HTTPException(status_code=404, detail="Project not found")
+
+
 def _is_project_archived(project: Project) -> bool:
-    return (project.status or "").strip().lower() == "archived"
+    normalized = (project.status or "").strip().lower()
+    if not normalized:
+        return False
+    return normalized == "archived" or normalized == "archiviert" or "archiv" in normalized
 
 
 def _active_projects_visible_to_user(db: Session, user: User) -> list[Project]:
@@ -628,12 +788,12 @@ def _project_webdav_display_name(project: Project) -> str:
     number = (project.project_number or "").strip()
     name = (project.name or "").strip()
     if number and customer:
-        return f"{number} - {customer} | ID {project.id}"
+        return f"{number} - {customer}"
     if customer:
-        return f"{customer} | ID {project.id}"
+        return customer
     if number and name:
-        return f"{number} {name} | ID {project.id}"
-    return (number or name or "project") + f" | ID {project.id}"
+        return f"{number} {name}"
+    return number or name or "project"
 
 
 def _auto_folder_for_upload(file_name: str, content_type: str | None) -> str:
@@ -644,6 +804,517 @@ def _auto_folder_for_upload(file_name: str, content_type: str | None) -> str:
     if lowered_content_type == "application/pdf" or lowered_name.endswith(".pdf"):
         return "Berichte"
     return ""
+
+
+def _resolve_project_upload_folder(raw_folder: str, file_name: str, content_type: str | None) -> str:
+    raw = (raw_folder or "").strip()
+    if raw == "/":
+        return ""
+    normalized = _normalize_project_folder_path(raw, allow_empty=True)
+    if normalized:
+        return normalized
+    return _auto_folder_for_upload(file_name, content_type)
+
+
+def _touch_project_last_update(db: Session, project_id: int, *, touch_time: datetime | None = None) -> None:
+    project = db.get(Project, project_id)
+    if not project:
+        return
+    project.last_updated_at = touch_time or utcnow()
+    db.add(project)
+
+
+def _record_project_activity(
+    db: Session,
+    *,
+    project_id: int,
+    actor_user_id: int | None,
+    event_type: str,
+    message: str,
+    details: dict | None = None,
+) -> None:
+    now = utcnow()
+    db.add(
+        ProjectActivity(
+            project_id=project_id,
+            actor_user_id=actor_user_id,
+            event_type=event_type,
+            message=message[:255],
+            details=details or {},
+            created_at=now,
+        )
+    )
+    _touch_project_last_update(db, project_id, touch_time=now)
+
+
+def _project_finance_row_or_default(db: Session, project_id: int) -> ProjectFinanceOut:
+    row = db.get(ProjectFinance, project_id)
+    if row:
+        return ProjectFinanceOut.model_validate(row)
+    return ProjectFinanceOut(project_id=project_id)
+
+
+def _parse_report_clock_minutes(raw_value: object) -> int | None:
+    text = str(raw_value or "").strip()
+    if not text:
+        return None
+    hour: int
+    minute: int
+    match = re.fullmatch(r"(\d{1,2}):(\d{1,2})", text)
+    if match:
+        try:
+            hour = int(match.group(1))
+            minute = int(match.group(2))
+        except Exception:
+            return None
+    else:
+        digits = re.sub(r"\D", "", text)
+        if len(digits) == 3:
+            digits = f"0{digits}"
+        if len(digits) < 4:
+            return None
+        try:
+            hour = int(digits[:2])
+            minute = int(digits[2:4])
+        except Exception:
+            return None
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        return None
+    return hour * 60 + minute
+
+
+def _report_image_extension(filename: str, content_type: str | None) -> str:
+    if "." in filename:
+        guessed = filename.rsplit(".", 1)[-1].strip().lower()
+        if guessed:
+            return guessed
+    normalized_type = str(content_type or "").split(";", 1)[0].strip().lower()
+    if normalized_type:
+        guessed_extension = mimetypes.guess_extension(normalized_type)
+        if guessed_extension:
+            return guessed_extension.lstrip(".")
+        if normalized_type.startswith("image/"):
+            image_extension = normalized_type.split("/", 1)[1].strip()
+            if image_extension:
+                return image_extension
+    return "bin"
+
+
+def _report_image_filename(upload: UploadFile, index: int) -> str:
+    raw_name = str(getattr(upload, "filename", "") or "").strip()
+    file_name = raw_name.replace("\\", "/").split("/")[-1]
+    extension = _report_image_extension(file_name, getattr(upload, "content_type", None))
+    if file_name:
+        if "." not in file_name or not file_name.rsplit(".", 1)[-1].strip():
+            return f"{file_name}.{extension}"
+        return file_name
+    return f"report-photo-{index}.{extension}"
+
+
+def _construction_report_worker_hours(payload: dict) -> float:
+    workers = payload.get("workers")
+    if not isinstance(workers, list):
+        return 0.0
+    total_minutes = 0
+    for worker in workers:
+        if not isinstance(worker, dict):
+            continue
+        start_minutes = _parse_report_clock_minutes(worker.get("start_time"))
+        end_minutes = _parse_report_clock_minutes(worker.get("end_time"))
+        if start_minutes is None or end_minutes is None:
+            continue
+        duration = end_minutes - start_minutes
+        if duration <= 0 or duration > 24 * 60:
+            continue
+        total_minutes += duration
+    return round(total_minutes / 60, 2)
+
+
+def _accumulate_project_reported_hours(db: Session, *, project_id: int, reported_hours: float) -> None:
+    if reported_hours <= 0:
+        return
+    finance_row = db.get(ProjectFinance, project_id)
+    if finance_row is None:
+        finance_row = ProjectFinance(project_id=project_id, reported_hours_total=0.0)
+        db.add(finance_row)
+        db.flush()
+    finance_row.reported_hours_total = round(float(finance_row.reported_hours_total or 0.0) + float(reported_hours), 2)
+    db.add(finance_row)
+
+
+def _normalize_material_need_status(raw_value: str | None, *, default: str = "order", strict: bool = False) -> str:
+    normalized = str(raw_value or "").strip().lower()
+    if not normalized:
+        return default
+    mapped = MATERIAL_NEED_STATUS_ALIASES.get(normalized)
+    if mapped:
+        return mapped
+    if strict:
+        raise HTTPException(status_code=400, detail="Invalid material status")
+    return default
+
+
+def _parse_office_material_need_items(raw_value: object) -> list[str]:
+    raw = str(raw_value or "").replace("\r", "\n")
+    if not raw.strip():
+        return []
+
+    items: list[str] = []
+    seen: set[str] = set()
+    for line in raw.split("\n"):
+        cleaned_line = re.sub(r"\s{2,}", " ", line).strip().strip("-*•")
+        if not cleaned_line:
+            continue
+        parts = re.split(r"[;,]", cleaned_line)
+        for part in parts:
+            item = re.sub(r"\s{2,}", " ", part).strip().strip("-*•")
+            if not item:
+                continue
+            key = item.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append(item)
+    return items
+
+
+def _create_material_needs_from_report_payload(
+    db: Session,
+    *,
+    project_id: int,
+    report_id: int,
+    payload: dict,
+    actor_user_id: int | None,
+) -> int:
+    items = _parse_office_material_need_items(payload.get("office_material_need"))
+    if not items:
+        return 0
+    created_count = 0
+    for item in items:
+        db.add(
+            ProjectMaterialNeed(
+                project_id=project_id,
+                construction_report_id=report_id,
+                item=item,
+                status="order",
+                created_by=actor_user_id,
+                updated_by=actor_user_id,
+            )
+        )
+        created_count += 1
+    return created_count
+
+
+def _project_material_need_out(
+    row: ProjectMaterialNeed,
+    *,
+    project: Project,
+    report: ConstructionReport | None,
+) -> ProjectMaterialNeedOut:
+    return ProjectMaterialNeedOut(
+        id=row.id,
+        project_id=row.project_id,
+        project_number=project.project_number,
+        project_name=project.name,
+        customer_name=project.customer_name,
+        construction_report_id=row.construction_report_id,
+        report_date=report.report_date if report else None,
+        item=row.item,
+        status=_normalize_material_need_status(row.status),
+        created_by=row.created_by,
+        updated_by=row.updated_by,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+
+
+def _recent_project_activities_out(db: Session, project_id: int, *, limit: int = 10) -> list[ProjectActivityOut]:
+    rows = db.scalars(
+        select(ProjectActivity)
+        .where(ProjectActivity.project_id == project_id)
+        .order_by(ProjectActivity.created_at.desc(), ProjectActivity.id.desc())
+        .limit(limit)
+    ).all()
+    actor_ids = sorted({row.actor_user_id for row in rows if row.actor_user_id is not None})
+    actor_names_by_id: dict[int, str] = {}
+    if actor_ids:
+        users = db.scalars(select(User).where(User.id.in_(actor_ids))).all()
+        actor_names_by_id = {user.id: user.full_name for user in users}
+    return [
+        ProjectActivityOut(
+            id=row.id,
+            project_id=row.project_id,
+            actor_user_id=row.actor_user_id,
+            actor_name=actor_names_by_id.get(row.actor_user_id or 0),
+            event_type=row.event_type,
+            message=row.message,
+            details=row.details or {},
+            created_at=row.created_at,
+        )
+        for row in rows
+    ]
+
+
+def _effective_openweather_api_key(db: Session) -> str:
+    runtime_key = get_openweather_api_key(db)
+    if runtime_key:
+        return runtime_key
+    return (settings.openweather_api_key or "").strip()
+
+
+def _normalize_openweather_5day(rows: list[dict], *, timezone_offset_seconds: int = 0) -> list[dict]:
+    grouped: dict[str, dict] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        raw_dt = row.get("dt")
+        try:
+            local_dt = datetime.fromtimestamp(int(raw_dt) + int(timezone_offset_seconds), tz=timezone.utc)
+        except Exception:
+            continue
+
+        day_key = local_dt.date().isoformat()
+        day_bucket = grouped.setdefault(
+            day_key,
+            {
+                "date": day_key,
+                "temp_min": None,
+                "temp_max": None,
+                "precipitation_probability": None,
+                "wind_speed": None,
+                "best_distance": None,
+                "description": None,
+                "icon": None,
+            },
+        )
+
+        main = row.get("main") if isinstance(row.get("main"), dict) else {}
+        temp_min = main.get("temp_min")
+        temp_max = main.get("temp_max")
+        if isinstance(temp_min, (int, float)):
+            temp_min_value = float(temp_min)
+            day_bucket["temp_min"] = (
+                temp_min_value
+                if day_bucket["temp_min"] is None
+                else min(float(day_bucket["temp_min"]), temp_min_value)
+            )
+        if isinstance(temp_max, (int, float)):
+            temp_max_value = float(temp_max)
+            day_bucket["temp_max"] = (
+                temp_max_value
+                if day_bucket["temp_max"] is None
+                else max(float(day_bucket["temp_max"]), temp_max_value)
+            )
+
+        pop_value = row.get("pop")
+        if isinstance(pop_value, (int, float)):
+            pop_percent = float(pop_value) * 100 if float(pop_value) <= 1 else float(pop_value)
+            day_bucket["precipitation_probability"] = (
+                round(pop_percent, 1)
+                if day_bucket["precipitation_probability"] is None
+                else max(float(day_bucket["precipitation_probability"]), round(pop_percent, 1))
+            )
+
+        wind = row.get("wind") if isinstance(row.get("wind"), dict) else {}
+        wind_speed = wind.get("speed")
+        if isinstance(wind_speed, (int, float)):
+            wind_value = float(wind_speed)
+            day_bucket["wind_speed"] = (
+                wind_value
+                if day_bucket["wind_speed"] is None
+                else max(float(day_bucket["wind_speed"]), wind_value)
+            )
+
+        weather_rows = row.get("weather")
+        weather_info = weather_rows[0] if isinstance(weather_rows, list) and weather_rows else {}
+        weather_desc = (str(weather_info.get("description") or weather_info.get("main") or "").strip() or None)
+        weather_icon = (str(weather_info.get("icon") or "").strip() or None)
+        hour_distance = abs(local_dt.hour - 12)
+        best_distance = day_bucket["best_distance"]
+        if best_distance is None or hour_distance < int(best_distance):
+            day_bucket["best_distance"] = hour_distance
+            day_bucket["description"] = weather_desc
+            day_bucket["icon"] = weather_icon
+
+    normalized: list[dict] = []
+    for day_key in sorted(grouped.keys())[:WEATHER_DAY_COUNT]:
+        bucket = grouped[day_key]
+        normalized.append(
+            {
+                "date": bucket["date"],
+                "temp_min": bucket["temp_min"],
+                "temp_max": bucket["temp_max"],
+                "description": bucket["description"],
+                "icon": bucket["icon"],
+                "precipitation_probability": bucket["precipitation_probability"],
+                "wind_speed": bucket["wind_speed"],
+            }
+        )
+    return normalized
+
+
+def _openweather_error_message(response: httpx.Response, *, context: str) -> str:
+    message = ""
+    try:
+        payload = response.json()
+    except Exception:
+        payload = None
+    if isinstance(payload, dict):
+        raw_msg = payload.get("message") or payload.get("detail")
+        if raw_msg is not None:
+            message = str(raw_msg).strip()
+    if not message:
+        message = (response.text or "").strip()
+    if not message:
+        message = f"HTTP {response.status_code}"
+    return f"{context}: {message}"
+
+
+def _sanitize_weather_language(value: str | None) -> str:
+    language = (value or "").strip().lower()
+    if language.startswith("de"):
+        return "de"
+    return "en"
+
+
+def _fetch_openweather_forecast(*, api_key: str, query_address: str, language: str = "en") -> tuple[float, float, list[dict]]:
+    weather_language = _sanitize_weather_language(language)
+    timeout = httpx.Timeout(12.0, connect=5.0)
+    with httpx.Client(timeout=timeout) as client:
+        lat: float | None = None
+        lon: float | None = None
+        geocode_error: str | None = None
+        for candidate in _weather_address_candidates(query_address):
+            geocode = client.get(
+                "https://api.openweathermap.org/geo/1.0/direct",
+                params={
+                    "q": candidate,
+                    "limit": 1,
+                    "appid": api_key,
+                },
+            )
+            if geocode.status_code >= 400:
+                geocode_error = _openweather_error_message(geocode, context="Geocoding failed")
+                continue
+            geo_rows = geocode.json()
+            if not isinstance(geo_rows, list) or not geo_rows:
+                continue
+            first_row = geo_rows[0] if isinstance(geo_rows[0], dict) else {}
+            try:
+                lat = float(first_row["lat"])
+                lon = float(first_row["lon"])
+                break
+            except Exception:
+                continue
+
+        if lat is None or lon is None:
+            for zip_candidate in _weather_zip_candidates(query_address):
+                geocode_zip = client.get(
+                    "https://api.openweathermap.org/geo/1.0/zip",
+                    params={
+                        "zip": zip_candidate,
+                        "appid": api_key,
+                    },
+                )
+                if geocode_zip.status_code >= 400:
+                    geocode_error = _openweather_error_message(geocode_zip, context="Geocoding failed")
+                    continue
+                geocode_zip_payload = geocode_zip.json()
+                if not isinstance(geocode_zip_payload, dict):
+                    continue
+                try:
+                    lat = float(geocode_zip_payload["lat"])
+                    lon = float(geocode_zip_payload["lon"])
+                    break
+                except Exception:
+                    continue
+
+        if lat is None or lon is None:
+            if geocode_error:
+                raise ValueError(geocode_error)
+            raise ValueError("Address could not be geocoded")
+
+        forecast = client.get(
+            "https://api.openweathermap.org/data/2.5/forecast",
+            params={
+                "lat": lat,
+                "lon": lon,
+                "units": "metric",
+                "lang": weather_language,
+                "appid": api_key,
+            },
+        )
+        if forecast.status_code >= 400:
+            raise ValueError(_openweather_error_message(forecast, context="Forecast fetch failed"))
+        forecast_payload = forecast.json()
+        rows = forecast_payload.get("list")
+        if not isinstance(rows, list) or not rows:
+            raise ValueError("No weather forecast data available")
+        timezone_offset = 0
+        city = forecast_payload.get("city") if isinstance(forecast_payload.get("city"), dict) else {}
+        if isinstance(city.get("timezone"), int):
+            timezone_offset = int(city.get("timezone"))
+        days = _normalize_openweather_5day(rows, timezone_offset_seconds=timezone_offset)
+        if not days:
+            raise ValueError("No daily weather forecast available")
+        return lat, lon, days
+
+
+def _project_weather_out(
+    *,
+    project_id: int,
+    query_address: str,
+    cache_row: ProjectWeatherCache | None,
+    stale: bool,
+    from_cache: bool,
+    can_refresh: bool,
+    message: str | None = None,
+) -> ProjectWeatherOut:
+    days_payload = cache_row.payload.get("days") if cache_row and isinstance(cache_row.payload, dict) else []
+    days: list[ProjectWeatherDayOut] = []
+    if isinstance(days_payload, list):
+        for row in days_payload[:WEATHER_DAY_COUNT]:
+            if not isinstance(row, dict):
+                continue
+            raw_date = str(row.get("date") or "").strip()
+            if not raw_date:
+                continue
+            try:
+                parsed_date = date.fromisoformat(raw_date)
+            except ValueError:
+                continue
+            days.append(
+                ProjectWeatherDayOut(
+                    date=parsed_date,
+                    temp_min=row.get("temp_min"),
+                    temp_max=row.get("temp_max"),
+                    description=row.get("description"),
+                    icon=row.get("icon"),
+                    precipitation_probability=row.get("precipitation_probability"),
+                    wind_speed=row.get("wind_speed"),
+                )
+            )
+
+    fetched_at = cache_row.fetched_at if cache_row else None
+    next_refresh_at = (
+        fetched_at + timedelta(seconds=WEATHER_MIN_REFRESH_SECONDS)
+        if fetched_at is not None
+        else None
+    )
+    provider = cache_row.provider if cache_row else WEATHER_PROVIDER
+    query = query_address or (cache_row.query_address if cache_row else "")
+    return ProjectWeatherOut(
+        project_id=project_id,
+        provider=provider,
+        query_address=query,
+        fetched_at=fetched_at,
+        next_refresh_at=next_refresh_at,
+        stale=stale,
+        from_cache=from_cache,
+        can_refresh=can_refresh,
+        message=message,
+        days=days,
+    )
 
 
 def _latest_general_report_file_by_path(db: Session) -> dict[str, Attachment]:
@@ -685,6 +1356,175 @@ def _normalize_task_status(raw_status: str | None, *, default: str = "open") -> 
     if status in {"completed", "complete"}:
         return "done"
     return status
+
+
+def _normalize_task_type(raw_task_type: str | None, *, default: str = "construction") -> str:
+    normalized = (raw_task_type or "").strip().lower()
+    if not normalized:
+        return default
+    mapped = TASK_TYPE_ALIASES.get(normalized)
+    if not mapped:
+        raise HTTPException(status_code=400, detail="Unknown task type")
+    return mapped
+
+
+def _normalize_class_template_ids(class_template_ids: list[int] | None) -> list[int]:
+    normalized: list[int] = []
+    seen: set[int] = set()
+    for raw_id in class_template_ids or []:
+        template_id = int(raw_id)
+        if template_id <= 0:
+            raise HTTPException(status_code=400, detail="Invalid class template id")
+        if template_id in seen:
+            continue
+        seen.add(template_id)
+        normalized.append(template_id)
+    return normalized
+
+
+def _class_template_task_rows(raw_templates: object) -> list[dict[str, str | None]]:
+    if not isinstance(raw_templates, list):
+        return []
+    rows: list[dict[str, str | None]] = []
+    for raw_item in raw_templates:
+        if not isinstance(raw_item, dict):
+            continue
+        title = str(raw_item.get("title") or "").strip()
+        if not title:
+            continue
+        description = str(raw_item.get("description") or "").strip() or None
+        task_type_raw = str(raw_item.get("task_type") or "construction")
+        try:
+            task_type = _normalize_task_type(task_type_raw, default="construction")
+        except HTTPException:
+            task_type = "construction"
+        rows.append({"title": title, "description": description, "task_type": task_type})
+    return rows
+
+
+def _project_class_template_out(template: ProjectClassTemplate) -> ProjectClassTemplateOut:
+    return ProjectClassTemplateOut(
+        id=template.id,
+        name=template.name,
+        materials_required=template.materials_required,
+        tools_required=template.tools_required,
+        task_templates=_class_template_task_rows(template.task_templates),
+    )
+
+
+def _project_class_templates_for_project(db: Session, project_id: int) -> list[ProjectClassTemplate]:
+    return list(
+        db.scalars(
+            select(ProjectClassTemplate)
+            .join(ProjectClassAssignment, ProjectClassAssignment.class_template_id == ProjectClassTemplate.id)
+            .where(ProjectClassAssignment.project_id == project_id)
+            .order_by(ProjectClassTemplate.name.asc(), ProjectClassTemplate.id.asc())
+        ).all()
+    )
+
+
+def _resolve_project_class_template(
+    db: Session, *, project_id: int, class_template_id: int
+) -> ProjectClassTemplate:
+    template = db.scalars(
+        select(ProjectClassTemplate)
+        .join(ProjectClassAssignment, ProjectClassAssignment.class_template_id == ProjectClassTemplate.id)
+        .where(
+            ProjectClassAssignment.project_id == project_id,
+            ProjectClassAssignment.class_template_id == class_template_id,
+        )
+        .limit(1)
+    ).first()
+    if not template:
+        raise HTTPException(status_code=400, detail="Class template is not assigned to this project")
+    return template
+
+
+def _class_template_materials_text(template: ProjectClassTemplate) -> str:
+    materials = (template.materials_required or "").strip()
+    tools = (template.tools_required or "").strip()
+    sections: list[str] = []
+    if materials:
+        sections.append(f"Materials:\n{materials}")
+    if tools:
+        sections.append(f"Tools:\n{tools}")
+    return "\n\n".join(sections).strip()
+
+
+def _sync_project_class_templates(
+    db: Session,
+    *,
+    project_id: int,
+    class_template_ids: list[int],
+    actor_user_id: int | None,
+) -> dict[str, int]:
+    requested_ids = _normalize_class_template_ids(class_template_ids)
+    existing_ids = set(
+        db.scalars(
+            select(ProjectClassAssignment.class_template_id).where(ProjectClassAssignment.project_id == project_id)
+        ).all()
+    )
+
+    templates_by_id: dict[int, ProjectClassTemplate] = {}
+    if requested_ids:
+        rows = db.scalars(select(ProjectClassTemplate).where(ProjectClassTemplate.id.in_(requested_ids))).all()
+        templates_by_id = {row.id: row for row in rows}
+        missing = [template_id for template_id in requested_ids if template_id not in templates_by_id]
+        if missing:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown class template id(s): {', '.join(str(value) for value in missing)}",
+            )
+
+    added_ids = [template_id for template_id in requested_ids if template_id not in existing_ids]
+    removed_ids = [template_id for template_id in existing_ids if template_id not in requested_ids]
+
+    if removed_ids:
+        db.execute(
+            delete(ProjectClassAssignment).where(
+                ProjectClassAssignment.project_id == project_id,
+                ProjectClassAssignment.class_template_id.in_(removed_ids),
+            )
+        )
+
+    for template_id in added_ids:
+        db.add(ProjectClassAssignment(project_id=project_id, class_template_id=template_id))
+
+    created_task_count = 0
+    for template_id in added_ids:
+        template = templates_by_id[template_id]
+        for task_template in _class_template_task_rows(template.task_templates):
+            task = Task(
+                project_id=project_id,
+                title=task_template["title"] or "",
+                description=task_template["description"],
+                materials_required=None,
+                task_type=_normalize_task_type(task_template["task_type"], default="construction"),
+                class_template_id=template.id,
+                status="open",
+            )
+            db.add(task)
+            db.flush()
+            created_task_count += 1
+            _record_project_activity(
+                db,
+                project_id=project_id,
+                actor_user_id=actor_user_id,
+                event_type="task.created",
+                message=f"Task created: {task.title}",
+                details={
+                    "task_id": task.id,
+                    "status": task.status,
+                    "source": "project_class_template",
+                    "class_template_id": template.id,
+                },
+            )
+
+    return {
+        "added": len(added_ids),
+        "removed": len(removed_ids),
+        "created_tasks": created_task_count,
+    }
 
 
 def _normalize_assignee_ids(candidate_ids: list[int | None]) -> list[int]:
@@ -735,6 +1575,8 @@ def _task_out(task: Task, assignee_ids: list[int]) -> TaskOut:
         description=task.description,
         materials_required=task.materials_required,
         storage_box_number=task.storage_box_number,
+        task_type=task.task_type,
+        class_template_id=task.class_template_id,
         status=task.status,
         due_date=task.due_date,
         start_time=task.start_time,
@@ -946,7 +1788,14 @@ async def _create_construction_report_impl(
 
         report_payload = ConstructionReportPayload(**payload_data).model_dump()
         send_telegram = str(form.get("send_telegram") or "").lower() in {"1", "true", "yes", "on"}
-        report_images = [file for file in form.getlist("images") if getattr(file, "filename", None)]
+        report_images = []
+        for _, form_value in form.multi_items():
+            if not hasattr(form_value, "read"):
+                continue
+            content_type = str(getattr(form_value, "content_type", "") or "").lower()
+            file_name = str(getattr(form_value, "filename", "") or "").strip()
+            if content_type.startswith("image/") or file_name:
+                report_images.append(form_value)
     else:
         payload = ConstructionReportCreate(**(await request.json()))
         requested_project_id = payload.project_id
@@ -981,11 +1830,12 @@ async def _create_construction_report_impl(
 
     report_image_rows: list[dict[str, str]] = []
     report_image_blobs: list[tuple[str, bytes]] = []
-    for image_file in report_images:
+    for image_index, image_file in enumerate(report_images, start=1):
         raw_image = await image_file.read()
         if not raw_image:
             continue
-        extension = image_file.filename.rsplit(".", 1)[-1] if "." in image_file.filename else "bin"
+        file_name = _report_image_filename(image_file, image_index)
+        extension = _report_image_extension(file_name, image_file.content_type)
         stored_path = store_encrypted_file(raw_image, extension)
         image_folder = "Bilder"
         if target_project_id is not None:
@@ -1000,7 +1850,7 @@ async def _create_construction_report_impl(
             construction_report_id=report.id,
             uploaded_by=current_user.id,
             folder_path=image_folder,
-            file_name=image_file.filename,
+            file_name=file_name,
             content_type=image_file.content_type or "application/octet-stream",
             stored_path=stored_path,
             is_encrypted=True,
@@ -1008,7 +1858,7 @@ async def _create_construction_report_impl(
         db.add(row)
         db.flush()
         report_image_rows.append({"id": str(row.id), "file_name": row.file_name, "content_type": row.content_type})
-        report_image_blobs.append((image_file.filename, raw_image))
+        report_image_blobs.append((file_name, raw_image))
 
     report_pdf = build_report_pdf_bytes(
         payload=report_payload,
@@ -1057,6 +1907,33 @@ async def _create_construction_report_impl(
 
     report.telegram_sent = telegram_sent
     db.add(report)
+    report_worker_hours = _construction_report_worker_hours(report_payload)
+    material_need_items_count = 0
+    if target_project_id is not None:
+        material_need_items_count = _create_material_needs_from_report_payload(
+            db,
+            project_id=target_project_id,
+            report_id=report.id,
+            payload=report_payload,
+            actor_user_id=current_user.id,
+        )
+        _accumulate_project_reported_hours(
+            db,
+            project_id=target_project_id,
+            reported_hours=report_worker_hours,
+        )
+        _record_project_activity(
+            db,
+            project_id=target_project_id,
+            actor_user_id=current_user.id,
+            event_type="report.created",
+            message=f"Construction report created ({report_date.isoformat()})",
+            details={
+                "report_id": report.id,
+                "reported_hours": report_worker_hours,
+                "material_need_items": material_need_items_count,
+            },
+        )
     db.commit()
     db.refresh(report)
     return {
@@ -1085,6 +1962,95 @@ def list_projects(
     return list(db.scalars(select(Project).where(Project.id.in_(member_project_ids))).all())
 
 
+@router.get("/materials", response_model=list[ProjectMaterialNeedOut])
+def list_project_material_needs(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    visible_projects = _active_projects_visible_to_user(db, current_user)
+    if not visible_projects:
+        return []
+    visible_project_ids = [project.id for project in visible_projects]
+    projects_by_id = {project.id: project for project in visible_projects}
+    status_rank = case(
+        (ProjectMaterialNeed.status == "order", 0),
+        (ProjectMaterialNeed.status == "on_the_way", 1),
+        (ProjectMaterialNeed.status == "available", 2),
+        else_=3,
+    )
+    rows = db.execute(
+        select(ProjectMaterialNeed, ConstructionReport)
+        .outerjoin(ConstructionReport, ConstructionReport.id == ProjectMaterialNeed.construction_report_id)
+        .where(ProjectMaterialNeed.project_id.in_(visible_project_ids))
+        .order_by(status_rank.asc(), ProjectMaterialNeed.created_at.desc(), ProjectMaterialNeed.id.desc())
+    ).all()
+    result: list[ProjectMaterialNeedOut] = []
+    for material_need, report in rows:
+        project = projects_by_id.get(material_need.project_id)
+        if not project:
+            continue
+        result.append(_project_material_need_out(material_need, project=project, report=report))
+    return result
+
+
+@router.patch("/materials/{material_need_id}", response_model=ProjectMaterialNeedOut)
+def update_project_material_need(
+    material_need_id: int,
+    payload: ProjectMaterialNeedUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    row = db.get(ProjectMaterialNeed, material_need_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Material item not found")
+    visible_project_ids = _project_ids_visible_to_user(db, current_user)
+    if row.project_id not in visible_project_ids:
+        raise HTTPException(status_code=403, detail="Project access denied")
+    project = db.get(Project, row.project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    previous_status = _normalize_material_need_status(row.status)
+    next_status = _normalize_material_need_status(payload.status, strict=True)
+    row.status = next_status
+    row.updated_by = current_user.id
+    row.updated_at = utcnow()
+    db.add(row)
+    if previous_status != next_status:
+        _record_project_activity(
+            db,
+            project_id=row.project_id,
+            actor_user_id=current_user.id,
+            event_type="material.status_updated",
+            message=f"Material status updated ({row.item[:80]})",
+            details={"material_need_id": row.id, "item": row.item, "from": previous_status, "to": next_status},
+        )
+    db.commit()
+    db.refresh(row)
+    report = db.get(ConstructionReport, row.construction_report_id) if row.construction_report_id is not None else None
+    return _project_material_need_out(row, project=project, report=report)
+
+
+@router.get("/project-class-templates", response_model=list[ProjectClassTemplateOut])
+def list_project_class_templates(
+    _: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    rows = db.scalars(select(ProjectClassTemplate).order_by(ProjectClassTemplate.name.asc(), ProjectClassTemplate.id.asc())).all()
+    return [_project_class_template_out(row) for row in rows]
+
+
+@router.get("/projects/{project_id}/class-templates", response_model=list[ProjectClassTemplateOut])
+def list_project_assigned_class_templates(
+    project_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    assert_project_access(db, current_user, project_id)
+    rows = _project_class_templates_for_project(db, project_id)
+    return [_project_class_template_out(row) for row in rows]
+
+
 @router.post("/projects", response_model=ProjectOut)
 def create_project(
     payload: ProjectCreate,
@@ -1097,6 +2063,10 @@ def create_project(
     existing = db.scalars(select(Project).where(Project.project_number == project_number)).first()
     if existing:
         raise HTTPException(status_code=400, detail="Project number already exists")
+    site_access_type, site_access_note = _normalize_project_site_access(
+        payload.site_access_type,
+        payload.site_access_note,
+    )
 
     project = Project(
         project_number=project_number,
@@ -1105,17 +2075,47 @@ def create_project(
         status=payload.status,
         last_state=payload.last_state,
         last_status_at=payload.last_status_at,
+        last_updated_at=utcnow(),
         customer_name=payload.customer_name,
         customer_address=payload.customer_address,
         customer_contact=payload.customer_contact,
         customer_email=payload.customer_email,
         customer_phone=payload.customer_phone,
+        site_access_type=site_access_type,
+        site_access_note=site_access_note,
         extra_attributes=payload.extra_attributes or {},
         created_by=current_user.id,
     )
     db.add(project)
     db.flush()
     _ensure_project_default_folders(db, project.id, created_by=current_user.id)
+    class_sync = _sync_project_class_templates(
+        db,
+        project_id=project.id,
+        class_template_ids=payload.class_template_ids,
+        actor_user_id=current_user.id,
+    )
+    _record_project_activity(
+        db,
+        project_id=project.id,
+        actor_user_id=current_user.id,
+        event_type="project.created",
+        message=f"Project created: {project.project_number}",
+        details={"project_number": project.project_number, "name": project.name},
+    )
+    if class_sync["added"] or class_sync["created_tasks"]:
+        _record_project_activity(
+            db,
+            project_id=project.id,
+            actor_user_id=current_user.id,
+            event_type="project.classes_updated",
+            message="Project classes assigned",
+            details={
+                "classes_added": class_sync["added"],
+                "classes_removed": class_sync["removed"],
+                "auto_created_tasks": class_sync["created_tasks"],
+            },
+        )
     db.commit()
     db.refresh(project)
 
@@ -1137,6 +2137,10 @@ def update_project(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     assert_project_access(db, current_user, project_id, manage_required=True)
+
+    previous_status = (project.status or "").strip()
+    previous_description = project.description or ""
+    class_sync: dict[str, int] | None = None
 
     if payload.project_number is not None:
         candidate = payload.project_number.strip()
@@ -1165,10 +2169,300 @@ def update_project(
         value = getattr(payload, field)
         if value is not None:
             setattr(project, field, value)
+
+    if "site_access_type" in payload.model_fields_set or "site_access_note" in payload.model_fields_set:
+        next_site_access_type, next_site_access_note = _normalize_project_site_access(
+            payload.site_access_type if "site_access_type" in payload.model_fields_set else project.site_access_type,
+            payload.site_access_note if "site_access_note" in payload.model_fields_set else project.site_access_note,
+        )
+        project.site_access_type = next_site_access_type
+        project.site_access_note = next_site_access_note
+
+    if "class_template_ids" in payload.model_fields_set and payload.class_template_ids is not None:
+        class_sync = _sync_project_class_templates(
+            db,
+            project_id=project.id,
+            class_template_ids=payload.class_template_ids,
+            actor_user_id=current_user.id,
+        )
+
+    next_status = (project.status or "").strip()
+    if next_status != previous_status:
+        _record_project_activity(
+            db,
+            project_id=project.id,
+            actor_user_id=current_user.id,
+            event_type="project.state_changed",
+            message=f"State changed to {next_status or '-'}",
+            details={"from": previous_status, "to": next_status},
+        )
+    elif project.description != previous_description:
+        _record_project_activity(
+            db,
+            project_id=project.id,
+            actor_user_id=current_user.id,
+            event_type="project.note_updated",
+            message="Internal note updated",
+            details={},
+        )
+    if class_sync and (class_sync["added"] or class_sync["removed"] or class_sync["created_tasks"]):
+        _record_project_activity(
+            db,
+            project_id=project.id,
+            actor_user_id=current_user.id,
+            event_type="project.classes_updated",
+            message="Project classes updated",
+            details={
+                "classes_added": class_sync["added"],
+                "classes_removed": class_sync["removed"],
+                "auto_created_tasks": class_sync["created_tasks"],
+            },
+        )
     db.add(project)
     db.commit()
     db.refresh(project)
     return project
+
+
+@router.get("/projects/{project_id}/finance", response_model=ProjectFinanceOut)
+def get_project_finance(
+    project_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    assert_project_access(db, current_user, project_id)
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return _project_finance_row_or_default(db, project_id)
+
+
+@router.patch("/projects/{project_id}/finance", response_model=ProjectFinanceOut)
+def update_project_finance(
+    project_id: int,
+    payload: ProjectFinanceUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if current_user.role not in {"admin", "ceo", "accountant"}:
+        raise HTTPException(status_code=403, detail="Finance access denied")
+    assert_project_access(db, current_user, project_id)
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    finance_row = db.get(ProjectFinance, project_id)
+    if not finance_row:
+        finance_row = ProjectFinance(project_id=project_id)
+        db.add(finance_row)
+        db.flush()
+
+    changed_fields: dict[str, float | None] = {}
+    for field in [
+        "order_value_net",
+        "down_payment_35",
+        "main_components_50",
+        "final_invoice_15",
+        "planned_costs",
+        "actual_costs",
+        "contribution_margin",
+        "planned_hours_total",
+    ]:
+        if field not in payload.model_fields_set:
+            continue
+        value = getattr(payload, field)
+        setattr(finance_row, field, value)
+        changed_fields[field] = value
+
+    finance_row.updated_by = current_user.id
+    finance_row.updated_at = utcnow()
+    db.add(finance_row)
+    _record_project_activity(
+        db,
+        project_id=project_id,
+        actor_user_id=current_user.id,
+        event_type="finance.updated",
+        message="Project finances updated",
+        details=changed_fields,
+    )
+    db.commit()
+    db.refresh(finance_row)
+    return ProjectFinanceOut.model_validate(finance_row)
+
+
+@router.get("/projects/{project_id}/overview", response_model=ProjectOverviewOut)
+def project_overview_detail(
+    project_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    assert_project_access(db, current_user, project_id)
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    open_tasks = int(
+        db.scalar(select(func.count(Task.id)).where(Task.project_id == project_id, Task.status != "done")) or 0
+    )
+    my_open_tasks = int(
+        db.scalar(
+            select(func.count(Task.id)).where(
+                Task.project_id == project_id,
+                Task.status != "done",
+                _my_task_filter(current_user.id),
+            )
+        )
+        or 0
+    )
+    return ProjectOverviewOut(
+        project=ProjectOut.model_validate(project),
+        open_tasks=open_tasks,
+        my_open_tasks=my_open_tasks,
+        finance=_project_finance_row_or_default(db, project_id),
+        recent_changes=_recent_project_activities_out(db, project_id, limit=10),
+    )
+
+
+@router.get("/projects/{project_id}/weather", response_model=ProjectWeatherOut)
+def get_project_weather(
+    project_id: int,
+    refresh: bool = True,
+    lang: str = "en",
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    assert_project_access(db, current_user, project_id)
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    query_address = _normalize_weather_address(project.customer_address)
+    cache_row = db.get(ProjectWeatherCache, project_id)
+    has_cached_days = bool(cache_row and isinstance(cache_row.payload, dict) and cache_row.payload.get("days"))
+    weather_language = _sanitize_weather_language(lang)
+    cached_language = (
+        _sanitize_weather_language(cache_row.payload.get("lang"))
+        if cache_row and isinstance(cache_row.payload, dict)
+        else "en"
+    )
+
+    if not query_address:
+        return _project_weather_out(
+            project_id=project_id,
+            query_address="",
+            cache_row=cache_row if has_cached_days else None,
+            stale=has_cached_days,
+            from_cache=has_cached_days,
+            can_refresh=False,
+            message="Project address is missing",
+        )
+
+    api_key = _effective_openweather_api_key(db)
+    if not api_key:
+        return _project_weather_out(
+            project_id=project_id,
+            query_address=query_address,
+            cache_row=cache_row if has_cached_days else None,
+            stale=has_cached_days,
+            from_cache=has_cached_days,
+            can_refresh=False,
+            message="OpenWeather API key is not configured",
+        )
+
+    now = utcnow()
+    last_fetch = cache_row.fetched_at if cache_row else None
+    next_refresh_at = (
+        last_fetch + timedelta(seconds=WEATHER_MIN_REFRESH_SECONDS)
+        if last_fetch is not None
+        else None
+    )
+    address_changed = bool(cache_row and cache_row.query_address != query_address)
+    language_changed = bool(cache_row and cached_language != weather_language)
+    throttle_blocked = bool(next_refresh_at and now < next_refresh_at and not address_changed and not language_changed)
+    should_refresh = bool(refresh and (not throttle_blocked or not has_cached_days))
+
+    if should_refresh:
+        try:
+            lat, lon, days = _fetch_openweather_forecast(
+                api_key=api_key,
+                query_address=query_address,
+                language=weather_language,
+            )
+            if cache_row is None:
+                cache_row = ProjectWeatherCache(
+                    project_id=project_id,
+                    provider=WEATHER_PROVIDER,
+                    query_address=query_address,
+                )
+            cache_row.provider = WEATHER_PROVIDER
+            cache_row.query_address = query_address
+            cache_row.latitude = lat
+            cache_row.longitude = lon
+            cache_row.payload = {"days": days, "lang": weather_language}
+            cache_row.fetched_at = now
+            cache_row.last_error = None
+            db.add(cache_row)
+            db.commit()
+            db.refresh(cache_row)
+            return _project_weather_out(
+                project_id=project_id,
+                query_address=query_address,
+                cache_row=cache_row,
+                stale=False,
+                from_cache=False,
+                can_refresh=False,
+            )
+        except Exception as exc:
+            error_text = str(exc).strip() or "Weather refresh failed"
+            error_lower = error_text.lower()
+            if "invalid api key" in error_lower:
+                error_text = "OpenWeather API key is invalid (or not active yet)"
+            elif "not subscribed" in error_lower:
+                error_text = "OpenWeather forecast API access is not enabled for this key"
+            if cache_row is not None and has_cached_days:
+                cache_row.last_error = error_text[:500]
+                db.add(cache_row)
+                db.commit()
+                db.refresh(cache_row)
+                return _project_weather_out(
+                    project_id=project_id,
+                    query_address=query_address,
+                    cache_row=cache_row,
+                    stale=True,
+                    from_cache=True,
+                    can_refresh=not throttle_blocked,
+                    message=f"Using cached weather values ({error_text[:140]})",
+                )
+            return _project_weather_out(
+                project_id=project_id,
+                query_address=query_address,
+                cache_row=None,
+                stale=True,
+                from_cache=False,
+                can_refresh=not throttle_blocked,
+                message=f"Weather fetch failed: {error_text[:180]}",
+            )
+
+    if cache_row is not None and has_cached_days:
+        return _project_weather_out(
+            project_id=project_id,
+            query_address=query_address,
+            cache_row=cache_row,
+            stale=bool(cache_row.last_error),
+            from_cache=True,
+            can_refresh=not throttle_blocked,
+            message=cache_row.last_error,
+        )
+
+    return _project_weather_out(
+        project_id=project_id,
+        query_address=query_address,
+        cache_row=None,
+        stale=False,
+        from_cache=False,
+        can_refresh=True,
+        message="No cached weather values yet",
+    )
 
 
 @router.delete("/projects/{project_id}")
@@ -1307,6 +2601,28 @@ async def upload_my_avatar(
     }
 
 
+@router.delete("/users/me/avatar")
+def delete_my_avatar(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    previous_path = current_user.avatar_stored_path
+    had_avatar = bool(previous_path)
+    current_user.avatar_stored_path = None
+    current_user.avatar_content_type = None
+    current_user.avatar_updated_at = None
+    db.add(current_user)
+    db.commit()
+
+    if previous_path:
+        try:
+            os.remove(previous_path)
+        except OSError:
+            pass
+
+    return {"ok": True, "deleted": had_avatar, "avatar_updated_at": None}
+
+
 @router.get("/users/{user_id}/avatar")
 def get_user_avatar(
     user_id: int,
@@ -1332,6 +2648,7 @@ def list_tasks(
     view: str = "all_open",
     project_id: int | None = None,
     week_start: date | None = None,
+    task_type: str | None = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -1342,8 +2659,13 @@ def list_tasks(
 
     if view == "my":
         stmt = stmt.where(_my_task_filter(current_user.id))
+        stmt = stmt.where(Task.status != "done")
     elif view == "all_open":
         stmt = stmt.where(Task.status != "done")
+        if current_user.role == "employee":
+            stmt = stmt.where(_my_task_filter(current_user.id))
+    elif view == "completed":
+        stmt = stmt.where(Task.status == "done")
         if current_user.role == "employee":
             stmt = stmt.where(_my_task_filter(current_user.id))
     elif view == "projects_overview":
@@ -1352,6 +2674,8 @@ def list_tasks(
 
     if week_start:
         stmt = stmt.where(Task.week_start == week_start)
+    if task_type:
+        stmt = stmt.where(Task.task_type == _normalize_task_type(task_type))
 
     tasks = list(db.scalars(stmt.order_by(Task.due_date.asc().nulls_last(), Task.id.desc())).all())
     return _tasks_out(db, tasks)
@@ -1364,15 +2688,32 @@ def create_task(
     db: Session = Depends(get_db),
 ):
     assert_project_access(db, current_user, payload.project_id, manage_required=True)
+    class_template: ProjectClassTemplate | None = None
+    if payload.class_template_id is not None:
+        class_template = _resolve_project_class_template(
+            db, project_id=payload.project_id, class_template_id=payload.class_template_id
+        )
     assignee_ids = _normalize_assignee_ids([*(payload.assignee_ids or []), payload.assignee_id])
     _validate_assignee_ids(db, assignee_ids)
-    task_data = payload.model_dump(exclude={"assignee_id", "assignee_ids"})
+    task_data = payload.model_dump(exclude={"assignee_id", "assignee_ids", "class_template_id"})
     task = Task(**task_data)
+    task.task_type = _normalize_task_type(payload.task_type, default="construction")
+    task.class_template_id = class_template.id if class_template else None
+    if class_template and not (task.materials_required or "").strip():
+        task.materials_required = _class_template_materials_text(class_template) or None
     task.status = _normalize_task_status(payload.status, default="open")
     task.assignee_id = assignee_ids[0] if assignee_ids else None
     db.add(task)
     db.flush()
     _sync_task_assignments(db, task, assignee_ids)
+    _record_project_activity(
+        db,
+        project_id=task.project_id,
+        actor_user_id=current_user.id,
+        event_type="task.created",
+        message=f"Task created: {task.title}",
+        details={"task_id": task.id, "status": task.status},
+    )
     db.commit()
     db.refresh(task)
     return _task_out(task, assignee_ids)
@@ -1390,6 +2731,9 @@ def update_task(
         raise HTTPException(status_code=404, detail="Task not found")
 
     existing_assignee_ids = _task_assignee_map(db, [task]).get(task.id, [])
+    previous_status = task.status
+    previous_due_date = task.due_date.isoformat() if task.due_date else None
+    previous_start_time = task.start_time.isoformat() if task.start_time else None
     can_manage = current_user.role in {"admin", "ceo", "planning"}
     if not can_manage and current_user.id not in existing_assignee_ids:
         raise HTTPException(status_code=403, detail="Task access denied")
@@ -1411,6 +2755,18 @@ def update_task(
             task.materials_required = payload.materials_required
         if "storage_box_number" in payload.model_fields_set:
             task.storage_box_number = payload.storage_box_number
+        if "task_type" in payload.model_fields_set:
+            task.task_type = _normalize_task_type(payload.task_type, default=task.task_type)
+        if "class_template_id" in payload.model_fields_set:
+            if payload.class_template_id is None:
+                task.class_template_id = None
+            else:
+                class_template = _resolve_project_class_template(
+                    db, project_id=task.project_id, class_template_id=payload.class_template_id
+                )
+                task.class_template_id = class_template.id
+                if "materials_required" not in payload.model_fields_set and not (task.materials_required or "").strip():
+                    task.materials_required = _class_template_materials_text(class_template) or None
         if "status" in payload.model_fields_set:
             task.status = _normalize_task_status(payload.status, default=task.status)
         if "due_date" in payload.model_fields_set:
@@ -1432,6 +2788,22 @@ def update_task(
             existing_assignee_ids = next_assignee_ids
 
     db.add(task)
+    if task.status != previous_status or (task.due_date.isoformat() if task.due_date else None) != previous_due_date or (
+        task.start_time.isoformat() if task.start_time else None
+    ) != previous_start_time:
+        _record_project_activity(
+            db,
+            project_id=task.project_id,
+            actor_user_id=current_user.id,
+            event_type="task.updated",
+            message=f"Task updated: {task.title}",
+            details={
+                "task_id": task.id,
+                "status": task.status,
+                "due_date": task.due_date.isoformat() if task.due_date else None,
+                "start_time": task.start_time.isoformat() if task.start_time else None,
+            },
+        )
     db.commit()
     db.refresh(task)
     return _task_out(task, existing_assignee_ids)
@@ -1447,6 +2819,14 @@ def delete_task(
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     assert_project_access(db, current_user, task.project_id, manage_required=True)
+    _record_project_activity(
+        db,
+        project_id=task.project_id,
+        actor_user_id=current_user.id,
+        event_type="task.deleted",
+        message=f"Task deleted: {task.title}",
+        details={"task_id": task.id},
+    )
     db.delete(task)
     db.commit()
     return {"ok": True}
@@ -1462,21 +2842,38 @@ def planning_assign_week(
     created_ids: list[int] = []
     for assignment in assignments:
         assert_project_access(db, current_user, assignment.project_id)
+        class_template: ProjectClassTemplate | None = None
+        if assignment.class_template_id is not None:
+            class_template = _resolve_project_class_template(
+                db, project_id=assignment.project_id, class_template_id=assignment.class_template_id
+            )
         assignee_ids = _normalize_assignee_ids([*(assignment.assignee_ids or []), assignment.assignee_id])
         _validate_assignee_ids(db, assignee_ids)
         assignment_data = assignment.model_dump(
-            exclude={"week_start", "due_date", "assignee_id", "assignee_ids", "status"}
+            exclude={"week_start", "due_date", "assignee_id", "assignee_ids", "status", "task_type", "class_template_id"}
         )
         due_date = assignment.due_date or week_start
         task = Task(
             **assignment_data,
             status=_normalize_task_status(assignment.status, default="open"),
+            task_type=_normalize_task_type(assignment.task_type, default="construction"),
+            class_template_id=class_template.id if class_template else None,
             due_date=due_date,
             week_start=week_start,
         )
+        if class_template and not (task.materials_required or "").strip():
+            task.materials_required = _class_template_materials_text(class_template) or None
         db.add(task)
         db.flush()
         _sync_task_assignments(db, task, assignee_ids)
+        _record_project_activity(
+            db,
+            project_id=task.project_id,
+            actor_user_id=current_user.id,
+            event_type="task.created",
+            message=f"Task created: {task.title}",
+            details={"task_id": task.id, "status": task.status},
+        )
         created_ids.append(task.id)
     db.commit()
     return {"ok": True, "created_task_ids": created_ids}
@@ -1486,6 +2883,7 @@ def planning_assign_week(
 def planning_week_view(
     week_start: date,
     project_id: int | None = None,
+    task_type: str | None = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -1496,6 +2894,8 @@ def planning_week_view(
 
     if current_user.role == "employee":
         stmt = stmt.where(_my_task_filter(current_user.id))
+    if task_type:
+        stmt = stmt.where(Task.task_type == _normalize_task_type(task_type))
 
     tasks = list(db.scalars(stmt.order_by(Task.due_date.asc().nulls_last(), Task.id.asc())).all())
     task_out_rows = _tasks_out(db, tasks)
@@ -1558,6 +2958,15 @@ def create_job_ticket(
     assert_project_access(db, current_user, project_id)
     ticket = JobTicket(project_id=project_id, **payload.model_dump())
     db.add(ticket)
+    db.flush()
+    _record_project_activity(
+        db,
+        project_id=project_id,
+        actor_user_id=current_user.id,
+        event_type="ticket.created",
+        message=f"Job ticket created: {ticket.title}",
+        details={"ticket_id": ticket.id},
+    )
     db.commit()
     db.refresh(ticket)
     return ticket
@@ -1604,6 +3013,14 @@ async def upload_job_ticket_attachment(
         is_encrypted=True,
     )
     db.add(attachment)
+    _record_project_activity(
+        db,
+        project_id=project_id,
+        actor_user_id=current_user.id,
+        event_type="ticket.updated",
+        message=f"Job ticket updated: #{ticket_id}",
+        details={"ticket_id": ticket_id, "file_name": file.filename},
+    )
     db.commit()
     db.refresh(attachment)
     return _attachment_out(attachment)
@@ -1722,9 +3139,7 @@ async def upload_project_file(
     db: Session = Depends(get_db),
 ):
     assert_project_access(db, current_user, project_id)
-    normalized_folder = _normalize_project_folder_path(folder, allow_empty=True)
-    if not normalized_folder:
-        normalized_folder = _auto_folder_for_upload(file.filename, file.content_type)
+    normalized_folder = _resolve_project_upload_folder(folder, file.filename, file.content_type)
     if _folder_path_is_protected(normalized_folder) and not _can_access_project_protected_folder(current_user):
         raise HTTPException(status_code=403, detail="Folder access denied")
     _register_project_folder(
@@ -1747,6 +3162,14 @@ async def upload_project_file(
         is_encrypted=True,
     )
     db.add(attachment)
+    _record_project_activity(
+        db,
+        project_id=project_id,
+        actor_user_id=current_user.id,
+        event_type="file.uploaded",
+        message=f"File uploaded: {file.filename}",
+        details={"file_name": file.filename, "folder": normalized_folder},
+    )
     db.commit()
     db.refresh(attachment)
     return _attachment_out(attachment)
@@ -1830,8 +3253,9 @@ def _dav_quote_path(value: str) -> str:
     return "/".join(quote(segment, safe="") for segment in value.split("/"))
 
 
-def _dav_project_href(project_id: int, relative_path: str = "", *, collection: bool) -> str:
-    base = f"/api/dav/projects/{project_id}/"
+def _dav_project_href(project_ref: str, relative_path: str = "", *, collection: bool) -> str:
+    encoded_ref = quote((project_ref or "").strip(), safe="")
+    base = f"/api/dav/projects/{encoded_ref}/"
     if not relative_path:
         return base
     encoded = _dav_quote_path(relative_path)
@@ -1959,6 +3383,7 @@ def _dav_folder_listing_responses(
     db: Session,
     *,
     project_id: int,
+    project_ref: str,
     user: User,
     folder_path: str,
     depth: str,
@@ -1980,7 +3405,7 @@ def _dav_folder_listing_responses(
     display_name = folder_path.split("/")[-1] if folder_path else root_display
     responses = [
         {
-            "href": _dav_project_href(project_id, folder_path, collection=True),
+            "href": _dav_project_href(project_ref, folder_path, collection=True),
             "displayname": display_name,
             "resourcetype_xml": "<D:resourcetype><D:collection/></D:resourcetype>",
             "last_modified": _rfc1123(project.last_status_at or project.created_at),
@@ -2026,7 +3451,7 @@ def _dav_folder_listing_responses(
         child_path = f"{folder_path}/{folder_name}" if folder_path else folder_name
         responses.append(
             {
-                "href": _dav_project_href(project_id, child_path, collection=True),
+                "href": _dav_project_href(project_ref, child_path, collection=True),
                 "displayname": folder_name,
                 "resourcetype_xml": "<D:resourcetype><D:collection/></D:resourcetype>",
                 "last_modified": _rfc1123(datetime.now(timezone.utc)),
@@ -2042,7 +3467,7 @@ def _dav_folder_listing_responses(
             continue
         responses.append(
             {
-                "href": _dav_project_href(project_id, child_path, collection=False),
+                "href": _dav_project_href(project_ref, child_path, collection=False),
                 "displayname": file_name,
                 "resourcetype_xml": "<D:resourcetype/>",
                 "last_modified": _rfc1123(attachment.created_at),
@@ -2100,9 +3525,10 @@ def webdav_projects_root(
             ]
         )
         for project in _active_projects_visible_to_user(db, user):
+            project_ref = quote(_project_webdav_ref(project), safe="")
             responses.append(
                 {
-                    "href": f"/api/dav/projects/{project.id}/",
+                    "href": f"/api/dav/projects/{project_ref}/",
                     "displayname": _project_webdav_display_name(project),
                     "resourcetype_xml": "<D:resourcetype><D:collection/></D:resourcetype>",
                     "last_modified": _rfc1123(project.last_status_at or project.created_at),
@@ -2258,6 +3684,7 @@ def webdav_archive_project_root(
         _dav_folder_listing_responses(
             db,
             project_id=project_id,
+            project_ref=str(project_id),
             user=user,
             folder_path="",
             depth=depth,
@@ -2295,6 +3722,7 @@ def webdav_archive_project_file(
                 _dav_folder_listing_responses(
                     db,
                     project_id=project_id,
+                    project_ref=str(project_id),
                     user=user,
                     folder_path=normalized_path,
                     depth=depth,
@@ -2332,16 +3760,18 @@ def webdav_archive_project_file(
     raise HTTPException(status_code=405, detail="Method not allowed")
 
 
-@router.api_route("/dav/projects/{project_id}", methods=["OPTIONS", "PROPFIND"])
-@router.api_route("/dav/projects/{project_id}/", methods=["OPTIONS", "PROPFIND"], include_in_schema=False)
+@router.api_route("/dav/projects/{project_ref}", methods=["OPTIONS", "PROPFIND"])
+@router.api_route("/dav/projects/{project_ref}/", methods=["OPTIONS", "PROPFIND"], include_in_schema=False)
 def webdav_project_root(
     request: Request,
-    project_id: int,
+    project_ref: str,
     db: Session = Depends(get_db),
     credentials: HTTPBasicCredentials | None = Depends(webdav_security),
 ):
     user = _webdav_authenticate(credentials, db)
-    assert_project_access(db, user, project_id)
+    project = _resolve_project_by_webdav_ref(db, project_ref)
+    assert_project_access(db, user, project.id)
+    canonical_ref = _project_webdav_ref(project)
 
     if request.method == "OPTIONS":
         return Response(status_code=204, headers=_dav_headers())
@@ -2350,7 +3780,8 @@ def webdav_project_root(
     return _dav_multistatus(
         _dav_folder_listing_responses(
             db,
-            project_id=project_id,
+            project_id=project.id,
+            project_ref=canonical_ref,
             user=user,
             folder_path="",
             depth=depth,
@@ -2359,26 +3790,28 @@ def webdav_project_root(
 
 
 @router.api_route(
-    "/dav/projects/{project_id}/{file_path:path}",
+    "/dav/projects/{project_ref}/{file_path:path}",
     methods=["OPTIONS", "PROPFIND", "GET", "HEAD", "PUT", "DELETE", "MKCOL"],
 )
 async def webdav_project_file(
     request: Request,
-    project_id: int,
+    project_ref: str,
     file_path: str,
     db: Session = Depends(get_db),
     credentials: HTTPBasicCredentials | None = Depends(webdav_security),
 ):
     user = _webdav_authenticate(credentials, db)
-    assert_project_access(db, user, project_id)
+    project = _resolve_project_by_webdav_ref(db, project_ref)
+    assert_project_access(db, user, project.id)
+    canonical_ref = _project_webdav_ref(project)
 
     normalized_path = _sanitize_dav_relative_path(file_path, allow_empty=True)
 
     if request.method == "OPTIONS":
         return Response(status_code=204, headers=_dav_headers())
 
-    file_map = _latest_project_file_by_path(db, project_id, user)
-    folder_paths = _project_folder_paths_for_user(db, project_id, user)
+    file_map = _latest_project_file_by_path(db, project.id, user)
+    folder_paths = _project_folder_paths_for_user(db, project.id, user)
     latest = file_map.get(normalized_path)
 
     if request.method == "PROPFIND":
@@ -2388,7 +3821,8 @@ async def webdav_project_file(
             return _dav_multistatus(
                 _dav_folder_listing_responses(
                     db,
-                    project_id=project_id,
+                    project_id=project.id,
+                    project_ref=canonical_ref,
                     user=user,
                     folder_path=normalized_path,
                     depth=depth,
@@ -2399,7 +3833,7 @@ async def webdav_project_file(
         return _dav_multistatus(
             [
                 {
-                    "href": _dav_project_href(project_id, normalized_path, collection=False),
+                    "href": _dav_project_href(canonical_ref, normalized_path, collection=False),
                     "displayname": latest.file_name,
                     "resourcetype_xml": "<D:resourcetype/>",
                     "last_modified": _rfc1123(latest.created_at),
@@ -2429,7 +3863,7 @@ async def webdav_project_file(
             raise HTTPException(status_code=403, detail="Folder access denied")
         _register_project_folder(
             db,
-            project_id=project_id,
+            project_id=project.id,
             folder_path=folder_path,
             created_by=user.id,
         )
@@ -2448,7 +3882,7 @@ async def webdav_project_file(
             raise HTTPException(status_code=403, detail="Folder access denied")
         _register_project_folder(
             db,
-            project_id=project_id,
+            project_id=project.id,
             folder_path=folder_path,
             created_by=user.id,
         )
@@ -2458,7 +3892,7 @@ async def webdav_project_file(
         extension = file_name.rsplit(".", 1)[-1] if "." in file_name else "bin"
         stored_path = store_encrypted_file(raw, extension)
         attachment = Attachment(
-            project_id=project_id,
+            project_id=project.id,
             uploaded_by=user.id,
             folder_path=folder_path,
             file_name=file_name,
@@ -2467,12 +3901,28 @@ async def webdav_project_file(
             is_encrypted=True,
         )
         db.add(attachment)
+        _record_project_activity(
+            db,
+            project_id=project.id,
+            actor_user_id=user.id,
+            event_type="file.uploaded",
+            message=f"File uploaded: {file_name}",
+            details={"file_name": file_name, "folder": folder_path},
+        )
         db.commit()
         return Response(status_code=201, headers=_dav_headers())
 
     if request.method == "DELETE":
         if not latest:
             raise HTTPException(status_code=404, detail="File not found")
+        _record_project_activity(
+            db,
+            project_id=project.id,
+            actor_user_id=user.id,
+            event_type="file.deleted",
+            message=f"File deleted: {latest.file_name}",
+            details={"file_name": latest.file_name, "folder": latest.folder_path},
+        )
         db.delete(latest)
         db.commit()
         return Response(status_code=204, headers=_dav_headers())
@@ -2996,6 +4446,7 @@ def projects_overview(
                 "project_number": project.project_number,
                 "name": project.name,
                 "status": project.status,
+                "last_updated_at": project.last_updated_at,
                 "open_tasks": total_open or 0,
                 "sites": total_sites or 0,
             }

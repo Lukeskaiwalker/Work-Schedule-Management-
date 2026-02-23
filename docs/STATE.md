@@ -153,6 +153,21 @@
 - Next: expand UI E2E coverage for the new workspace layout and polish chat UX details (unread indicators, typing states).
 - Blockers: none.
 
+## Compacted Update (2026-02-23, business-workspace handoff bundle)
+- Changed: added transfer-ready context docs `docs/HANDOFF_CONTEXT.md` and `docs/CHANGELOG_HANDOFF.md` so work can continue in a ChatGPT Business workspace without losing technical state.
+- Verified: `./scripts/test.sh` pass (`37 passed` API tests + web production build).
+- Next: use the new handoff docs as the initial brief in the Business workspace and continue release hardening from latest open items.
+- Blockers: none.
+
+## Compacted Update (2026-02-23, weather DE localization + overview header consistency)
+- Changed:
+  - weather endpoint now accepts `lang` and requests OpenWeather localized descriptions (`de`/`en`), including language-aware cache refresh behavior,
+  - frontend passes UI language to weather endpoint and reloads weather when language changes,
+  - project overview card headers were normalized to the same font size and top alignment across overview blocks.
+- Verified: `./scripts/test.sh` pass (`37 passed` API + web build).
+- Next: quick browser smoke check on project `#103` in DE mode to confirm localized weather descriptions in live UI.
+- Blockers: none.
+
 ## Compacted Update (2026-02-18, "changes not visible" deploy check)
 - Changed: rebuilt stale `web`/`api` images with `--no-cache` and restarted compose stack to ensure latest refactor is served; validated bundle hash rollout (`index-DfgQ217n.js`) on both localhost and LAN URL.
 - Verified: browser smoke login confirms new UI is active (left project list + top project tabs + independent chat); `./scripts/test.sh` pass (`5 passed` API + web build); stack healthy in `docker compose ps`.
@@ -243,6 +258,22 @@
   - `https://localhost/api` returns service `ok`.
   - Live smoke: `/api/files/2/download` and `/api/files/2/preview` return `200` with safe Unicode `Content-Disposition`.
   - Live smoke: wiki create/list endpoints return expected payloads.
+
+## Compacted Update (2026-02-23, project class templates + class-based task bootstrap)
+- Changed:
+  - Added reusable project-class templates in backend data model with CSV template import/export endpoints in Admin tools.
+  - Added project-to-class multi-assignment support during project create/edit.
+  - Added automatic task bootstrap from selected classes (title + description only, no due date, no assignees).
+  - Added task-level optional class selection to prefill materials/tools from assigned project classes.
+  - Added frontend UI for:
+    - selecting multiple classes in project modal,
+    - class-based material/tool autofill in task create/edit and weekly task modal,
+    - admin center class-template download/upload flow.
+- Verified:
+  - `./scripts/test.sh` pass (`38 passed` API tests + web build).
+  - Added API integration test:
+    - `test_project_class_templates_import_and_autocreate_tasks` (CSV import, assignment, auto-created tasks, class-prefilled task material behavior).
+  - `docker compose up -d --build` pass; stack healthy.
 - Next: add UI E2E for file-preview modal and wiki CRUD in mobile viewport.
 - Blockers: none.
 
@@ -1346,4 +1377,348 @@
   - `docker compose up -d --build && docker compose ps` pass; `db/api/web/caddy` healthy.
 - Next:
   - Server install: clone repo on target host, configure env/secrets, run `docker compose up -d --build`, then run restore/import as needed.
+- Blockers: none.
+
+## Compacted Update (2026-02-22, backup encryption key file for test DB)
+- Changed:
+  - Generated local backup key file `config/backup-test-db.key` (strong random, chmod `600`) for encrypted backup operations.
+  - Updated `.gitignore` to exclude key material via `config/*.key`.
+  - Verified encrypted backup creation using key file-derived passphrase:
+    - `BACKUP_PASSPHRASE="$(cat config/backup-test-db.key)" ./scripts/backup.sh`
+    - produced `backups/backup-20260222-211743.tar.enc`.
+- Verified:
+  - `./scripts/test.sh` pass (`32 passed` API tests + web build).
+  - `docker compose up -d --build && docker compose ps` pass; `db/api/web/caddy` healthy.
+- Next:
+  - Optional: add `BACKUP_PASSPHRASE_FILE` support to backup/restore scripts to avoid command substitution in shell history.
+- Blockers: none.
+
+## Compacted Update (2026-02-22, server hotfix: login hardening + DE default + data sync)
+- Changed:
+  - Removed hardcoded login field defaults (`admin@example.com` / `ChangeMe123!`) from web app.
+  - Forced UI startup language default to German (`DE`) on every fresh load.
+  - Added `INITIAL_ADMIN_BOOTSTRAP` config toggle in API startup; server is set to `false` to prevent automatic recreation of bootstrap admin.
+  - Deployed patch to live server (`192.168.1.127`) and rebuilt stack.
+  - Uploaded and restored encrypted backup (`backup-20260222-211743.tar.enc`) using key file (`config/backup-test-db.key`).
+  - Uploaded and extracted `local wiki` dataset to server mount path (`~/SMPL-all/local wiki`).
+  - Deactivated restored bootstrap account `admin@example.com` after restore so default credentials are blocked.
+- Verified:
+  - `./scripts/test.sh` pass (`32 passed` API tests + web build).
+  - Server API healthy: `https://smpl-office.duckdns.org/api -> {"status":"ok"}`.
+  - Default login blocked post-restore: `admin@example.com / ChangeMe123! -> 401`.
+  - Wiki content present on server (`find "local wiki" -type f | wc -l -> 2364`).
+- Next:
+  - Optional: add one-time startup guard that auto-disables known bootstrap credentials if still active.
+- Blockers: none.
+
+## Compacted Update (2026-02-22, bootstrap auto-disable + access recovery)
+- Changed:
+  - Added persistent runtime setting support (`app_settings`) and wired bootstrap lifecycle guard.
+  - Initial admin bootstrap now auto-completes (and stops recreating default admin) when initial credentials are changed.
+  - Profile update of initial bootstrap admin now marks bootstrap as completed server-side.
+  - Added Alembic migration `20260222_0015_bootstrap_runtime_settings`.
+  - Recovered live access on server by resetting active admin account password and confirming API login works.
+- Verified:
+  - `./scripts/test.sh` pass (`33 passed` API tests + web build).
+  - Live login verified on `https://smpl-office.duckdns.org` with active admin account after recovery.
+- Next:
+  - Optional: add one-click admin UI banner when bootstrap completion is detected.
+- Blockers: none.
+
+## Compacted Update (2026-02-22, live deploy verification + backup/wiki sync)
+- Changed:
+  - Deployed bootstrap-completion patch to `192.168.1.127` and ran Alembic migration `20260222_0015`.
+  - Fixed deployment incident caused by macOS AppleDouble metadata files (`._*`) accidentally copied into API source; removed them and rebuilt API image.
+  - Persisted bootstrap completion flag on live DB and rotated default bootstrap admin password hash while keeping that account inactive.
+  - Generated fresh encrypted local backup (`backup-20260222-224157.tar.enc`) and uploaded it to server.
+- Verified:
+  - `docker compose ps` on server: `db/api/web/caddy` healthy.
+  - API health: `https://smpl-office.duckdns.org/api` returns `status=ok`.
+  - Login checks: `employee.alex@example.com` works; `admin@example.com / ChangeMe123!` blocked (`401`).
+  - Wiki content still present on server (`2364` files).
+- Next:
+  - Optional: rotate temporary emergency admin password after user confirms access restored.
+- Blockers: none.
+
+## Compacted Update (2026-02-23, project overview/finance structure + project activity log)
+- Changed:
+  - Added new project data model support:
+    - `projects.last_updated_at`
+    - `project_finances` (single-row finance data per project)
+    - `project_activities` (typed project change log)
+  - Added backend endpoints:
+    - `GET /api/projects/{id}/overview`
+    - `GET /api/projects/{id}/finance`
+    - `PATCH /api/projects/{id}/finance`
+  - Implemented project last-update + change-log triggers for:
+    - task create/update/delete,
+    - project state changes,
+    - job ticket create/attachment update,
+    - project file upload/delete (including WebDAV PUT/DELETE),
+    - construction report creation,
+    - finance updates.
+  - Restructured project UI tabs to:
+    - `Overview`, `Tasks`, `Job Tickets`, `Files`, `Finances`.
+  - Implemented project `Overview` tab blocks:
+    - open vs personal task glance,
+    - address map preview,
+    - project metadata (ID/state/last update/customer),
+    - contact block,
+    - editable internal note (edit icon),
+    - last 10 changes feed.
+  - Implemented `Finances` tab with edit-icon flow and fields:
+    - `Auftragswert netto`, `35% Anzahlung`, `50% Hauptkomponenten`, `15% Schlussrechnung`,
+    - `Geplante Kosten`, `Tatsächliche Kosten`, `Deckungsbeitrag`.
+- Verified:
+  - `./scripts/test.sh` pass (`33 passed` API tests + web build).
+- Next:
+  - Optional: add sorting/filtering controls directly inside the new project-level change feed.
+- Blockers: none.
+
+## Compacted Update (2026-02-23, project overview map + open-task list refinement)
+- Changed:
+  - Project overview map query now uses only the project address field (`customer_address`) and no customer/project name suffixes.
+  - Removed separate `Open in maps` text button; map card itself is now the click target to open external maps.
+  - Replaced overview open-task counter-only block with a real open-task list (title, due date, assignees).
+  - Open-task list is fixed-height and scrollable so the card does not keep growing when many tasks exist.
+- Verified:
+  - `./scripts/test.sh` pass (`33 passed`, web build successful).
+- Next:
+  - Optional: add direct click-to-edit/open behavior from each open-task row.
+- Blockers: none.
+
+## Compacted Update (2026-02-23, overview task card simplification + weather placeholder)
+- Changed:
+  - Project overview open-tasks card now shows only:
+    - main header (`Projektüberblick`/`Project glance`)
+    - subheading (`Offene Aufgaben`/`Open tasks`)
+    - scrollable open-task list.
+  - Removed task counters and removed `My open tasks` text from this card to save space.
+  - Tightened header/subheading spacing in the open-tasks card.
+  - Added new weather placeholder card on project overview (`Wetter`/`Weather`) with a two-card width on desktop as preparation for real weather integration.
+- Verified:
+  - `./scripts/test.sh` pass (`33 passed`, web build successful).
+- Next:
+  - Implement real weather data + forecast rendering once data source/refresh rules are finalized.
+- Blockers: none.
+
+## Compacted Update (2026-02-23, project weather integration + admin API key settings)
+- Changed:
+  - Added project weather backend with OpenWeather integration:
+    - endpoint: `GET /api/projects/{id}/weather?refresh=true|false`
+    - geocodes project address and loads forecast days.
+  - Added per-project weather cache table with offline fallback:
+    - table: `project_weather_cache`
+    - returns last known forecast when provider is unavailable.
+  - Added project-level refresh throttling:
+    - max one provider refresh per project every 15 minutes.
+    - repeated project clicks inside cooldown return cached data.
+  - Added admin/CEO weather credential management:
+    - `GET /api/admin/settings/weather`
+    - `PATCH /api/admin/settings/weather` (`api_key` set/clear).
+  - Updated project overview weather card:
+    - renders project forecast for selected project address,
+    - shows cache/offline status and last update timestamp.
+  - Updated profile `Admin tools` UI with OpenWeather API key configuration form.
+  - Added migration `20260223_0017_project_weather_cache`.
+- Verified:
+  - `./scripts/test.sh` pass (`35 passed`, web build successful).
+- Next:
+  - Optional: add manual refresh button and provider-health indicator in weather card.
+- Blockers: none.
+
+## Compacted Update (2026-02-23, weather 401 diagnosis + clearer API-key errors)
+- Changed:
+  - Improved weather provider error handling so OpenWeather API responses are surfaced as readable messages instead of raw HTTP exceptions.
+  - Added explicit mapping for common key/subscription failures:
+    - invalid key -> `OpenWeather API key is invalid (or not active yet)`
+    - missing forecast access -> `OpenWeather forecast API access is not enabled for this key`
+- Verified:
+  - Reproduced issue outside app using the same key against OpenWeather geocoding endpoint (`401 Invalid API key`).
+  - `./scripts/test.sh` pass (`35 passed`, web build successful).
+- Next:
+  - User to replace key with a valid OpenWeather key and re-test project weather.
+- Blockers:
+  - Current configured OpenWeather key is rejected by provider (`401 Invalid API key`).
+
+## Compacted Update (2026-02-23, weather changed to 5-day forecast)
+- Changed:
+  - Switched weather provider endpoint from OpenWeather One Call 3.0 to OpenWeather 2.5 five-day forecast feed.
+  - Added daily aggregation from 3-hour slots into 5 day-cards (min/max temperature, rain probability, wind, icon/description near midday).
+  - Updated API weather output limit to 5 days and aligned Admin UI helper text to 5-day forecast wording.
+  - Kept existing per-project 15-minute refresh throttle and offline cached fallback behavior unchanged.
+- Verified:
+  - `./scripts/test.sh` pass (`35 passed`, web build successful).
+  - `docker compose up -d` successful; stack healthy.
+- Next:
+  - Re-test weather in UI with the configured API key after container refresh.
+- Blockers:
+  - If OpenWeather still returns `401`, the key itself is invalid/inactive and must be replaced.
+
+## Compacted Update (2026-02-23, weather address normalization)
+- Changed:
+  - Normalized `customer_address` before sending geocode requests: strip whitespace, collapse newline/comma patterns, and ensure a space after commas.
+  - This avoids lookups like `Nolsenstr. 62,58452 Witten` that previously returned `Address could not be geocoded`.
+  - Added geocode fallback candidates per project address (`base`, `base + Deutschland`, `base + Germany`) to improve successful lookup rates.
+  - Updated project create/edit address input handling to store normalized address format and display a format hint.
+- Verified:
+  - `./scripts/test.sh` pass (`36 passed`, web build successful).
+- Next:
+  - Confirm addresses with unusual separators now resolve once the API key is valid.
+- Blockers: none.
+
+## Compacted Update (2026-02-23, weather ZIP fallback for geocoding)
+- Changed:
+  - Added OpenWeather ZIP geocode fallback (`/geo/1.0/zip`) when direct address geocoding returns no result.
+  - ZIP fallback is derived from project address (e.g. `58453` -> `58453,DE`) and used before returning `Address could not be geocoded`.
+  - This fixes address patterns like project `#103` where street-level direct lookup fails but postal lookup succeeds.
+- Verified:
+  - `./scripts/test.sh` pass (`37 passed`, web build successful).
+- Next:
+  - Re-open affected projects once to refresh weather with the new fallback path.
+- Blockers: none.
+
+## Compacted Update (2026-02-23, project last-update refresh + customer appointment task type)
+- Changed:
+  - Project overview now updates local project state from `GET /projects/{id}/overview` so `last_updated_at` reflects task creation immediately in the project page.
+  - Frontend datetime parsing now treats server UTC-naive timestamps as UTC (adds `Z` when timezone is missing) to prevent 1-hour offset in displayed times.
+  - Added new task type `customer_appointment` across backend + frontend:
+    - accepted in task create/update and planning filters,
+    - available in project task creation, weekly task modal, and task edit modal,
+    - added as third weekly planning subview toggle.
+  - Extended admin project-class CSV template examples with a customer-appointment task row.
+- Verified:
+  - `./scripts/test.sh` pass (`38 passed`, web build successful).
+- Next:
+  - Optional: add distinct visual badge/chip style per planning task type for faster scanning in dense weeks.
+- Blockers: none.
+
+## Compacted Update (2026-02-23, project accumulates construction-report worker hours)
+- Changed:
+  - Added persistent project-level hour accumulator `project_finances.reported_hours_total`.
+  - Construction report creation now parses worker `start_time`/`end_time` rows and automatically adds valid durations to the corresponding project total.
+  - Project overview now displays a glance value for reported report-hours (`Gemeldete Stunden (Berichte)`).
+  - Report activity details now include `reported_hours` for auditability in recent changes.
+  - Added migration `20260224_0020_project_finance_reported_hours`.
+- Verified:
+  - `./scripts/test.sh` pass (`38 passed`, web build successful).
+  - Updated workflow test validates `reported_hours_total` is available via both `/projects/{id}/finance` and `/projects/{id}/overview`.
+- Next:
+  - Optional: add a per-employee hour breakdown per project (not only total) if required for dispatch/review workflows.
+- Blockers: none.
+
+## Compacted Update (2026-02-23, project site-access options in create form + overview contact)
+- Changed:
+  - Added project fields for site access handling:
+    - `site_access_type` (dropdown value),
+    - `site_access_note` (optional detail text for selected access types).
+  - Project creation/edit form now includes dropdown options:
+    - `Kunde ist Vorort`,
+    - `frei zugänglich`,
+    - `Schlüssel im Büro`,
+    - `Schlüssel abholen bei` (optional text input shown),
+    - `Zugang über Code` (optional text input shown),
+    - `Schlüsselbox` (optional text input shown),
+    - `Anrufen vor Abfahrt`.
+  - Contact block in project overview now shows selected site-access info (including optional detail text where relevant).
+  - Added migration `20260224_0021_project_site_access_fields`.
+- Verified:
+  - `./scripts/test.sh` pass (`38 passed`, web build successful).
+  - `docker compose up -d --build` successful; API/web/db/caddy healthy.
+- Next:
+  - Optional: include site-access columns in admin project import template if this data should be mass-imported.
+- Blockers: none.
+
+## Compacted Update (2026-02-23, avatar removal + user archive view in admin center)
+- Changed:
+  - Added profile-avatar removal endpoint `DELETE /api/users/me/avatar` (idempotent).
+  - Profile page now has `Profilbild entfernen` / `Remove profile picture` action.
+  - Admin user lists now separate active users from archived users:
+    - deleted users are hidden from main active tables,
+    - new `Benutzerarchiv` / `User archive` section shows archived users,
+    - archived users can be restored from archive (`is_active=true` patch path already in place).
+  - Delete-user UI language now reflects archive behavior (`archive` instead of `deactivate`).
+- Verified:
+  - `./scripts/test.sh` pass (`38 passed`, web build successful).
+  - targeted avatar test pass (`test_profile_avatar_upload_and_preview`).
+- Next:
+  - Optional: add server-side filter parameters to `/api/admin/users` (`active` / `archived`) if user list volume grows.
+- Blockers: none.
+
+## Compacted Update (2026-02-23, materials side menu from construction report office material need)
+- Changed:
+  - Added backend persistence for report-driven office material demand via new table `project_material_needs`.
+  - Construction report creation now parses `payload.office_material_need` entries and auto-creates material queue rows for the linked project.
+  - Added API endpoints:
+    - `GET /materials` (active-project material queue visible to current user),
+    - `PATCH /materials/{id}` (set availability state).
+  - Added new sidebar menu view `Materials` in web app:
+    - lists auto-imported material items from construction reports,
+    - per-item state selector with color-highlighted states:
+      - `Order`,
+      - `On its way`,
+      - `Available`.
+  - Added migration `20260224_0023_project_material_needs`.
+- Verified:
+  - `./scripts/test.sh` pass (`38 passed`, web build successful).
+  - `docker compose up -d --build api web` successful and migration applied (`20260224_0023`).
+- Next:
+  - Optional: add explicit quantity parsing (`20m`, `3x`) into structured fields if procurement analytics is needed later.
+- Blockers: none.
+
+## Compacted Update (2026-02-23, WebDAV project-reference alignment + file upload root/new-folder flow)
+- Changed:
+  - WebDAV project routes now resolve both project number and numeric ID (`/api/dav/projects/{project_ref}`), so file-share links can use the same project reference users see in the UI.
+  - WebDAV root listing now emits active project links by `project_number` (fallback to numeric ID only if number is missing).
+  - WebDAV project display names no longer append internal DB ID.
+  - File upload endpoint now supports explicit root-folder upload by sending `folder=/` (instead of forcing auto-folder routing).
+  - File upload modal now supports:
+    - explicit base-folder selection (`/`),
+    - optional inline new-folder path that is auto-created and used during upload.
+  - WebDAV helper tooltip now copies current-project links based on project number and clarifies multi-user mount behavior (same link, individual credentials).
+- Verified:
+  - `./scripts/test.sh` pass (`38 passed`, web build successful).
+  - Focused workflow tests for WebDAV + folder behavior pass.
+- Next:
+  - Optional: expose a one-click “copy LAN WebDAV URL” helper that automatically swaps origin host with configured LAN host if teams frequently mount from other devices.
+- Blockers: none.
+
+## Compacted Update (2026-02-23, construction report worker search + mobile image/time input reliability)
+- Changed:
+  - Construction report worker rows now support user-name search suggestions via assignable-user datalist.
+  - Worker time entry now supports digit-only mobile input (for example `0730`), with automatic normalization to `HH:MM`.
+  - Added mobile-focused camera upload field in construction report form (`camera_images`) and merged file collection from both picker and camera inputs.
+  - Backend construction report worker-time parsing now accepts both `HH:MM` and compact numeric times (`730`, `1600`) for reported-hours calculation.
+  - Backend report image ingestion now tolerates missing/weak filename metadata by generating stable fallback filenames and extension inference.
+- Verified:
+  - `docker compose run --rm --build api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_workflows.py -k project_task_planning_ticket_file_and_report_flow'` pass.
+  - `./scripts/test.sh` pass (`38 passed`, web build successful).
+- Next:
+  - Optional: add client-side image downscaling/compression for very large mobile photos to reduce upload bandwidth and timeout risk.
+- Blockers: none.
+
+## Compacted Update (2026-02-23, admin update menu + release status check/install workflow)
+- Changed:
+  - Added admin update endpoints:
+    - `GET /api/admin/updates/status`
+    - `POST /api/admin/updates/install`
+  - Update status now checks configured GitHub repository release/commit metadata and reports:
+    - current version/commit (from env),
+    - latest release/tag or branch commit,
+    - update-available flag,
+    - auto-install support state for current deployment.
+  - Added admin update menu in web UI (`Profile -> Admin tools` and `Admin` view):
+    - check update status,
+    - run dry-run update command sequence,
+    - run install sequence when auto-install is supported,
+    - show manual command steps when auto-install is unavailable (default Docker deployment).
+  - Added config/env support for release/update metadata:
+    - `APP_RELEASE_VERSION`, `APP_RELEASE_COMMIT`,
+    - `UPDATE_REPO_OWNER`, `UPDATE_REPO_NAME`, `UPDATE_REPO_BRANCH`, `UPDATE_REPO_PATH`,
+    - `GITHUB_API_TOKEN` (optional).
+- Verified:
+  - `./scripts/test.sh` pass (`40 passed`, web build successful).
+  - `docker compose run --rm --build api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_auth_rbac.py'` pass.
+- Next:
+  - Optional: wire CI/CD to set `APP_RELEASE_VERSION` and `APP_RELEASE_COMMIT` automatically for exact update comparisons.
 - Blockers: none.

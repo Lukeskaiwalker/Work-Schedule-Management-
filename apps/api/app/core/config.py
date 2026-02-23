@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     initial_admin_email: str = "admin@example.com"
     initial_admin_password: str = "admin123"
     initial_admin_name: str = "Initial Admin"
+    initial_admin_bootstrap: bool = True
 
     file_encryption_key: str = Field(default="", description="Fernet key")
     uploads_dir: str = "/data/uploads"
@@ -28,6 +29,14 @@ class Settings(BaseSettings):
     report_logo_path: str = "/app/app/assets/logo.jpeg"
     app_timezone: str = "Europe/Berlin"
     app_public_url: str = "https://localhost"
+    openweather_api_key: str = ""
+    app_release_version: str = ""
+    app_release_commit: str = ""
+    update_repo_owner: str = "Lukeskaiwalker"
+    update_repo_name: str = "Work-Schedule-Management-"
+    update_repo_branch: str = "main"
+    update_repo_path: str = ""
+    github_api_token: str = ""
 
     mail_from: str = "technik@smpl-energy.de"
     smtp_host: str = ""
