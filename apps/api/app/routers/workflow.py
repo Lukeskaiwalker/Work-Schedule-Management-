@@ -527,11 +527,29 @@ def _thread_visible_to_user(db: Session, user: User, thread: ChatThread) -> bool
 
 
 def _webdav_authenticate(credentials: HTTPBasicCredentials | None, db: Session) -> User:
+    auth_header = {'WWW-Authenticate': 'Basic realm="SMPL WebDAV", charset="UTF-8"'}
     if credentials is None:
-        raise HTTPException(status_code=401, detail="WebDAV authentication required", headers={"WWW-Authenticate": "Basic"})
-    user = db.scalars(select(User).where(User.email == credentials.username)).first()
+        raise HTTPException(status_code=401, detail="WebDAV authentication required", headers=auth_header)
+
+    username_raw = (credentials.username or "").strip()
+    candidates: list[str] = []
+    if username_raw:
+        candidates.append(username_raw)
+        if "\\" in username_raw:
+            candidates.append(username_raw.split("\\")[-1].strip())
+        if "/" in username_raw:
+            candidates.append(username_raw.split("/")[-1].strip())
+
+    user: User | None = None
+    for candidate in candidates:
+        if not candidate:
+            continue
+        user = db.scalars(select(User).where(func.lower(User.email) == candidate.lower())).first()
+        if user:
+            break
+
     if not user or not user.is_active or not verify_password(credentials.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Invalid WebDAV credentials", headers={"WWW-Authenticate": "Basic"})
+        raise HTTPException(status_code=401, detail="Invalid WebDAV credentials", headers=auth_header)
     return user
 
 
