@@ -3479,8 +3479,8 @@ def _dav_folder_listing_responses(
     return responses
 
 
-@router.api_route("/dav/projects", methods=["OPTIONS", "PROPFIND"])
-@router.api_route("/dav/projects/", methods=["OPTIONS", "PROPFIND"], include_in_schema=False)
+@router.api_route("/dav/projects", methods=["OPTIONS", "PROPFIND", "GET", "HEAD"])
+@router.api_route("/dav/projects/", methods=["OPTIONS", "PROPFIND", "GET", "HEAD"], include_in_schema=False)
 def webdav_projects_root(
     request: Request,
     db: Session = Depends(get_db),
@@ -3489,6 +3489,8 @@ def webdav_projects_root(
     user = _webdav_authenticate(credentials, db)
 
     if request.method == "OPTIONS":
+        return Response(status_code=204, headers=_dav_headers())
+    if request.method in {"GET", "HEAD"}:
         return Response(status_code=204, headers=_dav_headers())
 
     depth = request.headers.get("Depth", "1")
@@ -3540,8 +3542,12 @@ def webdav_projects_root(
     return _dav_multistatus(responses)
 
 
-@router.api_route(f"/dav/projects/{WEBDAV_GENERAL_SEGMENT}", methods=["OPTIONS", "PROPFIND"])
-@router.api_route(f"/dav/projects/{WEBDAV_GENERAL_SEGMENT}/", methods=["OPTIONS", "PROPFIND"], include_in_schema=False)
+@router.api_route(f"/dav/projects/{WEBDAV_GENERAL_SEGMENT}", methods=["OPTIONS", "PROPFIND", "GET", "HEAD"])
+@router.api_route(
+    f"/dav/projects/{WEBDAV_GENERAL_SEGMENT}/",
+    methods=["OPTIONS", "PROPFIND", "GET", "HEAD"],
+    include_in_schema=False,
+)
 def webdav_general_projects_root(
     request: Request,
     db: Session = Depends(get_db),
@@ -3551,6 +3557,8 @@ def webdav_general_projects_root(
     _assert_report_access(user, write=False)
 
     if request.method == "OPTIONS":
+        return Response(status_code=204, headers=_dav_headers())
+    if request.method in {"GET", "HEAD"}:
         return Response(status_code=204, headers=_dav_headers())
 
     depth = request.headers.get("Depth", "1")
@@ -3614,8 +3622,12 @@ def webdav_general_projects_file(
     raise HTTPException(status_code=405, detail="Method not allowed")
 
 
-@router.api_route(f"/dav/projects/{WEBDAV_ARCHIVE_SEGMENT}", methods=["OPTIONS", "PROPFIND"])
-@router.api_route(f"/dav/projects/{WEBDAV_ARCHIVE_SEGMENT}/", methods=["OPTIONS", "PROPFIND"], include_in_schema=False)
+@router.api_route(f"/dav/projects/{WEBDAV_ARCHIVE_SEGMENT}", methods=["OPTIONS", "PROPFIND", "GET", "HEAD"])
+@router.api_route(
+    f"/dav/projects/{WEBDAV_ARCHIVE_SEGMENT}/",
+    methods=["OPTIONS", "PROPFIND", "GET", "HEAD"],
+    include_in_schema=False,
+)
 def webdav_archive_root(
     request: Request,
     db: Session = Depends(get_db),
@@ -3624,6 +3636,8 @@ def webdav_archive_root(
     user = _webdav_authenticate(credentials, db)
 
     if request.method == "OPTIONS":
+        return Response(status_code=204, headers=_dav_headers())
+    if request.method in {"GET", "HEAD"}:
         return Response(status_code=204, headers=_dav_headers())
 
     depth = request.headers.get("Depth", "1")
@@ -3661,10 +3675,13 @@ def _assert_archived_project_webdav_access(db: Session, user: User, project_id: 
     assert_project_access(db, user, project_id)
 
 
-@router.api_route(f"/dav/projects/{WEBDAV_ARCHIVE_SEGMENT}" + "/{project_id}", methods=["OPTIONS", "PROPFIND"])
+@router.api_route(
+    f"/dav/projects/{WEBDAV_ARCHIVE_SEGMENT}" + "/{project_id}",
+    methods=["OPTIONS", "PROPFIND", "GET", "HEAD"],
+)
 @router.api_route(
     f"/dav/projects/{WEBDAV_ARCHIVE_SEGMENT}" + "/{project_id}/",
-    methods=["OPTIONS", "PROPFIND"],
+    methods=["OPTIONS", "PROPFIND", "GET", "HEAD"],
     include_in_schema=False,
 )
 def webdav_archive_project_root(
@@ -3677,6 +3694,8 @@ def webdav_archive_project_root(
     _assert_archived_project_webdav_access(db, user, project_id)
 
     if request.method == "OPTIONS":
+        return Response(status_code=204, headers=_dav_headers())
+    if request.method in {"GET", "HEAD"}:
         return Response(status_code=204, headers=_dav_headers())
 
     depth = request.headers.get("Depth", "1")
@@ -3760,8 +3779,12 @@ def webdav_archive_project_file(
     raise HTTPException(status_code=405, detail="Method not allowed")
 
 
-@router.api_route("/dav/projects/{project_ref}", methods=["OPTIONS", "PROPFIND"])
-@router.api_route("/dav/projects/{project_ref}/", methods=["OPTIONS", "PROPFIND"], include_in_schema=False)
+@router.api_route("/dav/projects/{project_ref}", methods=["OPTIONS", "PROPFIND", "GET", "HEAD"])
+@router.api_route(
+    "/dav/projects/{project_ref}/",
+    methods=["OPTIONS", "PROPFIND", "GET", "HEAD"],
+    include_in_schema=False,
+)
 def webdav_project_root(
     request: Request,
     project_ref: str,
@@ -3774,6 +3797,8 @@ def webdav_project_root(
     canonical_ref = _project_webdav_ref(project)
 
     if request.method == "OPTIONS":
+        return Response(status_code=204, headers=_dav_headers())
+    if request.method in {"GET", "HEAD"}:
         return Response(status_code=204, headers=_dav_headers())
 
     depth = request.headers.get("Depth", "1")
