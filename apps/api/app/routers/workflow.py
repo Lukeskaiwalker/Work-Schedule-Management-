@@ -12,7 +12,7 @@ from urllib.parse import quote
 
 import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from sqlalchemy import case, delete, func, or_, select
 from sqlalchemy.orm import Session
@@ -27,6 +27,7 @@ from app.models.entities import (
     ChatThread,
     ChatThreadRead,
     ConstructionReport,
+    ConstructionReportJob,
     JobTicket,
     Message,
     Project,
@@ -81,14 +82,19 @@ from app.schemas.api import (
     WikiPageOut,
     WikiPageUpdate,
 )
-from app.services.construction_report_pdf import (
-    build_report_filename,
-    build_report_pdf_bytes,
-    build_report_summary_text,
+from app.services.construction_report_pdf import build_report_filename
+from app.services.files import (
+    encrypted_file_plain_size,
+    iter_encrypted_file_bytes,
+    read_encrypted_file,
+    store_encrypted_file,
 )
-from app.services.files import read_encrypted_file, store_encrypted_file
-from app.services.telegram import send_telegram_report, telegram_enabled
 from app.services.audit import log_admin_action
+from app.services.report_jobs import (
+    process_construction_report_job,
+    queue_construction_report_job,
+    report_processing_payload,
+)
 from app.services.runtime_settings import get_openweather_api_key
 from app.core.security import verify_password
 
@@ -278,6 +284,65 @@ def _attachment_bytes_or_http_error(attachment: Attachment) -> bytes:
         raise HTTPException(status_code=404, detail="Stored file payload not accessible")
     except RuntimeError:
         raise HTTPException(status_code=409, detail="Stored file payload cannot be decrypted with current key")
+
+
+def _attachment_content_length_for_listing(attachment: Attachment) -> str:
+    """Best-effort file size for WebDAV PROPFIND responses."""
+    try:
+        chunked_plain_size = encrypted_file_plain_size(attachment.stored_path)
+    except (FileNotFoundError, OSError, RuntimeError):
+        return "0"
+    if chunked_plain_size is not None:
+        return str(max(0, int(chunked_plain_size)))
+    try:
+        encrypted_size = os.path.getsize(attachment.stored_path)
+    except OSError:
+        return "0"
+    return str(max(0, int(encrypted_size)))
+
+
+def _attachment_http_response(
+    attachment: Attachment,
+    *,
+    inline: bool,
+    include_dav_headers: bool = False,
+    head_only: bool = False,
+) -> Response:
+    media_type = _safe_media_type(attachment.content_type)
+    headers = {
+        "Content-Disposition": _content_disposition(attachment.file_name, inline=inline),
+        "X-Content-Type-Options": "nosniff",
+    }
+    if include_dav_headers:
+        headers.update(_dav_headers())
+    try:
+        chunked_plain_size = encrypted_file_plain_size(attachment.stored_path)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Stored file payload not found")
+    except OSError:
+        raise HTTPException(status_code=404, detail="Stored file payload not accessible")
+    except RuntimeError:
+        raise HTTPException(status_code=409, detail="Stored file payload cannot be decrypted with current key")
+
+    if chunked_plain_size is not None:
+        if int(chunked_plain_size) <= 0:
+            raise HTTPException(status_code=409, detail="Stored file payload is empty; please re-upload the file")
+        headers["Content-Length"] = str(chunked_plain_size)
+        if head_only:
+            return Response(status_code=200, media_type=media_type, headers=headers)
+        return StreamingResponse(
+            iter_encrypted_file_bytes(attachment.stored_path),
+            media_type=media_type,
+            headers=headers,
+        )
+
+    data = _attachment_bytes_or_http_error(attachment)
+    if len(data) == 0:
+        raise HTTPException(status_code=409, detail="Stored file payload is empty; please re-upload the file")
+    headers["Content-Length"] = str(len(data))
+    if head_only:
+        return Response(status_code=200, media_type=media_type, headers=headers)
+    return Response(content=data, media_type=media_type, headers=headers)
 
 
 def _avatar_bytes_or_http_error(stored_path: str) -> bytes:
@@ -840,6 +905,25 @@ def _touch_project_last_update(db: Session, project_id: int, *, touch_time: date
         return
     project.last_updated_at = touch_time or utcnow()
     db.add(project)
+
+
+def _normalized_timestamp(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is not None:
+        return value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
+
+
+def _assert_optimistic_timestamp(
+    *,
+    expected: datetime | None,
+    current: datetime | None,
+    conflict_detail: str,
+) -> None:
+    if _normalized_timestamp(expected) == _normalized_timestamp(current):
+        return
+    raise HTTPException(status_code=409, detail=conflict_detail)
 
 
 def _record_project_activity(
@@ -1601,6 +1685,7 @@ def _task_out(task: Task, assignee_ids: list[int]) -> TaskOut:
         assignee_id=assignee_ids[0] if assignee_ids else None,
         assignee_ids=assignee_ids,
         week_start=task.week_start,
+        updated_at=task.updated_at,
     )
 
 
@@ -1807,7 +1892,9 @@ async def _create_construction_report_impl(
         report_payload = ConstructionReportPayload(**payload_data).model_dump()
         send_telegram = str(form.get("send_telegram") or "").lower() in {"1", "true", "yes", "on"}
         report_images = []
-        for _, form_value in form.multi_items():
+        for form_key, form_value in form.multi_items():
+            if form_key not in {"images", "images[]", "camera_images", "camera_images[]"}:
+                continue
             if not hasattr(form_value, "read"):
                 continue
             content_type = str(getattr(form_value, "content_type", "") or "").lower()
@@ -1836,18 +1923,22 @@ async def _create_construction_report_impl(
 
     report_payload = _hydrate_report_payload_with_project_defaults(report_payload, project)
 
+    report_file_name = build_report_filename(report_payload, report_date)
+    telegram_configured = bool(settings.telegram_bot_token and settings.telegram_chat_id)
     report = ConstructionReport(
         project_id=target_project_id,
         user_id=current_user.id,
         report_date=report_date,
         payload=report_payload,
         telegram_sent=False,
+        telegram_mode="pending" if (send_telegram and telegram_configured) else "stub",
+        processing_status="queued",
+        pdf_file_name=report_file_name,
     )
     db.add(report)
     db.flush()
 
     report_image_rows: list[dict[str, str]] = []
-    report_image_blobs: list[tuple[str, bytes]] = []
     for image_index, image_file in enumerate(report_images, start=1):
         raw_image = await image_file.read()
         if not raw_image:
@@ -1876,55 +1967,14 @@ async def _create_construction_report_impl(
         db.add(row)
         db.flush()
         report_image_rows.append({"id": str(row.id), "file_name": row.file_name, "content_type": row.content_type})
-        report_image_blobs.append((file_name, raw_image))
 
-    report_pdf = build_report_pdf_bytes(
-        payload=report_payload,
-        report_date=report_date,
-        submitted_by=current_user.full_name,
-        project_name=project.name if project else None,
-        logo_path=settings.report_logo_path,
-        photos=report_image_blobs,
+    job = queue_construction_report_job(
+        db,
+        report_id=report.id,
+        send_telegram=send_telegram,
+        max_attempts=settings.report_job_max_attempts,
     )
-    report_file_name = build_report_filename(report_payload, report_date)
-    stored_path = store_encrypted_file(report_pdf, "pdf")
-    report_folder = "Berichte"
-    if target_project_id is not None:
-        _register_project_folder(
-            db,
-            project_id=target_project_id,
-            folder_path=report_folder,
-            created_by=current_user.id,
-        )
-    attachment = Attachment(
-        project_id=target_project_id,
-        construction_report_id=report.id,
-        uploaded_by=current_user.id,
-        folder_path=report_folder,
-        file_name=report_file_name,
-        content_type="application/pdf",
-        stored_path=stored_path,
-        is_encrypted=True,
-    )
-    db.add(attachment)
 
-    report_summary = build_report_summary_text(
-        project_id=target_project_id,
-        report_date=report_date,
-        payload=report_payload,
-        submitted_by=current_user.full_name,
-    )
-    telegram_sent = False
-    telegram_mode = "stub"
-    if send_telegram:
-        if telegram_enabled():
-            telegram_sent = await send_telegram_report(report_summary, report_pdf, report_file_name)
-            telegram_mode = "live"
-        else:
-            telegram_mode = "stub"
-
-    report.telegram_sent = telegram_sent
-    db.add(report)
     report_worker_hours = _construction_report_worker_hours(report_payload)
     material_need_items_count = 0
     if target_project_id is not None:
@@ -1953,14 +2003,20 @@ async def _create_construction_report_impl(
             },
         )
     db.commit()
+    if settings.report_processing_mode.strip().lower() == "inline":
+        inline_job = db.get(ConstructionReportJob, job.id)
+        if inline_job and inline_job.status == "queued":
+            await process_construction_report_job(db, inline_job.id)
     db.refresh(report)
     return {
         "id": report.id,
         "project_id": report.project_id,
-        "telegram_sent": telegram_sent,
-        "telegram_mode": telegram_mode,
-        "attachment_file_name": attachment.file_name,
+        "telegram_sent": report.telegram_sent,
+        "telegram_mode": report.telegram_mode,
+        "attachment_file_name": report.pdf_file_name,
         "report_images": report_image_rows,
+        "processing_status": report.processing_status,
+        "processing_error": report.processing_error,
     }
 
 
@@ -2155,6 +2211,12 @@ def update_project(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     assert_project_access(db, current_user, project_id, manage_required=True)
+    if "expected_last_updated_at" in payload.model_fields_set:
+        _assert_optimistic_timestamp(
+            expected=payload.expected_last_updated_at,
+            current=project.last_updated_at,
+            conflict_detail="Project was updated by another user. Please reload and retry.",
+        )
 
     previous_status = (project.status or "").strip()
     previous_description = project.description or ""
@@ -2236,6 +2298,7 @@ def update_project(
                 "auto_created_tasks": class_sync["created_tasks"],
             },
         )
+    project.last_updated_at = utcnow()
     db.add(project)
     db.commit()
     db.refresh(project)
@@ -2270,6 +2333,12 @@ def update_project_finance(
         raise HTTPException(status_code=404, detail="Project not found")
 
     finance_row = db.get(ProjectFinance, project_id)
+    if "expected_updated_at" in payload.model_fields_set:
+        _assert_optimistic_timestamp(
+            expected=payload.expected_updated_at,
+            current=finance_row.updated_at if finance_row else None,
+            conflict_detail="Project finances were updated by another user. Please reload and retry.",
+        )
     if not finance_row:
         finance_row = ProjectFinance(project_id=project_id)
         db.add(finance_row)
@@ -2755,6 +2824,12 @@ def update_task(
     can_manage = current_user.role in {"admin", "ceo", "planning"}
     if not can_manage and current_user.id not in existing_assignee_ids:
         raise HTTPException(status_code=403, detail="Task access denied")
+    if "expected_updated_at" in payload.model_fields_set:
+        _assert_optimistic_timestamp(
+            expected=payload.expected_updated_at,
+            current=task.updated_at,
+            conflict_detail="Task was updated by another user. Please reload and retry.",
+        )
 
     if not can_manage:
         illegal_fields = payload.model_fields_set.difference({"status"})
@@ -3014,8 +3089,12 @@ async def upload_job_ticket_attachment(
     ticket = db.get(JobTicket, ticket_id)
     if not ticket or ticket.project_id != project_id:
         raise HTTPException(status_code=404, detail="Ticket not found")
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="File name is required")
 
     raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="File body is required")
     extension = file.filename.rsplit(".", 1)[-1] if "." in file.filename else "bin"
     stored_path = store_encrypted_file(raw, extension)
 
@@ -3157,6 +3236,8 @@ async def upload_project_file(
     db: Session = Depends(get_db),
 ):
     assert_project_access(db, current_user, project_id)
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="File name is required")
     normalized_folder = _resolve_project_upload_folder(folder, file.filename, file.content_type)
     if _folder_path_is_protected(normalized_folder) and not _can_access_project_protected_folder(current_user):
         raise HTTPException(status_code=403, detail="Folder access denied")
@@ -3167,6 +3248,8 @@ async def upload_project_file(
         created_by=current_user.id,
     )
     raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="File body is required")
     extension = file.filename.rsplit(".", 1)[-1] if "." in file.filename else "bin"
     stored_path = store_encrypted_file(raw, extension)
 
@@ -3219,13 +3302,7 @@ def download_file(
     db: Session = Depends(get_db),
 ):
     attachment = _resolve_attachment_for_access(db, current_user, attachment_id)
-    data = _attachment_bytes_or_http_error(attachment)
-    media_type = _safe_media_type(attachment.content_type)
-    headers = {
-        "Content-Disposition": _content_disposition(attachment.file_name, inline=False),
-        "X-Content-Type-Options": "nosniff",
-    }
-    return Response(content=data, media_type=media_type, headers=headers)
+    return _attachment_http_response(attachment, inline=False)
 
 
 @router.get("/files/{attachment_id}/preview")
@@ -3235,13 +3312,7 @@ def preview_file(
     db: Session = Depends(get_db),
 ):
     attachment = _resolve_attachment_for_access(db, current_user, attachment_id)
-    data = _attachment_bytes_or_http_error(attachment)
-    media_type = _safe_media_type(attachment.content_type)
-    headers = {
-        "Content-Disposition": _content_disposition(attachment.file_name, inline=True),
-        "X-Content-Type-Options": "nosniff",
-    }
-    return Response(content=data, media_type=media_type, headers=headers)
+    return _attachment_http_response(attachment, inline=True)
 
 
 def _sanitize_dav_relative_path(raw_path: str, *, allow_empty: bool = False) -> str:
@@ -3389,7 +3460,7 @@ def _dav_general_listing_responses(
                 "displayname": file_name,
                 "resourcetype_xml": "<D:resourcetype/>",
                 "last_modified": _rfc1123(attachment.created_at),
-                "content_length": "0",
+                "content_length": _attachment_content_length_for_listing(attachment),
                 "content_type": _safe_media_type(attachment.content_type),
             }
         )
@@ -3489,7 +3560,7 @@ def _dav_folder_listing_responses(
                 "displayname": file_name,
                 "resourcetype_xml": "<D:resourcetype/>",
                 "last_modified": _rfc1123(attachment.created_at),
-                "content_length": "0",
+                "content_length": _attachment_content_length_for_listing(attachment),
                 "content_type": _safe_media_type(attachment.content_type),
             }
         )
@@ -3617,7 +3688,7 @@ def webdav_general_projects_file(
                     "displayname": latest.file_name,
                     "resourcetype_xml": "<D:resourcetype/>",
                     "last_modified": _rfc1123(latest.created_at),
-                    "content_length": "0",
+                    "content_length": _attachment_content_length_for_listing(latest),
                     "content_type": _safe_media_type(latest.content_type),
                 }
             ]
@@ -3626,16 +3697,12 @@ def webdav_general_projects_file(
     if request.method in {"GET", "HEAD"}:
         if not latest:
             raise HTTPException(status_code=404, detail="File not found")
-        data = _attachment_bytes_or_http_error(latest)
-        media_type = _safe_media_type(latest.content_type)
-        headers = {
-            "Content-Disposition": _content_disposition(latest.file_name, inline=False),
-            "Content-Length": str(len(data)),
-            **_dav_headers(),
-        }
-        if request.method == "HEAD":
-            return Response(status_code=200, media_type=media_type, headers=headers)
-        return Response(content=data, media_type=media_type, headers=headers)
+        return _attachment_http_response(
+            latest,
+            inline=False,
+            include_dav_headers=True,
+            head_only=request.method == "HEAD",
+        )
 
     raise HTTPException(status_code=405, detail="Method not allowed")
 
@@ -3774,7 +3841,7 @@ def webdav_archive_project_file(
                     "displayname": latest.file_name,
                     "resourcetype_xml": "<D:resourcetype/>",
                     "last_modified": _rfc1123(latest.created_at),
-                    "content_length": "0",
+                    "content_length": _attachment_content_length_for_listing(latest),
                     "content_type": _safe_media_type(latest.content_type),
                 }
             ]
@@ -3783,16 +3850,12 @@ def webdav_archive_project_file(
     if request.method in {"GET", "HEAD"}:
         if not latest:
             raise HTTPException(status_code=404, detail="File not found")
-        data = _attachment_bytes_or_http_error(latest)
-        media_type = _safe_media_type(latest.content_type)
-        headers = {
-            "Content-Disposition": _content_disposition(latest.file_name, inline=False),
-            "Content-Length": str(len(data)),
-            **_dav_headers(),
-        }
-        if request.method == "HEAD":
-            return Response(status_code=200, media_type=media_type, headers=headers)
-        return Response(content=data, media_type=media_type, headers=headers)
+        return _attachment_http_response(
+            latest,
+            inline=False,
+            include_dav_headers=True,
+            head_only=request.method == "HEAD",
+        )
 
     raise HTTPException(status_code=405, detail="Method not allowed")
 
@@ -3880,7 +3943,7 @@ async def webdav_project_file(
                     "displayname": latest.file_name,
                     "resourcetype_xml": "<D:resourcetype/>",
                     "last_modified": _rfc1123(latest.created_at),
-                    "content_length": "0",
+                    "content_length": _attachment_content_length_for_listing(latest),
                     "content_type": _safe_media_type(latest.content_type),
                 }
             ]
@@ -3889,16 +3952,12 @@ async def webdav_project_file(
     if request.method in {"GET", "HEAD"}:
         if not latest:
             raise HTTPException(status_code=404, detail="File not found")
-        data = _attachment_bytes_or_http_error(latest)
-        media_type = _safe_media_type(latest.content_type)
-        headers = {
-            "Content-Disposition": _content_disposition(latest.file_name, inline=False),
-            "Content-Length": str(len(data)),
-            **_dav_headers(),
-        }
-        if request.method == "HEAD":
-            return Response(status_code=200, media_type=media_type, headers=headers)
-        return Response(content=data, media_type=media_type, headers=headers)
+        return _attachment_http_response(
+            latest,
+            inline=False,
+            include_dav_headers=True,
+            head_only=request.method == "HEAD",
+        )
 
     if request.method == "MKCOL":
         folder_path = _sanitize_dav_relative_path(file_path, allow_empty=False)
@@ -4317,20 +4376,23 @@ async def create_message(
 
     if upload:
         raw = await upload.read()
-        extension = upload.filename.rsplit(".", 1)[-1] if "." in upload.filename else "bin"
-        stored_path = store_encrypted_file(raw, extension)
-        db.add(
-            Attachment(
-                project_id=thread.project_id,
-                site_id=thread.site_id,
-                message_id=message.id,
-                uploaded_by=current_user.id,
-                file_name=upload.filename,
-                content_type=upload.content_type or "application/octet-stream",
-                stored_path=stored_path,
-                is_encrypted=True,
+        if raw:
+            extension = upload.filename.rsplit(".", 1)[-1] if "." in upload.filename else "bin"
+            stored_path = store_encrypted_file(raw, extension)
+            db.add(
+                Attachment(
+                    project_id=thread.project_id,
+                    site_id=thread.site_id,
+                    message_id=message.id,
+                    uploaded_by=current_user.id,
+                    file_name=upload.filename,
+                    content_type=upload.content_type or "application/octet-stream",
+                    stored_path=stored_path,
+                    is_encrypted=True,
+                )
             )
-        )
+        elif not text:
+            raise HTTPException(status_code=400, detail="Attachment file is empty")
 
     db.flush()
     _mark_thread_read(
@@ -4414,6 +4476,11 @@ def list_construction_reports(
             "report_date": report.report_date,
             "payload": report.payload,
             "telegram_sent": report.telegram_sent,
+            "telegram_mode": report.telegram_mode,
+            "processing_status": report.processing_status,
+            "processing_error": report.processing_error,
+            "processed_at": report.processed_at,
+            "attachment_file_name": report.pdf_file_name,
             "created_at": report.created_at,
         }
         for report in reports
@@ -4441,10 +4508,31 @@ def list_global_or_project_reports(
             "report_date": report.report_date,
             "payload": report.payload,
             "telegram_sent": report.telegram_sent,
+            "telegram_mode": report.telegram_mode,
+            "processing_status": report.processing_status,
+            "processing_error": report.processing_error,
+            "processed_at": report.processed_at,
+            "attachment_file_name": report.pdf_file_name,
             "created_at": report.created_at,
         }
         for report in reports
     ]
+
+
+@router.get("/construction-reports/{report_id}/processing")
+def get_construction_report_processing_status(
+    report_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    report = db.get(ConstructionReport, report_id)
+    if not report:
+        raise HTTPException(status_code=404, detail="Construction report not found")
+    if report.project_id is not None:
+        assert_project_access(db, current_user, report.project_id)
+    else:
+        _assert_report_access(current_user, write=False)
+    return report_processing_payload(report)
 
 
 @router.get("/construction-reports/files")

@@ -541,8 +541,15 @@ def test_project_task_planning_ticket_file_and_report_flow(client: TestClient, a
     )
     assert report.status_code == 200
     data = report.json()
+    assert data["processing_status"] == "completed"
     assert data["telegram_mode"] == "stub"
     assert data["attachment_file_name"].endswith(".pdf")
+    processing_status = client.get(
+        f"/api/construction-reports/{data['id']}/processing",
+        headers=auth_headers(employee_token),
+    )
+    assert processing_status.status_code == 200
+    assert processing_status.json()["processing_status"] == "completed"
 
     materials_queue = client.get("/api/materials", headers=auth_headers(employee_token))
     assert materials_queue.status_code == 200
@@ -658,6 +665,7 @@ def test_project_task_planning_ticket_file_and_report_flow(client: TestClient, a
     assert global_report.status_code == 200
     global_payload = global_report.json()
     assert global_payload["project_id"] is None
+    assert global_payload["processing_status"] == "completed"
     assert global_payload["attachment_file_name"].endswith(".pdf")
 
     global_reports = client.get("/api/construction-reports", headers=auth_headers(employee_token))
@@ -960,6 +968,7 @@ def test_project_files_webdav_mount_flow(client: TestClient, admin_token: str):
     )
     assert propfind.status_code == 207
     assert "spec.txt" in propfind.text
+    assert "<D:getcontentlength>11</D:getcontentlength>" in propfind.text
 
     propfind_projects_root = client.request(
         "PROPFIND",
@@ -1038,6 +1047,29 @@ def test_preview_falls_back_to_octet_stream_for_invalid_stored_content_type(clie
     assert preview.status_code == 200
     assert preview.content == b"binary payload"
     assert preview.headers.get("content-type", "").startswith("application/octet-stream")
+
+
+def test_project_file_upload_rejects_empty_payload(client: TestClient, admin_token: str):
+    project = client.post(
+        "/api/projects",
+        headers=auth_headers(admin_token),
+        json={
+            "project_number": "2026-2003",
+            "name": "Empty Upload Guard",
+            "description": "files",
+            "status": "active",
+        },
+    )
+    assert project.status_code == 200
+    project_id = project.json()["id"]
+
+    upload = client.post(
+        f"/api/projects/{project_id}/files",
+        headers=auth_headers(admin_token),
+        files={"file": ("empty.txt", b"", "text/plain")},
+    )
+    assert upload.status_code == 400
+    assert upload.json().get("detail") == "File body is required"
 
 
 def test_rate_limiter_returns_429_response_without_middleware_exception(client: TestClient):

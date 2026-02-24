@@ -5,6 +5,7 @@
    - `cp apps/api/.env.example apps/api/.env`
 2. Start stack:
    - `docker compose up --build -d`
+   - Stack now includes `api_worker` (background report-processing worker) in addition to `db/api/web/caddy`.
 3. Trust local TLS root on macOS (Safari/Chrome):
    - `./scripts/trust_caddy_root_macos.sh`
 4. Open app:
@@ -53,6 +54,11 @@ Compose uses `apps/api/.env.example` by default. If you need custom values (new 
 Wiki source root can be changed with `WIKI_ROOT_DIR` in API env (default `/data/wiki`).
 The provided legacy logo is bundled into both web and API assets (`apps/web/public/logo.jpeg`, `apps/api/app/assets/logo.jpeg`).
 Time tracking day/week boundaries follow `APP_TIMEZONE` (default: `Europe/Berlin`).
+Construction report processing/runtime knobs:
+- `REPORT_PROCESSING_MODE=worker|inline` (`worker` recommended in compose; `inline` useful for deterministic fallback/testing)
+- `REPORT_JOB_MAX_ATTEMPTS` (default `3`)
+- `REPORT_WORKER_POLL_SECONDS` (default `1.0`)
+- `API_WORKERS` (default `2`) for concurrent API request handling
 
 ## One-command validation
 - `./scripts/test.sh`
@@ -174,6 +180,7 @@ Time tracking day/week boundaries follow `APP_TIMEZONE` (default: `Europe/Berlin
   - fixed-height message pane with internal scroll for older messages
   - newest-message auto-follow after sending (pauses when user scrolls up in history)
 - Construction report form supports image uploads in one submit; report images are stored encrypted and included in generated PDF output.
+- In `REPORT_PROCESSING_MODE=worker`, report upload returns quickly and PDF generation continues in background via `api_worker`; UI polls processing status until terminal state.
 - Construction report files panel reads from:
   - selected project report files when a project is chosen.
   - general report folder when no project is selected.
@@ -230,7 +237,7 @@ Run this sequence before tagging/releasing:
 Expected:
 - API tests + web build pass.
 - Restore smoke passes.
-- Compose services are healthy (`db/api/web/caddy`).
+- Compose services are healthy (`db/api/web/caddy/api_worker`).
 - HTTPS UI returns `HTTP/2 200` and API returns `{"status":"ok"}`.
 
 ## Local dev smoke without Docker (optional)
@@ -403,3 +410,70 @@ Expected:
   - `git pull --ff-only origin main`
   - `docker compose up -d --build`
   - `docker compose exec api alembic upgrade head`
+
+## Iteration Setup Notes (2026-02-24, optimistic edit locking)
+- New DB migration added:
+  - `20260224_0024_task_updated_at_for_optimistic_locking`
+- Standard refresh applies migration automatically:
+  - `docker compose up -d --build api web caddy`
+- Operational behavior change:
+  - project/task/finance edit saves can return `409` when another user changed the same record first.
+  - Recommended operator flow on conflict: reload the view, verify latest values, then save again.
+
+## Iteration Setup Notes (2026-02-24, empty upload guard + WebDAV file-size metadata)
+- No new migration required for this iteration.
+- Standard refresh is sufficient:
+  - `docker compose up -d --build`
+- Behavioral change:
+  - zero-byte uploads to project files and job-ticket attachments are now rejected with `400`.
+- WebDAV behavior:
+  - `PROPFIND` file entries now include non-zero file-size metadata when available, improving Finder/Explorer file handling.
+
+## Iteration Setup Notes (2026-02-24, optimistic quick-action tokens)
+- No new migration required for this iteration.
+- Standard refresh is sufficient:
+  - `docker compose up -d --build web`
+- Operational behavior update:
+  - quick actions (`task complete`, `project archive/unarchive`) now enforce the same optimistic conflict semantics as edit dialogs.
+  - if a stale action is attempted, UI now shows a conflict message and the user should reload before retrying.
+
+## Iteration Setup Notes (2026-02-24, construction report photo queue selection UX)
+- No new migration required for this iteration.
+- Standard refresh is sufficient:
+  - `docker compose up -d --build web`
+- Construction report form behavior:
+  - first picker action supports native multi-select,
+  - subsequent picker actions append more photos to the same queue,
+  - selected photos can be removed individually before submitting the report.
+
+## Iteration Setup Notes (2026-02-24, construction report photo queue thumbnails)
+- No new migration required for this iteration.
+- Standard refresh is sufficient:
+  - `docker compose up -d --build web`
+- Construction report form behavior:
+  - selected photos are rendered as thumbnail tiles with per-tile remove buttons,
+  - selecting additional photos appends to the existing queued set.
+
+## Iteration Setup Notes (2026-02-25, construction report materials row-entry mask)
+- No new migration required for this iteration.
+- Standard refresh is sufficient:
+  - `docker compose up -d --build web caddy`
+- Construction report form behavior:
+  - `Material` and `Büro Materialbedarf` now use structured rows (`item`, `qty`, `unit`, `article`) instead of free textareas,
+  - each section starts with one row and can add/remove rows while filling the report.
+
+## Iteration Setup Notes (2026-02-24, finance tab layout refresh)
+- No new migration required for this iteration.
+- Standard refresh is sufficient:
+  - `docker compose up -d --build web caddy`
+- Project finance tab behavior:
+  - `Zuletzt aktualisiert` appears directly below the finance card header.
+  - Finance KPI values are rendered in a fixed left-to-right label/value column layout.
+
+## Iteration Setup Notes (2026-02-25, finance text-size and spacing adjustment)
+- No new migration required for this iteration.
+- Standard refresh is sufficient:
+  - `docker compose up -d --build web caddy`
+- Project finance tab behavior:
+  - metric labels and values are rendered larger,
+  - vertical spacing inside metric rows is tighter for denser scanability.

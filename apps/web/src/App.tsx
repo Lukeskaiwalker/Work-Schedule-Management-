@@ -1,6 +1,6 @@
-import { ChangeEvent, FormEvent, PointerEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, MouseEvent, PointerEvent, useEffect, useMemo, useRef, useState } from "react";
 
-import { apiFetch } from "./api/client";
+import { apiFetch, apiUploadWithProgress } from "./api/client";
 
 type Language = "en" | "de";
 type TaskView = "my" | "all_open" | "completed";
@@ -142,6 +142,7 @@ type Task = {
   assignee_id?: number | null;
   assignee_ids?: number[];
   week_start?: string | null;
+  updated_at?: string | null;
 };
 
 type AssignableUser = {
@@ -383,6 +384,42 @@ type ReportDraft = {
   customer_phone: string;
   project_name: string;
   project_number: string;
+};
+
+type ReportMaterialRow = {
+  id: string;
+  item: string;
+  qty: string;
+  unit: string;
+  article_no: string;
+};
+
+type ConstructionReportCreateResponse = {
+  id: number;
+  project_id: number | null;
+  telegram_sent: boolean;
+  telegram_mode: string;
+  attachment_file_name: string | null;
+  report_images: Array<{ id: string; file_name: string; content_type: string }>;
+  processing_status: string;
+  processing_error?: string | null;
+};
+
+type ConstructionReportProcessingResponse = {
+  report_id: number;
+  project_id: number | null;
+  processing_status: string;
+  processing_error?: string | null;
+  processed_at?: string | null;
+  telegram_sent: boolean;
+  telegram_mode: string;
+  attachment_file_name: string | null;
+};
+
+type ReportImageSelection = {
+  key: string;
+  file: File;
+  preview_url: string;
 };
 
 type TaskReportPrefill = {
@@ -743,6 +780,72 @@ function parseListLines(value: string) {
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
+
+function buildClientFileKey(file: File) {
+  return `${file.name}:${file.size}:${file.lastModified}`;
+}
+
+let reportMaterialRowCounter = 0;
+
+function nextReportMaterialRowId(prefix: "materials" | "office_materials") {
+  reportMaterialRowCounter += 1;
+  return `${prefix}-${Date.now()}-${reportMaterialRowCounter}`;
+}
+
+function createReportMaterialRow(
+  prefix: "materials" | "office_materials",
+  values?: Partial<Omit<ReportMaterialRow, "id">>,
+): ReportMaterialRow {
+  return {
+    id: nextReportMaterialRowId(prefix),
+    item: values?.item ?? "",
+    qty: values?.qty ?? "",
+    unit: values?.unit ?? "",
+    article_no: values?.article_no ?? "",
+  };
+}
+
+function parseReportMaterialRows(
+  rawValue: string | null | undefined,
+  prefix: "materials" | "office_materials",
+): ReportMaterialRow[] {
+  const rows = parseListLines(String(rawValue || "")).map((line) => {
+    const [item, qty, unit, article_no] = line.split("|").map((entry) => entry.trim());
+    if (!qty && !unit && !article_no) {
+      return createReportMaterialRow(prefix, { item: line.trim() });
+    }
+    return createReportMaterialRow(prefix, {
+      item: item || "",
+      qty: qty || "",
+      unit: unit || "",
+      article_no: article_no || "",
+    });
+  });
+  if (rows.length > 0) return rows;
+  return [createReportMaterialRow(prefix)];
+}
+
+function serializeOfficeMaterialRows(rows: ReportMaterialRow[]) {
+  const lines = rows
+    .map((row) => {
+      const item = row.item.trim();
+      if (!item) return "";
+      const qtyUnit = [row.qty.trim(), row.unit.trim()].filter((value) => value.length > 0).join(" ");
+      const articleNo = row.article_no.trim();
+      const parts = [item];
+      if (qtyUnit) parts.push(qtyUnit);
+      if (articleNo) parts.push(`ArtNr ${articleNo}`);
+      return parts.join(" - ");
+    })
+    .filter((line) => line.length > 0);
+  return lines.join("\n");
 }
 
 function isoToLocalDateTimeInput(value?: string | null) {
@@ -1182,16 +1285,16 @@ function isValidTimeHHMM(value: string) {
 function formatTimeInputForTyping(value?: string | null) {
   const raw = String(value || "").trim();
   if (!raw) return "";
-  if (raw.includes(":")) {
-    const [leftRaw, rightRaw] = raw.split(":", 2);
-    const left = leftRaw.replace(/\D/g, "").slice(0, 2);
-    const right = rightRaw.replace(/\D/g, "").slice(0, 2);
-    if (!rightRaw && raw.endsWith(":")) return `${left}:`;
-    return right.length > 0 ? `${left}:${right}` : left;
-  }
   const digits = raw.replace(/\D/g, "").slice(0, 4);
+  if (raw.endsWith(":") && digits.length <= 2) return `${digits}:`;
   if (digits.length <= 2) return digits;
-  if (digits.length === 3) return `${digits.slice(0, 1)}:${digits.slice(1)}`;
+  if (digits.length === 3) {
+    const leadingPair = Number(digits.slice(0, 2));
+    if (Number.isFinite(leadingPair) && leadingPair <= 23) {
+      return `${digits.slice(0, 2)}:${digits.slice(2)}`;
+    }
+    return `${digits.slice(0, 1)}:${digits.slice(1)}`;
+  }
   return `${digits.slice(0, 2)}:${digits.slice(2)}`;
 }
 
@@ -1629,6 +1732,59 @@ function buildTaskEditFormState(task?: Task | null): TaskEditFormState {
   };
 }
 
+function sameNumberSet(left: number[], right: number[]) {
+  if (left.length !== right.length) return false;
+  const sortedLeft = [...left].sort((a, b) => a - b);
+  const sortedRight = [...right].sort((a, b) => a - b);
+  return sortedLeft.every((value, index) => value === sortedRight[index]);
+}
+
+function projectPayloadFromForm(form: ProjectFormState) {
+  const normalizedSiteAccessType = normalizeProjectSiteAccessType(form.site_access_type);
+  return {
+    project_number: form.project_number.trim(),
+    name: form.name.trim(),
+    description: form.description.trim(),
+    status: form.status.trim() || "active",
+    last_state: form.last_state.trim() || null,
+    last_status_at: localDateTimeInputToIso(form.last_status_at),
+    customer_name: form.customer_name.trim(),
+    customer_address: normalizeAddressInput(form.customer_address),
+    customer_contact: form.customer_contact.trim(),
+    customer_email: form.customer_email.trim(),
+    customer_phone: form.customer_phone.trim(),
+    site_access_type: normalizedSiteAccessType || null,
+    site_access_note: projectSiteAccessRequiresNote(normalizedSiteAccessType)
+      ? form.site_access_note.trim() || null
+      : null,
+    class_template_ids: form.class_template_ids,
+  };
+}
+
+function taskEditPayloadFromForm(form: TaskEditFormState, normalizedStartTime: string | null) {
+  const dueDate = form.due_date.trim() || null;
+  const storageBoxNumber =
+    form.has_storage_box && form.storage_box_number.trim()
+      ? Number(form.storage_box_number)
+      : null;
+  const classTemplateId =
+    form.class_template_id.trim().length > 0 ? Number(form.class_template_id) : null;
+  const weekStartValue = form.week_start.trim() || (dueDate ? normalizeWeekStartISO(dueDate) : null);
+  return {
+    title: form.title.trim(),
+    description: form.description.trim() || null,
+    materials_required: form.materials_required.trim() || null,
+    storage_box_number: storageBoxNumber,
+    task_type: form.task_type,
+    class_template_id: classTemplateId,
+    status: form.status.trim() || "open",
+    due_date: dueDate,
+    start_time: normalizedStartTime,
+    assignee_ids: form.assignee_ids,
+    week_start: weekStartValue,
+  };
+}
+
 const EMPTY_REPORT_DRAFT: ReportDraft = {
   customer: "",
   customer_address: "",
@@ -1927,6 +2083,8 @@ export function App() {
   const [fileQuery, setFileQuery] = useState("");
   const [projectModalMode, setProjectModalMode] = useState<"create" | "edit" | null>(null);
   const [projectForm, setProjectForm] = useState<ProjectFormState>(EMPTY_PROJECT_FORM);
+  const [projectFormBase, setProjectFormBase] = useState<ProjectFormState | null>(null);
+  const [projectEditExpectedLastUpdatedAt, setProjectEditExpectedLastUpdatedAt] = useState<string | null>(null);
   const [projectTaskForm, setProjectTaskForm] = useState<ProjectTaskFormState>(() =>
     buildEmptyProjectTaskFormState(),
   );
@@ -1936,10 +2094,22 @@ export function App() {
   );
   const [taskEditModalOpen, setTaskEditModalOpen] = useState(false);
   const [taskEditForm, setTaskEditForm] = useState<TaskEditFormState>(() => buildTaskEditFormState());
+  const [taskEditFormBase, setTaskEditFormBase] = useState<TaskEditFormState | null>(null);
+  const [taskEditExpectedUpdatedAt, setTaskEditExpectedUpdatedAt] = useState<string | null>(null);
   const [projectBackView, setProjectBackView] = useState<MainView | null>(null);
   const [reportProjectId, setReportProjectId] = useState<string>("");
   const [reportDraft, setReportDraft] = useState<ReportDraft>(EMPTY_REPORT_DRAFT);
   const [reportTaskPrefill, setReportTaskPrefill] = useState<TaskReportPrefill | null>(null);
+  const [reportMaterialRows, setReportMaterialRows] = useState<ReportMaterialRow[]>(() => [
+    createReportMaterialRow("materials"),
+  ]);
+  const [reportOfficeMaterialRows, setReportOfficeMaterialRows] = useState<ReportMaterialRow[]>(() => [
+    createReportMaterialRow("office_materials"),
+  ]);
+  const [reportImageFiles, setReportImageFiles] = useState<ReportImageSelection[]>([]);
+  const [reportSubmitting, setReportSubmitting] = useState(false);
+  const [reportUploadPercent, setReportUploadPercent] = useState<number | null>(null);
+  const [reportUploadPhase, setReportUploadPhase] = useState<"uploading" | "processing" | null>(null);
   const [constructionBackView, setConstructionBackView] = useState<MainView | null>(null);
   const [fileUploadModalOpen, setFileUploadModalOpen] = useState(false);
   const [avatarModalOpen, setAvatarModalOpen] = useState(false);
@@ -1972,11 +2142,25 @@ export function App() {
   const threadIconObjectUrlRef = useRef<string | null>(null);
   const messageListRef = useRef<HTMLUListElement | null>(null);
   const constructionFormRef = useRef<HTMLFormElement | null>(null);
+  const reportImageInputRef = useRef<HTMLInputElement | null>(null);
+  const reportImageFilesRef = useRef<ReportImageSelection[]>([]);
   const taskNotificationSnapshotRef = useRef("");
   const shouldFollowMessagesRef = useRef(true);
   const forceScrollToBottomRef = useRef(false);
 
   const [reportWorkers, setReportWorkers] = useState<ReportWorker[]>([{ name: "", start_time: "", end_time: "" }]);
+
+  useEffect(() => {
+    reportImageFilesRef.current = reportImageFiles;
+  }, [reportImageFiles]);
+
+  useEffect(() => {
+    return () => {
+      reportImageFilesRef.current.forEach((entry) => {
+        URL.revokeObjectURL(entry.preview_url);
+      });
+    };
+  }, []);
 
   const isAdmin = user?.role === "admin";
   const canAdjustRequiredHours = user ? ["admin", "ceo"].includes(user.role) : false;
@@ -2852,11 +3036,10 @@ export function App() {
     const reportDateInput = form.elements.namedItem("report_date") as HTMLInputElement | null;
     const workDoneInput = form.elements.namedItem("work_done") as HTMLTextAreaElement | null;
     const incidentsInput = form.elements.namedItem("incidents") as HTMLTextAreaElement | null;
-    const materialsInput = form.elements.namedItem("materials") as HTMLTextAreaElement | null;
     if (reportDateInput) reportDateInput.value = reportTaskPrefill.report_date;
     if (workDoneInput) workDoneInput.value = reportTaskPrefill.work_done;
     if (incidentsInput) incidentsInput.value = reportTaskPrefill.incidents;
-    if (materialsInput) materialsInput.value = reportTaskPrefill.materials;
+    setReportMaterialRows(parseReportMaterialRows(reportTaskPrefill.materials, "materials"));
     setReportTaskPrefill(null);
   }, [mainView, reportTaskPrefill]);
 
@@ -3570,12 +3753,14 @@ export function App() {
 
   function openCreateProjectModal() {
     setProjectForm(EMPTY_PROJECT_FORM);
+    setProjectFormBase(null);
+    setProjectEditExpectedLastUpdatedAt(null);
     setProjectModalMode("create");
   }
 
   function openEditProjectModal(project: Project) {
     const assignedClassTemplateIds = (projectClassTemplatesByProjectId[project.id] ?? []).map((row) => row.id);
-    setProjectForm({
+    const nextForm: ProjectFormState = {
       project_number: project.project_number ?? "",
       name: project.name ?? "",
       description: project.description ?? "",
@@ -3592,19 +3777,30 @@ export function App() {
       site_access_type: normalizeProjectSiteAccessType(project.site_access_type),
       site_access_note: project.site_access_note ?? "",
       class_template_ids: assignedClassTemplateIds,
-    });
+    };
+    setProjectForm(nextForm);
+    setProjectFormBase(nextForm);
+    setProjectEditExpectedLastUpdatedAt(project.last_updated_at ?? null);
     setProjectModalMode("edit");
     if (!projectClassTemplatesByProjectId[project.id]) {
       void loadProjectClassTemplates(project.id).then((rows) => {
+        const resolvedClassTemplateIds = rows.map((entry) => entry.id);
         setProjectForm((current) => {
           if (current.project_number !== (project.project_number ?? "")) return current;
-          return { ...current, class_template_ids: rows.map((entry) => entry.id) };
+          return { ...current, class_template_ids: resolvedClassTemplateIds };
+        });
+        setProjectFormBase((current) => {
+          if (!current) return current;
+          if (current.project_number !== (project.project_number ?? "")) return current;
+          return { ...current, class_template_ids: resolvedClassTemplateIds };
         });
       });
     }
   }
 
   function closeProjectModal() {
+    setProjectFormBase(null);
+    setProjectEditExpectedLastUpdatedAt(null);
     setProjectModalMode(null);
   }
 
@@ -3798,12 +3994,17 @@ export function App() {
   }
 
   function openTaskEditModal(task: Task) {
-    setTaskEditForm(buildTaskEditFormState(task));
+    const nextForm = buildTaskEditFormState(task);
+    setTaskEditForm(nextForm);
+    setTaskEditFormBase(nextForm);
+    setTaskEditExpectedUpdatedAt(task.updated_at ?? null);
     setTaskEditModalOpen(true);
   }
 
   function closeTaskEditModal() {
     setTaskEditModalOpen(false);
+    setTaskEditFormBase(null);
+    setTaskEditExpectedUpdatedAt(null);
     setTaskEditForm(buildTaskEditFormState());
   }
 
@@ -3889,14 +4090,14 @@ export function App() {
     setProjectFinanceForm((current) => ({ ...current, [field]: value }));
   }
 
-  function financeFormPayload(): Record<string, number | null> {
+  function financeFormPayload(options?: { changedOnly?: boolean }): Record<string, number | null> {
     const toNumberOrNull = (value: string): number | null => {
       const normalized = value.trim().replace(",", ".");
       if (!normalized) return null;
       const parsed = Number(normalized);
       return Number.isFinite(parsed) ? parsed : null;
     };
-    return {
+    const payload = {
       order_value_net: toNumberOrNull(projectFinanceForm.order_value_net),
       down_payment_35: toNumberOrNull(projectFinanceForm.down_payment_35),
       main_components_50: toNumberOrNull(projectFinanceForm.main_components_50),
@@ -3905,6 +4106,23 @@ export function App() {
       actual_costs: toNumberOrNull(projectFinanceForm.actual_costs),
       contribution_margin: toNumberOrNull(projectFinanceForm.contribution_margin),
     };
+    if (!options?.changedOnly) return payload;
+    const currentValues = {
+      order_value_net: projectFinance?.order_value_net ?? null,
+      down_payment_35: projectFinance?.down_payment_35 ?? null,
+      main_components_50: projectFinance?.main_components_50 ?? null,
+      final_invoice_15: projectFinance?.final_invoice_15 ?? null,
+      planned_costs: projectFinance?.planned_costs ?? null,
+      actual_costs: projectFinance?.actual_costs ?? null,
+      contribution_margin: projectFinance?.contribution_margin ?? null,
+    };
+    const changedPayload: Record<string, number | null> = {};
+    (Object.keys(payload) as (keyof typeof payload)[]).forEach((field) => {
+      if (payload[field] !== currentValues[field]) {
+        changedPayload[field] = payload[field];
+      }
+    });
+    return changedPayload;
   }
 
   function validateTimeInputOrSetError(value: string, required: boolean): string | null {
@@ -3968,25 +4186,7 @@ export function App() {
 
   async function submitProjectForm(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const normalizedSiteAccessType = normalizeProjectSiteAccessType(projectForm.site_access_type);
-    const payload = {
-      project_number: projectForm.project_number.trim(),
-      name: projectForm.name.trim(),
-      description: projectForm.description.trim(),
-      status: projectForm.status.trim() || "active",
-      last_state: projectForm.last_state.trim() || null,
-      last_status_at: localDateTimeInputToIso(projectForm.last_status_at),
-      customer_name: projectForm.customer_name.trim(),
-      customer_address: normalizeAddressInput(projectForm.customer_address),
-      customer_contact: projectForm.customer_contact.trim(),
-      customer_email: projectForm.customer_email.trim(),
-      customer_phone: projectForm.customer_phone.trim(),
-      site_access_type: normalizedSiteAccessType || null,
-      site_access_note: projectSiteAccessRequiresNote(normalizedSiteAccessType)
-        ? projectForm.site_access_note.trim() || null
-        : null,
-      class_template_ids: projectForm.class_template_ids,
-    };
+    const payload = projectPayloadFromForm(projectForm);
     if (!payload.project_number || !payload.name) {
       setError(language === "de" ? "Projektnummer und Name sind erforderlich" : "Project number and name are required");
       return;
@@ -4004,9 +4204,47 @@ export function App() {
         setProjectTab("overview");
         setNotice(language === "de" ? "Projekt erstellt" : "Project created");
       } else if (projectModalMode === "edit" && activeProjectId) {
+        const basePayload = projectPayloadFromForm(projectFormBase ?? projectForm);
+        const patchPayload: Record<string, unknown> = {};
+        (
+          [
+            "project_number",
+            "name",
+            "description",
+            "status",
+            "last_state",
+            "last_status_at",
+            "customer_name",
+            "customer_address",
+            "customer_contact",
+            "customer_email",
+            "customer_phone",
+            "site_access_type",
+            "site_access_note",
+            "class_template_ids",
+          ] as (keyof typeof payload)[]
+        ).forEach((key) => {
+          if (key === "class_template_ids") {
+            if (!sameNumberSet(payload.class_template_ids, basePayload.class_template_ids)) {
+              patchPayload[key] = payload[key];
+            }
+            return;
+          }
+          if (payload[key] !== basePayload[key]) {
+            patchPayload[key] = payload[key];
+          }
+        });
+        if (projectEditExpectedLastUpdatedAt !== null) {
+          patchPayload.expected_last_updated_at = projectEditExpectedLastUpdatedAt;
+        }
+        const hasChanges = Object.keys(patchPayload).some((key) => key !== "expected_last_updated_at");
+        if (!hasChanges) {
+          closeProjectModal();
+          return;
+        }
         await apiFetch<Project>(`/projects/${activeProjectId}`, token, {
           method: "PATCH",
-          body: JSON.stringify(payload),
+          body: JSON.stringify(patchPayload),
         });
         setNotice(language === "de" ? "Projekt aktualisiert" : "Project updated");
       }
@@ -4014,32 +4252,63 @@ export function App() {
       closeProjectModal();
       await loadBaseData();
     } catch (err: any) {
+      if (err?.status === 409) {
+        setError(
+          language === "de"
+            ? "Projekt wurde in der Zwischenzeit geändert. Bitte neu laden und erneut speichern."
+            : "Project was changed in the meantime. Please reload and save again.",
+        );
+        return;
+      }
       setError(err.message ?? "Failed to save project");
     }
   }
 
   async function saveProjectInternalNote() {
     if (!activeProjectId) return;
+    const expectedLastUpdatedAt =
+      projectOverviewDetails?.project?.last_updated_at ?? activeProject?.last_updated_at ?? null;
+    const payload: Record<string, unknown> = { description: projectNoteDraft };
+    if (expectedLastUpdatedAt !== null) {
+      payload.expected_last_updated_at = expectedLastUpdatedAt;
+    }
     try {
       await apiFetch<Project>(`/projects/${activeProjectId}`, token, {
         method: "PATCH",
-        body: JSON.stringify({ description: projectNoteDraft }),
+        body: JSON.stringify(payload),
       });
       setProjectNoteEditing(false);
       await loadBaseData();
       await loadProjectOverview(activeProjectId);
       setNotice(language === "de" ? "Notiz aktualisiert" : "Note updated");
     } catch (err: any) {
+      if (err?.status === 409) {
+        setError(
+          language === "de"
+            ? "Projekt wurde in der Zwischenzeit geändert. Bitte neu laden und erneut speichern."
+            : "Project was changed in the meantime. Please reload and save again.",
+        );
+        return;
+      }
       setError(err.message ?? "Failed to save note");
     }
   }
 
   async function saveProjectFinance() {
     if (!activeProjectId) return;
+    const patchPayload: Record<string, unknown> = financeFormPayload({ changedOnly: true });
+    if (projectFinance?.updated_at !== undefined) {
+      patchPayload.expected_updated_at = projectFinance.updated_at ?? null;
+    }
+    const hasChanges = Object.keys(patchPayload).some((key) => key !== "expected_updated_at");
+    if (!hasChanges) {
+      setProjectFinanceEditing(false);
+      return;
+    }
     try {
       const updated = await apiFetch<ProjectFinance>(`/projects/${activeProjectId}/finance`, token, {
         method: "PATCH",
-        body: JSON.stringify(financeFormPayload()),
+        body: JSON.stringify(patchPayload),
       });
       setProjectFinance(updated);
       setProjectFinanceForm(projectFinanceToFormState(updated));
@@ -4049,6 +4318,14 @@ export function App() {
       await loadProjectOverview(activeProjectId);
       setNotice(language === "de" ? "Finanzen aktualisiert" : "Finances updated");
     } catch (err: any) {
+      if (err?.status === 409) {
+        setError(
+          language === "de"
+            ? "Projektfinanzen wurden in der Zwischenzeit geändert. Bitte neu laden und erneut speichern."
+            : "Project finances were changed in the meantime. Please reload and save again.",
+        );
+        return;
+      }
       setError(err.message ?? "Failed to save finances");
     }
   }
@@ -4065,11 +4342,17 @@ export function App() {
       setError(language === "de" ? "Geplante Stunden muessen >= 0 sein" : "Planned hours must be >= 0");
       return;
     }
+    const currentPlannedHours = projectFinance?.planned_hours_total ?? null;
+    if (parsed === currentPlannedHours) return;
 
+    const patchPayload: Record<string, unknown> = { planned_hours_total: parsed };
+    if (projectFinance?.updated_at !== undefined) {
+      patchPayload.expected_updated_at = projectFinance.updated_at ?? null;
+    }
     try {
       const updated = await apiFetch<ProjectFinance>(`/projects/${activeProjectId}/finance`, token, {
         method: "PATCH",
-        body: JSON.stringify({ planned_hours_total: parsed }),
+        body: JSON.stringify(patchPayload),
       });
       setProjectFinance(updated);
       setProjectFinanceForm(projectFinanceToFormState(updated));
@@ -4078,21 +4361,43 @@ export function App() {
       await loadProjectOverview(activeProjectId);
       setNotice(language === "de" ? "Projektstunden aktualisiert" : "Project hours updated");
     } catch (err: any) {
+      if (err?.status === 409) {
+        setError(
+          language === "de"
+            ? "Projektfinanzen wurden in der Zwischenzeit geändert. Bitte neu laden und erneut speichern."
+            : "Project finances were changed in the meantime. Please reload and save again.",
+        );
+        return;
+      }
       setError(err.message ?? "Failed to save project hours");
     }
   }
 
   async function archiveActiveProject() {
     if (!activeProjectId) return;
+    const expectedLastUpdatedAt =
+      projectOverviewDetails?.project?.last_updated_at ?? activeProject?.last_updated_at ?? null;
+    const payload: Record<string, unknown> = { status: "archived" };
+    if (expectedLastUpdatedAt !== null) {
+      payload.expected_last_updated_at = expectedLastUpdatedAt;
+    }
     try {
       await apiFetch<Project>(`/projects/${activeProjectId}`, token, {
         method: "PATCH",
-        body: JSON.stringify({ status: "archived" }),
+        body: JSON.stringify(payload),
       });
       setNotice(language === "de" ? "Projekt archiviert" : "Project archived");
       closeProjectModal();
       await loadBaseData();
     } catch (err: any) {
+      if (err?.status === 409) {
+        setError(
+          language === "de"
+            ? "Projekt wurde in der Zwischenzeit geändert. Bitte neu laden und erneut versuchen."
+            : "Project was changed in the meantime. Please reload and try again.",
+        );
+        return;
+      }
       setError(err.message ?? "Failed to archive project");
     }
   }
@@ -4118,17 +4423,29 @@ export function App() {
     }
   }
 
-  async function unarchiveProject(projectId: number) {
+  async function unarchiveProject(projectId: number, expectedLastUpdatedAt?: string | null) {
     if (!canCreateProject) return;
+    const payload: Record<string, unknown> = { status: "active" };
+    if (expectedLastUpdatedAt !== null && expectedLastUpdatedAt !== undefined) {
+      payload.expected_last_updated_at = expectedLastUpdatedAt;
+    }
     try {
       await apiFetch<Project>(`/projects/${projectId}`, token, {
         method: "PATCH",
-        body: JSON.stringify({ status: "active" }),
+        body: JSON.stringify(payload),
       });
       setHighlightedArchivedProjectId((current) => (current === projectId ? null : current));
       setNotice(language === "de" ? "Projekt wiederhergestellt" : "Project restored");
       await loadBaseData();
     } catch (err: any) {
+      if (err?.status === 409) {
+        setError(
+          language === "de"
+            ? "Projekt wurde in der Zwischenzeit geändert. Bitte neu laden und erneut versuchen."
+            : "Project was changed in the meantime. Please reload and try again.",
+        );
+        return;
+      }
       setError(err.message ?? "Failed to restore project");
     }
   }
@@ -4315,7 +4632,6 @@ export function App() {
       setError(language === "de" ? "Aufgabentitel ist erforderlich" : "Task title is required");
       return;
     }
-    const dueDate = taskEditForm.due_date.trim() || null;
     const storageBoxNumber =
       taskEditForm.has_storage_box && taskEditForm.storage_box_number.trim()
         ? Number(taskEditForm.storage_box_number)
@@ -4333,25 +4649,50 @@ export function App() {
         ? validateTimeInputOrSetError(taskEditForm.start_time, false)
         : null;
     if (taskEditForm.start_time.trim().length > 0 && !startTime) return;
-    const weekStartValue = taskEditForm.week_start.trim() || (dueDate ? normalizeWeekStartISO(dueDate) : null);
-    const classTemplateId =
-      taskEditForm.class_template_id.trim().length > 0 ? Number(taskEditForm.class_template_id) : null;
+    const baseStartTime =
+      taskEditFormBase && taskEditFormBase.start_time.trim().length > 0
+        ? normalizeTimeHHMM(taskEditFormBase.start_time)
+        : null;
+    const nextPayload = taskEditPayloadFromForm(taskEditForm, startTime);
+    const basePayload = taskEditPayloadFromForm(taskEditFormBase ?? taskEditForm, baseStartTime);
+    const patchPayload: Record<string, unknown> = {};
+    (
+      [
+        "title",
+        "description",
+        "materials_required",
+        "storage_box_number",
+        "task_type",
+        "class_template_id",
+        "status",
+        "due_date",
+        "start_time",
+        "assignee_ids",
+        "week_start",
+      ] as (keyof typeof nextPayload)[]
+    ).forEach((key) => {
+      if (key === "assignee_ids") {
+        if (!sameNumberSet(nextPayload.assignee_ids, basePayload.assignee_ids)) {
+          patchPayload[key] = nextPayload[key];
+        }
+        return;
+      }
+      if (nextPayload[key] !== basePayload[key]) {
+        patchPayload[key] = nextPayload[key];
+      }
+    });
+    if (taskEditExpectedUpdatedAt !== null) {
+      patchPayload.expected_updated_at = taskEditExpectedUpdatedAt;
+    }
+    const hasChanges = Object.keys(patchPayload).some((key) => key !== "expected_updated_at");
+    if (!hasChanges) {
+      closeTaskEditModal();
+      return;
+    }
     try {
       await apiFetch(`/tasks/${taskEditForm.id}`, token, {
         method: "PATCH",
-        body: JSON.stringify({
-          title: taskEditForm.title.trim(),
-          description: taskEditForm.description.trim() || null,
-          materials_required: taskEditForm.materials_required.trim() || null,
-          storage_box_number: storageBoxNumber,
-          task_type: taskEditForm.task_type,
-          class_template_id: classTemplateId,
-          status: taskEditForm.status.trim() || "open",
-          due_date: dueDate,
-          start_time: startTime,
-          assignee_ids: taskEditForm.assignee_ids,
-          week_start: weekStartValue,
-        }),
+        body: JSON.stringify(patchPayload),
       });
       closeTaskEditModal();
       if (mainView === "project" && activeProjectId) {
@@ -4367,6 +4708,14 @@ export function App() {
       setOverview(await apiFetch<any[]>("/projects-overview", token));
       setNotice(language === "de" ? "Aufgabe aktualisiert" : "Task updated");
     } catch (err: any) {
+      if (err?.status === 409) {
+        setError(
+          language === "de"
+            ? "Aufgabe wurde in der Zwischenzeit geändert. Bitte neu laden und erneut speichern."
+            : "Task was changed in the meantime. Please reload and save again.",
+        );
+        return;
+      }
       setError(err.message ?? "Failed to update task");
     }
   }
@@ -4409,13 +4758,17 @@ export function App() {
   }
 
   async function markTaskDone(
-    taskId: number,
+    task: Task,
     options?: { openReportFromTask?: Task; reportBackView?: MainView | null },
   ) {
+    const payload: Record<string, unknown> = { status: "done" };
+    if (task.updated_at !== null && task.updated_at !== undefined) {
+      payload.expected_updated_at = task.updated_at;
+    }
     try {
-      await apiFetch(`/tasks/${taskId}`, token, {
+      await apiFetch(`/tasks/${task.id}`, token, {
         method: "PATCH",
-        body: JSON.stringify({ status: "done" }),
+        body: JSON.stringify(payload),
       });
       if (mainView === "project" && activeProjectId) {
         await loadTasks(taskView, activeProjectId);
@@ -4435,6 +4788,14 @@ export function App() {
       }
       setNotice(language === "de" ? "Aufgabe abgeschlossen" : "Task marked complete");
     } catch (err: any) {
+      if (err?.status === 409) {
+        setError(
+          language === "de"
+            ? "Aufgabe wurde in der Zwischenzeit geändert. Bitte neu laden und erneut versuchen."
+            : "Task was changed in the meantime. Please reload and try again.",
+        );
+        return;
+      }
       setError(err.message ?? "Failed to complete task");
     }
   }
@@ -4985,8 +5346,110 @@ export function App() {
     setReportDraft((current) => ({ ...current, [field]: value }));
   }
 
+  function updateReportMaterialRow(
+    index: number,
+    field: keyof Omit<ReportMaterialRow, "id">,
+    value: string,
+  ) {
+    setReportMaterialRows((current) => {
+      const next = [...current];
+      next[index] = { ...next[index], [field]: value };
+      return next;
+    });
+  }
+
+  function addReportMaterialRow() {
+    setReportMaterialRows((current) => [...current, createReportMaterialRow("materials")]);
+  }
+
+  function removeReportMaterialRow(index: number) {
+    setReportMaterialRows((current) =>
+      current.length <= 1 ? [createReportMaterialRow("materials")] : current.filter((_, rowIndex) => rowIndex !== index),
+    );
+  }
+
+  function updateReportOfficeMaterialRow(
+    index: number,
+    field: keyof Omit<ReportMaterialRow, "id">,
+    value: string,
+  ) {
+    setReportOfficeMaterialRows((current) => {
+      const next = [...current];
+      next[index] = { ...next[index], [field]: value };
+      return next;
+    });
+  }
+
+  function addReportOfficeMaterialRow() {
+    setReportOfficeMaterialRows((current) => [...current, createReportMaterialRow("office_materials")]);
+  }
+
+  function removeReportOfficeMaterialRow(index: number) {
+    setReportOfficeMaterialRows((current) =>
+      current.length <= 1
+        ? [createReportMaterialRow("office_materials")]
+        : current.filter((_, rowIndex) => rowIndex !== index),
+    );
+  }
+
+  function onReportImagesChange(event: ChangeEvent<HTMLInputElement>) {
+    const selectedFiles = event.target.files ? Array.from(event.target.files) : [];
+    if (selectedFiles.length === 0) return;
+    const invalidFile = selectedFiles.find((file) => file.type && !file.type.startsWith("image/"));
+    if (invalidFile) {
+      setError(language === "de" ? "Bitte nur Bilddateien wählen." : "Please select image files only.");
+      event.target.value = "";
+      return;
+    }
+    setReportImageFiles((current) => {
+      const seen = new Set(current.map((entry) => entry.key));
+      const next = [...current];
+      for (const file of selectedFiles) {
+        const fileKey = buildClientFileKey(file);
+        if (seen.has(fileKey)) continue;
+        seen.add(fileKey);
+        next.push({
+          key: fileKey,
+          file,
+          preview_url: URL.createObjectURL(file),
+        });
+      }
+      return next;
+    });
+    event.target.value = "";
+  }
+
+  function removeReportImage(fileKey: string) {
+    setReportImageFiles((current) => {
+      const toRemove = current.find((entry) => entry.key === fileKey) ?? null;
+      if (toRemove) {
+        URL.revokeObjectURL(toRemove.preview_url);
+      }
+      return current.filter((entry) => entry.key !== fileKey);
+    });
+  }
+
+  function onReportImageRemoveClick(event: MouseEvent<HTMLButtonElement>, fileKey: string) {
+    event.preventDefault();
+    event.stopPropagation();
+    removeReportImage(fileKey);
+  }
+
+  function clearReportImages() {
+    setReportImageFiles((current) => {
+      current.forEach((entry) => {
+        URL.revokeObjectURL(entry.preview_url);
+      });
+      return [];
+    });
+    if (reportImageInputRef.current) {
+      reportImageInputRef.current.value = "";
+    }
+  }
+
   async function submitConstructionReport(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (reportSubmitting) return;
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
     const rawProjectId = String(form.get("project_id") || reportProjectId || "").trim();
@@ -5022,14 +5485,25 @@ export function App() {
       return;
     }
 
-    const materials = parseListLines(String(form.get("materials") || "")).map((line) => {
-      const [item, qty, unit, article_no] = line.split("|").map((x) => x.trim());
-      return { item: item || "-", qty: qty || null, unit: unit || null, article_no: article_no || null };
-    });
+    const materials = reportMaterialRows
+      .map((row) => ({
+        item: row.item.trim(),
+        qty: row.qty.trim(),
+        unit: row.unit.trim(),
+        article_no: row.article_no.trim(),
+      }))
+      .filter((row) => row.item.length > 0)
+      .map((row) => ({
+        item: row.item,
+        qty: row.qty || null,
+        unit: row.unit || null,
+        article_no: row.article_no || null,
+      }));
     const extras = parseListLines(String(form.get("extras") || "")).map((line) => {
       const [description, reason] = line.split("|").map((x) => x.trim());
       return { description: description || "-", reason: reason || null };
     });
+    const officeMaterialNeed = serializeOfficeMaterialRows(reportOfficeMaterialRows);
 
     const payload = {
       customer: reportDraft.customer.trim() || null,
@@ -5044,7 +5518,7 @@ export function App() {
       extras,
       work_done: String(form.get("work_done") || ""),
       incidents: String(form.get("incidents") || ""),
-      office_material_need: String(form.get("office_material_need") || ""),
+      office_material_need: officeMaterialNeed,
       office_rework: String(form.get("office_rework") || ""),
       office_next_steps: String(form.get("office_next_steps") || ""),
     };
@@ -5055,33 +5529,85 @@ export function App() {
     multipart.set("payload", JSON.stringify(payload));
     if (targetProjectId) multipart.set("project_id", String(targetProjectId));
 
-    const imageInputs = formElement.querySelectorAll<HTMLInputElement>('input[name="images"], input[name="camera_images"]');
-    const imageFiles: File[] = [];
-    const seenFileKeys = new Set<string>();
-    imageInputs.forEach((input) => {
-      const filesFromInput = input.files ? Array.from(input.files) : [];
-      for (const file of filesFromInput) {
-        const fileKey = `${file.name}:${file.size}:${file.lastModified}`;
-        if (seenFileKeys.has(fileKey)) continue;
-        seenFileKeys.add(fileKey);
-        imageFiles.push(file);
-      }
-    });
-    for (const [index, file] of imageFiles.entries()) {
-      const fallbackName = file.name.trim() || `report-photo-${index + 1}.jpg`;
-      multipart.append("images", file, fallbackName);
+    for (const [index, selection] of reportImageFiles.entries()) {
+      const fallbackName = selection.file.name.trim() || `report-photo-${index + 1}.jpg`;
+      multipart.append("images", selection.file, fallbackName);
     }
 
     try {
+      setReportSubmitting(true);
+      setReportUploadPercent(0);
+      setReportUploadPhase("uploading");
       const reportEndpoint = targetProjectId ? `/projects/${targetProjectId}/construction-reports` : "/construction-reports";
-      await apiFetch(reportEndpoint, token, {
-        method: "POST",
-        body: multipart,
-      });
+      const createdReport = await apiUploadWithProgress<ConstructionReportCreateResponse>(
+        reportEndpoint,
+        token,
+        multipart,
+        (progress) => {
+          if (progress.percent != null) {
+            setReportUploadPercent(progress.percent);
+            if (progress.percent >= 100) {
+              setReportUploadPhase("processing");
+            }
+            return;
+          }
+          if (progress.loaded > 0) {
+            setReportUploadPercent((current) => current ?? 1);
+          }
+        },
+      );
+
       formElement.reset();
       setReportDraft(reportDraftFromProject(targetProject ?? null));
       setReportWorkers([{ name: "", start_time: "", end_time: "" }]);
-      setNotice(language === "de" ? "Baustellenbericht gespeichert" : "Construction report saved");
+      setReportMaterialRows([createReportMaterialRow("materials")]);
+      setReportOfficeMaterialRows([createReportMaterialRow("office_materials")]);
+      clearReportImages();
+
+      let finalProcessingStatus: ConstructionReportProcessingResponse | null = null;
+      const initialStatus = String(createdReport.processing_status || "").toLowerCase();
+      if (initialStatus === "queued" || initialStatus === "processing") {
+        setReportUploadPhase("processing");
+        const timeoutAt = Date.now() + 120_000;
+        while (Date.now() < timeoutAt) {
+          await sleep(2000);
+          try {
+            finalProcessingStatus = await apiFetch<ConstructionReportProcessingResponse>(
+              `/construction-reports/${createdReport.id}/processing`,
+              token,
+            );
+          } catch {
+            finalProcessingStatus = null;
+            break;
+          }
+          if (!finalProcessingStatus) {
+            break;
+          }
+          const statusValue = String(finalProcessingStatus.processing_status || "").toLowerCase();
+          if (statusValue === "completed" || statusValue === "failed") {
+            break;
+          }
+        }
+      }
+
+      const terminalStatus = String(
+        finalProcessingStatus?.processing_status || createdReport.processing_status || "",
+      ).toLowerCase();
+      if (terminalStatus === "failed") {
+        const fallbackDetail =
+          language === "de" ? "PDF-Verarbeitung für den Bericht fehlgeschlagen." : "Report PDF processing failed.";
+        throw new Error(finalProcessingStatus?.processing_error || createdReport.processing_error || fallbackDetail);
+      }
+      if (terminalStatus !== "completed") {
+        setNotice(
+          language === "de"
+            ? "Baustellenbericht gespeichert. PDF wird im Hintergrund erstellt."
+            : "Construction report saved. PDF is processing in the background.",
+        );
+      } else {
+        setNotice(language === "de" ? "Baustellenbericht gespeichert" : "Construction report saved");
+      }
+
       await loadConstructionReportFiles(targetProjectId);
       if (targetProjectId) {
         await loadProjectOverview(targetProjectId);
@@ -5089,6 +5615,10 @@ export function App() {
       setOverview(await apiFetch<any[]>("/projects-overview", token));
     } catch (err: any) {
       setError(err.message ?? "Failed to submit report");
+    } finally {
+      setReportSubmitting(false);
+      setReportUploadPercent(null);
+      setReportUploadPhase(null);
     }
   }
 
@@ -7220,7 +7750,10 @@ export function App() {
                       <div className="row wrap task-actions task-actions-left">
                         {canCreateProject ? (
                           <>
-                            <button type="button" onClick={() => void unarchiveProject(project.id)}>
+                            <button
+                              type="button"
+                              onClick={() => void unarchiveProject(project.id, project.last_updated_at ?? null)}
+                            >
                               {language === "de" ? "Wiederherstellen" : "Unarchive"}
                             </button>
                             <button
@@ -7343,7 +7876,7 @@ export function App() {
                           type="button"
                           onClick={() =>
                             task.status !== "done"
-                              ? void markTaskDone(task.id, { openReportFromTask: task, reportBackView: "my_tasks" })
+                              ? void markTaskDone(task, { openReportFromTask: task, reportBackView: "my_tasks" })
                               : openConstructionReportFromTask(task, "my_tasks")
                           }
                         >
@@ -7351,7 +7884,7 @@ export function App() {
                         </button>
                       )}
                       {isMine && task.status !== "done" && (
-                        <button type="button" onClick={() => void markTaskDone(task.id)}>
+                        <button type="button" onClick={() => void markTaskDone(task)}>
                           {language === "de" ? "Als erledigt markieren" : "Mark complete"}
                         </button>
                       )}
@@ -7907,7 +8440,7 @@ export function App() {
                             type="button"
                             onClick={(event) => {
                               event.stopPropagation();
-                              void markTaskDone(task.id);
+                              void markTaskDone(task);
                             }}
                           >
                             {language === "de" ? "Erledigt" : "Complete"}
@@ -8282,7 +8815,7 @@ export function App() {
                                 type="button"
                                 onClick={(event) => {
                                   event.stopPropagation();
-                                  void markTaskDone(task.id);
+                                  void markTaskDone(task);
                                 }}
                               >
                                 {language === "de" ? "Erledigt" : "Complete"}
@@ -8517,36 +9050,8 @@ export function App() {
                   </div>
                 </form>
               ) : (
-                <div className="project-finance-grid">
-                  <small>
-                    {language === "de" ? "Auftragswert netto" : "Order value (net)"}:{" "}
-                    <b>{formatMoney(projectFinance?.order_value_net, language)}</b>
-                  </small>
-                  <small>
-                    {language === "de" ? "35% Anzahlung" : "35% down payment"}:{" "}
-                    <b>{formatMoney(projectFinance?.down_payment_35, language)}</b>
-                  </small>
-                  <small>
-                    {language === "de" ? "50% Hauptkomponenten" : "50% main components"}:{" "}
-                    <b>{formatMoney(projectFinance?.main_components_50, language)}</b>
-                  </small>
-                  <small>
-                    {language === "de" ? "15% Schlussrechnung" : "15% final invoice"}:{" "}
-                    <b>{formatMoney(projectFinance?.final_invoice_15, language)}</b>
-                  </small>
-                  <small>
-                    {language === "de" ? "Geplante Kosten" : "Planned costs"}:{" "}
-                    <b>{formatMoney(projectFinance?.planned_costs, language)}</b>
-                  </small>
-                  <small>
-                    {language === "de" ? "Tatsächliche Kosten" : "Actual costs"}:{" "}
-                    <b>{formatMoney(projectFinance?.actual_costs, language)}</b>
-                  </small>
-                  <small>
-                    {language === "de" ? "Deckungsbeitrag" : "Contribution margin"}:{" "}
-                    <b>{formatMoney(projectFinance?.contribution_margin, language)}</b>
-                  </small>
-                  <small>
+                <>
+                  <small className="project-finance-last-update">
                     {language === "de" ? "Zuletzt aktualisiert" : "Last updated"}:{" "}
                     <b>
                       {projectFinance?.updated_at
@@ -8554,7 +9059,53 @@ export function App() {
                         : "-"}
                     </b>
                   </small>
-                </div>
+                  <div className="project-finance-grid">
+                    <div className="project-finance-metric">
+                      <small className="project-finance-metric-label">
+                        {language === "de" ? "Auftragswert netto" : "Order value (net)"}
+                      </small>
+                      <b className="project-finance-metric-value">{formatMoney(projectFinance?.order_value_net, language)}</b>
+                    </div>
+                    <div className="project-finance-metric">
+                      <small className="project-finance-metric-label">
+                        {language === "de" ? "35% Anzahlung" : "35% down payment"}
+                      </small>
+                      <b className="project-finance-metric-value">{formatMoney(projectFinance?.down_payment_35, language)}</b>
+                    </div>
+                    <div className="project-finance-metric">
+                      <small className="project-finance-metric-label">
+                        {language === "de" ? "50% Hauptkomponenten" : "50% main components"}
+                      </small>
+                      <b className="project-finance-metric-value">{formatMoney(projectFinance?.main_components_50, language)}</b>
+                    </div>
+                    <div className="project-finance-metric">
+                      <small className="project-finance-metric-label">
+                        {language === "de" ? "15% Schlussrechnung" : "15% final invoice"}
+                      </small>
+                      <b className="project-finance-metric-value">{formatMoney(projectFinance?.final_invoice_15, language)}</b>
+                    </div>
+                    <div className="project-finance-metric">
+                      <small className="project-finance-metric-label">
+                        {language === "de" ? "Geplante Kosten" : "Planned costs"}
+                      </small>
+                      <b className="project-finance-metric-value">{formatMoney(projectFinance?.planned_costs, language)}</b>
+                    </div>
+                    <div className="project-finance-metric">
+                      <small className="project-finance-metric-label">
+                        {language === "de" ? "Tatsächliche Kosten" : "Actual costs"}
+                      </small>
+                      <b className="project-finance-metric-value">{formatMoney(projectFinance?.actual_costs, language)}</b>
+                    </div>
+                    <div className="project-finance-metric">
+                      <small className="project-finance-metric-label">
+                        {language === "de" ? "Deckungsbeitrag" : "Contribution margin"}
+                      </small>
+                      <b className="project-finance-metric-value">
+                        {formatMoney(projectFinance?.contribution_margin, language)}
+                      </b>
+                    </div>
+                  </div>
+                </>
               )}
             </div>
           </section>
@@ -8915,18 +9466,94 @@ export function App() {
                 </small>
               </div>
 
-              <label>
-                {language === "de" ? "Material (eine Zeile: Artikel|Menge|Einheit|ArtNr)" : "Materials (one line: Item|Qty|Unit|Article)"}
-                <textarea name="materials" />
-              </label>
+              <div className="report-material-block">
+                <b>{language === "de" ? "Material" : "Materials"}</b>
+                <div className="report-material-grid">
+                  <div className="report-material-grid-head">
+                    <b>{language === "de" ? "Artikel" : "Item"}</b>
+                    <b>{language === "de" ? "Menge" : "Qty"}</b>
+                    <b>{language === "de" ? "Einheit" : "Unit"}</b>
+                    <b>{language === "de" ? "ArtNr" : "Article"}</b>
+                    <span />
+                  </div>
+                  {reportMaterialRows.map((row, index) => (
+                    <div key={row.id} className="report-material-grid-row">
+                      <input
+                        value={row.item}
+                        placeholder={language === "de" ? "Artikel" : "Item"}
+                        onChange={(event) => updateReportMaterialRow(index, "item", event.target.value)}
+                      />
+                      <input
+                        value={row.qty}
+                        placeholder={language === "de" ? "Menge" : "Qty"}
+                        onChange={(event) => updateReportMaterialRow(index, "qty", event.target.value)}
+                      />
+                      <input
+                        value={row.unit}
+                        placeholder={language === "de" ? "Einheit" : "Unit"}
+                        onChange={(event) => updateReportMaterialRow(index, "unit", event.target.value)}
+                      />
+                      <input
+                        value={row.article_no}
+                        placeholder={language === "de" ? "ArtNr" : "Article"}
+                        onChange={(event) => updateReportMaterialRow(index, "article_no", event.target.value)}
+                      />
+                      <button type="button" onClick={() => removeReportMaterialRow(index)} disabled={reportSubmitting}>
+                        {language === "de" ? "Entfernen" : "Remove"}
+                      </button>
+                    </div>
+                  ))}
+                  <button type="button" onClick={addReportMaterialRow} disabled={reportSubmitting}>
+                    {language === "de" ? "Materialzeile hinzufügen" : "Add material row"}
+                  </button>
+                </div>
+              </div>
               <label>
                 {language === "de" ? "Zusatzarbeiten (eine Zeile: Beschreibung|Grund)" : "Extras (one line: Description|Reason)"}
                 <textarea name="extras" />
               </label>
-              <label>
-                {language === "de" ? "Büro Materialbedarf" : "Office material need"}
-                <textarea name="office_material_need" />
-              </label>
+              <div className="report-material-block">
+                <b>{language === "de" ? "Büro Materialbedarf" : "Office material need"}</b>
+                <div className="report-material-grid">
+                  <div className="report-material-grid-head">
+                    <b>{language === "de" ? "Artikel" : "Item"}</b>
+                    <b>{language === "de" ? "Menge" : "Qty"}</b>
+                    <b>{language === "de" ? "Einheit" : "Unit"}</b>
+                    <b>{language === "de" ? "ArtNr" : "Article"}</b>
+                    <span />
+                  </div>
+                  {reportOfficeMaterialRows.map((row, index) => (
+                    <div key={row.id} className="report-material-grid-row">
+                      <input
+                        value={row.item}
+                        placeholder={language === "de" ? "Artikel" : "Item"}
+                        onChange={(event) => updateReportOfficeMaterialRow(index, "item", event.target.value)}
+                      />
+                      <input
+                        value={row.qty}
+                        placeholder={language === "de" ? "Menge" : "Qty"}
+                        onChange={(event) => updateReportOfficeMaterialRow(index, "qty", event.target.value)}
+                      />
+                      <input
+                        value={row.unit}
+                        placeholder={language === "de" ? "Einheit" : "Unit"}
+                        onChange={(event) => updateReportOfficeMaterialRow(index, "unit", event.target.value)}
+                      />
+                      <input
+                        value={row.article_no}
+                        placeholder={language === "de" ? "ArtNr" : "Article"}
+                        onChange={(event) => updateReportOfficeMaterialRow(index, "article_no", event.target.value)}
+                      />
+                      <button type="button" onClick={() => removeReportOfficeMaterialRow(index)} disabled={reportSubmitting}>
+                        {language === "de" ? "Entfernen" : "Remove"}
+                      </button>
+                    </div>
+                  ))}
+                  <button type="button" onClick={addReportOfficeMaterialRow} disabled={reportSubmitting}>
+                    {language === "de" ? "Büro-Materialzeile hinzufügen" : "Add office material row"}
+                  </button>
+                </div>
+              </div>
               <label>
                 {language === "de" ? "Büro Nacharbeiten" : "Office rework"}
                 <textarea name="office_rework" />
@@ -8937,11 +9564,58 @@ export function App() {
               </label>
               <label>
                 {language === "de" ? "Fotos" : "Photos"}
-                <input type="file" name="images" accept="image/*" multiple />
-              </label>
-              <label>
-                {language === "de" ? "Foto aufnehmen (mobil)" : "Take photo (mobile)"}
-                <input type="file" name="camera_images" accept="image/*" capture="environment" />
+                <div className="report-image-upload">
+                  <input
+                    ref={reportImageInputRef}
+                    className="report-image-input"
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    onChange={onReportImagesChange}
+                  />
+                  <button
+                    type="button"
+                    className={reportImageFiles.length ? "report-image-add has-files" : "report-image-add"}
+                    onClick={() => reportImageInputRef.current?.click()}
+                    disabled={reportSubmitting}
+                  >
+                    {reportImageFiles.length > 0
+                      ? language === "de"
+                        ? "Weitere Fotos hinzufügen"
+                        : "Add more photos"
+                      : language === "de"
+                        ? "Fotos auswählen"
+                        : "Select photos"}
+                  </button>
+                  {reportImageFiles.length > 0 && (
+                    <>
+                      <small className="muted">
+                        {language === "de"
+                          ? `${reportImageFiles.length} Datei(en) ausgewählt`
+                          : `${reportImageFiles.length} file(s) selected`}
+                      </small>
+                      <div className="report-image-list">
+                        {reportImageFiles.map((entry) => {
+                          return (
+                            <div key={entry.key} className="report-image-item" title={entry.file.name}>
+                              <img className="report-image-thumb" src={entry.preview_url} alt={entry.file.name} />
+                              <button
+                                type="button"
+                                className="report-image-remove"
+                                onClick={(event) => onReportImageRemoveClick(event, entry.key)}
+                                aria-label={language === "de" ? "Foto entfernen" : "Remove photo"}
+                                title={language === "de" ? "Foto entfernen" : "Remove photo"}
+                                disabled={reportSubmitting}
+                              >
+                                ×
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </>
+                  )}
+                </div>
               </label>
               <label className="report-send-option">
                 <span className="report-send-head">
@@ -8956,7 +9630,36 @@ export function App() {
                     : "Without local bot configuration, sending stays in stub mode."}
                 </small>
               </label>
-              <button type="submit">{language === "de" ? "Bericht speichern" : "Save report"}</button>
+              {reportSubmitting && (
+                <div className="report-upload-progress" role="status" aria-live="polite">
+                  <div className="report-upload-progress-track">
+                    <span
+                      className="report-upload-progress-fill"
+                      style={{
+                        width: `${Math.max(0, Math.min(100, reportUploadPercent ?? 4))}%`,
+                      }}
+                    />
+                  </div>
+                  <small className="muted">
+                    {reportUploadPhase === "processing"
+                      ? language === "de"
+                        ? "Upload abgeschlossen, Bericht wird verarbeitet..."
+                        : "Upload complete, report is being processed..."
+                      : language === "de"
+                        ? `Upload läuft${reportUploadPercent != null ? `: ${reportUploadPercent}%` : "..."}`
+                        : `Uploading${reportUploadPercent != null ? `: ${reportUploadPercent}%` : "..."}`}
+                  </small>
+                </div>
+              )}
+              <button type="submit" disabled={reportSubmitting}>
+                {reportSubmitting
+                  ? language === "de"
+                    ? "Wird hochgeladen..."
+                    : "Uploading..."
+                  : language === "de"
+                    ? "Bericht speichern"
+                    : "Save report"}
+              </button>
             </form>
 
             <div className="card">

@@ -284,3 +284,62 @@
   - default container deployments without git checkout stay in manual mode.
 - Install workflow uses `git pull --ff-only` to avoid implicit merge commits in production update paths.
 - GitHub API auth token support is optional and server-side only (`GITHUB_API_TOKEN`); token value is never returned to the frontend.
+
+## Iteration Security Notes (2026-02-24, optimistic edit locking for project/task/finance writes)
+- Added optimistic concurrency controls to reduce silent lost-update risk in concurrent editing scenarios:
+  - `PATCH /api/projects/{id}` checks `expected_last_updated_at`,
+  - `PATCH /api/tasks/{id}` checks `expected_updated_at`,
+  - `PATCH /api/projects/{id}/finance` checks `expected_updated_at`.
+- Stale writes are rejected with `409` instead of silently overwriting newer data.
+- Frontend edit flows now submit changed fields only, reducing inadvertent replacement of unrelated fields during concurrent edits.
+- New `tasks.updated_at` timestamp field is used as the server-issued task edit token; authorization model remains unchanged.
+
+## Iteration Security Notes (2026-02-24, async construction-report processing queue)
+- Construction-report processing now uses a persisted background queue (`construction_report_jobs`):
+  - upload requests store original encrypted images and queue processing work,
+  - PDF generation + optional Telegram send run in worker context.
+- Access control remains unchanged:
+  - report creation still requires existing report/project permissions,
+  - processing-status reads (`GET /construction-reports/{id}/processing`) re-check project/report visibility server-side.
+- Data-at-rest posture remains unchanged:
+  - original images and generated PDF artifacts stay encrypted through the same file-encryption service.
+- Reliability control:
+  - failed jobs are retried up to configured limit (`REPORT_JOB_MAX_ATTEMPTS`) and terminal failures are stored on the report (`processing_status=failed`, `processing_error`) for operator visibility.
+
+## Iteration Security Notes (2026-02-24, empty upload guard + WebDAV metadata hardening)
+- Added server-side rejection of zero-byte payloads in project-file and job-ticket attachment upload routes.
+- This prevents storing empty encrypted payload records that can later appear as broken/empty files in user workflows.
+- Construction-report multipart intake now whitelists known image field keys (`images`/`camera_images` variants), reducing accidental ingestion of unrelated multipart file fields.
+- WebDAV `PROPFIND` now exposes best-effort real file sizes for files instead of `0`, improving client interoperability without changing authorization behavior.
+- No authN/authZ model changes in this iteration.
+
+## Iteration Security Notes (2026-02-24, optimistic tokens for quick status actions)
+- No authN/authZ model changes in this iteration.
+- Quick project/task status updates now include optimistic timestamps in frontend quick actions, so stale one-click writes are rejected by the API with `409`.
+- Security impact:
+  - reduces integrity risk from race-condition overwrites in concurrent operator sessions,
+  - keeps existing permission boundaries unchanged.
+
+## Iteration Security Notes (2026-02-24, construction-report photo queue UX)
+- No authN/authZ model changes in this iteration.
+- Client now validates that queued construction-report attachments are image files before upload and ignores duplicate selections by file identity.
+- Per-photo remove is performed client-side before upload; server-side validation and encrypted-at-rest storage behavior are unchanged.
+
+## Iteration Security Notes (2026-02-24, construction-report photo thumbnail queue)
+- No authN/authZ model changes in this iteration.
+- Thumbnail previews use local browser object URLs only; no additional network transfer occurs before submit.
+- Object URLs are revoked on item removal, queue clear, and component unmount to limit local memory retention.
+
+## Iteration Security Notes (2026-02-25, structured report material-entry rows)
+- No authN/authZ model changes in this iteration.
+- Structured material-entry inputs only alter frontend data capture; submitted payload still uses existing server-validated report schema.
+- Office material need is still server-parsed into procurement queue items; parsing and access-control behavior remain unchanged.
+
+## Iteration Security Notes (2026-02-24, finance tab layout refresh)
+- No authN/authZ model changes in this iteration.
+- Change is limited to frontend read-view ordering/layout for finance values.
+- Finance edit permission boundaries (`admin`/`ceo`/`accountant`) and API validation paths are unchanged.
+
+## Iteration Security Notes (2026-02-25, finance typography/spacing tune)
+- No authN/authZ model changes in this iteration.
+- CSS-only presentation update for finance metrics; no API, storage, or permission behavior changes.

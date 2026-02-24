@@ -16,7 +16,7 @@
 ## Current Architecture
 - `apps/api`: FastAPI, SQLAlchemy, Alembic, JWT auth, RBAC, encrypted file service, audit log.
 - `apps/web`: React + Vite responsive UI with sidebar modules.
-- `docker-compose.yml`: `db` (Postgres), `api`, `web`, `caddy` (TLS reverse proxy).
+- `docker-compose.yml`: `db` (Postgres), `api`, `api_worker`, `web`, `caddy` (TLS reverse proxy).
 - `scripts/`: encrypted backup and restore scripts + smoke restore test.
 
 ## Milestones
@@ -24,6 +24,20 @@
 2. Auth + RBAC + Admin: completed.
 3. Projects/tasks/planning/tickets/time/files/chat/report: completed (MVP scope).
 4. Backup/restore + docs + test hardening: completed.
+
+## Compacted Update (2026-02-24, async report processing + API concurrency)
+- Changed:
+  - moved construction-report PDF/Telegram generation into a persisted background-job pipeline (`construction_report_jobs`) instead of doing all heavy work inline in the upload request.
+  - added report processing state tracking (`queued/processing/completed/failed`) and status endpoint (`GET /api/construction-reports/{id}/processing`).
+  - added dedicated `api_worker` compose service to process report jobs and retry failed jobs.
+  - enabled multi-worker API runtime (`API_WORKERS`) in container startup for better concurrent request handling during uploads.
+  - updated report submit UI to wait on processing status after upload and show clear background-processing messaging.
+- Verified:
+  - `./scripts/test.sh` pass (`47 passed` API tests + web build).
+  - targeted report/WebDAV regression run pass for report artifact visibility and archive/general WebDAV routing.
+- Next:
+  - optional: expose per-job progress metrics (phase-level) if operators want finer-grained status than queued/processing/completed.
+- Blockers: none.
 
 ## Done in This Iteration
 - Created monorepo structure and service skeletons.
@@ -1721,4 +1735,134 @@
   - `docker compose run --rm --build api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_auth_rbac.py'` pass.
 - Next:
   - Optional: wire CI/CD to set `APP_RELEASE_VERSION` and `APP_RELEASE_COMMIT` automatically for exact update comparisons.
+- Blockers: none.
+
+## Compacted Update (2026-02-24, report PDF image compaction + upload progress visibility)
+- Changed:
+  - Construction-report PDF generation now compacts embedded photos (auto-rotated, downscaled, JPEG compressed) to reduce generated PDF size and opening latency.
+  - Original uploaded report photos remain unchanged and encrypted as separate attachments (no data loss in source images).
+  - Construction-report form now shows live upload progress with percent and processing state, and blocks duplicate submits while upload is running.
+- Verified:
+  - `./scripts/test.sh` pass (`42 passed`, web build successful).
+  - Added API test coverage for report-photo compaction helper behavior.
+- Next:
+  - Optional: add client-side pre-upload image compression toggle for very weak mobile networks.
+- Blockers: none.
+
+## Compacted Update (2026-02-24, file-share performance step 1 with encrypted streaming)
+- Changed:
+  - Switched new attachment storage to chunked encrypted file format (AES-GCM chunks) while keeping encryption at rest enabled.
+  - Added streaming response path for chunked-encrypted files in file download/preview and WebDAV GET, so large file opens avoid full-file memory decrypt before first bytes.
+  - Kept backward compatibility: legacy Fernet-encrypted files still read correctly.
+- Verified:
+  - `./scripts/test.sh` pass (`44 passed`, web build successful).
+  - Added file-service tests for chunked round-trip and legacy compatibility.
+- Next:
+  - Optional: add one-time migration utility to rewrite old legacy encrypted files to the new chunked format for speed gains on historical files too.
+- Blockers: none.
+
+## Compacted Update (2026-02-24, optimistic edit locking + changed-only PATCH payloads)
+- Changed:
+  - Added optimistic concurrency checks for mutable project data endpoints:
+    - `PATCH /api/projects/{id}` via `expected_last_updated_at`,
+    - `PATCH /api/tasks/{id}` via `expected_updated_at`,
+    - `PATCH /api/projects/{id}/finance` via `expected_updated_at`.
+  - Added `tasks.updated_at` persistence field (migration `20260224_0024_task_updated_at_for_optimistic_locking`) and exposed `updated_at` in task API responses.
+  - Updated web edit flows to send only changed fields (instead of full-form payload) plus the corresponding optimistic token.
+  - Added localized conflict feedback in UI for `409` edit-collision responses.
+- Verified:
+  - `docker compose run --build --rm api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_optimistic_locking.py tests/test_workflows.py -k "project_task_planning_ticket_file_and_report_flow or file or webdav"'` pass.
+  - `./scripts/test.sh` pass (`47 passed`, web build successful).
+  - `cd apps/web && npm run build` pass.
+  - `docker compose up -d --build api web caddy` pass (`db/api/web/caddy` healthy).
+- Next:
+  - Optional: extend optimistic token checks to quick-update actions (`mark done`, project archive/unarchive) for the same conflict semantics outside edit modals.
+- Blockers: none.
+
+## Compacted Update (2026-02-24, empty-file upload guards + WebDAV file-size metadata)
+- Changed:
+  - Added zero-byte payload guards for project file uploads and job-ticket attachments (`400 File body is required`).
+  - Chat message attachment persistence now skips empty attachment payloads and rejects attachment-only empty submits.
+  - Construction-report multipart image intake is now restricted to known image fields (`images`, `camera_images`, including `[]` variants) to avoid unintended multipart ingestion.
+  - WebDAV `PROPFIND` file entries now return real file-size metadata (chunked plain-size when available, encrypted-size fallback) instead of hardcoded `0`.
+- Verified:
+  - `docker compose run --build --rm api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_workflows.py -k "project_files_webdav_mount_flow or project_file_upload_rejects_empty_payload"'` pass.
+  - `./scripts/test.sh` pass (`48 passed`, web build successful).
+  - `docker compose up -d --build` pass (local stack healthy).
+- Next:
+  - Optional: add an admin maintenance action to detect and clean historical zero-byte attachments created before this guard.
+- Blockers: none.
+
+## Compacted Update (2026-02-24, optimistic tokens added to quick status actions)
+- Changed:
+  - Project archive/unarchive quick actions now send `expected_last_updated_at` so stale one-click status changes return `409` instead of overwriting newer project updates.
+  - Task quick-complete actions (`my tasks`, project task list, weekly planning) now send `expected_updated_at` with status updates.
+  - Added localized conflict messages for quick-action stale-write collisions.
+- Verified:
+  - `cd apps/web && npm run build` pass.
+  - `./scripts/test.sh` pass (`48 passed`, web build successful).
+- Next:
+  - Optional: add admin maintenance utility to rewrite legacy encrypted attachment blobs into chunked-encrypted format for historical file-share speed gains.
+- Blockers: none.
+
+## Compacted Update (2026-02-24, construction report photo queue selection UX)
+- Changed:
+  - Construction-report photo selection now uses a managed queue in UI (matching chat-attachment behavior).
+  - Users can select multiple photos at once, add additional photos in later selections, and remove individual queued photos before upload.
+  - Duplicate selections are ignored by file identity (`name:size:lastModified`), and selected photos are cleared only after successful report save.
+- Verified:
+  - `cd apps/web && npm run build` pass.
+  - `./scripts/test.sh` pass (`48 passed`, web build successful).
+- Next:
+  - Optional: add lightweight thumbnail previews in the queued-photo chips for faster pre-submit visual checks.
+- Blockers: none.
+
+## Compacted Update (2026-02-24, construction report photo thumbnails in selection queue)
+- Changed:
+  - Replaced filename-only queued-photo chips with small thumbnail tiles in the construction-report form.
+  - Each selected photo now shows a preview box with direct remove action, closer to chat attachment visuals.
+  - Append behavior is preserved: selecting additional photos keeps already selected photos in queue.
+- Verified:
+  - `cd apps/web && npm run build` pass.
+  - `./scripts/test.sh` pass (`48 passed`, web build successful).
+- Next:
+  - Optional: add tap-to-open lightbox preview for queued photos on mobile before submit.
+- Blockers: none.
+
+## Compacted Update (2026-02-25, structured material entry rows in report form)
+- Changed:
+  - Replaced free-text `Material` textarea in construction report form with structured row inputs (`item`, `qty`, `unit`, `article`).
+  - Replaced free-text `Büro Materialbedarf` textarea with the same structured row input model.
+  - Both sections now start with one row and support incremental add/remove rows while editing.
+  - Submit path now serializes row data to existing backend payload format, preserving compatibility.
+- Verified:
+  - `cd apps/web && npm run build` pass.
+  - `./scripts/test.sh` pass (`48 passed`, web build successful).
+  - `docker compose up -d --build web caddy` pass (web/api healthy).
+- Next:
+  - Optional: add per-row autocomplete for common units/items to speed up repeated entry.
+- Blockers: none.
+
+## Compacted Update (2026-02-24, project finance tab layout refresh)
+- Changed:
+  - Updated the project finance read view so `Zuletzt aktualisiert` appears directly under the `Finanzen` header.
+  - Reworked finance metrics into a left-to-right column layout with labels on top and values directly beneath:
+    - `Auftragswert netto`, `35% Anzahlung`, `50% Hauptkomponenten`, `15% Schlussrechnung`, `Geplante Kosten`, `Tatsächliche Kosten`, `Deckungsbeitrag`.
+  - Added responsive column behavior to keep the same visual structure on smaller viewports.
+- Verified:
+  - `cd apps/web && npm run build` pass.
+  - `docker compose up -d --build web caddy` pass (web/api healthy).
+- Next:
+  - Optional: tune mobile spacing/font size if field values become long in narrow layouts.
+- Blockers: none.
+
+## Compacted Update (2026-02-25, finance metric typography and row spacing tune)
+- Changed:
+  - Reduced vertical spacing between finance metric rows for denser scanability.
+  - Increased text size for both finance labels and numeric values.
+- Verified:
+  - `cd apps/web && npm run build` pass.
+  - `docker compose up -d --build web caddy` pass (web/api healthy).
+- Next:
+  - Optional: if needed, clamp long monetary values on very narrow screens.
 - Blockers: none.

@@ -6,6 +6,13 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
+try:
+    from PIL import Image as PILImage
+    from PIL import ImageOps
+except Exception:  # pragma: no cover - fallback when Pillow is unavailable
+    PILImage = None
+    ImageOps = None
+
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
@@ -133,6 +140,41 @@ def build_report_summary_text(
         f"Project Number: {payload.get('project_number') or '-'}\n"
         f"Workers: {len(workers)} | Materials: {len(materials)} | Extras: {len(extras)}"
     )
+
+
+def compact_photo_for_pdf(photo_bytes: bytes) -> bytes:
+    if not photo_bytes or PILImage is None or ImageOps is None:
+        return photo_bytes
+    try:
+        with PILImage.open(BytesIO(photo_bytes)) as source:
+            image = ImageOps.exif_transpose(source)
+            if image.mode in {"RGBA", "LA"} or (image.mode == "P" and "transparency" in image.info):
+                alpha = image.convert("RGBA")
+                flattened = PILImage.new("RGB", alpha.size, (255, 255, 255))
+                flattened.paste(alpha, mask=alpha.split()[-1])
+                image = flattened
+            elif image.mode != "RGB":
+                image = image.convert("RGB")
+
+            width, height = image.size
+            max_edge = 1920
+            if max(width, height) > max_edge:
+                scale = max_edge / float(max(width, height))
+                resized = (
+                    max(1, int(width * scale)),
+                    max(1, int(height * scale)),
+                )
+                resampling = getattr(PILImage, "Resampling", PILImage)
+                image = image.resize(resized, resampling.LANCZOS)
+
+            output = BytesIO()
+            image.save(output, format="JPEG", quality=72, optimize=True, progressive=True)
+            compacted = output.getvalue()
+            if len(compacted) >= len(photo_bytes):
+                return photo_bytes
+            return compacted
+    except Exception:
+        return photo_bytes
 
 
 def _section_title(title: str, styles) -> Paragraph:

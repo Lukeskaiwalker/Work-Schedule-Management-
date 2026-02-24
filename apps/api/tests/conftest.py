@@ -13,6 +13,7 @@ os.environ["SECURE_COOKIES"] = "false"
 os.environ["INITIAL_ADMIN_EMAIL"] = "admin@example.com"
 os.environ["INITIAL_ADMIN_PASSWORD"] = "ChangeMe123!"
 os.environ["FILE_ENCRYPTION_KEY"] = "fdoXG7LEODVDx2wB8M-oTofEUHw1cjyM8s0q0JfPWPQ="
+os.environ["REPORT_PROCESSING_MODE"] = "inline"
 
 uploads_tmp = tempfile.mkdtemp(prefix="smpl-test-uploads-")
 os.environ["UPLOADS_DIR"] = uploads_tmp

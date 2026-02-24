@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     file_encryption_key: str = Field(default="", description="Fernet key")
     uploads_dir: str = "/data/uploads"
     wiki_root_dir: str = "/data/wiki"
+    report_processing_mode: str = "worker"
+    report_job_max_attempts: int = 3
+    report_worker_poll_seconds: float = 1.0
+    api_workers: int = 2
 
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""

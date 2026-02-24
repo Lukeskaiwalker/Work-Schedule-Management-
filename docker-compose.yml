@@ -33,6 +33,20 @@ services:
       db:
         condition: service_healthy
 
+  api_worker:
+    build:
+      context: ./apps/api
+    restart: unless-stopped
+    command: ["python", "-m", "app.worker"]
+    env_file:
+      - ./apps/api/.env.example
+    volumes:
+      - uploads_data:/data/uploads
+      - "./local wiki:/data/wiki:ro"
+    depends_on:
+      api:
+        condition: service_healthy
+
   web:
     build:
       context: ./apps/web

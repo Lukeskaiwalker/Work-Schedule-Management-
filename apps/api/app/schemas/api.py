@@ -68,6 +68,7 @@ class ProjectCreate(BaseModel):
 
 
 class ProjectUpdate(BaseModel):
+    expected_last_updated_at: datetime | None = None
     project_number: str | None = Field(default=None, min_length=1, max_length=64)
     name: str | None = None
     description: str | None = None
@@ -107,6 +108,7 @@ class ProjectOut(BaseModel):
 
 
 class ProjectFinanceUpdate(BaseModel):
+    expected_updated_at: datetime | None = None
     order_value_net: float | None = None
     down_payment_35: float | None = None
     main_components_50: float | None = None
@@ -229,6 +231,7 @@ class TaskCreate(BaseModel):
 
 
 class TaskUpdate(BaseModel):
+    expected_updated_at: datetime | None = None
     title: str | None = None
     description: str | None = None
     materials_required: str | None = None
@@ -258,6 +261,7 @@ class TaskOut(BaseModel):
     assignee_id: int | None = None
     assignee_ids: list[int] = Field(default_factory=list)
     week_start: date | None = None
+    updated_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

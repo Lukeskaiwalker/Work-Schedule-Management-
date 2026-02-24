@@ -15,6 +15,17 @@
 - Local browser smoke (manual automation):
   - Start local API + web dev servers, then run Playwright CLI flow for login/project/report submit.
 
+## Latest Result (2026-02-24, async report queue + worker/runtime tuning)
+- One-command run (`./scripts/test.sh`): pass.
+- API tests: pass (`47 passed`) in Docker mode.
+- Web build: pass (`vite build`).
+- Targeted regression run:
+  - `docker compose run --build --rm api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_workflows.py -k "project_task_planning_ticket_file_and_report_flow or webdav_projects_root_includes_archive_and_general_collections"'`
+  - Result: pass (`2 passed`, `21 deselected`).
+- New assertion coverage:
+  - report create response includes `processing_status`,
+  - processing-status endpoint (`GET /api/construction-reports/{id}/processing`) returns terminal state in inline mode.
+
 ## Latest Result (2026-02-20)
 - One-command run (`./scripts/test.sh`): pass.
 - API tests: pass (`7 passed`) in Docker mode.
@@ -919,3 +930,131 @@
 - Coverage updated:
   - `test_admin_can_read_update_status` validates release-status payload mapping and update-available detection.
   - `test_admin_install_update_returns_manual_when_auto_install_unavailable` validates safe manual fallback when auto-install cannot run.
+
+## Iteration Result (2026-02-24, report PDF compaction + construction-upload progress indicator)
+- Commands run:
+  - `docker compose run --rm --build api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_construction_report_pdf.py tests/test_workflows.py -k "construction-report or construction_report"'`
+  - `cd apps/web && npm run build`
+  - `./scripts/test.sh`
+- Results:
+  - Targeted API tests: pass (`2 passed`, `23 deselected`).
+  - Direct web production build: pass (`vite build`).
+  - Full API + web wrapper checks: pass (`42 passed`, web build successful).
+- Coverage updated:
+  - `test_construction_report_pdf.py` validates:
+    - large images are downscaled/compressed for PDF embedding,
+    - invalid/non-image payloads safely fall back without mutation.
+
+## Iteration Result (2026-02-24, file-share performance step 1 - encrypted streaming path)
+- Commands run:
+  - `docker compose run --build --rm api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_files_service.py tests/test_workflows.py -k "file or webdav"'`
+  - `./scripts/test.sh`
+- Results:
+  - Targeted API file/webdav set: pass (`11 passed`, `14 deselected`).
+  - Full API + web wrapper checks: pass (`44 passed`, web build successful).
+- Coverage updated:
+  - `test_files_service.py` validates:
+    - chunked encrypted storage round-trip via stream + full read APIs,
+    - legacy Fernet payload compatibility path remains functional.
+
+## Iteration Result (2026-02-24, optimistic edit locking + changed-only patch payloads)
+- Commands run:
+  - `docker compose run --build --rm api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_optimistic_locking.py tests/test_workflows.py -k "project_task_planning_ticket_file_and_report_flow or file or webdav"'`
+  - `docker compose run --build --rm api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_optimistic_locking.py'`
+  - `cd apps/web && npm run build`
+  - `./scripts/test.sh`
+  - `docker compose up -d --build api web caddy`
+  - `docker compose ps`
+- Results:
+  - Targeted optimistic+workflow set: pass (`9 passed`, `17 deselected`).
+  - Dedicated optimistic-lock tests: pass (`3 passed`).
+  - Full API + web wrapper checks: pass (`47 passed`, web build successful).
+  - Direct web production build: pass (`vite build`).
+  - Runtime stack healthy after rebuild (`db/api/web/caddy`).
+- Coverage updated:
+  - Added `tests/test_optimistic_locking.py` validating `409` conflict responses for stale writes on:
+    - project patch,
+    - task patch,
+    - project finance patch.
+
+## Iteration Result (2026-02-24, empty upload guard + WebDAV content-length metadata)
+- Commands run:
+  - `docker compose run --build --rm api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_workflows.py -k "project_files_webdav_mount_flow or project_file_upload_rejects_empty_payload"'`
+  - `./scripts/test.sh`
+  - `docker compose up -d --build`
+  - `docker compose ps`
+- Results:
+  - Targeted workflow tests: pass (`2 passed`, `22 deselected`).
+  - Full API + web wrapper checks: pass (`48 passed`, web build successful).
+  - Runtime stack healthy after rebuild (`db`, `api`, `api_worker`, `web`, `caddy`).
+- Coverage updated:
+  - `test_project_files_webdav_mount_flow` now asserts WebDAV `PROPFIND` includes non-zero file length for uploaded file.
+  - Added `test_project_file_upload_rejects_empty_payload` to prevent regression on zero-byte project uploads.
+
+## Iteration Result (2026-02-24, optimistic quick-action token enforcement in web UI)
+- Commands run:
+  - `cd apps/web && npm run build`
+  - `./scripts/test.sh`
+- Results:
+  - Direct web production build: pass (`vite build`).
+  - Full API + web wrapper checks: pass (`48 passed`, web build successful).
+- Coverage notes:
+  - No backend contract changes in this iteration.
+  - Existing optimistic-lock API tests continue covering `409` behavior for project/task/finance stale writes.
+
+## Iteration Result (2026-02-24, construction report photo queue UX)
+- Commands run:
+  - `cd apps/web && npm run build`
+  - `./scripts/test.sh`
+- Results:
+  - Direct web production build: pass (`vite build`).
+  - Full API + web wrapper checks: pass (`48 passed`, web build successful).
+- Coverage notes:
+  - No backend contract changes in this iteration.
+  - Change is frontend UX/state handling for construction-report photo selection/removal prior to submit.
+
+## Iteration Result (2026-02-24, construction report queued-photo thumbnail tiles)
+- Commands run:
+  - `cd apps/web && npm run build`
+  - `./scripts/test.sh`
+- Results:
+  - Direct web production build: pass (`vite build`).
+  - Full API + web wrapper checks: pass (`48 passed`, web build successful).
+- Coverage notes:
+  - No backend contract changes in this iteration.
+  - Change is frontend rendering/state handling for thumbnail previews of queued report photos.
+
+## Iteration Result (2026-02-25, report materials row-entry mask)
+- Commands run:
+  - `cd apps/web && npm run build`
+  - `./scripts/test.sh`
+  - `docker compose up -d --build web caddy`
+- Results:
+  - Direct web production build: pass (`vite build`).
+  - Full API + web wrapper checks: pass (`48 passed`, web build successful).
+  - Runtime services healthy after deploy (`web`, `api`, `caddy`).
+- Coverage notes:
+  - No backend contract changes in this iteration.
+  - Change is frontend form/state handling for structured material-entry rows in report creation.
+
+## Iteration Result (2026-02-24, finance tab layout refresh)
+- Commands run:
+  - `cd apps/web && npm run build`
+  - `docker compose up -d --build web caddy`
+- Results:
+  - Direct web production build: pass (`vite build`).
+  - Runtime services healthy after deploy (`web`, `api`, `caddy`).
+- Coverage notes:
+  - No backend contract changes in this iteration.
+  - Change is frontend presentation/layout only for finance tab read view.
+
+## Iteration Result (2026-02-25, finance text-size and spacing adjustment)
+- Commands run:
+  - `cd apps/web && npm run build`
+  - `docker compose up -d --build web caddy`
+- Results:
+  - Direct web production build: pass (`vite build`).
+  - Runtime services healthy after deploy (`web`, `api`, `caddy`).
+- Coverage notes:
+  - No backend contract changes in this iteration.
+  - Change is CSS-only tuning for finance metric readability/density.

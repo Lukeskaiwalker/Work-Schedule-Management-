@@ -1170,3 +1170,130 @@
 - Tradeoffs:
   - Pros: operational visibility into update availability directly in-app; safer update execution with explicit fallback in Docker/self-hosted setups where in-container git checkout is absent.
   - Cons: automatic install is environment-dependent and typically unavailable in immutable container deployments unless explicitly configured with a repository path.
+
+## 2026-02-24 - Construction report PDFs embed compacted photos while preserving original uploads
+- Status: accepted
+- Decision:
+  - Keep original report image uploads as encrypted attachments exactly as received.
+  - Add a PDF-only image compaction step (EXIF orientation normalization, downscale to max edge 1920px, JPEG quality compression) before embedding photos in generated report PDFs.
+  - Add client upload-progress feedback in construction-report UI using XHR upload events.
+- Tradeoffs:
+  - Pros: much smaller PDF artifacts and clearer user feedback during large mobile uploads.
+  - Cons: embedded PDF photos have lower fidelity than originals by design, and upload progress reflects network transfer (not full server-side processing time).
+
+## 2026-02-24 - File-share delivery uses chunked encrypted storage + streaming reads
+- Status: accepted
+- Decision:
+  - Keep file encryption enabled for attachments and move new writes from single-blob Fernet payloads to chunked AES-GCM encrypted payloads.
+  - Serve chunked-encrypted files via streaming responses (API download/preview + WebDAV GET) using stored plaintext-size metadata for `Content-Length`.
+  - Keep legacy Fernet file support for backward compatibility during transition.
+- Tradeoffs:
+  - Pros: lower memory pressure and faster first-byte delivery for large files without dropping encryption-at-rest.
+  - Cons: existing legacy files do not benefit until re-uploaded or migrated; storage format complexity increased.
+
+## 2026-02-24 - Optimistic edit locking with changed-only PATCH payloads for core project data
+- Status: accepted
+- Decision:
+  - Add optimistic timestamp tokens to project/task/finance update contracts:
+    - projects: `expected_last_updated_at`,
+    - tasks: `expected_updated_at`,
+    - project finances: `expected_updated_at`.
+  - Reject stale writes with `409` when expected token does not match current row timestamp.
+  - Add `tasks.updated_at` so task edits have a stable concurrency token.
+  - Update web edit forms to send changed fields only, reducing accidental overwrite of untouched fields.
+- Tradeoffs:
+  - Pros: prevents silent lost updates during parallel edits; minimizes write scope per request; clearer operator feedback on collisions.
+  - Cons: stale clients now see conflict responses and must reload; implementation complexity rises across API + UI payload handling.
+
+## 2026-02-24 - Construction report rendering is executed via persisted background-job queue
+- Status: accepted
+- Decision:
+  - Keep report row creation and encrypted original image persistence in the upload request path.
+  - Move heavy PDF rendering + optional Telegram delivery into a persisted DB-backed queue (`construction_report_jobs`) processed asynchronously.
+  - Persist report processing lifecycle on `construction_reports` (`queued`, `processing`, `completed`, `failed`) and expose status through `GET /construction-reports/{id}/processing`.
+  - Keep inline processing mode available by config (`REPORT_PROCESSING_MODE=inline`) for deterministic test/runtime fallback.
+- Tradeoffs:
+  - Pros: upload requests return faster under large image sets, and heavy report rendering no longer blocks API request workers.
+  - Cons: PDF artifact availability becomes eventually consistent in worker mode and requires client-side status polling/UX messaging.
+
+## 2026-02-24 - API runtime split into multi-worker request handling plus dedicated job worker service
+- Status: accepted
+- Decision:
+  - Run API with configurable worker count (`API_WORKERS`) to increase concurrent request capacity.
+  - Add dedicated `api_worker` compose service (`python -m app.worker`) for queued report jobs.
+  - Keep report-job retry attempts configurable (`REPORT_JOB_MAX_ATTEMPTS`) with worker poll interval control (`REPORT_WORKER_POLL_SECONDS`).
+- Tradeoffs:
+  - Pros: isolates heavy report processing from interactive request traffic and reduces perceived platform stalls during large uploads.
+  - Cons: extra operational process/container to monitor and slightly higher deployment/runtime complexity.
+
+## 2026-02-24 - Empty upload rejection and accurate WebDAV file-length metadata
+- Status: accepted
+- Decision:
+  - Reject zero-byte payloads in primary file-ingest endpoints (`POST /projects/{id}/files`, `POST /projects/{id}/job-tickets/{ticket_id}/attachments`) with explicit `400` errors.
+  - Keep chat behavior lenient for text+attachment posts by ignoring empty attachment payloads unless attachment is the only message content.
+  - Restrict construction-report multipart image ingestion to known report image keys (`images`, `camera_images`, plus `[]` variants) while preserving backward compatibility.
+  - Replace hardcoded `getcontentlength=0` in WebDAV file `PROPFIND` responses with best-effort real sizes.
+- Tradeoffs:
+  - Pros: prevents creation of empty/broken file records, improves WebDAV/Finder/Explorer reliability, and reduces accidental multipart field ingestion.
+  - Cons: legacy clients that intentionally uploaded zero-byte placeholders now receive explicit validation errors and must upload non-empty content.
+
+## 2026-02-24 - Quick status actions use optimistic tokens to avoid stale one-click overwrites
+- Status: accepted
+- Decision:
+  - Keep existing optimistic-lock contracts on `PATCH /projects/{id}` and `PATCH /tasks/{id}`.
+  - Extend frontend quick actions to always send optimistic tokens when available:
+    - project archive/unarchive sends `expected_last_updated_at`,
+    - task mark-complete sends `expected_updated_at`.
+  - Surface explicit localized conflict feedback for `409` responses from quick actions.
+- Tradeoffs:
+  - Pros: aligns one-click status actions with edit-modal conflict protection; reduces silent lost updates in multi-user workflows.
+  - Cons: users can encounter more visible conflict errors and may need to reload before retrying a quick action.
+
+## 2026-02-24 - Construction report photo picker uses managed multi-select queue
+- Status: accepted
+- Decision:
+  - Replace direct file-input-only handling for construction-report photos with React-managed queued file state.
+  - Allow incremental photo collection across multiple picker actions while preserving initial multi-select support.
+  - Enable explicit per-photo removal before submit and submit queued files as multipart `images`.
+- Tradeoffs:
+  - Pros: users can correct mistaken selections before upload and build large photo sets in multiple steps.
+  - Cons: extra frontend state/identity bookkeeping and one additional interaction layer around native file input.
+
+## 2026-02-24 - Construction report queued photos render as thumbnail tiles
+- Status: accepted
+- Decision:
+  - Render selected construction-report photos as compact thumbnail tiles instead of filename-only chips.
+  - Keep per-photo remove action directly on each tile.
+  - Keep append-on-add selection semantics unchanged.
+- Tradeoffs:
+  - Pros: clearer pre-submit visual verification and better parity with chat attachment visuals.
+  - Cons: additional object-URL lifecycle handling in frontend state.
+
+## 2026-02-25 - Construction report materials use structured row-entry masks
+- Status: accepted
+- Decision:
+  - Replace free-text report `materials` and `office_material_need` inputs with structured row-based inputs (item/qty/unit/article).
+  - Initialize each section with one row and allow explicit add/remove actions for additional rows.
+  - Serialize structured row data back to existing payload contract so no backend API migration is required.
+- Tradeoffs:
+  - Pros: easier and less error-prone data entry on desktop/mobile, with clearer per-attribute input.
+  - Cons: additional frontend state and row-serialization logic compared with a plain textarea.
+
+## 2026-02-24 - Project finance read view uses column metrics layout
+- Status: accepted
+- Decision:
+  - Render finance `updated_at` directly below the finance card header.
+  - Render the seven finance metrics as consistent left-to-right metric columns with label above value.
+  - Keep finance edit form and backend payload unchanged; this is read-view presentation only.
+- Tradeoffs:
+  - Pros: faster scanability and consistent visual hierarchy for finance KPIs.
+  - Cons: long formatted values can require tighter typography on smaller screens.
+
+## 2026-02-25 - Finance metric text emphasis and tighter row spacing
+- Status: accepted
+- Decision:
+  - Increase finance metric label and value font sizes in read view.
+  - Reduce vertical spacing between per-metric rows while keeping responsive column behavior unchanged.
+- Tradeoffs:
+  - Pros: better readability for key numbers without opening edit mode.
+  - Cons: slightly higher risk of wrapping on narrow layouts with long localized number formats.
