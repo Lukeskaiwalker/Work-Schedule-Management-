@@ -1,5 +1,26 @@
 # Architecture Decision Records
 
+## 2026-02-26 - Chat creation supports explicit restricted visibility
+- Status: accepted
+- Decision: keep default chat creation public, but when at least one participant user or employee group is selected, persist thread as `restricted` and enforce visibility to creator + selected users + members of selected groups.
+- Tradeoffs:
+  - Pros: private 1:1 and team chats are supported without changing existing public-chat defaults.
+  - Cons: access control logic becomes membership-dependent and requires additional participant/group tables.
+
+## 2026-02-26 - Admin nickname is optional, unique, and immutable after first set
+- Status: accepted
+- Decision: Allow admins to set an optional nickname once via profile settings. Nickname must be unique (case-insensitive availability check) and cannot be changed after first successful set.
+- Tradeoffs:
+  - Pros: enables privacy-preserving exports/documents where personal legal names should not appear.
+  - Cons: immutable naming can require careful first-choice selection and admin communication.
+
+## 2026-02-26 - Export/document submitter identity uses `display_name`
+- Status: accepted
+- Decision: Introduce user `display_name` (`nickname` fallback to `full_name`) and use it for report/document submitter rendering and related display-name surfaces.
+- Tradeoffs:
+  - Pros: centralizes anonymized identity behavior and reduces risk of real-name leakage in generated artifacts.
+  - Cons: dual identity fields (`full_name` vs `display_name`) increase model/API surface complexity.
+
 ## 2026-02-17 - Monorepo + FastAPI/React + Docker Compose
 - Status: accepted
 - Decision: Use monorepo structure with `apps/api` (FastAPI + SQLAlchemy + Alembic), `apps/web` (React + Vite), `docker-compose.yml` orchestration.
@@ -1297,3 +1318,163 @@
 - Tradeoffs:
   - Pros: better readability for key numbers without opening edit mode.
   - Cons: slightly higher risk of wrapping on narrow layouts with long localized number formats.
+
+## 2026-02-25 - Materials menu uses single status indicator with explicit completion step
+- Status: accepted
+- Decision:
+  - Remove redundant materials-status dropdown and keep a single clickable status indicator as the only state-change control.
+  - Add explicit `completed` material status, set via `Erledigt/Complete` button shown only when item is `available`.
+  - Exclude `completed` items from the active `/materials` list endpoint.
+- Tradeoffs:
+  - Pros: simpler operator interaction and cleaner active materials queue.
+  - Cons: completed items are no longer visible in the active list without a separate archive view.
+
+## 2026-02-25 - Construction reports use per-project sequence numbers and normalized photo filenames
+- Status: accepted
+- Decision:
+  - Add `construction_reports.report_number` and assign it sequentially per project (`1..n`) during report creation.
+  - Enforce uniqueness with DB constraint on (`project_id`, `report_number`).
+  - Backfill report numbers for existing project reports in migration order by (`project_id`, `id`).
+  - Normalize uploaded report-image names server-side to deterministic numbered names (`report-<token>-photo-<index>.<ext>`) rather than preserving device/library filenames.
+- Tradeoffs:
+  - Pros: clearer operator reference per project report and predictable, collision-resistant image naming in project file shares.
+  - Cons: introducing a new sequence field adds migration/backfill requirements and lightly increases create-path logic.
+
+## 2026-02-25 - Update menu resolves placeholder local-production to real git tag
+- Status: accepted
+- Decision:
+  - Treat `local-production` as placeholder metadata, not as a release version.
+  - On update-status requests, resolve current release from local git tag at `HEAD` when placeholder is configured.
+  - Derive current commit from git `HEAD` when commit env metadata is missing.
+  - In frontend, do not render `local-production` literally; show resolved values/fallback labels.
+- Tradeoffs:
+  - Pros: operators see meaningful current release info instead of placeholder text.
+  - Cons: git-tag resolution requires a local git checkout with tags; non-git deployments still need explicit env version metadata.
+
+## 2026-02-26 - Chat restriction selection uses users plus roles (multi-select)
+- Status: accepted
+- Decision:
+  - Keep public-by-default chat behavior when no restrictions are selected.
+  - Add role-based chat participants (`participant_roles`) so restricted chats can target role cohorts (e.g. `admin`, `employee`) without prebuilding groups.
+  - Update New Chat UI to task-style chip selectors for both users and roles to make multi-selection explicit.
+  - Preserve legacy group-based participant access checks for backward compatibility with already-created restricted chats.
+- Tradeoffs:
+  - Pros: faster chat audience targeting, clearer multi-select UX, reduced dependency on group setup for common cases.
+  - Cons: role-based visibility is broader and follows future role changes; legacy group paths remain until a cleanup iteration.
+
+## 2026-02-26 - Restricted chat access is mutable and chats use archive lifecycle
+- Status: accepted
+- Decision:
+  - Extend thread edit (`PATCH /threads/{id}`) to support replacing restricted participants (`participant_user_ids`, `participant_roles`), not only renaming/reassigning project.
+  - Add explicit chat lifecycle endpoints for archive/restore/delete instead of overloading visibility semantics.
+  - Keep archived chats out of default thread lists; expose via `include_archived=true` for archive UI workflows.
+  - Preserve archived user memberships when they were already part of the thread, but keep archived users non-selectable for new additions.
+- Tradeoffs:
+  - Pros: admins/creators can safely adjust chat access over time and recover archived chats without losing message history.
+  - Cons: thread payload and edit flow become broader; hard delete remains irreversible and should be used intentionally.
+
+## 2026-02-26 - Chat header actions consolidated under a 3-dot menu
+- Status: accepted
+- Decision:
+  - Replace separate chat-header action buttons with a single overflow (`⋮`) menu for thread actions.
+  - Keep the same three actions (`edit`, `archive`, `delete`) and existing backend calls; change only presentation and interaction.
+  - Close the menu on outside click, Escape, and when thread/view context changes.
+- Tradeoffs:
+  - Pros: cleaner header layout, less visual noise, more room for thread title/meta.
+  - Cons: one extra click for frequent actions versus always-visible individual buttons.
+
+## 2026-02-26 - Add compact copy-address action to project overview map card
+- Status: accepted
+- Decision:
+  - Add a small icon-only copy button in the map card header for quick address copy.
+  - Keep the existing map behavior unchanged; this is an additive convenience action.
+  - Disable the action when a project has no saved address.
+- Tradeoffs:
+  - Pros: faster operator workflow when sharing addresses externally.
+  - Cons: introduces one additional icon control in an already dense project overview card.
+
+## 2026-02-26 - Show absence range hints in task assignee selection
+- Status: accepted
+- Decision:
+  - Add a small absence hint directly in task assignee entries while assigning people to tasks.
+  - Evaluate absence hints against the task due date; if no due date is present, use today.
+  - Source hints from approved vacation requests and school absence records (including recurring weekday school entries).
+  - Render the same hint in both suggestion rows and already selected assignee chips.
+- Tradeoffs:
+  - Pros: reduces accidental assignment of unavailable people and improves planning clarity at selection time.
+  - Cons: adds extra metadata text in compact picker rows, which can increase visual density.
+
+## 2026-02-26 - Nicknames remain optional but are now editable/removable
+- Status: accepted
+- Decision:
+  - Keep admin-only nickname management and global nickname uniqueness.
+  - Remove one-time lock restriction so admins can update nickname values over time.
+  - Support clearing nickname by submitting an empty value, reverting display name usage back to full name.
+  - Keep nickname availability endpoint and uniqueness checks aligned with editable behavior.
+- Tradeoffs:
+  - Pros: admins can correct typos/rebrand aliases without DB intervention and can return to full-name display when needed.
+  - Cons: `nickname_set_at` is less semantically strict (set/cleared repeatedly) unless treated as last-change timestamp.
+
+## 2026-02-26 - Sub-tasks are task-owned and unresolved items auto-carry to unassigned follow-up task on report
+- Status: accepted
+- Decision:
+  - Store sub-tasks directly on `tasks` as JSON string list (`subtasks`) instead of a separate relational table.
+  - Keep sub-task completion transient at report time: users tick completed items in report flow; unresolved items create a new open, unassigned follow-up task.
+  - Follow-up creation is server-side and project-scoped (`source_task_id` must match report project) to keep behavior authoritative.
+  - Include follow-up metadata in report create response (`follow_up_task_id`, `follow_up_subtask_count`) for immediate UI feedback.
+  - Make migration idempotent for environments where `subtasks` may already exist.
+- Tradeoffs:
+  - Pros: minimal schema complexity, fast rollout, clear operational behavior for unfinished work.
+  - Cons: no per-subtask history timeline on the original task; completion state is captured at report event level rather than persisted sub-task-by-sub-task lifecycle.
+
+## 2026-02-26 - Updates must pass DB safety gate (snapshot + migration preflight)
+- Status: accepted
+- Decision:
+  - Make update workflows data-safe by default.
+  - Add preflight migration check that clones current DB into a temporary database and runs `alembic upgrade head` there first.
+  - Require a DB snapshot before real install migrations in admin auto-install flow.
+  - Publish a one-command safe update script for local/remote operators (`scripts/safe_update.sh`) and standalone preflight script (`scripts/preflight_migrations.sh`).
+- Tradeoffs:
+  - Pros: failed migrations are detected before touching production DB; rollback point is created before update.
+  - Cons: update flow is slower due to extra dump/restore/preflight steps and needs `pg_dump/pg_restore/psql` availability.
+
+## 2026-02-26 - Completed sub-tasks are rendered in finished report work section
+- Status: accepted
+- Decision:
+  - Keep report sub-task completion transient at report submission (`completed_subtasks`) and render those completed rows in the PDF section `Ausgefuehrte Arbeiten`.
+  - Combine free-text `work_done` and completed sub-task list in one rendered block so delivered reports show both narrative and checked items.
+  - Keep follow-up task generation behavior unchanged (unchecked sub-tasks still create unassigned follow-up task).
+- Tradeoffs:
+  - Pros: report recipients can verify completed checklist items directly in the exported report.
+  - Cons: `Ausgefuehrte Arbeiten` can become longer for tasks with large sub-task lists.
+
+## 2026-02-26 - Task edit modal shows last edit timestamp instead of week-start input
+- Status: accepted
+- Decision:
+  - Remove editable `Wochenstart (Montag)` field from task edit modal and replace it with read-only `Zuletzt bearbeitet`.
+  - Preserve backend `week_start` behavior by deriving week start from due date when due date is set, and otherwise keeping existing week value.
+- Tradeoffs:
+  - Pros: cleaner edit form and clearer operational context on when task was last changed.
+  - Cons: manual week-start override from task edit modal is no longer available.
+
+## 2026-02-26 - Accept HEIC/HEIF uploads in image flows with graceful fallback
+- Status: accepted
+- Decision:
+  - Treat image uploads as valid when either MIME type is `image/*` or filename extension is a known image extension (`.jpg/.png/.../.heic/.heif`).
+  - For avatar and thread icon uploads, attempt HEIC->JPEG conversion server-side when HEIC decoding is available; if not, keep original HEIC bytes and image media type.
+  - Keep frontend crop flow for browser-decodable images, and allow direct upload fallback for HEIC files when preview is not renderable in-browser.
+- Tradeoffs:
+  - Pros: HEIC files from mobile devices are accepted reliably even when MIME metadata is inconsistent.
+  - Cons: HEIC preview compatibility still depends on browser support when server-side conversion is unavailable.
+
+## 2026-02-26 - Project materials are aggregated from report payloads and shown in dedicated project tab
+- Status: accepted
+- Decision:
+  - Add a dedicated project tab `materials` and keep existing global materials queue unchanged.
+  - Aggregate report materials server-side via `GET /projects/{project_id}/materials`.
+  - Merge keys use normalized `item + unit + article_no` to avoid over-merging dissimilar entries.
+  - Sum parseable numeric quantities (supports comma and dot decimal formats) and keep non-numeric qty values as notes.
+  - Standardize future entries by adding unit suggestion dropdowns while keeping manual unit entry available.
+- Tradeoffs:
+  - Pros: shorter, clearer per-project material lists and less frontend post-processing.
+  - Cons: aggregated results depend on free-text naming discipline (item spelling/article numbers still matter).

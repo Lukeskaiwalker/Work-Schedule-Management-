@@ -7,7 +7,7 @@ from openpyxl import Workbook
 from sqlalchemy import func, select
 
 from app.core.db import SessionLocal
-from app.models.entities import Project
+from app.models.entities import Project, ProjectFinance
 from app.services.project_import import import_projects_from_csv, import_projects_from_excel
 
 
@@ -63,13 +63,13 @@ def test_import_projects_from_excel_preserves_columns_and_generates_temp_numbers
         db.close()
 
 
-def test_import_projects_from_excel_updates_existing_project(tmp_path: Path):
+def test_import_projects_from_excel_existing_project_only_fills_missing_fields(tmp_path: Path):
     file_path = tmp_path / "projects_update.xlsx"
     _write_workbook(
         file_path,
         [
-            ["Projektname", "Projektnummer", "Status", "Notizen"],
-            ["Alt", "2026-7777", "active", "first"],
+            ["Projektname", "Projektnummer", "Status", "Notizen", "Kundenadresse"],
+            ["Alt", "2026-7777", "active", "first", ""],
         ],
     )
 
@@ -81,20 +81,23 @@ def test_import_projects_from_excel_updates_existing_project(tmp_path: Path):
         _write_workbook(
             file_path,
             [
-                ["Projektname", "Projektnummer", "Status", "Notizen"],
-                ["Neu", "2026-7777", "in_progress", "second"],
+                ["Projektname", "Projektnummer", "Status", "Notizen", "Kundenadresse"],
+                ["Neu", "2026-7777", "in_progress", "second", "Musterweg 1, 12345 Berlin"],
             ],
         )
 
         second = import_projects_from_excel(db, str(file_path), source_label=file_path.name)
         assert second.created == 0
         assert second.updated == 1
+        assert second.skipped_project_fields > 0
+        assert second.skipped_finance_fields == 0
 
         project = db.scalars(select(Project).where(Project.project_number == "2026-7777")).first()
         assert project is not None
-        assert project.name == "Neu"
-        assert project.status == "in_progress"
-        assert project.last_state == "second"
+        assert project.name == "Alt"
+        assert project.status == "active"
+        assert project.last_state == "first"
+        assert project.customer_address == "Musterweg 1, 12345 Berlin"
     finally:
         db.close()
 
@@ -186,8 +189,9 @@ def test_import_projects_from_excel_imports_last_status_datetime_and_deduplicate
 
         second = import_projects_from_excel(db, str(file_path), source_label=file_path.name)
         assert second.created == 0
-        assert second.updated == 2
+        assert second.updated == 0
         assert second.temporary_numbers == 0
+        assert second.skipped_project_fields > 0
         assert db.scalar(select(func.count(Project.id))) == 2
     finally:
         db.close()
@@ -246,5 +250,74 @@ def test_import_projects_from_csv_preserves_columns_and_generates_temp_numbers(t
         assert temporary is not None
         assert temporary.project_number.startswith("T")
         assert temporary.extra_attributes["Neue Spalte"] == "B"
+    finally:
+        db.close()
+
+
+def test_import_projects_from_csv_imports_finance_and_does_not_overwrite_existing_values(tmp_path: Path):
+    file_path = tmp_path / "projects_finance.csv"
+    _write_csv(
+        file_path,
+        [
+            [
+                "project_number",
+                "name",
+                "status",
+                "order_value_net",
+                "planned_costs",
+                "actual_costs",
+                "contribution_margin",
+            ],
+            ["6100", "PV Finance", "active", "100000", "70000", "", ""],
+        ],
+    )
+
+    db = SessionLocal()
+    try:
+        first = import_projects_from_csv(db, str(file_path), source_label=file_path.name)
+        assert first.created == 1
+
+        project = db.scalars(select(Project).where(Project.project_number == "6100")).first()
+        assert project is not None
+        first_finance = db.get(ProjectFinance, project.id)
+        assert first_finance is not None
+        assert first_finance.order_value_net == 100000.0
+        assert first_finance.planned_costs == 70000.0
+        assert first_finance.actual_costs is None
+        assert first_finance.contribution_margin is None
+
+        _write_csv(
+            file_path,
+            [
+                [
+                    "project_number",
+                    "name",
+                    "status",
+                    "order_value_net",
+                    "planned_costs",
+                    "actual_costs",
+                    "contribution_margin",
+                ],
+                ["6100", "PV Finance Updated", "completed", "120000", "75000", "63000", "20000"],
+            ],
+        )
+
+        second = import_projects_from_csv(db, str(file_path), source_label=file_path.name)
+        assert second.created == 0
+        assert second.updated == 1
+        assert second.skipped_project_fields > 0
+        assert second.skipped_finance_fields >= 2
+
+        project = db.scalars(select(Project).where(Project.project_number == "6100")).first()
+        assert project is not None
+        assert project.name == "PV Finance"
+        assert project.status == "active"
+
+        second_finance = db.get(ProjectFinance, project.id)
+        assert second_finance is not None
+        assert second_finance.order_value_net == 100000.0
+        assert second_finance.planned_costs == 70000.0
+        assert second_finance.actual_costs == 63000.0
+        assert second_finance.contribution_margin == 20000.0
     finally:
         db.close()

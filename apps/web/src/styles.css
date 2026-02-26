@@ -672,6 +672,21 @@ button[type="submit"] {
   line-height: 1.1;
 }
 
+.materials-status-toggle {
+  appearance: none;
+  cursor: pointer;
+  transition: filter 0.16s ease;
+}
+
+.materials-status-toggle:hover:not(:disabled) {
+  filter: brightness(0.97);
+}
+
+.materials-status-toggle:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
 .materials-status-badge.order {
   color: #8d250f;
   border-color: #edc6bc;
@@ -690,26 +705,27 @@ button[type="submit"] {
   background: #ecf9f0;
 }
 
-.materials-status-select {
-  min-width: 140px;
+.materials-status-badge.completed {
+  color: #5a6475;
+  border-color: #d4d9e2;
+  background: #f4f6f9;
 }
 
-.materials-status-select.order {
-  border-color: #edc6bc;
-  background: #fff2ef;
-  color: #7e2310;
-}
-
-.materials-status-select.on-the-way {
-  border-color: #bfd5ee;
-  background: #edf5ff;
-  color: #1e4f86;
-}
-
-.materials-status-select.available {
-  border-color: #b8dfc3;
+.materials-complete-btn {
+  border: 1px solid #b8dfc3;
+  border-radius: 999px;
+  padding: 0.16rem 0.56rem;
   background: #ecf9f0;
   color: #1b6333;
+  font-size: 0.76rem;
+  font-weight: 700;
+  line-height: 1.1;
+  cursor: pointer;
+}
+
+.materials-complete-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
 }
 
 .card {
@@ -1302,6 +1318,18 @@ label {
   max-width: 320px;
 }
 
+.project-materials-card {
+  align-content: start;
+}
+
+.project-materials-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.55rem;
+}
+
 .project-map-frame {
   width: 100%;
   height: 170px;
@@ -1314,6 +1342,13 @@ label {
   display: block;
   line-height: 0;
   cursor: pointer;
+}
+
+.project-map-copy-btn {
+  min-width: 30px;
+  width: 30px;
+  height: 30px;
+  padding: 0;
 }
 
 @media (max-width: 1240px) {
@@ -2119,6 +2154,22 @@ li {
   border-color: var(--line);
 }
 
+.task-assignee-suggestion-btn {
+  display: grid;
+  gap: 0.08rem;
+}
+
+.assignee-primary-label {
+  display: block;
+}
+
+.assignee-availability-note {
+  display: block;
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1.2;
+}
+
 .assignee-chip-list {
   display: flex;
   flex-wrap: wrap;
@@ -2132,6 +2183,13 @@ li {
   padding: 0.3rem 0.56rem;
   font-size: 0.8rem;
   line-height: 1.15;
+}
+
+.task-assignee-chip {
+  display: grid;
+  gap: 0.08rem;
+  align-items: start;
+  text-align: left;
 }
 
 .tasks-list-card {
@@ -2263,6 +2321,24 @@ li {
 
 .task-expanded-content b {
   font-weight: 700;
+}
+
+.task-subtask-list {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.task-subtask-list ul {
+  margin: 0;
+  padding-left: 1.1rem;
+  display: grid;
+  gap: 0.15rem;
+  color: var(--ink);
+}
+
+.task-subtask-list li {
+  font-size: 0.85rem;
+  line-height: 1.3;
 }
 
 .task-edit-icon-btn {
@@ -2478,6 +2554,17 @@ li {
   margin-left: auto;
 }
 
+.thread-panel-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.thread-archive-list-btn {
+  padding: 0.35rem 0.55rem;
+  min-height: 32px;
+}
+
 .thread-list {
   list-style: none;
   padding: 0;
@@ -2517,6 +2604,31 @@ li {
   align-items: center;
   justify-content: space-between;
   gap: 0.45rem;
+}
+
+.thread-title-main {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.thread-title-main b {
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.thread-visibility-badge {
+  border: 1px solid #d6ba77;
+  background: #fff6dc;
+  color: #7a5a1c;
+  border-radius: 999px;
+  padding: 0.1rem 0.42rem;
+  font-size: 0.64rem;
+  line-height: 1.2;
+  white-space: nowrap;
 }
 
 .thread-unread-badge {
@@ -2607,9 +2719,69 @@ li {
   color: var(--muted);
 }
 
-.thread-edit-btn {
-  min-width: 36px;
-  padding: 0.4rem 0.45rem;
+.thread-head-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+}
+
+.thread-actions-menu-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.thread-actions-trigger {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.thread-actions-menu {
+  position: absolute;
+  top: calc(100% + 0.2rem);
+  right: 0;
+  left: auto;
+  min-width: 180px;
+  z-index: 45;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 10px 24px rgba(14, 39, 65, 0.16);
+  padding: 0.28rem;
+  display: grid;
+  gap: 0.2rem;
+}
+
+.thread-actions-menu button {
+  width: 100%;
+  justify-content: flex-start;
+  text-align: left;
+  padding: 0.42rem 0.5rem;
+  border-radius: 8px;
+}
+
+.thread-actions-menu button.danger {
+  color: #8d1b1b;
+}
+
+.thread-archive-row {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  padding: 0.5rem 0.6rem;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.thread-archive-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
 }
 
 .chat-empty {
@@ -3047,6 +3219,32 @@ li {
 
 .report-form textarea {
   min-height: 72px;
+}
+
+.report-subtask-checklist {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.55rem 0.65rem;
+  background: #fff;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.report-subtask-checklist-items {
+  display: grid;
+  gap: 0.3rem;
+}
+
+.report-subtask-item {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 0.45rem;
+  font-size: 0.9rem;
+}
+
+.report-subtask-item input {
+  width: auto;
+  margin-top: 0.12rem;
 }
 
 .report-image-upload {

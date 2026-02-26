@@ -25,6 +25,35 @@
 3. Projects/tasks/planning/tickets/time/files/chat/report: completed (MVP scope).
 4. Backup/restore + docs + test hardening: completed.
 
+## Compacted Update (2026-02-26, admin nickname for anonymized exports)
+- Changed:
+  - added optional admin nickname support (`nickname`) with one-time set semantics (cannot be changed after first save).
+  - added nickname availability endpoint (`GET /api/auth/nickname-availability`) with uniqueness checks.
+  - construction report generation now uses user `display_name` (nickname if set) for `Submitted by` fields, preventing real-name leakage in report exports.
+  - assignable-user and planning/activity name rendering now prefers display name.
+  - profile settings UI now includes admin nickname input with availability validation and one-time lock messaging.
+- Verified:
+  - frontend build pass (`cd apps/web && npm run build`).
+  - backend syntax compile checks pass for modified modules.
+- Blockers:
+  - API tests could not be executed in this environment (`pytest` unavailable locally and Docker daemon not reachable).
+
+## Compacted Update (2026-02-26, restricted chat participants by users/groups)
+- Changed:
+  - added chat visibility modes (`public` / `restricted`) with DB-backed participant memberships.
+  - added employee group model + membership tables and admin-managed group CRUD API.
+  - added chat participant endpoints:
+    - `GET /api/threads/participant-users` (active users only),
+    - `GET /api/threads/participant-groups` (groups + memberships).
+  - extended chat creation payload with `participant_user_ids` and `participant_group_ids`.
+  - access control now enforces restricted-thread visibility for list/read/send paths (creator always included).
+  - updated new-chat UI with two multi-select dropdowns (users + employee groups), chips/tags for selections, and restricted/public helper text.
+  - chat list/header now indicate restricted threads.
+- Verified:
+  - `./scripts/test.sh` pass (`53 passed` API tests + web build).
+  - `docker compose up --build -d api web caddy` pass; `https://localhost/` and `https://localhost/api` return `200`.
+- Blockers: none.
+
 ## Compacted Update (2026-02-24, async report processing + API concurrency)
 - Changed:
   - moved construction-report PDF/Telegram generation into a persisted background-job pipeline (`construction_report_jobs`) instead of doing all heavy work inline in the upload request.
@@ -1865,4 +1894,213 @@
   - `docker compose up -d --build web caddy` pass (web/api healthy).
 - Next:
   - Optional: if needed, clamp long monetary values on very narrow screens.
+- Blockers: none.
+
+## Compacted Update (2026-02-25, materials menu single-indicator flow + completion action)
+- Changed:
+  - Materials menu now uses only one status control: clicking the status indicator cycles `Bestellen` -> `Unterwegs` -> `Verfügbar`.
+  - Removed the extra status dropdown to avoid duplicate state indicators.
+  - Added `Erledigt` button for items in `Verfügbar`; clicking it marks item as completed.
+  - Completed material items are excluded from active `/materials` queue results.
+- Verified:
+  - `./scripts/test.sh` pass (`48 passed`, web build successful).
+  - `docker compose up -d --build api web caddy` pass (web/api healthy).
+- Next:
+  - Optional: add a dedicated completed-material archive view if historical traceability is needed in UI.
+- Blockers: none.
+
+## Compacted Update (2026-02-25, per-project report numbering + numbered uploaded photo names)
+- Changed:
+  - Added per-project sequential `report_number` assignment on construction report creation.
+  - Exposed `report_number` in report create/list/processing API payloads.
+  - Construction report image attachments are now renamed server-side to numbered names (`report-<token>-photo-<index>.<ext>`), independent from phone/library filenames.
+  - PDF base filename generation now includes report number for project reports.
+- Verified:
+  - `docker compose run --rm api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_workflows.py::test_project_task_planning_ticket_file_and_report_flow'` pass.
+  - `./scripts/test.sh` pass (`49 passed`, web build successful).
+  - `docker compose run --rm api sh -lc 'cd /app && alembic upgrade head'` pass.
+  - `docker compose up -d --build api web caddy` pass (api/web healthy).
+- Next:
+  - Optional: show report number directly in report-history cards where available.
+- Blockers: none.
+
+## Compacted Update (2026-02-25, update menu resolves current release version instead of placeholder)
+- Changed:
+  - Admin update status now treats `APP_RELEASE_VERSION=local-production` as a placeholder and attempts to resolve the real current release tag from local git (`HEAD` tag).
+  - If release commit env is missing, update status also derives `current_commit` from local git `HEAD`.
+  - Update menu no longer displays `local-production`; it falls back to resolved version/commit, and when already up-to-date can use latest release label as a display fallback.
+- Verified:
+  - `docker compose run --rm api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_auth_rbac.py -k "update_status or install_update"'` pass.
+  - `cd apps/web && npm run build` pass.
+  - `./scripts/test.sh` pass (`50 passed`, web build successful).
+  - `docker compose up -d --build api web caddy` pass (api/web healthy).
+- Next:
+  - Optional: set `APP_RELEASE_VERSION`/`APP_RELEASE_COMMIT` in deployment env for explicit, deterministic version display.
+- Blockers: none.
+
+## Compacted Update (2026-02-26, chat creation uses users + roles multi-select)
+- Changed:
+  - Chat restriction creation now supports role-based participants in addition to explicit users.
+  - Added `/threads/participant-roles` and updated thread create payload to accept `participant_roles`.
+  - Restricted-thread access now grants visibility/send/read when user is explicitly selected, matches a selected role, or is creator (legacy group membership still honored for existing data).
+  - New Chat modal now uses task-style chip multi-select for users and roles; replaced group selector in chat create flow.
+- Verified:
+  - `cd apps/api && PYTHONPATH=. python3 -m compileall app` pass.
+  - `cd apps/web && npm run build` pass.
+  - `./scripts/test.sh` pass (`53 passed`, web build successful).
+  - `docker compose up --build -d api web caddy` pass.
+  - `docker compose exec -T api alembic current` => `20260226_0029 (head)`.
+- Next:
+  - Optional: remove legacy chat-group participant endpoint/model if no clients rely on it.
+- Blockers: none.
+
+## Compacted Update (2026-02-26, restricted chat access editing + archive/restore/delete)
+- Changed:
+  - Added post-creation restricted chat audience editing in `PATCH /threads/{id}` using `participant_user_ids` and `participant_roles`.
+  - Restricted chat updates now allow already-member archived users to remain in membership (graceful history handling), while still blocking new archived-user additions.
+  - Added chat lifecycle actions:
+    - `POST /threads/{id}/archive`
+    - `POST /threads/{id}/restore`
+    - `DELETE /threads/{id}`
+  - Added thread archive state in DB/model/output (`status`, `is_archived`) and defaulted thread lists to active chats only (`include_archived=true` to include archived).
+  - Frontend chat UI now supports:
+    - editing users/roles in the existing thread edit modal,
+    - archive/delete actions in chat header,
+    - archived chats modal with restore/delete.
+- Verified:
+  - `cd apps/api && PYTHONPATH=. python3 -m compileall app` pass.
+  - `cd apps/web && npm run build` pass.
+  - `./scripts/test.sh` pass (`53 passed`, web build successful).
+  - `docker compose up --build -d api web caddy` pass.
+  - `docker compose exec -T api alembic upgrade head` pass.
+  - `docker compose exec -T api alembic current` => `20260226_0030 (head)`.
+- Next:
+  - Optional: add dedicated audit-log events for chat archive/restore/delete/member changes.
+- Blockers: none.
+
+## Compacted Update (2026-02-26, chat header actions merged into 3-dot menu)
+- Changed:
+  - Replaced separate chat-header buttons (`Edit`, `Archive`, `Delete`) with one 3-dot action menu in the thread header.
+  - Added menu open/close behavior for outside click, Escape key, and context changes (thread/view change).
+  - Kept existing action handlers and confirmations; only interaction surface changed.
+- Verified:
+  - `cd apps/web && npm run build` pass.
+  - `docker compose up --build -d web caddy` pass (web healthy).
+- Next:
+  - Optional: replicate same compact action-menu pattern in archived-thread rows for UI consistency.
+- Blockers: none.
+
+## Compacted Update (2026-02-26, project overview map includes copy-address icon)
+- Changed:
+  - Added a compact copy-address icon button to the Project Overview map card header.
+  - Button copies the current project address to clipboard and is disabled when no address exists.
+  - Reused clipboard fallback logic and added localized notice/error messages for address copy.
+- Verified:
+  - `cd apps/web && npm run build` pass.
+  - `docker compose up --build -d web caddy` pass (web/api/caddy healthy).
+  - `curl -k -I https://localhost/` returns `HTTP/2 200`.
+- Next:
+  - Optional: add brief inline “copied” tooltip state on the map button for instant visual feedback.
+- Blockers: none.
+
+## Compacted Update (2026-02-26, task assignee picker shows absence date-range hints)
+- Changed:
+  - Added a compact availability note in task assignee suggestion rows and selected assignee chips.
+  - Notes are shown in all task assignment flows (overview create modal, task edit modal, and project task create).
+  - Hint text format: `Absent from <start> until <end>` with reason marker (`Vacation`/`School`), localized for German/English.
+  - Visibility logic checks the task due date (or today when no due date is set) against approved vacation ranges and school absence ranges (including recurring weekday school entries).
+- Verified:
+  - `cd apps/web && npm run build` pass.
+  - `docker compose up --build -d web caddy` pass (web/api/caddy healthy).
+  - `curl -k -I https://localhost/` returns `HTTP/2 200`.
+- Next:
+  - Optional: add a color accent/icon for unavailable assignees to improve scanability in long suggestion lists.
+- Blockers: none.
+
+## Compacted Update (2026-02-26, nicknames are now editable and removable)
+- Changed:
+  - Removed one-time nickname lock behavior for admins; nicknames can now be changed after initial set.
+  - Added nickname removal support by saving an empty nickname value.
+  - Kept nickname uniqueness enforcement across users and admin-only nickname management.
+  - Updated profile UI copy/validation flow to allow set/change/remove in one input without lock state.
+- Verified:
+  - `docker compose run --rm api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_workflows.py -k nickname'` pass (`3 passed`).
+  - `cd apps/web && npm run build` pass.
+  - `docker compose up --build -d api web caddy` pass (api/web/caddy healthy).
+  - `curl -k -I https://localhost/` returns `HTTP/2 200`.
+- Next:
+  - Optional: remove/repurpose `nickname_set_at` if historical timestamp is no longer needed in UI/API.
+- Blockers: none.
+
+## Compacted Update (2026-02-26, task sub-tasks + report carry-over follow-up tasks)
+- Changed:
+  - Added task-level `subtasks` storage and API fields for create/update/list.
+  - Added sub-task entry fields in task create/edit flows (project tasks and weekly planning modal).
+  - Added sub-task checklist in “Construction report from task” flow.
+  - Report submit now sends `source_task_id` + completed sub-tasks; backend auto-creates a new **unassigned** follow-up task when some sub-tasks remain open.
+  - Follow-up task keeps the remaining sub-tasks and is linked in activity log.
+  - Added idempotent Alembic migration `20260226_0031_task_subtasks`.
+- Verified:
+  - `./scripts/test.sh` pass (`53 passed`, web build pass).
+  - `docker compose up --build -d api web caddy` pass (api/web/caddy healthy).
+  - `curl -k -I https://localhost/` returns `HTTP/2 200`.
+- Next:
+  - Optional: add explicit “report from task” action in project task list (not only my-tasks view) for faster access to sub-task checklist.
+- Blockers: none.
+
+## Compacted Update (2026-02-26, DB-safe update gate with preflight + snapshot)
+- Changed:
+  - Added `scripts/preflight_migrations.sh` to validate migrations on a temporary cloned DB before touching the real DB.
+  - Added `scripts/safe_update.sh` for a guarded update path (`optional pull -> build -> preflight -> backup -> migrate -> deploy`).
+  - Added `BACKUP_PASSPHRASE_FILE` support to `scripts/backup.sh` and `scripts/restore.sh`.
+  - Hardened admin update install flow:
+    - dry-run now performs real migration preflight on a temporary clone,
+    - install now creates a pre-update DB snapshot and aborts if preflight fails.
+  - Updated web admin update UI to show failed preflight/install responses as errors (not success notices).
+- Verified:
+  - Targeted admin update tests added for dry-run preflight and install snapshot/preflight ordering.
+  - Web production build runs with updated update-menu behavior.
+- Next:
+  - Optional: add upload-volume snapshot support to auto-install flow in addition to DB snapshot.
+- Blockers: none.
+
+## Compacted Update (2026-02-26, report shows completed sub-tasks + task edit shows last edited timestamp)
+- Changed:
+  - Updated construction report PDF composition so `completed_subtasks` are rendered in `Ausgefuehrte Arbeiten` together with `work_done`.
+  - Replaced task edit modal field `Wochenstart (Montag)` with read-only `Zuletzt bearbeitet` value.
+  - Kept `week_start` persistence logic internal: when due date exists, week start is derived from due date; otherwise existing week start is retained.
+- Verified:
+  - `docker compose run --rm --build api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_construction_report_pdf.py'` pass (`4 passed`).
+  - `cd apps/web && npm run build` pass.
+- Next:
+  - Optional: add one integration test that inspects generated report PDF text for completed sub-task rows.
+- Blockers: none.
+
+## Compacted Update (2026-02-26, HEIC/HEIF upload support for avatars, thread icons, and report image selection)
+- Changed:
+  - API image validation for avatar/thread icon uploads now accepts image uploads by MIME **or** file extension, including `.heic/.heif`.
+  - API image stack now includes `pillow-heif` so HEIC avatar/thread icon uploads can be converted to JPEG for broader browser compatibility.
+  - Added optional HEIC->JPEG conversion path for avatar/thread icon uploads when HEIC decoder support is available at runtime.
+  - Web file inputs for avatar, thread icon, and report photos now explicitly accept `.heic/.heif`.
+  - Avatar modal can save HEIC source files even when in-browser preview/crop is unavailable.
+- Verified:
+  - `docker compose run --rm --build api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_workflows.py -k "heic"'` pass (`2 passed`).
+  - `cd apps/web && npm run build` pass.
+  - `docker compose up -d --build --force-recreate api web caddy` pass (healthy services, `https://localhost/` and `https://localhost/api` return `200`).
+- Next:
+  - Optional: add browser E2E coverage for HEIC avatar flow on Safari/iOS.
+- Blockers: none.
+
+## Compacted Update (2026-02-26, project-level materials tab + merged report materials + unit suggestions)
+- Changed:
+  - Added a new `Materials` tab in project navigation (between `Project Hours` and `Job Tickets`).
+  - Added backend endpoint `GET /api/projects/{project_id}/materials` to aggregate materials from project construction reports.
+  - Aggregation merges rows by normalized `item + unit + article_no`, sums numeric quantities, and tracks non-numeric qty notes.
+  - Added unit suggestion dropdown support (`datalist`) for material unit inputs with free-text fallback.
+- Verified:
+  - `docker compose run --rm api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_workflows.py -k project_task_planning_ticket_file_and_report_flow'` pass.
+  - `cd apps/web && npm run build` pass.
+  - `docker compose up -d --build --force-recreate api web caddy` pass (services healthy, `/` and `/api` return `200`).
+- Next:
+  - Optional: add a quick CSV export for aggregated project materials.
 - Blockers: none.

@@ -10,6 +10,9 @@ type User = {
   id: number;
   email: string;
   full_name: string;
+  nickname?: string | null;
+  display_name: string;
+  nickname_set_at?: string | null;
   role: "admin" | "ceo" | "accountant" | "planning" | "employee";
   is_active: boolean;
   required_daily_hours: number;
@@ -109,7 +112,7 @@ type ProjectWeather = {
   days: ProjectWeatherDay[];
 };
 
-type MaterialNeedStatus = "order" | "on_the_way" | "available";
+type MaterialNeedStatus = "order" | "on_the_way" | "available" | "completed";
 
 type ProjectMaterialNeed = {
   id: number;
@@ -127,11 +130,23 @@ type ProjectMaterialNeed = {
   updated_at: string;
 };
 
+type ProjectTrackedMaterial = {
+  item: string;
+  unit?: string | null;
+  article_no?: string | null;
+  quantity_total?: number | null;
+  quantity_notes: string[];
+  occurrence_count: number;
+  report_count: number;
+  last_report_date?: string | null;
+};
+
 type Task = {
   id: number;
   project_id: number;
   title: string;
   description?: string | null;
+  subtasks?: string[];
   materials_required?: string | null;
   storage_box_number?: number | null;
   task_type?: string | null;
@@ -148,6 +163,8 @@ type Task = {
 type AssignableUser = {
   id: number;
   full_name: string;
+  nickname?: string | null;
+  display_name: string;
   role: string;
   required_daily_hours: number;
   avatar_updated_at?: string | null;
@@ -171,11 +188,17 @@ type Ticket = { id: number; title: string; site_address: string; ticket_date: st
 type Thread = {
   id: number;
   name: string;
+  visibility?: string;
+  status?: string;
+  is_restricted?: boolean;
+  is_archived?: boolean;
   created_by?: number | null;
   project_id?: number | null;
   project_name?: string | null;
   site_id?: number | null;
   icon_updated_at?: string | null;
+  participant_user_ids?: number[];
+  participant_roles?: string[];
   message_count: number;
   unread_count: number;
   last_message_at?: string | null;
@@ -340,6 +363,13 @@ type PasswordResetDispatchResponse = {
   expires_at: string;
 };
 
+type NicknameAvailability = {
+  nickname: string;
+  available: boolean;
+  locked: boolean;
+  reason?: string | null;
+};
+
 type WeatherSettings = {
   provider: string;
   configured: boolean;
@@ -397,17 +427,21 @@ type ReportMaterialRow = {
 type ConstructionReportCreateResponse = {
   id: number;
   project_id: number | null;
+  report_number?: number | null;
   telegram_sent: boolean;
   telegram_mode: string;
   attachment_file_name: string | null;
   report_images: Array<{ id: string; file_name: string; content_type: string }>;
   processing_status: string;
   processing_error?: string | null;
+  follow_up_task_id?: number | null;
+  follow_up_subtask_count?: number;
 };
 
 type ConstructionReportProcessingResponse = {
   report_id: number;
   project_id: number | null;
+  report_number?: number | null;
   processing_status: string;
   processing_error?: string | null;
   processed_at?: string | null;
@@ -428,6 +462,13 @@ type TaskReportPrefill = {
   work_done: string;
   incidents: string;
   materials: string;
+  subtasks: string[];
+};
+
+type ReportTaskChecklistItem = {
+  id: string;
+  label: string;
+  done: boolean;
 };
 
 type ProjectFormState = {
@@ -450,6 +491,7 @@ type ProjectFormState = {
 type ProjectTaskFormState = {
   title: string;
   description: string;
+  subtasks_raw: string;
   materials_required: string;
   has_storage_box: boolean;
   storage_box_number: string;
@@ -474,6 +516,7 @@ type ProjectFinanceFormState = {
 type TaskModalState = {
   title: string;
   description: string;
+  subtasks_raw: string;
   materials_required: string;
   has_storage_box: boolean;
   storage_box_number: string;
@@ -495,6 +538,7 @@ type TaskEditFormState = {
   project_id: number | null;
   title: string;
   description: string;
+  subtasks_raw: string;
   materials_required: string;
   has_storage_box: boolean;
   storage_box_number: string;
@@ -523,7 +567,7 @@ type MainView =
   | "time"
   | "profile"
   | "admin";
-type ProjectTab = "overview" | "tasks" | "hours" | "tickets" | "files" | "finances";
+type ProjectTab = "overview" | "tasks" | "hours" | "materials" | "tickets" | "files" | "finances";
 
 const MAIN_LABELS: Record<Language, Record<MainView, string>> = {
   en: {
@@ -565,6 +609,7 @@ const TAB_LABELS: Record<Language, Record<ProjectTab, string>> = {
     overview: "Overview",
     tasks: "Tasks",
     hours: "Project Hours",
+    materials: "Materials",
     tickets: "Job Tickets",
     files: "Files",
     finances: "Finances",
@@ -573,6 +618,7 @@ const TAB_LABELS: Record<Language, Record<ProjectTab, string>> = {
     overview: "Übersicht",
     tasks: "Aufgaben",
     hours: "Projektstunden",
+    materials: "Material",
     tickets: "Job Tickets",
     files: "Dateien",
     finances: "Finanzen",
@@ -604,9 +650,29 @@ const PROJECT_SITE_ACCESS_PRESETS = [
   "call_before_departure",
 ] as const;
 const PROJECT_SITE_ACCESS_WITH_NOTE = new Set<string>(["key_pickup", "code_access", "key_box"]);
+const DEFAULT_THREAD_PARTICIPANT_ROLES = ["admin", "ceo", "accountant", "planning", "employee"] as const;
+const MATERIAL_UNIT_EXAMPLES = ["pcs", "m", "cm", "mm", "m2", "m3", "kg", "g", "l", "ml", "set", "pack", "box", "roll"];
 
 const HHMM_PATTERN = "^([01]\\d|2[0-3]):[0-5]\\d$";
 const HHMM_REGEX = /^([01]\d|2[0-3]):[0-5]\d$/;
+
+function roleOptionLabel(role: string, language: Language): string {
+  const normalized = String(role || "").trim().toLowerCase();
+  if (language === "de") {
+    if (normalized === "admin") return "Admins";
+    if (normalized === "ceo") return "Geschäftsführung";
+    if (normalized === "accountant") return "Buchhaltung";
+    if (normalized === "planning") return "Planung";
+    if (normalized === "employee") return "Mitarbeiter";
+    return normalized || role;
+  }
+  if (normalized === "admin") return "Admins";
+  if (normalized === "ceo") return "Management";
+  if (normalized === "accountant") return "Accountants";
+  if (normalized === "planning") return "Planners";
+  if (normalized === "employee") return "Employees";
+  return normalized || role;
+}
 
 function initialsFromName(name: string, fallback: string) {
   const parts = (name || "")
@@ -616,6 +682,64 @@ function initialsFromName(name: string, fallback: string) {
   if (parts.length === 0) return fallback;
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
   return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
+}
+
+type CompactNameParts = {
+  first: string;
+  lastInitial: string;
+};
+
+function splitCompactNameParts(name: string): CompactNameParts {
+  const parts = (name || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (parts.length === 0) return { first: "", lastInitial: "" };
+  const first = parts[0];
+  const last = parts.length > 1 ? parts[parts.length - 1] : "";
+  return { first, lastInitial: last ? last[0].toUpperCase() : "" };
+}
+
+function compactNameLabel(name: string, withLastInitial: boolean): string {
+  const parts = splitCompactNameParts(name);
+  if (!parts.first) return "";
+  if (withLastInitial && parts.lastInitial) return `${parts.first} ${parts.lastInitial}.`;
+  return parts.first;
+}
+
+function buildCompactUserNameMap(entries: Array<{ id: number; name: string }>): Map<number, string> {
+  const distinctEntries = new Map<number, string>();
+  entries.forEach(({ id, name }) => {
+    if (!distinctEntries.has(id)) {
+      distinctEntries.set(id, name);
+    }
+  });
+
+  const firstNameCounts = new Map<string, number>();
+  const partsByUserId = new Map<number, CompactNameParts>();
+  distinctEntries.forEach((name, userId) => {
+    const parts = splitCompactNameParts(name);
+    partsByUserId.set(userId, parts);
+    if (!parts.first) return;
+    const key = parts.first.toLowerCase();
+    firstNameCounts.set(key, (firstNameCounts.get(key) ?? 0) + 1);
+  });
+
+  const result = new Map<number, string>();
+  distinctEntries.forEach((name, userId) => {
+    const parts = partsByUserId.get(userId);
+    if (!parts || !parts.first) {
+      result.set(userId, name.trim() || `#${userId}`);
+      return;
+    }
+    const duplicateFirstName = (firstNameCounts.get(parts.first.toLowerCase()) ?? 0) > 1;
+    result.set(userId, compactNameLabel(name, duplicateFirstName));
+  });
+  return result;
+}
+
+function preferredDisplayName(entry: { display_name?: string | null; full_name?: string | null }): string {
+  return String(entry.display_name ?? entry.full_name ?? "").trim();
 }
 
 function parseServerDateTime(value?: string | null) {
@@ -775,11 +899,55 @@ function SearchIcon() {
   );
 }
 
+function CopyIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="task-edit-pen-icon">
+      <rect x="9" y="9" width="10.5" height="10.5" rx="1.8" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <path
+        d="M6.4 15H5.8a1.8 1.8 0 0 1-1.8-1.8V5.8A1.8 1.8 0 0 1 5.8 4h7.4A1.8 1.8 0 0 1 15 5.8v.6"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
 function parseListLines(value: string) {
   return value
     .split("\n")
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
+}
+
+function parseTaskSubtasks(rawValue: string) {
+  const seen = new Set<string>();
+  const rows: string[] = [];
+  parseListLines(rawValue).forEach((line) => {
+    const key = line.toLocaleLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    rows.push(line);
+  });
+  return rows;
+}
+
+function subtasksToTextareaValue(subtasks?: string[] | null) {
+  return (subtasks ?? []).map((value) => String(value || "").trim()).filter((value) => value.length > 0).join("\n");
+}
+
+function sameStringList(left: string[], right: string[]) {
+  if (left.length !== right.length) return false;
+  return left.every((value, index) => value === right[index]);
+}
+
+function buildReportTaskChecklist(subtasks: string[]): ReportTaskChecklistItem[] {
+  return subtasks.map((label, index) => ({
+    id: `subtask-${index}-${label.toLocaleLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+    label,
+    done: false,
+  }));
 }
 
 function sleep(ms: number) {
@@ -830,6 +998,37 @@ function parseReportMaterialRows(
   });
   if (rows.length > 0) return rows;
   return [createReportMaterialRow(prefix)];
+}
+
+function serializeTaskMaterialRows(rows: ReportMaterialRow[]) {
+  const lines = rows
+    .map((row) => {
+      const item = row.item.trim();
+      if (!item) return "";
+      const qty = row.qty.trim();
+      const unit = row.unit.trim();
+      const articleNo = row.article_no.trim();
+      if (!qty && !unit && !articleNo) return item;
+      return [item, qty, unit, articleNo].join(" | ");
+    })
+    .filter((line) => line.length > 0);
+  return lines.join("\n");
+}
+
+function taskMaterialsDisplay(rawValue: string | null | undefined, language: Language) {
+  const rows = parseReportMaterialRows(rawValue, "materials")
+    .map((row) => {
+      const item = row.item.trim();
+      if (!item) return "";
+      const qtyUnit = [row.qty.trim(), row.unit.trim()].filter((value) => value.length > 0).join(" ");
+      const articleNo = row.article_no.trim();
+      const parts = [item];
+      if (qtyUnit) parts.push(qtyUnit);
+      if (articleNo) parts.push(`${language === "de" ? "ArtNr" : "ArtNo"} ${articleNo}`);
+      return parts.join(" - ");
+    })
+    .filter((line) => line.length > 0);
+  return rows.join(", ");
 }
 
 function serializeOfficeMaterialRows(rows: ReportMaterialRow[]) {
@@ -956,6 +1155,31 @@ function weekdaysBetweenIso(startIso: string, endIso: string) {
   return count;
 }
 
+function isIsoDateWithinRange(targetIso: string, startIso: string, endIso: string) {
+  const target = targetIso.trim();
+  const start = startIso.trim();
+  const end = endIso.trim() || start;
+  if (!target || !start || !end) return false;
+  const from = start <= end ? start : end;
+  const until = start <= end ? end : start;
+  return target >= from && target <= until;
+}
+
+function isoWeekdayMondayFirst(isoDate: string) {
+  const date = new Date(`${isoDate}T12:00:00`);
+  if (Number.isNaN(date.getTime())) return -1;
+  return (date.getDay() + 6) % 7;
+}
+
+function formatShortIsoDate(isoDate: string, language: Language) {
+  const date = new Date(`${isoDate}T12:00:00`);
+  if (Number.isNaN(date.getTime())) return isoDate;
+  return date.toLocaleDateString(language === "de" ? "de-DE" : "en-US", {
+    day: "2-digit",
+    month: "2-digit",
+  });
+}
+
 function monthWeekRanges(reference: Date): MonthWeekRange[] {
   const year = reference.getFullYear();
   const monthIndex = reference.getMonth();
@@ -991,6 +1215,14 @@ function shiftMonthStart(source: Date, delta: number) {
 
 function formatHours(hours: number) {
   return `${hours.toFixed(2)}h`;
+}
+
+function formatMaterialQuantity(value: number, language: Language) {
+  if (!Number.isFinite(value)) return "";
+  return new Intl.NumberFormat(language === "de" ? "de-DE" : "en-US", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 3,
+  }).format(value);
 }
 
 function parseNullableDecimalInput(value: string): number | null {
@@ -1126,18 +1358,36 @@ function normalizeMaterialNeedStatus(value?: string | null): MaterialNeedStatus 
   if (normalized === "available" || normalized === "verfuegbar" || normalized === "verfügbar") {
     return "available";
   }
+  if (
+    normalized === "completed" ||
+    normalized === "complete" ||
+    normalized === "done" ||
+    normalized === "erledigt" ||
+    normalized === "abgeschlossen"
+  ) {
+    return "completed";
+  }
   return "order";
 }
 
 function materialNeedStatusLabel(status: MaterialNeedStatus, language: Language) {
+  if (status === "completed") return language === "de" ? "Erledigt" : "Completed";
   if (status === "on_the_way") return language === "de" ? "Unterwegs" : "On its way";
   if (status === "available") return language === "de" ? "Verfügbar" : "Available";
   return language === "de" ? "Bestellen" : "Order";
 }
 
 function materialNeedStatusClass(status: MaterialNeedStatus) {
+  if (status === "completed") return "completed";
   if (status === "on_the_way") return "on-the-way";
   if (status === "available") return "available";
+  return "order";
+}
+
+function nextMaterialNeedStatus(status: MaterialNeedStatus): MaterialNeedStatus {
+  if (status === "order") return "on_the_way";
+  if (status === "on_the_way") return "available";
+  if (status === "available") return "order";
   return "order";
 }
 
@@ -1645,6 +1895,7 @@ function buildEmptyProjectTaskFormState(): ProjectTaskFormState {
   return {
     title: "",
     description: "",
+    subtasks_raw: "",
     materials_required: "",
     has_storage_box: false,
     storage_box_number: "",
@@ -1689,6 +1940,7 @@ function buildTaskModalFormState(defaults?: {
   return {
     title: "",
     description: "",
+    subtasks_raw: "",
     materials_required: "",
     has_storage_box: false,
     storage_box_number: "",
@@ -1718,6 +1970,7 @@ function buildTaskEditFormState(task?: Task | null): TaskEditFormState {
     project_id: task?.project_id ?? null,
     title: task?.title ?? "",
     description: task?.description ?? "",
+    subtasks_raw: subtasksToTextareaValue(task?.subtasks),
     materials_required: task?.materials_required ?? "",
     has_storage_box: task?.storage_box_number != null,
     storage_box_number: task?.storage_box_number != null ? String(task.storage_box_number) : "",
@@ -1769,10 +2022,11 @@ function taskEditPayloadFromForm(form: TaskEditFormState, normalizedStartTime: s
       : null;
   const classTemplateId =
     form.class_template_id.trim().length > 0 ? Number(form.class_template_id) : null;
-  const weekStartValue = form.week_start.trim() || (dueDate ? normalizeWeekStartISO(dueDate) : null);
+  const weekStartValue = dueDate ? normalizeWeekStartISO(dueDate) : form.week_start.trim() || null;
   return {
     title: form.title.trim(),
     description: form.description.trim() || null,
+    subtasks: parseTaskSubtasks(form.subtasks_raw),
     materials_required: form.materials_required.trim() || null,
     storage_box_number: storageBoxNumber,
     task_type: form.task_type,
@@ -1798,6 +2052,19 @@ const EMPTY_REPORT_DRAFT: ReportDraft = {
 type ThreadModalState = {
   name: string;
   project_id: string;
+  participant_user_query: string;
+  participant_user_ids: number[];
+  participant_role_query: string;
+  participant_roles: string[];
+};
+
+const EMPTY_THREAD_MODAL_FORM: ThreadModalState = {
+  name: "",
+  project_id: "",
+  participant_user_query: "",
+  participant_user_ids: [],
+  participant_role_query: "",
+  participant_roles: [],
 };
 
 type AvatarUploadResponse = {
@@ -1816,8 +2083,30 @@ type AvatarImageSize = {
   height: number;
 };
 
+const IMAGE_INPUT_ACCEPT = "image/*,.heic,.heif";
+const IMAGE_EXTENSIONS = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp", "tif", "tiff", "heic", "heif"]);
+const HEIC_EXTENSIONS = new Set(["heic", "heif"]);
+
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
+}
+
+function fileExtension(fileName: string): string {
+  const normalized = String(fileName || "").trim().toLowerCase();
+  if (!normalized.includes(".")) return "";
+  return normalized.split(".").pop() ?? "";
+}
+
+function isHeicFile(file: File): boolean {
+  const mime = String(file.type || "").trim().toLowerCase();
+  if (mime === "image/heic" || mime === "image/heif") return true;
+  return HEIC_EXTENSIONS.has(fileExtension(file.name));
+}
+
+function isImageUploadFile(file: File): boolean {
+  const mime = String(file.type || "").trim().toLowerCase();
+  if (mime.startsWith("image/")) return true;
+  return IMAGE_EXTENSIONS.has(fileExtension(file.name));
 }
 
 function loadImage(source: string): Promise<HTMLImageElement> {
@@ -1978,9 +2267,13 @@ export function App() {
 
   const [users, setUsers] = useState<User[]>([]);
   const [assignableUsers, setAssignableUsers] = useState<AssignableUser[]>([]);
+  const [threadParticipantRoles, setThreadParticipantRoles] = useState<string[]>([
+    ...DEFAULT_THREAD_PARTICIPANT_ROLES,
+  ]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [materialNeeds, setMaterialNeeds] = useState<ProjectMaterialNeed[]>([]);
   const [materialNeedUpdating, setMaterialNeedUpdating] = useState<Record<number, boolean>>({});
+  const [projectTrackedMaterials, setProjectTrackedMaterials] = useState<ProjectTrackedMaterial[]>([]);
   const [projectClassTemplates, setProjectClassTemplates] = useState<ProjectClassTemplate[]>([]);
   const [projectClassTemplatesByProjectId, setProjectClassTemplatesByProjectId] = useState<
     Record<number, ProjectClassTemplate[]>
@@ -2028,6 +2321,8 @@ export function App() {
   const [calendarLoading, setCalendarLoading] = useState(false);
 
   const [threads, setThreads] = useState<Thread[]>([]);
+  const [archivedThreads, setArchivedThreads] = useState<Thread[]>([]);
+  const [archivedThreadsModalOpen, setArchivedThreadsModalOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [messageBody, setMessageBody] = useState("");
   const [messageAttachment, setMessageAttachment] = useState<File | null>(null);
@@ -2054,9 +2349,12 @@ export function App() {
   const [profileSettingsForm, setProfileSettingsForm] = useState({
     full_name: "",
     email: "",
+    nickname: "",
     current_password: "",
     new_password: "",
   });
+  const [nicknameCheckState, setNicknameCheckState] = useState<"idle" | "checking" | "available" | "unavailable">("idle");
+  const [nicknameCheckMessage, setNicknameCheckMessage] = useState("");
   const [inviteCreateForm, setInviteCreateForm] = useState({
     email: "",
     full_name: "",
@@ -2088,18 +2386,29 @@ export function App() {
   const [projectTaskForm, setProjectTaskForm] = useState<ProjectTaskFormState>(() =>
     buildEmptyProjectTaskFormState(),
   );
+  const [projectTaskMaterialRows, setProjectTaskMaterialRows] = useState<ReportMaterialRow[]>(() => [
+    createReportMaterialRow("materials"),
+  ]);
   const [taskModalOpen, setTaskModalOpen] = useState(false);
   const [taskModalForm, setTaskModalForm] = useState<TaskModalState>(() =>
     buildTaskModalFormState({ dueDate: planningWeekStart }),
   );
+  const [taskModalMaterialRows, setTaskModalMaterialRows] = useState<ReportMaterialRow[]>(() => [
+    createReportMaterialRow("materials"),
+  ]);
   const [taskEditModalOpen, setTaskEditModalOpen] = useState(false);
   const [taskEditForm, setTaskEditForm] = useState<TaskEditFormState>(() => buildTaskEditFormState());
+  const [taskEditMaterialRows, setTaskEditMaterialRows] = useState<ReportMaterialRow[]>(() => [
+    createReportMaterialRow("materials"),
+  ]);
   const [taskEditFormBase, setTaskEditFormBase] = useState<TaskEditFormState | null>(null);
   const [taskEditExpectedUpdatedAt, setTaskEditExpectedUpdatedAt] = useState<string | null>(null);
   const [projectBackView, setProjectBackView] = useState<MainView | null>(null);
   const [reportProjectId, setReportProjectId] = useState<string>("");
   const [reportDraft, setReportDraft] = useState<ReportDraft>(EMPTY_REPORT_DRAFT);
   const [reportTaskPrefill, setReportTaskPrefill] = useState<TaskReportPrefill | null>(null);
+  const [reportSourceTaskId, setReportSourceTaskId] = useState<number | null>(null);
+  const [reportTaskChecklist, setReportTaskChecklist] = useState<ReportTaskChecklistItem[]>([]);
   const [reportMaterialRows, setReportMaterialRows] = useState<ReportMaterialRow[]>(() => [
     createReportMaterialRow("materials"),
   ]);
@@ -2121,9 +2430,11 @@ export function App() {
   const [avatarStageSize, setAvatarStageSize] = useState(260);
   const [avatarIsDragging, setAvatarIsDragging] = useState(false);
   const [avatarPreviewDataUrl, setAvatarPreviewDataUrl] = useState("");
+  const [avatarSelectedFile, setAvatarSelectedFile] = useState<File | null>(null);
   const [avatarVersionKey, setAvatarVersionKey] = useState<string>(String(Date.now()));
   const [preUserMenuOpen, setPreUserMenuOpen] = useState(false);
   const [adminUserMenuOpenId, setAdminUserMenuOpenId] = useState<number | null>(null);
+  const [threadActionMenuOpen, setThreadActionMenuOpen] = useState(false);
   const avatarObjectUrlRef = useRef<string | null>(null);
   const avatarCropStageRef = useRef<HTMLDivElement | null>(null);
   const preUserMenuRef = useRef<HTMLDivElement | null>(null);
@@ -2136,7 +2447,7 @@ export function App() {
     startOffsetY: number;
   } | null>(null);
   const [threadModalMode, setThreadModalMode] = useState<"create" | "edit" | null>(null);
-  const [threadModalForm, setThreadModalForm] = useState<ThreadModalState>({ name: "", project_id: "" });
+  const [threadModalForm, setThreadModalForm] = useState<ThreadModalState>(EMPTY_THREAD_MODAL_FORM);
   const [threadIconFile, setThreadIconFile] = useState<File | null>(null);
   const [threadIconPreviewUrl, setThreadIconPreviewUrl] = useState<string>("");
   const threadIconObjectUrlRef = useRef<string | null>(null);
@@ -2261,7 +2572,11 @@ export function App() {
     [projects],
   );
   const materialNeedRows = useMemo(
-    () => materialNeeds.filter((entry) => projectsById.has(entry.project_id)),
+    () =>
+      materialNeeds.filter(
+        (entry) =>
+          projectsById.has(entry.project_id) && normalizeMaterialNeedStatus(entry.status) !== "completed",
+      ),
     [materialNeeds, projectsById],
   );
   const activeProjects = useMemo(
@@ -2442,6 +2757,28 @@ export function App() {
       )
       .slice(0, 8);
   }, [assignableUsers, taskEditForm.assignee_ids, taskEditForm.assignee_query]);
+  const threadModalUserSuggestions = useMemo(() => {
+    const query = threadModalForm.participant_user_query.trim().toLowerCase();
+    if (!query) return [];
+    return assignableUsers
+      .filter((assignee) => !threadModalForm.participant_user_ids.includes(assignee.id))
+      .filter(
+        (assignee) =>
+          assignee.full_name.toLowerCase().includes(query) || String(assignee.id).includes(query),
+      )
+      .slice(0, 8);
+  }, [assignableUsers, threadModalForm.participant_user_ids, threadModalForm.participant_user_query]);
+  const threadModalRoleSuggestions = useMemo(() => {
+    const query = threadModalForm.participant_role_query.trim().toLowerCase();
+    return threadParticipantRoles
+      .filter((role) => !threadModalForm.participant_roles.includes(role))
+      .filter((role) => {
+        if (!query) return true;
+        const label = roleOptionLabel(role, language).toLowerCase();
+        return role.toLowerCase().includes(query) || label.includes(query);
+      })
+      .slice(0, 8);
+  }, [threadParticipantRoles, threadModalForm.participant_roles, threadModalForm.participant_role_query, language]);
   const taskModalProjectSuggestions = useMemo(() => {
     const query = taskModalForm.project_query.trim().toLowerCase();
     const selectedId = Number(taskModalForm.project_id);
@@ -2495,6 +2832,47 @@ export function App() {
     () => new Map(users.map((entry) => [entry.id, entry])),
     [users],
   );
+  const compactMenuUserNamesById = useMemo(() => {
+    const entries: Array<{ id: number; name: string }> = [];
+    if (user) {
+      entries.push({ id: user.id, name: preferredDisplayName(user) });
+    }
+    users.forEach((entry) => {
+      entries.push({ id: entry.id, name: preferredDisplayName(entry) });
+    });
+    assignableUsers.forEach((entry) => {
+      entries.push({ id: entry.id, name: preferredDisplayName(entry) });
+    });
+    return buildCompactUserNameMap(entries);
+  }, [assignableUsers, user, users]);
+  const threadModalSelectedUsers = useMemo(
+    () =>
+      threadModalForm.participant_user_ids
+        .map((id) => {
+          const assignable = assignableUsersById.get(id);
+          if (assignable) {
+            const fallbackLabel = assignable.display_name || assignable.full_name || `#${id}`;
+            return {
+              id,
+              label: compactMenuUserNamesById.get(id) || compactNameLabel(fallbackLabel, false) || `#${id}`,
+              archived: false,
+            };
+          }
+          const adminUser = adminUsersById.get(id);
+          if (adminUser) {
+            const fallbackLabel = adminUser.display_name || adminUser.full_name || `#${id}`;
+            return {
+              id,
+              label: compactMenuUserNamesById.get(id) || compactNameLabel(fallbackLabel, false) || `#${id}`,
+              archived: !adminUser.is_active,
+            };
+          }
+          return { id, label: `#${id}`, archived: true };
+        }),
+    [threadModalForm.participant_user_ids, assignableUsersById, adminUsersById, compactMenuUserNamesById],
+  );
+  const threadModalIsRestricted =
+    threadModalForm.participant_user_ids.length > 0 || threadModalForm.participant_roles.length > 0;
   const activeAdminUsers = useMemo(() => users.filter((entry) => entry.is_active), [users]);
   const archivedAdminUsers = useMemo(() => users.filter((entry) => !entry.is_active), [users]);
   const hasMessageText = messageBody.trim().length > 0;
@@ -2559,7 +2937,10 @@ export function App() {
     return views;
   }, []);
 
-  const projectTabs = useMemo<ProjectTab[]>(() => ["overview", "tasks", "hours", "tickets", "files", "finances"], []);
+  const projectTabs = useMemo<ProjectTab[]>(
+    () => ["overview", "tasks", "hours", "materials", "tickets", "files", "finances"],
+    [],
+  );
 
   const fileRows = useMemo(
     () =>
@@ -2696,7 +3077,10 @@ export function App() {
     if (projectPlannedHoursTotal <= 0) return 0;
     return (projectReportedHoursTotal / projectPlannedHoursTotal) * 100;
   }, [projectPlannedHoursTotal, projectReportedHoursTotal]);
-  const userInitials = useMemo(() => initialsFromName(user?.full_name ?? "", "U"), [user?.full_name]);
+  const userInitials = useMemo(
+    () => initialsFromName(user?.display_name ?? user?.full_name ?? "", "U"),
+    [user?.display_name, user?.full_name],
+  );
   const todayIso = useMemo(() => formatDateISOLocal(now), [now]);
   const calendarRangeLabel = useMemo(() => {
     const firstDayIso = calendarWeeks[0]?.week_start ?? calendarWeekStart;
@@ -2756,6 +3140,57 @@ export function App() {
     () => vacationRequests.filter((row) => row.status === "approved"),
     [vacationRequests],
   );
+  const approvedVacationRequestsByUserId = useMemo(() => {
+    const map = new Map<number, VacationRequest[]>();
+    approvedVacationRequests.forEach((row) => {
+      const current = map.get(row.user_id) ?? [];
+      current.push(row);
+      map.set(row.user_id, current);
+    });
+    return map;
+  }, [approvedVacationRequests]);
+  const schoolAbsencesByUserId = useMemo(() => {
+    const map = new Map<number, SchoolAbsence[]>();
+    schoolAbsences.forEach((row) => {
+      const current = map.get(row.user_id) ?? [];
+      current.push(row);
+      map.set(row.user_id, current);
+    });
+    return map;
+  }, [schoolAbsences]);
+  function assigneeAvailabilityHint(userId: number, referenceIsoDate?: string | null) {
+    const targetDate = String(referenceIsoDate ?? "").trim() || todayIso;
+    const vacationRows = approvedVacationRequestsByUserId.get(userId) ?? [];
+    for (const row of vacationRows) {
+      const startIso = row.start_date || "";
+      const endIso = row.end_date || row.start_date || "";
+      if (!isIsoDateWithinRange(targetDate, startIso, endIso)) continue;
+      const startLabel = formatShortIsoDate(startIso, language);
+      const endLabel = formatShortIsoDate(endIso, language);
+      return language === "de"
+        ? `Abwesend von ${startLabel} bis ${endLabel} (Urlaub)`
+        : `Absent from ${startLabel} until ${endLabel} (Vacation)`;
+    }
+    const schoolRows = schoolAbsencesByUserId.get(userId) ?? [];
+    for (const row of schoolRows) {
+      const startIso = row.start_date || "";
+      const endIso = row.recurrence_until || row.end_date || row.start_date || "";
+      if (!isIsoDateWithinRange(targetDate, startIso, endIso)) continue;
+      if (
+        row.recurrence_weekday !== null &&
+        row.recurrence_weekday !== undefined &&
+        row.recurrence_weekday !== isoWeekdayMondayFirst(targetDate)
+      ) {
+        continue;
+      }
+      const startLabel = formatShortIsoDate(startIso, language);
+      const endLabel = formatShortIsoDate(endIso, language);
+      return language === "de"
+        ? `Abwesend von ${startLabel} bis ${endLabel} (Schule)`
+        : `Absent from ${startLabel} until ${endLabel} (School)`;
+    }
+    return "";
+  }
   const sidebarNowLabel = useMemo(
     () =>
       now.toLocaleString(language === "de" ? "de-DE" : "en-US", {
@@ -2871,6 +3306,34 @@ export function App() {
   }, [adminUserMenuOpenId]);
 
   useEffect(() => {
+    if (!threadActionMenuOpen) return;
+    const onPointerOutside = (event: MouseEvent | TouchEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      if (target.closest(".thread-actions-menu-wrap")) return;
+      setThreadActionMenuOpen(false);
+    };
+    const onEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setThreadActionMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onPointerOutside);
+    document.addEventListener("touchstart", onPointerOutside);
+    document.addEventListener("keydown", onEscape);
+    return () => {
+      document.removeEventListener("mousedown", onPointerOutside);
+      document.removeEventListener("touchstart", onPointerOutside);
+      document.removeEventListener("keydown", onEscape);
+    };
+  }, [threadActionMenuOpen]);
+
+  useEffect(() => {
+    if (!threadActionMenuOpen) return;
+    if (!activeThread || !activeThread.can_edit || mainView !== "messages") {
+      setThreadActionMenuOpen(false);
+    }
+  }, [threadActionMenuOpen, activeThread, mainView]);
+
+  useEffect(() => {
     if (mainView !== "time" && timeInfoOpen) setTimeInfoOpen(false);
   }, [mainView, timeInfoOpen]);
 
@@ -2883,10 +3346,13 @@ export function App() {
     setProfileSettingsForm({
       full_name: user.full_name ?? "",
       email: user.email ?? "",
+      nickname: user.nickname ?? "",
       current_password: "",
       new_password: "",
     });
-  }, [user?.id, user?.full_name, user?.email]);
+    setNicknameCheckState("idle");
+    setNicknameCheckMessage("");
+  }, [user?.id, user?.full_name, user?.email, user?.nickname]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 1000);
@@ -2987,6 +3453,7 @@ export function App() {
       void loadProjectFolders(activeProjectId);
     }
     if (projectTab === "finances" || projectTab === "hours") void loadProjectFinance(activeProjectId);
+    if (projectTab === "materials") void loadProjectTrackedMaterials(activeProjectId);
   }, [mainView, projectTab, activeProjectId, token, user, taskView]);
 
   useEffect(() => {
@@ -3040,16 +3507,26 @@ export function App() {
     if (workDoneInput) workDoneInput.value = reportTaskPrefill.work_done;
     if (incidentsInput) incidentsInput.value = reportTaskPrefill.incidents;
     setReportMaterialRows(parseReportMaterialRows(reportTaskPrefill.materials, "materials"));
+    setReportSourceTaskId(reportTaskPrefill.task_id);
+    setReportTaskChecklist(buildReportTaskChecklist(reportTaskPrefill.subtasks));
     setReportTaskPrefill(null);
   }, [mainView, reportTaskPrefill]);
 
   useEffect(() => {
+    if (mainView === "construction") return;
+    setReportSourceTaskId(null);
+    setReportTaskChecklist([]);
+  }, [mainView]);
+
+  useEffect(() => {
     setProjectTaskForm(buildEmptyProjectTaskFormState());
+    setProjectTaskMaterialRows([createReportMaterialRow("materials")]);
     setProjectOverviewDetails(null);
     setProjectOverviewOpenTasks([]);
     setProjectWeather(null);
     setProjectWeatherLoading(false);
     setProjectFinance(null);
+    setProjectTrackedMaterials([]);
     setProjectFinanceEditing(false);
     setProjectFinanceForm({ ...EMPTY_PROJECT_FINANCE_FORM });
     setProjectNoteEditing(false);
@@ -3264,6 +3741,21 @@ export function App() {
       } catch {
         setAssignableUsers([]);
       }
+      try {
+        const roles = await apiFetch<string[]>("/threads/participant-roles", token);
+        const normalizedRoles = Array.from(
+          new Set(
+            roles
+              .map((entry) => String(entry || "").trim().toLowerCase())
+              .filter((entry) => entry.length > 0),
+          ),
+        );
+        setThreadParticipantRoles(
+          normalizedRoles.length > 0 ? normalizedRoles : [...DEFAULT_THREAD_PARTICIPANT_ROLES],
+        );
+      } catch {
+        setThreadParticipantRoles([...DEFAULT_THREAD_PARTICIPANT_ROLES]);
+      }
       if (canManageProjectImport) {
         try {
           const settingsRow = await apiFetch<WeatherSettings>("/admin/settings/weather", token);
@@ -3291,6 +3783,7 @@ export function App() {
         if (projectTab === "overview") await loadProjectOverview(activeProjectId);
         if (projectTab === "tasks") await loadTasks(taskView, activeProjectId);
         if (projectTab === "finances" || projectTab === "hours") await loadProjectFinance(activeProjectId);
+        if (projectTab === "materials") await loadProjectTrackedMaterials(activeProjectId);
       }
       if (mainView === "materials") {
         await loadMaterialNeeds();
@@ -3407,6 +3900,16 @@ export function App() {
     }
   }
 
+  async function loadProjectTrackedMaterials(projectId: number) {
+    try {
+      const rows = await apiFetch<ProjectTrackedMaterial[]>(`/projects/${projectId}/materials`, token);
+      setProjectTrackedMaterials(rows);
+    } catch (err: any) {
+      setProjectTrackedMaterials([]);
+      setError(err.message ?? "Failed to load project materials");
+    }
+  }
+
   async function saveWeatherSettings(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!canManageProjectImport) return;
@@ -3456,6 +3959,10 @@ export function App() {
         method: "POST",
         body: JSON.stringify({ dry_run: dryRun }),
       });
+      if (!result.ok) {
+        setError(result.detail || (language === "de" ? "Update fehlgeschlagen" : "Update failed"));
+        return;
+      }
       setNotice(result.detail || (language === "de" ? "Update ausgeführt" : "Update completed"));
       await loadUpdateStatus(false);
     } catch (err: any) {
@@ -3549,6 +4056,12 @@ export function App() {
     }
   }
 
+  function isThreadArchived(thread: Thread | null | undefined) {
+    if (!thread) return false;
+    if (thread.is_archived) return true;
+    return String(thread.status || "").trim().toLowerCase() === "archived";
+  }
+
   async function loadThreads() {
     try {
       const data = await apiFetch<Thread[]>("/threads", token);
@@ -3560,6 +4073,16 @@ export function App() {
     } catch (err: any) {
       if (err?.status === 403 && mainView !== "messages") return;
       setError(err.message ?? "Failed to load threads");
+    }
+  }
+
+  async function loadArchivedThreads() {
+    try {
+      const data = await apiFetch<Thread[]>("/threads?include_archived=true", token);
+      setArchivedThreads(data.filter((thread) => isThreadArchived(thread)));
+    } catch (err: any) {
+      setArchivedThreads([]);
+      setError(err.message ?? "Failed to load archived threads");
     }
   }
 
@@ -3815,11 +4338,26 @@ export function App() {
     return getTaskAssigneeIds(task).includes(user.id);
   }
 
+  function menuUserNameById(userId: number, fallbackName?: string | null): string {
+    const mapped = compactMenuUserNamesById.get(userId);
+    if (mapped) return mapped;
+    const fallback = compactNameLabel(String(fallbackName ?? ""), false);
+    return fallback || `#${userId}`;
+  }
+
   function getTaskAssigneeLabel(task: Task): string {
     const ids = getTaskAssigneeIds(task);
     if (ids.length === 0) return "-";
     return ids
-      .map((id) => assignableUsers.find((userEntry) => userEntry.id === id)?.full_name ?? `#${id}`)
+      .map((id) =>
+        menuUserNameById(
+          id,
+          assignableUsersById.get(id)?.display_name ??
+            assignableUsersById.get(id)?.full_name ??
+            adminUsersById.get(id)?.display_name ??
+            adminUsersById.get(id)?.full_name,
+        ),
+      )
       .join(", ");
   }
 
@@ -3855,6 +4393,7 @@ export function App() {
     }
 
     const summaryBase = project ? `${project.project_number} - ${task.title}` : task.title;
+    const materialsSummary = taskMaterialsDisplay(task.materials_required, "en");
     const lines: string[] = [
       `Task ID: #${task.id}`,
       `Status: ${task.status}`,
@@ -3863,7 +4402,7 @@ export function App() {
       `Due: ${task.due_date ?? "-"}`,
       startTime ? `Start: ${startTime}` : "",
       task.description ? `Info: ${task.description}` : "",
-      task.materials_required ? `Materials: ${task.materials_required}` : "",
+      materialsSummary ? `Materials: ${materialsSummary}` : "",
       task.storage_box_number ? `Storage box: ${task.storage_box_number}` : "",
       `Assignees: ${getTaskAssigneeLabel(task)}`,
     ].filter((line) => line.length > 0);
@@ -3907,10 +4446,12 @@ export function App() {
 
   function userNameById(userId: number): string {
     if (userId === user.id) return language === "de" ? "Ich" : "Me";
-    return (
-      assignableUsersById.get(userId)?.full_name ??
-      adminUsersById.get(userId)?.full_name ??
-      `#${userId}`
+    return menuUserNameById(
+      userId,
+      assignableUsersById.get(userId)?.display_name ??
+        assignableUsersById.get(userId)?.full_name ??
+        adminUsersById.get(userId)?.display_name ??
+        adminUsersById.get(userId)?.full_name,
     );
   }
 
@@ -3937,14 +4478,14 @@ export function App() {
     const fallbackProjectId = defaults?.projectId ?? activeProjectId ?? projects[0]?.id ?? null;
     const fallbackDueDate = defaults?.dueDate ?? planningWeekStart;
     const fallbackProject = projects.find((project) => project.id === fallbackProjectId) ?? null;
-    setTaskModalForm(
-      buildTaskModalFormState({
-        projectId: fallbackProjectId,
-        dueDate: fallbackDueDate,
-        projectQuery: fallbackProject ? projectSearchLabel(fallbackProject) : "",
-        taskType: defaults?.taskType,
-      }),
-    );
+    const nextForm = buildTaskModalFormState({
+      projectId: fallbackProjectId,
+      dueDate: fallbackDueDate,
+      projectQuery: fallbackProject ? projectSearchLabel(fallbackProject) : "",
+      taskType: defaults?.taskType,
+    });
+    setTaskModalForm(nextForm);
+    setTaskModalMaterialRows(parseReportMaterialRows(nextForm.materials_required, "materials"));
     setTaskModalOpen(true);
   }
 
@@ -3956,15 +4497,47 @@ export function App() {
     setTaskModalForm((current) => ({ ...current, [field]: value }));
   }
 
+  function updateTaskModalMaterialRow(
+    index: number,
+    field: keyof Omit<ReportMaterialRow, "id">,
+    value: string,
+  ) {
+    setTaskModalMaterialRows((current) => {
+      const next = [...current];
+      next[index] = { ...next[index], [field]: value };
+      setTaskModalForm((form) => ({ ...form, materials_required: serializeTaskMaterialRows(next) }));
+      return next;
+    });
+  }
+
+  function addTaskModalMaterialRow() {
+    setTaskModalMaterialRows((current) => {
+      const next = [...current, createReportMaterialRow("materials")];
+      setTaskModalForm((form) => ({ ...form, materials_required: serializeTaskMaterialRows(next) }));
+      return next;
+    });
+  }
+
+  function removeTaskModalMaterialRow(index: number) {
+    setTaskModalMaterialRows((current) => {
+      const next =
+        current.length <= 1 ? [createReportMaterialRow("materials")] : current.filter((_, rowIndex) => rowIndex !== index);
+      setTaskModalForm((form) => ({ ...form, materials_required: serializeTaskMaterialRows(next) }));
+      return next;
+    });
+  }
+
   function selectTaskModalClassTemplate(classTemplateId: string) {
     const normalized = classTemplateId.trim();
     const selected = taskModalProjectClassTemplates.find((entry) => String(entry.id) === normalized) ?? null;
     const importedMaterials = selected ? classTemplateMaterialsText(selected, language) : "";
+    const importedRows = parseReportMaterialRows(importedMaterials, "materials");
     setTaskModalForm((current) => ({
       ...current,
       class_template_id: normalized,
       materials_required: selected ? importedMaterials : current.materials_required,
     }));
+    if (selected) setTaskModalMaterialRows(importedRows);
   }
 
   function addTaskModalAssignee(assigneeId: number) {
@@ -3997,6 +4570,7 @@ export function App() {
     const nextForm = buildTaskEditFormState(task);
     setTaskEditForm(nextForm);
     setTaskEditFormBase(nextForm);
+    setTaskEditMaterialRows(parseReportMaterialRows(nextForm.materials_required, "materials"));
     setTaskEditExpectedUpdatedAt(task.updated_at ?? null);
     setTaskEditModalOpen(true);
   }
@@ -4006,21 +4580,54 @@ export function App() {
     setTaskEditFormBase(null);
     setTaskEditExpectedUpdatedAt(null);
     setTaskEditForm(buildTaskEditFormState());
+    setTaskEditMaterialRows([createReportMaterialRow("materials")]);
   }
 
   function updateTaskEditField<K extends keyof TaskEditFormState>(field: K, value: TaskEditFormState[K]) {
     setTaskEditForm((current) => ({ ...current, [field]: value }));
   }
 
+  function updateTaskEditMaterialRow(
+    index: number,
+    field: keyof Omit<ReportMaterialRow, "id">,
+    value: string,
+  ) {
+    setTaskEditMaterialRows((current) => {
+      const next = [...current];
+      next[index] = { ...next[index], [field]: value };
+      setTaskEditForm((form) => ({ ...form, materials_required: serializeTaskMaterialRows(next) }));
+      return next;
+    });
+  }
+
+  function addTaskEditMaterialRow() {
+    setTaskEditMaterialRows((current) => {
+      const next = [...current, createReportMaterialRow("materials")];
+      setTaskEditForm((form) => ({ ...form, materials_required: serializeTaskMaterialRows(next) }));
+      return next;
+    });
+  }
+
+  function removeTaskEditMaterialRow(index: number) {
+    setTaskEditMaterialRows((current) => {
+      const next =
+        current.length <= 1 ? [createReportMaterialRow("materials")] : current.filter((_, rowIndex) => rowIndex !== index);
+      setTaskEditForm((form) => ({ ...form, materials_required: serializeTaskMaterialRows(next) }));
+      return next;
+    });
+  }
+
   function selectTaskEditClassTemplate(classTemplateId: string) {
     const normalized = classTemplateId.trim();
     const selected = taskEditProjectClassTemplates.find((entry) => String(entry.id) === normalized) ?? null;
     const importedMaterials = selected ? classTemplateMaterialsText(selected, language) : "";
+    const importedRows = parseReportMaterialRows(importedMaterials, "materials");
     setTaskEditForm((current) => ({
       ...current,
       class_template_id: normalized,
       materials_required: selected ? importedMaterials : current.materials_required,
     }));
+    if (selected) setTaskEditMaterialRows(importedRows);
   }
 
   function addTaskEditAssignee(assigneeId: number) {
@@ -4147,15 +4754,47 @@ export function App() {
     setProjectTaskForm((current) => ({ ...current, [field]: value }));
   }
 
+  function updateProjectTaskMaterialRow(
+    index: number,
+    field: keyof Omit<ReportMaterialRow, "id">,
+    value: string,
+  ) {
+    setProjectTaskMaterialRows((current) => {
+      const next = [...current];
+      next[index] = { ...next[index], [field]: value };
+      setProjectTaskForm((form) => ({ ...form, materials_required: serializeTaskMaterialRows(next) }));
+      return next;
+    });
+  }
+
+  function addProjectTaskMaterialRow() {
+    setProjectTaskMaterialRows((current) => {
+      const next = [...current, createReportMaterialRow("materials")];
+      setProjectTaskForm((form) => ({ ...form, materials_required: serializeTaskMaterialRows(next) }));
+      return next;
+    });
+  }
+
+  function removeProjectTaskMaterialRow(index: number) {
+    setProjectTaskMaterialRows((current) => {
+      const next =
+        current.length <= 1 ? [createReportMaterialRow("materials")] : current.filter((_, rowIndex) => rowIndex !== index);
+      setProjectTaskForm((form) => ({ ...form, materials_required: serializeTaskMaterialRows(next) }));
+      return next;
+    });
+  }
+
   function selectProjectTaskClassTemplate(classTemplateId: string) {
     const normalized = classTemplateId.trim();
     const selected = activeProjectClassTemplates.find((entry) => String(entry.id) === normalized) ?? null;
     const importedMaterials = selected ? classTemplateMaterialsText(selected, language) : "";
+    const importedRows = parseReportMaterialRows(importedMaterials, "materials");
     setProjectTaskForm((current) => ({
       ...current,
       class_template_id: normalized,
       materials_required: selected ? importedMaterials : current.materials_required,
     }));
+    if (selected) setProjectTaskMaterialRows(importedRows);
   }
 
   function addProjectTaskAssignee(assigneeId: number) {
@@ -4497,6 +5136,8 @@ export function App() {
     if (projectTaskForm.start_time.trim().length > 0 && !startTime) return;
     const classTemplateId =
       projectTaskForm.class_template_id.trim().length > 0 ? Number(projectTaskForm.class_template_id) : null;
+    const materialsRequired = serializeTaskMaterialRows(projectTaskMaterialRows).trim() || null;
+    const subtasks = parseTaskSubtasks(projectTaskForm.subtasks_raw);
     try {
       await apiFetch("/tasks", token, {
         method: "POST",
@@ -4504,7 +5145,8 @@ export function App() {
           project_id: activeProjectId,
           title: projectTaskForm.title.trim(),
           description: projectTaskForm.description.trim() || null,
-          materials_required: projectTaskForm.materials_required.trim() || null,
+          subtasks,
+          materials_required: materialsRequired,
           storage_box_number: storageBoxNumber,
           task_type: projectTaskForm.task_type,
           class_template_id: classTemplateId,
@@ -4516,6 +5158,7 @@ export function App() {
         }),
       });
       setProjectTaskForm(buildEmptyProjectTaskFormState());
+      setProjectTaskMaterialRows([createReportMaterialRow("materials")]);
       await loadTasks(taskView, activeProjectId);
       await loadProjectOverview(activeProjectId);
       if (mainView === "planning") {
@@ -4554,6 +5197,8 @@ export function App() {
     const targetWeekStart = normalizeWeekStartISO(dueDate);
     const classTemplateId =
       taskModalForm.class_template_id.trim().length > 0 ? Number(taskModalForm.class_template_id) : null;
+    const materialsRequired = serializeTaskMaterialRows(taskModalMaterialRows).trim() || null;
+    const subtasks = parseTaskSubtasks(taskModalForm.subtasks_raw);
 
     let projectId = Number(taskModalForm.project_id);
     try {
@@ -4600,7 +5245,8 @@ export function App() {
             project_id: projectId,
             title: taskModalForm.title.trim(),
             description: taskModalForm.description.trim() || null,
-            materials_required: taskModalForm.materials_required.trim() || null,
+            subtasks,
+            materials_required: materialsRequired,
             storage_box_number: storageBoxNumber,
             task_type: taskModalForm.task_type,
             class_template_id: classTemplateId,
@@ -4653,13 +5299,18 @@ export function App() {
       taskEditFormBase && taskEditFormBase.start_time.trim().length > 0
         ? normalizeTimeHHMM(taskEditFormBase.start_time)
         : null;
-    const nextPayload = taskEditPayloadFromForm(taskEditForm, startTime);
+    const nextMaterialsRequired = serializeTaskMaterialRows(taskEditMaterialRows);
+    const nextPayload = taskEditPayloadFromForm(
+      { ...taskEditForm, materials_required: nextMaterialsRequired },
+      startTime,
+    );
     const basePayload = taskEditPayloadFromForm(taskEditFormBase ?? taskEditForm, baseStartTime);
     const patchPayload: Record<string, unknown> = {};
     (
       [
         "title",
         "description",
+        "subtasks",
         "materials_required",
         "storage_box_number",
         "task_type",
@@ -4673,6 +5324,12 @@ export function App() {
     ).forEach((key) => {
       if (key === "assignee_ids") {
         if (!sameNumberSet(nextPayload.assignee_ids, basePayload.assignee_ids)) {
+          patchPayload[key] = nextPayload[key];
+        }
+        return;
+      }
+      if (key === "subtasks") {
+        if (!sameStringList(nextPayload.subtasks, basePayload.subtasks)) {
           patchPayload[key] = nextPayload[key];
         }
         return;
@@ -4751,6 +5408,7 @@ export function App() {
           ? `${language === "de" ? "Lagerbox" : "Storage box"}: ${task.storage_box_number}`
           : "",
       materials: task.materials_required ?? "",
+      subtasks: task.subtasks ?? [],
     });
     setOverviewShortcutBackVisible(false);
     setConstructionBackView(sourceView);
@@ -4963,14 +5621,30 @@ export function App() {
   }
 
   function openCreateThreadModal() {
-    setThreadModalForm({ name: "", project_id: "" });
+    setThreadModalForm(EMPTY_THREAD_MODAL_FORM);
     setThreadIconFile(null);
     setThreadIconPreviewUrl("");
     setThreadModalMode("create");
   }
 
   function openEditThreadModal(thread: Thread) {
-    setThreadModalForm({ name: thread.name ?? "", project_id: thread.project_id ? String(thread.project_id) : "" });
+    setThreadActionMenuOpen(false);
+    setThreadModalForm({
+      name: thread.name ?? "",
+      project_id: thread.project_id ? String(thread.project_id) : "",
+      participant_user_query: "",
+      participant_user_ids: Array.from(
+        new Set((thread.participant_user_ids ?? []).map((entry) => Number(entry)).filter((entry) => entry > 0)),
+      ),
+      participant_role_query: "",
+      participant_roles: Array.from(
+        new Set(
+          (thread.participant_roles ?? [])
+            .map((entry) => String(entry || "").trim().toLowerCase())
+            .filter((entry) => entry.length > 0),
+        ),
+      ),
+    });
     setThreadIconFile(null);
     setThreadIconPreviewUrl("");
     setThreadModalMode("edit");
@@ -4978,13 +5652,23 @@ export function App() {
 
   function closeThreadModal() {
     setThreadModalMode(null);
-    setThreadModalForm({ name: "", project_id: "" });
+    setThreadModalForm(EMPTY_THREAD_MODAL_FORM);
     setThreadIconFile(null);
     setThreadIconPreviewUrl("");
     if (threadIconObjectUrlRef.current) {
       URL.revokeObjectURL(threadIconObjectUrlRef.current);
       threadIconObjectUrlRef.current = null;
     }
+  }
+
+  async function openArchivedThreadsModal() {
+    setArchivedThreadsModalOpen(true);
+    await loadArchivedThreads();
+  }
+
+  function closeArchivedThreadsModal() {
+    setArchivedThreadsModalOpen(false);
+    setArchivedThreads([]);
   }
 
   function onThreadIconFileChange(event: ChangeEvent<HTMLInputElement>) {
@@ -4994,7 +5678,7 @@ export function App() {
       setThreadIconPreviewUrl("");
       return;
     }
-    if (!file.type.startsWith("image/")) {
+    if (!isImageUploadFile(file)) {
       setError(language === "de" ? "Bitte eine Bilddatei wählen." : "Please select an image file.");
       return;
     }
@@ -5005,6 +5689,60 @@ export function App() {
     threadIconObjectUrlRef.current = objectUrl;
     setThreadIconFile(file);
     setThreadIconPreviewUrl(objectUrl);
+  }
+
+  function addThreadModalUser(userId: number) {
+    setThreadModalForm((current) => {
+      if (current.participant_user_ids.includes(userId)) {
+        return { ...current, participant_user_query: "" };
+      }
+      return {
+        ...current,
+        participant_user_ids: [...current.participant_user_ids, userId],
+        participant_user_query: "",
+      };
+    });
+  }
+
+  function removeThreadModalUser(userId: number) {
+    setThreadModalForm((current) => ({
+      ...current,
+      participant_user_ids: current.participant_user_ids.filter((id) => id !== userId),
+    }));
+  }
+
+  function addFirstMatchingThreadModalUser() {
+    const first = threadModalUserSuggestions[0];
+    if (!first) return;
+    addThreadModalUser(first.id);
+  }
+
+  function addThreadModalRole(role: string) {
+    const normalizedRole = String(role || "").trim().toLowerCase();
+    if (!normalizedRole) return;
+    setThreadModalForm((current) => {
+      if (current.participant_roles.includes(normalizedRole)) {
+        return { ...current, participant_role_query: "" };
+      }
+      return {
+        ...current,
+        participant_roles: [...current.participant_roles, normalizedRole],
+        participant_role_query: "",
+      };
+    });
+  }
+
+  function removeThreadModalRole(role: string) {
+    setThreadModalForm((current) => ({
+      ...current,
+      participant_roles: current.participant_roles.filter((entry) => entry !== role),
+    }));
+  }
+
+  function addFirstMatchingThreadModalRole() {
+    const first = threadModalRoleSuggestions[0];
+    if (!first) return;
+    addThreadModalRole(first);
   }
 
   async function submitThreadModal(event: FormEvent<HTMLFormElement>) {
@@ -5025,13 +5763,23 @@ export function App() {
       if (threadModalMode === "create") {
         const created = await apiFetch<Thread>("/threads", token, {
           method: "POST",
-          body: JSON.stringify({ name, project_id: selectedProjectId }),
+          body: JSON.stringify({
+            name,
+            project_id: selectedProjectId,
+            participant_user_ids: threadModalForm.participant_user_ids,
+            participant_roles: threadModalForm.participant_roles,
+          }),
         });
         targetThreadId = created.id;
       } else if (threadModalMode === "edit" && activeThreadId) {
         const updated = await apiFetch<Thread>(`/threads/${activeThreadId}`, token, {
           method: "PATCH",
-          body: JSON.stringify({ name, project_id: selectedProjectId }),
+          body: JSON.stringify({
+            name,
+            project_id: selectedProjectId,
+            participant_user_ids: threadModalForm.participant_user_ids,
+            participant_roles: threadModalForm.participant_roles,
+          }),
         });
         targetThreadId = updated.id;
       }
@@ -5062,6 +5810,60 @@ export function App() {
       );
     } catch (err: any) {
       setError(err.message ?? (threadModalMode === "edit" ? "Failed to update thread" : "Failed to create thread"));
+    }
+  }
+
+  async function archiveActiveThread() {
+    if (!activeThread || !activeThread.can_edit) return;
+    const confirmed = window.confirm(
+      language === "de"
+        ? "Diesen Chat archivieren? Er kann später wiederhergestellt werden."
+        : "Archive this chat? It can be restored later.",
+    );
+    if (!confirmed) return;
+    try {
+      await apiFetch(`/threads/${activeThread.id}/archive`, token, { method: "POST" });
+      await loadThreads();
+      setNotice(language === "de" ? "Chat archiviert" : "Chat archived");
+    } catch (err: any) {
+      setError(err.message ?? "Failed to archive thread");
+    }
+  }
+
+  async function restoreArchivedThread(threadId: number) {
+    try {
+      await apiFetch(`/threads/${threadId}/restore`, token, { method: "POST" });
+      await loadArchivedThreads();
+      await loadThreads();
+      setActiveThreadId(threadId);
+      await loadMessages(threadId);
+      setNotice(language === "de" ? "Chat wiederhergestellt" : "Chat restored");
+    } catch (err: any) {
+      setError(err.message ?? "Failed to restore thread");
+    }
+  }
+
+  async function deleteThread(thread: Thread) {
+    if (!thread.can_edit) return;
+    const confirmed = window.confirm(
+      language === "de"
+        ? "Diesen Chat dauerhaft löschen? Verlauf und Anhänge bleiben nicht erhalten."
+        : "Delete this chat permanently? History and attachments cannot be restored.",
+    );
+    if (!confirmed) return;
+    try {
+      await apiFetch(`/threads/${thread.id}`, token, { method: "DELETE" });
+      if (activeThreadId === thread.id) {
+        setActiveThreadId(null);
+        setMessages([]);
+      }
+      await loadThreads();
+      if (archivedThreadsModalOpen) {
+        await loadArchivedThreads();
+      }
+      setNotice(language === "de" ? "Chat gelöscht" : "Chat deleted");
+    } catch (err: any) {
+      setError(err.message ?? "Failed to delete thread");
     }
   }
 
@@ -5184,6 +5986,7 @@ export function App() {
     setAvatarIsDragging(false);
     avatarDragRef.current = null;
     setAvatarPreviewDataUrl("");
+    setAvatarSelectedFile(null);
     setAvatarSourceUrl("");
     if (avatarObjectUrlRef.current) {
       URL.revokeObjectURL(avatarObjectUrlRef.current);
@@ -5194,7 +5997,7 @@ export function App() {
   function onAvatarFileChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) return;
-    if (!file.type.startsWith("image/")) {
+    if (!isImageUploadFile(file)) {
       setError(language === "de" ? "Bitte eine Bilddatei wählen." : "Please select an image file.");
       return;
     }
@@ -5203,6 +6006,8 @@ export function App() {
     }
     const objectUrl = URL.createObjectURL(file);
     avatarObjectUrlRef.current = objectUrl;
+    setAvatarSelectedFile(file);
+    setAvatarPreviewDataUrl("");
     setAvatarSourceUrl(objectUrl);
     setAvatarZoom(1);
     setAvatarOffsetX(0);
@@ -5249,15 +6054,19 @@ export function App() {
   }
 
   async function saveAvatar() {
-    if (!avatarPreviewDataUrl) {
+    if (!avatarPreviewDataUrl && !avatarSelectedFile) {
       setError(language === "de" ? "Bitte zuerst ein Bild auswählen." : "Please choose an image first.");
       return;
     }
     try {
-      const previewResponse = await fetch(avatarPreviewDataUrl);
-      const blob = await previewResponse.blob();
       const form = new FormData();
-      form.set("file", new File([blob], "avatar.jpg", { type: "image/jpeg" }));
+      if (avatarPreviewDataUrl) {
+        const previewResponse = await fetch(avatarPreviewDataUrl);
+        const blob = await previewResponse.blob();
+        form.set("file", new File([blob], "avatar.jpg", { type: "image/jpeg" }));
+      } else if (avatarSelectedFile) {
+        form.set("file", avatarSelectedFile);
+      }
       const result = await apiFetch<AvatarUploadResponse>("/users/me/avatar", token, {
         method: "POST",
         body: form,
@@ -5340,6 +6149,14 @@ export function App() {
     setReportProjectId(nextProjectId);
     const selected = projects.find((project) => String(project.id) === nextProjectId) ?? null;
     setReportDraft(reportDraftFromProject(selected));
+    setReportSourceTaskId(null);
+    setReportTaskChecklist([]);
+  }
+
+  function toggleReportTaskChecklistItem(itemId: string, checked: boolean) {
+    setReportTaskChecklist((current) =>
+      current.map((entry) => (entry.id === itemId ? { ...entry, done: checked } : entry)),
+    );
   }
 
   function updateReportDraftField(field: keyof ReportDraft, value: string) {
@@ -5395,7 +6212,7 @@ export function App() {
   function onReportImagesChange(event: ChangeEvent<HTMLInputElement>) {
     const selectedFiles = event.target.files ? Array.from(event.target.files) : [];
     if (selectedFiles.length === 0) return;
-    const invalidFile = selectedFiles.find((file) => file.type && !file.type.startsWith("image/"));
+    const invalidFile = selectedFiles.find((file) => !isImageUploadFile(file));
     if (invalidFile) {
       setError(language === "de" ? "Bitte nur Bilddateien wählen." : "Please select image files only.");
       event.target.value = "";
@@ -5504,6 +6321,7 @@ export function App() {
       return { description: description || "-", reason: reason || null };
     });
     const officeMaterialNeed = serializeOfficeMaterialRows(reportOfficeMaterialRows);
+    const completedSubtasks = reportTaskChecklist.filter((entry) => entry.done).map((entry) => entry.label);
 
     const payload = {
       customer: reportDraft.customer.trim() || null,
@@ -5521,6 +6339,8 @@ export function App() {
       office_material_need: officeMaterialNeed,
       office_rework: String(form.get("office_rework") || ""),
       office_next_steps: String(form.get("office_next_steps") || ""),
+      source_task_id: targetProjectId && reportSourceTaskId ? reportSourceTaskId : null,
+      completed_subtasks: targetProjectId && reportSourceTaskId ? completedSubtasks : [],
     };
 
     const multipart = new FormData();
@@ -5562,6 +6382,8 @@ export function App() {
       setReportWorkers([{ name: "", start_time: "", end_time: "" }]);
       setReportMaterialRows([createReportMaterialRow("materials")]);
       setReportOfficeMaterialRows([createReportMaterialRow("office_materials")]);
+      setReportSourceTaskId(null);
+      setReportTaskChecklist([]);
       clearReportImages();
 
       let finalProcessingStatus: ConstructionReportProcessingResponse | null = null;
@@ -5605,7 +6427,22 @@ export function App() {
             : "Construction report saved. PDF is processing in the background.",
         );
       } else {
-        setNotice(language === "de" ? "Baustellenbericht gespeichert" : "Construction report saved");
+        const followUpTaskId = Number(createdReport.follow_up_task_id ?? 0);
+        if (followUpTaskId > 0) {
+          setNotice(
+            language === "de"
+              ? `Baustellenbericht gespeichert. Folgeaufgabe #${followUpTaskId} mit offenen Unteraufgaben erstellt.`
+              : `Construction report saved. Follow-up task #${followUpTaskId} created for open sub-tasks.`,
+          );
+        } else if (createdReport.report_number && targetProjectId) {
+          setNotice(
+            language === "de"
+              ? `Baustellenbericht #${createdReport.report_number} gespeichert`
+              : `Construction report #${createdReport.report_number} saved`,
+          );
+        } else {
+          setNotice(language === "de" ? "Baustellenbericht gespeichert" : "Construction report saved");
+        }
       }
 
       await loadConstructionReportFiles(targetProjectId);
@@ -5679,9 +6516,53 @@ export function App() {
     event.preventDefault();
     const fullName = profileSettingsForm.full_name.trim();
     const emailValue = profileSettingsForm.email.trim();
+    const nicknameValue = profileSettingsForm.nickname.trim();
+    const currentNicknameValue = String(user?.nickname ?? "").trim();
     const payload: Record<string, string> = {};
     if (fullName) payload.full_name = fullName;
     if (emailValue) payload.email = emailValue;
+    if (isAdmin) {
+      if (!nicknameValue) {
+        payload.nickname = "";
+        setNicknameCheckState("idle");
+        setNicknameCheckMessage("");
+      } else if (nicknameValue.toLowerCase() === currentNicknameValue.toLowerCase()) {
+        payload.nickname = nicknameValue;
+        setNicknameCheckState("idle");
+        setNicknameCheckMessage("");
+      } else {
+        setNicknameCheckState("checking");
+        setNicknameCheckMessage(language === "de" ? "Prüfe Verfügbarkeit..." : "Checking availability...");
+        try {
+          const availability = await apiFetch<NicknameAvailability>(
+            `/auth/nickname-availability?nickname=${encodeURIComponent(nicknameValue)}`,
+            token,
+          );
+          if (!availability.available) {
+            setNicknameCheckState("unavailable");
+            setNicknameCheckMessage(
+              language === "de"
+                ? "Nickname ist nicht verfügbar."
+                : "Nickname is not available.",
+            );
+            setError(
+              language === "de"
+                ? "Nickname ist nicht verfügbar. Bitte einen anderen wählen."
+                : "Nickname is not available. Please choose another one.",
+            );
+            return;
+          }
+          setNicknameCheckState("available");
+          setNicknameCheckMessage(language === "de" ? "Nickname verfügbar." : "Nickname is available.");
+          payload.nickname = nicknameValue;
+        } catch (err: any) {
+          setNicknameCheckState("unavailable");
+          setNicknameCheckMessage(err.message ?? "Nickname availability check failed");
+          setError(err.message ?? "Failed to verify nickname availability");
+          return;
+        }
+      }
+    }
     if (profileSettingsForm.current_password.trim()) {
       payload.current_password = profileSettingsForm.current_password;
     }
@@ -5698,6 +6579,7 @@ export function App() {
       setProfileSettingsForm({
         full_name: updated.full_name,
         email: updated.email,
+        nickname: updated.nickname ?? "",
         current_password: "",
         new_password: "",
       });
@@ -6100,15 +6982,22 @@ export function App() {
         updated: number;
         temporary_numbers: number;
         duplicates_skipped: number;
+        skipped_project_fields: number;
+        skipped_finance_fields: number;
+        skipped_filled_fields: number;
       }>("/admin/projects/import-csv", token, {
         method: "POST",
         body: payload,
       });
       await loadBaseData();
+      const skippedFilledFields =
+        typeof result.skipped_filled_fields === "number"
+          ? result.skipped_filled_fields
+          : (result.skipped_project_fields ?? 0) + (result.skipped_finance_fields ?? 0);
       setNotice(
         language === "de"
-          ? `CSV importiert: ${result.processed_rows} Zeilen, ${result.created} neu, ${result.updated} aktualisiert`
-          : `CSV imported: ${result.processed_rows} rows, ${result.created} created, ${result.updated} updated`,
+          ? `CSV importiert: ${result.processed_rows} Zeilen, ${result.created} neu, ${result.updated} aktualisiert, ${skippedFilledFields} Felder übersprungen (bereits befüllt)`
+          : `CSV imported: ${result.processed_rows} rows, ${result.created} created, ${result.updated} updated, ${skippedFilledFields} fields skipped (already filled)`,
       );
       event.currentTarget.reset();
     } catch (err: any) {
@@ -6161,7 +7050,7 @@ export function App() {
     setPreUserMenuOpen(false);
   }
 
-  async function copyToClipboard(value: string, label: "all" | "project") {
+  async function copyToClipboard(value: string, label: "all" | "project" | "address") {
     try {
       if (navigator.clipboard?.writeText) {
         await navigator.clipboard.writeText(value);
@@ -6180,13 +7069,25 @@ export function App() {
         language === "de"
           ? label === "all"
             ? "WebDAV-Link (alle Projekte) kopiert"
-            : "WebDAV-Link (aktuelles Projekt) kopiert"
+            : label === "project"
+              ? "WebDAV-Link (aktuelles Projekt) kopiert"
+              : "Projektadresse kopiert"
           : label === "all"
             ? "WebDAV link (all projects) copied"
-            : "WebDAV link (current project) copied",
+            : label === "project"
+              ? "WebDAV link (current project) copied"
+              : "Project address copied",
       );
     } catch {
-      setError(language === "de" ? "Link konnte nicht kopiert werden" : "Failed to copy link");
+      setError(
+        language === "de"
+          ? label === "address"
+            ? "Adresse konnte nicht kopiert werden"
+            : "Link konnte nicht kopiert werden"
+          : label === "address"
+            ? "Failed to copy address"
+            : "Failed to copy link",
+      );
     }
   }
 
@@ -6299,8 +7200,18 @@ export function App() {
 
   const renderAdminUpdateMenu = () => {
     if (!isAdmin) return null;
+    const rawCurrentVersion = String(updateStatus?.current_version || "").trim();
+    const hasPlaceholderCurrentVersion = rawCurrentVersion.toLowerCase() === "local-production";
+    const resolvedCurrentVersion =
+      rawCurrentVersion && !hasPlaceholderCurrentVersion
+        ? rawCurrentVersion
+        : hasPlaceholderCurrentVersion && updateStatus?.update_available === false
+          ? String(updateStatus?.latest_version || "").trim() || null
+          : null;
     const currentLabel =
-      updateStatus?.current_version || updateStatus?.current_commit || (language === "de" ? "nicht gesetzt" : "not set");
+      resolvedCurrentVersion ||
+      updateStatus?.current_commit ||
+      (language === "de" ? "nicht gesetzt" : "not set");
     const latestLabel =
       updateStatus?.latest_version || updateStatus?.latest_commit || (language === "de" ? "unbekannt" : "unknown");
     let statusLabel = language === "de" ? "Status unbekannt" : "Status unknown";
@@ -6323,6 +7234,11 @@ export function App() {
         </small>
         <small className="muted">
           {language === "de" ? "Ergebnis" : "Result"}: {statusLabel}
+        </small>
+        <small className="muted">
+          {language === "de"
+            ? "Sicherheitsablauf: Snapshot + Migrations-Preflight vor echter DB-Migration."
+            : "Safety flow: snapshot + migration preflight before real DB migration."}
         </small>
         {updateStatus?.message && <small className="muted">{updateStatus.message}</small>}
         {updateStatus?.latest_url && (
@@ -6581,7 +7497,7 @@ export function App() {
                   versionKey={avatarVersionKey}
                 />
                 <div className="sidebar-user-meta">
-                  <b>{user.full_name}</b>
+                  <b>{menuUserNameById(user.id, user.display_name || user.full_name)}</b>
                   <small className="role">Role: {user.role}</small>
                 </div>
               </div>
@@ -6705,6 +7621,11 @@ export function App() {
             {notice}
           </div>
         )}
+        <datalist id="material-unit-options">
+          {MATERIAL_UNIT_EXAMPLES.map((unit) => (
+            <option key={`material-unit-${unit}`} value={unit} />
+          ))}
+        </datalist>
 
         {projectModalMode && (
           <div className="modal-backdrop" onClick={closeProjectModal}>
@@ -6930,17 +7851,60 @@ export function App() {
                   />
                 </label>
                 <label>
-                  {language === "de" ? "Benötigte Materialien" : "Required materials"}
+                  {language === "de" ? "Unteraufgaben" : "Sub-tasks"}
                   <textarea
-                    value={taskModalForm.materials_required}
-                    onChange={(event) => updateTaskModalField("materials_required", event.target.value)}
+                    value={taskModalForm.subtasks_raw}
+                    onChange={(event) => updateTaskModalField("subtasks_raw", event.target.value)}
                     placeholder={
                       language === "de"
-                        ? "z.B. Kabel, Wechselrichter, Montagematerial"
-                        : "e.g. cables, inverter, mounting kit"
+                        ? "Eine Unteraufgabe pro Zeile"
+                        : "One sub-task per line"
                     }
                   />
                 </label>
+                <div className="report-material-block">
+                  <b>{language === "de" ? "Benötigte Materialien" : "Required materials"}</b>
+                  <div className="report-material-grid">
+                    <div className="report-material-grid-head">
+                      <span>{language === "de" ? "Artikel" : "Item"}</span>
+                      <span>{language === "de" ? "Menge" : "Qty"}</span>
+                      <span>{language === "de" ? "Einheit" : "Unit"}</span>
+                      <span>{language === "de" ? "Artikel-Nr." : "Article no."}</span>
+                      <span />
+                    </div>
+                    {taskModalMaterialRows.map((row, index) => (
+                      <div key={row.id} className="report-material-grid-row">
+                        <input
+                          value={row.item}
+                          onChange={(event) => updateTaskModalMaterialRow(index, "item", event.target.value)}
+                          placeholder={language === "de" ? "z.B. Kabel NYM" : "e.g. cable NYM"}
+                        />
+                        <input
+                          value={row.qty}
+                          onChange={(event) => updateTaskModalMaterialRow(index, "qty", event.target.value)}
+                          placeholder="1"
+                        />
+                        <input
+                          value={row.unit}
+                          list="material-unit-options"
+                          onChange={(event) => updateTaskModalMaterialRow(index, "unit", event.target.value)}
+                          placeholder={language === "de" ? "Stk" : "pcs"}
+                        />
+                        <input
+                          value={row.article_no}
+                          onChange={(event) => updateTaskModalMaterialRow(index, "article_no", event.target.value)}
+                          placeholder="A-1001"
+                        />
+                        <button type="button" onClick={() => removeTaskModalMaterialRow(index)} aria-label="Remove">
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <button type="button" onClick={addTaskModalMaterialRow}>
+                    {language === "de" ? "Materialzeile hinzufügen" : "Add material row"}
+                  </button>
+                </div>
                 <label>
                   {language === "de" ? "Aufgabentyp" : "Task type"}
                   <select
@@ -7121,7 +8085,7 @@ export function App() {
                       title="HH:MM (24h)"
                       maxLength={5}
                       value={taskModalForm.start_time}
-                      onChange={(event) => updateTaskModalField("start_time", event.target.value)}
+                      onChange={(event) => updateTaskModalField("start_time", formatTimeInputForTyping(event.target.value))}
                       required
                     />
                   </label>
@@ -7144,30 +8108,42 @@ export function App() {
                   />
                   {taskModalAssigneeSuggestions.length > 0 && (
                     <div className="assignee-suggestions">
-                      {taskModalAssigneeSuggestions.map((assignee) => (
-                        <button
-                          key={assignee.id}
-                          type="button"
-                          className="assignee-suggestion-btn"
-                          onClick={() => addTaskModalAssignee(assignee.id)}
-                        >
-                          {assignee.full_name} (#{assignee.id})
-                        </button>
-                      ))}
+                      {taskModalAssigneeSuggestions.map((assignee) => {
+                        const hint = assigneeAvailabilityHint(assignee.id, taskModalForm.due_date);
+                        return (
+                          <button
+                            key={assignee.id}
+                            type="button"
+                            className="assignee-suggestion-btn task-assignee-suggestion-btn"
+                            onClick={() => addTaskModalAssignee(assignee.id)}
+                          >
+                            <span className="assignee-primary-label">
+                              {menuUserNameById(assignee.id, assignee.display_name || assignee.full_name)} (#{assignee.id})
+                            </span>
+                            {hint ? <small className="assignee-availability-note">{hint}</small> : null}
+                          </button>
+                        );
+                      })}
                     </div>
                   )}
                   <div className="assignee-chip-list">
                     {taskModalForm.assignee_ids.map((assigneeId) => {
                       const assignee = assignableUsers.find((entry) => entry.id === assigneeId);
+                      const hint = assignee ? assigneeAvailabilityHint(assignee.id, taskModalForm.due_date) : "";
                       return (
                         <button
                           key={assigneeId}
                           type="button"
-                          className="assignee-chip"
+                          className="assignee-chip task-assignee-chip"
                           onClick={() => removeTaskModalAssignee(assigneeId)}
                           title={language === "de" ? "Entfernen" : "Remove"}
                         >
-                          {(assignee?.full_name ?? `#${assigneeId}`) + " ×"}
+                          <span>
+                            {(assignee
+                              ? menuUserNameById(assignee.id, assignee.display_name || assignee.full_name)
+                              : `#${assigneeId}`) + " ×"}
+                          </span>
+                          {hint ? <small className="assignee-availability-note">{hint}</small> : null}
                         </button>
                       );
                     })}
@@ -7220,17 +8196,60 @@ export function App() {
                   />
                 </label>
                 <label>
-                  {language === "de" ? "Benötigte Materialien" : "Required materials"}
+                  {language === "de" ? "Unteraufgaben" : "Sub-tasks"}
                   <textarea
-                    value={taskEditForm.materials_required}
-                    onChange={(event) => updateTaskEditField("materials_required", event.target.value)}
+                    value={taskEditForm.subtasks_raw}
+                    onChange={(event) => updateTaskEditField("subtasks_raw", event.target.value)}
                     placeholder={
                       language === "de"
-                        ? "z.B. Kabel, Wechselrichter, Montagematerial"
-                        : "e.g. cables, inverter, mounting kit"
+                        ? "Eine Unteraufgabe pro Zeile"
+                        : "One sub-task per line"
                     }
                   />
                 </label>
+                <div className="report-material-block">
+                  <b>{language === "de" ? "Benötigte Materialien" : "Required materials"}</b>
+                  <div className="report-material-grid">
+                    <div className="report-material-grid-head">
+                      <span>{language === "de" ? "Artikel" : "Item"}</span>
+                      <span>{language === "de" ? "Menge" : "Qty"}</span>
+                      <span>{language === "de" ? "Einheit" : "Unit"}</span>
+                      <span>{language === "de" ? "Artikel-Nr." : "Article no."}</span>
+                      <span />
+                    </div>
+                    {taskEditMaterialRows.map((row, index) => (
+                      <div key={row.id} className="report-material-grid-row">
+                        <input
+                          value={row.item}
+                          onChange={(event) => updateTaskEditMaterialRow(index, "item", event.target.value)}
+                          placeholder={language === "de" ? "z.B. Kabel NYM" : "e.g. cable NYM"}
+                        />
+                        <input
+                          value={row.qty}
+                          onChange={(event) => updateTaskEditMaterialRow(index, "qty", event.target.value)}
+                          placeholder="1"
+                        />
+                        <input
+                          value={row.unit}
+                          list="material-unit-options"
+                          onChange={(event) => updateTaskEditMaterialRow(index, "unit", event.target.value)}
+                          placeholder={language === "de" ? "Stk" : "pcs"}
+                        />
+                        <input
+                          value={row.article_no}
+                          onChange={(event) => updateTaskEditMaterialRow(index, "article_no", event.target.value)}
+                          placeholder="A-1001"
+                        />
+                        <button type="button" onClick={() => removeTaskEditMaterialRow(index)} aria-label="Remove">
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <button type="button" onClick={addTaskEditMaterialRow}>
+                    {language === "de" ? "Materialzeile hinzufügen" : "Add material row"}
+                  </button>
+                </div>
                 <label>
                   {language === "de" ? "Aufgabentyp" : "Task type"}
                   <select
@@ -7299,16 +8318,17 @@ export function App() {
                     </select>
                   </label>
                   <label>
-                    {language === "de" ? "Wochenstart (Montag)" : "Week start (Monday)"}
+                    {language === "de" ? "Zuletzt bearbeitet" : "Last edited"}
                     <input
-                      type="date"
-                      value={taskEditForm.week_start}
-                      onChange={(event) =>
-                        updateTaskEditField(
-                          "week_start",
-                          event.target.value ? normalizeWeekStartISO(event.target.value) : "",
-                        )
+                      type="text"
+                      value={
+                        taskEditExpectedUpdatedAt
+                          ? formatServerDateTime(taskEditExpectedUpdatedAt, language)
+                          : language === "de"
+                            ? "Unbekannt"
+                            : "Unknown"
                       }
+                      readOnly
                     />
                   </label>
                 </div>
@@ -7331,7 +8351,7 @@ export function App() {
                       title="HH:MM (24h)"
                       maxLength={5}
                       value={taskEditForm.start_time}
-                      onChange={(event) => updateTaskEditField("start_time", event.target.value)}
+                      onChange={(event) => updateTaskEditField("start_time", formatTimeInputForTyping(event.target.value))}
                     />
                   </label>
                 </div>
@@ -7351,30 +8371,42 @@ export function App() {
                   />
                   {taskEditAssigneeSuggestions.length > 0 && (
                     <div className="assignee-suggestions">
-                      {taskEditAssigneeSuggestions.map((assignee) => (
-                        <button
-                          key={assignee.id}
-                          type="button"
-                          className="assignee-suggestion-btn"
-                          onClick={() => addTaskEditAssignee(assignee.id)}
-                        >
-                          {assignee.full_name} (#{assignee.id})
-                        </button>
-                      ))}
+                      {taskEditAssigneeSuggestions.map((assignee) => {
+                        const hint = assigneeAvailabilityHint(assignee.id, taskEditForm.due_date);
+                        return (
+                          <button
+                            key={assignee.id}
+                            type="button"
+                            className="assignee-suggestion-btn task-assignee-suggestion-btn"
+                            onClick={() => addTaskEditAssignee(assignee.id)}
+                          >
+                            <span className="assignee-primary-label">
+                              {menuUserNameById(assignee.id, assignee.display_name || assignee.full_name)} (#{assignee.id})
+                            </span>
+                            {hint ? <small className="assignee-availability-note">{hint}</small> : null}
+                          </button>
+                        );
+                      })}
                     </div>
                   )}
                   <div className="assignee-chip-list">
                     {taskEditForm.assignee_ids.map((assigneeId) => {
                       const assignee = assignableUsers.find((entry) => entry.id === assigneeId);
+                      const hint = assignee ? assigneeAvailabilityHint(assignee.id, taskEditForm.due_date) : "";
                       return (
                         <button
                           key={assigneeId}
                           type="button"
-                          className="assignee-chip"
+                          className="assignee-chip task-assignee-chip"
                           onClick={() => removeTaskEditAssignee(assigneeId)}
                           title={language === "de" ? "Entfernen" : "Remove"}
                         >
-                          {(assignee?.full_name ?? `#${assigneeId}`) + " ×"}
+                          <span>
+                            {(assignee
+                              ? menuUserNameById(assignee.id, assignee.display_name || assignee.full_name)
+                              : `#${assigneeId}`) + " ×"}
+                          </span>
+                          {hint ? <small className="assignee-availability-note">{hint}</small> : null}
                         </button>
                       );
                     })}
@@ -7596,21 +8628,29 @@ export function App() {
                       </small>
                     </div>
                     <div className="materials-item-actions">
-                      <span className={`materials-status-badge ${statusClass}`}>
-                        {materialNeedStatusLabel(normalizedStatus, language)}
-                      </span>
-                      <select
-                        className={`materials-status-select ${statusClass}`}
-                        value={normalizedStatus}
+                      <button
+                        type="button"
+                        className={`materials-status-badge materials-status-toggle ${statusClass}`}
                         disabled={isUpdating}
-                        onChange={(event) =>
-                          void updateMaterialNeedState(entry.id, normalizeMaterialNeedStatus(event.target.value))
+                        onClick={() => void updateMaterialNeedState(entry.id, nextMaterialNeedStatus(normalizedStatus))}
+                        title={
+                          language === "de"
+                            ? `Status wechseln zu: ${materialNeedStatusLabel(nextMaterialNeedStatus(normalizedStatus), language)}`
+                            : `Change status to: ${materialNeedStatusLabel(nextMaterialNeedStatus(normalizedStatus), language)}`
                         }
                       >
-                        <option value="order">{materialNeedStatusLabel("order", language)}</option>
-                        <option value="on_the_way">{materialNeedStatusLabel("on_the_way", language)}</option>
-                        <option value="available">{materialNeedStatusLabel("available", language)}</option>
-                      </select>
+                        {materialNeedStatusLabel(normalizedStatus, language)}
+                      </button>
+                      {normalizedStatus === "available" && (
+                        <button
+                          type="button"
+                          className="materials-complete-btn"
+                          disabled={isUpdating}
+                          onClick={() => void updateMaterialNeedState(entry.id, "completed")}
+                        >
+                          {language === "de" ? "Erledigt" : "Complete"}
+                        </button>
+                      )}
                     </div>
                   </li>
                 );
@@ -7809,6 +8849,8 @@ export function App() {
                 const isMine = isTaskAssignedToCurrentUser(task);
                 const expanded = expandedMyTaskId === task.id;
                 const taskProject = projectsById.get(task.project_id);
+                const taskMaterials = taskMaterialsDisplay(task.materials_required, language);
+                const taskSubtasks = (task.subtasks ?? []).map((row) => row.trim()).filter((row) => row.length > 0);
                 return (
                   <li key={task.id} className={isMine ? "task-list-item task-list-item-mine" : "task-list-item"}>
                     <div className="task-list-main">
@@ -7843,11 +8885,24 @@ export function App() {
                             {language === "de" ? "Information" : "Information"}: <b>{task.description || "-"}</b>
                           </small>
                           <small>
-                            {language === "de" ? "Material" : "Materials"}: <b>{task.materials_required || "-"}</b>
+                            {language === "de" ? "Material" : "Materials"}: <b>{taskMaterials || "-"}</b>
                           </small>
                           <small>
                             {language === "de" ? "Lagerbox" : "Storage box"}: <b>{task.storage_box_number ?? "-"}</b>
                           </small>
+                          <div className="task-subtask-list">
+                            <small>
+                              {language === "de" ? "Unteraufgaben" : "Sub-tasks"}:{" "}
+                              <b>{taskSubtasks.length > 0 ? taskSubtasks.length : "-"}</b>
+                            </small>
+                            {taskSubtasks.length > 0 && (
+                              <ul>
+                                {taskSubtasks.map((subtask, index) => (
+                                  <li key={`task-${task.id}-subtask-${index}`}>{subtask}</li>
+                                ))}
+                              </ul>
+                            )}
+                          </div>
                         </div>
                       )}
                     </div>
@@ -7946,6 +9001,16 @@ export function App() {
             <aside className="card project-map-card project-map-card-full">
               <div className="project-overview-card-head">
                 <h3 className="project-overview-title">{language === "de" ? "Projektadresse" : "Project location"}</h3>
+                <button
+                  type="button"
+                  className="icon-btn task-edit-icon-btn project-map-copy-btn"
+                  onClick={() => void copyToClipboard(activeProjectAddress, "address")}
+                  disabled={!activeProjectAddress}
+                  aria-label={language === "de" ? "Adresse kopieren" : "Copy address"}
+                  title={language === "de" ? "Adresse kopieren" : "Copy address"}
+                >
+                  <CopyIcon />
+                </button>
               </div>
               {activeProjectMapEmbedUrl ? (
                 <a
@@ -8178,6 +9243,18 @@ export function App() {
                   />
                 </label>
                 <label>
+                  {language === "de" ? "Unteraufgaben" : "Sub-tasks"}
+                  <textarea
+                    value={projectTaskForm.subtasks_raw}
+                    onChange={(event) => updateProjectTaskFormField("subtasks_raw", event.target.value)}
+                    placeholder={
+                      language === "de"
+                        ? "Eine Unteraufgabe pro Zeile"
+                        : "One sub-task per line"
+                    }
+                  />
+                </label>
+                <label>
                   {language === "de" ? "Projektklasse (optional)" : "Project class (optional)"}
                   <select
                     value={projectTaskForm.class_template_id}
@@ -8198,18 +9275,49 @@ export function App() {
                     </small>
                   )}
                 </label>
-                <label>
-                  {language === "de" ? "Benötigte Materialien" : "Required materials"}
-                  <textarea
-                    value={projectTaskForm.materials_required}
-                    onChange={(event) => updateProjectTaskFormField("materials_required", event.target.value)}
-                    placeholder={
-                      language === "de"
-                        ? "z.B. Kabel, Wechselrichter, Montagematerial"
-                        : "e.g. cables, inverter, mounting kit"
-                    }
-                  />
-                </label>
+                <div className="report-material-block">
+                  <b>{language === "de" ? "Benötigte Materialien" : "Required materials"}</b>
+                  <div className="report-material-grid">
+                    <div className="report-material-grid-head">
+                      <span>{language === "de" ? "Artikel" : "Item"}</span>
+                      <span>{language === "de" ? "Menge" : "Qty"}</span>
+                      <span>{language === "de" ? "Einheit" : "Unit"}</span>
+                      <span>{language === "de" ? "Artikel-Nr." : "Article no."}</span>
+                      <span />
+                    </div>
+                    {projectTaskMaterialRows.map((row, index) => (
+                      <div key={row.id} className="report-material-grid-row">
+                        <input
+                          value={row.item}
+                          onChange={(event) => updateProjectTaskMaterialRow(index, "item", event.target.value)}
+                          placeholder={language === "de" ? "z.B. Kabel NYM" : "e.g. cable NYM"}
+                        />
+                        <input
+                          value={row.qty}
+                          onChange={(event) => updateProjectTaskMaterialRow(index, "qty", event.target.value)}
+                          placeholder="1"
+                        />
+                        <input
+                          value={row.unit}
+                          list="material-unit-options"
+                          onChange={(event) => updateProjectTaskMaterialRow(index, "unit", event.target.value)}
+                          placeholder={language === "de" ? "Stk" : "pcs"}
+                        />
+                        <input
+                          value={row.article_no}
+                          onChange={(event) => updateProjectTaskMaterialRow(index, "article_no", event.target.value)}
+                          placeholder="A-1001"
+                        />
+                        <button type="button" onClick={() => removeProjectTaskMaterialRow(index)} aria-label="Remove">
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <button type="button" onClick={addProjectTaskMaterialRow}>
+                    {language === "de" ? "Materialzeile hinzufügen" : "Add material row"}
+                  </button>
+                </div>
                 <label>
                   {language === "de" ? "Aufgabentyp" : "Task type"}
                   <select
@@ -8272,7 +9380,9 @@ export function App() {
                       title="HH:MM (24h)"
                       maxLength={5}
                       value={projectTaskForm.start_time}
-                      onChange={(event) => updateProjectTaskFormField("start_time", event.target.value)}
+                      onChange={(event) =>
+                        updateProjectTaskFormField("start_time", formatTimeInputForTyping(event.target.value))
+                      }
                       required
                     />
                   </label>
@@ -8295,30 +9405,42 @@ export function App() {
                   />
                   {projectTaskAssigneeSuggestions.length > 0 && (
                     <div className="assignee-suggestions">
-                      {projectTaskAssigneeSuggestions.map((assignee) => (
-                        <button
-                          key={assignee.id}
-                          type="button"
-                          className="assignee-suggestion-btn"
-                          onClick={() => addProjectTaskAssignee(assignee.id)}
-                        >
-                          {assignee.full_name} (#{assignee.id})
-                        </button>
-                      ))}
+                      {projectTaskAssigneeSuggestions.map((assignee) => {
+                        const hint = assigneeAvailabilityHint(assignee.id, projectTaskForm.due_date);
+                        return (
+                          <button
+                            key={assignee.id}
+                            type="button"
+                            className="assignee-suggestion-btn task-assignee-suggestion-btn"
+                            onClick={() => addProjectTaskAssignee(assignee.id)}
+                          >
+                            <span className="assignee-primary-label">
+                              {menuUserNameById(assignee.id, assignee.display_name || assignee.full_name)} (#{assignee.id})
+                            </span>
+                            {hint ? <small className="assignee-availability-note">{hint}</small> : null}
+                          </button>
+                        );
+                      })}
                     </div>
                   )}
                   <div className="assignee-chip-list">
                     {projectTaskForm.assignee_ids.map((assigneeId) => {
                       const assignee = assignableUsers.find((entry) => entry.id === assigneeId);
+                      const hint = assignee ? assigneeAvailabilityHint(assignee.id, projectTaskForm.due_date) : "";
                       return (
                         <button
                           key={assigneeId}
                           type="button"
-                          className="assignee-chip"
+                          className="assignee-chip task-assignee-chip"
                           onClick={() => removeProjectTaskAssignee(assigneeId)}
                           title={language === "de" ? "Entfernen" : "Remove"}
                         >
-                          {(assignee?.full_name ?? `#${assigneeId}`) + " ×"}
+                          <span>
+                            {(assignee
+                              ? menuUserNameById(assignee.id, assignee.display_name || assignee.full_name)
+                              : `#${assigneeId}`) + " ×"}
+                          </span>
+                          {hint ? <small className="assignee-availability-note">{hint}</small> : null}
                         </button>
                       );
                     })}
@@ -8365,6 +9487,7 @@ export function App() {
                 {tasks.map((task) => {
                   const isMine = isTaskAssignedToCurrentUser(task);
                   const canOpenInMyTasks = isMine && task.status !== "done";
+                  const taskMaterials = taskMaterialsDisplay(task.materials_required, language);
                   return (
                     <li
                       key={task.id}
@@ -8396,12 +9519,12 @@ export function App() {
                           {task.start_time ? ` ${language === "de" ? "um" : "at"} ${formatTaskStartTime(task.start_time)}` : ""} |{" "}
                           {language === "de" ? "Mitarbeiter" : "Assignees"}: {getTaskAssigneeLabel(task)}
                         </small>
-                        {(task.description || task.materials_required || task.storage_box_number) && (
+                        {(task.description || taskMaterials || task.storage_box_number) && (
                           <small>
                             {task.description ? `${language === "de" ? "Info" : "Info"}: ${task.description}` : ""}
-                            {task.description && (task.materials_required || task.storage_box_number) ? " | " : ""}
-                            {task.materials_required
-                              ? `${language === "de" ? "Material" : "Materials"}: ${task.materials_required}`
+                            {task.description && (taskMaterials || task.storage_box_number) ? " | " : ""}
+                            {taskMaterials
+                              ? `${language === "de" ? "Material" : "Materials"}: ${taskMaterials}`
                               : ""}
                             {task.storage_box_number
                               ? ` | ${language === "de" ? "Lagerbox" : "Storage box"}: ${task.storage_box_number}`
@@ -8535,6 +9658,75 @@ export function App() {
           </section>
         )}
 
+        {mainView === "project" && activeProject && projectTab === "materials" && (
+          <section className="grid">
+            <div className="card project-materials-card">
+              <div className="project-overview-card-head">
+                <h3>{language === "de" ? "Material aus Berichten" : "Materials from reports"}</h3>
+                <button type="button" onClick={() => void loadProjectTrackedMaterials(activeProject.id)}>
+                  {language === "de" ? "Aktualisieren" : "Refresh"}
+                </button>
+              </div>
+              <small className="muted">
+                {language === "de"
+                  ? "Gleiche Positionen (Artikel + Einheit + ArtNr) werden zusammengeführt."
+                  : "Matching rows (item + unit + article no.) are merged."}
+              </small>
+              <ul className="project-materials-list">
+                {projectTrackedMaterials.map((entry, index) => {
+                  const quantityParts: string[] = [];
+                  if (entry.quantity_total != null) {
+                    quantityParts.push(formatMaterialQuantity(entry.quantity_total, language));
+                  }
+                  if (entry.unit) quantityParts.push(entry.unit);
+                  const quantityLabel = quantityParts.join(" ").trim();
+                  const quantityNotes =
+                    entry.quantity_notes.length > 0
+                      ? entry.quantity_notes.join(", ")
+                      : language === "de"
+                        ? "keine"
+                        : "none";
+                  return (
+                    <li
+                      key={`project-material-${entry.item}-${entry.unit ?? ""}-${entry.article_no ?? ""}-${index}`}
+                      className="materials-item"
+                    >
+                      <div className="materials-item-main">
+                        <b>{entry.item}</b>
+                        <small>
+                          {language === "de" ? "Menge" : "Qty"}: <b>{quantityLabel || "-"}</b>
+                        </small>
+                        <small>
+                          {language === "de" ? "Manuelle Mengenangaben" : "Manual qty notes"}: <b>{quantityNotes}</b>
+                        </small>
+                        {entry.article_no && (
+                          <small>
+                            {language === "de" ? "ArtNr" : "Article"}: <b>{entry.article_no}</b>
+                          </small>
+                        )}
+                        <small>
+                          {language === "de" ? "Einträge" : "Entries"}: <b>{entry.occurrence_count}</b> |{" "}
+                          {language === "de" ? "Berichte" : "Reports"}: <b>{entry.report_count}</b>
+                          {entry.last_report_date
+                            ? ` | ${language === "de" ? "Zuletzt im Bericht" : "Last report"}: ${formatShortIsoDate(entry.last_report_date, language)}`
+                            : ""}
+                        </small>
+                      </div>
+                    </li>
+                  );
+                })}
+                {projectTrackedMaterials.length === 0 && (
+                  <li className="muted">
+                    {language === "de"
+                      ? "Noch kein Material in Berichten erfasst."
+                      : "No materials tracked in reports yet."}
+                  </li>
+                )}
+              </ul>
+            </div>
+          </section>
+        )}
+
         {mainView === "calendar" && (
           <section className="card calendar-overview">
             <div className="row wrap planning-toolbar">
@@ -8605,7 +9797,7 @@ export function App() {
                                   className="calendar-absence"
                                 >
                                   <b>
-                                    {absence.user_name}: {absence.label}
+                                    {menuUserNameById(absence.user_id, absence.user_name)}: {absence.label}
                                   </b>
                                   <small>
                                     {absence.type === "vacation"
@@ -8743,7 +9935,7 @@ export function App() {
                     {(day.absences ?? []).map((absence, index) => (
                       <li key={`absence-${day.date}-${absence.type}-${absence.user_id}-${index}`} className="planning-absence">
                         <b>
-                          {absence.user_name}: {absence.label}
+                          {menuUserNameById(absence.user_id, absence.user_name)}: {absence.label}
                         </b>
                         <small>
                           {absence.type === "vacation"
@@ -9166,13 +10358,20 @@ export function App() {
               <h3>{language === "de" ? "Profilbild anpassen" : "Adjust profile picture"}</h3>
               <label>
                 {language === "de" ? "Bilddatei" : "Image file"}
-                <input type="file" accept="image/*" onChange={onAvatarFileChange} />
+                <input type="file" accept={IMAGE_INPUT_ACCEPT} onChange={onAvatarFileChange} />
               </label>
               {!avatarSourceUrl && (
                 <small className="muted">
                   {language === "de"
                     ? "Bild auswählen, dann Bild mit der Maus/Finger verschieben und Zoom anpassen."
                     : "Choose an image, then drag the picture and adjust zoom."}
+                </small>
+              )}
+              {avatarSelectedFile && isHeicFile(avatarSelectedFile) && !avatarPreviewDataUrl && (
+                <small className="muted">
+                  {language === "de"
+                    ? "HEIC-Vorschau ist im Browser eventuell nicht verfügbar. Speichern lädt das Original hoch."
+                    : "HEIC preview may be unavailable in your browser. Save uploads the original file."}
                 </small>
               )}
               {avatarSourceUrl && (
@@ -9229,7 +10428,11 @@ export function App() {
                 >
                   {language === "de" ? "Profilbild entfernen" : "Remove profile picture"}
                 </button>
-                <button type="button" onClick={() => void saveAvatar()} disabled={!avatarPreviewDataUrl}>
+                <button
+                  type="button"
+                  onClick={() => void saveAvatar()}
+                  disabled={!avatarPreviewDataUrl && !(avatarSelectedFile && isHeicFile(avatarSelectedFile))}
+                >
                   {language === "de" ? "Speichern" : "Save"}
                 </button>
                 <button type="button" onClick={closeAvatarModal}>
@@ -9282,9 +10485,135 @@ export function App() {
                     ))}
                   </select>
                 </label>
+                <small className="muted">
+                  {language === "de"
+                    ? "Wenn du niemanden auswählst, ist der Chat für alle sichtbar."
+                    : "If you select nobody, the chat is visible to everyone."}
+                </small>
+                <div className="assignee-search-block">
+                  <b>{language === "de" ? "Nutzer (optional)" : "Users (optional)"}</b>
+                  <input
+                    value={threadModalForm.participant_user_query}
+                    onChange={(event) =>
+                      setThreadModalForm((current) => ({
+                        ...current,
+                        participant_user_query: event.target.value,
+                      }))
+                    }
+                    onKeyDown={(event) => {
+                      if (event.key !== "Enter") return;
+                      event.preventDefault();
+                      addFirstMatchingThreadModalUser();
+                    }}
+                    placeholder={
+                      language === "de"
+                        ? "Namen eingeben und auswählen"
+                        : "Type user name and select"
+                    }
+                  />
+                  {threadModalUserSuggestions.length > 0 && (
+                    <div className="assignee-suggestions">
+                      {threadModalUserSuggestions.map((entry) => (
+                        <button
+                          key={`thread-user-suggestion-${entry.id}`}
+                          type="button"
+                          className="assignee-suggestion-btn"
+                          onClick={() => addThreadModalUser(entry.id)}
+                        >
+                          {menuUserNameById(entry.id, entry.display_name || entry.full_name)} (#{entry.id})
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <div className="assignee-chip-list">
+                    {threadModalSelectedUsers.map((entry) => (
+                      <button
+                        key={`thread-user-chip-${entry.id}`}
+                        type="button"
+                        className="assignee-chip"
+                        onClick={() => removeThreadModalUser(entry.id)}
+                        title={language === "de" ? "Entfernen" : "Remove"}
+                      >
+                        {entry.label}
+                        {entry.archived ? ` (${language === "de" ? "archiviert" : "archived"})` : ""}
+                        {" ×"}
+                      </button>
+                    ))}
+                    {threadModalSelectedUsers.length === 0 && (
+                      <small className="muted">
+                        {language === "de"
+                          ? "Noch keine Nutzer ausgewählt."
+                          : "No users selected yet."}
+                      </small>
+                    )}
+                  </div>
+                </div>
+                <div className="assignee-search-block">
+                  <b>{language === "de" ? "Rollen (optional)" : "Roles (optional)"}</b>
+                  <input
+                    value={threadModalForm.participant_role_query}
+                    onChange={(event) =>
+                      setThreadModalForm((current) => ({
+                        ...current,
+                        participant_role_query: event.target.value,
+                      }))
+                    }
+                    onKeyDown={(event) => {
+                      if (event.key !== "Enter") return;
+                      event.preventDefault();
+                      addFirstMatchingThreadModalRole();
+                    }}
+                    placeholder={
+                      language === "de"
+                        ? "Rolle eingeben und auswählen"
+                        : "Type role and select"
+                    }
+                  />
+                  {threadModalRoleSuggestions.length > 0 && (
+                    <div className="assignee-suggestions">
+                      {threadModalRoleSuggestions.map((role) => (
+                        <button
+                          key={`thread-role-suggestion-${role}`}
+                          type="button"
+                          className="assignee-suggestion-btn"
+                          onClick={() => addThreadModalRole(role)}
+                        >
+                          {roleOptionLabel(role, language)}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <div className="assignee-chip-list">
+                    {threadModalForm.participant_roles.map((role) => (
+                      <button
+                        key={`thread-role-chip-${role}`}
+                        type="button"
+                        className="assignee-chip"
+                        onClick={() => removeThreadModalRole(role)}
+                        title={language === "de" ? "Entfernen" : "Remove"}
+                      >
+                        {roleOptionLabel(role, language) + " ×"}
+                      </button>
+                    ))}
+                    {threadModalForm.participant_roles.length === 0 && (
+                      <small className="muted">
+                        {language === "de"
+                          ? "Noch keine Rollen ausgewählt."
+                          : "No roles selected yet."}
+                      </small>
+                    )}
+                  </div>
+                </div>
+                {threadModalIsRestricted && (
+                  <small className="muted">
+                    {language === "de"
+                      ? "Sichtbar nur für ausgewählte Nutzer/Rollen."
+                      : "Visible only to selected users/roles."}
+                  </small>
+                )}
                 <label>
                   {language === "de" ? "Thread-Bild" : "Thread picture"}
-                  <input type="file" accept="image/*" onChange={onThreadIconFileChange} />
+                  <input type="file" accept={IMAGE_INPUT_ACCEPT} onChange={onThreadIconFileChange} />
                 </label>
                 {threadIconPreviewUrl && (
                   <div className="thread-modal-icon-preview">
@@ -9310,6 +10639,61 @@ export function App() {
           </div>
         )}
 
+        {archivedThreadsModalOpen && mainView === "messages" && (
+          <div className="modal-backdrop" onClick={closeArchivedThreadsModal}>
+            <div className="card modal-card modal-card-sm" onClick={(event) => event.stopPropagation()}>
+              <h3>{language === "de" ? "Archivierte Chats" : "Archived chats"}</h3>
+              {archivedThreads.length === 0 && (
+                <small className="muted">
+                  {language === "de" ? "Keine archivierten Chats vorhanden." : "No archived chats available."}
+                </small>
+              )}
+              {archivedThreads.length > 0 && (
+                <ul className="thread-list">
+                  {archivedThreads.map((thread) => (
+                    <li key={`archived-thread-${thread.id}`}>
+                      <div className="thread-archive-row">
+                        <div className="thread-item-main">
+                          <span className="thread-title-main">
+                            <b>{thread.name}</b>
+                            {(thread.is_restricted || thread.visibility === "restricted") && (
+                              <span className="thread-visibility-badge">
+                                {language === "de" ? "Eingeschränkt" : "Restricted"}
+                              </span>
+                            )}
+                          </span>
+                          <small>{thread.project_name ?? (language === "de" ? "Allgemein" : "General")}</small>
+                        </div>
+                        <div className="thread-archive-actions">
+                          {thread.can_edit && (
+                            <>
+                              <button type="button" onClick={() => void restoreArchivedThread(thread.id)}>
+                                {language === "de" ? "Wiederherstellen" : "Restore"}
+                              </button>
+                              <button
+                                type="button"
+                                className="danger-btn"
+                                onClick={() => void deleteThread(thread)}
+                              >
+                                {language === "de" ? "Löschen" : "Delete"}
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="row wrap">
+                <button type="button" onClick={closeArchivedThreadsModal}>
+                  {language === "de" ? "Schließen" : "Close"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {mainView === "construction" && (
           <section className="grid">
             <form ref={constructionFormRef} className="card report-form" onSubmit={submitConstructionReport}>
@@ -9320,6 +10704,32 @@ export function App() {
                     ? `Vorlage aus Aufgabe #${reportTaskPrefill.task_id}`
                     : `Template from task #${reportTaskPrefill.task_id}`}
                 </small>
+              )}
+              {reportSourceTaskId && reportTaskChecklist.length > 0 && (
+                <div className="report-subtask-checklist">
+                  <b>
+                    {language === "de"
+                      ? `Unteraufgaben aus Aufgabe #${reportSourceTaskId}`
+                      : `Sub-tasks from task #${reportSourceTaskId}`}
+                  </b>
+                  <small className="muted">
+                    {language === "de"
+                      ? "Abhaken, was erledigt wurde. Offene Punkte erzeugen automatisch eine neue, nicht zugewiesene Folgeaufgabe."
+                      : "Tick completed items. Open items will create a new unassigned follow-up task automatically."}
+                  </small>
+                  <div className="report-subtask-checklist-items">
+                    {reportTaskChecklist.map((entry) => (
+                      <label key={entry.id} className="report-subtask-item">
+                        <input
+                          type="checkbox"
+                          checked={entry.done}
+                          onChange={(event) => toggleReportTaskChecklistItem(entry.id, event.target.checked)}
+                        />
+                        <span>{entry.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
               )}
               <label>
                 {language === "de" ? "Projekt" : "Project"}
@@ -9490,6 +10900,7 @@ export function App() {
                       />
                       <input
                         value={row.unit}
+                        list="material-unit-options"
                         placeholder={language === "de" ? "Einheit" : "Unit"}
                         onChange={(event) => updateReportMaterialRow(index, "unit", event.target.value)}
                       />
@@ -9506,6 +10917,11 @@ export function App() {
                   <button type="button" onClick={addReportMaterialRow} disabled={reportSubmitting}>
                     {language === "de" ? "Materialzeile hinzufügen" : "Add material row"}
                   </button>
+                  <small className="muted">
+                    {language === "de"
+                      ? "Einheiten aus der Vorschlagsliste wählen oder frei eingeben."
+                      : "Pick a unit from the dropdown suggestions or type your own."}
+                  </small>
                 </div>
               </div>
               <label>
@@ -9536,6 +10952,7 @@ export function App() {
                       />
                       <input
                         value={row.unit}
+                        list="material-unit-options"
                         placeholder={language === "de" ? "Einheit" : "Unit"}
                         onChange={(event) => updateReportOfficeMaterialRow(index, "unit", event.target.value)}
                       />
@@ -9552,6 +10969,11 @@ export function App() {
                   <button type="button" onClick={addReportOfficeMaterialRow} disabled={reportSubmitting}>
                     {language === "de" ? "Büro-Materialzeile hinzufügen" : "Add office material row"}
                   </button>
+                  <small className="muted">
+                    {language === "de"
+                      ? "Einheiten aus der Vorschlagsliste wählen oder frei eingeben."
+                      : "Pick a unit from the dropdown suggestions or type your own."}
+                  </small>
                 </div>
               </div>
               <label>
@@ -9569,7 +10991,7 @@ export function App() {
                     ref={reportImageInputRef}
                     className="report-image-input"
                     type="file"
-                    accept="image/*"
+                    accept={IMAGE_INPUT_ACCEPT}
                     multiple
                     onChange={onReportImagesChange}
                   />
@@ -9811,15 +11233,26 @@ export function App() {
             <aside className="thread-panel">
               <div className="row thread-panel-head">
                 <h3>{language === "de" ? "Threads" : "Threads"}</h3>
-                <button
-                  type="button"
-                  className="create-new-btn thread-create-btn"
-                  onClick={openCreateThreadModal}
-                  aria-label={language === "de" ? "Thread erstellen" : "Create thread"}
-                  title={language === "de" ? "Thread erstellen" : "Create thread"}
-                >
-                  +
-                </button>
+                <div className="thread-panel-actions">
+                  <button
+                    type="button"
+                    className="icon-btn thread-archive-list-btn"
+                    onClick={() => void openArchivedThreadsModal()}
+                    aria-label={language === "de" ? "Archivierte Chats" : "Archived chats"}
+                    title={language === "de" ? "Archivierte Chats" : "Archived chats"}
+                  >
+                    {language === "de" ? "Archiv" : "Archive"}
+                  </button>
+                  <button
+                    type="button"
+                    className="create-new-btn thread-create-btn"
+                    onClick={openCreateThreadModal}
+                    aria-label={language === "de" ? "Thread erstellen" : "Create thread"}
+                    title={language === "de" ? "Thread erstellen" : "Create thread"}
+                  >
+                    +
+                  </button>
+                </div>
               </div>
               <ul className="thread-list">
                 {threads.map((thread) => (
@@ -9837,7 +11270,14 @@ export function App() {
                       />
                       <span className="thread-item-main">
                         <span className="thread-title-row">
-                          <b>{thread.name}</b>
+                          <span className="thread-title-main">
+                            <b>{thread.name}</b>
+                            {(thread.is_restricted || thread.visibility === "restricted") && (
+                              <span className="thread-visibility-badge">
+                                {language === "de" ? "Eingeschränkt" : "Restricted"}
+                              </span>
+                            )}
+                          </span>
                           {thread.unread_count > 0 && <span className="thread-unread-badge">{thread.unread_count}</span>}
                         </span>
                         <small>
@@ -9866,20 +11306,68 @@ export function App() {
                         versionKey={activeThread.icon_updated_at || "0"}
                       />
                       <div>
-                        <b>{activeThread.name}</b>
+                        <span className="thread-title-main">
+                          <b>{activeThread.name}</b>
+                          {(activeThread.is_restricted || activeThread.visibility === "restricted") && (
+                            <span className="thread-visibility-badge">
+                              {language === "de" ? "Eingeschränkt" : "Restricted"}
+                            </span>
+                          )}
+                        </span>
                         <small>{activeThread.project_name ?? (language === "de" ? "Allgemein" : "General")}</small>
                       </div>
                     </div>
                     {activeThread.can_edit && (
-                      <button
-                        type="button"
-                        className="icon-btn thread-edit-btn"
-                        onClick={() => openEditThreadModal(activeThread)}
-                        aria-label={language === "de" ? "Thread bearbeiten" : "Edit thread"}
-                        title={language === "de" ? "Thread bearbeiten" : "Edit thread"}
-                      >
-                        ✎
-                      </button>
+                      <div className="thread-head-actions">
+                        <div className="thread-actions-menu-wrap">
+                          <button
+                            type="button"
+                            className="thread-actions-trigger"
+                            aria-haspopup="menu"
+                            aria-expanded={threadActionMenuOpen}
+                            aria-label={language === "de" ? "Thread-Aktionen öffnen" : "Open thread actions"}
+                            title={language === "de" ? "Thread-Aktionen" : "Thread actions"}
+                            onClick={() => setThreadActionMenuOpen((current) => !current)}
+                          >
+                            &#8942;
+                          </button>
+                          {threadActionMenuOpen && (
+                            <div className="thread-actions-menu" role="menu">
+                              <button
+                                type="button"
+                                role="menuitem"
+                                onClick={() => {
+                                  setThreadActionMenuOpen(false);
+                                  openEditThreadModal(activeThread);
+                                }}
+                              >
+                                {language === "de" ? "Thread bearbeiten" : "Edit thread"}
+                              </button>
+                              <button
+                                type="button"
+                                role="menuitem"
+                                onClick={() => {
+                                  setThreadActionMenuOpen(false);
+                                  void archiveActiveThread();
+                                }}
+                              >
+                                {language === "de" ? "Archivieren" : "Archive"}
+                              </button>
+                              <button
+                                type="button"
+                                role="menuitem"
+                                className="danger"
+                                onClick={() => {
+                                  setThreadActionMenuOpen(false);
+                                  void deleteThread(activeThread);
+                                }}
+                              >
+                                {language === "de" ? "Löschen" : "Delete"}
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
                     )}
                   </div>
 
@@ -10115,7 +11603,8 @@ export function App() {
                 )}
                 {isTimeManager && timeTargetUser && (
                   <small className="muted">
-                    {language === "de" ? "Filter aktiv" : "Filter active"}: {timeTargetUser.full_name}
+                    {language === "de" ? "Filter aktiv" : "Filter active"}:{" "}
+                    {menuUserNameById(timeTargetUser.id, timeTargetUser.display_name || timeTargetUser.full_name)}
                   </small>
                 )}
               </div>
@@ -10198,7 +11687,7 @@ export function App() {
                     {pendingVacationRequests.map((row) => (
                       <li key={`vacation-pending-${row.id}`} className="task-list-item">
                         <div className="task-list-main">
-                          <b>{row.user_name}</b>
+                          <b>{menuUserNameById(row.user_id, row.user_name)}</b>
                           <small>
                             {row.start_date} - {row.end_date}
                           </small>
@@ -10227,7 +11716,7 @@ export function App() {
                   {approvedVacationRequests.map((row) => (
                     <li key={`vacation-approved-${row.id}`}>
                       <small>
-                        {row.user_name}: {row.start_date} - {row.end_date}
+                        {menuUserNameById(row.user_id, row.user_name)}: {row.start_date} - {row.end_date}
                       </small>
                     </li>
                   ))}
@@ -10254,7 +11743,7 @@ export function App() {
                       <option value="">{language === "de" ? "Bitte auswählen" : "Please select"}</option>
                       {assignableUsers.map((entry) => (
                         <option key={`school-user-${entry.id}`} value={String(entry.id)}>
-                          {entry.full_name} (#{entry.id})
+                          {menuUserNameById(entry.id, entry.display_name || entry.full_name)} (#{entry.id})
                         </option>
                       ))}
                     </select>
@@ -10327,7 +11816,7 @@ export function App() {
                 {schoolAbsences.map((row) => (
                   <li key={`school-${row.id}`} className="task-list-item">
                     <div className="task-list-main">
-                      <b>{row.user_name}</b>
+                      <b>{menuUserNameById(row.user_id, row.user_name)}</b>
                       <small>
                         {row.title}: {row.start_date} - {row.end_date}
                       </small>
@@ -10379,7 +11868,7 @@ export function App() {
                     <span className="profile-avatar-overlay">{language === "de" ? "Ändern" : "Change"}</span>
                   </button>
                   <div className="metric-stack">
-                    <b>{user.full_name}</b>
+                    <b>{menuUserNameById(user.id, user.display_name || user.full_name)}</b>
                     <small>{user.email}</small>
                     <small>Role: {user.role}</small>
                   </div>
@@ -10406,6 +11895,29 @@ export function App() {
                       required
                     />
                   </label>
+                  {isAdmin && (
+                    <label>
+                      {language === "de" ? "Nickname (optional)" : "Nickname (optional)"}
+                      <input
+                        value={profileSettingsForm.nickname}
+                        onChange={(event) => {
+                          const nextValue = event.target.value;
+                          setProfileSettingsForm((current) => ({ ...current, nickname: nextValue }));
+                          setNicknameCheckState("idle");
+                          setNicknameCheckMessage("");
+                        }}
+                        placeholder={language === "de" ? "z. B. SiteWolf" : "for example SiteWolf"}
+                      />
+                      <small className="muted">
+                        {language === "de"
+                          ? "Wird in Berichten und Exporten statt des echten Namens verwendet. Leer lassen, um den Nickname zu entfernen."
+                          : "Used in reports and exports instead of the real name. Leave empty to remove nickname."}
+                      </small>
+                      {nicknameCheckState !== "idle" && nicknameCheckMessage && (
+                        <small className="muted">{nicknameCheckMessage}</small>
+                      )}
+                    </label>
+                  )}
                   <label>
                     {language === "de" ? "Aktuelles Passwort" : "Current password"}
                     <input
@@ -10606,7 +12118,7 @@ export function App() {
                             <option value="">{language === "de" ? "Bitte auswählen" : "Please select"}</option>
                             {assignableUsers.map((entry) => (
                               <option key={`profile-school-user-${entry.id}`} value={String(entry.id)}>
-                                {entry.full_name} (#{entry.id})
+                                {menuUserNameById(entry.id, entry.display_name || entry.full_name)} (#{entry.id})
                               </option>
                             ))}
                           </select>

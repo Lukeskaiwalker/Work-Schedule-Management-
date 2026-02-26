@@ -1,4 +1,6 @@
 from __future__ import annotations
+from pathlib import Path
+
 from fastapi.testclient import TestClient
 
 from app.main import _initialize_runtime_data
@@ -218,6 +220,48 @@ def test_admin_can_read_update_status(client: TestClient, admin_token: str, monk
     assert len(payload["install_steps"]) >= 2
 
 
+def test_admin_update_status_resolves_placeholder_release_version_from_git(
+    client: TestClient,
+    admin_token: str,
+    monkeypatch,
+):
+    monkeypatch.setattr(admin_router.settings, "app_release_version", "local-production", raising=False)
+    monkeypatch.setattr(admin_router.settings, "app_release_commit", "", raising=False)
+    monkeypatch.setattr(admin_router.settings, "update_repo_owner", "example", raising=False)
+    monkeypatch.setattr(admin_router.settings, "update_repo_name", "repo", raising=False)
+    monkeypatch.setattr(admin_router.settings, "update_repo_branch", "main", raising=False)
+    monkeypatch.setattr(admin_router, "_can_auto_install_updates", lambda: False)
+    monkeypatch.setattr(
+        admin_router,
+        "_resolve_current_release_from_git",
+        lambda: ("v1.2.3", "333333333333"),
+    )
+
+    def fake_github_api_json(path: str):
+        if path.endswith("/releases"):
+            return [
+                {
+                    "tag_name": "v1.2.4",
+                    "html_url": "https://github.com/example/repo/releases/tag/v1.2.4",
+                    "published_at": "2026-02-20T10:00:00Z",
+                    "target_commitish": "main",
+                }
+            ]
+        if path.endswith("/commits/main"):
+            return {"sha": "4444444444444444444444444444444444444444"}
+        raise AssertionError(f"Unexpected path: {path}")
+
+    monkeypatch.setattr(admin_router, "_github_api_json", fake_github_api_json)
+
+    response = client.get("/api/admin/updates/status", headers=auth_headers(admin_token))
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["current_version"] == "v1.2.3"
+    assert payload["current_commit"] == "333333333333"
+    assert payload["latest_version"] == "v1.2.4"
+    assert payload["update_available"] is True
+
+
 def test_admin_install_update_returns_manual_when_auto_install_unavailable(
     client: TestClient,
     admin_token: str,
@@ -245,3 +289,106 @@ def test_admin_install_update_returns_manual_when_auto_install_unavailable(
     assert payload["ok"] is False
     assert payload["mode"] == "manual"
     assert "Automatic install is unavailable" in payload["detail"]
+
+
+def test_admin_install_update_dry_run_runs_preflight(
+    client: TestClient,
+    admin_token: str,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        admin_router,
+        "_fetch_update_status",
+        lambda: admin_router.UpdateStatusOut(
+            repository="example/repo",
+            branch="main",
+            install_supported=True,
+            install_mode="auto",
+            install_steps=[],
+        ),
+    )
+    monkeypatch.setattr(admin_router, "_resolve_repo_root", lambda: Path("/tmp/repo"))
+
+    called: dict[str, bool] = {"preflight": False}
+
+    def fake_preflight(*, repo_root: Path, alembic_workdir: Path) -> list[str]:
+        called["preflight"] = True
+        assert repo_root == Path("/tmp/repo")
+        assert alembic_workdir == Path("/tmp/repo")
+        return ["alembic upgrade head (preflight temp db)"]
+
+    monkeypatch.setattr(admin_router, "_run_migration_preflight", fake_preflight)
+
+    response = client.post(
+        "/api/admin/updates/install",
+        headers=auth_headers(admin_token),
+        json={"dry_run": True},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["dry_run"] is True
+    assert called["preflight"] is True
+    assert any("git fetch --tags --prune origin" in step for step in payload["ran_steps"])
+    assert any("alembic upgrade head (preflight temp db)" in step for step in payload["ran_steps"])
+
+
+def test_admin_install_update_creates_snapshot_and_runs_preflight_before_migration(
+    client: TestClient,
+    admin_token: str,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        admin_router,
+        "_fetch_update_status",
+        lambda: admin_router.UpdateStatusOut(
+            repository="example/repo",
+            branch="main",
+            install_supported=True,
+            install_mode="auto",
+            install_steps=[],
+            latest_version="v1.2.0",
+            latest_commit="abcdef123456",
+        ),
+    )
+    monkeypatch.setattr(admin_router, "_resolve_repo_root", lambda: Path("/tmp/repo"))
+    monkeypatch.setattr(
+        admin_router,
+        "_create_pre_update_db_snapshot",
+        lambda repo_root: Path("/tmp/repo/backups/pre-update/db-smpl-20260226-220000.dump"),
+    )
+    monkeypatch.setattr(
+        admin_router,
+        "_run_migration_preflight",
+        lambda **_: ["alembic upgrade head (preflight temp db)"],
+    )
+
+    executed: list[str] = []
+
+    def fake_run_update_command(command: list[str], *, cwd: Path, env=None):  # noqa: ANN001
+        executed.append(" ".join(command))
+
+        class _Result:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _Result()
+
+    monkeypatch.setattr(admin_router, "_run_update_command", fake_run_update_command)
+
+    response = client.post(
+        "/api/admin/updates/install",
+        headers=auth_headers(admin_token),
+        json={"dry_run": False},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert executed == [
+        "git fetch --tags --prune origin",
+        "git pull --ff-only origin main",
+        "alembic upgrade head",
+    ]
+    assert any("pre-update snapshot:" in step for step in payload["ran_steps"])
+    assert any("alembic upgrade head (preflight temp db)" in step for step in payload["ran_steps"])

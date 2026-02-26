@@ -172,7 +172,7 @@ def _vacation_request_out(db: Session, request_row: VacationRequest) -> Vacation
     return VacationRequestOut(
         id=request_row.id,
         user_id=request_row.user_id,
-        user_name=request_user.full_name if request_user else f"#{request_row.user_id}",
+        user_name=request_user.display_name if request_user else f"#{request_row.user_id}",
         start_date=request_row.start_date,
         end_date=request_row.end_date,
         note=request_row.note,
@@ -188,7 +188,7 @@ def _school_absence_out(db: Session, row: SchoolAbsence) -> SchoolAbsenceOut:
     return SchoolAbsenceOut(
         id=row.id,
         user_id=row.user_id,
-        user_name=target_user.full_name if target_user else f"#{row.user_id}",
+        user_name=target_user.display_name if target_user else f"#{row.user_id}",
         title=row.title,
         start_date=row.start_date,
         end_date=row.end_date,

@@ -20,7 +20,7 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import Response
 from sqlalchemy.engine import make_url
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -29,8 +29,11 @@ from app.core.deps import get_current_user, require_admin
 from app.core.permissions import ALL_ROLES, ROLE_EMPLOYEE, TEMPLATES
 from app.core.security import get_password_hash
 from app.core.time import utcnow
-from app.models.entities import AuditLog, ProjectClassTemplate, User, UserActionToken
+from app.models.entities import AuditLog, EmployeeGroup, EmployeeGroupMember, ProjectClassTemplate, User, UserActionToken
 from app.schemas.api import (
+    EmployeeGroupCreate,
+    EmployeeGroupOut,
+    EmployeeGroupUpdate,
     InviteCreate,
     InviteDispatchOut,
     PasswordResetDispatchOut,
@@ -52,6 +55,7 @@ router = APIRouter(prefix="/admin", tags=["admin"])
 settings = get_settings()
 DB_BACKUP_MAGIC = b"SMPLDB1"
 DB_BACKUP_KDF_ITERATIONS = 390000
+PLACEHOLDER_RELEASE_VERSIONS = {"local-production"}
 
 PROJECT_IMPORT_TEMPLATE_HEADERS = [
     "project_number",
@@ -65,6 +69,14 @@ PROJECT_IMPORT_TEMPLATE_HEADERS = [
     "customer_email",
     "customer_phone",
     "description",
+    "order_value_net",
+    "down_payment_35",
+    "main_components_50",
+    "final_invoice_15",
+    "planned_costs",
+    "actual_costs",
+    "contribution_margin",
+    "planned_hours_total",
 ]
 PROJECT_CLASS_TEMPLATE_HEADERS = [
     "class_name",
@@ -113,6 +125,52 @@ def _trim_or_none(value: str | None) -> str | None:
     return raw or None
 
 
+def _employee_group_out(db: Session, group: EmployeeGroup) -> EmployeeGroupOut:
+    memberships = db.scalars(
+        select(EmployeeGroupMember).where(EmployeeGroupMember.group_id == group.id).order_by(EmployeeGroupMember.id.asc())
+    ).all()
+    members: list[dict] = []
+    member_user_ids: list[int] = []
+    for membership in memberships:
+        user = db.get(User, membership.user_id)
+        if not user:
+            continue
+        members.append(
+            {
+                "user_id": user.id,
+                "full_name": user.full_name,
+                "display_name": user.display_name,
+                "is_active": bool(user.is_active),
+            }
+        )
+        if user.is_active:
+            member_user_ids.append(user.id)
+    return EmployeeGroupOut(
+        id=group.id,
+        name=group.name,
+        member_user_ids=sorted(set(member_user_ids)),
+        members=members,
+    )
+
+
+def _sync_employee_group_members(db: Session, group_id: int, member_user_ids: list[int]) -> None:
+    normalized_ids = sorted({int(user_id) for user_id in member_user_ids if int(user_id) > 0})
+    if normalized_ids:
+        users = db.scalars(
+            select(User).where(User.id.in_(normalized_ids), User.is_active.is_(True)).order_by(User.id.asc())
+        ).all()
+        valid_ids = {user.id for user in users}
+        missing = [user_id for user_id in normalized_ids if user_id not in valid_ids]
+        if missing:
+            raise HTTPException(status_code=400, detail=f"Invalid or archived user ids: {missing}")
+    else:
+        valid_ids = set()
+
+    db.execute(delete(EmployeeGroupMember).where(EmployeeGroupMember.group_id == group_id))
+    for user_id in sorted(valid_ids):
+        db.add(EmployeeGroupMember(group_id=group_id, user_id=user_id))
+
+
 def _to_semver_tuple(value: str | None) -> tuple[int, int, int] | None:
     normalized = _trim_or_none(value)
     if not normalized:
@@ -128,6 +186,70 @@ def _short_commit(value: str | None) -> str | None:
     if not normalized:
         return None
     return normalized[:12]
+
+
+def _is_placeholder_release_version(value: str | None) -> bool:
+    normalized = _trim_or_none(value)
+    if not normalized:
+        return False
+    return normalized.lower() in PLACEHOLDER_RELEASE_VERSIONS
+
+
+def _run_git_readonly(command: list[str], *, cwd: Path) -> str | None:
+    try:
+        result = subprocess.run(
+            command,
+            cwd=str(cwd),
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, OSError):
+        return None
+    if result.returncode != 0:
+        return None
+    return _trim_or_none(result.stdout)
+
+
+def _resolve_current_release_from_git() -> tuple[str | None, str | None]:
+    repo_root = _resolve_repo_root()
+    if repo_root is None:
+        return None, None
+
+    head_commit = _run_git_readonly(["git", "rev-parse", "HEAD"], cwd=repo_root)
+    head_short_commit = _short_commit(head_commit)
+
+    exact_tag = _run_git_readonly(["git", "describe", "--tags", "--exact-match", "HEAD"], cwd=repo_root)
+    if exact_tag:
+        return exact_tag, head_short_commit
+
+    points_at_rows = _run_git_readonly(["git", "tag", "--points-at", "HEAD"], cwd=repo_root)
+    if points_at_rows:
+        first_tag = _trim_or_none(points_at_rows.splitlines()[0])
+        if first_tag:
+            return first_tag, head_short_commit
+
+    return None, head_short_commit
+
+
+def _current_release_metadata() -> tuple[str | None, str | None, bool]:
+    current_version = _trim_or_none(settings.app_release_version)
+    current_commit = _short_commit(settings.app_release_commit)
+    placeholder_requested = _is_placeholder_release_version(current_version)
+    unresolved_placeholder = False
+
+    if placeholder_requested or not current_commit:
+        git_version, git_commit = _resolve_current_release_from_git()
+        if placeholder_requested and git_version:
+            current_version = git_version
+        if not current_commit and git_commit:
+            current_commit = git_commit
+
+    if _is_placeholder_release_version(current_version):
+        unresolved_placeholder = True
+        current_version = None
+
+    return current_version, current_commit, unresolved_placeholder
 
 
 def _github_repo_slug() -> str:
@@ -151,10 +273,13 @@ def _github_api_json(path: str) -> dict | list:
 
 def _manual_update_steps(branch: str) -> list[str]:
     return [
+        "BACKUP_PASSPHRASE='<passphrase>' ./scripts/backup.sh",
         "git fetch --tags --prune",
         f"git pull --ff-only origin {branch}",
-        "docker compose up -d --build",
-        "docker compose exec api alembic upgrade head",
+        "docker compose build api",
+        "./scripts/preflight_migrations.sh",
+        "docker compose run --rm api sh -lc 'cd /app && alembic upgrade head'",
+        "docker compose up -d --build api api_worker web caddy",
     ]
 
 
@@ -177,7 +302,12 @@ def _can_auto_install_updates() -> bool:
     return _resolve_repo_root() is not None
 
 
-def _run_update_command(command: list[str], *, cwd: Path) -> subprocess.CompletedProcess[str]:
+def _run_update_command(
+    command: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
             command,
@@ -185,6 +315,7 @@ def _run_update_command(command: list[str], *, cwd: Path) -> subprocess.Complete
             check=True,
             capture_output=True,
             text=True,
+            env=env,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=500, detail=f"Command not found: {command[0]}") from exc
@@ -195,25 +326,170 @@ def _run_update_command(command: list[str], *, cwd: Path) -> subprocess.Complete
         raise HTTPException(status_code=500, detail=detail) from exc
 
 
+def _pg_conn_args_from_url(db_url) -> list[str]:
+    return [
+        "-h",
+        db_url.host or "db",
+        "-p",
+        str(db_url.port or 5432),
+        "-U",
+        db_url.username or "smpl",
+    ]
+
+
+def _pg_env_from_url(db_url) -> dict[str, str]:
+    env = os.environ.copy()
+    if db_url.password:
+        env["PGPASSWORD"] = db_url.password
+    return env
+
+
+def _sanitize_db_identifier(value: str) -> str:
+    raw = re.sub(r"[^a-zA-Z0-9_]", "_", value.strip())
+    if not raw:
+        raw = "smpl"
+    if raw[0].isdigit():
+        raw = f"db_{raw}"
+    return raw[:63]
+
+
+def _create_pre_update_db_snapshot(repo_root: Path) -> Path:
+    db_url = make_url(settings.database_url)
+    if not db_url.drivername.startswith("postgresql"):
+        raise HTTPException(status_code=400, detail="Automatic update requires PostgreSQL for DB safety snapshot")
+    source_db_name = _trim_or_none(db_url.database)
+    if not source_db_name:
+        raise HTTPException(status_code=500, detail="Database name missing in DATABASE_URL")
+
+    snapshot_dir = repo_root / "backups" / "pre-update"
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = utcnow().strftime("%Y%m%d-%H%M%S")
+    snapshot_name = f"db-{_sanitize_db_identifier(source_db_name)}-{timestamp}.dump"
+    snapshot_path = snapshot_dir / snapshot_name
+
+    dump_cmd = [
+        "pg_dump",
+        "--format=custom",
+        "--no-owner",
+        "--no-privileges",
+        *_pg_conn_args_from_url(db_url),
+        "-d",
+        source_db_name,
+        "-f",
+        str(snapshot_path),
+    ]
+    _run_update_command(dump_cmd, cwd=repo_root, env=_pg_env_from_url(db_url))
+    return snapshot_path
+
+
+def _run_migration_preflight(*, repo_root: Path, alembic_workdir: Path) -> list[str]:
+    db_url = make_url(settings.database_url)
+    if not db_url.drivername.startswith("postgresql"):
+        raise HTTPException(status_code=400, detail="Migration preflight requires PostgreSQL")
+    source_db_name = _trim_or_none(db_url.database)
+    if not source_db_name:
+        raise HTTPException(status_code=500, detail="Database name missing in DATABASE_URL")
+
+    base_name = _sanitize_db_identifier(source_db_name)
+    tmp_db_name = _sanitize_db_identifier(f"{base_name}_preflight_{utcnow().strftime('%Y%m%d%H%M%S')}_{secrets.token_hex(2)}")
+    preflight_steps: list[str] = []
+    pg_env = _pg_env_from_url(db_url)
+    pg_conn_args = _pg_conn_args_from_url(db_url)
+
+    with tempfile.TemporaryDirectory(prefix="smpl-update-preflight-") as tmp_dir:
+        dump_path = Path(tmp_dir) / "db.dump"
+        dump_cmd = [
+            "pg_dump",
+            "--format=custom",
+            "--no-owner",
+            "--no-privileges",
+            *pg_conn_args,
+            "-d",
+            source_db_name,
+            "-f",
+            str(dump_path),
+        ]
+        _run_update_command(dump_cmd, cwd=repo_root, env=pg_env)
+        preflight_steps.append(f"pg_dump {source_db_name} -> {dump_path.name}")
+
+        create_cmd = [
+            "psql",
+            *pg_conn_args,
+            "-d",
+            "postgres",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-c",
+            f"CREATE DATABASE {tmp_db_name}",
+        ]
+        drop_cmd = [
+            "psql",
+            *pg_conn_args,
+            "-d",
+            "postgres",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-c",
+            f"DROP DATABASE IF EXISTS {tmp_db_name} WITH (FORCE)",
+        ]
+
+        try:
+            _run_update_command(create_cmd, cwd=repo_root, env=pg_env)
+            preflight_steps.append(f"created temp database {tmp_db_name}")
+
+            restore_cmd = [
+                "pg_restore",
+                "--clean",
+                "--if-exists",
+                "--no-owner",
+                "--no-privileges",
+                *pg_conn_args,
+                "-d",
+                tmp_db_name,
+                str(dump_path),
+            ]
+            _run_update_command(restore_cmd, cwd=repo_root, env=pg_env)
+            preflight_steps.append(f"pg_restore -> {tmp_db_name}")
+
+            preflight_env = os.environ.copy()
+            preflight_env.update(pg_env)
+            preflight_env["DATABASE_URL"] = str(db_url.set(database=tmp_db_name))
+            _run_update_command(["alembic", "upgrade", "head"], cwd=alembic_workdir, env=preflight_env)
+            preflight_steps.append("alembic upgrade head (preflight temp db)")
+        finally:
+            try:
+                _run_update_command(drop_cmd, cwd=repo_root, env=pg_env)
+            except HTTPException:
+                pass
+
+    return preflight_steps
+
+
 def _fetch_update_status() -> UpdateStatusOut:
     owner = settings.update_repo_owner.strip()
     repo = settings.update_repo_name.strip()
     branch = (settings.update_repo_branch or "main").strip() or "main"
     if not owner or not repo:
+        current_version, current_commit, unresolved_placeholder = _current_release_metadata()
+        message = "Update repository is not configured"
+        if unresolved_placeholder:
+            message = (
+                "Update repository is not configured. Current release version is unresolved; "
+                "set APP_RELEASE_VERSION or run from a tagged git checkout."
+            )
         return UpdateStatusOut(
             repository="",
             branch=branch,
-            current_version=_trim_or_none(settings.app_release_version),
-            current_commit=_short_commit(settings.app_release_commit),
+            current_version=current_version,
+            current_commit=current_commit,
             install_supported=False,
             install_mode="manual",
             install_steps=_manual_update_steps(branch),
-            message="Update repository is not configured",
+            message=message,
         )
 
     repository = f"{owner}/{repo}"
-    current_version = _trim_or_none(settings.app_release_version)
-    current_commit = _short_commit(settings.app_release_commit)
+    current_version, current_commit, unresolved_placeholder = _current_release_metadata()
     install_supported = _can_auto_install_updates()
     install_mode = "auto" if install_supported else "manual"
     install_steps = _manual_update_steps(branch)
@@ -274,6 +550,9 @@ def _fetch_update_status() -> UpdateStatusOut:
                 message = "No GitHub release is published yet; branch commit check only."
     except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, ValueError) as exc:
         message = f"Could not fetch update status from GitHub: {exc}"
+
+    if unresolved_placeholder and not current_version and not message:
+        message = "Current release version is unresolved; set APP_RELEASE_VERSION or run from a tagged git checkout."
 
     return UpdateStatusOut(
         repository=repository,
@@ -570,6 +849,97 @@ def _create_encrypted_database_backup(database_url: str, key_material: bytes) ->
 @router.get("/users", response_model=list[UserOut])
 def list_users(_: User = Depends(require_admin), db: Session = Depends(get_db)):
     return list(db.scalars(select(User).order_by(User.is_active.desc(), User.id)).all())
+
+
+@router.get("/employee-groups", response_model=list[EmployeeGroupOut])
+def list_employee_groups(_: User = Depends(require_admin), db: Session = Depends(get_db)):
+    groups = db.scalars(select(EmployeeGroup).order_by(EmployeeGroup.name.asc(), EmployeeGroup.id.asc())).all()
+    return [_employee_group_out(db, group) for group in groups]
+
+
+@router.post("/employee-groups", response_model=EmployeeGroupOut)
+def create_employee_group(payload: EmployeeGroupCreate, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Group name cannot be empty")
+    exists = db.scalars(select(EmployeeGroup).where(EmployeeGroup.name == name)).first()
+    if exists:
+        raise HTTPException(status_code=409, detail="Employee group already exists")
+
+    group = EmployeeGroup(name=name, created_by=admin.id)
+    db.add(group)
+    db.flush()
+    _sync_employee_group_members(db, group.id, payload.member_user_ids)
+    db.commit()
+    db.refresh(group)
+    log_admin_action(
+        db,
+        admin,
+        "employee_group.create",
+        "employee_group",
+        str(group.id),
+        {"name": group.name, "member_user_ids": payload.member_user_ids},
+    )
+    return _employee_group_out(db, group)
+
+
+@router.patch("/employee-groups/{group_id}", response_model=EmployeeGroupOut)
+def update_employee_group(
+    group_id: int,
+    payload: EmployeeGroupUpdate,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    group = db.get(EmployeeGroup, group_id)
+    if not group:
+        raise HTTPException(status_code=404, detail="Employee group not found")
+
+    fields_set = getattr(payload, "model_fields_set", None)
+    if fields_set is None:
+        fields_set = getattr(payload, "__fields_set__", set())
+
+    if "name" in fields_set and payload.name is not None:
+        name = payload.name.strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Group name cannot be empty")
+        duplicate = db.scalars(select(EmployeeGroup).where(EmployeeGroup.name == name, EmployeeGroup.id != group.id)).first()
+        if duplicate:
+            raise HTTPException(status_code=409, detail="Employee group already exists")
+        group.name = name
+
+    if "member_user_ids" in fields_set and payload.member_user_ids is not None:
+        _sync_employee_group_members(db, group.id, payload.member_user_ids)
+
+    db.commit()
+    db.refresh(group)
+    log_admin_action(
+        db,
+        admin,
+        "employee_group.update",
+        "employee_group",
+        str(group.id),
+        payload.model_dump(exclude_none=True),
+    )
+    return _employee_group_out(db, group)
+
+
+@router.delete("/employee-groups/{group_id}")
+def delete_employee_group(group_id: int, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    group = db.get(EmployeeGroup, group_id)
+    if not group:
+        raise HTTPException(status_code=404, detail="Employee group not found")
+    group_name = group.name
+    db.delete(group)
+    db.commit()
+    log_admin_action(
+        db,
+        admin,
+        "employee_group.delete",
+        "employee_group",
+        str(group_id),
+        {"name": group_name},
+    )
+    return {"ok": True, "group_id": group_id}
 
 
 @router.post("/users", response_model=UserOut)
@@ -932,6 +1302,14 @@ def download_project_import_template(
             "kontakt@example.com",
             "+49 123 456789",
             "Import per CSV",
+            "100000",
+            "35000",
+            "50000",
+            "15000",
+            "70000",
+            "65000",
+            "35000",
+            "120",
         ]
     )
     return Response(
@@ -982,6 +1360,9 @@ async def import_projects_csv(
             "updated": stats.updated,
             "temporary_numbers": stats.temporary_numbers,
             "duplicates_skipped": stats.duplicates_skipped,
+            "skipped_project_fields": stats.skipped_project_fields,
+            "skipped_finance_fields": stats.skipped_finance_fields,
+            "skipped_filled_fields": stats.skipped_project_fields + stats.skipped_finance_fields,
         },
     )
     return {
@@ -990,6 +1371,9 @@ async def import_projects_csv(
         "updated": stats.updated,
         "temporary_numbers": stats.temporary_numbers,
         "duplicates_skipped": stats.duplicates_skipped,
+        "skipped_project_fields": stats.skipped_project_fields,
+        "skipped_finance_fields": stats.skipped_finance_fields,
+        "skipped_filled_fields": stats.skipped_project_fields + stats.skipped_finance_fields,
     }
 
 
@@ -1151,22 +1535,60 @@ def install_updates(
 
     api_dir_candidate = repo_root / "apps" / "api"
     alembic_workdir = api_dir_candidate if (api_dir_candidate / "alembic.ini").exists() else repo_root
-    command_steps.append(("alembic.upgrade", ["alembic", "upgrade", "head"], alembic_workdir))
-
     ran_steps: list[str] = []
     if payload.dry_run:
+        try:
+            preflight_steps = _run_migration_preflight(repo_root=repo_root, alembic_workdir=alembic_workdir)
+        except HTTPException as exc:
+            return UpdateInstallOut(
+                ok=False,
+                mode="auto",
+                detail=f"Dry run failed during migration preflight: {exc.detail}",
+                ran_steps=[" ".join(cmd) for _, cmd, _ in command_steps],
+                dry_run=True,
+            )
         ran_steps = [" ".join(cmd) for _, cmd, _ in command_steps]
+        ran_steps.extend(preflight_steps)
         return UpdateInstallOut(
             ok=True,
             mode="auto",
-            detail="Dry run complete. No commands were executed.",
+            detail=(
+                "Dry run complete. Migration preflight passed on a temporary cloned database. "
+                "Git pull and real migrations were not executed."
+            ),
             ran_steps=ran_steps,
             dry_run=True,
         )
 
-    for _, command, cwd in command_steps:
-        _run_update_command(command, cwd=cwd)
-        ran_steps.append(" ".join(command))
+    snapshot_path: Path | None = None
+    try:
+        for _, command, cwd in command_steps:
+            _run_update_command(command, cwd=cwd)
+            ran_steps.append(" ".join(command))
+
+        snapshot_path = _create_pre_update_db_snapshot(repo_root)
+        try:
+            snapshot_label = str(snapshot_path.relative_to(repo_root))
+        except ValueError:
+            snapshot_label = str(snapshot_path)
+        ran_steps.append(f"pre-update snapshot: {snapshot_label}")
+
+        preflight_steps = _run_migration_preflight(repo_root=repo_root, alembic_workdir=alembic_workdir)
+        ran_steps.extend(preflight_steps)
+
+        _run_update_command(["alembic", "upgrade", "head"], cwd=alembic_workdir)
+        ran_steps.append("alembic upgrade head")
+    except HTTPException as exc:
+        backup_note = ""
+        if snapshot_path is not None:
+            backup_note = f" Snapshot kept at: {snapshot_path}."
+        return UpdateInstallOut(
+            ok=False,
+            mode="auto",
+            detail=f"Automatic install aborted before DB migration completion: {exc.detail}.{backup_note}",
+            ran_steps=ran_steps,
+            dry_run=False,
+        )
 
     log_admin_action(
         db,
@@ -1180,13 +1602,17 @@ def install_updates(
             "ran_steps": ran_steps,
             "latest_version": status.latest_version,
             "latest_commit": status.latest_commit,
+            "snapshot_path": str(snapshot_path) if snapshot_path else None,
         },
     )
 
     return UpdateInstallOut(
         ok=True,
         mode="auto",
-        detail="Update commands completed successfully.",
+        detail=(
+            "Update commands completed successfully. "
+            f"Pre-update DB snapshot created at {snapshot_path}."
+        ),
         ran_steps=ran_steps,
         dry_run=False,
     )

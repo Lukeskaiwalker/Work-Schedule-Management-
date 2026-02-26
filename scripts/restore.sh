@@ -15,6 +15,15 @@ if [[ ! -f "$BACKUP_FILE" ]]; then
   exit 1
 fi
 
+if [[ -z "${BACKUP_PASSPHRASE:-}" && -n "${BACKUP_PASSPHRASE_FILE:-}" ]]; then
+  if [[ ! -f "${BACKUP_PASSPHRASE_FILE}" ]]; then
+    echo "BACKUP_PASSPHRASE_FILE not found: ${BACKUP_PASSPHRASE_FILE}" >&2
+    exit 1
+  fi
+  BACKUP_PASSPHRASE="$(<"${BACKUP_PASSPHRASE_FILE}")"
+  export BACKUP_PASSPHRASE
+fi
+
 if [[ -z "${BACKUP_PASSPHRASE:-}" ]]; then
   echo "BACKUP_PASSPHRASE must be set" >&2
   exit 1

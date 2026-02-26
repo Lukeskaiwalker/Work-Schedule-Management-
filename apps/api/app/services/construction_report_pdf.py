@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import date
+from html import escape
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -29,12 +30,14 @@ def sanitize_filename(value: str) -> str:
     return cleaned or "report"
 
 
-def build_report_filename(payload: dict[str, Any], report_date: date) -> str:
+def build_report_filename(payload: dict[str, Any], report_date: date, *, report_number: int | None = None) -> str:
     customer = sanitize_filename(str(payload.get("customer") or "construction-report"))
     project_number = payload.get("project_number")
     parts = [customer]
     if project_number:
         parts.append(sanitize_filename(str(project_number)))
+    if report_number and report_number > 0:
+        parts.append(f"report-{int(report_number):04d}")
     parts.append(report_date.isoformat())
     return "_".join(parts) + ".pdf"
 
@@ -90,7 +93,7 @@ def build_report_pdf_bytes(
     elements.append(_workers_table(payload.get("workers") or [], doc.width))
 
     elements.append(_section_title("Ausgefuehrte Arbeiten", styles))
-    elements.append(_paragraph(str(payload.get("work_done") or "-"), styles))
+    elements.append(_paragraph(format_work_done_for_report(payload), styles))
 
     elements.append(_section_title("Material", styles))
     elements.append(_materials_table(payload.get("materials") or [], doc.width))
@@ -140,6 +143,21 @@ def build_report_summary_text(
         f"Project Number: {payload.get('project_number') or '-'}\n"
         f"Workers: {len(workers)} | Materials: {len(materials)} | Extras: {len(extras)}"
     )
+
+
+def format_work_done_for_report(payload: dict[str, Any]) -> str:
+    work_done = str(payload.get("work_done") or "").strip()
+    completed_subtasks = _normalize_completed_subtasks(payload.get("completed_subtasks"))
+    if not completed_subtasks:
+        return work_done or "-"
+
+    lines: list[str] = []
+    if work_done:
+        lines.append(work_done)
+        lines.append("")
+    lines.append("Erledigte Teilaufgaben:")
+    lines.extend([f"- {entry}" for entry in completed_subtasks])
+    return "\n".join(lines).strip() or "-"
 
 
 def compact_photo_for_pdf(photo_bytes: bytes) -> bytes:
@@ -203,7 +221,27 @@ def _build_header(styles, report_date: date, logo_path: str | None, width: float
 
 def _paragraph(text: str, styles) -> Paragraph:
     value = (text or "").strip()
-    return Paragraph(value or "-", styles["NormalSmall"])
+    if not value:
+        return Paragraph("-", styles["NormalSmall"])
+    rendered = escape(value).replace("\n", "<br/>")
+    return Paragraph(rendered, styles["NormalSmall"])
+
+
+def _normalize_completed_subtasks(raw_subtasks: Any) -> list[str]:
+    if not isinstance(raw_subtasks, list):
+        return []
+    seen: set[str] = set()
+    result: list[str] = []
+    for row in raw_subtasks:
+        label = str(row or "").strip()
+        if not label:
+            continue
+        key = label.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(label)
+    return result
 
 
 def _key_value_table(rows: list[tuple[str, str]], width: float) -> Table:

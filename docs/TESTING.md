@@ -15,6 +15,33 @@
 - Local browser smoke (manual automation):
   - Start local API + web dev servers, then run Playwright CLI flow for login/project/report submit.
 
+## Latest Result (2026-02-26, admin nickname + anonymized report submitter)
+- Frontend:
+  - `cd apps/web && npm run build`: pass.
+- Backend:
+  - Python syntax compile checks for changed API files: pass.
+  - Targeted pytest execution could not run in this environment:
+    - local `pytest` module missing,
+    - Docker fallback unavailable (`Cannot connect to Docker daemon`).
+- Added automated coverage (new tests in `apps/api/tests/test_workflows.py`):
+  - admin nickname availability + one-time lock behavior,
+  - admin-only nickname restriction,
+  - construction report submitter uses nickname/display name.
+
+## Latest Result (2026-02-26, restricted chat participants)
+- API + web one-command check:
+  - `./scripts/test.sh`: pass (`53 passed`, web build pass).
+- Added coverage in `apps/api/tests/test_workflows.py` for:
+  - restricted thread creation with `participant_user_ids` + `participant_group_ids`,
+  - visibility filtering on `/api/threads` for selected users/group members vs outsiders,
+  - access denial on restricted message read/send for non-participants,
+  - archived users excluded from participant selector endpoint,
+  - archived user IDs rejected in restricted-thread create payload.
+- Runtime deploy verification:
+  - `docker compose up --build -d api web caddy`: pass.
+  - `curl -k https://localhost/` -> `200`.
+  - `curl -k https://localhost/api` -> `200`.
+
 ## Latest Result (2026-02-24, async report queue + worker/runtime tuning)
 - One-command run (`./scripts/test.sh`): pass.
 - API tests: pass (`47 passed`) in Docker mode.
@@ -1058,3 +1085,195 @@
 - Coverage notes:
   - No backend contract changes in this iteration.
   - Change is CSS-only tuning for finance metric readability/density.
+
+## Iteration Result (2026-02-25, materials status indicator + complete action)
+- Commands run:
+  - `./scripts/test.sh`
+  - `docker compose up -d --build api web caddy`
+- Results:
+  - Full API + web wrapper checks: pass (`48 passed`, web build successful).
+  - Runtime services healthy after deploy (`web`, `api`, `caddy`).
+- Coverage notes:
+  - Added API behavior for `completed` material status and active-list exclusion.
+  - Updated workflow integration test to validate `order` -> `on_the_way` -> `available` -> `completed` flow and queue removal.
+
+## Iteration Result (2026-02-25, report numbers + numbered report photo filenames)
+- Commands run:
+  - `docker compose run --rm api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_workflows.py::test_project_task_planning_ticket_file_and_report_flow'`
+  - `./scripts/test.sh`
+  - `docker compose run --rm api sh -lc 'cd /app && alembic upgrade head'`
+  - `docker compose up -d --build api web caddy`
+- Results:
+  - Targeted workflow integration: pass (`1 passed`).
+  - Full API + web wrapper checks: pass (`49 passed`, web build successful).
+  - Migration upgrade: pass (upgraded to `20260225_0026`).
+  - Runtime services healthy after deploy (`api`, `web`, `caddy`).
+- Coverage notes:
+  - Updated workflow test coverage for project report numbering, processing payload report number, and numbered report image filenames.
+
+## Iteration Result (2026-02-25, update menu current release version placeholder removal)
+- Commands run:
+  - `docker compose run --rm api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_auth_rbac.py -k "update_status or install_update"'`
+  - `cd apps/web && npm run build`
+  - `./scripts/test.sh`
+  - `docker compose up -d --build api web caddy`
+- Results:
+  - Targeted admin update tests: pass (`2 passed`).
+  - Web production build: pass.
+  - Full API + web wrapper checks: pass (`50 passed`, web build successful).
+  - Runtime services healthy after deploy (`api`, `web`, `caddy`).
+- Coverage notes:
+  - Added API test for resolving placeholder `local-production` to git-derived release metadata.
+
+## Iteration Result (2026-02-26, chat users+roles multi-select restrictions)
+- Commands run:
+  - `cd apps/api && PYTHONPATH=. python3 -m compileall app`
+  - `cd apps/web && npm run build`
+  - `./scripts/test.sh`
+  - `docker compose up --build -d api web caddy`
+  - `docker compose exec -T api alembic current`
+- Results:
+  - Python compile check: pass.
+  - Web production build: pass.
+  - Full API + web wrapper checks: pass (`53 passed`, web build successful).
+  - Runtime services healthy after deploy (`api`, `web`, `caddy`).
+  - Migration state at runtime: `20260226_0029 (head)`.
+- Coverage notes:
+  - Workflow test now validates restricted thread creation via `participant_roles` and access for role-matched users.
+  - Added invalid-role rejection test and kept archived-user participant rejection checks.
+
+## Iteration Result (2026-02-26, chat access editing + archive/restore/delete)
+- Commands run:
+  - `cd apps/api && PYTHONPATH=. python3 -m compileall app`
+  - `cd apps/web && npm run build`
+  - `./scripts/test.sh`
+  - `docker compose up --build -d api web caddy`
+  - `docker compose exec -T api alembic upgrade head`
+  - `docker compose exec -T api alembic current`
+- Results:
+  - Python compile check: pass.
+  - Web production build: pass.
+  - Full API + web wrapper checks: pass (`53 passed`, web build successful).
+  - Runtime services healthy after deploy (`api`, `web`, `caddy`).
+  - Migration state at runtime: `20260226_0030 (head)`.
+- Coverage notes:
+  - Workflow test now validates:
+    - restricted membership changes via `PATCH /threads/{id}`,
+    - archive visibility filtering and `include_archived=true`,
+    - archived-thread send rejection (`409`),
+    - restore flow,
+    - thread delete permission + hard delete behavior,
+    - archived existing member preservation on thread updates.
+
+## Iteration Result (2026-02-26, chat header 3-dot actions menu)
+- Commands run:
+  - `cd apps/web && npm run build`
+  - `docker compose up --build -d web caddy`
+- Results:
+  - Web production build: pass.
+  - Runtime services healthy after deploy (`web`, `caddy`).
+- Coverage notes:
+  - UI interaction change only; no API behavior changes introduced in this iteration.
+
+## Iteration Result (2026-02-26, project overview map copy-address button)
+- Commands run:
+  - `cd apps/web && npm run build`
+  - `docker compose up --build -d web caddy`
+  - `curl -k -I https://localhost/`
+- Results:
+  - Web production build: pass.
+  - Runtime services healthy after deploy (`api`, `web`, `caddy`).
+  - Local HTTPS endpoint reachable (`HTTP/2 200`).
+- Coverage notes:
+  - Frontend-only interaction change in project overview map card; no API or migration changes.
+
+## Iteration Result (2026-02-26, task assignee absence info in picker)
+- Commands run:
+  - `cd apps/web && npm run build`
+  - `docker compose up --build -d web caddy`
+  - `curl -k -I https://localhost/`
+- Results:
+  - Web production build: pass.
+  - Runtime services healthy after deploy (`api`, `web`, `caddy`).
+  - Local HTTPS endpoint reachable (`HTTP/2 200`).
+- Coverage notes:
+  - Frontend-only behavior change in task assignee pickers; no API/migration changes.
+  - Manual UI check needed for exact per-user hint text in all three task assignment forms.
+
+## Iteration Result (2026-02-26, nickname edit/remove after set)
+- Commands run:
+  - `docker compose run --rm api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_workflows.py -k nickname'`
+  - `cd apps/web && npm run build`
+  - `docker compose up --build -d api web caddy`
+  - `curl -k -I https://localhost/`
+- Results:
+  - Targeted API nickname tests: pass (`3 passed`).
+  - Web production build: pass.
+  - Runtime services healthy after deploy (`api`, `web`, `caddy`).
+  - Local HTTPS endpoint reachable (`HTTP/2 200`).
+- Coverage notes:
+  - Updated workflow test now covers nickname change and removal flow after initial set.
+
+## Iteration Result (2026-02-26, task sub-tasks + report follow-up carry-over)
+- Commands run:
+  - `docker compose run --rm --build api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_workflows.py -k "project_task_planning_ticket_file_and_report_flow"'`
+  - `./scripts/test.sh`
+  - `cd apps/web && npm run build`
+- Results:
+  - Targeted workflow test: pass (`1 passed`, filtered).
+  - Full backend suite + web build wrapper: pass (`53 passed`, web build successful).
+- Coverage notes:
+  - Workflow test now asserts sub-task persistence on task create/update.
+  - Workflow test now asserts report-driven follow-up task creation with remaining sub-tasks and unassigned assignees.
+
+## Iteration Result (2026-02-26, DB-safe update preflight + snapshot guard)
+- Commands run:
+  - `docker compose run --rm --build api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_auth_rbac.py -k "admin_install_update or admin_can_read_update_status or placeholder_release"'`
+  - `cd apps/web && npm run build`
+  - `bash -n scripts/preflight_migrations.sh scripts/safe_update.sh scripts/backup.sh scripts/restore.sh`
+- Results:
+  - Targeted admin update tests: pass (`5 passed`, `7 deselected`).
+  - Web production build: pass.
+  - Shell syntax checks for new/updated operational scripts: pass.
+- Coverage notes:
+  - Added update safety coverage for:
+    - dry-run migration preflight execution,
+    - auto-install order (`git fetch/pull` -> snapshot -> preflight -> real migration),
+    - existing manual fallback behavior when auto-install is unavailable.
+
+## Iteration Result (2026-02-26, report completed sub-task rendering + task-edit last-edited display)
+- Commands run:
+  - `docker compose run --rm --build api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_construction_report_pdf.py'`
+  - `cd apps/web && npm run build`
+- Results:
+  - PDF service tests: pass (`4 passed`).
+  - Web production build: pass.
+- Coverage notes:
+  - Added PDF formatter tests validating completed sub-task rows are included in `Ausgefuehrte Arbeiten` text block.
+  - Task edit modal change is frontend-only and build-validated.
+
+## Iteration Result (2026-02-26, HEIC upload support for avatar/thread icons + web file pickers)
+- Commands run:
+  - `docker compose run --rm --build api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_workflows.py -k "heic"'`
+  - `cd apps/web && npm run build`
+- Results:
+  - Targeted HEIC workflow tests: pass (`2 passed`, filtered).
+  - Web production build: pass.
+- Coverage notes:
+  - Added integration coverage for avatar upload with `.heic` filename and non-image MIME (`application/octet-stream`).
+  - Added integration coverage for thread icon upload with `.heic` filename and non-image MIME.
+
+## Iteration Result (2026-02-26, project materials tab + merged report materials)
+- Commands run:
+  - `docker compose run --rm api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_workflows.py -k project_task_planning_ticket_file_and_report_flow'`
+  - `cd apps/web && npm run build`
+  - `docker compose up -d --build --force-recreate api web caddy`
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/api`
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/`
+- Results:
+  - Targeted workflow test: pass (`1 passed`, filtered).
+  - Web production build: pass.
+  - Runtime services healthy after recreate.
+  - Health checks: API `200`, web `200`.
+- Coverage notes:
+  - Workflow test now validates merged project material summary endpoint output and project access control (`403` for outsider).

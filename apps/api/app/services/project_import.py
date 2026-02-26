@@ -11,7 +11,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.entities import Project
+from app.models.entities import Project, ProjectFinance
 
 
 PROJECT_NUMBER_KEYS = {
@@ -91,6 +91,46 @@ CUSTOMER_EMAIL_KEYS = {"customer_email", "email", "e_mail", "mail"}
 
 CUSTOMER_PHONE_KEYS = {"customer_phone", "telefon", "telefonnummer", "phone", "tel", "mobil"}
 
+FINANCE_ORDER_VALUE_NET_KEYS = {
+    "order_value_net",
+    "auftragswert_netto",
+    "auftragswert_net",
+    "auftragswert",
+}
+FINANCE_DOWN_PAYMENT_35_KEYS = {
+    "down_payment_35",
+    "anzahlung_35",
+    "35_anzahlung",
+    "anzahlung35",
+}
+FINANCE_MAIN_COMPONENTS_50_KEYS = {
+    "main_components_50",
+    "hauptkomponenten_50",
+    "50_hauptkomponenten",
+    "hauptkomponenten50",
+}
+FINANCE_FINAL_INVOICE_15_KEYS = {
+    "final_invoice_15",
+    "schlussrechnung_15",
+    "15_schlussrechnung",
+    "schlussrechnung15",
+}
+FINANCE_PLANNED_COSTS_KEYS = {"planned_costs", "geplante_kosten"}
+FINANCE_ACTUAL_COSTS_KEYS = {"actual_costs", "tatsachliche_kosten", "tatsaechliche_kosten"}
+FINANCE_CONTRIBUTION_MARGIN_KEYS = {"contribution_margin", "deckungsbeitrag"}
+FINANCE_PLANNED_HOURS_TOTAL_KEYS = {"planned_hours_total", "geplante_stunden", "projektstunden_geplant"}
+
+FINANCE_FIELD_KEY_MAP: tuple[tuple[str, set[str]], ...] = (
+    ("order_value_net", FINANCE_ORDER_VALUE_NET_KEYS),
+    ("down_payment_35", FINANCE_DOWN_PAYMENT_35_KEYS),
+    ("main_components_50", FINANCE_MAIN_COMPONENTS_50_KEYS),
+    ("final_invoice_15", FINANCE_FINAL_INVOICE_15_KEYS),
+    ("planned_costs", FINANCE_PLANNED_COSTS_KEYS),
+    ("actual_costs", FINANCE_ACTUAL_COSTS_KEYS),
+    ("contribution_margin", FINANCE_CONTRIBUTION_MARGIN_KEYS),
+    ("planned_hours_total", FINANCE_PLANNED_HOURS_TOTAL_KEYS),
+)
+
 
 @dataclass
 class RowData:
@@ -108,6 +148,8 @@ class ImportStats:
     temporary_numbers: int = 0
     processed_rows: int = 0
     duplicates_skipped: int = 0
+    skipped_project_fields: int = 0
+    skipped_finance_fields: int = 0
 
 
 def _normalize_key(value: str, fallback_index: int | None = None) -> str:
@@ -162,6 +204,41 @@ def _project_status_value(value: Any) -> str:
     if _is_empty(value):
         return "active"
     return re.sub(r"\s+", " ", _as_clean_string(value))
+
+
+def _parse_float(value: Any) -> float | None:
+    if _is_empty(value):
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    raw = _as_clean_string(value)
+    if not raw:
+        return None
+    normalized = (
+        raw.replace("\u00a0", " ")
+        .replace(" ", "")
+        .replace("EUR", "")
+        .replace("eur", "")
+        .replace("€", "")
+    )
+    if not normalized:
+        return None
+
+    if "," in normalized and "." in normalized:
+        if normalized.rfind(",") > normalized.rfind("."):
+            normalized = normalized.replace(".", "").replace(",", ".")
+        else:
+            normalized = normalized.replace(",", "")
+    elif "," in normalized:
+        normalized = normalized.replace(",", ".")
+
+    try:
+        return float(normalized)
+    except ValueError:
+        return None
 
 
 def _parse_datetime(value: Any) -> datetime | None:
@@ -478,6 +555,44 @@ def _next_temporary_number(reserved_numbers: set[str], counter: int) -> tuple[st
         current += 1
 
 
+def _string_or_none(value: Any) -> str | None:
+    if _is_empty(value):
+        return None
+    return _as_clean_string(value)
+
+
+def _set_if_missing(instance: object, field_name: str, value: Any) -> tuple[bool, bool]:
+    if value is None:
+        return False, False
+    current = getattr(instance, field_name)
+    if not _is_empty(current):
+        return False, True
+    setattr(instance, field_name, value)
+    return True, False
+
+
+def _finance_values_from_row(row_normalized: dict[str, Any]) -> dict[str, float | None]:
+    values: dict[str, float | None] = {}
+    for field_name, keys in FINANCE_FIELD_KEY_MAP:
+        values[field_name] = _parse_float(_first_value(row_normalized, keys))
+    return values
+
+
+def _merge_extra_attributes(existing: dict[str, Any], incoming: dict[str, Any]) -> tuple[dict[str, Any], bool, int]:
+    merged = dict(existing or {})
+    changed = False
+    skipped = 0
+    for key, value in incoming.items():
+        if _is_empty(value):
+            continue
+        if key not in merged or _is_empty(merged.get(key)):
+            merged[key] = value
+            changed = True
+        else:
+            skipped += 1
+    return merged, changed, skipped
+
+
 def _import_projects_from_rows(
     db: Session,
     rows: list[RowData],
@@ -493,7 +608,9 @@ def _import_projects_from_rows(
     stats.duplicates_skipped = duplicates_skipped
 
     existing_projects = db.scalars(select(Project)).all()
+    existing_finances = db.scalars(select(ProjectFinance)).all()
     projects_by_number = {project.project_number: project for project in existing_projects}
+    finances_by_project_id = {finance.project_id: finance for finance in existing_finances}
     projects_by_fallback: dict[str, Project] = {}
     for project in existing_projects:
         fallback_identity = _project_fallback_identity(project)
@@ -507,6 +624,7 @@ def _import_projects_from_rows(
         project_number: str
         fallback_identity = _row_fallback_identity(row)
         project: Project | None = None
+        project_number_changed = False
 
         if _is_empty(provided_project_number):
             if fallback_identity and fallback_identity in projects_by_fallback:
@@ -528,13 +646,15 @@ def _import_projects_from_rows(
                 if fallback_project.project_number != project_number and project_number not in projects_by_number:
                     old_number = fallback_project.project_number
                     fallback_project.project_number = project_number
+                    project_number_changed = True
                     projects_by_number.pop(old_number, None)
                     reserved_numbers.discard(old_number)
 
         name_value = _first_value(row.normalized, PROJECT_NAME_KEYS)
         if _is_empty(name_value):
             name_value = _first_value(row.normalized, {"projekt_anfrage", "customer_name", "kunde"})
-        name = _as_clean_string(name_value) if not _is_empty(name_value) else f"Project {project_number}"
+        name_from_import = _as_clean_string(name_value) if not _is_empty(name_value) else None
+        name = name_from_import or f"Project {project_number}"
 
         status_value = _first_value(row.normalized, STATUS_KEYS)
         status = _project_status_value(status_value)
@@ -548,6 +668,7 @@ def _import_projects_from_rows(
         customer_contact = _first_value(row.normalized, CUSTOMER_CONTACT_KEYS)
         customer_email = _first_value(row.normalized, CUSTOMER_EMAIL_KEYS)
         customer_phone = _first_value(row.normalized, CUSTOMER_PHONE_KEYS)
+        finance_values = _finance_values_from_row(row.normalized)
 
         extra_attributes = {key: value for key, value in row.original.items() if not _is_empty(value)}
         if source_label:
@@ -561,41 +682,103 @@ def _import_projects_from_rows(
             project = Project(
                 project_number=project_number,
                 name=name,
-                description=None if _is_empty(description_value) else _as_clean_string(description_value),
+                description=_string_or_none(description_value),
                 status=status,
-                last_state=None if _is_empty(last_state_value) else _as_clean_string(last_state_value),
+                last_state=_string_or_none(last_state_value),
                 last_status_at=last_status_at,
-                customer_name=None if _is_empty(customer_name) else _as_clean_string(customer_name),
-                customer_address=None if _is_empty(customer_address) else _as_clean_string(customer_address),
-                customer_contact=None if _is_empty(customer_contact) else _as_clean_string(customer_contact),
-                customer_email=None if _is_empty(customer_email) else _as_clean_string(customer_email),
-                customer_phone=None if _is_empty(customer_phone) else _as_clean_string(customer_phone),
+                customer_name=_string_or_none(customer_name),
+                customer_address=_string_or_none(customer_address),
+                customer_contact=_string_or_none(customer_contact),
+                customer_email=_string_or_none(customer_email),
+                customer_phone=_string_or_none(customer_phone),
                 extra_attributes=extra_attributes,
             )
             db.add(project)
+            if any(value is not None for value in finance_values.values()):
+                if project.id is None:
+                    db.flush()
+                finance_row = ProjectFinance(
+                    project_id=project.id,
+                    order_value_net=finance_values["order_value_net"],
+                    down_payment_35=finance_values["down_payment_35"],
+                    main_components_50=finance_values["main_components_50"],
+                    final_invoice_15=finance_values["final_invoice_15"],
+                    planned_costs=finance_values["planned_costs"],
+                    actual_costs=finance_values["actual_costs"],
+                    contribution_margin=finance_values["contribution_margin"],
+                    planned_hours_total=finance_values["planned_hours_total"],
+                )
+                db.add(finance_row)
+                finances_by_project_id[project.id] = finance_row
             projects_by_number[project_number] = project
             if fallback_identity:
                 projects_by_fallback[fallback_identity] = project
             stats.created += 1
             continue
 
-        project.project_number = project_number
-        project.name = name
-        project.status = status
-        project.description = None if _is_empty(description_value) else _as_clean_string(description_value)
-        project.last_state = None if _is_empty(last_state_value) else _as_clean_string(last_state_value)
-        project.last_status_at = last_status_at
-        project.customer_name = None if _is_empty(customer_name) else _as_clean_string(customer_name)
-        project.customer_address = None if _is_empty(customer_address) else _as_clean_string(customer_address)
-        project.customer_contact = None if _is_empty(customer_contact) else _as_clean_string(customer_contact)
-        project.customer_email = None if _is_empty(customer_email) else _as_clean_string(customer_email)
-        project.customer_phone = None if _is_empty(customer_phone) else _as_clean_string(customer_phone)
-        project.extra_attributes = extra_attributes
+        changed = project_number_changed
+        applied, skipped = _set_if_missing(project, "name", name_from_import)
+        changed = applied or changed
+        stats.skipped_project_fields += int(skipped)
+        if not _is_empty(status_value):
+            applied, skipped = _set_if_missing(project, "status", status)
+            changed = applied or changed
+            stats.skipped_project_fields += int(skipped)
+        applied, skipped = _set_if_missing(project, "description", _string_or_none(description_value))
+        changed = applied or changed
+        stats.skipped_project_fields += int(skipped)
+        applied, skipped = _set_if_missing(project, "last_state", _string_or_none(last_state_value))
+        changed = applied or changed
+        stats.skipped_project_fields += int(skipped)
+        applied, skipped = _set_if_missing(project, "last_status_at", last_status_at)
+        changed = applied or changed
+        stats.skipped_project_fields += int(skipped)
+        applied, skipped = _set_if_missing(project, "customer_name", _string_or_none(customer_name))
+        changed = applied or changed
+        stats.skipped_project_fields += int(skipped)
+        applied, skipped = _set_if_missing(project, "customer_address", _string_or_none(customer_address))
+        changed = applied or changed
+        stats.skipped_project_fields += int(skipped)
+        applied, skipped = _set_if_missing(project, "customer_contact", _string_or_none(customer_contact))
+        changed = applied or changed
+        stats.skipped_project_fields += int(skipped)
+        applied, skipped = _set_if_missing(project, "customer_email", _string_or_none(customer_email))
+        changed = applied or changed
+        stats.skipped_project_fields += int(skipped)
+        applied, skipped = _set_if_missing(project, "customer_phone", _string_or_none(customer_phone))
+        changed = applied or changed
+        stats.skipped_project_fields += int(skipped)
+        merged_extra, extra_changed, extra_skipped = _merge_extra_attributes(project.extra_attributes or {}, extra_attributes)
+        if extra_changed:
+            project.extra_attributes = merged_extra
+            changed = True
+        stats.skipped_project_fields += extra_skipped
+
+        finance_changed = False
+        if any(value is not None for value in finance_values.values()):
+            if project.id is None:
+                db.flush()
+            finance_row = finances_by_project_id.get(project.id)
+            if finance_row is None:
+                finance_row = ProjectFinance(project_id=project.id)
+                db.add(finance_row)
+                finances_by_project_id[project.id] = finance_row
+            for field_name, value in finance_values.items():
+                if value is None:
+                    continue
+                applied, skipped = _set_if_missing(finance_row, field_name, value)
+                if applied:
+                    finance_changed = True
+                stats.skipped_finance_fields += int(skipped)
+            if finance_changed:
+                db.add(finance_row)
         projects_by_number[project_number] = project
         if fallback_identity:
             projects_by_fallback[fallback_identity] = project
-        db.add(project)
-        stats.updated += 1
+        if changed:
+            db.add(project)
+        if changed or finance_changed:
+            stats.updated += 1
 
     db.commit()
     return stats

@@ -1,5 +1,6 @@
 from __future__ import annotations
 import hashlib
+import re
 import secrets
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
@@ -9,15 +10,43 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.core.deps import get_current_user
-from app.core.permissions import ALL_ROLES
+from app.core.permissions import ALL_ROLES, ROLE_ADMIN
 from app.core.security import create_access_token, get_password_hash, verify_password
 from app.core.time import utcnow
 from app.models.entities import User, UserActionToken
-from app.schemas.api import InviteAccept, LoginRequest, PasswordResetConfirm, ProfileUpdate, UserOut
+from app.schemas.api import (
+    InviteAccept,
+    LoginRequest,
+    NicknameAvailabilityOut,
+    PasswordResetConfirm,
+    ProfileUpdate,
+    UserOut,
+)
 from app.services.runtime_settings import mark_initial_admin_bootstrap_completed
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 settings = get_settings()
+NICKNAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,31}$")
+
+
+def _normalize_nickname(value: str | None) -> str:
+    return (value or "").strip()
+
+
+def _validate_nickname(value: str) -> str:
+    nickname = _normalize_nickname(value)
+    if not nickname:
+        raise HTTPException(status_code=400, detail="Nickname is required")
+    if not NICKNAME_PATTERN.fullmatch(nickname):
+        raise HTTPException(
+            status_code=400,
+            detail="Nickname must be 3-32 characters and use letters, numbers, dot, underscore, or hyphen",
+        )
+    return nickname
+
+
+def _nickname_normalized(value: str) -> str:
+    return value.strip().lower()
 
 
 @router.post("/login", response_model=UserOut)
@@ -62,6 +91,32 @@ def me(current_user: User = Depends(get_current_user)):
     return current_user
 
 
+@router.get("/nickname-availability", response_model=NicknameAvailabilityOut)
+def nickname_availability(
+    nickname: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if current_user.role != ROLE_ADMIN:
+        raise HTTPException(status_code=403, detail="Only admins can set nicknames")
+
+    nickname_value = _validate_nickname(nickname)
+    nickname_normalized = _nickname_normalized(nickname_value)
+
+    exists = db.scalars(
+        select(User.id).where(
+            User.nickname_normalized == nickname_normalized,
+            User.id != current_user.id,
+        )
+    ).first()
+    return NicknameAvailabilityOut(
+        nickname=nickname_value,
+        available=exists is None,
+        locked=False,
+        reason=None if exists is None else "nickname_taken",
+    )
+
+
 def _token_hash(raw_token: str) -> str:
     return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
 
@@ -100,6 +155,7 @@ def update_profile(
     initial_admin_email = settings.initial_admin_email.strip().lower()
     incoming_name = payload.full_name.strip() if payload.full_name is not None else None
     incoming_email = payload.email.strip().lower() if payload.email is not None else None
+    incoming_nickname = _normalize_nickname(payload.nickname) if payload.nickname is not None else None
     requires_password_check = incoming_email is not None or payload.new_password is not None
     if requires_password_check:
         if not payload.current_password or not verify_password(payload.current_password, current_user.password_hash):
@@ -115,6 +171,28 @@ def update_profile(
         if exists:
             raise HTTPException(status_code=409, detail="Email exists")
         current_user.email = incoming_email
+
+    if incoming_nickname is not None:
+        if current_user.role != ROLE_ADMIN:
+            raise HTTPException(status_code=403, detail="Only admins can set nicknames")
+        if not incoming_nickname:
+            current_user.nickname = None
+            current_user.nickname_normalized = None
+            current_user.nickname_set_at = None
+        else:
+            nickname_value = _validate_nickname(incoming_nickname)
+            nickname_normalized = _nickname_normalized(nickname_value)
+            exists = db.scalars(
+                select(User.id).where(
+                    User.nickname_normalized == nickname_normalized,
+                    User.id != current_user.id,
+                )
+            ).first()
+            if exists is not None:
+                raise HTTPException(status_code=409, detail="Nickname not available")
+            current_user.nickname = nickname_value
+            current_user.nickname_normalized = nickname_normalized
+            current_user.nickname_set_at = utcnow()
 
     if payload.new_password is not None:
         current_user.password_hash = get_password_hash(payload.new_password)

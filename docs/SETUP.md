@@ -93,6 +93,8 @@ Construction report processing/runtime knobs:
 
 ## Backup
 - `export BACKUP_PASSPHRASE='replace-with-strong-passphrase'`
+- Or use a passphrase file:
+  - `export BACKUP_PASSPHRASE_FILE='config/backup-test-db.key'`
 - `./scripts/backup.sh`
 - Output artifact is placed under `backups/*.tar.enc`.
 - Script auto-starts `db` + `api` if needed and waits for DB readiness.
@@ -105,6 +107,7 @@ Construction report processing/runtime knobs:
 
 ## Restore into fresh environment
 1. `export BACKUP_PASSPHRASE='your-passphrase'`
+   - or `export BACKUP_PASSPHRASE_FILE='config/backup-test-db.key'`
 2. `./scripts/restore.sh backups/<artifact>.tar.enc`
 3. By default, script restores DB/uploads and then starts full stack (`web` + `caddy`).
 4. Optional: set `RESTORE_START_FULL_STACK=false` to skip web/caddy startup.
@@ -135,11 +138,27 @@ Construction report processing/runtime knobs:
   - name,
   - email address,
   - password.
+  - admin-only nickname (optional).
 - Security behavior:
   - email/password change requires current password.
+  - admin nickname has availability checks and can be set, changed, or removed.
+  - when nickname is set, report exports use nickname display instead of legal full name for submitter identity.
   - newly created users default to role `employee` unless admin explicitly changes role.
   - Admin Center user actions are in each user row’s 3-dot menu (`invite`, `reset password`, `delete user`).
   - `Delete user` deactivates account access but preserves historical data for exports/reporting.
+
+## Employee Groups For Restricted Chats
+- Admin-managed API endpoints:
+  - `GET /api/admin/employee-groups`
+  - `POST /api/admin/employee-groups`
+  - `PATCH /api/admin/employee-groups/{group_id}`
+  - `DELETE /api/admin/employee-groups/{group_id}`
+- Chat creation selector endpoints:
+  - `GET /api/threads/participant-users` (active users only)
+  - `GET /api/threads/participant-groups`
+- Chat visibility behavior:
+  - no selected users/groups => public chat,
+  - selected users/groups => restricted chat (creator always included).
 
 ## Operational Notes (Current MVP)
 - Navigation model:
@@ -406,10 +425,13 @@ Expected:
   - `UPDATE_REPO_PATH` (set only if auto-install should run against a local git checkout)
   - `GITHUB_API_TOKEN` (optional, helps avoid GitHub API rate limits)
 - Manual safe update commands shown in admin menu are:
+  - `BACKUP_PASSPHRASE='<passphrase>' ./scripts/backup.sh`
   - `git fetch --tags --prune`
   - `git pull --ff-only origin main`
-  - `docker compose up -d --build`
-  - `docker compose exec api alembic upgrade head`
+  - `docker compose build api`
+  - `./scripts/preflight_migrations.sh`
+  - `docker compose run --rm api sh -lc 'cd /app && alembic upgrade head'`
+  - `docker compose up -d --build api api_worker web caddy`
 
 ## Iteration Setup Notes (2026-02-24, optimistic edit locking)
 - New DB migration added:
@@ -477,3 +499,126 @@ Expected:
 - Project finance tab behavior:
   - metric labels and values are rendered larger,
   - vertical spacing inside metric rows is tighter for denser scanability.
+
+## Iteration Setup Notes (2026-02-25, materials single-indicator flow + complete action)
+- No new migration required for this iteration.
+- Standard refresh is sufficient:
+  - `docker compose up -d --build api web caddy`
+- Materials menu behavior:
+  - status is changed only by clicking the status indicator (no extra dropdown),
+  - when status is `Verfügbar/Available`, an `Erledigt/Complete` button is shown,
+  - completed items are no longer listed in active materials queue.
+
+## Iteration Setup Notes (2026-02-25, report numbering + normalized report image filenames)
+- New DB migration added:
+  - `20260225_0026_construction_report_numbers`
+- Apply with standard update flow:
+  - `docker compose up -d --build api web caddy`
+  - `docker compose exec api alembic upgrade head` (if needed separately)
+- Operational behavior update:
+  - project construction reports now receive a sequential report number,
+  - uploaded report photos are stored with deterministic numbered filenames instead of original device/library names.
+
+## Iteration Setup Notes (2026-02-25, update menu release-version display)
+- No new migration required for this iteration.
+- Standard refresh is sufficient:
+  - `docker compose up -d --build api web caddy`
+- Recommended deployment metadata:
+  - set `APP_RELEASE_VERSION` and `APP_RELEASE_COMMIT` explicitly in API env to avoid fallback-only version detection.
+
+## Iteration Setup Notes (2026-02-26, chat participant roles)
+- New DB migration added:
+  - `20260226_0029_chat_thread_participant_roles`
+- Apply with standard update flow:
+  - `docker compose up --build -d api web caddy`
+  - `docker compose exec -T api alembic upgrade head` (if needed separately)
+- Operational behavior update:
+  - New Chat now supports multi-select users and multi-select roles; selecting none keeps chat public.
+  - Any selected user/role creates a restricted chat visible only to matching participants and the creator.
+
+## Iteration Setup Notes (2026-02-26, chat archive state + editable restricted participants)
+- New DB migration added:
+  - `20260226_0030_chat_thread_archive_state`
+- Apply with standard update flow:
+  - `docker compose up --build -d api web caddy`
+  - `docker compose exec -T api alembic upgrade head`
+- Operational behavior update:
+  - Restricted chat participants can be changed after creation via thread edit.
+  - Chats can now be archived, restored from archive, or deleted.
+  - Default chat list excludes archived chats; archive UI uses `include_archived=true` path.
+
+## Iteration Setup Notes (2026-02-26, chat header 3-dot actions menu)
+- No new migration required for this iteration.
+- Standard refresh is sufficient:
+  - `docker compose up --build -d web caddy`
+- Operational behavior update:
+  - Chat header now shows a single 3-dot menu containing `Edit`, `Archive`, and `Delete` actions instead of separate buttons.
+
+## Iteration Setup Notes (2026-02-26, project map copy-address button)
+- No new migration required for this iteration.
+- Standard refresh is sufficient:
+  - `docker compose up --build -d web caddy`
+- Operational behavior update:
+  - Project overview map card now includes a compact copy icon button to copy the current project address.
+
+## Iteration Setup Notes (2026-02-26, task assignee absence hints)
+- No new migration required for this iteration.
+- Standard refresh is sufficient:
+  - `docker compose up --build -d web caddy`
+- Operational behavior update:
+  - Task assignee selection now shows compact absence date-range hints in picker rows and selected chips when a user is unavailable (vacation/school) for the task due date.
+
+## Iteration Setup Notes (2026-02-26, nickname edit/remove support)
+- No new migration required for this iteration.
+- Standard refresh is sufficient:
+  - `docker compose up --build -d api web caddy`
+- Operational behavior update:
+  - Admin nickname can be set, changed, or removed from profile settings.
+  - Empty nickname input now clears the current nickname and restores full-name display behavior.
+
+## Iteration Setup Notes (2026-02-26, task sub-tasks + report follow-up carry-over)
+- New DB migration added:
+  - `20260226_0031_task_subtasks`
+- Migration behavior:
+  - idempotent guard for `tasks.subtasks` column to avoid startup failure in environments where the column already exists.
+- Apply with standard update flow:
+  - `docker compose up --build -d api web caddy`
+  - `docker compose exec -T api alembic upgrade head`
+- Operational behavior update:
+  - Tasks can include sub-tasks.
+  - When creating a report from a task, unchecked sub-tasks create a new unassigned follow-up task automatically.
+
+## Iteration Setup Notes (2026-02-26, DB-safe update preflight and snapshot guard)
+- No new migration required for this iteration.
+- New safe operation scripts:
+  - `./scripts/preflight_migrations.sh` (clones DB to temp database and runs Alembic upgrade there)
+  - `./scripts/safe_update.sh --pull --branch main` (optional pull, build, preflight, backup, migrate, deploy)
+- Admin update menu behavior:
+  - `Dry run` now executes migration preflight on a temporary cloned DB and reports failures directly.
+  - `Install update` now creates a DB snapshot and runs preflight before applying real migrations.
+
+## Iteration Setup Notes (2026-02-26, report completed sub-tasks in work section + task-edit last-edited display)
+- No new migration required for this iteration.
+- Standard refresh is sufficient:
+  - `docker compose up --build -d api web caddy`
+- Operational behavior update:
+  - Finished construction report PDF now includes completed sub-task lines inside `Ausgefuehrte Arbeiten`.
+  - Task edit modal no longer exposes `Wochenstart (Montag)` input and now shows `Zuletzt bearbeitet` timestamp instead.
+
+## Iteration Setup Notes (2026-02-26, HEIC/HEIF upload support)
+- No new migration required for this iteration.
+- Standard refresh is sufficient:
+  - `docker compose up --build -d api web caddy`
+- Operational behavior update:
+  - Avatar and chat-thread icon uploads accept `.heic/.heif` even when MIME metadata is not `image/*`.
+  - Avatar file picker, thread icon picker, and construction report photo picker now explicitly allow `.heic/.heif`.
+  - API image dependencies include `pillow-heif` to decode/convert HEIC uploads during avatar/icon handling.
+
+## Iteration Setup Notes (2026-02-26, project materials tab + merged report materials)
+- No new migration required for this iteration.
+- Standard refresh is sufficient:
+  - `docker compose up -d --build --force-recreate api web caddy`
+- Operational behavior update:
+  - Project detail now includes `Materials` tab between project hours and job tickets.
+  - Tab data is sourced from `GET /api/projects/{project_id}/materials` and merges repeated material rows from reports.
+  - Material unit fields now support dropdown suggestions with manual free-text fallback.

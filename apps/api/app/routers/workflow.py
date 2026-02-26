@@ -4,9 +4,11 @@ import mimetypes
 import os
 import re
 import unicodedata
+from decimal import Decimal, InvalidOperation
 from datetime import date, datetime, timedelta, timezone
 from email.utils import format_datetime
 from html import escape
+from io import BytesIO
 from pathlib import Path, PurePosixPath
 from urllib.parse import quote
 
@@ -20,14 +22,19 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.core.deps import assert_project_access, get_current_user, require_permission
-from app.core.permissions import has_permission
+from app.core.permissions import ALL_ROLES, has_permission
 from app.core.time import utcnow
 from app.models.entities import (
     Attachment,
     ChatThread,
+    ChatThreadParticipantGroup,
+    ChatThreadParticipantRole,
+    ChatThreadParticipantUser,
     ChatThreadRead,
     ConstructionReport,
     ConstructionReportJob,
+    EmployeeGroup,
+    EmployeeGroupMember,
     JobTicket,
     Message,
     Project,
@@ -49,6 +56,7 @@ from app.models.entities import (
 )
 from app.schemas.api import (
     AssignableUserOut,
+    EmployeeGroupOut,
     ConstructionReportCreate,
     ConstructionReportPayload,
     JobTicketCreate,
@@ -62,6 +70,7 @@ from app.schemas.api import (
     ProjectClassTemplateOut,
     ProjectMaterialNeedOut,
     ProjectMaterialNeedUpdate,
+    ProjectTrackedMaterialOut,
     ProjectOut,
     ProjectOverviewOut,
     ProjectUpdate,
@@ -98,6 +107,18 @@ from app.services.report_jobs import (
 from app.services.runtime_settings import get_openweather_api_key
 from app.core.security import verify_password
 
+try:
+    from PIL import Image as PILImage
+    from PIL import ImageOps
+except Exception:  # pragma: no cover - fallback when Pillow is unavailable
+    PILImage = None
+    ImageOps = None
+
+try:  # pragma: no cover - optional HEIC decoding
+    from pillow_heif import register_heif_opener
+except Exception:  # pragma: no cover - optional dependency
+    register_heif_opener = None
+
 router = APIRouter(prefix="", tags=["workflow"])
 settings = get_settings()
 webdav_security = HTTPBasic(auto_error=False)
@@ -122,6 +143,8 @@ TASK_TYPE_ALIASES = {
     "kundentermine": "customer_appointment",
     "termin": "customer_appointment",
 }
+MAX_TASK_SUBTASKS = 100
+MAX_TASK_SUBTASK_LENGTH = 220
 PROJECT_SITE_ACCESS_OPTIONS = {
     "customer_on_site",
     "freely_accessible",
@@ -132,6 +155,20 @@ PROJECT_SITE_ACCESS_OPTIONS = {
     "call_before_departure",
 }
 PROJECT_SITE_ACCESS_OPTIONS_WITH_NOTE = {"key_pickup", "code_access", "key_box"}
+IMAGE_UPLOAD_EXTENSIONS = {
+    "jpg",
+    "jpeg",
+    "png",
+    "gif",
+    "webp",
+    "bmp",
+    "tif",
+    "tiff",
+    "heic",
+    "heif",
+}
+HEIC_IMAGE_EXTENSIONS = {"heic", "heif"}
+HEIC_CONTENT_TYPES = {"image/heic", "image/heif"}
 MATERIAL_NEED_STATUS_ALIASES = {
     "order": "order",
     "ordered": "order",
@@ -146,7 +183,18 @@ MATERIAL_NEED_STATUS_ALIASES = {
     "available": "available",
     "verfuegbar": "available",
     "verfügbar": "available",
+    "completed": "completed",
+    "complete": "completed",
+    "done": "completed",
+    "erledigt": "completed",
+    "abgeschlossen": "completed",
 }
+
+if register_heif_opener is not None:
+    try:
+        register_heif_opener()
+    except Exception:
+        pass
 
 
 def _normalize_weather_address(raw: str | None) -> str:
@@ -255,6 +303,47 @@ def _safe_media_type(raw_content_type: str | None, *, fallback: str = "applicati
     if not token_re.match(main) or not token_re.match(sub):
         return fallback
     return f"{main}/{sub}"
+
+
+def _file_extension(file_name: str | None) -> str:
+    raw_name = str(file_name or "").strip().lower()
+    if "." not in raw_name:
+        return ""
+    return raw_name.rsplit(".", 1)[-1].strip()
+
+
+def _is_upload_image(file_name: str | None, content_type: str | None) -> bool:
+    normalized_type = _safe_media_type(content_type, fallback="")
+    if normalized_type.startswith("image/"):
+        return True
+    return _file_extension(file_name) in IMAGE_UPLOAD_EXTENSIONS
+
+
+def _is_heic_upload(file_name: str | None, content_type: str | None) -> bool:
+    normalized_type = _safe_media_type(content_type, fallback="")
+    if normalized_type in HEIC_CONTENT_TYPES:
+        return True
+    return _file_extension(file_name) in HEIC_IMAGE_EXTENSIONS
+
+
+def _convert_heic_to_jpeg(raw: bytes) -> bytes | None:
+    if not raw or PILImage is None or ImageOps is None:
+        return None
+    try:
+        with PILImage.open(BytesIO(raw)) as source:
+            image = ImageOps.exif_transpose(source)
+            if image.mode in {"RGBA", "LA"} or (image.mode == "P" and "transparency" in image.info):
+                alpha = image.convert("RGBA")
+                flattened = PILImage.new("RGB", alpha.size, (255, 255, 255))
+                flattened.paste(alpha, mask=alpha.split()[-1])
+                image = flattened
+            elif image.mode != "RGB":
+                image = image.convert("RGB")
+            output = BytesIO()
+            image.save(output, format="JPEG", quality=90, optimize=True, progressive=True)
+            return output.getvalue()
+    except Exception:
+        return None
 
 
 def _resolve_attachment_for_access(db: Session, current_user: User, attachment_id: int) -> Attachment:
@@ -545,6 +634,206 @@ def _mark_thread_read(
         db.commit()
 
 
+def _assignable_user_out(user: User) -> AssignableUserOut:
+    return AssignableUserOut(
+        id=user.id,
+        full_name=user.display_name,
+        nickname=user.nickname,
+        display_name=user.display_name,
+        role=user.role,
+        required_daily_hours=user.required_daily_hours,
+        avatar_updated_at=user.avatar_updated_at,
+    )
+
+
+def _list_active_assignable_users(db: Session) -> list[AssignableUserOut]:
+    users = list(
+        db.scalars(
+            select(User)
+            .where(User.is_active.is_(True))
+            .order_by(User.full_name.asc(), User.id.asc())
+        ).all()
+    )
+    users.sort(key=lambda user: (user.display_name.lower(), user.id))
+    return [_assignable_user_out(user) for user in users]
+
+
+def _employee_group_out(db: Session, group: EmployeeGroup) -> EmployeeGroupOut:
+    memberships = db.scalars(
+        select(EmployeeGroupMember).where(EmployeeGroupMember.group_id == group.id).order_by(EmployeeGroupMember.id.asc())
+    ).all()
+    members: list[dict] = []
+    member_user_ids: list[int] = []
+    for membership in memberships:
+        user = db.get(User, membership.user_id)
+        if not user:
+            continue
+        members.append(
+            {
+                "user_id": user.id,
+                "full_name": user.full_name,
+                "display_name": user.display_name,
+                "is_active": bool(user.is_active),
+            }
+        )
+        if user.is_active:
+            member_user_ids.append(user.id)
+    return EmployeeGroupOut(
+        id=group.id,
+        name=group.name,
+        member_user_ids=sorted(set(member_user_ids)),
+        members=members,
+    )
+
+
+def _normalize_id_list(values: list[int]) -> list[int]:
+    return sorted({int(value) for value in values if int(value) > 0})
+
+
+def _normalize_role_list(values: list[str]) -> list[str]:
+    normalized: set[str] = set()
+    for value in values:
+        role = str(value or "").strip().lower()
+        if role:
+            normalized.add(role)
+    return sorted(normalized)
+
+
+def _thread_status(thread: ChatThread) -> str:
+    status = (thread.status or "").strip().lower()
+    return status or "active"
+
+
+def _thread_is_archived(thread: ChatThread) -> bool:
+    return _thread_status(thread) == "archived"
+
+
+def _thread_participant_user_ids(db: Session, thread_id: int) -> list[int]:
+    return sorted(
+        {
+            int(user_id)
+            for user_id in db.scalars(
+                select(ChatThreadParticipantUser.user_id).where(ChatThreadParticipantUser.thread_id == thread_id)
+            ).all()
+            if int(user_id) > 0
+        }
+    )
+
+
+def _thread_participant_roles(db: Session, thread_id: int) -> list[str]:
+    return sorted(
+        {
+            str(role or "").strip().lower()
+            for role in db.scalars(
+                select(ChatThreadParticipantRole.role).where(ChatThreadParticipantRole.thread_id == thread_id)
+            ).all()
+            if str(role or "").strip()
+        }
+    )
+
+
+def _validate_thread_participants(
+    db: Session,
+    *,
+    participant_user_ids: list[int],
+    participant_role_keys: list[str],
+    participant_group_ids: list[int],
+    allow_existing_thread_id: int | None = None,
+) -> None:
+    if participant_user_ids:
+        selected_active_user_ids = {
+            int(user_id)
+            for user_id in db.scalars(
+                select(User.id).where(User.id.in_(participant_user_ids), User.is_active.is_(True))
+            ).all()
+        }
+        allowed_user_ids = set(selected_active_user_ids)
+        if allow_existing_thread_id is not None:
+            existing_user_ids = {
+                int(user_id)
+                for user_id in db.scalars(
+                    select(ChatThreadParticipantUser.user_id).where(
+                        ChatThreadParticipantUser.thread_id == allow_existing_thread_id,
+                        ChatThreadParticipantUser.user_id.in_(participant_user_ids),
+                    )
+                ).all()
+            }
+            allowed_user_ids.update(existing_user_ids)
+        invalid_user_ids = [user_id for user_id in participant_user_ids if user_id not in allowed_user_ids]
+        if invalid_user_ids:
+            raise HTTPException(status_code=400, detail=f"Invalid or archived participant_user_ids: {invalid_user_ids}")
+
+    invalid_roles = [role for role in participant_role_keys if role not in ALL_ROLES]
+    if invalid_roles:
+        raise HTTPException(status_code=400, detail=f"Invalid participant_roles: {invalid_roles}")
+
+    if participant_group_ids:
+        selected_group_ids = {
+            int(group_id)
+            for group_id in db.scalars(select(EmployeeGroup.id).where(EmployeeGroup.id.in_(participant_group_ids))).all()
+        }
+        missing_group_ids = [group_id for group_id in participant_group_ids if group_id not in selected_group_ids]
+        if missing_group_ids:
+            raise HTTPException(status_code=400, detail=f"Invalid participant_group_ids: {missing_group_ids}")
+
+
+def _replace_thread_participants(
+    db: Session,
+    *,
+    thread: ChatThread,
+    participant_user_ids: list[int],
+    participant_role_keys: list[str],
+    participant_group_ids: list[int],
+    include_creator: bool,
+) -> None:
+    db.execute(delete(ChatThreadParticipantUser).where(ChatThreadParticipantUser.thread_id == thread.id))
+    db.execute(delete(ChatThreadParticipantRole).where(ChatThreadParticipantRole.thread_id == thread.id))
+    db.execute(delete(ChatThreadParticipantGroup).where(ChatThreadParticipantGroup.thread_id == thread.id))
+
+    is_restricted = bool(participant_user_ids or participant_role_keys or participant_group_ids)
+    if is_restricted:
+        user_members = set(participant_user_ids)
+        if include_creator and thread.created_by is not None:
+            user_members.add(thread.created_by)
+        for user_id in sorted(user_members):
+            db.add(ChatThreadParticipantUser(thread_id=thread.id, user_id=user_id))
+        for role in participant_role_keys:
+            db.add(ChatThreadParticipantRole(thread_id=thread.id, role=role))
+        for group_id in participant_group_ids:
+            db.add(ChatThreadParticipantGroup(thread_id=thread.id, group_id=group_id))
+
+    thread.visibility = "restricted" if is_restricted else "public"
+
+
+def _thread_is_restricted_visible_to_user(db: Session, user: User, thread: ChatThread) -> bool:
+    if thread.created_by is not None and thread.created_by == user.id:
+        return True
+
+    direct = db.scalars(
+        select(ChatThreadParticipantUser.id)
+        .where(ChatThreadParticipantUser.thread_id == thread.id, ChatThreadParticipantUser.user_id == user.id)
+        .limit(1)
+    ).first()
+    if direct is not None:
+        return True
+
+    via_role = db.scalars(
+        select(ChatThreadParticipantRole.id)
+        .where(ChatThreadParticipantRole.thread_id == thread.id, ChatThreadParticipantRole.role == user.role)
+        .limit(1)
+    ).first()
+    if via_role is not None:
+        return True
+
+    via_group = db.scalars(
+        select(ChatThreadParticipantGroup.id)
+        .join(EmployeeGroupMember, EmployeeGroupMember.group_id == ChatThreadParticipantGroup.group_id)
+        .where(ChatThreadParticipantGroup.thread_id == thread.id, EmployeeGroupMember.user_id == user.id)
+        .limit(1)
+    ).first()
+    return via_group is not None
+
+
 def _thread_out(db: Session, thread: ChatThread, current_user: User) -> ThreadOut:
     messages = db.scalars(select(Message).where(Message.thread_id == thread.id).order_by(Message.created_at.desc())).all()
     last_message = messages[0] if messages else None
@@ -552,14 +841,23 @@ def _thread_out(db: Session, thread: ChatThread, current_user: User) -> ThreadOu
     if thread.project_id is not None:
         project = db.get(Project, thread.project_id)
         project_name = project.name if project else None
+    participant_user_ids = _thread_participant_user_ids(db, thread.id)
+    participant_roles = _thread_participant_roles(db, thread.id)
+    status = _thread_status(thread)
     return ThreadOut(
         id=thread.id,
         name=thread.name,
+        visibility=thread.visibility or "public",
+        status=status,
+        is_restricted=(thread.visibility or "public") == "restricted",
+        is_archived=status == "archived",
         created_by=thread.created_by,
         project_id=thread.project_id,
         project_name=project_name,
         site_id=thread.site_id,
         icon_updated_at=thread.icon_updated_at,
+        participant_user_ids=participant_user_ids,
+        participant_roles=participant_roles,
         message_count=len(messages),
         unread_count=_thread_unread_count(db, thread.id, current_user.id),
         last_message_at=last_message.created_at if last_message else None,
@@ -577,18 +875,21 @@ def _assert_thread_access(db: Session, user: User, thread: ChatThread) -> None:
         raise HTTPException(status_code=403, detail="Chat access denied")
     if thread.project_id is not None:
         assert_project_access(db, user, thread.project_id)
+    if (thread.visibility or "public") == "restricted" and not _thread_is_restricted_visible_to_user(db, user, thread):
+        raise HTTPException(status_code=403, detail="Thread access denied")
 
 
 def _thread_visible_to_user(db: Session, user: User, thread: ChatThread) -> bool:
     if not _chat_permission_allowed(user):
         return False
-    if thread.project_id is None:
+    if thread.project_id is not None:
+        try:
+            assert_project_access(db, user, thread.project_id)
+        except HTTPException:
+            return False
+    if (thread.visibility or "public") != "restricted":
         return True
-    try:
-        assert_project_access(db, user, thread.project_id)
-        return True
-    except HTTPException:
-        return False
+    return _thread_is_restricted_visible_to_user(db, user, thread)
 
 
 def _webdav_authenticate(credentials: HTTPBasicCredentials | None, db: Session) -> User:
@@ -1002,15 +1303,15 @@ def _report_image_extension(filename: str, content_type: str | None) -> str:
     return "bin"
 
 
-def _report_image_filename(upload: UploadFile, index: int) -> str:
+def _report_image_filename(report: ConstructionReport, upload: UploadFile, index: int) -> str:
     raw_name = str(getattr(upload, "filename", "") or "").strip()
     file_name = raw_name.replace("\\", "/").split("/")[-1]
     extension = _report_image_extension(file_name, getattr(upload, "content_type", None))
-    if file_name:
-        if "." not in file_name or not file_name.rsplit(".", 1)[-1].strip():
-            return f"{file_name}.{extension}"
-        return file_name
-    return f"report-photo-{index}.{extension}"
+    if report.project_id is not None and report.report_number:
+        report_token = f"{int(report.report_number):04d}"
+    else:
+        report_token = str(report.id)
+    return f"report-{report_token}-photo-{index:03d}.{extension}"
 
 
 def _construction_report_worker_hours(payload: dict) -> float:
@@ -1042,6 +1343,32 @@ def _accumulate_project_reported_hours(db: Session, *, project_id: int, reported
         db.flush()
     finance_row.reported_hours_total = round(float(finance_row.reported_hours_total or 0.0) + float(reported_hours), 2)
     db.add(finance_row)
+
+
+def _normalize_report_material_text(raw_value: object) -> str:
+    raw = str(raw_value or "").replace("\r", " ").replace("\n", " ").strip()
+    if not raw:
+        return ""
+    return re.sub(r"\s{2,}", " ", raw)
+
+
+def _parse_report_material_quantity(raw_value: object) -> Decimal | None:
+    raw = str(raw_value or "").strip()
+    if not raw:
+        return None
+    compact = raw.replace(" ", "")
+    if "," in compact and "." in compact:
+        if compact.rfind(",") > compact.rfind("."):
+            compact = compact.replace(".", "")
+            compact = compact.replace(",", ".")
+        else:
+            compact = compact.replace(",", "")
+    elif "," in compact:
+        compact = compact.replace(",", ".")
+    try:
+        return Decimal(compact)
+    except (InvalidOperation, ValueError):
+        return None
 
 
 def _normalize_material_need_status(raw_value: str | None, *, default: str = "order", strict: bool = False) -> str:
@@ -1141,7 +1468,7 @@ def _recent_project_activities_out(db: Session, project_id: int, *, limit: int =
     actor_names_by_id: dict[int, str] = {}
     if actor_ids:
         users = db.scalars(select(User).where(User.id.in_(actor_ids))).all()
-        actor_names_by_id = {user.id: user.full_name for user in users}
+        actor_names_by_id = {user.id: user.display_name for user in users}
     return [
         ProjectActivityOut(
             id=row.id,
@@ -1470,6 +1797,28 @@ def _normalize_task_type(raw_task_type: str | None, *, default: str = "construct
     return mapped
 
 
+def _normalize_task_subtasks(raw_subtasks: object) -> list[str]:
+    if not isinstance(raw_subtasks, list):
+        return []
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw_item in raw_subtasks:
+        text = re.sub(r"\s+", " ", str(raw_item or "").strip())
+        if not text:
+            continue
+        text = text[:MAX_TASK_SUBTASK_LENGTH].strip()
+        if not text:
+            continue
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append(text)
+        if len(normalized) >= MAX_TASK_SUBTASKS:
+            break
+    return normalized
+
+
 def _normalize_class_template_ids(class_template_ids: list[int] | None) -> list[int]:
     normalized: list[int] = []
     seen: set[int] = set()
@@ -1675,6 +2024,7 @@ def _task_out(task: Task, assignee_ids: list[int]) -> TaskOut:
         project_id=task.project_id,
         title=task.title,
         description=task.description,
+        subtasks=_normalize_task_subtasks(task.subtasks),
         materials_required=task.materials_required,
         storage_box_number=task.storage_box_number,
         task_type=task.task_type,
@@ -1757,7 +2107,7 @@ def _planning_absences_by_day(
         return {}
 
     users = db.scalars(select(User).where(User.id.in_(allowed_user_ids))).all()
-    names_by_user_id = {user.id: user.full_name for user in users}
+    names_by_user_id = {user.id: user.display_name for user in users}
     by_day: dict[date, list[dict[str, object]]] = {}
 
     vacation_rows = db.scalars(
@@ -1859,6 +2209,93 @@ def _hydrate_report_payload_with_project_defaults(payload: dict, project: Projec
     return hydrated
 
 
+def _next_project_report_number(db: Session, project_id: int) -> int:
+    current_max = db.scalar(
+        select(func.max(ConstructionReport.report_number)).where(ConstructionReport.project_id == project_id)
+    )
+    return int(current_max or 0) + 1
+
+
+def _subtask_match_key(value: str) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip()).casefold()
+
+
+def _create_follow_up_task_for_open_subtasks(
+    db: Session,
+    *,
+    current_user: User,
+    report: ConstructionReport,
+    report_payload: dict,
+) -> Task | None:
+    source_task_id_raw = report_payload.get("source_task_id")
+    if source_task_id_raw in {None, ""}:
+        return None
+    if report.project_id is None:
+        raise HTTPException(status_code=400, detail="source_task_id requires a project report")
+    try:
+        source_task_id = int(source_task_id_raw)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="source_task_id must be a valid integer") from exc
+    if source_task_id <= 0:
+        raise HTTPException(status_code=400, detail="source_task_id must be positive")
+
+    source_task = db.get(Task, source_task_id)
+    if not source_task or source_task.project_id != report.project_id:
+        raise HTTPException(status_code=400, detail="source_task_id is not valid for this project")
+
+    source_subtasks = _normalize_task_subtasks(source_task.subtasks)
+    if not source_subtasks:
+        return None
+
+    completed_subtasks = _normalize_task_subtasks(report_payload.get("completed_subtasks") or [])
+    completed_keys = {_subtask_match_key(value) for value in completed_subtasks}
+    remaining_subtasks = [value for value in source_subtasks if _subtask_match_key(value) not in completed_keys]
+    if not remaining_subtasks:
+        return None
+
+    follow_up_title = f"{source_task.title} (Follow-up)"
+    follow_up_description_parts = []
+    source_description = str(source_task.description or "").strip()
+    if source_description:
+        follow_up_description_parts.append(source_description)
+    follow_up_description_parts.append(
+        f"Created automatically from task #{source_task.id} after report #{report.id}."
+    )
+    follow_up_task = Task(
+        project_id=source_task.project_id,
+        title=follow_up_title[:255],
+        description="\n\n".join(follow_up_description_parts),
+        subtasks=remaining_subtasks,
+        materials_required=source_task.materials_required,
+        storage_box_number=source_task.storage_box_number,
+        task_type=source_task.task_type,
+        class_template_id=source_task.class_template_id,
+        status="open",
+        assignee_id=None,
+        due_date=None,
+        start_time=None,
+        week_start=None,
+    )
+    db.add(follow_up_task)
+    db.flush()
+    _sync_task_assignments(db, follow_up_task, [])
+    _record_project_activity(
+        db,
+        project_id=follow_up_task.project_id,
+        actor_user_id=current_user.id,
+        event_type="task.created",
+        message=f"Task created: {follow_up_task.title}",
+        details={
+            "task_id": follow_up_task.id,
+            "status": follow_up_task.status,
+            "source_task_id": source_task.id,
+            "source_report_id": report.id,
+            "subtask_count": len(remaining_subtasks),
+        },
+    )
+    return follow_up_task
+
+
 async def _create_construction_report_impl(
     request: Request,
     current_user: User,
@@ -1922,11 +2359,13 @@ async def _create_construction_report_impl(
         _assert_report_access(current_user, write=True)
 
     report_payload = _hydrate_report_payload_with_project_defaults(report_payload, project)
+    report_number = _next_project_report_number(db, target_project_id) if target_project_id is not None else None
 
-    report_file_name = build_report_filename(report_payload, report_date)
+    report_file_name = build_report_filename(report_payload, report_date, report_number=report_number)
     telegram_configured = bool(settings.telegram_bot_token and settings.telegram_chat_id)
     report = ConstructionReport(
         project_id=target_project_id,
+        report_number=report_number,
         user_id=current_user.id,
         report_date=report_date,
         payload=report_payload,
@@ -1943,7 +2382,7 @@ async def _create_construction_report_impl(
         raw_image = await image_file.read()
         if not raw_image:
             continue
-        file_name = _report_image_filename(image_file, image_index)
+        file_name = _report_image_filename(report, image_file, image_index)
         extension = _report_image_extension(file_name, image_file.content_type)
         stored_path = store_encrypted_file(raw_image, extension)
         image_folder = "Bilder"
@@ -1977,6 +2416,7 @@ async def _create_construction_report_impl(
 
     report_worker_hours = _construction_report_worker_hours(report_payload)
     material_need_items_count = 0
+    follow_up_task: Task | None = None
     if target_project_id is not None:
         material_need_items_count = _create_material_needs_from_report_payload(
             db,
@@ -2002,6 +2442,12 @@ async def _create_construction_report_impl(
                 "material_need_items": material_need_items_count,
             },
         )
+        follow_up_task = _create_follow_up_task_for_open_subtasks(
+            db,
+            current_user=current_user,
+            report=report,
+            report_payload=report_payload,
+        )
     db.commit()
     if settings.report_processing_mode.strip().lower() == "inline":
         inline_job = db.get(ConstructionReportJob, job.id)
@@ -2011,12 +2457,15 @@ async def _create_construction_report_impl(
     return {
         "id": report.id,
         "project_id": report.project_id,
+        "report_number": report.report_number,
         "telegram_sent": report.telegram_sent,
         "telegram_mode": report.telegram_mode,
         "attachment_file_name": report.pdf_file_name,
         "report_images": report_image_rows,
         "processing_status": report.processing_status,
         "processing_error": report.processing_error,
+        "follow_up_task_id": follow_up_task.id if follow_up_task else None,
+        "follow_up_subtask_count": len(follow_up_task.subtasks) if follow_up_task else 0,
     }
 
 
@@ -2050,12 +2499,16 @@ def list_project_material_needs(
         (ProjectMaterialNeed.status == "order", 0),
         (ProjectMaterialNeed.status == "on_the_way", 1),
         (ProjectMaterialNeed.status == "available", 2),
-        else_=3,
+        (ProjectMaterialNeed.status == "completed", 3),
+        else_=4,
     )
     rows = db.execute(
         select(ProjectMaterialNeed, ConstructionReport)
         .outerjoin(ConstructionReport, ConstructionReport.id == ProjectMaterialNeed.construction_report_id)
-        .where(ProjectMaterialNeed.project_id.in_(visible_project_ids))
+        .where(
+            ProjectMaterialNeed.project_id.in_(visible_project_ids),
+            ProjectMaterialNeed.status != "completed",
+        )
         .order_by(status_rank.asc(), ProjectMaterialNeed.created_at.desc(), ProjectMaterialNeed.id.desc())
     ).all()
     result: list[ProjectMaterialNeedOut] = []
@@ -2316,6 +2769,101 @@ def get_project_finance(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     return _project_finance_row_or_default(db, project_id)
+
+
+@router.get("/projects/{project_id}/materials", response_model=list[ProjectTrackedMaterialOut])
+def list_project_report_materials(
+    project_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    assert_project_access(db, current_user, project_id)
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    reports = db.scalars(
+        select(ConstructionReport)
+        .where(ConstructionReport.project_id == project_id)
+        .order_by(ConstructionReport.report_date.asc(), ConstructionReport.id.asc())
+    ).all()
+    buckets: dict[tuple[str, str, str], dict[str, object]] = {}
+    for report in reports:
+        payload = report.payload if isinstance(report.payload, dict) else {}
+        materials = payload.get("materials")
+        if not isinstance(materials, list):
+            continue
+        for raw_row in materials:
+            if not isinstance(raw_row, dict):
+                continue
+            item = _normalize_report_material_text(raw_row.get("item"))
+            if not item:
+                continue
+            unit = _normalize_report_material_text(raw_row.get("unit"))
+            article_no = _normalize_report_material_text(raw_row.get("article_no"))
+            qty_raw = _normalize_report_material_text(raw_row.get("qty"))
+
+            key = (item.lower(), unit.lower(), article_no.lower())
+            bucket = buckets.get(key)
+            if bucket is None:
+                bucket = {
+                    "item": item,
+                    "unit": unit or None,
+                    "article_no": article_no or None,
+                    "quantity_total": Decimal("0"),
+                    "has_numeric_qty": False,
+                    "quantity_notes": set(),
+                    "occurrence_count": 0,
+                    "report_ids": set(),
+                    "last_report_date": None,
+                }
+                buckets[key] = bucket
+
+            bucket["occurrence_count"] = int(bucket["occurrence_count"]) + 1
+            report_ids = bucket["report_ids"]
+            if isinstance(report_ids, set):
+                report_ids.add(report.id)
+            current_last = bucket["last_report_date"]
+            if report.report_date and (not isinstance(current_last, date) or report.report_date > current_last):
+                bucket["last_report_date"] = report.report_date
+
+            qty_numeric = _parse_report_material_quantity(qty_raw)
+            if qty_numeric is not None:
+                bucket["quantity_total"] = Decimal(bucket["quantity_total"]) + qty_numeric
+                bucket["has_numeric_qty"] = True
+            elif qty_raw:
+                quantity_notes = bucket["quantity_notes"]
+                if isinstance(quantity_notes, set):
+                    quantity_notes.add(qty_raw)
+
+    result: list[ProjectTrackedMaterialOut] = []
+    ordered_buckets = sorted(
+        buckets.values(),
+        key=lambda row: (
+            str(row["item"]).lower(),
+            str(row.get("unit") or "").lower(),
+            str(row.get("article_no") or "").lower(),
+        ),
+    )
+    for bucket in ordered_buckets:
+        quantity_total: float | None = None
+        if bool(bucket["has_numeric_qty"]):
+            quantity_total = float(bucket["quantity_total"])
+        quantity_notes = bucket["quantity_notes"]
+        report_ids = bucket["report_ids"]
+        result.append(
+            ProjectTrackedMaterialOut(
+                item=str(bucket["item"]),
+                unit=bucket.get("unit"),
+                article_no=bucket.get("article_no"),
+                quantity_total=quantity_total,
+                quantity_notes=sorted(quantity_notes) if isinstance(quantity_notes, set) else [],
+                occurrence_count=int(bucket["occurrence_count"]),
+                report_count=len(report_ids) if isinstance(report_ids, set) else 0,
+                last_report_date=bucket.get("last_report_date"),
+            )
+        )
+    return result
 
 
 @router.patch("/projects/{project_id}/finance", response_model=ProjectFinanceOut)
@@ -2638,12 +3186,7 @@ def list_assignable_users(
     db: Session = Depends(get_db),
 ):
     _ = current_user
-    users = db.scalars(
-        select(User)
-        .where(User.is_active.is_(True))
-        .order_by(User.full_name.asc(), User.id.asc())
-    ).all()
-    return list(users)
+    return _list_active_assignable_users(db)
 
 
 @router.post("/users/me/avatar")
@@ -2655,8 +3198,8 @@ async def upload_my_avatar(
     if not file.filename:
         raise HTTPException(status_code=400, detail="Avatar file is required")
 
-    content_type = (file.content_type or "").strip().lower()
-    if not content_type.startswith("image/"):
+    content_type = _safe_media_type(file.content_type, fallback="")
+    if not _is_upload_image(file.filename, content_type):
         raise HTTPException(status_code=400, detail="Avatar must be an image")
 
     raw = await file.read()
@@ -2665,12 +3208,24 @@ async def upload_my_avatar(
     if len(raw) > MAX_AVATAR_BYTES:
         raise HTTPException(status_code=413, detail="Avatar exceeds 5 MB limit")
 
-    extension = file.filename.rsplit(".", 1)[-1] if "." in file.filename else "jpg"
-    stored_path = store_encrypted_file(raw, extension)
+    extension = _file_extension(file.filename) or "jpg"
+    stored_bytes = raw
+    stored_content_type = content_type or (mimetypes.guess_type(file.filename or "")[0] or "image/jpeg")
+    if _is_heic_upload(file.filename, content_type):
+        converted = _convert_heic_to_jpeg(raw)
+        if converted:
+            stored_bytes = converted
+            extension = "jpg"
+            stored_content_type = "image/jpeg"
+        else:
+            extension = "heic" if extension not in HEIC_IMAGE_EXTENSIONS else extension
+            stored_content_type = "image/heif" if extension == "heif" else "image/heic"
+
+    stored_path = store_encrypted_file(stored_bytes, extension)
 
     previous_path = current_user.avatar_stored_path
     current_user.avatar_stored_path = stored_path
-    current_user.avatar_content_type = content_type
+    current_user.avatar_content_type = stored_content_type
     current_user.avatar_updated_at = utcnow()
     db.add(current_user)
     db.commit()
@@ -2782,8 +3337,9 @@ def create_task(
         )
     assignee_ids = _normalize_assignee_ids([*(payload.assignee_ids or []), payload.assignee_id])
     _validate_assignee_ids(db, assignee_ids)
-    task_data = payload.model_dump(exclude={"assignee_id", "assignee_ids", "class_template_id"})
+    task_data = payload.model_dump(exclude={"assignee_id", "assignee_ids", "class_template_id", "subtasks"})
     task = Task(**task_data)
+    task.subtasks = _normalize_task_subtasks(payload.subtasks)
     task.task_type = _normalize_task_type(payload.task_type, default="construction")
     task.class_template_id = class_template.id if class_template else None
     if class_template and not (task.materials_required or "").strip():
@@ -2844,6 +3400,8 @@ def update_task(
             task.title = payload.title or task.title
         if "description" in payload.model_fields_set:
             task.description = payload.description
+        if "subtasks" in payload.model_fields_set:
+            task.subtasks = _normalize_task_subtasks(payload.subtasks or [])
         if "materials_required" in payload.model_fields_set:
             task.materials_required = payload.materials_required
         if "storage_box_number" in payload.model_fields_set:
@@ -2943,11 +3501,21 @@ def planning_assign_week(
         assignee_ids = _normalize_assignee_ids([*(assignment.assignee_ids or []), assignment.assignee_id])
         _validate_assignee_ids(db, assignee_ids)
         assignment_data = assignment.model_dump(
-            exclude={"week_start", "due_date", "assignee_id", "assignee_ids", "status", "task_type", "class_template_id"}
+            exclude={
+                "week_start",
+                "due_date",
+                "assignee_id",
+                "assignee_ids",
+                "status",
+                "task_type",
+                "class_template_id",
+                "subtasks",
+            }
         )
         due_date = assignment.due_date or week_start
         task = Task(
             **assignment_data,
+            subtasks=_normalize_task_subtasks(assignment.subtasks),
             status=_normalize_task_status(assignment.status, default="open"),
             task_type=_normalize_task_type(assignment.task_type, default="construction"),
             class_template_id=class_template.id if class_template else None,
@@ -4180,6 +4748,9 @@ def delete_wiki_page(
 def _create_thread_internal(payload: ThreadCreate, current_user: User, db: Session) -> ThreadOut:
     if not _chat_permission_allowed(current_user):
         raise HTTPException(status_code=403, detail="Chat access denied")
+    cleaned_name = payload.name.strip()
+    if not cleaned_name:
+        raise HTTPException(status_code=400, detail="Thread name cannot be empty")
 
     project_id = payload.project_id
     if payload.site_id is not None:
@@ -4193,17 +4764,72 @@ def _create_thread_internal(payload: ThreadCreate, current_user: User, db: Sessi
     if project_id is not None:
         assert_project_access(db, current_user, project_id)
 
+    participant_user_ids = _normalize_id_list(payload.participant_user_ids)
+    participant_role_keys = _normalize_role_list(payload.participant_roles)
+    participant_group_ids = _normalize_id_list(payload.participant_group_ids)
+    _validate_thread_participants(
+        db,
+        participant_user_ids=participant_user_ids,
+        participant_role_keys=participant_role_keys,
+        participant_group_ids=participant_group_ids,
+    )
+
     thread = ChatThread(
         project_id=project_id,
         site_id=payload.site_id,
-        name=payload.name.strip(),
+        name=cleaned_name,
+        visibility="public",
+        status="active",
+        archived_at=None,
+        archived_by=None,
         created_by=current_user.id,
         updated_at=utcnow(),
     )
     db.add(thread)
+    db.flush()
+
+    _replace_thread_participants(
+        db,
+        thread=thread,
+        participant_user_ids=participant_user_ids,
+        participant_role_keys=participant_role_keys,
+        participant_group_ids=participant_group_ids,
+        include_creator=True,
+    )
+
     db.commit()
     db.refresh(thread)
     return _thread_out(db, thread, current_user)
+
+
+@router.get("/threads/participant-users", response_model=list[AssignableUserOut])
+def list_thread_participant_users(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not _chat_permission_allowed(current_user):
+        raise HTTPException(status_code=403, detail="Chat access denied")
+    return _list_active_assignable_users(db)
+
+
+@router.get("/threads/participant-roles", response_model=list[str])
+def list_thread_participant_roles(
+    current_user: User = Depends(get_current_user),
+):
+    if not _chat_permission_allowed(current_user):
+        raise HTTPException(status_code=403, detail="Chat access denied")
+    return list(ALL_ROLES)
+
+
+@router.get("/threads/participant-groups", response_model=list[EmployeeGroupOut])
+def list_thread_participant_groups(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not _chat_permission_allowed(current_user):
+        raise HTTPException(status_code=403, detail="Chat access denied")
+    groups = db.scalars(select(EmployeeGroup).order_by(EmployeeGroup.name.asc(), EmployeeGroup.id.asc())).all()
+    return [_employee_group_out(db, group) for group in groups]
 
 
 @router.post("/threads", response_model=ThreadOut)
@@ -4217,13 +4843,18 @@ def create_global_thread(
 
 @router.get("/threads", response_model=list[ThreadOut])
 def list_global_threads(
+    include_archived: bool = False,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     if not _chat_permission_allowed(current_user):
         raise HTTPException(status_code=403, detail="Chat access denied")
     threads = db.scalars(select(ChatThread).order_by(ChatThread.id.desc())).all()
-    return [_thread_out(db, thread, current_user) for thread in threads if _thread_visible_to_user(db, current_user, thread)]
+    return [
+        _thread_out(db, thread, current_user)
+        for thread in threads
+        if _thread_visible_to_user(db, current_user, thread) and (include_archived or not _thread_is_archived(thread))
+    ]
 
 
 @router.post("/projects/{project_id}/threads", response_model=ThreadOut)
@@ -4233,19 +4864,31 @@ def create_project_thread(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    fixed_payload = ThreadCreate(name=payload.name, project_id=project_id, site_id=payload.site_id)
+    fixed_payload = ThreadCreate(
+        name=payload.name,
+        project_id=project_id,
+        site_id=payload.site_id,
+        participant_user_ids=payload.participant_user_ids,
+        participant_roles=payload.participant_roles,
+        participant_group_ids=payload.participant_group_ids,
+    )
     return _create_thread_internal(fixed_payload, current_user, db)
 
 
 @router.get("/projects/{project_id}/threads", response_model=list[ThreadOut])
 def list_project_threads(
     project_id: int,
+    include_archived: bool = False,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     assert_project_access(db, current_user, project_id)
     threads = db.scalars(select(ChatThread).where(ChatThread.project_id == project_id).order_by(ChatThread.id.desc())).all()
-    return [_thread_out(db, thread, current_user) for thread in threads]
+    return [
+        _thread_out(db, thread, current_user)
+        for thread in threads
+        if _thread_visible_to_user(db, current_user, thread) and (include_archived or not _thread_is_archived(thread))
+    ]
 
 
 @router.patch("/threads/{thread_id}", response_model=ThreadOut)
@@ -4283,10 +4926,99 @@ def update_thread(
             if target_project_id != site.project_id:
                 raise HTTPException(status_code=400, detail="site_id does not belong to project_id")
         thread.project_id = target_project_id
+
+    access_fields = {"participant_user_ids", "participant_roles", "participant_group_ids"}
+    if provided_fields & access_fields:
+        participant_user_ids = _normalize_id_list(payload.participant_user_ids or [])
+        participant_role_keys = _normalize_role_list(payload.participant_roles or [])
+        participant_group_ids = _normalize_id_list(payload.participant_group_ids or [])
+        _validate_thread_participants(
+            db,
+            participant_user_ids=participant_user_ids,
+            participant_role_keys=participant_role_keys,
+            participant_group_ids=participant_group_ids,
+            allow_existing_thread_id=thread.id,
+        )
+        _replace_thread_participants(
+            db,
+            thread=thread,
+            participant_user_ids=participant_user_ids,
+            participant_role_keys=participant_role_keys,
+            participant_group_ids=participant_group_ids,
+            include_creator=True,
+        )
+
     thread.updated_at = utcnow()
     db.commit()
     db.refresh(thread)
     return _thread_out(db, thread, current_user)
+
+
+@router.post("/threads/{thread_id}/archive", response_model=ThreadOut)
+def archive_thread(
+    thread_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    thread = db.get(ChatThread, thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    _assert_thread_access(db, current_user, thread)
+    if not _can_edit_thread(current_user, thread):
+        raise HTTPException(status_code=403, detail="Only the creator or chat managers can archive this thread")
+    if not _thread_is_archived(thread):
+        thread.status = "archived"
+        thread.archived_at = utcnow()
+        thread.archived_by = current_user.id
+        thread.updated_at = utcnow()
+        db.commit()
+        db.refresh(thread)
+    return _thread_out(db, thread, current_user)
+
+
+@router.post("/threads/{thread_id}/restore", response_model=ThreadOut)
+def restore_thread(
+    thread_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    thread = db.get(ChatThread, thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    _assert_thread_access(db, current_user, thread)
+    if not _can_edit_thread(current_user, thread):
+        raise HTTPException(status_code=403, detail="Only the creator or chat managers can restore this thread")
+    if _thread_is_archived(thread):
+        thread.status = "active"
+        thread.archived_at = None
+        thread.archived_by = None
+        thread.updated_at = utcnow()
+        db.commit()
+        db.refresh(thread)
+    return _thread_out(db, thread, current_user)
+
+
+@router.delete("/threads/{thread_id}")
+def delete_thread(
+    thread_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    thread = db.get(ChatThread, thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    _assert_thread_access(db, current_user, thread)
+    if not _can_edit_thread(current_user, thread):
+        raise HTTPException(status_code=403, detail="Only the creator or chat managers can delete this thread")
+    icon_path = (thread.icon_stored_path or "").strip()
+    db.delete(thread)
+    db.commit()
+    if icon_path:
+        try:
+            Path(icon_path).unlink(missing_ok=True)
+        except OSError:
+            pass
+    return {"ok": True}
 
 
 @router.post("/threads/{thread_id}/icon")
@@ -4305,8 +5037,8 @@ async def upload_thread_icon(
 
     if not file.filename:
         raise HTTPException(status_code=400, detail="File name is required")
-    content_type = (file.content_type or "").lower()
-    if not content_type.startswith("image/"):
+    content_type = _safe_media_type(file.content_type, fallback="")
+    if not _is_upload_image(file.filename, content_type):
         raise HTTPException(status_code=400, detail="Thread icon must be an image")
 
     raw = await file.read()
@@ -4315,10 +5047,22 @@ async def upload_thread_icon(
     if len(raw) > MAX_AVATAR_BYTES:
         raise HTTPException(status_code=413, detail="Thread icon too large (max 5MB)")
 
-    extension = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else "bin"
-    stored_path = store_encrypted_file(raw, extension)
+    extension = _file_extension(file.filename) or "jpg"
+    stored_bytes = raw
+    stored_content_type = content_type or (mimetypes.guess_type(file.filename or "")[0] or "image/jpeg")
+    if _is_heic_upload(file.filename, content_type):
+        converted = _convert_heic_to_jpeg(raw)
+        if converted:
+            stored_bytes = converted
+            extension = "jpg"
+            stored_content_type = "image/jpeg"
+        else:
+            extension = "heic" if extension not in HEIC_IMAGE_EXTENSIONS else extension
+            stored_content_type = "image/heif" if extension == "heif" else "image/heic"
+
+    stored_path = store_encrypted_file(stored_bytes, extension)
     thread.icon_stored_path = stored_path
-    thread.icon_content_type = file.content_type or "application/octet-stream"
+    thread.icon_content_type = stored_content_type
     thread.icon_updated_at = utcnow()
     thread.updated_at = utcnow()
     db.commit()
@@ -4360,6 +5104,8 @@ async def create_message(
     if not thread:
         raise HTTPException(status_code=404, detail="Thread not found")
     _assert_thread_access(db, current_user, thread)
+    if _thread_is_archived(thread):
+        raise HTTPException(status_code=409, detail="Thread is archived")
 
     text = (body or "").strip() or None
     upload = None
@@ -4472,6 +5218,7 @@ def list_construction_reports(
         {
             "id": report.id,
             "project_id": report.project_id,
+            "report_number": report.report_number,
             "user_id": report.user_id,
             "report_date": report.report_date,
             "payload": report.payload,
@@ -4504,6 +5251,7 @@ def list_global_or_project_reports(
         {
             "id": report.id,
             "project_id": report.project_id,
+            "report_number": report.report_number,
             "user_id": report.user_id,
             "report_date": report.report_date,
             "payload": report.payload,

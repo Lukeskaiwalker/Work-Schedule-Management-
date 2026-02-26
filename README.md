@@ -52,16 +52,19 @@ If the runtime cannot auto-install (common in container-only deployments), use O
 
 ### Option B: Manual Upgrade (Data-Safe)
 
-1. Backup first:
-   - `BACKUP_PASSPHRASE='<pass>' ./scripts/backup.sh`
-2. Download the release source code (`v1.0.0`) from GitHub and replace code on host, or pull latest `main` at/after tag `v1.0.0`.
-3. Rebuild and restart services:
-   - `docker compose up -d --build`
-4. Run DB migrations:
-   - `docker compose run --rm api alembic upgrade head`
-5. Verify:
+1. Run safe update flow (backup + migration preflight + real migration):
+   - `BACKUP_PASSPHRASE='<pass>' ./scripts/safe_update.sh --pull --branch main`
+2. Verify:
    - `./scripts/test.sh`
    - open app and run quick smoke flow.
+
+If you need to run steps manually:
+1. `BACKUP_PASSPHRASE='<pass>' ./scripts/backup.sh`
+2. `git fetch --tags --prune && git pull --ff-only origin main`
+3. `docker compose build api`
+4. `./scripts/preflight_migrations.sh`
+5. `docker compose run --rm api sh -lc 'cd /app && alembic upgrade head'`
+6. `docker compose up -d --build api api_worker web caddy`
 
 ## Important Data Safety Rule
 

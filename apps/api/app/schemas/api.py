@@ -28,6 +28,9 @@ class UserOut(BaseModel):
     id: int
     email: str
     full_name: str
+    nickname: str | None = None
+    display_name: str
+    nickname_set_at: datetime | None = None
     role: str
     is_active: bool
     required_daily_hours: float = 8
@@ -42,11 +45,37 @@ class UserOut(BaseModel):
 class AssignableUserOut(BaseModel):
     id: int
     full_name: str
+    nickname: str | None = None
+    display_name: str
     role: str
     required_daily_hours: float = 8
     avatar_updated_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class EmployeeGroupMemberOut(BaseModel):
+    user_id: int
+    full_name: str
+    display_name: str
+    is_active: bool
+
+
+class EmployeeGroupOut(BaseModel):
+    id: int
+    name: str
+    member_user_ids: list[int] = Field(default_factory=list)
+    members: list[EmployeeGroupMemberOut] = Field(default_factory=list)
+
+
+class EmployeeGroupCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    member_user_ids: list[int] = Field(default_factory=list)
+
+
+class EmployeeGroupUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    member_user_ids: list[int] | None = None
 
 
 class ProjectCreate(BaseModel):
@@ -175,6 +204,17 @@ class ProjectMaterialNeedUpdate(BaseModel):
     status: str = Field(min_length=1, max_length=32)
 
 
+class ProjectTrackedMaterialOut(BaseModel):
+    item: str
+    unit: str | None = None
+    article_no: str | None = None
+    quantity_total: float | None = None
+    quantity_notes: list[str] = Field(default_factory=list)
+    occurrence_count: int = 0
+    report_count: int = 0
+    last_report_date: date | None = None
+
+
 class ProjectWeatherDayOut(BaseModel):
     date: date
     temp_min: float | None = None
@@ -218,6 +258,7 @@ class TaskCreate(BaseModel):
     project_id: int
     title: str
     description: str | None = None
+    subtasks: list[str] = Field(default_factory=list)
     materials_required: str | None = None
     storage_box_number: int | None = Field(default=None, ge=1)
     task_type: str = "construction"
@@ -234,6 +275,7 @@ class TaskUpdate(BaseModel):
     expected_updated_at: datetime | None = None
     title: str | None = None
     description: str | None = None
+    subtasks: list[str] | None = None
     materials_required: str | None = None
     storage_box_number: int | None = Field(default=None, ge=1)
     task_type: str | None = None
@@ -251,6 +293,7 @@ class TaskOut(BaseModel):
     project_id: int
     title: str
     description: str | None = None
+    subtasks: list[str] = Field(default_factory=list)
     materials_required: str | None = None
     storage_box_number: int | None = None
     task_type: str = "construction"
@@ -325,21 +368,33 @@ class ThreadCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     project_id: int | None = None
     site_id: int | None = None
+    participant_user_ids: list[int] = Field(default_factory=list)
+    participant_roles: list[str] = Field(default_factory=list)
+    participant_group_ids: list[int] = Field(default_factory=list)
 
 
 class ThreadUpdate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     project_id: int | None = None
+    participant_user_ids: list[int] | None = None
+    participant_roles: list[str] | None = None
+    participant_group_ids: list[int] | None = None
 
 
 class ThreadOut(BaseModel):
     id: int
     name: str
+    visibility: str = "public"
+    status: str = "active"
+    is_restricted: bool = False
+    is_archived: bool = False
     created_by: int | None = None
     project_id: int | None = None
     project_name: str | None = None
     site_id: int | None = None
     icon_updated_at: datetime | None = None
+    participant_user_ids: list[int] = Field(default_factory=list)
+    participant_roles: list[str] = Field(default_factory=list)
     message_count: int = 0
     unread_count: int = 0
     last_message_at: datetime | None = None
@@ -442,6 +497,8 @@ class ConstructionReportPayload(BaseModel):
     office_material_need: str | None = None
     office_rework: str | None = None
     office_next_steps: str | None = None
+    source_task_id: int | None = None
+    completed_subtasks: list[str] = Field(default_factory=list)
 
 
 class ConstructionReportCreate(BaseModel):
@@ -576,8 +633,16 @@ class PlanningWeekOut(BaseModel):
 class ProfileUpdate(BaseModel):
     full_name: str | None = None
     email: EmailStr | None = None
+    nickname: str | None = None
     current_password: str | None = None
     new_password: str | None = Field(default=None, min_length=8)
+
+
+class NicknameAvailabilityOut(BaseModel):
+    nickname: str
+    available: bool
+    locked: bool = False
+    reason: str | None = None
 
 
 class InviteCreate(BaseModel):

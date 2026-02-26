@@ -5,7 +5,7 @@ from io import BytesIO
 
 from PIL import Image
 
-from app.services.construction_report_pdf import compact_photo_for_pdf
+from app.services.construction_report_pdf import compact_photo_for_pdf, format_work_done_for_report
 
 
 def test_compact_photo_for_pdf_downscales_and_compresses() -> None:
@@ -29,3 +29,28 @@ def test_compact_photo_for_pdf_downscales_and_compresses() -> None:
 def test_compact_photo_for_pdf_keeps_unreadable_payload() -> None:
     payload = b"not-an-image"
     assert compact_photo_for_pdf(payload) == payload
+
+
+def test_format_work_done_for_report_includes_completed_subtasks() -> None:
+    result = format_work_done_for_report(
+        {
+            "work_done": "String wiring and inverter setup.",
+            "completed_subtasks": ["Mount frame", "Connect inverter", "Mount frame"],
+        }
+    )
+    assert "String wiring and inverter setup." in result
+    assert "Erledigte Teilaufgaben:" in result
+    assert "- Mount frame" in result
+    assert "- Connect inverter" in result
+    assert result.count("Mount frame") == 1
+
+
+def test_format_work_done_for_report_handles_only_subtasks() -> None:
+    result = format_work_done_for_report(
+        {
+            "work_done": "",
+            "completed_subtasks": ["Check outputs"],
+        }
+    )
+    assert result.startswith("Erledigte Teilaufgaben:")
+    assert "- Check outputs" in result

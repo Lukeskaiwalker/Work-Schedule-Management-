@@ -6,6 +6,7 @@ from urllib.parse import quote
 from fastapi.testclient import TestClient
 from app.main import _rate_bucket
 from app.routers import workflow as workflow_router
+from app.services import report_jobs as report_jobs_service
 
 
 def auth_headers(token: str) -> dict[str, str]:
@@ -37,6 +38,7 @@ def test_project_task_planning_ticket_file_and_report_flow(client: TestClient, a
     employee = _create_user(client, admin_token, "employee2@example.com", "employee")
     employee_b = _create_user(client, admin_token, "employee4@example.com", "employee")
     outsider = _create_user(client, admin_token, "employee5@example.com", "employee")
+    archived_candidate = _create_user(client, admin_token, "employee6@example.com", "employee")
     accountant = _create_user(client, admin_token, "accountant1@example.com", "accountant")
     _create_user(client, admin_token, "planner@example.com", "planning")
     planning_token = _login(client, "planner@example.com")
@@ -97,6 +99,7 @@ def test_project_task_planning_ticket_file_and_report_flow(client: TestClient, a
             "project_id": project_id,
             "title": "Install inverter",
             "description": "Mount inverter in technical room",
+            "subtasks": ["Mount frame", "Connect inverter", "Test output"],
             "materials_required": "Inverter, cable set",
             "storage_box_number": 7,
             "task_type": "office",
@@ -112,6 +115,7 @@ def test_project_task_planning_ticket_file_and_report_flow(client: TestClient, a
     assert created_task.json()["storage_box_number"] == 7
     assert created_task.json()["task_type"] == "office"
     assert created_task.json()["start_time"] == "08:30:00"
+    assert created_task.json()["subtasks"] == ["Mount frame", "Connect inverter", "Test output"]
     assert len(created_task.json()["assignee_ids"]) == 3
     created_task_id = created_task.json()["id"]
 
@@ -204,6 +208,7 @@ def test_project_task_planning_ticket_file_and_report_flow(client: TestClient, a
     assert admin_updates_task.json()["description"] == "Updated by admin"
     assert admin_updates_task.json()["storage_box_number"] == 9
     assert admin_updates_task.json()["start_time"] == "09:45:00"
+    assert admin_updates_task.json()["subtasks"] == ["Mount frame", "Connect inverter", "Test output"]
     assert admin_updates_task.json()["assignee_ids"] == [employee["id"], accountant["id"]]
 
     mark_done = client.patch(
@@ -384,11 +389,100 @@ def test_project_task_planning_ticket_file_and_report_flow(client: TestClient, a
     assert project_thread.status_code == 200
     assert project_thread.json()["project_id"] == project_id
 
+    participant_users = client.get("/api/threads/participant-users", headers=auth_headers(employee_token))
+    assert participant_users.status_code == 200
+    participant_user_ids = {row["id"] for row in participant_users.json()}
+    assert employee["id"] in participant_user_ids
+    assert employee_b["id"] in participant_user_ids
+    assert archived_candidate["id"] in participant_user_ids
+
+    participant_roles = client.get("/api/threads/participant-roles", headers=auth_headers(employee_token))
+    assert participant_roles.status_code == 200
+    participant_role_values = set(participant_roles.json())
+    assert "employee" in participant_role_values
+    assert "accountant" in participant_role_values
+
+    restricted_thread = client.post(
+        "/api/threads",
+        headers=auth_headers(employee_token),
+        json={
+            "name": "Restricted Crew Chat",
+            "participant_user_ids": [employee_b["id"]],
+            "participant_roles": ["accountant"],
+        },
+    )
+    assert restricted_thread.status_code == 200
+    restricted_thread_id = restricted_thread.json()["id"]
+    assert restricted_thread.json()["visibility"] == "restricted"
+    assert restricted_thread.json()["is_restricted"] is True
+    assert restricted_thread.json()["participant_user_ids"] == sorted([employee["id"], employee_b["id"]])
+    assert restricted_thread.json()["participant_roles"] == ["accountant"]
+
+    archived_member_thread = client.post(
+        "/api/threads",
+        headers=auth_headers(employee_token),
+        json={"name": "Archive-safe thread", "participant_user_ids": [archived_candidate["id"]]},
+    )
+    assert archived_member_thread.status_code == 200
+    archived_member_thread_id = archived_member_thread.json()["id"]
+
     threads = client.get("/api/threads", headers=auth_headers(employee_token))
     assert threads.status_code == 200
     thread_names = {entry["name"] for entry in threads.json()}
     assert "General Team Chat" in thread_names
     assert "Project A Chat" in thread_names
+    assert "Restricted Crew Chat" in thread_names
+
+    threads_for_employee_b = client.get("/api/threads", headers=auth_headers(employee_b_token))
+    assert threads_for_employee_b.status_code == 200
+    names_for_employee_b = {entry["name"] for entry in threads_for_employee_b.json()}
+    assert "Restricted Crew Chat" in names_for_employee_b
+
+    threads_for_accountant = client.get("/api/threads", headers=auth_headers(accountant_token))
+    assert threads_for_accountant.status_code == 200
+    names_for_accountant = {entry["name"] for entry in threads_for_accountant.json()}
+    assert "Restricted Crew Chat" in names_for_accountant
+
+    outsider_threads = client.get("/api/threads", headers=auth_headers(outsider_token))
+    assert outsider_threads.status_code == 200
+    outsider_names = {entry["name"] for entry in outsider_threads.json()}
+    assert "Restricted Crew Chat" not in outsider_names
+
+    restricted_update_add_outsider = client.patch(
+        f"/api/threads/{restricted_thread_id}",
+        headers=auth_headers(employee_token),
+        json={
+            "name": "Restricted Crew Chat",
+            "participant_user_ids": [employee_b["id"], outsider["id"]],
+            "participant_roles": ["accountant"],
+            "participant_group_ids": [],
+        },
+    )
+    assert restricted_update_add_outsider.status_code == 200
+    updated_user_ids = set(restricted_update_add_outsider.json()["participant_user_ids"])
+    assert updated_user_ids == {employee["id"], employee_b["id"], outsider["id"]}
+
+    outsider_threads_after_add = client.get("/api/threads", headers=auth_headers(outsider_token))
+    assert outsider_threads_after_add.status_code == 200
+    outsider_names_after_add = {entry["name"] for entry in outsider_threads_after_add.json()}
+    assert "Restricted Crew Chat" in outsider_names_after_add
+
+    restricted_update_remove_outsider = client.patch(
+        f"/api/threads/{restricted_thread_id}",
+        headers=auth_headers(employee_token),
+        json={
+            "name": "Restricted Crew Chat",
+            "participant_user_ids": [employee_b["id"]],
+            "participant_roles": ["accountant"],
+            "participant_group_ids": [],
+        },
+    )
+    assert restricted_update_remove_outsider.status_code == 200
+
+    outsider_threads_after_remove = client.get("/api/threads", headers=auth_headers(outsider_token))
+    assert outsider_threads_after_remove.status_code == 200
+    outsider_names_after_remove = {entry["name"] for entry in outsider_threads_after_remove.json()}
+    assert "Restricted Crew Chat" not in outsider_names_after_remove
 
     employee_created_thread = client.post(
         "/api/threads",
@@ -431,6 +525,55 @@ def test_project_task_planning_ticket_file_and_report_flow(client: TestClient, a
     )
     assert non_creator_patch_denied.status_code == 403
 
+    archive_thread_denied = client.post(
+        f"/api/threads/{employee_thread_id}/archive",
+        headers=auth_headers(employee_b_token),
+    )
+    assert archive_thread_denied.status_code == 403
+
+    archive_thread_ok = client.post(
+        f"/api/threads/{employee_thread_id}/archive",
+        headers=auth_headers(employee_token),
+    )
+    assert archive_thread_ok.status_code == 200
+    assert archive_thread_ok.json()["is_archived"] is True
+    assert archive_thread_ok.json()["status"] == "archived"
+
+    threads_after_archive = client.get("/api/threads", headers=auth_headers(employee_token))
+    assert threads_after_archive.status_code == 200
+    assert all(entry["id"] != employee_thread_id for entry in threads_after_archive.json())
+
+    threads_with_archive = client.get("/api/threads?include_archived=true", headers=auth_headers(employee_token))
+    assert threads_with_archive.status_code == 200
+    archived_entry = next((entry for entry in threads_with_archive.json() if entry["id"] == employee_thread_id), None)
+    assert archived_entry is not None
+    assert archived_entry["is_archived"] is True
+
+    archived_thread_send = client.post(
+        f"/api/threads/{employee_thread_id}/messages",
+        headers=auth_headers(employee_token),
+        data={"body": "Should fail on archived"},
+    )
+    assert archived_thread_send.status_code == 409
+
+    restore_thread_denied = client.post(
+        f"/api/threads/{employee_thread_id}/restore",
+        headers=auth_headers(employee_b_token),
+    )
+    assert restore_thread_denied.status_code == 403
+
+    restore_thread_ok = client.post(
+        f"/api/threads/{employee_thread_id}/restore",
+        headers=auth_headers(employee_token),
+    )
+    assert restore_thread_ok.status_code == 200
+    assert restore_thread_ok.json()["is_archived"] is False
+    assert restore_thread_ok.json()["status"] == "active"
+
+    threads_after_restore = client.get("/api/threads", headers=auth_headers(employee_token))
+    assert threads_after_restore.status_code == 200
+    assert any(entry["id"] == employee_thread_id for entry in threads_after_restore.json())
+
     message = client.post(
         f"/api/threads/{thread_id}/messages",
         headers=auth_headers(employee_token),
@@ -464,6 +607,26 @@ def test_project_task_planning_ticket_file_and_report_flow(client: TestClient, a
     assert attachment_only_message.json()["body"] is None
     assert len(attachment_only_message.json()["attachments"]) == 1
 
+    restricted_message = client.post(
+        f"/api/threads/{restricted_thread_id}/messages",
+        headers=auth_headers(employee_token),
+        data={"body": "Private update"},
+    )
+    assert restricted_message.status_code == 200
+
+    restricted_denied_read = client.get(
+        f"/api/threads/{restricted_thread_id}/messages",
+        headers=auth_headers(outsider_token),
+    )
+    assert restricted_denied_read.status_code == 403
+
+    restricted_denied_send = client.post(
+        f"/api/threads/{restricted_thread_id}/messages",
+        headers=auth_headers(outsider_token),
+        data={"body": "Should not pass"},
+    )
+    assert restricted_denied_send.status_code == 403
+
     unread_for_admin = client.get("/api/threads", headers=auth_headers(admin_token))
     assert unread_for_admin.status_code == 200
     unread_entry = next((entry for entry in unread_for_admin.json() if entry["id"] == thread_id), None)
@@ -491,6 +654,64 @@ def test_project_task_planning_ticket_file_and_report_flow(client: TestClient, a
     assert icon_file.status_code == 200
     assert icon_file.content == b"icon-content"
 
+    delete_thread_denied = client.delete(
+        f"/api/threads/{employee_thread_id}",
+        headers=auth_headers(employee_b_token),
+    )
+    assert delete_thread_denied.status_code == 403
+
+    delete_thread_ok = client.delete(
+        f"/api/threads/{employee_thread_id}",
+        headers=auth_headers(employee_token),
+    )
+    assert delete_thread_ok.status_code == 200
+    assert delete_thread_ok.json()["ok"] is True
+
+    threads_after_thread_delete = client.get("/api/threads", headers=auth_headers(employee_token))
+    assert threads_after_thread_delete.status_code == 200
+    assert all(entry["id"] != employee_thread_id for entry in threads_after_thread_delete.json())
+
+    deleted_thread_messages = client.get(
+        f"/api/threads/{employee_thread_id}/messages",
+        headers=auth_headers(employee_token),
+    )
+    assert deleted_thread_messages.status_code == 404
+
+    archive_user = client.delete(f"/api/admin/users/{archived_candidate['id']}", headers=auth_headers(admin_token))
+    assert archive_user.status_code == 200
+
+    participant_users_after_archive = client.get("/api/threads/participant-users", headers=auth_headers(employee_token))
+    assert participant_users_after_archive.status_code == 200
+    participant_ids_after_archive = {row["id"] for row in participant_users_after_archive.json()}
+    assert archived_candidate["id"] not in participant_ids_after_archive
+
+    archived_member_thread_update = client.patch(
+        f"/api/threads/{archived_member_thread_id}",
+        headers=auth_headers(employee_token),
+        json={
+            "name": "Archive-safe thread updated",
+            "participant_user_ids": [archived_candidate["id"]],
+            "participant_roles": [],
+            "participant_group_ids": [],
+        },
+    )
+    assert archived_member_thread_update.status_code == 200
+    assert archived_candidate["id"] in archived_member_thread_update.json()["participant_user_ids"]
+
+    archived_user_restricted = client.post(
+        "/api/threads",
+        headers=auth_headers(employee_token),
+        json={"name": "Archived participant thread", "participant_user_ids": [archived_candidate["id"]]},
+    )
+    assert archived_user_restricted.status_code == 400
+
+    invalid_role_restricted = client.post(
+        "/api/threads",
+        headers=auth_headers(employee_token),
+        json={"name": "Invalid role thread", "participant_roles": ["not-a-real-role"]},
+    )
+    assert invalid_role_restricted.status_code == 400
+
     autofill_report = client.post(
         f"/api/projects/{project_id}/construction-reports",
         headers=auth_headers(employee_token),
@@ -504,6 +725,7 @@ def test_project_task_planning_ticket_file_and_report_flow(client: TestClient, a
     )
     assert autofill_report.status_code == 200
     autofill_report_id = autofill_report.json()["id"]
+    assert autofill_report.json()["report_number"] == 1
 
     reports_with_autofill = client.get(
         f"/api/projects/{project_id}/construction-reports",
@@ -536,20 +758,38 @@ def test_project_task_planning_ticket_file_and_report_flow(client: TestClient, a
                 "office_material_need": "Need 20m cable",
                 "office_rework": "No rework needed",
                 "office_next_steps": "Switchboard wiring",
+                "source_task_id": created_task_id,
+                "completed_subtasks": ["Mount frame", "Test output"],
             },
         },
     )
     assert report.status_code == 200
     data = report.json()
+    assert data["report_number"] == 2
     assert data["processing_status"] == "completed"
     assert data["telegram_mode"] == "stub"
     assert data["attachment_file_name"].endswith(".pdf")
+    follow_up_task_id = data["follow_up_task_id"]
+    assert follow_up_task_id is not None
+    assert data["follow_up_subtask_count"] == 1
     processing_status = client.get(
         f"/api/construction-reports/{data['id']}/processing",
         headers=auth_headers(employee_token),
     )
     assert processing_status.status_code == 200
     assert processing_status.json()["processing_status"] == "completed"
+    assert processing_status.json()["report_number"] == 2
+
+    tasks_after_report = client.get(
+        f"/api/tasks?view=all_open&project_id={project_id}",
+        headers=auth_headers(admin_token),
+    )
+    assert tasks_after_report.status_code == 200
+    follow_up_task = next((entry for entry in tasks_after_report.json() if entry["id"] == follow_up_task_id), None)
+    assert follow_up_task is not None
+    assert follow_up_task["title"].startswith("Install inverter + meter")
+    assert follow_up_task["subtasks"] == ["Connect inverter"]
+    assert follow_up_task["assignee_ids"] == []
 
     materials_queue = client.get("/api/materials", headers=auth_headers(employee_token))
     assert materials_queue.status_code == 200
@@ -573,6 +813,26 @@ def test_project_task_planning_ticket_file_and_report_flow(client: TestClient, a
         entry["id"] == material_item["id"] and entry["status"] == "on_the_way"
         for entry in materials_queue_after_update.json()
     )
+
+    material_available_update = client.patch(
+        f"/api/materials/{material_item['id']}",
+        headers=auth_headers(employee_token),
+        json={"status": "available"},
+    )
+    assert material_available_update.status_code == 200
+    assert material_available_update.json()["status"] == "available"
+
+    material_completed_update = client.patch(
+        f"/api/materials/{material_item['id']}",
+        headers=auth_headers(employee_token),
+        json={"status": "completed"},
+    )
+    assert material_completed_update.status_code == 200
+    assert material_completed_update.json()["status"] == "completed"
+
+    materials_queue_after_complete = client.get("/api/materials", headers=auth_headers(employee_token))
+    assert materials_queue_after_complete.status_code == 200
+    assert all(entry["id"] != material_item["id"] for entry in materials_queue_after_complete.json())
 
     project_finance_after_report = client.get(
         f"/api/projects/{project_id}/finance",
@@ -611,7 +871,7 @@ def test_project_task_planning_ticket_file_and_report_flow(client: TestClient, a
                     "project_name": "Project A",
                     "project_number": "2026-001",
                     "workers": [{"name": "Max", "start_time": "730", "end_time": "1600"}],
-                    "materials": [],
+                    "materials": [{"item": " cable ", "qty": "2,5", "unit": "m", "article_no": "A1"}],
                     "extras": [],
                     "work_done": "Wall prep",
                 }
@@ -623,7 +883,9 @@ def test_project_task_planning_ticket_file_and_report_flow(client: TestClient, a
         ],
     )
     assert multipart_report.status_code == 200
-    assert len(multipart_report.json()["report_images"]) == 2
+    multipart_payload = multipart_report.json()
+    assert multipart_payload["report_number"] == 3
+    assert len(multipart_payload["report_images"]) == 2
 
     project_report_files = client.get(
         f"/api/construction-reports/files?project_id={project_id}",
@@ -632,11 +894,11 @@ def test_project_task_planning_ticket_file_and_report_flow(client: TestClient, a
     assert project_report_files.status_code == 200
     assert any(entry["file_name"] == data["attachment_file_name"] for entry in project_report_files.json())
     assert any(
-        entry["file_name"] == "site-photo.jpg" and str(entry.get("folder") or "").startswith("Bilder")
+        entry["file_name"] == "report-0003-photo-001.jpg" and str(entry.get("folder") or "").startswith("Bilder")
         for entry in project_report_files.json()
     )
     assert any(
-        entry["file_name"] == "mobile-capture.jpg" and str(entry.get("folder") or "").startswith("Bilder")
+        entry["file_name"] == "report-0003-photo-002.jpg" and str(entry.get("folder") or "").startswith("Bilder")
         for entry in project_report_files.json()
     )
 
@@ -646,6 +908,30 @@ def test_project_task_planning_ticket_file_and_report_flow(client: TestClient, a
     )
     assert project_finance_after_multipart_report.status_code == 200
     assert project_finance_after_multipart_report.json()["reported_hours_total"] == 17.0
+
+    project_materials_summary = client.get(
+        f"/api/projects/{project_id}/materials",
+        headers=auth_headers(employee_token),
+    )
+    assert project_materials_summary.status_code == 200
+    material_summary_entry = next(
+        (
+            entry
+            for entry in project_materials_summary.json()
+            if entry["item"] == "Cable" and entry.get("unit") == "m" and entry.get("article_no") == "A1"
+        ),
+        None,
+    )
+    assert material_summary_entry is not None
+    assert material_summary_entry["quantity_total"] == 12.5
+    assert material_summary_entry["occurrence_count"] == 2
+    assert material_summary_entry["report_count"] == 2
+
+    project_materials_summary_denied = client.get(
+        f"/api/projects/{project_id}/materials",
+        headers=auth_headers(outsider_token),
+    )
+    assert project_materials_summary_denied.status_code == 403
 
     global_report = client.post(
         "/api/construction-reports",
@@ -665,6 +951,7 @@ def test_project_task_planning_ticket_file_and_report_flow(client: TestClient, a
     assert global_report.status_code == 200
     global_payload = global_report.json()
     assert global_payload["project_id"] is None
+    assert global_payload["report_number"] is None
     assert global_payload["processing_status"] == "completed"
     assert global_payload["attachment_file_name"].endswith(".pdf")
 
@@ -1588,11 +1875,13 @@ def test_admin_project_csv_template_and_import(client: TestClient, admin_token: 
     assert template.status_code == 200
     assert "project_number" in template.text
     assert "customer_name" in template.text
+    assert "order_value_net" in template.text
+    assert "planned_hours_total" in template.text
 
     csv_payload = (
-        "project_number,name,status,customer_name,Notiz\n"
-        "7001,CSV Import Projekt,active,CSV Kunde,Importiert\n"
-        ",Temp Projekt,in_progress,Temp Kunde,Ohne Nummer\n"
+        "project_number,name,status,customer_name,Notiz,order_value_net,planned_costs,planned_hours_total\n"
+        "7001,CSV Import Projekt,active,CSV Kunde,Importiert,100000,70000,120\n"
+        ",Temp Projekt,in_progress,Temp Kunde,Ohne Nummer,5000,2000,8\n"
     )
     imported = client.post(
         "/api/admin/projects/import-csv",
@@ -1603,10 +1892,18 @@ def test_admin_project_csv_template_and_import(client: TestClient, admin_token: 
     assert imported.json()["processed_rows"] == 2
     assert imported.json()["created"] == 2
     assert imported.json()["temporary_numbers"] == 1
+    assert imported.json()["skipped_filled_fields"] == 0
 
     projects = client.get("/api/projects", headers=auth_headers(admin_token))
     assert projects.status_code == 200
     assert any(entry["project_number"] == "7001" for entry in projects.json())
+
+    imported_project = next(entry for entry in projects.json() if entry["project_number"] == "7001")
+    finance = client.get(f"/api/projects/{imported_project['id']}/finance", headers=auth_headers(admin_token))
+    assert finance.status_code == 200
+    assert finance.json()["order_value_net"] == 100000.0
+    assert finance.json()["planned_costs"] == 70000.0
+    assert finance.json()["planned_hours_total"] == 120.0
 
 
 def test_wiki_pages_crud_and_permissions(client: TestClient, admin_token: str):
@@ -1766,6 +2063,50 @@ def test_profile_avatar_upload_and_preview(client: TestClient, admin_token: str)
     assert delete_avatar_again.json()["deleted"] is False
 
 
+def test_profile_avatar_upload_accepts_heic_extension_without_image_mime(client: TestClient, admin_token: str):
+    created = _create_user(client, admin_token, "avatar-heic-user@example.com", "employee")
+    token = _login(client, "avatar-heic-user@example.com")
+
+    upload = client.post(
+        "/api/users/me/avatar",
+        headers=auth_headers(token),
+        files={"file": ("avatar.heic", b"fake-heic-binary", "application/octet-stream")},
+    )
+    assert upload.status_code == 200
+    assert upload.json()["ok"] is True
+
+    preview = client.get(f"/api/users/{created['id']}/avatar", headers=auth_headers(token))
+    assert preview.status_code == 200
+    assert preview.content
+    assert preview.headers.get("content-type", "").startswith("image/")
+
+
+def test_thread_icon_upload_accepts_heic_extension_without_image_mime(client: TestClient, admin_token: str):
+    _create_user(client, admin_token, "thread-heic-owner@example.com", "employee")
+    employee_token = _login(client, "thread-heic-owner@example.com")
+
+    created = client.post(
+        "/api/threads",
+        headers=auth_headers(employee_token),
+        json={"name": "HEIC icon thread"},
+    )
+    assert created.status_code == 200
+    thread_id = created.json()["id"]
+
+    icon_upload = client.post(
+        f"/api/threads/{thread_id}/icon",
+        headers=auth_headers(employee_token),
+        files={"file": ("thread-icon.heic", b"fake-heic-icon", "application/octet-stream")},
+    )
+    assert icon_upload.status_code == 200
+    assert icon_upload.json()["ok"] is True
+
+    icon_file = client.get(f"/api/threads/{thread_id}/icon", headers=auth_headers(employee_token))
+    assert icon_file.status_code == 200
+    assert icon_file.content
+    assert icon_file.headers.get("content-type", "").startswith("image/")
+
+
 def test_profile_settings_update_name_email_password(client: TestClient, admin_token: str):
     _create_user(client, admin_token, "profile-user@example.com", "employee")
     token = _login(client, "profile-user@example.com")
@@ -1802,6 +2143,158 @@ def test_profile_settings_update_name_email_password(client: TestClient, admin_t
     assert old_login.status_code == 401
     new_login = client.post("/api/auth/login", json={"email": "profile-user-new@example.com", "password": "Password123!New"})
     assert new_login.status_code == 200
+
+
+def test_admin_nickname_is_optional_unique_changeable_and_removable(client: TestClient, admin_token: str):
+    available_before = client.get(
+        "/api/auth/nickname-availability",
+        headers=auth_headers(admin_token),
+        params={"nickname": "SiteWolf"},
+    )
+    assert available_before.status_code == 200
+    assert available_before.json()["available"] is True
+
+    set_nickname = client.patch(
+        "/api/auth/me",
+        headers=auth_headers(admin_token),
+        json={"nickname": "SiteWolf"},
+    )
+    assert set_nickname.status_code == 200
+    assert set_nickname.json()["nickname"] == "SiteWolf"
+    assert set_nickname.json()["display_name"] == "SiteWolf"
+    assert set_nickname.json().get("nickname_set_at")
+
+    same_nickname = client.get(
+        "/api/auth/nickname-availability",
+        headers=auth_headers(admin_token),
+        params={"nickname": "sitewolf"},
+    )
+    assert same_nickname.status_code == 200
+    assert same_nickname.json()["available"] is True
+    assert same_nickname.json()["locked"] is False
+
+    other_admin = _create_user(client, admin_token, "admin-two@example.com", "admin")
+    other_admin_token = _login(client, "admin-two@example.com")
+    taken = client.get(
+        "/api/auth/nickname-availability",
+        headers=auth_headers(other_admin_token),
+        params={"nickname": "SiteWolf"},
+    )
+    assert taken.status_code == 200
+    assert taken.json()["available"] is False
+    assert taken.json()["reason"] == "nickname_taken"
+    assert taken.json()["locked"] is False
+    assert other_admin["role"] == "admin"
+
+    changed_nickname = client.patch(
+        "/api/auth/me",
+        headers=auth_headers(admin_token),
+        json={"nickname": "DifferentName"},
+    )
+    assert changed_nickname.status_code == 200
+    assert changed_nickname.json()["nickname"] == "DifferentName"
+    assert changed_nickname.json()["display_name"] == "DifferentName"
+
+    old_now_available = client.get(
+        "/api/auth/nickname-availability",
+        headers=auth_headers(other_admin_token),
+        params={"nickname": "SiteWolf"},
+    )
+    assert old_now_available.status_code == 200
+    assert old_now_available.json()["available"] is True
+
+    take_old_nickname = client.patch(
+        "/api/auth/me",
+        headers=auth_headers(other_admin_token),
+        json={"nickname": "SiteWolf"},
+    )
+    assert take_old_nickname.status_code == 200
+    assert take_old_nickname.json()["nickname"] == "SiteWolf"
+
+    cleared_nickname = client.patch(
+        "/api/auth/me",
+        headers=auth_headers(admin_token),
+        json={"nickname": ""},
+    )
+    assert cleared_nickname.status_code == 200
+    assert cleared_nickname.json()["nickname"] is None
+    assert cleared_nickname.json()["nickname_set_at"] is None
+    assert cleared_nickname.json()["display_name"] == cleared_nickname.json()["full_name"]
+
+
+def test_nickname_admin_only(client: TestClient, admin_token: str):
+    _create_user(client, admin_token, "employee-nickname@example.com", "employee")
+    employee_token = _login(client, "employee-nickname@example.com")
+
+    check = client.get(
+        "/api/auth/nickname-availability",
+        headers=auth_headers(employee_token),
+        params={"nickname": "CrewOne"},
+    )
+    assert check.status_code == 403
+
+    set_nickname = client.patch(
+        "/api/auth/me",
+        headers=auth_headers(employee_token),
+        json={"nickname": "CrewOne"},
+    )
+    assert set_nickname.status_code == 403
+
+
+def test_construction_report_uses_nickname_for_submitted_by(client: TestClient, admin_token: str, monkeypatch):
+    set_nickname = client.patch(
+        "/api/auth/me",
+        headers=auth_headers(admin_token),
+        json={"nickname": "ReportAlias"},
+    )
+    assert set_nickname.status_code == 200
+
+    captured: dict[str, str] = {}
+
+    def fake_build_report_pdf_bytes(
+        payload,
+        report_date,
+        submitted_by,
+        project_name=None,
+        logo_path=None,
+        photos=None,
+    ):
+        _ = payload, report_date, project_name, logo_path, photos
+        captured["pdf_submitted_by"] = submitted_by
+        return b"%PDF-1.4 fake"
+
+    def fake_build_report_summary_text(project_id, report_date, payload, submitted_by):
+        _ = project_id, report_date, payload
+        captured["summary_submitted_by"] = submitted_by
+        return "summary"
+
+    monkeypatch.setattr(report_jobs_service, "build_report_pdf_bytes", fake_build_report_pdf_bytes)
+    monkeypatch.setattr(report_jobs_service, "build_report_summary_text", fake_build_report_summary_text)
+
+    project = client.post(
+        "/api/projects",
+        headers=auth_headers(admin_token),
+        json={"project_number": "2026-4010", "name": "Nickname Report Project", "status": "active"},
+    )
+    assert project.status_code == 200
+    project_id = project.json()["id"]
+
+    report = client.post(
+        f"/api/projects/{project_id}/construction-reports",
+        headers=auth_headers(admin_token),
+        json={
+            "report_date": "2026-02-26",
+            "payload": {
+                "customer": "Nickname Customer",
+                "project_name": "Nickname Report Project",
+                "project_number": "2026-4010",
+                "workers": [{"name": "Worker A"}],
+            },
+        },
+    )
+    assert report.status_code == 200
+    assert captured["pdf_submitted_by"] == "ReportAlias"
+    assert captured["summary_submitted_by"] == "ReportAlias"
 
 
 def test_admin_invite_and_password_reset_links(client: TestClient, admin_token: str):

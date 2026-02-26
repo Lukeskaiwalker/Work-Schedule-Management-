@@ -28,6 +28,9 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    nickname: Mapped[str | None] = mapped_column(String(64))
+    nickname_normalized: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
+    nickname_set_at: Mapped[datetime | None] = mapped_column(DateTime)
     role: Mapped[str] = mapped_column(String(32), default=ROLE_EMPLOYEE, nullable=False, index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     required_daily_hours: Mapped[float] = mapped_column(Float, default=8.0, nullable=False)
@@ -38,6 +41,11 @@ class User(Base):
     invite_accepted_at: Mapped[datetime | None] = mapped_column(DateTime)
     password_reset_sent_at: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+    @property
+    def display_name(self) -> str:
+        nickname = (self.nickname or "").strip()
+        return nickname or self.full_name
 
 
 class Project(Base):
@@ -145,6 +153,7 @@ class Task(Base):
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
+    subtasks: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     materials_required: Mapped[str | None] = mapped_column(Text)
     storage_box_number: Mapped[int | None] = mapped_column(Integer)
     task_type: Mapped[str] = mapped_column(String(32), default="construction", nullable=False)
@@ -193,6 +202,25 @@ class JobTicket(Base):
     notes: Mapped[str | None] = mapped_column(Text)
 
 
+class EmployeeGroup(Base):
+    __tablename__ = "employee_groups"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False, unique=True, index=True)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
+class EmployeeGroupMember(Base):
+    __tablename__ = "employee_group_members"
+    __table_args__ = (UniqueConstraint("group_id", "user_id", name="uq_employee_group_member"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    group_id: Mapped[int] = mapped_column(ForeignKey("employee_groups.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
 class ChatThread(Base):
     __tablename__ = "chat_threads"
 
@@ -200,11 +228,45 @@ class ChatThread(Base):
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
     site_id: Mapped[int | None] = mapped_column(ForeignKey("sites.id", ondelete="SET NULL"), index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    visibility: Mapped[str] = mapped_column(String(16), default="public", nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(16), default="active", nullable=False, index=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime)
+    archived_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
     icon_stored_path: Mapped[str | None] = mapped_column(String(500))
     icon_content_type: Mapped[str | None] = mapped_column(String(128))
     icon_updated_at: Mapped[datetime | None] = mapped_column(DateTime)
     updated_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class ChatThreadParticipantUser(Base):
+    __tablename__ = "chat_thread_participant_users"
+    __table_args__ = (UniqueConstraint("thread_id", "user_id", name="uq_chat_thread_participant_user"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    thread_id: Mapped[int] = mapped_column(ForeignKey("chat_threads.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
+class ChatThreadParticipantRole(Base):
+    __tablename__ = "chat_thread_participant_roles"
+    __table_args__ = (UniqueConstraint("thread_id", "role", name="uq_chat_thread_participant_role"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    thread_id: Mapped[int] = mapped_column(ForeignKey("chat_threads.id", ondelete="CASCADE"), index=True)
+    role: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
+class ChatThreadParticipantGroup(Base):
+    __tablename__ = "chat_thread_participant_groups"
+    __table_args__ = (UniqueConstraint("thread_id", "group_id", name="uq_chat_thread_participant_group"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    thread_id: Mapped[int] = mapped_column(ForeignKey("chat_threads.id", ondelete="CASCADE"), index=True)
+    group_id: Mapped[int] = mapped_column(ForeignKey("employee_groups.id", ondelete="CASCADE"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
 class ChatThreadRead(Base):
@@ -230,9 +292,11 @@ class Message(Base):
 
 class ConstructionReport(Base):
     __tablename__ = "construction_reports"
+    __table_args__ = (UniqueConstraint("project_id", "report_number", name="uq_construction_report_project_number"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    report_number: Mapped[int | None] = mapped_column(Integer)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
     report_date: Mapped[date] = mapped_column(Date, nullable=False)
     payload: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)

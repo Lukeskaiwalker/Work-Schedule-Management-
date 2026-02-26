@@ -104,6 +104,7 @@ def report_processing_payload(report: ConstructionReport) -> dict[str, Any]:
     return {
         "report_id": report.id,
         "project_id": report.project_id,
+        "report_number": report.report_number,
         "processing_status": report.processing_status or REPORT_PROCESSING_QUEUED,
         "processing_error": report.processing_error,
         "processed_at": report.processed_at,
@@ -199,11 +200,15 @@ async def process_construction_report_job(db: Session, job_id: int) -> Construct
         payload = dict(report.payload or {})
         project = db.get(Project, report.project_id) if report.project_id is not None else None
         submitted_by_user = db.get(User, report.user_id)
-        submitted_by = submitted_by_user.full_name if submitted_by_user else "Unknown user"
+        submitted_by = submitted_by_user.display_name if submitted_by_user else "Unknown user"
         uploaded_by_user_id = submitted_by_user.id if submitted_by_user and submitted_by_user.id else report.user_id
         if not uploaded_by_user_id:
             raise RuntimeError("Report submitter missing")
-        report_file_name = (report.pdf_file_name or "").strip() or build_report_filename(payload, report.report_date)
+        report_file_name = (report.pdf_file_name or "").strip() or build_report_filename(
+            payload,
+            report.report_date,
+            report_number=report.report_number,
+        )
         report.pdf_file_name = report_file_name
 
         pdf_attachment = _latest_report_pdf_attachment(db, report.id)

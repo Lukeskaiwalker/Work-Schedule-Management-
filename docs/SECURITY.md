@@ -119,6 +119,25 @@
 - Job Ticket simplification (project default date/address, no site-create segment) is UI-only and does not reduce server-side authorization on ticket endpoints.
 - Sidebar project search is client-side filtering over already authorized project data; it does not widen data exposure scope.
 
+## Iteration Security Notes (2026-02-26, admin nickname for anonymized exports)
+- Nickname management is admin-only and server-enforced:
+  - non-admin users receive `403` on nickname availability/set paths.
+- Nickname uniqueness is case-insensitive and validated server-side before write.
+- Nickname can be set only once (immutable after first set) to prevent identity churn.
+- Construction-report submitter identity now uses `display_name` (nickname fallback), reducing real-name exposure in exported/generated report artifacts.
+
+## Iteration Security Notes (2026-02-26, restricted chat participant enforcement)
+- Thread visibility now has explicit server-enforced modes:
+  - `public`: visible to all users with chat permissions (existing behavior),
+  - `restricted`: visible only to creator + explicit participant users + users in selected participant groups.
+- Restricted access checks are enforced server-side across:
+  - thread listing,
+  - message reads,
+  - message sends,
+  - thread icon read/update and thread update operations.
+- Participant-user selection endpoints return active users only; archived users are excluded from selectable lists and rejected during restricted-thread creation payload validation.
+- Group memberships are persisted and auditable via admin-managed employee-group APIs; no frontend-only authorization assumptions are used.
+
 ## Iteration Security Notes (2026-02-22, archive/task-delete/task-notification update)
 - Task delete is now explicit API functionality (`DELETE /tasks/{id}`):
   - server-side restricted to `tasks:manage`,
@@ -343,3 +362,98 @@
 ## Iteration Security Notes (2026-02-25, finance typography/spacing tune)
 - No authN/authZ model changes in this iteration.
 - CSS-only presentation update for finance metrics; no API, storage, or permission behavior changes.
+
+## Iteration Security Notes (2026-02-25, materials single-indicator flow + completion status)
+- No authN/authZ model changes in this iteration.
+- `completed` material status extends existing server-side status normalization only; project visibility checks on material updates remain unchanged.
+- Active materials endpoint now excludes `completed` rows, reducing operational noise without altering access boundaries.
+
+## Iteration Security Notes (2026-02-25, report numbering + normalized report image filenames)
+- No authN/authZ model changes in this iteration.
+- Report numbering adds metadata only (`report_number`) and does not change report-access checks.
+- Server-side image filename normalization removes user/device-origin filenames from stored report-photo attachment names, reducing incidental exposure of personal naming patterns.
+- File encryption-at-rest behavior for report images/PDFs is unchanged.
+
+## Iteration Security Notes (2026-02-25, update menu release-version placeholder resolution)
+- No authN/authZ model changes in this iteration.
+- Change is limited to metadata/reporting in admin update status (version/commit display values).
+- No impact on data-access permissions, encryption, or file handling paths.
+
+## Iteration Security Notes (2026-02-26, chat restrictions by users and roles)
+- No authentication model changes in this iteration.
+- Restricted chat authorization now validates server-side on list/read/send using:
+  - explicit selected users,
+  - selected roles,
+  - thread creator,
+  - and legacy group membership for backward compatibility.
+- Chat participant selectors still expose active users only; archived users remain non-selectable and rejected on restricted create payload validation.
+
+## Iteration Security Notes (2026-02-26, mutable chat access + archive lifecycle)
+- No authentication model changes in this iteration.
+- Authorization checks remain server-side for all new lifecycle operations:
+  - only thread creator or chat managers can archive/restore/delete,
+  - restricted visibility checks still gate thread list/read/send.
+- Archived thread behavior:
+  - archived threads are hidden from default lists to reduce accidental posting,
+  - sending messages to archived chats is rejected (`409`),
+  - history is preserved for authorized users.
+- Archived-user handling:
+  - archived users remain non-selectable for new membership assignment,
+  - existing archived members can remain in restricted threads when access lists are edited, preserving historical conversation integrity.
+
+## Iteration Security Notes (2026-02-26, chat header 3-dot actions menu)
+- No authN/authZ model changes in this iteration.
+- Change is frontend-only in chat header controls; action endpoints and permission enforcement remain unchanged server-side.
+- Added menu-close behavior on outside click/Escape/context change to reduce accidental action invocation from stale open menus.
+
+## Iteration Security Notes (2026-02-26, project map copy-address icon)
+- No authN/authZ model changes in this iteration.
+- Frontend-only clipboard convenience action; no backend data exposure or permission-path changes.
+- Copies already-visible project address text and uses existing browser clipboard APIs with fallback behavior.
+
+## Iteration Security Notes (2026-02-26, task assignee absence hint text)
+- No authN/authZ model changes in this iteration.
+- Frontend-only rendering of existing absence metadata already available to authorized users in time/planning views.
+- No new API endpoints, permission paths, or data persistence changes introduced.
+
+## Iteration Security Notes (2026-02-26, nickname edit/remove flow)
+- No authentication model changes in this iteration.
+- Nickname authorization remains server-side and admin-only for set/update/remove operations.
+- Uniqueness checks remain enforced server-side before nickname assignment.
+- Allowing nickname removal only clears alias fields on the current admin user; it does not broaden access or data visibility.
+
+## Iteration Security Notes (2026-02-26, task sub-task carry-over via reports)
+- No authentication model changes in this iteration.
+- Report-linked follow-up creation is enforced server-side:
+  - `source_task_id` is validated as positive integer,
+  - must belong to the same project as the report,
+  - and only runs in project-scoped reports.
+- No client-only trust for sub-task carry-over logic; unresolved-item handling executes in backend transaction with activity logging.
+
+## Iteration Security Notes (2026-02-26, DB-safe update preflight + snapshot guard)
+- No authentication model changes in this iteration.
+- Update safety hardening:
+  - admin auto-install now creates a pre-update DB snapshot before real migration,
+  - migration preflight runs against a temporary cloned DB and aborts install on failure.
+- Risk reduction:
+  - lowers risk of destructive/partial schema updates on live DB,
+  - increases rollback readiness by creating explicit pre-update snapshot artifact.
+- Operational note:
+  - snapshot is DB-only (uploads are still protected by regular encrypted backup flow via `scripts/backup.sh`).
+
+## Iteration Security Notes (2026-02-26, report sub-task rendering + task-edit timestamp display)
+- No authentication or authorization model changes in this iteration.
+- Report change is presentation-level for already-submitted payload data (`completed_subtasks`) and does not expand report access scope.
+- Task modal change is frontend-only display adjustment (`last edited` shown instead of week-start input); backend permission and optimistic-locking checks remain unchanged.
+
+## Iteration Security Notes (2026-02-26, HEIC/HEIF upload support)
+- No authentication or authorization model changes in this iteration.
+- Upload validation remains server-side; the change broadens accepted image identification by extension in addition to MIME.
+- Avatar/thread icon handling keeps existing max-size limits and encrypted-at-rest storage behavior unchanged.
+- No new public endpoints were introduced.
+
+## Iteration Security Notes (2026-02-26, project materials aggregation tab)
+- No authentication model changes in this iteration.
+- New endpoint `GET /projects/{project_id}/materials` is protected with existing `assert_project_access` checks.
+- Aggregation reads existing report payload data only; no new sensitive fields or write paths introduced.
+- Unit dropdown additions are frontend-only input aids; server-side authorization/validation boundaries are unchanged.
