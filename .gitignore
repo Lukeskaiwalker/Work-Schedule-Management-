@@ -30,6 +30,10 @@ data/
 .mcp/
 .playwright-cli/
 output/
+AGENTS.md
+**/AGENTS.md
+agents.md
+**/agents.md
 
 # Large local content (mount at runtime)
 local wiki/*

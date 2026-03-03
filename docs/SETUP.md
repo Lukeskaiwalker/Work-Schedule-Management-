@@ -622,3 +622,133 @@ Expected:
   - Project detail now includes `Materials` tab between project hours and job tickets.
   - Tab data is sourced from `GET /api/projects/{project_id}/materials` and merges repeated material rows from reports.
   - Material unit fields now support dropdown suggestions with manual free-text fallback.
+
+## Iteration Setup Notes (2026-02-26, backup/restore script transport hardening)
+- No new migration required for this iteration.
+- Script interfaces are unchanged:
+  - `./scripts/backup.sh`
+  - `./scripts/preflight_migrations.sh`
+  - `./scripts/restore.sh backups/<artifact>.tar.enc`
+  - `./scripts/safe_update.sh --pull --branch main`
+- Operational behavior update:
+  - backup/preflight/restore now transfer dump/tar artifacts via stream copy (`docker compose exec -T ... cat`) instead of `docker compose cp`.
+  - temp directories in those scripts are forced to `0700` after creation, making runs resilient to restrictive `umask` values.
+
+## Iteration Setup Notes (2026-02-28, release version display consistency)
+- No new migration required for this iteration.
+- Standard refresh is sufficient:
+  - `docker compose up --build -d api web caddy`
+- Operational behavior update:
+  - admin update-status now infers current release tag when placeholder version metadata is present and commit data matches release/tag metadata.
+  - bottom-left user menu popup now shows `Release version` label instead of `Firmware build`.
+
+## Iteration Setup Notes (2026-02-28, project modal drag-select close fix)
+- No new migration required for this iteration.
+- Standard refresh is sufficient:
+  - `docker compose up -d --build web caddy`
+- Operational behavior update:
+  - Project create/edit modal no longer closes accidentally when text is selected and pointer is released outside modal bounds.
+
+## Iteration Setup Notes (2026-02-28, workspace split toggle in sidebar)
+- No new migration required for this iteration.
+- Standard refresh is sufficient:
+  - `docker compose up -d --build web caddy`
+- Operational behavior update:
+  - Sidebar header now includes a `Construction` / `Office` workspace toggle beside `SMPL`.
+  - Current workspace selection is persisted in local browser storage and restored on reload.
+  - Both workspace modes currently show the same pages until dedicated mode-specific customization is added.
+
+## Iteration Setup Notes (2026-03-03, task/calendar labels + sorting)
+- No migration required for this iteration.
+- Standard frontend refresh is sufficient:
+  - `docker compose up -d --build web caddy`
+- Operational behavior update:
+  - task/calendar entries now use project-title links for quick navigation.
+  - calendar/planning day columns are rendered in due-time order.
+
+## Iteration Setup Notes (2026-03-03, persistent report-feed chat + overview recent reports list)
+- No migration required for this iteration.
+- Standard refresh is sufficient:
+  - `docker compose up -d --build api web caddy`
+- Operational behavior update:
+  - New global chat thread `Latest Construction Reports` is auto-maintained by backend report processing.
+  - Processed construction report PDFs are attached to feed-thread messages for direct in-browser viewing.
+  - Overview page now includes a latest-10 construction reports card sourced from `GET /api/construction-reports/recent`.
+
+## Iteration Setup Notes (2026-03-03, report-feed sync/backfill fix)
+- No migration required for this iteration.
+- Standard backend refresh is sufficient:
+  - `docker compose up -d --build api web caddy`
+- Operational behavior update:
+  - Missing `Latest Construction Reports` thread is recreated automatically when loading global chat threads.
+  - Existing report PDFs missing chat linkage are backfilled into the feed thread.
+  - Feed messages now include project number and project name in the text payload.
+
+## Iteration Setup Notes (2026-03-03, report-feed thread lifecycle guardrails)
+- No migration required for this iteration.
+- Standard backend refresh is sufficient:
+  - `docker compose up -d --build api`
+- Operational behavior update:
+  - `Latest Construction Reports` thread cannot be deleted.
+  - Thread is not created in brand-new systems until at least one construction report has been created.
+
+## Iteration Setup Notes (2026-03-03, compact add button in project tasks)
+- No migration required for this iteration.
+- Standard frontend refresh is sufficient:
+  - `docker compose up -d --build web caddy`
+- Operational behavior update:
+  - `Project -> Tasks` now shows a compact `+` action to create tasks via modal instead of the full inline form.
+
+## Iteration Setup Notes (2026-03-03, office tasks side menu + filters)
+- No migration required for this iteration.
+- Standard frontend refresh is sufficient:
+  - `docker compose up -d --build web caddy`
+- Operational behavior update:
+  - In `Office` workspace mode, sidebar now includes `Tasks` (global tasks list view).
+  - `Tasks` view supports filtering by status, assignee (including unassigned), due date, and project.
+  - Switching workspace mode automatically maps task navigation between `My Tasks` (construction) and `Tasks` (office).
+
+## Iteration Setup Notes (2026-03-03, office project search filter + undated task support)
+- No migration required for this iteration.
+- Standard refresh is sufficient:
+  - `docker compose up -d --build web caddy`
+- Operational behavior update:
+  - Office tasks project filter is now searchable and supports multiple selected projects.
+  - Task modal supports creating undated tasks (`due_date = null`), which do not appear in calendar/planning views until dated.
+
+## Iteration Setup Notes (2026-03-03, office task filter UX cleanup)
+- No migration required for this iteration.
+- Standard frontend refresh is sufficient:
+  - `docker compose up -d --build web caddy`
+- Operational behavior update:
+  - Office project filter suggestions now appear only while typing.
+  - Office due-date filter now supports `No due date` for undated tasks.
+
+## Iteration Setup Notes (2026-03-03, centered add-task plus icon)
+- No migration required.
+- Standard frontend refresh:
+  - `docker compose up -d --build web caddy`
+
+## Iteration Setup Notes (2026-03-03, overview status/report card positioning)
+- No migration required.
+- Standard frontend refresh:
+  - `docker compose up -d --build web caddy`
+- Operational behavior update:
+  - Overview clock action button remains on the left in both clock-in and clock-out states.
+  - Overview `Latest construction reports` is now directly below `My current status`.
+
+## Iteration Setup Notes (2026-03-03, optional due date + overdue + image format handling)
+- No migration required for this iteration.
+- Standard refresh is sufficient:
+  - `docker compose up -d --build api web caddy`
+- Operational behavior update:
+  - Task modal can create tasks without due date.
+  - Overdue tasks are auto-derived and filterable in Office task view.
+  - Avatar upload flow preserves common non-HEIC output formats; HEIC remains JPEG-converted path.
+
+## Iteration Setup Notes (2026-03-03, local page startup crash fix)
+- No migration required.
+- Standard frontend refresh/rebuild:
+  - `docker compose up -d --build web caddy`
+- If browser still reports unreachable over HTTPS due local CA trust, continue using `https://localhost` and re-run local trust setup:
+  - `./scripts/trust_caddy_root_macos.sh`

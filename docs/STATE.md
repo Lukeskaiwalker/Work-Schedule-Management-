@@ -1829,6 +1829,8 @@
   - Added localized conflict messages for quick-action stale-write collisions.
 - Verified:
   - `cd apps/web && npm run build` pass.
+  - `docker compose up -d --build web caddy` pass.
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/` returns `200`.
   - `./scripts/test.sh` pass (`48 passed`, web build successful).
 - Next:
   - Optional: add admin maintenance utility to rewrite legacy encrypted attachment blobs into chunked-encrypted format for historical file-share speed gains.
@@ -2103,4 +2105,205 @@
   - `docker compose up -d --build --force-recreate api web caddy` pass (services healthy, `/` and `/api` return `200`).
 - Next:
   - Optional: add a quick CSV export for aggregated project materials.
+- Blockers: none.
+
+## Compacted Update (2026-02-26, backup/restore script transport hardening)
+- Changed:
+  - Replaced `docker compose cp` usage in `scripts/backup.sh`, `scripts/preflight_migrations.sh`, and `scripts/restore.sh` with stream copy via `docker compose exec -T ... cat`.
+  - Added secure temp-directory creation helper (`mktemp -d` + `chmod 700`) in those scripts so restrictive shell `umask` values do not break temp folder access.
+- Verified:
+  - `bash -n scripts/backup.sh scripts/preflight_migrations.sh scripts/restore.sh scripts/safe_update.sh` pass.
+  - `rg -n "docker compose cp" scripts/backup.sh scripts/preflight_migrations.sh scripts/restore.sh` returns no matches.
+- Next:
+  - Optional: apply the same stream-copy hardening to other helper scripts still using `docker compose cp` if needed in production environments.
+- Blockers: none.
+
+## Compacted Update (2026-02-28, release version display consistency in admin updates + user menu popup)
+- Changed:
+  - Backend update-status resolver now infers `current_version` from GitHub metadata when local release metadata is placeholder-only (`local-production`) and commit hash matches latest/tagged release commit.
+  - Frontend now uses one shared release-resolution path for:
+    - Admin tools `System updates` current version label,
+    - bottom-left user menu popup release label.
+  - Bottom-left popup label changed from `Firmware build` to `Release version` and no longer defaults to showing `local-production`.
+- Verified:
+  - `docker compose run --rm --build api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_auth_rbac.py -k "update_status"'` pass (`3 passed`).
+  - `cd apps/web && npm run build` pass.
+- Next:
+  - Optional: expose resolved release metadata in a non-admin API endpoint if non-admin users should always see exact release tags too.
+- Blockers: none.
+
+## Compacted Update (2026-02-28, prevent accidental project-edit modal close on drag selection)
+- Changed:
+  - Fixed project edit/create modal backdrop behavior so it only closes when pointer down + pointer up both happen on the backdrop.
+  - Prevents accidental modal close (and unsaved form loss) when selecting text inside an input/textarea and releasing pointer outside the modal.
+- Verified:
+  - `cd apps/web && npm run build` pass.
+  - `docker compose up -d --build web caddy` pass.
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/` returns `200`.
+- Next:
+  - Optional: apply the same pointer-safe backdrop close pattern to other edit modals with unsaved form state.
+- Blockers: none.
+
+## Compacted Update (2026-02-28, sidebar workspace split toggle: construction vs office)
+- Changed:
+  - Added a new workspace-mode toggle next to the `SMPL` header in the left sidebar.
+  - Workspace now has two top-level modes: `Construction` and `Office`.
+  - Added persistent workspace-mode state in frontend (`localStorage` key: `smpl_workspace_mode`).
+  - Both workspace modes currently render the same app content by design (placeholder split for later tailored views).
+- Verified:
+  - `cd apps/web && npm run build` pass.
+  - `docker compose up -d --build web caddy` pass.
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/` returns `200`.
+- Next:
+  - Tailor navigation/content visibility per workspace mode once UX rules are finalized.
+- Blockers: none.
+
+## Compacted Update (2026-03-03, task/calendar project labels + time ordering)
+- Changed:
+  - Task cards and calendar rows no longer show task IDs.
+  - Replaced task-ID display with clickable project title (`project_number - project_name`) in task overview and calendar views.
+  - Added project navigation links from task rows (including calendar/planning rows) to open project detail directly.
+  - Added frontend day-task sorting by due date + start time for calendar/planning day columns.
+  - Standardized core project title presentation across sidebar/project lists to show number first, then name.
+- Verified:
+  - `cd apps/web && npm run build` pass.
+- Next:
+  - Optional: add backend ordering by `start_time` for planning/task endpoints so all clients receive identical sort order server-side.
+- Blockers: none.
+
+## Compacted Update (2026-03-03, persistent report-feed chat + overview latest reports list)
+- Changed:
+  - Added backend report-feed service that maintains a global chat thread `Latest Construction Reports`.
+  - On successful construction report processing, system now posts a chat message into that thread and links the generated PDF attachment to the message.
+  - Added new API endpoint `GET /api/construction-reports/recent?limit=10` for newest construction reports ordered by `created_at` descending.
+  - Updated overview page with a new card listing the last 10 created construction reports including quick open and project navigation actions.
+- Verified:
+  - `docker compose run --rm api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_workflows.py -k project_task_planning_ticket_file_and_report_flow'` pass.
+  - `cd apps/web && npm run build` pass.
+  - `docker compose up -d --build api web caddy` pass.
+- Next:
+  - Optional: pin or visually badge the feed thread in chat sidebar for faster discovery.
+- Blockers: none.
+
+## Compacted Update (2026-03-03, report-feed thread backfill + project label details)
+- Changed:
+  - Added backend report-feed sync/backfill so the global chat thread `Latest Construction Reports` is auto-created during thread listing and existing report PDFs without feed messages are backfilled.
+  - Feed message text now explicitly includes project number and project name (`Project <number> - <name>` when available).
+  - Global/project chat thread listing now sorts by latest activity (`updated_at`) so the report-feed thread stays near the top when new reports arrive.
+- Verified:
+  - `docker compose run --rm api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_workflows.py -k project_task_planning_ticket_file_and_report_flow'` pass.
+  - `cd apps/web && npm run build` pass.
+- Next:
+  - Optional: add a dedicated pin/badge treatment for the report-feed thread in the chat sidebar.
+- Blockers: none.
+
+## Compacted Update (2026-03-03, report-feed thread protection + first-report creation timing)
+- Changed:
+  - Report-feed thread (`Latest Construction Reports`) is now protected from deletion via API.
+  - Feed sync no longer creates the thread in an empty system; it appears only once at least one construction report exists.
+  - Existing behavior retained: once reports exist, feed sync/backfill keeps the thread/messages aligned with report PDFs.
+- Verified:
+  - `docker compose run --rm --build api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_workflows.py -k project_task_planning_ticket_file_and_report_flow'` pass.
+  - `docker compose up -d --build api` pass.
+- Blockers: none.
+
+## Compacted Update (2026-03-03, project tasks tab compact add action)
+- Changed:
+  - Removed the large inline `Create task` form from `Project -> Tasks`.
+  - Kept the tasks list card and added a compact `+` icon action in the tasks header.
+  - `+` now opens the existing task modal prefilled with the current project.
+- Verified:
+  - `cd apps/web && npm run build` pass.
+  - `docker compose up -d --build web caddy` pass.
+- Next:
+  - Optional: remove now-unused project-task-inline form state/helpers from `App.tsx` in a cleanup pass.
+- Blockers: none.
+
+## Compacted Update (2026-03-03, office workspace tasks menu + filters)
+- Changed:
+  - Added a dedicated `Tasks` nav entry for `Office` workspace mode (while `Construction` mode keeps `My Tasks`).
+  - Added new `office_tasks` view with a full tasks list from `GET /tasks?view=projects_overview`.
+  - Implemented office task filters for:
+    - task status,
+    - assignee (including explicit `Unassigned`),
+    - due date,
+    - project.
+  - Added reset action for office task filters and kept project jump links directly from each task row.
+  - Added workspace-mode view handoff (`my_tasks` <-> `office_tasks`) so switching mode keeps navigation consistent.
+- Verified:
+  - `./scripts/test.sh` pass.
+  - `docker compose up -d --build web caddy` pass (stack currently rebuilt with `web`, `api`, `caddy`).
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/` => `200`.
+- Blockers: none.
+
+## Compacted Update (2026-03-03, searchable project selection + undated task creation)
+- Changed:
+  - Office `Tasks` project filter now supports search + multi-select chips instead of a long single dropdown.
+  - Office project filter can select multiple projects at once and remove selections individually.
+  - Task modal no longer auto-fills due date by default outside explicit planning context.
+  - Task creation from the modal now allows empty `due_date`; undated tasks are saved with `week_start = null` so they do not appear in calendar/planning views.
+  - Task modal now saves through `POST /tasks` with optional date/time.
+- Verified:
+  - `./scripts/test.sh` pass (`60 passed`).
+  - `cd apps/web && npm run build` pass.
+  - `docker compose up -d --build web caddy` pass.
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/` => `200`.
+- Blockers: none.
+
+## Compacted Update (2026-03-03, office task filter cleanup + undated due-date filter)
+- Changed:
+  - Office task project search no longer renders all project suggestions by default; suggestions appear only while typing.
+  - Office due-date filtering now supports `No due date` to list tasks with empty due date.
+  - Due-date date picker is disabled while `No due date` is active to avoid conflicting filter states.
+- Verified:
+  - `cd apps/web && npm run build` pass.
+  - `docker compose up -d --build web caddy` pass.
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/` => `200`.
+- Blockers: none.
+
+## Compacted Update (2026-03-03, centered add-task plus icon)
+- Changed:
+  - Centered the `+` glyph in `.task-add-icon-btn` by applying explicit flex centering.
+- Verified:
+  - `cd apps/web && npm run build` pass.
+  - `docker compose up -d --build web caddy` pass.
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/` => `200`.
+- Blockers: none.
+
+## Compacted Update (2026-03-03, overview shift controls + report card order)
+- Changed:
+  - In Overview `My current status`, the clock action button is now always left-aligned (both clock-in and clock-out states).
+  - Current shift info/no-open-shift text now appears on the right side of the action row and is vertically centered with the button.
+  - `Latest construction reports` card moved directly beneath `My current status` in a dedicated left overview column so it is no longer at the bottom.
+- Verified:
+  - `cd apps/web && npm run build` pass.
+  - `docker compose up -d --build web caddy` pass.
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/` => `200`.
+- Blockers: none.
+
+## Compacted Update (2026-03-03, optional task due date + overdue state/filter + image format handling)
+- Changed:
+  - Task creation modal now allows empty `due_date` (and optional `start_time`) so tasks can be created without a due date.
+  - Added automatic overdue behavior for tasks one day past due date (`due_date < today` and not done).
+  - Added overdue display/filter support in task views:
+    - new status label `Overdue/Überfällig`,
+    - Office task status filter includes `overdue`,
+    - overdue task cards are highlighted in a light red tone.
+  - Added backend task output flag `is_overdue` to expose server-side overdue state.
+  - Avatar crop/upload now preserves common non-HEIC output formats (jpg/png/webp) instead of always forcing JPEG; HEIC/HEIF continues to resolve to JPEG path.
+- Verified:
+  - `./scripts/test.sh` pass (`61 passed`, web build pass).
+  - `docker compose up -d --build api web caddy` pass.
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/` => `200`.
+- Blockers: none.
+
+## Compacted Update (2026-03-03, local page unreachable startup crash fix)
+- Changed:
+  - Fixed frontend startup crash caused by a temporal dead zone reference in `apps/web/src/App.tsx` (`officeFilteredTasks` used `todayIso` before initialization).
+  - Updated overdue filter logic to derive `referenceTodayIso` directly from `now` inside the memoized filter.
+- Verified:
+  - `docker compose up -d --build web caddy` pass.
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/` => `200`.
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/api` => `200`.
+  - Playwright browser check on `http://192.168.5.59/` loads `SMPL Workflow` page without console startup errors.
 - Blockers: none.

@@ -432,6 +432,7 @@ def test_project_task_planning_ticket_file_and_report_flow(client: TestClient, a
     assert "General Team Chat" in thread_names
     assert "Project A Chat" in thread_names
     assert "Restricted Crew Chat" in thread_names
+    assert "Latest Construction Reports" not in thread_names
 
     threads_for_employee_b = client.get("/api/threads", headers=auth_headers(employee_b_token))
     assert threads_for_employee_b.status_code == 200
@@ -859,6 +860,38 @@ def test_project_task_planning_ticket_file_and_report_flow(client: TestClient, a
     assert report_download.status_code == 200
     assert report_download.content.startswith(b"%PDF")
 
+    report_feed_threads = client.get("/api/threads", headers=auth_headers(employee_token))
+    assert report_feed_threads.status_code == 200
+    report_feed = next((entry for entry in report_feed_threads.json() if entry["name"] == "Latest Construction Reports"), None)
+    assert report_feed is not None
+    assert report_feed["project_id"] is None
+
+    report_feed_messages = client.get(
+        f"/api/threads/{report_feed['id']}/messages",
+        headers=auth_headers(employee_token),
+    )
+    assert report_feed_messages.status_code == 200
+    feed_message_for_report = next(
+        (
+            entry
+            for entry in report_feed_messages.json()
+            if str(entry.get("body") or "").find(f"#{data['report_number']}") >= 0
+        ),
+        None,
+    )
+    assert feed_message_for_report is not None
+    assert "Project 2026-1001A - Project A" in str(feed_message_for_report.get("body") or "")
+    assert len(feed_message_for_report["attachments"]) >= 1
+    feed_attachment_id = int(feed_message_for_report["attachments"][0]["id"])
+    assert feed_attachment_id == report_file["id"]
+
+    outsider_feed_preview = client.get(f"/api/files/{feed_attachment_id}/preview", headers=auth_headers(outsider_token))
+    assert outsider_feed_preview.status_code == 200
+    assert outsider_feed_preview.content.startswith(b"%PDF")
+
+    delete_report_feed = client.delete(f"/api/threads/{report_feed['id']}", headers=auth_headers(admin_token))
+    assert delete_report_feed.status_code == 403
+
     multipart_report = client.post(
         f"/api/projects/{project_id}/construction-reports",
         headers=auth_headers(employee_token),
@@ -958,6 +991,23 @@ def test_project_task_planning_ticket_file_and_report_flow(client: TestClient, a
     global_reports = client.get("/api/construction-reports", headers=auth_headers(employee_token))
     assert global_reports.status_code == 200
     assert any(entry["id"] == global_payload["id"] and entry["project_id"] is None for entry in global_reports.json())
+
+    threads_after_global_report = client.get("/api/threads", headers=auth_headers(employee_token))
+    assert threads_after_global_report.status_code == 200
+    assert len(threads_after_global_report.json()) >= 1
+    assert threads_after_global_report.json()[0]["name"] == "Latest Construction Reports"
+
+    recent_reports = client.get("/api/construction-reports/recent?limit=10", headers=auth_headers(employee_token))
+    assert recent_reports.status_code == 200
+    recent_payload = recent_reports.json()
+    assert len(recent_payload) >= 3
+    assert recent_payload[0]["id"] == global_payload["id"]
+    assert any(
+        entry["id"] == data["id"]
+        and entry["project_id"] == project_id
+        and entry["attachment_id"] == report_file["id"]
+        for entry in recent_payload
+    )
 
     global_files = client.get("/api/construction-reports/files", headers=auth_headers(employee_token))
     assert global_files.status_code == 200
@@ -1621,6 +1671,86 @@ def test_planning_week_calendar_view(client: TestClient, admin_token: str):
     assert "Friday appointment" in appointment_tasks
     assert "Monday task" not in appointment_tasks
     assert "Wednesday task" not in appointment_tasks
+
+
+def test_task_overdue_flag_and_optional_due_date(client: TestClient, admin_token: str):
+    project = client.post(
+        "/api/projects",
+        headers=auth_headers(admin_token),
+        json={"project_number": "2026-3002", "name": "Project Overdue", "description": "overdue", "status": "active"},
+    )
+    assert project.status_code == 200
+    project_id = project.json()["id"]
+
+    today = datetime.now(timezone.utc).date()
+    yesterday_iso = (today - timedelta(days=1)).isoformat()
+    tomorrow_iso = (today + timedelta(days=1)).isoformat()
+
+    overdue_task = client.post(
+        "/api/tasks",
+        headers=auth_headers(admin_token),
+        json={
+            "project_id": project_id,
+            "title": "Open overdue task",
+            "status": "open",
+            "due_date": yesterday_iso,
+        },
+    )
+    assert overdue_task.status_code == 200
+    assert overdue_task.json()["status"] == "open"
+    assert overdue_task.json()["is_overdue"] is True
+
+    no_due_date_task = client.post(
+        "/api/tasks",
+        headers=auth_headers(admin_token),
+        json={
+            "project_id": project_id,
+            "title": "Task without due date",
+            "status": "open",
+            "due_date": None,
+        },
+    )
+    assert no_due_date_task.status_code == 200
+    assert no_due_date_task.json()["due_date"] is None
+    assert no_due_date_task.json()["is_overdue"] is False
+
+    future_task = client.post(
+        "/api/tasks",
+        headers=auth_headers(admin_token),
+        json={
+            "project_id": project_id,
+            "title": "Open future task",
+            "status": "open",
+            "due_date": tomorrow_iso,
+        },
+    )
+    assert future_task.status_code == 200
+    assert future_task.json()["is_overdue"] is False
+
+    done_past_task = client.post(
+        "/api/tasks",
+        headers=auth_headers(admin_token),
+        json={
+            "project_id": project_id,
+            "title": "Done past task",
+            "status": "done",
+            "due_date": yesterday_iso,
+        },
+    )
+    assert done_past_task.status_code == 200
+    assert done_past_task.json()["is_overdue"] is False
+
+    open_tasks = client.get("/api/tasks?view=all_open", headers=auth_headers(admin_token))
+    assert open_tasks.status_code == 200
+    open_by_title = {row["title"]: row for row in open_tasks.json()}
+    assert open_by_title["Open overdue task"]["is_overdue"] is True
+    assert open_by_title["Task without due date"]["is_overdue"] is False
+    assert open_by_title["Open future task"]["is_overdue"] is False
+
+    completed_tasks = client.get("/api/tasks?view=completed", headers=auth_headers(admin_token))
+    assert completed_tasks.status_code == 200
+    completed_by_title = {row["title"]: row for row in completed_tasks.json()}
+    assert completed_by_title["Done past task"]["is_overdue"] is False
 
 
 def test_project_files_folder_visibility_and_webdav_structure(client: TestClient, admin_token: str):

@@ -1277,3 +1277,190 @@
   - Health checks: API `200`, web `200`.
 - Coverage notes:
   - Workflow test now validates merged project material summary endpoint output and project access control (`403` for outsider).
+
+## Iteration Result (2026-02-26, backup/restore script transport hardening)
+- Commands run:
+  - `bash -n scripts/backup.sh scripts/preflight_migrations.sh scripts/restore.sh scripts/safe_update.sh`
+  - `rg -n "docker compose cp" scripts/backup.sh scripts/preflight_migrations.sh scripts/restore.sh`
+- Results:
+  - Shell syntax checks: pass.
+  - Targeted scripts no longer contain `docker compose cp` usage.
+- Coverage notes:
+  - This iteration validates script integrity/safety paths only; no API or frontend runtime behavior changed.
+
+## Iteration Result (2026-02-28, release version display consistency)
+- Commands run:
+  - `docker compose run --rm --build api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_auth_rbac.py -k "update_status"'`
+  - `cd apps/web && npm run build`
+- Results:
+  - Targeted update-status tests: pass (`3 passed`, filtered).
+  - Web production build: pass.
+- Coverage notes:
+  - Added update-status inference coverage for placeholder local version + matching latest release commit path.
+  - Frontend release-label changes are build-verified.
+
+## Iteration Result (2026-02-28, project modal drag-select close fix)
+- Commands run:
+  - `cd apps/web && npm run build`
+  - `docker compose up -d --build web caddy`
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/`
+- Results:
+  - Web production build: pass.
+  - Local web stack rebuild/restart: pass.
+  - Web health check: `200`.
+- Coverage notes:
+  - Change is frontend modal interaction logic; no backend behavior changed in this iteration.
+
+## Iteration Result (2026-02-28, workspace split toggle in sidebar)
+- Commands run:
+  - `cd apps/web && npm run build`
+  - `docker compose up -d --build web caddy`
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/`
+- Results:
+  - Web production build: pass.
+  - Local web stack rebuild/restart: pass.
+  - Web health check: `200`.
+- Coverage notes:
+  - Change is frontend layout/state only; no backend endpoints, migrations, or permission logic changed in this iteration.
+
+## Iteration Result (2026-03-03, task/calendar labels + sorting)
+- Commands run:
+  - `cd apps/web && npm run build`
+  - `docker compose up -d --build web caddy`
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/`
+- Results:
+  - Web production build: pass.
+  - Local web stack rebuild/restart: pass.
+  - Web health check: `200`.
+- Coverage notes:
+  - Frontend rendering/navigation changes verified via TypeScript production build.
+  - No backend API behavior changed in this iteration.
+
+## Iteration Result (2026-03-03, persistent report-feed chat + recent reports overview API)
+- Commands run:
+  - `docker compose run --rm api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_workflows.py -k project_task_planning_ticket_file_and_report_flow'`
+  - `cd apps/web && npm run build`
+  - `docker compose up -d --build api web caddy`
+- Results:
+  - Targeted workflow integration test: pass (`1 passed`, filtered).
+  - Web production build: pass.
+  - Local stack rebuild/restart: pass.
+- Coverage notes:
+  - Workflow test now verifies creation of the persistent report-feed chat thread, feed message attachment linkage to report PDF, cross-user preview access through chat attachment route, and `/construction-reports/recent` response behavior.
+
+## Iteration Result (2026-03-03, report-feed backfill + project number/name in feed messages)
+- Commands run:
+  - `docker compose run --rm api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_workflows.py -k project_task_planning_ticket_file_and_report_flow'`
+  - `cd apps/web && npm run build`
+- Results:
+  - Targeted workflow integration test: pass (`1 passed`, filtered).
+  - Web production build: pass.
+- Coverage notes:
+  - Workflow test now verifies report-feed message body includes explicit project number + name, feed thread can be deleted and automatically recreated/backfilled from existing report attachments, and latest report activity ordering keeps the feed thread first.
+
+## Iteration Result (2026-03-03, report-feed non-deletable + first-report gating)
+- Commands run:
+  - `docker compose run --rm --build api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_workflows.py -k project_task_planning_ticket_file_and_report_flow'`
+- Results:
+  - Targeted workflow integration test: pass (`1 passed`, filtered).
+- Coverage notes:
+  - Test now verifies feed thread is absent before any report exists and deletion of the system feed thread returns `403`.
+
+## Iteration Result (2026-03-03, compact project-task add button)
+- Commands run:
+  - `cd apps/web && npm run build`
+  - `docker compose up -d --build web caddy`
+- Results:
+  - Web production build: pass.
+  - Local web stack rebuild/restart: pass.
+- Coverage notes:
+  - Frontend rendering/navigation only; no backend API behavior changed.
+
+## Iteration Result (2026-03-03, office tasks sidebar view + filters)
+- Commands run:
+  - `./scripts/test.sh`
+  - `docker compose up -d --build web caddy`
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/`
+- Results:
+  - API tests + web build script: pass (`60 passed`).
+  - Local web stack refresh: pass.
+  - Web health check: `200`.
+- Coverage notes:
+  - Verified new office-only task navigation and filtering code path compiles and deploys in local Docker runtime.
+  - No backend behavior changes in this iteration.
+
+## Iteration Result (2026-03-03, searchable project filter + undated task creation)
+- Commands run:
+  - `./scripts/test.sh`
+  - `cd apps/web && npm run build`
+  - `docker compose up -d --build web caddy`
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/`
+- Results:
+  - API tests + web build script: pass (`60 passed`).
+  - Web production build: pass.
+  - Local web stack refresh: pass.
+  - Health check: `200`.
+- Coverage notes:
+  - Verified frontend compiles with new multi-project search filter state.
+  - Verified no backend regressions through full default test script.
+
+## Iteration Result (2026-03-03, office project suggestions + no-due-date filter)
+- Commands run:
+  - `cd apps/web && npm run build`
+  - `docker compose up -d --build web caddy`
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/`
+- Results:
+  - Web production build: pass.
+  - Local web stack refresh: pass.
+  - Health check: `200`.
+- Coverage notes:
+  - Verified frontend compiles and local runtime serves updated Office task filter behavior.
+
+## Iteration Result (2026-03-03, centered add-task plus icon)
+- Commands run:
+  - `cd apps/web && npm run build`
+  - `docker compose up -d --build web caddy`
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/`
+- Results:
+  - Web build: pass.
+  - Local web refresh: pass.
+  - Health check: `200`.
+
+## Iteration Result (2026-03-03, overview shift alignment + recent report positioning)
+- Commands run:
+  - `cd apps/web && npm run build`
+  - `docker compose up -d --build web caddy`
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/`
+- Results:
+  - Web build: pass.
+  - Local web refresh: pass.
+  - Health check: `200`.
+- Coverage notes:
+  - Verified frontend compiles and updated overview layout is served in local Docker runtime.
+
+## Iteration Result (2026-03-03, optional due date + overdue state/filter + image format handling)
+- Commands run:
+  - `./scripts/test.sh`
+  - `docker compose up -d --build api web caddy`
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/`
+- Results:
+  - API tests + web build script: pass (`61 passed`, warnings only).
+  - Local stack rebuild/restart (`api`, `web`, `caddy`): pass.
+  - Health check: `200`.
+- Coverage notes:
+  - Added API test `test_task_overdue_flag_and_optional_due_date` covering:
+    - overdue flag for past-due open tasks,
+    - no-due-date task creation,
+    - non-overdue for future and done tasks.
+
+## Iteration Result (2026-03-03, page unreachable/startup crash hotfix)
+- Commands run:
+  - `docker compose up -d --build web caddy`
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/`
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/api`
+  - Playwright CLI open check on `http://192.168.5.59/`
+- Results:
+  - Web rebuild/restart: pass.
+  - Local web health: `200`.
+  - Local API health via Caddy: `200`.
+  - Browser render: pass (`SMPL Workflow` login page visible, no startup ReferenceError after fix).

@@ -41,7 +41,21 @@ wait_for_db() {
   done
 }
 
-TMP_DIR="$(mktemp -d)"
+create_tmp_dir() {
+  local dir
+  dir="$(mktemp -d)"
+  chmod 700 "$dir"
+  printf '%s\n' "$dir"
+}
+
+copy_to_container() {
+  local source_path="$1"
+  local service="$2"
+  local dest_path="$3"
+  cat "$source_path" | docker compose exec -T "$service" sh -lc "cat > '$dest_path'"
+}
+
+TMP_DIR="$(create_tmp_dir)"
 cleanup() {
   rm -rf "$TMP_DIR"
 }
@@ -57,12 +71,12 @@ docker compose up -d db api
 wait_for_db
 
 echo "Restoring database..."
-docker compose cp "${TMP_DIR}/db.dump" db:/tmp/db.dump
+copy_to_container "${TMP_DIR}/db.dump" db /tmp/db.dump
 docker compose exec -T db sh -lc "pg_restore -U smpl -d smpl --clean --if-exists /tmp/db.dump"
 docker compose exec -T db rm -f /tmp/db.dump
 
 echo "Restoring uploads volume..."
-docker compose cp "${TMP_DIR}/uploads.tar.gz" api:/tmp/uploads.tar.gz
+copy_to_container "${TMP_DIR}/uploads.tar.gz" api /tmp/uploads.tar.gz
 docker compose exec -T api sh -lc "mkdir -p /data/uploads && rm -rf /data/uploads/* && tar xzf /tmp/uploads.tar.gz -C /data/uploads"
 docker compose exec -T api rm -f /tmp/uploads.tar.gz
 

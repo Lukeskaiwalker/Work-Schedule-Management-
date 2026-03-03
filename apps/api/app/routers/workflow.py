@@ -59,6 +59,7 @@ from app.schemas.api import (
     EmployeeGroupOut,
     ConstructionReportCreate,
     ConstructionReportPayload,
+    RecentConstructionReportOut,
     JobTicketCreate,
     JobTicketOut,
     MessageOut,
@@ -104,6 +105,7 @@ from app.services.report_jobs import (
     queue_construction_report_job,
     report_processing_payload,
 )
+from app.services.report_feed import is_report_feed_thread, sync_report_feed_thread
 from app.services.runtime_settings import get_openweather_api_key
 from app.core.security import verify_password
 
@@ -350,6 +352,13 @@ def _resolve_attachment_for_access(db: Session, current_user: User, attachment_i
     attachment = db.get(Attachment, attachment_id)
     if not attachment:
         raise HTTPException(status_code=404, detail="File not found")
+    if attachment.message_id is not None:
+        message = db.get(Message, attachment.message_id)
+        if message is not None:
+            thread = db.get(ChatThread, message.thread_id)
+            if thread is not None:
+                _assert_thread_access(db, current_user, thread)
+                return attachment
     if attachment.project_id is not None:
         assert_project_access(db, current_user, attachment.project_id)
         folder = _normalize_project_folder_path(attachment.folder_path, allow_empty=True)
@@ -1787,6 +1796,17 @@ def _normalize_task_status(raw_status: str | None, *, default: str = "open") -> 
     return status
 
 
+def _task_is_overdue(task: Task, *, today: date | None = None) -> bool:
+    normalized_status = _normalize_task_status(task.status, default="open")
+    if normalized_status == "overdue":
+        return True
+    if normalized_status == "done":
+        return False
+    if task.due_date is None:
+        return False
+    return task.due_date < (today or date.today())
+
+
 def _normalize_task_type(raw_task_type: str | None, *, default: str = "construction") -> str:
     normalized = (raw_task_type or "").strip().lower()
     if not normalized:
@@ -2030,6 +2050,7 @@ def _task_out(task: Task, assignee_ids: list[int]) -> TaskOut:
         task_type=task.task_type,
         class_template_id=task.class_template_id,
         status=task.status,
+        is_overdue=_task_is_overdue(task),
         due_date=task.due_date,
         start_time=task.start_time,
         assignee_id=assignee_ids[0] if assignee_ids else None,
@@ -4849,7 +4870,14 @@ def list_global_threads(
 ):
     if not _chat_permission_allowed(current_user):
         raise HTTPException(status_code=403, detail="Chat access denied")
-    threads = db.scalars(select(ChatThread).order_by(ChatThread.id.desc())).all()
+    sync_report_feed_thread(db)
+    db.commit()
+    threads = db.scalars(
+        select(ChatThread).order_by(
+            func.coalesce(ChatThread.updated_at, datetime(1970, 1, 1)).desc(),
+            ChatThread.id.desc(),
+        )
+    ).all()
     return [
         _thread_out(db, thread, current_user)
         for thread in threads
@@ -4883,7 +4911,14 @@ def list_project_threads(
     db: Session = Depends(get_db),
 ):
     assert_project_access(db, current_user, project_id)
-    threads = db.scalars(select(ChatThread).where(ChatThread.project_id == project_id).order_by(ChatThread.id.desc())).all()
+    threads = db.scalars(
+        select(ChatThread)
+        .where(ChatThread.project_id == project_id)
+        .order_by(
+            func.coalesce(ChatThread.updated_at, datetime(1970, 1, 1)).desc(),
+            ChatThread.id.desc(),
+        )
+    ).all()
     return [
         _thread_out(db, thread, current_user)
         for thread in threads
@@ -5010,6 +5045,8 @@ def delete_thread(
     _assert_thread_access(db, current_user, thread)
     if not _can_edit_thread(current_user, thread):
         raise HTTPException(status_code=403, detail="Only the creator or chat managers can delete this thread")
+    if is_report_feed_thread(thread):
+        raise HTTPException(status_code=403, detail="System report feed thread cannot be deleted")
     icon_path = (thread.icon_stored_path or "").strip()
     db.delete(thread)
     db.commit()
@@ -5265,6 +5302,55 @@ def list_global_or_project_reports(
         }
         for report in reports
     ]
+
+
+def _latest_report_pdf_attachment_for_report(db: Session, report_id: int) -> Attachment | None:
+    return db.scalars(
+        select(Attachment)
+        .where(
+            Attachment.construction_report_id == report_id,
+            Attachment.content_type == "application/pdf",
+        )
+        .order_by(Attachment.id.desc())
+        .limit(1)
+    ).first()
+
+
+def _recent_construction_report_out(db: Session, report: ConstructionReport) -> RecentConstructionReportOut:
+    payload = report.payload if isinstance(report.payload, dict) else {}
+    project = db.get(Project, report.project_id) if report.project_id is not None else None
+    project_number = (project.project_number if project else payload.get("project_number")) or None
+    project_name = (project.name if project else payload.get("project_name")) or None
+    sender = db.get(User, report.user_id) if report.user_id is not None else None
+    pdf_attachment = _latest_report_pdf_attachment_for_report(db, report.id)
+    return RecentConstructionReportOut(
+        id=report.id,
+        project_id=report.project_id,
+        report_number=report.report_number,
+        user_id=report.user_id,
+        user_display_name=sender.display_name if sender else None,
+        project_number=str(project_number).strip() if project_number is not None else None,
+        project_name=str(project_name).strip() if project_name is not None else None,
+        report_date=report.report_date,
+        created_at=report.created_at,
+        processing_status=report.processing_status or "queued",
+        attachment_file_name=report.pdf_file_name,
+        attachment_id=pdf_attachment.id if pdf_attachment else None,
+    )
+
+
+@router.get("/construction-reports/recent", response_model=list[RecentConstructionReportOut])
+def list_recent_construction_reports(
+    limit: int = 10,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _assert_report_access(current_user, write=False)
+    safe_limit = max(1, min(int(limit or 10), 50))
+    reports = db.scalars(
+        select(ConstructionReport).order_by(ConstructionReport.created_at.desc(), ConstructionReport.id.desc()).limit(safe_limit)
+    ).all()
+    return [_recent_construction_report_out(db, report) for report in reports]
 
 
 @router.get("/construction-reports/{report_id}/processing")

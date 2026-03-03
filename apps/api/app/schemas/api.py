@@ -299,6 +299,7 @@ class TaskOut(BaseModel):
     task_type: str = "construction"
     class_template_id: int | None = None
     status: str
+    is_overdue: bool = False
     due_date: date | None = None
     start_time: time | None = None
     assignee_id: int | None = None
@@ -506,6 +507,21 @@ class ConstructionReportCreate(BaseModel):
     report_date: date
     payload: ConstructionReportPayload
     send_telegram: bool = False
+
+
+class RecentConstructionReportOut(BaseModel):
+    id: int
+    project_id: int | None = None
+    report_number: int | None = None
+    user_id: int | None = None
+    user_display_name: str | None = None
+    project_number: str | None = None
+    project_name: str | None = None
+    report_date: date
+    created_at: datetime
+    processing_status: str
+    attachment_file_name: str | None = None
+    attachment_id: int | None = None
 
 
 class ClockOut(BaseModel):

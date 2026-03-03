@@ -21,7 +21,28 @@ wait_for_db() {
   done
 }
 
-TMP_DIR="$(mktemp -d)"
+create_tmp_dir() {
+  local dir
+  dir="$(mktemp -d)"
+  chmod 700 "$dir"
+  printf '%s\n' "$dir"
+}
+
+copy_from_container() {
+  local service="$1"
+  local source_path="$2"
+  local dest_path="$3"
+  docker compose exec -T "$service" sh -lc "cat '$source_path'" > "$dest_path"
+}
+
+copy_to_container() {
+  local source_path="$1"
+  local service="$2"
+  local dest_path="$3"
+  cat "$source_path" | docker compose exec -T "$service" sh -lc "cat > '$dest_path'"
+}
+
+TMP_DIR="$(create_tmp_dir)"
 TIMESTAMP="$(date +%Y%m%d%H%M%S)"
 TMP_DB="smpl_preflight_${TIMESTAMP}_$RANDOM"
 TMP_DB="${TMP_DB//[^a-zA-Z0-9_]/_}"
@@ -39,11 +60,11 @@ wait_for_db
 
 echo "Creating source database dump for migration preflight..."
 docker compose exec -T db sh -lc "pg_dump -U smpl -d smpl -F c -f /tmp/preflight.dump"
-docker compose cp db:/tmp/preflight.dump "${TMP_DIR}/preflight.dump"
+copy_from_container db /tmp/preflight.dump "${TMP_DIR}/preflight.dump"
 
 echo "Creating temporary preflight database: ${TMP_DB}"
 docker compose exec -T db sh -lc "psql -U smpl -d postgres -v ON_ERROR_STOP=1 -c \"CREATE DATABASE ${TMP_DB};\""
-docker compose cp "${TMP_DIR}/preflight.dump" db:/tmp/preflight.dump
+copy_to_container "${TMP_DIR}/preflight.dump" db /tmp/preflight.dump
 docker compose exec -T db sh -lc "pg_restore -U smpl -d ${TMP_DB} --no-owner --no-privileges /tmp/preflight.dump"
 
 echo "Running Alembic upgrade on temporary clone..."

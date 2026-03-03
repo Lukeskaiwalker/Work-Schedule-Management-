@@ -1478,3 +1478,181 @@
 - Tradeoffs:
   - Pros: shorter, clearer per-project material lists and less frontend post-processing.
   - Cons: aggregated results depend on free-text naming discipline (item spelling/article numbers still matter).
+
+## 2026-02-26 - Backup/preflight/restore scripts must be `docker compose cp`-independent and umask-safe
+- Status: accepted
+- Decision:
+  - Replace container file transfer steps that relied on `docker compose cp` with stream-based transfer via `docker compose exec -T ... cat`.
+  - Standardize temp-folder creation in ops scripts to force `0700` permissions after `mktemp -d`.
+  - Keep external operator commands unchanged (`backup.sh`, `preflight_migrations.sh`, `restore.sh`, `safe_update.sh` interfaces remain the same).
+- Tradeoffs:
+  - Pros: avoids host/runtime compatibility failures seen with `docker compose cp` and restrictive shell `umask` settings.
+  - Cons: stream-copy approach is less explicit than path-based `cp` and can be slower for very large artifacts in some environments.
+
+## 2026-02-28 - Release version labels are resolved from update metadata with placeholder fallback inference
+- Status: accepted
+- Decision:
+  - Use one frontend release label resolver for both admin update card and sidebar user-menu popup.
+  - When local release version is placeholder-only (`local-production`), backend update-status infers installed release tag from GitHub release/tag commit metadata when possible.
+  - Prefer resolved release tag; fallback to commit hash; avoid showing placeholder string to users.
+- Tradeoffs:
+  - Pros: version reporting is consistent and operator-facing UI reflects real deployed release more reliably.
+  - Cons: fallback inference depends on GitHub metadata availability; offline/self-contained environments may still show commit-only labels.
+
+## 2026-02-28 - Project modal closes only on confirmed backdrop pointer gesture
+- Status: accepted
+- Decision:
+  - Replace project modal `onClick` backdrop-close behavior with pointer-safe logic.
+  - Close only when both `pointerdown` and `pointerup` originate on the backdrop element itself.
+  - Reset pointer-close state on pointer leave/cancel.
+- Tradeoffs:
+  - Pros: prevents accidental close while dragging text selection from form fields to outside modal bounds.
+  - Cons: slightly more event-handling complexity than single `onClick` backdrop close.
+
+## 2026-02-28 - Add explicit workspace-mode split toggle in sidebar (construction vs office)
+- Status: accepted
+- Decision:
+  - Introduce a frontend workspace-mode state (`construction` | `office`) controlled from a compact toggle next to the `SMPL` brand header.
+  - Persist selected mode in browser storage (`smpl_workspace_mode`) so users keep their preferred mode across reloads.
+  - Keep both modes rendering identical content for now and defer functional divergence to later iterations.
+- Tradeoffs:
+  - Pros: creates clear UX and technical foundation for future per-workspace customization without routing refactors now.
+  - Cons: immediate user-facing behavior change is mainly structural (mode indicator/switch) until dedicated construction/office view differences are implemented.
+
+## 2026-03-03 - Project-first task labels and calendar time sorting in frontend
+- Status: accepted
+- Decision:
+  - Remove task-ID display from task overview/calendar task rows and replace metadata emphasis with project identity.
+  - Use clickable `project_number - project_name` labels in task/calendar rows to navigate directly to the project.
+  - Sort day-level task rows in calendar/planning by due date and `start_time` (null times last) in frontend rendering.
+  - Standardize primary project title display across key menus/lists to `project_number - project_name`.
+- Tradeoffs:
+  - Pros: improves readability, saves UI space, and gives direct project context/navigation from task entries.
+  - Cons: sorting currently happens in frontend render path; API ordering can still differ unless aligned server-side.
+
+## 2026-03-03 - Use an auto-maintained global chat thread as the construction-report feed
+- Status: accepted
+- Decision:
+  - Introduce a backend-managed global thread named `Latest Construction Reports`.
+  - Create/repair this thread automatically when posting report-feed updates (public visibility, active status).
+  - Post one message per successfully processed report and attach the generated PDF to that message for direct browser preview/download.
+  - Add dedicated endpoint `GET /construction-reports/recent` for overview widgets instead of overloading existing report/file listings.
+- Tradeoffs:
+  - Pros: users get a single persistent feed and immediate access to latest report PDFs without manual file browsing.
+  - Cons: feed ordering in chat list still follows general thread ordering behavior and may benefit from future pinning/sorting refinements.
+
+## 2026-03-03 - Auto-sync report-feed thread from existing report PDFs on chat list load
+- Status: accepted
+- Decision:
+  - Keep a single global thread (`Latest Construction Reports`) synchronized by scanning report PDF attachments that are not currently linked to a valid message in that thread.
+  - Trigger sync in `GET /threads` so legacy data (reports created before feed feature deployment) is backfilled automatically without manual admin action.
+  - Sort thread lists by activity (`updated_at desc`, then `id desc`) instead of creation id to surface newest report updates first.
+- Tradeoffs:
+  - Pros: immediate recovery for missing feed thread/messages in live databases; newest report feed is visible without manual refresh/recreation tasks.
+  - Cons: `GET /threads` now performs light write/commit work when synchronization is needed.
+
+## 2026-03-03 - Make report-feed thread non-deletable and defer creation until first report exists
+- Status: accepted
+- Decision:
+  - Block `DELETE /threads/{id}` for the system feed thread `Latest Construction Reports`.
+  - Do not auto-create the feed thread on generic chat list calls when no construction report exists yet.
+  - Allow automatic creation/backfill once at least one report exists, preserving hands-off recovery for existing data.
+- Tradeoffs:
+  - Pros: prevents accidental removal of the global report feed and avoids showing an empty system thread before report usage starts.
+  - Cons: thread visibility now depends on first report creation event (intentional behavior).
+
+## 2026-03-03 - Replace inline project-task create form with compact add action
+- Status: accepted
+- Decision:
+  - In `Project -> Tasks`, use a compact `+` action instead of rendering the full inline create-task block.
+  - Reuse the existing task creation modal and prefill it with the active project ID.
+- Tradeoffs:
+  - Pros: less clutter in project task view; more room for task list content.
+  - Cons: one extra click to open creation UI.
+
+## 2026-03-03 - Office workspace gets a dedicated global Tasks navigation view
+- Status: accepted
+- Decision:
+  - Add a new frontend main view `office_tasks` and show it in the sidebar only when `workspaceMode === "office"`.
+  - Keep `my_tasks` as the task entry in construction mode.
+  - Load office tasks through existing backend task view `projects_overview` to support cross-project filtering in one page.
+  - Apply filtering client-side for status, assignee (including unassigned), due date, and project.
+- Tradeoffs:
+  - Pros: office users can triage tasks from one place without entering project tabs; no backend migration/API expansion required.
+  - Cons: employee-role visibility still follows existing backend restrictions for `projects_overview` (not broadened in this iteration).
+
+## 2026-03-03 - Use searchable multi-select for Office task project filtering and allow undated tasks
+- Status: accepted
+- Decision:
+  - Replace the Office task project filter `<select>` with a searchable multi-select control (suggestions + chips).
+  - Keep filtering client-side using selected project IDs.
+  - Allow creating tasks without `due_date` from the task modal; persist with `week_start = null` so undated tasks are excluded from week/calendar views.
+  - Use `POST /tasks` for modal task creation with optional `due_date`/`start_time`.
+- Tradeoffs:
+  - Pros: better UX for large project sets; supports backlog-style tasks that are not forced into calendar scheduling.
+  - Cons: undated tasks are less visible in date-based views by design and must be managed from task lists.
+
+## 2026-03-03 - Hide Office project suggestions until query text and add explicit undated-task due-date filter
+- Status: accepted
+- Decision:
+  - In Office task filters, project suggestions are shown only when the user types in the search field.
+  - Add a dedicated `No due date` filter toggle for Office tasks.
+  - Keep date input and `No due date` toggle mutually exclusive in UI state.
+- Tradeoffs:
+  - Pros: removes noisy long project list below search and supports backlog/undated task triage directly.
+  - Cons: users need to type at least one character before suggestion list appears.
+
+## 2026-03-03 - Explicitly center plus glyph in task add icon button
+- Status: accepted
+- Decision:
+  - Apply `display: inline-flex; align-items: center; justify-content: center;` to `.task-add-icon-btn`.
+- Tradeoffs:
+  - Pros: consistent visual centering across font/rendering differences.
+  - Cons: none material.
+
+## 2026-03-03 - Keep overview shift action in a fixed left slot and pin latest reports under status
+- Status: accepted
+- Decision:
+  - Replace separate status action layouts with one shared row where the clock button is always on the left.
+  - Align shift/no-shift info to the right side with vertical centering against the button.
+  - Restructure overview cards into a primary column so `Latest construction reports` sits immediately below `My current status`.
+- Tradeoffs:
+  - Pros: predictable control placement and better report visibility in overview.
+  - Cons: overview card ordering is now intentionally biased toward status/report scanning.
+
+## 2026-03-03 - Treat overdue as derived task state (not persisted status mutation)
+- Status: accepted
+- Decision:
+  - Keep task persistence model unchanged (`status` values remain user-managed like `open/done/...`).
+  - Derive overdue automatically from `due_date < today` for non-done tasks.
+  - Expose derived state via `TaskOut.is_overdue` and show overdue as a UI status label/filter option.
+- Tradeoffs:
+  - Pros: no DB migration and no background updater required; deterministic state from existing fields.
+  - Cons: overdue is computed at read/render time, not stored as historical status transition.
+
+## 2026-03-03 - Allow undated task creation from task modal
+- Status: accepted
+- Decision:
+  - Remove frontend-required constraint for task modal `due_date` (and start time).
+  - Continue submitting `due_date: null`/`week_start: null` for undated tasks.
+- Tradeoffs:
+  - Pros: backlog-style tasks can be created without forcing calendar assignment.
+  - Cons: users must use task lists/filters to surface undated tasks.
+
+## 2026-03-03 - Keep non-HEIC image formats; convert HEIC path to JPEG
+- Status: accepted
+- Decision:
+  - Do not force one output format for all avatar image uploads.
+  - Preserve common non-HEIC output format in avatar crop flow where possible; HEIC/HEIF still follows JPEG conversion path.
+- Tradeoffs:
+  - Pros: aligns with user expectation to keep original format behavior for normal images.
+  - Cons: browser support can still influence exact encoded output in edge formats.
+
+## 2026-03-03 - Resolve startup crash by avoiding pre-initialization `todayIso` reference
+- Status: accepted
+- Decision:
+  - Keep `todayIso` for general UI usage, but stop referencing it in `officeFilteredTasks` before it is initialized.
+  - Compute `referenceTodayIso` locally from `now` within the memoized office-task filter.
+- Tradeoffs:
+  - Pros: minimal targeted fix with no behavior regression and no state model changes.
+  - Cons: similar ordering-sensitive hook code still requires care in future edits.

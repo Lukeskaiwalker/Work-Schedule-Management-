@@ -35,9 +35,23 @@ wait_for_db() {
   done
 }
 
+create_tmp_dir() {
+  local dir
+  dir="$(mktemp -d)"
+  chmod 700 "$dir"
+  printf '%s\n' "$dir"
+}
+
+copy_from_container() {
+  local service="$1"
+  local source_path="$2"
+  local dest_path="$3"
+  docker compose exec -T "$service" sh -lc "cat '$source_path'" > "$dest_path"
+}
+
 mkdir -p backups
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
-TMP_DIR="$(mktemp -d)"
+TMP_DIR="$(create_tmp_dir)"
 ARCHIVE_RAW="${TMP_DIR}/backup-${TIMESTAMP}.tar"
 ARCHIVE_ENC="${ROOT_DIR}/backups/backup-${TIMESTAMP}.tar.enc"
 
@@ -52,12 +66,12 @@ wait_for_db
 
 echo "Creating database dump..."
 docker compose exec -T db sh -lc "pg_dump -U smpl -d smpl -F c -f /tmp/db.dump"
-docker compose cp db:/tmp/db.dump "${TMP_DIR}/db.dump"
+copy_from_container db /tmp/db.dump "${TMP_DIR}/db.dump"
 docker compose exec -T db rm -f /tmp/db.dump
 
 echo "Exporting encrypted upload volume..."
 docker compose exec -T api sh -lc "mkdir -p /tmp && tar czf /tmp/uploads.tar.gz -C /data/uploads . || true"
-docker compose cp api:/tmp/uploads.tar.gz "${TMP_DIR}/uploads.tar.gz"
+copy_from_container api /tmp/uploads.tar.gz "${TMP_DIR}/uploads.tar.gz"
 docker compose exec -T api rm -f /tmp/uploads.tar.gz
 
 cat > "${TMP_DIR}/manifest.txt" <<MANIFEST

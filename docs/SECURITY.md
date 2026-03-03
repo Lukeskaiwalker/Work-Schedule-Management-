@@ -457,3 +457,94 @@
 - New endpoint `GET /projects/{project_id}/materials` is protected with existing `assert_project_access` checks.
 - Aggregation reads existing report payload data only; no new sensitive fields or write paths introduced.
 - Unit dropdown additions are frontend-only input aids; server-side authorization/validation boundaries are unchanged.
+
+## Iteration Security Notes (2026-02-26, backup/restore script transport hardening)
+- No authentication or authorization model changes in this iteration.
+- Operational hardening only:
+  - backup/preflight/restore scripts no longer rely on `docker compose cp`,
+  - temp working directories are forced to `0700` permissions even under restrictive shell `umask`.
+- Risk reduction:
+  - lowers chance of failed safety backup/preflight execution due to host-specific Docker copy behavior or permission-masked temp directories.
+
+## Iteration Security Notes (2026-02-28, release label consistency)
+- No authentication or authorization model changes in this iteration.
+- Change scope is metadata display and release-version inference only:
+  - admin update-status endpoint now infers version tag from repository metadata when placeholder version is configured.
+  - sidebar user popup now shows release label instead of frontend mode string.
+- No new data-access paths, credential flows, or secret handling changes were introduced.
+
+## Iteration Security Notes (2026-02-28, project modal drag-select close fix)
+- No authentication or authorization model changes in this iteration.
+- Frontend-only interaction safety update for modal dismissal.
+- Security boundaries and API permission checks are unchanged.
+
+## Iteration Security Notes (2026-02-28, workspace split toggle in sidebar)
+- No authentication or authorization model changes in this iteration.
+- Workspace mode is a frontend presentation preference stored in browser local storage (`smpl_workspace_mode`).
+- No new API endpoints, permission paths, or sensitive data flows were introduced.
+
+## Iteration Security Notes (2026-03-03, task/calendar labels + sorting)
+- No authentication or authorization model changes in this iteration.
+- Change scope is frontend display/navigation only:
+  - task metadata labeling,
+  - calendar row ordering,
+  - project-link UI wiring.
+- Server-side permission checks remain unchanged.
+
+## Iteration Security Notes (2026-03-03, report-feed chat + recent reports endpoint)
+- No authentication model changes in this iteration.
+- Added report-feed chat updates are server-driven only after successful report processing.
+- Attachment access now allows chat-thread authorization path for attachments bound to messages (`message_id`), enabling feed/chat file preview based on thread visibility rules.
+- New endpoint `GET /construction-reports/recent` remains protected by existing report permissions (`reports:view|create|manage` path via `_assert_report_access`).
+
+## Iteration Security Notes (2026-03-03, report-feed sync/backfill and thread ordering)
+- No authentication or authorization model changes in this iteration.
+- Feed backfill reuses existing attachment/report data and existing chat/report access checks.
+- `GET /threads` may now trigger feed synchronization writes; visibility controls remain unchanged (public/restricted thread checks still enforced server-side).
+
+## Iteration Security Notes (2026-03-03, protected report-feed thread)
+- Added server-side protection preventing deletion of the system report-feed thread.
+- No auth model changes; existing chat access checks remain unchanged.
+
+## Iteration Security Notes (2026-03-03, project-task UI compaction)
+- No authentication or authorization model changes in this iteration.
+- Change scope is frontend-only task creation entrypoint UX in project tasks view.
+- Existing server-side task permissions and validation paths are unchanged.
+
+## Iteration Security Notes (2026-03-03, office tasks menu and client-side filters)
+- No authentication or authorization model changes in this iteration.
+- Change scope is frontend-only navigation and filtering UI:
+  - added `office_tasks` view and office-mode sidebar item,
+  - filter logic runs client-side against already-authorized task data.
+- Existing backend task visibility/permission checks remain unchanged.
+
+## Iteration Security Notes (2026-03-03, office project multi-filter + undated tasks)
+- No authentication or authorization model changes in this iteration.
+- Office project filtering changes are frontend-only and operate on already-authorized task data.
+- Task creation still uses existing server-side permission checks (`tasks:manage`) and existing task payload validation.
+- Allowing empty `due_date` does not broaden data access; it only changes scheduling visibility semantics.
+
+## Iteration Security Notes (2026-03-03, office filter UX cleanup)
+- No authentication or authorization model changes in this iteration.
+- Changes are frontend-only filter behavior updates over already-authorized task data.
+- No new API endpoints, permissions, or data exposure paths were introduced.
+
+## Iteration Security Notes (2026-03-03, centered add-task plus icon)
+- No auth/authz or data-flow changes.
+- Frontend styling-only adjustment.
+
+## Iteration Security Notes (2026-03-03, overview shift/report layout update)
+- No authentication or authorization changes.
+- Change scope is frontend-only structure/styling of overview cards and status action row.
+- No API, permissions, or data-access path changes.
+
+## Iteration Security Notes (2026-03-03, optional due date + derived overdue + image format handling)
+- No authentication or authorization model changes.
+- Overdue state is derived from existing task fields; no new data-access paths or privilege checks.
+- Task creation with `due_date = null` changes scheduling semantics only and does not expand visibility scope.
+- Image handling update keeps existing upload authorization and encrypted-at-rest storage behavior unchanged.
+
+## Iteration Security Notes (2026-03-03, frontend startup crash fix)
+- No authentication or authorization model changes.
+- No API surface change.
+- Change is frontend runtime stability only (hook initialization/order safety).

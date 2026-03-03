@@ -195,6 +195,16 @@ def _is_placeholder_release_version(value: str | None) -> bool:
     return normalized.lower() in PLACEHOLDER_RELEASE_VERSIONS
 
 
+def _commit_refs_match(left: str | None, right: str | None) -> bool:
+    left_value = _trim_or_none(left)
+    right_value = _trim_or_none(right)
+    if not left_value or not right_value:
+        return False
+    left_norm = left_value.lower()
+    right_norm = right_value.lower()
+    return left_norm == right_norm or left_norm.startswith(right_norm) or right_norm.startswith(left_norm)
+
+
 def _run_git_readonly(command: list[str], *, cwd: Path) -> str | None:
     try:
         result = subprocess.run(
@@ -250,6 +260,25 @@ def _current_release_metadata() -> tuple[str | None, str | None, bool]:
         current_version = None
 
     return current_version, current_commit, unresolved_placeholder
+
+
+def _resolve_release_tag_for_commit(owner: str, repo: str, commit_ref: str | None) -> str | None:
+    if not commit_ref:
+        return None
+    tags = _github_api_json(f"/repos/{owner}/{repo}/tags")
+    if not isinstance(tags, list):
+        return None
+    for row in tags:
+        if not isinstance(row, dict):
+            continue
+        tag_name = _trim_or_none(str(row.get("name") or ""))
+        commit_row = row.get("commit")
+        tag_commit = None
+        if isinstance(commit_row, dict):
+            tag_commit = _trim_or_none(str(commit_row.get("sha") or ""))
+        if tag_name and _commit_refs_match(commit_ref, tag_commit):
+            return tag_name
+    return None
 
 
 def _github_repo_slug() -> str:
@@ -535,6 +564,16 @@ def _fetch_update_status() -> UpdateStatusOut:
             else:
                 update_available = None
                 message = "Current version metadata is missing; update comparison is limited."
+
+            if not current_version and current_commit:
+                inferred_version = None
+                if latest_version and _commit_refs_match(current_commit, latest_commit):
+                    inferred_version = latest_version
+                if not inferred_version:
+                    inferred_version = _resolve_release_tag_for_commit(owner, repo, current_commit)
+                if inferred_version:
+                    current_version = inferred_version
+                    unresolved_placeholder = False
         else:
             branch_row = _github_api_json(
                 f"/repos/{owner}/{repo}/commits/{quote(branch, safe='')}"
@@ -548,6 +587,12 @@ def _fetch_update_status() -> UpdateStatusOut:
             else:
                 update_available = None
                 message = "No GitHub release is published yet; branch commit check only."
+
+            if not current_version and current_commit:
+                inferred_version = _resolve_release_tag_for_commit(owner, repo, current_commit)
+                if inferred_version:
+                    current_version = inferred_version
+                    unresolved_placeholder = False
     except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, ValueError) as exc:
         message = f"Could not fetch update status from GitHub: {exc}"
 
