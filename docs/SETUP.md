@@ -883,3 +883,11 @@ Expected:
   - ensure `./Datanorm_Neuanlage` is present on server host (mounted to `/data/Datanorm_Neuanlage`),
   - trigger catalog import by opening materials catalog in UI or by running backend import check (state endpoint/service),
   - verify imported counts via `GET /api/materials/catalog/state`.
+
+## Iteration Setup Notes (2026-03-05, admin update flow includes release metadata refresh)
+- No migration required.
+- Admin update command behavior update:
+  - manual command list now includes `./scripts/update_release_metadata.sh` after `git pull`.
+  - auto-install flow in admin backend executes the same script before migrations.
+- Operational note:
+  - this keeps displayed release version/commit aligned after in-app update execution, not only shell-based `safe_update` runs.

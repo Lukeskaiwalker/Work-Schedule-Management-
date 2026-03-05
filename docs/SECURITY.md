@@ -632,3 +632,8 @@
 - No authentication or authorization model changes.
 - Release metadata automation is operational only (`scripts/update_release_metadata.sh`, compose env wiring) and does not introduce new API permissions.
 - Material catalog sync on server uses existing authenticated/authorized backend data model and existing DATANORM mount path; no new external trust boundary was added.
+
+## Iteration Security Notes (2026-03-05, admin update flow metadata refresh step)
+- No authentication or authorization model changes.
+- Admin update flow now executes one additional local script (`./scripts/update_release_metadata.sh`) after git pull; permission boundary for invoking updates remains admin/CEO-only.
+- No new external network destinations or privilege expansion introduced by this step.

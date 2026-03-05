@@ -305,6 +305,7 @@ def _manual_update_steps(branch: str) -> list[str]:
         "BACKUP_PASSPHRASE='<passphrase>' ./scripts/backup.sh",
         "git fetch --tags --prune",
         f"git pull --ff-only origin {branch}",
+        "./scripts/update_release_metadata.sh",
         "docker compose build api",
         "./scripts/preflight_migrations.sh",
         "docker compose run --rm api sh -lc 'cd /app && alembic upgrade head'",
@@ -1576,6 +1577,7 @@ def install_updates(
     command_steps: list[tuple[str, list[str], Path]] = [
         ("git.fetch", ["git", "fetch", "--tags", "--prune", "origin"], repo_root),
         ("git.pull", ["git", "pull", "--ff-only", "origin", branch], repo_root),
+        ("release.metadata", ["./scripts/update_release_metadata.sh"], repo_root),
     ]
 
     api_dir_candidate = repo_root / "apps" / "api"

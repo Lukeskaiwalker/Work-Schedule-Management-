@@ -2487,3 +2487,13 @@
   - `bash -n scripts/update_release_metadata.sh scripts/safe_update.sh` pass.
   - `docker compose config` pass with optional `.release.env` mapping.
 - Blockers: none.
+
+## Compacted Update (2026-03-05, admin update flows now refresh release metadata too)
+- Changed:
+  - Updated admin manual update step list to include `./scripts/update_release_metadata.sh` right after `git pull`.
+  - Updated automatic admin install command sequence to run `./scripts/update_release_metadata.sh` before migration execution.
+  - Updated admin update install test expectation accordingly.
+- Verified:
+  - `docker compose run --rm --build api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_auth_rbac.py -k "update_status or install_update"'` pass (`6 passed`).
+  - `./scripts/test.sh` pass (`66 passed` + web build pass).
+- Blockers: none.

@@ -1812,3 +1812,12 @@
 - Tradeoffs:
   - Pros: deployed UI/API release label now tracks real git state on each update, avoiding stale hardcoded values like `v1.0.0`.
   - Cons: exact label quality depends on local git metadata availability in the deployment checkout.
+
+## 2026-03-05 - Include release metadata refresh in admin update install flows
+- Status: accepted
+- Decision:
+  - Insert `./scripts/update_release_metadata.sh` into admin-exposed manual update command list.
+  - Execute the same script inside automatic admin update install command sequence after `git pull`.
+- Tradeoffs:
+  - Pros: release/commit labels stay synchronized across both shell-based and in-app update paths.
+  - Cons: auto-install now has one additional script dependency in repo root.

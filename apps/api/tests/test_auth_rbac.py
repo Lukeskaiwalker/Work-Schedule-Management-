@@ -431,6 +431,7 @@ def test_admin_install_update_creates_snapshot_and_runs_preflight_before_migrati
     assert executed == [
         "git fetch --tags --prune origin",
         "git pull --ff-only origin main",
+        "./scripts/update_release_metadata.sh",
         "alembic upgrade head",
     ]
     assert any("pre-update snapshot:" in step for step in payload["ran_steps"])

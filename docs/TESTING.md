@@ -1646,3 +1646,13 @@
   - Compose config validation for optional generated release env file: pass.
 - Coverage notes:
   - Validated release metadata generation path (`scripts/update_release_metadata.sh`) and compose/runtime wiring (`apps/api/.release.env` optional load).
+
+## Iteration Result (2026-03-05, admin update install flow refreshes release metadata)
+- Commands run:
+  - `docker compose run --rm --build api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_auth_rbac.py -k "update_status or install_update"'`
+  - `./scripts/test.sh`
+- Results:
+  - Targeted admin update tests: pass (`6 passed`, `7 deselected`).
+  - Full validation script: pass (`66 passed`, web build pass).
+- Coverage notes:
+  - Verified admin manual/auto update paths include `./scripts/update_release_metadata.sh` step without regressing update status/install behaviors.

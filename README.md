@@ -4,7 +4,7 @@ Self-hosted construction operations platform (FastAPI + React + PostgreSQL + Doc
 
 ## Current Release
 
-Version: `v1.4.0`  
+Version: `v1.4.1`  
 Release date: `2026-03-05`
 
 ## Last Changes Included In This Release
