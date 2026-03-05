@@ -176,11 +176,21 @@ class ProjectActivityOut(BaseModel):
     created_at: datetime
 
 
+class ProjectOfficeNoteOut(BaseModel):
+    report_id: int
+    report_number: int | None = None
+    report_date: date
+    created_at: datetime
+    office_rework: str | None = None
+    office_next_steps: str | None = None
+
+
 class ProjectOverviewOut(BaseModel):
     project: ProjectOut
     open_tasks: int = 0
     my_open_tasks: int = 0
     finance: ProjectFinanceOut
+    office_notes: list[ProjectOfficeNoteOut] = Field(default_factory=list)
     recent_changes: list[ProjectActivityOut] = Field(default_factory=list)
 
 
@@ -193,6 +203,12 @@ class ProjectMaterialNeedOut(BaseModel):
     construction_report_id: int | None = None
     report_date: date | None = None
     item: str
+    material_catalog_item_id: int | None = None
+    article_no: str | None = None
+    unit: str | None = None
+    quantity: str | None = None
+    image_url: str | None = None
+    image_source: str | None = None
     status: str
     created_by: int | None = None
     updated_by: int | None = None
@@ -202,6 +218,38 @@ class ProjectMaterialNeedOut(BaseModel):
 
 class ProjectMaterialNeedUpdate(BaseModel):
     status: str = Field(min_length=1, max_length=32)
+
+
+class ProjectMaterialNeedCreate(BaseModel):
+    project_id: int
+    item: str | None = Field(default=None, min_length=1, max_length=500)
+    material_catalog_item_id: int | None = None
+    article_no: str | None = Field(default=None, max_length=160)
+    unit: str | None = Field(default=None, max_length=64)
+    quantity: str | None = Field(default=None, max_length=64)
+    status: str = Field(default="order", min_length=1, max_length=32)
+
+
+class MaterialCatalogItemOut(BaseModel):
+    id: int
+    article_no: str | None = None
+    item_name: str
+    unit: str | None = None
+    manufacturer: str | None = None
+    ean: str | None = None
+    price_text: str | None = None
+    image_url: str | None = None
+    image_source: str | None = None
+    image_checked_at: datetime | None = None
+    source_file: str
+    source_line: int
+
+
+class MaterialCatalogImportStateOut(BaseModel):
+    file_count: int = 0
+    item_count: int = 0
+    duplicates_skipped: int = 0
+    imported_at: datetime | None = None
 
 
 class ProjectTrackedMaterialOut(BaseModel):

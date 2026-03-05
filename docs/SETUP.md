@@ -19,6 +19,26 @@
   - host `./local wiki` -> container `/data/wiki`
 - Wiki tab now reads from this folder (brand/folder explorer with searchable files and in-browser preview for HTML/PDF/text/image files).
 
+## Material Catalog Source (DATANORM)
+- Place vendor DATANORM files under:
+  - `./Datanorm_Neuanlage/Datanorm.001` ... `Datanorm.00x`
+- Compose mounts this folder read-only into API:
+  - host `./Datanorm_Neuanlage` -> container `/data/Datanorm_Neuanlage`
+- Catalog import behavior:
+  - DATANORM `A/B` records are parsed with DATANORM-specific mapping (article/text/unit/EAN/price).
+  - parser-version changes trigger an automatic one-time reimport on next catalog access.
+  - duplicates are ignored and counted; current count can be read at `GET /api/materials/catalog/state`.
+- Optional catalog image lookup controls (API env):
+  - `MATERIAL_CATALOG_IMAGE_LOOKUP_ENABLED=true|false` (default `true`)
+  - `MATERIAL_CATALOG_IMAGE_LOOKUP_RETRY_HOURS=<int>` (default `168`)
+  - `MATERIAL_CATALOG_IMAGE_LOOKUP_MAX_PER_REQUEST=<int>` (default `4`)
+- Material image behavior:
+  - image lookup is EAN-driven and automatic for newly touched items (catalog search/add-to-needs).
+  - lookup order is manufacturer-site first, then open EAN sources.
+  - resolved image URLs are cached in DB and reused across catalog reimports.
+- If catalog changes are not visible in UI, rebuild/restart API and web:
+  - `docker compose up --build -d api web caddy`
+
 ## Share on Local Network (Demo Mode)
 - Print LAN URL:
   - `./scripts/show_lan_url.sh`
@@ -752,3 +772,114 @@ Expected:
   - `docker compose up -d --build web caddy`
 - If browser still reports unreachable over HTTPS due local CA trust, continue using `https://localhost` and re-run local trust setup:
   - `./scripts/trust_caddy_root_macos.sh`
+
+## Iteration Setup Notes (2026-03-04, DATANORM material catalog + picker menu)
+- Migration required:
+  - `20260304_0032_material_catalog_and_manual_needs.py`
+- New environment variable:
+  - `MATERIAL_CATALOG_DIR` (default `/data/Datanorm_Neuanlage`)
+- Runtime requirement:
+  - ensure the DATANORM source folder is accessible inside the API container at the configured path (for Docker setups, mount the host folder into the API service path).
+- Standard refresh:
+  - `docker compose up -d --build api web caddy`
+- Operational behavior update:
+  - Materials view now includes a catalog panel for search and add.
+  - Catalog import runs automatically on first search (and whenever source file signature changes).
+
+## Iteration Setup Notes (2026-03-05, task modal accidental-close guard)
+- No migration required.
+- Standard frontend refresh is sufficient:
+  - `docker compose up -d --build web caddy`
+- Operational behavior update:
+  - Task create/edit modals no longer close from drag-selection release outside the modal card.
+
+## Iteration Setup Notes (2026-03-05, project overview office rework/next-steps box)
+- No migration required.
+- Standard refresh is sufficient:
+  - `docker compose up -d --build api web caddy`
+- Operational behavior update:
+  - Project Overview now contains an office follow-up card fed by construction report `office_rework` and `office_next_steps` entries.
+
+## Iteration Setup Notes (2026-03-05, office-only visibility for project overview office notes card)
+- No migration required.
+- Standard frontend refresh is sufficient:
+  - `docker compose up -d --build web caddy`
+- Operational behavior update:
+  - Office follow-up card in Project Overview is visible only in Office workspace mode.
+
+## Iteration Setup Notes (2026-03-05, materials catalog search cap + stale-search guard + searchable project picker)
+- No migration required.
+- Standard refresh is sufficient:
+  - `docker compose up -d --build api web caddy`
+- Operational behavior update:
+  - Materials catalog now returns/displays at most 10 rows per search.
+  - Catalog search results are protected against stale overwrite from older requests.
+  - Project assignment in Materials catalog uses searchable suggestions instead of a dropdown.
+
+## Iteration Setup Notes (2026-03-05, materials project search-bar persistence + alignment)
+- No migration required.
+- Standard frontend refresh is sufficient:
+  - `docker compose up -d --build web caddy`
+- Operational behavior update:
+  - Selected project is shown directly inside the materials project search bar.
+  - Project selection remains visible while typing a new project search query.
+  - Project/material search bars in the materials catalog are visually aligned and sized consistently.
+
+## Iteration Setup Notes (2026-03-05, materials combobox overflow fix)
+- No migration required.
+- Standard frontend refresh is sufficient:
+  - `docker compose up -d --build web caddy`
+- Operational behavior update:
+  - Long selected project labels in the materials project search bar now truncate safely and no longer collide with the material search field.
+
+## Iteration Setup Notes (2026-03-05, materials selected project plain-text input display)
+- No migration required.
+- Standard frontend refresh is sufficient:
+  - `docker compose up -d --build web caddy`
+- Operational behavior update:
+  - Selected project now appears directly as plain text inside the materials project search field (no chip/box wrapper).
+  - Extra hint text for this project field was removed.
+
+## Iteration Setup Notes (2026-03-05, materials project search overwrite loop fix)
+- No migration required.
+- Standard frontend refresh is sufficient:
+  - `docker compose up -d --build web caddy`
+- Operational behavior update:
+  - Materials project search can now overwrite the current selected-project text directly without forced reinsertion while editing.
+
+## Iteration Setup Notes (2026-03-05, office material comma-splitting fix)
+- No migration required.
+- Backend refresh is sufficient:
+  - `docker compose up -d --build api api_worker caddy`
+- Operational behavior update:
+  - Construction report office material entries are now split by line only.
+  - Commas inside one item description are preserved and no longer create multiple material needs.
+
+## Iteration Setup Notes (2026-03-05, material ID autofill + project materials readability)
+- No migration required.
+- Standard frontend refresh is sufficient:
+  - `docker compose up -d --build web caddy`
+- Operational behavior update:
+  - In task create/edit and construction report material rows, known item IDs now autofill row data from catalog after leaving the field.
+  - Project > Materials list uses a full-width row layout for better readability.
+
+## Iteration Setup Notes (2026-03-05, automatic zero-padding for time inputs)
+- No migration required.
+- Standard frontend refresh is sufficient:
+  - `docker compose up -d --build web caddy`
+- Operational behavior update:
+  - Task start-time and report worker time inputs now auto-normalize to `HH:MM` when leaving the field, including leading-zero padding for single-digit hour/minute parts.
+
+## Iteration Setup Notes (2026-03-05, release metadata auto-sync + local material catalog server import)
+- No migration required for release metadata automation.
+- New operational helper:
+  - `./scripts/update_release_metadata.sh`
+  - writes `apps/api/.release.env` with git-derived `APP_RELEASE_VERSION` and `APP_RELEASE_COMMIT`.
+- Compose behavior update:
+  - `api` and `api_worker` now read optional `apps/api/.release.env` in addition to `apps/api/.env.example`.
+- Update behavior update:
+  - `./scripts/safe_update.sh` now refreshes release metadata automatically before rebuild/deploy.
+- Material catalog server sync:
+  - ensure `./Datanorm_Neuanlage` is present on server host (mounted to `/data/Datanorm_Neuanlage`),
+  - trigger catalog import by opening materials catalog in UI or by running backend import check (state endpoint/service),
+  - verify imported counts via `GET /api/materials/catalog/state`.

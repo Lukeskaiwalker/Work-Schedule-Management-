@@ -848,6 +848,11 @@ def test_project_task_planning_ticket_file_and_report_flow(client: TestClient, a
     )
     assert project_overview_after_report.status_code == 200
     assert project_overview_after_report.json()["finance"]["reported_hours_total"] == 8.5
+    office_notes = project_overview_after_report.json()["office_notes"]
+    assert len(office_notes) >= 1
+    assert office_notes[0]["report_id"] == data["id"]
+    assert office_notes[0]["office_rework"] == "No rework needed"
+    assert office_notes[0]["office_next_steps"] == "Switchboard wiring"
 
     project_files = client.get(f"/api/projects/{project_id}/files", headers=auth_headers(employee_token))
     assert project_files.status_code == 200
@@ -2578,3 +2583,37 @@ def test_weather_address_candidates_normalize_and_add_country_fallbacks():
 def test_weather_zip_candidates_extracts_postal_code():
     candidates = workflow_router._weather_zip_candidates("Stockumer Straße 65, Annen, 58453 Witten, Germany")
     assert candidates == ["58453,DE"]
+
+
+def test_construction_report_office_material_need_keeps_commas_in_single_item(client: TestClient, admin_token: str):
+    project = client.post(
+        "/api/projects",
+        headers=auth_headers(admin_token),
+        json={
+            "project_number": "2026-5100",
+            "name": "Comma Material Project",
+            "status": "active",
+        },
+    )
+    assert project.status_code == 200
+    project_id = project.json()["id"]
+
+    report = client.post(
+        f"/api/projects/{project_id}/construction-reports",
+        headers=auth_headers(admin_token),
+        json={
+            "report_date": "2026-03-01",
+            "send_telegram": False,
+            "payload": {
+                "work_done": "Installed cable route",
+                "office_material_need": "NYM-J 5x6, 25m ring",
+            },
+        },
+    )
+    assert report.status_code == 200
+
+    material_needs = client.get("/api/materials", headers=auth_headers(admin_token))
+    assert material_needs.status_code == 200
+    project_entries = [entry for entry in material_needs.json() if entry["project_id"] == project_id]
+    assert len(project_entries) == 1
+    assert project_entries[0]["item"] == "NYM-J 5x6, 25m ring"

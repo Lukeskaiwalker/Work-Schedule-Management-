@@ -13,7 +13,7 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import quote
 
 import httpx
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from sqlalchemy import case, delete, func, or_, select
@@ -36,6 +36,7 @@ from app.models.entities import (
     EmployeeGroup,
     EmployeeGroupMember,
     JobTicket,
+    MaterialCatalogItem,
     Message,
     Project,
     ProjectActivity,
@@ -69,6 +70,9 @@ from app.schemas.api import (
     ProjectWeatherDayOut,
     ProjectWeatherOut,
     ProjectClassTemplateOut,
+    MaterialCatalogItemOut,
+    MaterialCatalogImportStateOut,
+    ProjectMaterialNeedCreate,
     ProjectMaterialNeedOut,
     ProjectMaterialNeedUpdate,
     ProjectTrackedMaterialOut,
@@ -87,6 +91,7 @@ from app.schemas.api import (
     ThreadOut,
     ThreadUpdate,
     ProjectActivityOut,
+    ProjectOfficeNoteOut,
     WikiPageCreate,
     WikiLibraryFileOut,
     WikiPageOut,
@@ -107,6 +112,11 @@ from app.services.report_jobs import (
 )
 from app.services.report_feed import is_report_feed_thread, sync_report_feed_thread
 from app.services.runtime_settings import get_openweather_api_key
+from app.services.material_catalog import (
+    ensure_material_catalog_item_image,
+    get_material_catalog_import_state,
+    search_material_catalog,
+)
 from app.core.security import verify_password
 
 try:
@@ -1403,16 +1413,14 @@ def _parse_office_material_need_items(raw_value: object) -> list[str]:
         cleaned_line = re.sub(r"\s{2,}", " ", line).strip().strip("-*•")
         if not cleaned_line:
             continue
-        parts = re.split(r"[;,]", cleaned_line)
-        for part in parts:
-            item = re.sub(r"\s{2,}", " ", part).strip().strip("-*•")
-            if not item:
-                continue
-            key = item.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            items.append(item)
+        item = re.sub(r"\s{2,}", " ", cleaned_line).strip().strip("-*•")
+        if not item:
+            continue
+        key = item.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(item)
     return items
 
 
@@ -1448,6 +1456,7 @@ def _project_material_need_out(
     *,
     project: Project,
     report: ConstructionReport | None,
+    catalog_item: MaterialCatalogItem | None = None,
 ) -> ProjectMaterialNeedOut:
     return ProjectMaterialNeedOut(
         id=row.id,
@@ -1458,11 +1467,34 @@ def _project_material_need_out(
         construction_report_id=row.construction_report_id,
         report_date=report.report_date if report else None,
         item=row.item,
+        material_catalog_item_id=row.material_catalog_item_id,
+        article_no=row.article_no,
+        unit=row.unit,
+        quantity=row.quantity,
+        image_url=(catalog_item.image_url if catalog_item else None),
+        image_source=(catalog_item.image_source if catalog_item else None),
         status=_normalize_material_need_status(row.status),
         created_by=row.created_by,
         updated_by=row.updated_by,
         created_at=row.created_at,
         updated_at=row.updated_at,
+    )
+
+
+def _material_catalog_item_out(row: MaterialCatalogItem) -> MaterialCatalogItemOut:
+    return MaterialCatalogItemOut(
+        id=row.id,
+        article_no=row.article_no,
+        item_name=row.item_name,
+        unit=row.unit,
+        manufacturer=row.manufacturer,
+        ean=row.ean,
+        price_text=row.price_text,
+        image_url=row.image_url,
+        image_source=row.image_source,
+        image_checked_at=row.image_checked_at,
+        source_file=row.source_file,
+        source_line=row.source_line,
     )
 
 
@@ -1491,6 +1523,41 @@ def _recent_project_activities_out(db: Session, project_id: int, *, limit: int =
         )
         for row in rows
     ]
+
+
+def _normalize_report_office_text(raw_value: object) -> str:
+    return str(raw_value or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+
+
+def _recent_project_office_notes_out(db: Session, project_id: int, *, limit: int = 10) -> list[ProjectOfficeNoteOut]:
+    safe_limit = max(1, min(int(limit), 50))
+    source_limit = max(safe_limit * 4, safe_limit)
+    reports = db.scalars(
+        select(ConstructionReport)
+        .where(ConstructionReport.project_id == project_id)
+        .order_by(ConstructionReport.report_date.desc(), ConstructionReport.id.desc())
+        .limit(source_limit)
+    ).all()
+    rows: list[ProjectOfficeNoteOut] = []
+    for report in reports:
+        payload = report.payload if isinstance(report.payload, dict) else {}
+        office_rework = _normalize_report_office_text(payload.get("office_rework"))
+        office_next_steps = _normalize_report_office_text(payload.get("office_next_steps"))
+        if not office_rework and not office_next_steps:
+            continue
+        rows.append(
+            ProjectOfficeNoteOut(
+                report_id=report.id,
+                report_number=report.report_number,
+                report_date=report.report_date,
+                created_at=report.created_at,
+                office_rework=office_rework or None,
+                office_next_steps=office_next_steps or None,
+            )
+        )
+        if len(rows) >= safe_limit:
+            break
+    return rows
 
 
 def _effective_openweather_api_key(db: Session) -> str:
@@ -2524,8 +2591,9 @@ def list_project_material_needs(
         else_=4,
     )
     rows = db.execute(
-        select(ProjectMaterialNeed, ConstructionReport)
+        select(ProjectMaterialNeed, ConstructionReport, MaterialCatalogItem)
         .outerjoin(ConstructionReport, ConstructionReport.id == ProjectMaterialNeed.construction_report_id)
+        .outerjoin(MaterialCatalogItem, MaterialCatalogItem.id == ProjectMaterialNeed.material_catalog_item_id)
         .where(
             ProjectMaterialNeed.project_id.in_(visible_project_ids),
             ProjectMaterialNeed.status != "completed",
@@ -2533,12 +2601,120 @@ def list_project_material_needs(
         .order_by(status_rank.asc(), ProjectMaterialNeed.created_at.desc(), ProjectMaterialNeed.id.desc())
     ).all()
     result: list[ProjectMaterialNeedOut] = []
-    for material_need, report in rows:
+    for material_need, report, catalog_item in rows:
         project = projects_by_id.get(material_need.project_id)
         if not project:
             continue
-        result.append(_project_material_need_out(material_need, project=project, report=report))
+        result.append(
+            _project_material_need_out(
+                material_need,
+                project=project,
+                report=report,
+                catalog_item=catalog_item,
+            )
+        )
     return result
+
+
+@router.get("/materials/catalog", response_model=list[MaterialCatalogItemOut])
+def list_material_catalog_items(
+    q: str = "",
+    limit: int = Query(default=10, ge=1),
+    _: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    rows = search_material_catalog(db, query=q, limit=min(limit, 10))
+    return [_material_catalog_item_out(row) for row in rows]
+
+
+@router.get("/materials/catalog/state", response_model=MaterialCatalogImportStateOut)
+def get_material_catalog_state(
+    _: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    state = get_material_catalog_import_state(db)
+    if state is None:
+        return MaterialCatalogImportStateOut()
+    return MaterialCatalogImportStateOut(
+        file_count=state.file_count,
+        item_count=state.item_count,
+        duplicates_skipped=state.duplicates_skipped,
+        imported_at=state.imported_at,
+    )
+
+
+@router.post("/materials", response_model=ProjectMaterialNeedOut)
+def create_project_material_need(
+    payload: ProjectMaterialNeedCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    visible_project_ids = _project_ids_visible_to_user(db, current_user)
+    if payload.project_id not in visible_project_ids:
+        raise HTTPException(status_code=403, detail="Project access denied")
+    project = db.get(Project, payload.project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    selected_catalog_item: MaterialCatalogItem | None = None
+    if payload.material_catalog_item_id is not None:
+        selected_catalog_item = db.get(MaterialCatalogItem, payload.material_catalog_item_id)
+        if not selected_catalog_item:
+            raise HTTPException(status_code=404, detail="Catalog item not found")
+
+    item_name = _normalize_report_material_text(payload.item)
+    if not item_name and selected_catalog_item is not None:
+        item_name = _normalize_report_material_text(selected_catalog_item.item_name)
+    if not item_name:
+        raise HTTPException(status_code=400, detail="Material item is required")
+
+    normalized_status = _normalize_material_need_status(payload.status, strict=True)
+    normalized_article = _normalize_report_material_text(payload.article_no)
+    normalized_unit = _normalize_report_material_text(payload.unit)
+    normalized_quantity = _normalize_report_material_text(payload.quantity)
+    if selected_catalog_item is not None:
+        if not normalized_article:
+            normalized_article = _normalize_report_material_text(selected_catalog_item.article_no)
+        if not normalized_unit:
+            normalized_unit = _normalize_report_material_text(selected_catalog_item.unit)
+        ensure_material_catalog_item_image(db, selected_catalog_item)
+
+    row = ProjectMaterialNeed(
+        project_id=payload.project_id,
+        construction_report_id=None,
+        item=item_name,
+        material_catalog_item_id=selected_catalog_item.id if selected_catalog_item else None,
+        article_no=normalized_article or None,
+        unit=normalized_unit or None,
+        quantity=normalized_quantity or None,
+        status=normalized_status,
+        created_by=current_user.id,
+        updated_by=current_user.id,
+    )
+    db.add(row)
+    db.flush()
+    _record_project_activity(
+        db,
+        project_id=payload.project_id,
+        actor_user_id=current_user.id,
+        event_type="material.created",
+        message=f"Material need added ({item_name[:80]})",
+        details={
+            "material_need_id": row.id,
+            "item": row.item,
+            "article_no": row.article_no,
+            "unit": row.unit,
+            "quantity": row.quantity,
+        },
+    )
+    db.commit()
+    db.refresh(row)
+    return _project_material_need_out(
+        row,
+        project=project,
+        report=None,
+        catalog_item=selected_catalog_item,
+    )
 
 
 @router.patch("/materials/{material_need_id}", response_model=ProjectMaterialNeedOut)
@@ -2576,7 +2752,8 @@ def update_project_material_need(
     db.commit()
     db.refresh(row)
     report = db.get(ConstructionReport, row.construction_report_id) if row.construction_report_id is not None else None
-    return _project_material_need_out(row, project=project, report=report)
+    catalog_item = db.get(MaterialCatalogItem, row.material_catalog_item_id) if row.material_catalog_item_id else None
+    return _project_material_need_out(row, project=project, report=report, catalog_item=catalog_item)
 
 
 @router.get("/project-class-templates", response_model=list[ProjectClassTemplateOut])
@@ -2975,6 +3152,7 @@ def project_overview_detail(
         open_tasks=open_tasks,
         my_open_tasks=my_open_tasks,
         finance=_project_finance_row_or_default(db, project_id),
+        office_notes=_recent_project_office_notes_out(db, project_id, limit=10),
         recent_changes=_recent_project_activities_out(db, project_id, limit=10),
     )
 

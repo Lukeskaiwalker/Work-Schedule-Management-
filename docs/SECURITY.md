@@ -108,6 +108,20 @@
   - Protect encryption keys and backup passphrase.
   - Run periodic restore drills and verify restored data integrity before relying on backups operationally.
 
+## Iteration Security Notes (2026-03-04, DATANORM material catalog parsing)
+- Material catalog import now uses deterministic DATANORM field parsing instead of heuristic token extraction, reducing risk of incorrect catalog metadata being shown to users.
+- Parser-signature versioning forces a controlled one-time reimport when parser logic changes, preventing stale/misparsed cached catalog data from persisting indefinitely.
+- DATANORM source folder handling remains read-only mount-based (`/data/Datanorm_Neuanlage:ro`) and does not introduce new write surfaces.
+
+## Iteration Security Notes (2026-03-04, material image lookup)
+- Catalog image enrichment now performs outbound HTTP lookups by EAN. To reduce abuse surface:
+  - only `http/https` URLs are accepted,
+  - localhost/private/link-local IP targets are rejected,
+  - manufacturer-first lookup is domain-filtered before page fetch.
+- Image data is stored as URL metadata only (`image_url`), not as downloaded binary blobs, so no new file-at-rest storage path is introduced.
+- Lookup attempts are cached with `image_checked_at` and throttled via retry window (`MATERIAL_CATALOG_IMAGE_LOOKUP_RETRY_HOURS`) to limit repeated outbound calls.
+- Duplicate import rows continue to be ignored deterministically, and skipped counts are now surfaced to users/operators for import transparency.
+
 ## Iteration Security Notes (2026-02-22)
 - Chat unread indicator uses server-derived unread counts from authenticated `/threads` responses; unread UI state is not client-authored.
 - Global thread polling (slow outside chat, fast inside chat) keeps unread indicators current; this is read-only and does not alter message authorization.
@@ -548,3 +562,73 @@
 - No authentication or authorization model changes.
 - No API surface change.
 - Change is frontend runtime stability only (hook initialization/order safety).
+
+## Iteration Security Notes (2026-03-04, material catalog import + manual material creation)
+- No authentication model changes in this iteration.
+- New endpoints:
+  - `GET /materials/catalog` requires authenticated user context.
+  - `POST /materials` enforces existing project visibility checks (`_project_ids_visible_to_user`) before creating material-needs entries.
+- Import scope:
+  - Catalog importer reads from configured filesystem directory (`MATERIAL_CATALOG_DIR`) and stores parsed text metadata only.
+  - No secrets/credentials are read from catalog content; importer writes normalized searchable data into DB tables.
+- Existing server-side status update permission boundaries for materials remain unchanged.
+
+## Iteration Security Notes (2026-03-05, task modal accidental-close guard)
+- No authentication or authorization model changes.
+- Change scope is frontend-only interaction handling (modal backdrop pointer event logic).
+- No API, permission, or data-access path changes.
+
+## Iteration Security Notes (2026-03-05, project overview office follow-up card)
+- No authentication or authorization model changes.
+- `office_notes` in project overview is derived from existing construction report payload data already protected by project access checks.
+- No new write endpoint or privilege model introduced.
+
+## Iteration Security Notes (2026-03-05, office-only visibility for overview office notes card)
+- No authentication or authorization model changes.
+- Change scope is frontend-only conditional rendering by workspace mode.
+- No API, permission, or data-access path changes.
+
+## Iteration Security Notes (2026-03-05, materials catalog search cap and project picker UX)
+- No authentication or authorization model changes.
+- `GET /materials/catalog` remains authenticated-only; this iteration only reduces max result size (limit clamped to 10).
+- Frontend stale-search guards and searchable project picker are UI-state changes only and do not alter server-side permission checks.
+
+## Iteration Security Notes (2026-03-05, materials project search-bar persistence/alignment)
+- No authentication or authorization model changes.
+- Change scope is frontend-only materials catalog input/selection UI.
+- No API endpoint, permission boundary, or data-access path changes.
+
+## Iteration Security Notes (2026-03-05, materials combobox overflow fix)
+- No authentication or authorization model changes.
+- Frontend-only CSS layout hardening for long selected-project labels.
+- No API/permission/data-exposure changes.
+
+## Iteration Security Notes (2026-03-05, materials selected project plain-text input display)
+- No authentication or authorization model changes.
+- Frontend-only rendering/interaction update in materials project search field.
+- No API, permission, or data-access changes.
+
+## Iteration Security Notes (2026-03-05, materials project search overwrite loop fix)
+- No authentication or authorization model changes.
+- Frontend-only state/interaction fix in materials project input.
+- No API, permission, or data-access changes.
+
+## Iteration Security Notes (2026-03-05, office material comma-splitting fix)
+- No authentication or authorization model changes.
+- Change is scoped to server-side parsing semantics of existing `office_material_need` text.
+- No new endpoint, permission boundary, or additional data exposure path introduced.
+
+## Iteration Security Notes (2026-03-05, task/report material ID autofill + project materials layout)
+- No authentication or authorization model changes.
+- Frontend uses existing authenticated `GET /materials/catalog` endpoint for row autofill lookups; no new endpoint introduced.
+- Project materials readability change is CSS/markup only with no permission or data-path impact.
+
+## Iteration Security Notes (2026-03-05, automatic zero-padding for time inputs)
+- No authentication or authorization model changes.
+- Frontend-only input-formatting update for existing task/report time fields.
+- No API, permission, or data-access path changes.
+
+## Iteration Security Notes (2026-03-05, release metadata automation + local catalog sync deploy)
+- No authentication or authorization model changes.
+- Release metadata automation is operational only (`scripts/update_release_metadata.sh`, compose env wiring) and does not introduce new API permissions.
+- Material catalog sync on server uses existing authenticated/authorized backend data model and existing DATANORM mount path; no new external trust boundary was added.

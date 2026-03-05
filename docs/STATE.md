@@ -25,6 +25,39 @@
 3. Projects/tasks/planning/tickets/time/files/chat/report: completed (MVP scope).
 4. Backup/restore + docs + test hardening: completed.
 
+## Compacted Update (2026-03-04, material image enrichment + duplicate import reporting)
+- Changed:
+  - material catalog items now store image metadata (`image_url`, `image_source`, `image_checked_at`).
+  - automatic EAN-based image enrichment was added:
+    - manufacturer-site lookup is attempted first,
+    - fallback uses open EAN sources.
+  - enrichment is automatic for newly touched catalog items (catalog search and add-to-needs flow), with retry throttling and DB caching.
+  - material needs and catalog responses now expose image fields so thumbnails render in the Materials tab.
+  - catalog import now counts skipped duplicates and persists this in `material_catalog_import_state.duplicates_skipped`.
+  - duplicate count is visible to users via new endpoint `GET /api/materials/catalog/state` and displayed in the material catalog panel.
+  - reimport preserves already resolved image metadata for unchanged items.
+- Verified:
+  - `docker compose run --build --rm api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_material_catalog.py'`: pass (`3 passed`).
+  - `./scripts/test.sh`: pass (`64 passed` API tests + web build pass).
+- Blockers: none.
+
+## Compacted Update (2026-03-04, DATANORM material catalog correction)
+- Changed:
+  - replaced heuristic material-catalog parsing with DATANORM-aware parsing for `A`/`B` records with `V` currency handling.
+  - item data now maps deterministically to DATANORM semantics:
+    - `article_no` from `A` record article field,
+    - `item_name` from DATANORM short+long text,
+    - `unit` from DATANORM unit field,
+    - `ean` from `B` record GTIN/EAN field,
+    - `price_text` as normalized decimal currency text.
+  - import signature now includes parser-version stamp to force one automatic reimport after parser upgrades.
+  - material catalog UI now also shows EAN and price metadata in search results.
+- Verified:
+  - `./scripts/test.sh` pass (`63 passed` API tests + web build).
+  - live stack rebuilt/restarted (`docker compose up --build -d api web caddy`).
+  - DB now contains `1,067,574` parsed catalog items with corrected DATANORM field mapping samples.
+- Blockers: none.
+
 ## Compacted Update (2026-02-26, admin nickname for anonymized exports)
 - Changed:
   - added optional admin nickname support (`nickname`) with one-time set semantics (cannot be changed after first save).
@@ -2306,4 +2339,151 @@
   - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/` => `200`.
   - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/api` => `200`.
   - Playwright browser check on `http://192.168.5.59/` loads `SMPL Workflow` page without console startup errors.
+- Blockers: none.
+
+## Compacted Update (2026-03-04, DATANORM material catalog + material picker menu)
+- Changed:
+  - Added persistent material catalog backend tables (`material_catalog_items`, `material_catalog_import_state`) plus new material-need metadata fields (`material_catalog_item_id`, `article_no`, `unit`, `quantity`).
+  - Added automatic catalog ingestion from `MATERIAL_CATALOG_DIR` (default `/data/Datanorm_Neuanlage`) with search endpoint `GET /api/materials/catalog`.
+  - Added manual material-need creation endpoint `POST /api/materials` so catalog items can be added directly to project material needs.
+  - Extended Materials main view with a second panel (`Material catalog`) supporting project selection, search, and one-click add into the needs list.
+  - Added API coverage for catalog search/import and add-to-needs flow (`apps/api/tests/test_material_catalog.py`).
+- Verified:
+  - `./scripts/test.sh` pass (`62 passed`, web build pass).
+  - `cd apps/web && npm run build` pass.
+- Blockers:
+  - The source directory `Datanorm_Neuanlage` is not present in the current workspace snapshot, so real catalog content import depends on providing that folder at runtime.
+
+## Compacted Update (2026-03-05, task modal accidental-close guard)
+- Changed:
+  - Switched task create/edit modal backdrop closing from plain `onClick` to pointer-down/up guarded behavior (matching the existing project modal).
+  - Prevents accidental modal close when selecting text in a task field and releasing the mouse outside the edit card.
+- Verified:
+  - `cd apps/web && npm run build` pass.
+- Blockers: none.
+
+## Compacted Update (2026-03-05, project overview office rework/next-steps box)
+- Changed:
+  - Extended `GET /api/projects/{id}/overview` with `office_notes`, derived from the latest project construction reports that contain `office_rework` or `office_next_steps`.
+  - Added a new Project Overview card showing those office follow-up entries with report/date context.
+  - Notes are populated automatically from saved report payload data, so new report submissions appear in the overview without any manual sync step.
+- Verified:
+  - `docker compose run --rm api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_workflows.py::test_project_task_planning_ticket_file_and_report_flow'` pass.
+  - `cd apps/web && npm run build` pass.
+  - `docker compose up -d --build api web caddy` pass.
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/` => `200`.
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/api` => `200`.
+- Blockers: none.
+
+## Compacted Update (2026-03-05, office-only visibility for project overview office notes card)
+- Changed:
+  - Project Overview office-notes card is now rendered only when workspace mode is `office`.
+  - Construction workspace no longer shows the office follow-up card.
+- Verified:
+  - `cd apps/web && npm run build` pass.
+  - `docker compose up -d --build web caddy` pass.
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/` => `200`.
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/api` => `200`.
+- Blockers: none.
+
+## Compacted Update (2026-03-05, materials catalog search cap + stale-search guard + searchable project picker)
+- Changed:
+  - Materials catalog search is now limited to 10 results in UI and API (`/materials/catalog` clamps requested `limit` to 10).
+  - Added stale-request protection for catalog searches in the web app so older responses no longer overwrite newer query results.
+  - Replaced the materials catalog project dropdown with a searchable project picker (type-to-search suggestions + selected project chip).
+- Verified:
+  - `docker compose run --rm --build api python -m pytest -q tests/test_material_catalog.py` pass (`4 passed`).
+  - `./scripts/test.sh` pass (`65 passed`, web build pass).
+  - `docker compose up -d --build api web caddy` pass.
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/` => `200`.
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/api` => `200`.
+- Blockers: none.
+
+## Compacted Update (2026-03-05, materials catalog project search bar persistence + alignment)
+- Changed:
+  - Materials catalog project picker now shows the selected project directly inside the project search bar as an inline chip.
+  - Selected project chip remains visible while typing a new project search query.
+  - Project and material search fields in the materials catalog now use the same layout and input height for consistent sizing/alignment.
+- Verified:
+  - `cd apps/web && npm run build` pass.
+- Blockers: none.
+
+## Compacted Update (2026-03-05, materials project combobox overflow fix)
+- Changed:
+  - Fixed materials catalog project search combobox overflow so long selected project names/numbers no longer collide with the adjacent material search bar.
+  - Improved flex shrink behavior and clipping in the inline selected-project chip/input container.
+- Verified:
+  - `cd apps/web && npm run build` pass.
+  - `docker compose up -d --build web caddy` pass.
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/` => `200`.
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/api` => `200`.
+- Blockers: none.
+
+## Compacted Update (2026-03-05, materials selected project shown as plain search-bar text)
+- Changed:
+  - Removed the inline chip/box around the selected project in the materials project picker.
+  - Project search field now shows selected project number/name directly as plain text in the input.
+  - Removed extra no-selection/search hint text from the project field as requested.
+- Verified:
+  - `cd apps/web && npm run build` pass.
+  - `docker compose up -d --build web caddy` pass.
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/` => `200`.
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/api` => `200`.
+- Blockers: none.
+
+## Compacted Update (2026-03-05, materials project search overwrite loop fix)
+- Changed:
+  - Fixed materials project picker input loop where selected project text reappeared immediately after deleting input content.
+  - Added focused edit-state handling so users can type over the current project text directly and search a replacement project without forced text restoration during editing.
+  - Suggestions are now shown only while the project field is focused.
+- Verified:
+  - `cd apps/web && npm run build` pass.
+  - `docker compose up -d --build web caddy` pass.
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/` => `200`.
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/api` => `200`.
+- Blockers: none.
+
+## Compacted Update (2026-03-05, construction report office material commas no longer split into multiple needs)
+- Changed:
+  - Updated backend office-material parser to keep each entered line as one material-need item.
+  - Removed comma/semicolon based splitting in `_parse_office_material_need_items`, so text like `NYM-J 5x6, 25m ring` remains one entry.
+- Verified:
+  - `docker compose run --rm api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_workflows.py -k "construction_report_office_material_need_keeps_commas_in_single_item"'` pass.
+  - `docker compose run --rm api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_workflows.py -k "project_task_planning_ticket_file_and_report_flow"'` pass.
+- Blockers: none.
+
+## Compacted Update (2026-03-05, task/report material ID autofill + project materials readability)
+- Changed:
+  - Added automatic material-row enrichment in task create/edit and construction report forms: when item/article ID fields match a known catalog entry, row fields are replaced with catalog data (`item`, `article_no`, `unit`) while keeping entered quantity.
+  - Added stale-edit guards so async lookup only applies to the row value that triggered the lookup.
+  - Fixed Project > Materials list compression by using a dedicated full-width row layout instead of the compact global materials card grid.
+- Verified:
+  - `cd apps/web && npm run build` pass.
+  - `docker compose up -d --build web caddy` pass.
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/` => `200`.
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/api` => `200`.
+- Blockers: none.
+
+## Compacted Update (2026-03-05, automatic zero-padding for time inputs across forms)
+- Changed:
+  - Updated shared time typing parser so colon-based single-digit input is preserved while typing (e.g. `8:3` no longer collapses to `83`).
+  - Added blur-time normalization for task start time fields and construction report worker start/end fields so single digits are auto-padded to `HH:MM` after entry.
+- Verified:
+  - `cd apps/web && npm run build` pass.
+  - `docker compose up -d --build web caddy` pass.
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/` => `200`.
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/api` => `200`.
+- Blockers: none.
+
+## Compacted Update (2026-03-05, release metadata auto-sync + local material catalog server sync rollout)
+- Changed:
+  - Added `scripts/update_release_metadata.sh` to generate runtime release metadata file `apps/api/.release.env` from local git tag/commit.
+  - Updated compose runtime wiring so `api` and `api_worker` optionally load generated `apps/api/.release.env` (when present) in addition to `apps/api/.env.example`.
+  - Updated `scripts/safe_update.sh` to refresh release metadata automatically before API rebuild/deploy.
+  - Changed default API env template release fields to placeholder values (`APP_RELEASE_VERSION=local-production`, empty commit) so stale hardcoded `v1.0.0` cannot persist.
+  - Added release notes document for `v1.4.0`.
+- Verified:
+  - `./scripts/test.sh` pass (`66 passed` API tests + web production build pass).
+  - `bash -n scripts/update_release_metadata.sh scripts/safe_update.sh` pass.
+  - `docker compose config` pass with optional `.release.env` mapping.
 - Blockers: none.

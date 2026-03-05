@@ -19,6 +19,9 @@ uploads_tmp = tempfile.mkdtemp(prefix="smpl-test-uploads-")
 os.environ["UPLOADS_DIR"] = uploads_tmp
 wiki_tmp = tempfile.mkdtemp(prefix="smpl-test-wiki-")
 os.environ["WIKI_ROOT_DIR"] = wiki_tmp
+material_catalog_tmp = tempfile.mkdtemp(prefix="smpl-test-material-catalog-")
+os.environ["MATERIAL_CATALOG_DIR"] = material_catalog_tmp
+os.environ["MATERIAL_CATALOG_IMAGE_LOOKUP_ENABLED"] = "false"
 
 from app.core.db import Base, engine  # noqa: E402
 from app.main import _initialize_runtime_data, app  # noqa: E402

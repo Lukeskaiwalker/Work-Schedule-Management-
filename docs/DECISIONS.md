@@ -1,5 +1,26 @@
 # Architecture Decision Records
 
+## 2026-03-04 - Material catalog image enrichment is lazy, EAN-based, and cached
+- Status: accepted
+- Decision: Resolve product images by EAN at runtime for newly touched material catalog rows (search results and add-to-needs), not as a full import-time batch. Lookup order is manufacturer-site first, then open EAN sources. Persist lookup result metadata (`image_url`, `image_source`, `image_checked_at`) in catalog rows and preserve it across reimports.
+- Tradeoffs:
+  - Pros: avoids expensive full-catalog internet lookups on large DATANORM imports and still provides automatic thumbnails for active items.
+  - Cons: first lookup for an unseen item can add slight latency until cached; image coverage depends on external source availability.
+
+## 2026-03-04 - Catalog imports skip duplicates and expose skipped-count state
+- Status: accepted
+- Decision: Keep import deduplication (article-first keying, fallback tuple key), count skipped duplicates, persist count in `material_catalog_import_state`, and expose it via `GET /api/materials/catalog/state`.
+- Tradeoffs:
+  - Pros: deterministic duplicate handling with operator-visible feedback.
+  - Cons: users see aggregate duplicate counts rather than per-file duplicate diagnostics.
+
+## 2026-03-04 - Material catalog import uses DATANORM `A/B` records as primary parser
+- Status: accepted
+- Decision: Parse `Datanorm.*` files with explicit DATANORM record handling (`A` for base item fields, `B` for match/EAN fields, `V` for currency hint) and keep legacy CSV/linewise parsing only as fallback for non-DATANORM sources.
+- Tradeoffs:
+  - Pros: deterministic article mapping, complete item coverage, and correct field semantics for electronics DATANORM catalogs.
+  - Cons: importer logic is more format-specific and requires parser-version tracking to refresh already imported catalogs.
+
 ## 2026-02-26 - Chat creation supports explicit restricted visibility
 - Status: accepted
 - Decision: keep default chat creation public, but when at least one participant user or employee group is selected, persist thread as `restricted` and enforce visibility to creator + selected users + members of selected groups.
@@ -1656,3 +1677,138 @@
 - Tradeoffs:
   - Pros: minimal targeted fix with no behavior regression and no state model changes.
   - Cons: similar ordering-sensitive hook code still requires care in future edits.
+
+## 2026-03-04 - Introduce a persistent DATANORM-backed material catalog and manual material-need creation
+- Status: accepted
+- Decision:
+  - Add dedicated DB tables for catalog entries/import state instead of parsing DATANORM files on every search request.
+  - Ingest from filesystem directory configured by `MATERIAL_CATALOG_DIR` with automatic re-import when source file signature changes.
+  - Expose catalog through `GET /materials/catalog` and create material needs via `POST /materials` with optional catalog linkage and structured metadata (`article_no`, `unit`, `quantity`).
+  - Keep existing report-driven material-needs flow unchanged; manual/catalog entries share the same queue and status lifecycle.
+- Tradeoffs:
+  - Pros: search stays fast after first import, catalog content is reusable across sessions, and users can add standardized items directly from the Materials menu.
+  - Cons: import quality depends on source file consistency and the configured directory being mounted/available to the API runtime.
+
+## 2026-03-05 - Guard task modal backdrop close with pointer start/end checks
+- Status: accepted
+- Decision:
+  - Use pointer-down/up gating for task modal backdrop closes (create + edit) and only close when press and release both happen on the backdrop itself.
+  - Keep explicit save/cancel buttons unchanged.
+- Tradeoffs:
+  - Pros: prevents accidental close while selecting or dragging text inside task form fields.
+  - Cons: slightly more event-handling complexity than a plain backdrop click.
+
+## 2026-03-05 - Derive project overview office follow-up from construction report payload
+- Status: accepted
+- Decision:
+  - Keep office follow-up data source in `construction_reports.payload` (`office_rework`, `office_next_steps`) and expose a derived list `office_notes` on `GET /projects/{id}/overview`.
+  - Render this list in a dedicated Project Overview card rather than duplicating data into another persistence table.
+- Tradeoffs:
+  - Pros: no migration needed, no duplicated write path, and updates are automatically visible after report creation.
+  - Cons: overview call performs an additional report query and payload parsing per request.
+
+## 2026-03-05 - Show project office follow-up card only in office workspace mode
+- Status: accepted
+- Decision:
+  - Gate rendering of the Project Overview office-notes card by `workspaceMode === "office"`.
+  - Keep backend `office_notes` in the overview response unchanged for compatibility.
+- Tradeoffs:
+  - Pros: keeps construction view focused and avoids office-only context bleed.
+  - Cons: office notes are hidden unless users switch to office mode.
+
+## 2026-03-05 - Cap material catalog search to 10 and guard against stale UI search responses
+- Status: accepted
+- Decision:
+  - Limit material catalog search responses to a maximum of 10 items end-to-end:
+    - frontend requests `limit=10`,
+    - backend clamps incoming `limit` to `min(limit, 10)`.
+  - In the web app, only apply catalog search responses if they still match the latest request sequence and current query text.
+  - Replace the materials catalog project dropdown with a searchable suggestion picker to speed up project selection in larger project lists.
+- Tradeoffs:
+  - Pros: lower response payloads, more stable/accurate search UX under concurrent requests, and faster project selection.
+  - Cons: users cannot browse more than 10 catalog rows per query and must refine search terms for broader discovery.
+
+## 2026-03-05 - Keep selected materials project visible inside search bar while typing
+- Status: accepted
+- Decision:
+  - Represent the selected project in the materials catalog project picker as an inline chip inside the search control.
+  - Keep the search query input separate from the selected value so the selected project stays visible while users type a new search term.
+  - Use a shared field layout for project and material search controls to keep both bars the same size and aligned vertically.
+- Tradeoffs:
+  - Pros: clearer project context during re-selection, fewer accidental mis-associations, and more consistent visual layout.
+  - Cons: introduces a custom combobox-style control with slightly more CSS/markup complexity than a plain input.
+
+## 2026-03-05 - Clamp materials project combobox internals to prevent long-label collision
+- Status: accepted
+- Decision:
+  - Keep the inline selected-project chip approach, but enforce strict flex shrink/ellipsis and container overflow clipping.
+  - Set the embedded input to `min-width: 0` so long selected labels cannot force horizontal overflow into the neighboring search field.
+- Tradeoffs:
+  - Pros: preserves persistent selection visibility without layout breakage on long project identifiers.
+  - Cons: very long selected labels are truncated more aggressively.
+
+## 2026-03-05 - Show selected materials project as plain input text (no chip/hints)
+- Status: accepted
+- Decision:
+  - Replace the custom chip-in-input combobox appearance with a plain input presentation.
+  - Display selected project label directly as input text when no active project-search query is being typed.
+  - Remove auxiliary “no project selected yet” hint text in this field.
+- Tradeoffs:
+  - Pros: cleaner UI, full selected identifier visibility, and matches user preference.
+  - Cons: selected project and active search query share one visible text field, so selection context is hidden while actively typing a replacement query.
+
+## 2026-03-05 - Prevent selected-project text reinsert loop while editing materials project search
+- Status: accepted
+- Decision:
+  - Introduce explicit focus/edit state for the materials project search input.
+  - While focused, treat input text as user-owned search query and do not auto-reinsert selected-project text when the query becomes empty.
+  - Restore selected-project label on blur and keep suggestion list visible only during focused editing.
+- Tradeoffs:
+  - Pros: enables direct overwrite workflow and avoids loop/flicker while changing project selection.
+  - Cons: adds a small amount of focus-state interaction logic.
+
+## 2026-03-05 - Keep office material need row text intact (no comma-based splitting)
+- Status: accepted
+- Decision:
+  - Parse `office_material_need` as newline-separated entries only.
+  - Treat commas and semicolons as regular characters inside an item string instead of separators.
+- Tradeoffs:
+  - Pros: matches report UI row semantics; item descriptions with decimal commas/product labels are preserved as one material need.
+  - Cons: legacy free-text comma-separated input no longer expands into multiple entries automatically.
+
+## 2026-03-05 - Autofill task/report material rows from catalog on known item IDs
+- Status: accepted
+- Decision:
+  - Trigger material catalog lookup when users leave (`blur`) `item` or `article_no` fields in task/report material rows.
+  - Apply replacement only when there is a deterministic match (exact article number/EAN/name or a single result) and the row value has not changed since lookup started.
+  - Keep quantity untouched while replacing `item`, `article_no`, and `unit` from catalog.
+- Tradeoffs:
+  - Pros: faster, consistent material entry and fewer manual typing errors.
+  - Cons: introduces async UI lookup logic in multiple material forms.
+
+## 2026-03-05 - Separate project materials list layout from global materials-card row layout
+- Status: accepted
+- Decision:
+  - Keep shared `.materials-item` style for materials side-menu cards, but add project-specific row class in Project > Materials tab to render full-width content.
+- Tradeoffs:
+  - Pros: restores readability for tracked-material summaries without changing side-menu visuals.
+  - Cons: one additional style variant to maintain.
+
+## 2026-03-05 - Auto-pad manual time inputs to HH:MM on field blur
+- Status: accepted
+- Decision:
+  - Keep permissive typing behavior for numeric time entry, but normalize to strict `HH:MM` when leaving task/report time fields.
+  - Preserve `:` while typing to avoid collapsing values like `8:3` into `83`.
+- Tradeoffs:
+  - Pros: faster time entry with fewer formatting errors and less need to type leading zeros manually.
+  - Cons: slightly more client-side formatting logic around blur events.
+
+## 2026-03-05 - Derive runtime release metadata from git during update/deploy
+- Status: accepted
+- Decision:
+  - Remove hardcoded release version/commit defaults from runtime env template and treat them as placeholder metadata.
+  - Add `scripts/update_release_metadata.sh` to generate `apps/api/.release.env` from the checked-out git tag/commit.
+  - Load optional generated `.release.env` in compose (`api`, `api_worker`) and run metadata generation automatically in `scripts/safe_update.sh` before rebuild/deploy.
+- Tradeoffs:
+  - Pros: deployed UI/API release label now tracks real git state on each update, avoiding stale hardcoded values like `v1.0.0`.
+  - Cons: exact label quality depends on local git metadata availability in the deployment checkout.

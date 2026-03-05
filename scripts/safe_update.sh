@@ -69,6 +69,9 @@ if $PULL_REPO; then
   git pull --ff-only origin "$BRANCH"
 fi
 
+echo "Refreshing release metadata..."
+./scripts/update_release_metadata.sh
+
 echo "Building API image..."
 docker compose build api
 

@@ -81,11 +81,21 @@ type ProjectActivity = {
   created_at: string;
 };
 
+type ProjectOfficeNote = {
+  report_id: number;
+  report_number?: number | null;
+  report_date: string;
+  created_at: string;
+  office_rework?: string | null;
+  office_next_steps?: string | null;
+};
+
 type ProjectOverviewDetails = {
   project: Project;
   open_tasks: number;
   my_open_tasks: number;
   finance: ProjectFinance;
+  office_notes: ProjectOfficeNote[];
   recent_changes: ProjectActivity[];
 };
 
@@ -123,11 +133,39 @@ type ProjectMaterialNeed = {
   construction_report_id?: number | null;
   report_date?: string | null;
   item: string;
+  material_catalog_item_id?: number | null;
+  article_no?: string | null;
+  unit?: string | null;
+  quantity?: string | null;
+  image_url?: string | null;
+  image_source?: string | null;
   status: MaterialNeedStatus | string;
   created_by?: number | null;
   updated_by?: number | null;
   created_at: string;
   updated_at: string;
+};
+
+type MaterialCatalogItem = {
+  id: number;
+  article_no?: string | null;
+  item_name: string;
+  unit?: string | null;
+  manufacturer?: string | null;
+  ean?: string | null;
+  price_text?: string | null;
+  image_url?: string | null;
+  image_source?: string | null;
+  image_checked_at?: string | null;
+  source_file: string;
+  source_line: number;
+};
+
+type MaterialCatalogImportState = {
+  file_count: number;
+  item_count: number;
+  duplicates_skipped: number;
+  imported_at?: string | null;
 };
 
 type ProjectTrackedMaterial = {
@@ -673,6 +711,7 @@ const PROJECT_SITE_ACCESS_PRESETS = [
 const PROJECT_SITE_ACCESS_WITH_NOTE = new Set<string>(["key_pickup", "code_access", "key_box"]);
 const DEFAULT_THREAD_PARTICIPANT_ROLES = ["admin", "ceo", "accountant", "planning", "employee"] as const;
 const MATERIAL_UNIT_EXAMPLES = ["pcs", "m", "cm", "mm", "m2", "m3", "kg", "g", "l", "ml", "set", "pack", "box", "roll"];
+const MATERIAL_CATALOG_SEARCH_LIMIT = 10;
 const WORKSPACE_MODE_STORAGE_KEY = "smpl_workspace_mode";
 
 const HHMM_PATTERN = "^([01]\\d|2[0-3]):[0-5]\\d$";
@@ -1583,6 +1622,7 @@ function activityEventLabel(eventType: string, language: Language) {
     "file.uploaded": { de: "Datei hochgeladen", en: "File uploaded" },
     "file.deleted": { de: "Datei gelöscht", en: "File deleted" },
     "report.created": { de: "Bericht erstellt", en: "Report created" },
+    "material.created": { de: "Materialbedarf erstellt", en: "Material need created" },
     "material.status_updated": { de: "Materialstatus aktualisiert", en: "Material status updated" },
     "finance.updated": { de: "Finanzen aktualisiert", en: "Finances updated" },
   };
@@ -1606,14 +1646,50 @@ function formatTaskStartTime(value?: string | null) {
   return text;
 }
 
-function formatProjectTitle(projectNumber?: string | null, projectName?: string | null, fallbackId?: number | null) {
+function preferredProjectDisplayName(customerName?: string | null, projectName?: string | null) {
+  const customer = String(customerName ?? "").trim();
+  if (customer) return customer;
+  return String(projectName ?? "").trim();
+}
+
+type ProjectTitleParts = {
+  title: string;
+  subtitle: string;
+};
+
+function formatProjectTitle(
+  projectNumber?: string | null,
+  customerName?: string | null,
+  projectName?: string | null,
+  fallbackId?: number | null,
+) {
   const number = String(projectNumber ?? "").trim();
-  const name = String(projectName ?? "").trim();
+  const name = preferredProjectDisplayName(customerName, projectName);
   if (number && name) return `${number} - ${name}`;
   if (number) return number;
   if (name) return name;
   if (typeof fallbackId === "number" && Number.isFinite(fallbackId)) return String(fallbackId);
   return "-";
+}
+
+function formatProjectSubtitle(customerName?: string | null, projectName?: string | null) {
+  const customer = String(customerName ?? "").trim();
+  const project = String(projectName ?? "").trim();
+  if (!customer || !project) return "";
+  if (customer.localeCompare(project, undefined, { sensitivity: "base" }) === 0) return "";
+  return project;
+}
+
+function formatProjectTitleParts(
+  projectNumber?: string | null,
+  customerName?: string | null,
+  projectName?: string | null,
+  fallbackId?: number | null,
+): ProjectTitleParts {
+  return {
+    title: formatProjectTitle(projectNumber, customerName, projectName, fallbackId),
+    subtitle: formatProjectSubtitle(customerName, projectName),
+  };
 }
 
 function taskStartTimeMinutes(task: Task): number | null {
@@ -1655,7 +1731,16 @@ function isValidTimeHHMM(value: string) {
 function formatTimeInputForTyping(value?: string | null) {
   const raw = String(value || "").trim();
   if (!raw) return "";
-  const digits = raw.replace(/\D/g, "").slice(0, 4);
+  const compact = raw.replace(/[^\d:]/g, "");
+  const colonIndex = compact.indexOf(":");
+  if (colonIndex >= 0) {
+    const hours = compact.slice(0, colonIndex).replace(/\D/g, "").slice(0, 2);
+    const minutes = compact.slice(colonIndex + 1).replace(/\D/g, "").slice(0, 2);
+    if (!hours) return "";
+    if (minutes.length === 0) return `${hours}:`;
+    return `${hours}:${minutes}`;
+  }
+  const digits = compact.replace(/\D/g, "").slice(0, 4);
   if (raw.endsWith(":") && digits.length <= 2) return `${digits}:`;
   if (digits.length <= 2) return digits;
   if (digits.length === 3) {
@@ -1681,6 +1766,23 @@ function normalizeTimeHHMM(value?: string | null) {
   const match = raw.match(/^(\d{1,2}):(\d{1,2})$/);
   if (match) {
     return `${match[1].padStart(2, "0").slice(0, 2)}:${match[2].padStart(2, "0").slice(0, 2)}`;
+  }
+  return raw.slice(0, 5);
+}
+
+function formatTimeInputForBlur(value?: string | null) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const normalized = normalizeTimeHHMM(raw);
+  if (normalized && isValidTimeHHMM(normalized)) return normalized;
+  const digits = raw.replace(/\D/g, "");
+  if (digits.length === 1) {
+    const candidate = `0${digits}:00`;
+    if (isValidTimeHHMM(candidate)) return candidate;
+  }
+  if (digits.length === 2) {
+    const asHour = Number(digits);
+    if (Number.isFinite(asHour) && asHour >= 0 && asHour <= 23) return `${digits}:00`;
   }
   return raw.slice(0, 5);
 }
@@ -2426,6 +2528,14 @@ export function App() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [materialNeeds, setMaterialNeeds] = useState<ProjectMaterialNeed[]>([]);
   const [materialNeedUpdating, setMaterialNeedUpdating] = useState<Record<number, boolean>>({});
+  const [materialCatalogRows, setMaterialCatalogRows] = useState<MaterialCatalogItem[]>([]);
+  const [materialCatalogState, setMaterialCatalogState] = useState<MaterialCatalogImportState | null>(null);
+  const [materialCatalogQuery, setMaterialCatalogQuery] = useState("");
+  const [materialCatalogLoading, setMaterialCatalogLoading] = useState(false);
+  const [materialCatalogProjectId, setMaterialCatalogProjectId] = useState<string>("");
+  const [materialCatalogProjectSearch, setMaterialCatalogProjectSearch] = useState("");
+  const [materialCatalogProjectSearchFocused, setMaterialCatalogProjectSearchFocused] = useState(false);
+  const [materialCatalogAdding, setMaterialCatalogAdding] = useState<Record<number, boolean>>({});
   const [projectTrackedMaterials, setProjectTrackedMaterials] = useState<ProjectTrackedMaterial[]>([]);
   const [projectClassTemplates, setProjectClassTemplates] = useState<ProjectClassTemplate[]>([]);
   const [projectClassTemplatesByProjectId, setProjectClassTemplatesByProjectId] = useState<
@@ -2607,6 +2717,8 @@ export function App() {
     startOffsetY: number;
   } | null>(null);
   const projectModalBackdropPointerDownRef = useRef(false);
+  const taskModalBackdropPointerDownRef = useRef(false);
+  const taskEditModalBackdropPointerDownRef = useRef(false);
   const [threadModalMode, setThreadModalMode] = useState<"create" | "edit" | null>(null);
   const [threadModalForm, setThreadModalForm] = useState<ThreadModalState>(EMPTY_THREAD_MODAL_FORM);
   const [threadIconFile, setThreadIconFile] = useState<File | null>(null);
@@ -2619,12 +2731,19 @@ export function App() {
   const taskNotificationSnapshotRef = useRef("");
   const shouldFollowMessagesRef = useRef(true);
   const forceScrollToBottomRef = useRef(false);
+  const materialCatalogRequestSeqRef = useRef(0);
+  const materialCatalogQueryRef = useRef(materialCatalogQuery);
+  const materialCatalogLookupCacheRef = useRef<Record<string, MaterialCatalogItem | null>>({});
 
   const [reportWorkers, setReportWorkers] = useState<ReportWorker[]>([{ name: "", start_time: "", end_time: "" }]);
 
   useEffect(() => {
     reportImageFilesRef.current = reportImageFiles;
   }, [reportImageFiles]);
+
+  useEffect(() => {
+    materialCatalogQueryRef.current = materialCatalogQuery;
+  }, [materialCatalogQuery]);
 
   useEffect(() => {
     return () => {
@@ -2669,9 +2788,14 @@ export function App() {
     if (!activeProjectDavRef) return `${window.location.origin}/api/dav/projects/`;
     return `${window.location.origin}/api/dav/projects/${encodeURIComponent(activeProjectDavRef)}/`;
   }, [activeProjectDavRef]);
-  const activeProjectHeaderTitle = useMemo(() => {
-    if (!activeProject) return "";
-    return formatProjectTitle(activeProject.project_number, activeProject.name, activeProject.id);
+  const activeProjectHeader = useMemo<ProjectTitleParts>(() => {
+    if (!activeProject) return { title: "", subtitle: "" };
+    return formatProjectTitleParts(
+      activeProject.project_number,
+      activeProject.customer_name,
+      activeProject.name,
+      activeProject.id,
+    );
   }, [activeProject]);
   const activeProjectLastState = useMemo(() => {
     if (!activeProject) return "";
@@ -2768,6 +2892,44 @@ export function App() {
     () => projects.filter((project) => !isArchivedProjectStatus(project.status)),
     [projects],
   );
+  const materialCatalogProjectOptions = useMemo(
+    () =>
+      activeProjects
+        .slice()
+        .sort((a, b) =>
+          formatProjectTitle(a.project_number, a.customer_name, a.name, a.id).localeCompare(
+            formatProjectTitle(b.project_number, b.customer_name, b.name, b.id),
+          ),
+        ),
+    [activeProjects],
+  );
+  const selectedMaterialCatalogProject = useMemo(
+    () => materialCatalogProjectOptions.find((project) => String(project.id) === materialCatalogProjectId) ?? null,
+    [materialCatalogProjectOptions, materialCatalogProjectId],
+  );
+  const selectedMaterialCatalogProjectLabel = useMemo(
+    () => (selectedMaterialCatalogProject ? projectSearchLabel(selectedMaterialCatalogProject) : ""),
+    [selectedMaterialCatalogProject],
+  );
+  const materialCatalogProjectSuggestions = useMemo(() => {
+    const query = materialCatalogProjectSearch.trim().toLowerCase();
+    if (!query) return [];
+    const selectedLabelQuery = selectedMaterialCatalogProjectLabel.trim().toLowerCase();
+    if (query === selectedLabelQuery) return [];
+    return materialCatalogProjectOptions
+      .filter((project) => {
+        const searchable = [
+          project.project_number,
+          project.name,
+          project.customer_name ?? "",
+          project.customer_address ?? "",
+        ]
+          .join(" ")
+          .toLowerCase();
+        return searchable.includes(query);
+      })
+      .slice(0, 10);
+  }, [materialCatalogProjectOptions, materialCatalogProjectSearch, selectedMaterialCatalogProjectLabel]);
   const filteredSidebarProjects = useMemo(() => {
     const query = projectSidebarSearchQuery.trim().toLowerCase();
     const matchesQuery = (project: Project) => {
@@ -3162,8 +3324,13 @@ export function App() {
         const label = directProject
           ? projectTitle(directProject)
           : overviewProject
-            ? formatProjectTitle(overviewProject.project_number, overviewProject.name, overviewProject.id)
-            : formatProjectTitle("", "", projectId);
+            ? formatProjectTitle(
+                overviewProject.project_number,
+                overviewProject.customer_name,
+                overviewProject.name,
+                overviewProject.id,
+              )
+            : formatProjectTitle("", "", "", projectId);
         return { id: projectId, label };
       })
       .sort((left, right) => left.label.localeCompare(right.label, language === "de" ? "de" : "en"));
@@ -3179,8 +3346,13 @@ export function App() {
         const label = directProject
           ? projectTitle(directProject)
           : overviewProject
-            ? formatProjectTitle(overviewProject.project_number, overviewProject.name, overviewProject.id)
-            : formatProjectTitle("", "", projectId);
+            ? formatProjectTitle(
+                overviewProject.project_number,
+                overviewProject.customer_name,
+                overviewProject.name,
+                overviewProject.id,
+              )
+            : formatProjectTitle("", "", "", projectId);
         return { id: projectId, label };
       }),
     [officeTaskProjectFilterIds, officeTaskProjectOptions, projectsById, overviewProjectsById],
@@ -3814,6 +3986,36 @@ export function App() {
   }, [mainView, token, user]);
 
   useEffect(() => {
+    const hasSelectedProject = materialCatalogProjectOptions.some(
+      (project) => String(project.id) === materialCatalogProjectId,
+    );
+    if (hasSelectedProject) return;
+    if (activeProjectId && materialCatalogProjectOptions.some((project) => project.id === activeProjectId)) {
+      setMaterialCatalogProjectId(String(activeProjectId));
+      return;
+    }
+    if (materialCatalogProjectOptions.length > 0) {
+      setMaterialCatalogProjectId(String(materialCatalogProjectOptions[0].id));
+      return;
+    }
+    if (materialCatalogProjectId) setMaterialCatalogProjectId("");
+  }, [materialCatalogProjectId, materialCatalogProjectOptions, activeProjectId]);
+
+  useEffect(() => {
+    if (materialCatalogProjectSearchFocused) return;
+    setMaterialCatalogProjectSearch(selectedMaterialCatalogProjectLabel);
+  }, [selectedMaterialCatalogProjectLabel, materialCatalogProjectSearchFocused]);
+
+  useEffect(() => {
+    if (!token || !user) return;
+    if (mainView !== "materials") return;
+    const timeout = window.setTimeout(() => {
+      void loadMaterialCatalog(materialCatalogQuery);
+    }, 220);
+    return () => window.clearTimeout(timeout);
+  }, [mainView, token, user, materialCatalogQuery]);
+
+  useEffect(() => {
     if (!token || !user) return;
     if (mainView !== "office_tasks") return;
     void loadTasks("projects_overview", null);
@@ -4142,6 +4344,7 @@ export function App() {
       }
       if (mainView === "materials") {
         await loadMaterialNeeds();
+        await loadMaterialCatalog(materialCatalogQuery);
       }
     } catch (err: any) {
       setError(err.message ?? "Failed to load data");
@@ -4177,6 +4380,261 @@ export function App() {
     } catch (err: any) {
       setMaterialNeeds([]);
       setError(err.message ?? "Failed to load materials");
+    }
+  }
+
+  async function loadMaterialCatalog(query: string) {
+    const requestSeq = ++materialCatalogRequestSeqRef.current;
+    setMaterialCatalogLoading(true);
+    try {
+      const q = query.trim();
+      const [rows, state] = await Promise.all([
+        apiFetch<MaterialCatalogItem[]>(
+          `/materials/catalog?q=${encodeURIComponent(q)}&limit=${MATERIAL_CATALOG_SEARCH_LIMIT}`,
+          token,
+        ),
+        apiFetch<MaterialCatalogImportState>("/materials/catalog/state", token).catch(() => null),
+      ]);
+      if (requestSeq !== materialCatalogRequestSeqRef.current) return;
+      if (q !== materialCatalogQueryRef.current.trim()) return;
+      setMaterialCatalogRows(rows.slice(0, MATERIAL_CATALOG_SEARCH_LIMIT));
+      setMaterialCatalogState(state);
+    } catch (err: any) {
+      if (requestSeq !== materialCatalogRequestSeqRef.current) return;
+      if (query.trim() !== materialCatalogQueryRef.current.trim()) return;
+      setMaterialCatalogRows([]);
+      setMaterialCatalogState(null);
+      setError(err.message ?? "Failed to load material catalog");
+    } finally {
+      if (requestSeq !== materialCatalogRequestSeqRef.current) return;
+      setMaterialCatalogLoading(false);
+    }
+  }
+
+  function normalizeMaterialCatalogLookupKey(value: string) {
+    return value.trim().toLowerCase();
+  }
+
+  function isLikelyMaterialCatalogIdentifier(value: string) {
+    const normalized = value.trim();
+    if (!normalized || normalized.length < 2) return false;
+    if (/^\d+$/.test(normalized)) return true;
+    return /[0-9]|[-_/]/.test(normalized);
+  }
+
+  function mergeMaterialRowWithCatalogItem(row: ReportMaterialRow, catalogItem: MaterialCatalogItem): ReportMaterialRow {
+    return {
+      ...row,
+      item: String(catalogItem.item_name || row.item || "").trim(),
+      article_no: String(catalogItem.article_no || row.article_no || "").trim(),
+      unit: String(catalogItem.unit || row.unit || "").trim(),
+    };
+  }
+
+  function findMaterialCatalogMatch(
+    rows: MaterialCatalogItem[],
+    lookupKey: string,
+  ): MaterialCatalogItem | null {
+    const exactArticleNo =
+      rows.find((entry) => normalizeMaterialCatalogLookupKey(String(entry.article_no || "")) === lookupKey) ?? null;
+    if (exactArticleNo) return exactArticleNo;
+    const exactEan = rows.find((entry) => normalizeMaterialCatalogLookupKey(String(entry.ean || "")) === lookupKey) ?? null;
+    if (exactEan) return exactEan;
+    const exactName =
+      rows.find((entry) => normalizeMaterialCatalogLookupKey(String(entry.item_name || "")) === lookupKey) ?? null;
+    if (exactName) return exactName;
+    if (rows.length === 1) return rows[0];
+    return null;
+  }
+
+  async function lookupMaterialCatalogByIdentifier(rawValue: string): Promise<MaterialCatalogItem | null> {
+    const lookupKey = normalizeMaterialCatalogLookupKey(rawValue);
+    if (!lookupKey) return null;
+    if (lookupKey in materialCatalogLookupCacheRef.current) {
+      return materialCatalogLookupCacheRef.current[lookupKey] ?? null;
+    }
+    try {
+      const rows = await apiFetch<MaterialCatalogItem[]>(
+        `/materials/catalog?q=${encodeURIComponent(rawValue.trim())}&limit=${MATERIAL_CATALOG_SEARCH_LIMIT}`,
+        token,
+      );
+      const match = findMaterialCatalogMatch(rows.slice(0, MATERIAL_CATALOG_SEARCH_LIMIT), lookupKey);
+      materialCatalogLookupCacheRef.current[lookupKey] = match;
+      return match;
+    } catch {
+      return null;
+    }
+  }
+
+  async function enrichTaskModalMaterialRowFromCatalog(
+    index: number,
+    lookupField: "item" | "article_no",
+  ) {
+    const row = taskModalMaterialRows[index];
+    if (!row) return;
+    const rawLookupValue = lookupField === "article_no" ? row.article_no : row.item;
+    if (lookupField === "item" && !isLikelyMaterialCatalogIdentifier(rawLookupValue)) return;
+    const lookupKey = normalizeMaterialCatalogLookupKey(rawLookupValue);
+    if (!lookupKey) return;
+    const matched = await lookupMaterialCatalogByIdentifier(rawLookupValue);
+    if (!matched) return;
+    setTaskModalMaterialRows((current) => {
+      const target = current[index];
+      if (!target) return current;
+      const currentLookupKey = normalizeMaterialCatalogLookupKey(
+        lookupField === "article_no" ? target.article_no : target.item,
+      );
+      if (currentLookupKey !== lookupKey) return current;
+      const merged = mergeMaterialRowWithCatalogItem(target, matched);
+      if (
+        merged.item === target.item &&
+        merged.article_no === target.article_no &&
+        merged.unit === target.unit
+      ) {
+        return current;
+      }
+      const next = [...current];
+      next[index] = merged;
+      setTaskModalForm((form) => ({ ...form, materials_required: serializeTaskMaterialRows(next) }));
+      return next;
+    });
+  }
+
+  async function enrichTaskEditMaterialRowFromCatalog(
+    index: number,
+    lookupField: "item" | "article_no",
+  ) {
+    const row = taskEditMaterialRows[index];
+    if (!row) return;
+    const rawLookupValue = lookupField === "article_no" ? row.article_no : row.item;
+    if (lookupField === "item" && !isLikelyMaterialCatalogIdentifier(rawLookupValue)) return;
+    const lookupKey = normalizeMaterialCatalogLookupKey(rawLookupValue);
+    if (!lookupKey) return;
+    const matched = await lookupMaterialCatalogByIdentifier(rawLookupValue);
+    if (!matched) return;
+    setTaskEditMaterialRows((current) => {
+      const target = current[index];
+      if (!target) return current;
+      const currentLookupKey = normalizeMaterialCatalogLookupKey(
+        lookupField === "article_no" ? target.article_no : target.item,
+      );
+      if (currentLookupKey !== lookupKey) return current;
+      const merged = mergeMaterialRowWithCatalogItem(target, matched);
+      if (
+        merged.item === target.item &&
+        merged.article_no === target.article_no &&
+        merged.unit === target.unit
+      ) {
+        return current;
+      }
+      const next = [...current];
+      next[index] = merged;
+      setTaskEditForm((form) => ({ ...form, materials_required: serializeTaskMaterialRows(next) }));
+      return next;
+    });
+  }
+
+  async function enrichReportMaterialRowFromCatalog(
+    index: number,
+    lookupField: "item" | "article_no",
+  ) {
+    const row = reportMaterialRows[index];
+    if (!row) return;
+    const rawLookupValue = lookupField === "article_no" ? row.article_no : row.item;
+    if (lookupField === "item" && !isLikelyMaterialCatalogIdentifier(rawLookupValue)) return;
+    const lookupKey = normalizeMaterialCatalogLookupKey(rawLookupValue);
+    if (!lookupKey) return;
+    const matched = await lookupMaterialCatalogByIdentifier(rawLookupValue);
+    if (!matched) return;
+    setReportMaterialRows((current) => {
+      const target = current[index];
+      if (!target) return current;
+      const currentLookupKey = normalizeMaterialCatalogLookupKey(
+        lookupField === "article_no" ? target.article_no : target.item,
+      );
+      if (currentLookupKey !== lookupKey) return current;
+      const merged = mergeMaterialRowWithCatalogItem(target, matched);
+      if (
+        merged.item === target.item &&
+        merged.article_no === target.article_no &&
+        merged.unit === target.unit
+      ) {
+        return current;
+      }
+      const next = [...current];
+      next[index] = merged;
+      return next;
+    });
+  }
+
+  async function enrichReportOfficeMaterialRowFromCatalog(
+    index: number,
+    lookupField: "item" | "article_no",
+  ) {
+    const row = reportOfficeMaterialRows[index];
+    if (!row) return;
+    const rawLookupValue = lookupField === "article_no" ? row.article_no : row.item;
+    if (lookupField === "item" && !isLikelyMaterialCatalogIdentifier(rawLookupValue)) return;
+    const lookupKey = normalizeMaterialCatalogLookupKey(rawLookupValue);
+    if (!lookupKey) return;
+    const matched = await lookupMaterialCatalogByIdentifier(rawLookupValue);
+    if (!matched) return;
+    setReportOfficeMaterialRows((current) => {
+      const target = current[index];
+      if (!target) return current;
+      const currentLookupKey = normalizeMaterialCatalogLookupKey(
+        lookupField === "article_no" ? target.article_no : target.item,
+      );
+      if (currentLookupKey !== lookupKey) return current;
+      const merged = mergeMaterialRowWithCatalogItem(target, matched);
+      if (
+        merged.item === target.item &&
+        merged.article_no === target.article_no &&
+        merged.unit === target.unit
+      ) {
+        return current;
+      }
+      const next = [...current];
+      next[index] = merged;
+      return next;
+    });
+  }
+
+  function selectMaterialCatalogProject(project: Project) {
+    setMaterialCatalogProjectId(String(project.id));
+    setMaterialCatalogProjectSearch(projectSearchLabel(project));
+    setMaterialCatalogProjectSearchFocused(false);
+  }
+
+  async function addCatalogMaterialNeed(materialCatalogItem: MaterialCatalogItem) {
+    const projectId = Number(materialCatalogProjectId);
+    if (!projectId) {
+      setError(language === "de" ? "Bitte zuerst ein Projekt auswählen." : "Please select a project first.");
+      return;
+    }
+    setMaterialCatalogAdding((current) => ({ ...current, [materialCatalogItem.id]: true }));
+    try {
+      const created = await apiFetch<ProjectMaterialNeed>("/materials", token, {
+        method: "POST",
+        body: JSON.stringify({
+          project_id: projectId,
+          material_catalog_item_id: materialCatalogItem.id,
+        }),
+      });
+      setMaterialNeeds((current) => [created, ...current]);
+      setNotice(
+        language === "de"
+          ? `Material hinzugefügt: ${materialCatalogItem.item_name}`
+          : `Material added: ${materialCatalogItem.item_name}`,
+      );
+    } catch (err: any) {
+      setError(err.message ?? "Failed to add material");
+    } finally {
+      setMaterialCatalogAdding((current) => {
+        const next = { ...current };
+        delete next[materialCatalogItem.id];
+        return next;
+      });
     }
   }
 
@@ -4744,23 +5202,50 @@ export function App() {
       .join(", ");
   }
 
-  function projectTitle(project: Project | null | undefined): string {
-    if (!project) return "-";
-    return formatProjectTitle(project.project_number, project.name, project.id);
+  function projectTitleParts(project: Project | null | undefined): ProjectTitleParts {
+    if (!project) return { title: "-", subtitle: "" };
+    return formatProjectTitleParts(project.project_number, project.customer_name, project.name, project.id);
   }
 
-  function taskProjectTitle(task: Task): string {
+  function projectTitle(project: Project | null | undefined): string {
+    return projectTitleParts(project).title;
+  }
+
+  function taskProjectTitleParts(task: Task): ProjectTitleParts {
     const directProject = projectsById.get(task.project_id);
-    if (directProject) return projectTitle(directProject);
+    if (directProject) return projectTitleParts(directProject);
     const overviewProject = overviewProjectsById.get(task.project_id);
     if (overviewProject) {
-      return formatProjectTitle(overviewProject.project_number, overviewProject.name, overviewProject.id);
+      return formatProjectTitleParts(
+        overviewProject.project_number,
+        overviewProject.customer_name,
+        overviewProject.name,
+        overviewProject.id,
+      );
     }
-    return formatProjectTitle("", "", task.project_id);
+    return formatProjectTitleParts("", "", "", task.project_id);
   }
 
-  function recentReportProjectTitle(report: RecentConstructionReport): string {
-    return formatProjectTitle(report.project_number, report.project_name, report.project_id ?? null);
+  function recentReportProjectTitleParts(report: RecentConstructionReport): ProjectTitleParts {
+    const projectId = Number(report.project_id ?? 0);
+    const project = projectId > 0 ? projectsById.get(projectId) : null;
+    return formatProjectTitleParts(
+      report.project_number ?? project?.project_number,
+      project?.customer_name ?? null,
+      report.project_name ?? project?.name ?? null,
+      report.project_id ?? null,
+    );
+  }
+
+  function threadProjectTitleParts(thread: Thread): ProjectTitleParts {
+    const projectId = Number(thread.project_id ?? 0);
+    if (projectId > 0) {
+      const project = projectsById.get(projectId);
+      if (project) {
+        return formatProjectTitleParts(project.project_number, project.customer_name, project.name, project.id);
+      }
+    }
+    return { title: String(thread.project_name ?? "").trim(), subtitle: "" };
   }
 
   function ensureProjectVisibleById(projectId: number) {
@@ -4820,11 +5305,14 @@ export function App() {
     }
 
     const summaryBase = project ? `${project.project_number} - ${task.title}` : task.title;
+    const projectLabel = project
+      ? formatProjectTitle(project.project_number, project.customer_name, project.name, project.id)
+      : "";
     const materialsSummary = taskMaterialsDisplay(task.materials_required, "en");
     const lines: string[] = [
       `Task ID: #${task.id}`,
       `Status: ${taskDisplayStatus(task, todayIso)}`,
-      project ? `Project: ${project.project_number} - ${project.name}` : `Project ID: ${task.project_id}`,
+      project ? `Project: ${projectLabel}` : `Project ID: ${task.project_id}`,
       project?.customer_name ? `Customer: ${project.customer_name}` : "",
       `Due: ${task.due_date ?? "-"}`,
       startTime ? `Start: ${startTime}` : "",
@@ -4920,6 +5408,22 @@ export function App() {
     setTaskModalOpen(false);
   }
 
+  function onTaskModalBackdropPointerDown(event: PointerEvent<HTMLDivElement>) {
+    taskModalBackdropPointerDownRef.current = event.target === event.currentTarget;
+  }
+
+  function onTaskModalBackdropPointerUp(event: PointerEvent<HTMLDivElement>) {
+    const startedOnBackdrop = taskModalBackdropPointerDownRef.current;
+    taskModalBackdropPointerDownRef.current = false;
+    if (!startedOnBackdrop) return;
+    if (event.target !== event.currentTarget) return;
+    closeTaskModal();
+  }
+
+  function resetTaskModalBackdropPointerState() {
+    taskModalBackdropPointerDownRef.current = false;
+  }
+
   function updateTaskModalField<K extends keyof TaskModalState>(field: K, value: TaskModalState[K]) {
     setTaskModalForm((current) => ({ ...current, [field]: value }));
   }
@@ -5008,6 +5512,22 @@ export function App() {
     setTaskEditExpectedUpdatedAt(null);
     setTaskEditForm(buildTaskEditFormState());
     setTaskEditMaterialRows([createReportMaterialRow("materials")]);
+  }
+
+  function onTaskEditModalBackdropPointerDown(event: PointerEvent<HTMLDivElement>) {
+    taskEditModalBackdropPointerDownRef.current = event.target === event.currentTarget;
+  }
+
+  function onTaskEditModalBackdropPointerUp(event: PointerEvent<HTMLDivElement>) {
+    const startedOnBackdrop = taskEditModalBackdropPointerDownRef.current;
+    taskEditModalBackdropPointerDownRef.current = false;
+    if (!startedOnBackdrop) return;
+    if (event.target !== event.currentTarget) return;
+    closeTaskEditModal();
+  }
+
+  function resetTaskEditModalBackdropPointerState() {
+    taskEditModalBackdropPointerDownRef.current = false;
   }
 
   function updateTaskEditField<K extends keyof TaskEditFormState>(field: K, value: TaskEditFormState[K]) {
@@ -7832,44 +8352,47 @@ export function App() {
               />
             )}
             <div className={projectSidebarSearchOpen ? "project-list-scroll with-search" : "project-list-scroll"}>
-              {filteredSidebarProjects.map(({ project, isArchived }) => (
-                <button
-                  key={project.id}
-                  className={[
-                    "project-item",
-                    project.id === activeProjectId && mainView === "project" ? "active" : "",
-                    isArchived ? "project-item-archived" : "",
-                  ]
-                    .filter(Boolean)
-                    .join(" ")}
-                  onClick={() => {
-                    if (isArchived) {
-                      setHighlightedArchivedProjectId(project.id);
+              {filteredSidebarProjects.map(({ project, isArchived }) => {
+                const projectLabel = projectTitleParts(project);
+                return (
+                  <button
+                    key={project.id}
+                    className={[
+                      "project-item",
+                      project.id === activeProjectId && mainView === "project" ? "active" : "",
+                      isArchived ? "project-item-archived" : "",
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
+                    onClick={() => {
+                      if (isArchived) {
+                        setHighlightedArchivedProjectId(project.id);
+                        setProjectBackView(null);
+                        setOverviewShortcutBackVisible(false);
+                        setConstructionBackView(null);
+                        setMainView("projects_archive");
+                        return;
+                      }
+                      setActiveProjectId(project.id);
+                      setProjectTab("overview");
                       setProjectBackView(null);
                       setOverviewShortcutBackVisible(false);
                       setConstructionBackView(null);
-                      setMainView("projects_archive");
-                      return;
-                    }
-                    setActiveProjectId(project.id);
-                    setProjectTab("overview");
-                    setProjectBackView(null);
-                    setOverviewShortcutBackVisible(false);
-                    setConstructionBackView(null);
-                    setMainView("project");
-                  }}
-                >
-                  <span className="project-item-main">
-                    <b>{projectTitle(project)}</b>
-                    {(project.customer_name ?? "").trim() && <small>{(project.customer_name ?? "").trim()}</small>}
-                    {isArchived && (
-                      <small className="project-item-archive-mark">
-                        {language === "de" ? "Archiviert" : "Archived"}
-                      </small>
-                    )}
-                  </span>
-                </button>
-              ))}
+                      setMainView("project");
+                    }}
+                  >
+                    <span className="project-item-main">
+                      <b>{projectLabel.title}</b>
+                      {projectLabel.subtitle && <small className="project-name-subtle">{projectLabel.subtitle}</small>}
+                      {isArchived && (
+                        <small className="project-item-archive-mark">
+                          {language === "de" ? "Archiviert" : "Archived"}
+                        </small>
+                      )}
+                    </span>
+                  </button>
+                );
+              })}
               {filteredSidebarProjects.length === 0 && (
                 <small>{projectSidebarSearchQuery ? (language === "de" ? "Keine Treffer" : "No matching projects") : language === "de" ? "Keine Projekte" : "No projects"}</small>
               )}
@@ -7973,8 +8496,8 @@ export function App() {
               <div>
               {mainView === "project" && activeProject ? (
                 <>
-                  <h1>{activeProjectHeaderTitle}</h1>
-                  {(activeProject.customer_name ?? "").trim() && <small>{(activeProject.customer_name ?? "").trim()}</small>}
+                  <h1>{activeProjectHeader.title}</h1>
+                  {activeProjectHeader.subtitle && <small className="project-name-subtle">{activeProjectHeader.subtitle}</small>}
                 </>
               ) : (
                 <h1>{mainLabels[mainView]}</h1>
@@ -8284,7 +8807,13 @@ export function App() {
         )}
 
         {taskModalOpen && (
-          <div className="modal-backdrop" onClick={closeTaskModal}>
+          <div
+            className="modal-backdrop"
+            onPointerDown={onTaskModalBackdropPointerDown}
+            onPointerUp={onTaskModalBackdropPointerUp}
+            onPointerCancel={resetTaskModalBackdropPointerState}
+            onPointerLeave={resetTaskModalBackdropPointerState}
+          >
             <div className="card modal-card" onClick={(event) => event.stopPropagation()}>
               <h3>{language === "de" ? "Neue Aufgabe" : "New task"}</h3>
               <form
@@ -8338,6 +8867,9 @@ export function App() {
                         <input
                           value={row.item}
                           onChange={(event) => updateTaskModalMaterialRow(index, "item", event.target.value)}
+                          onBlur={() => {
+                            void enrichTaskModalMaterialRowFromCatalog(index, "item");
+                          }}
                           placeholder={language === "de" ? "z.B. Kabel NYM" : "e.g. cable NYM"}
                         />
                         <input
@@ -8354,6 +8886,9 @@ export function App() {
                         <input
                           value={row.article_no}
                           onChange={(event) => updateTaskModalMaterialRow(index, "article_no", event.target.value)}
+                          onBlur={() => {
+                            void enrichTaskModalMaterialRowFromCatalog(index, "article_no");
+                          }}
                           placeholder="A-1001"
                         />
                         <button type="button" onClick={() => removeTaskModalMaterialRow(index)} aria-label="Remove">
@@ -8546,6 +9081,7 @@ export function App() {
                       maxLength={5}
                       value={taskModalForm.start_time}
                       onChange={(event) => updateTaskModalField("start_time", formatTimeInputForTyping(event.target.value))}
+                      onBlur={(event) => updateTaskModalField("start_time", formatTimeInputForBlur(event.target.value))}
                     />
                   </label>
                 </div>
@@ -8627,7 +9163,13 @@ export function App() {
         )}
 
         {taskEditModalOpen && (
-          <div className="modal-backdrop" onClick={closeTaskEditModal}>
+          <div
+            className="modal-backdrop"
+            onPointerDown={onTaskEditModalBackdropPointerDown}
+            onPointerUp={onTaskEditModalBackdropPointerUp}
+            onPointerCancel={resetTaskEditModalBackdropPointerState}
+            onPointerLeave={resetTaskEditModalBackdropPointerState}
+          >
             <div className="card modal-card" onClick={(event) => event.stopPropagation()}>
               <h3>{language === "de" ? "Aufgabe bearbeiten" : "Edit task"}</h3>
               <form
@@ -8681,6 +9223,9 @@ export function App() {
                         <input
                           value={row.item}
                           onChange={(event) => updateTaskEditMaterialRow(index, "item", event.target.value)}
+                          onBlur={() => {
+                            void enrichTaskEditMaterialRowFromCatalog(index, "item");
+                          }}
                           placeholder={language === "de" ? "z.B. Kabel NYM" : "e.g. cable NYM"}
                         />
                         <input
@@ -8697,6 +9242,9 @@ export function App() {
                         <input
                           value={row.article_no}
                           onChange={(event) => updateTaskEditMaterialRow(index, "article_no", event.target.value)}
+                          onBlur={() => {
+                            void enrichTaskEditMaterialRowFromCatalog(index, "article_no");
+                          }}
                           placeholder="A-1001"
                         />
                         <button type="button" onClick={() => removeTaskEditMaterialRow(index)} aria-label="Remove">
@@ -8811,6 +9359,7 @@ export function App() {
                       maxLength={5}
                       value={taskEditForm.start_time}
                       onChange={(event) => updateTaskEditField("start_time", formatTimeInputForTyping(event.target.value))}
+                      onBlur={(event) => updateTaskEditField("start_time", formatTimeInputForBlur(event.target.value))}
                     />
                   </label>
                 </div>
@@ -8953,38 +9502,42 @@ export function App() {
                 <div className="card overview-card overview-recent-reports-card">
                   <h3>{language === "de" ? "Neueste Baustellenberichte" : "Latest construction reports"}</h3>
                   <ul className="overview-list">
-                    {recentConstructionReports.map((report) => (
-                      <li key={`recent-report-${report.id}`} className="task-list-item">
-                        <div className="task-list-main">
-                          <b>
-                            {(language === "de" ? "Bericht" : "Report")}{" "}
-                            {report.report_number != null ? `#${report.report_number}` : `#${report.id}`}
-                          </b>
-                          <small>
-                            {language === "de" ? "Projekt" : "Project"}: {recentReportProjectTitle(report)}
-                          </small>
-                          <small>
-                            {language === "de" ? "Erstellt" : "Created"}: {formatServerDateTime(report.created_at, language)}
-                          </small>
-                        </div>
-                        <div className="row wrap task-actions">
-                          {report.attachment_id ? (
-                            <a href={filePreviewUrl(report.attachment_id)} target="_blank" rel="noreferrer">
-                              {language === "de" ? "Öffnen" : "Open"}
-                            </a>
-                          ) : (
-                            <small className="muted">
-                              {language === "de" ? "Wird verarbeitet" : "Processing"}
+                    {recentConstructionReports.map((report) => {
+                      const reportProjectLabel = recentReportProjectTitleParts(report);
+                      return (
+                        <li key={`recent-report-${report.id}`} className="task-list-item">
+                          <div className="task-list-main">
+                            <b>
+                              {(language === "de" ? "Bericht" : "Report")}{" "}
+                              {report.report_number != null ? `#${report.report_number}` : `#${report.id}`}
+                            </b>
+                            <small>
+                              {language === "de" ? "Projekt" : "Project"}: {reportProjectLabel.title}
                             </small>
-                          )}
-                          {report.project_id ? (
-                            <button type="button" onClick={() => openProjectById(report.project_id!, null)}>
-                              {language === "de" ? "Projekt" : "Project"}
-                            </button>
-                          ) : null}
-                        </div>
-                      </li>
-                    ))}
+                            {reportProjectLabel.subtitle && <small className="project-name-subtle">{reportProjectLabel.subtitle}</small>}
+                            <small>
+                              {language === "de" ? "Erstellt" : "Created"}: {formatServerDateTime(report.created_at, language)}
+                            </small>
+                          </div>
+                          <div className="row wrap task-actions">
+                            {report.attachment_id ? (
+                              <a href={filePreviewUrl(report.attachment_id)} target="_blank" rel="noreferrer">
+                                {language === "de" ? "Öffnen" : "Open"}
+                              </a>
+                            ) : (
+                              <small className="muted">
+                                {language === "de" ? "Wird verarbeitet" : "Processing"}
+                              </small>
+                            )}
+                            {report.project_id ? (
+                              <button type="button" onClick={() => openProjectById(report.project_id!, null)}>
+                                {language === "de" ? "Projekt" : "Project"}
+                              </button>
+                            ) : null}
+                          </div>
+                        </li>
+                      );
+                    })}
                     {recentConstructionReports.length === 0 && (
                       <li className="muted">
                         {language === "de" ? "Keine Berichte vorhanden." : "No reports found."}
@@ -8997,22 +9550,25 @@ export function App() {
               <div className="card overview-card">
                 <h3>{language === "de" ? "Meine Projekte" : "My projects"}</h3>
                 <ul className="overview-list">
-                  {recentAssignedProjects.map((project) => (
-                    <li key={project.id}>
-                      <button
-                        className="linklike overview-list-item"
-                        onClick={() => {
-                          setActiveProjectId(project.id);
-                          setProjectTab("overview");
-                          setProjectBackView(null);
-                          setMainView("project");
-                        }}
-                      >
-                        <b>{projectTitle(project)}</b>
-                        {(project.customer_name ?? "").trim() && <small>{(project.customer_name ?? "").trim()}</small>}
-                      </button>
-                    </li>
-                  ))}
+                  {recentAssignedProjects.map((project) => {
+                    const projectLabel = projectTitleParts(project);
+                    return (
+                      <li key={project.id}>
+                        <button
+                          className="linklike overview-list-item"
+                          onClick={() => {
+                            setActiveProjectId(project.id);
+                            setProjectTab("overview");
+                            setProjectBackView(null);
+                            setMainView("project");
+                          }}
+                        >
+                          <b>{projectLabel.title}</b>
+                          {projectLabel.subtitle && <small className="project-name-subtle">{projectLabel.subtitle}</small>}
+                        </button>
+                      </li>
+                    );
+                  })}
                   {recentAssignedProjects.length === 0 && (
                     <li className="muted">
                       {language === "de" ? "Keine zugewiesenen Projekte." : "No assigned projects."}
@@ -9056,10 +9612,15 @@ export function App() {
                   </div>
                 </div>
 	                <ul className="overview-list">
-	                  {filteredDetailedOverview.map((row) => {
+                  {filteredDetailedOverview.map((row) => {
                     const projectId = Number(row.project_id);
-                    const customerName = String(row.customer_name ?? "").trim() || "-";
                     const projectNumber = row.project_number ?? row.project_id;
+                    const projectLabel = formatProjectTitleParts(
+                      String(projectNumber),
+                      String(row.customer_name ?? ""),
+                      String(row.project_name ?? ""),
+                      projectId,
+                    );
                     return (
                       <li key={row.project_id}>
                         <button
@@ -9072,15 +9633,13 @@ export function App() {
                             setMainView("project");
                           }}
                         >
-                          <b>
-                            {formatProjectTitle(String(projectNumber), String(row.project_name ?? ""), projectId)}
-                          </b>
+                          <b>{projectLabel.title}</b>
+                          {projectLabel.subtitle && <small className="project-name-subtle">{projectLabel.subtitle}</small>}
                           <small>
                             {language === "de" ? "Offene Aufgaben" : "Open tasks"}: {row.open_tasks} |{" "}
                             {language === "de" ? "Standorte" : "Sites"}: {row.sites} |{" "}
                             {statusLabel(String(row.status ?? ""), language)}
                           </small>
-                          <small>{language === "de" ? "Kunde" : "Customer"}: {customerName}</small>
                         </button>
                       </li>
                     );
@@ -9100,77 +9659,244 @@ export function App() {
         {mainView === "materials" && (
           <section className="card materials-view-card">
             <div className="materials-view-head">
-              <h3>{language === "de" ? "Materialbedarf aus Berichten" : "Material needs from reports"}</h3>
-              <button type="button" onClick={() => void loadMaterialNeeds()}>
+              <h3>{language === "de" ? "Materialbedarf" : "Material needs"}</h3>
+              <button
+                type="button"
+                onClick={() => {
+                  void loadMaterialNeeds();
+                  void loadMaterialCatalog(materialCatalogQuery);
+                }}
+              >
                 {language === "de" ? "Aktualisieren" : "Refresh"}
               </button>
             </div>
-            <ul className="materials-list">
-              {materialNeedRows.map((entry) => {
-                const normalizedStatus = normalizeMaterialNeedStatus(entry.status);
-                const statusClass = materialNeedStatusClass(normalizedStatus);
-                const project = projectsById.get(entry.project_id) ?? null;
-                const projectLabel = formatProjectTitle(entry.project_number, entry.project_name, entry.project_id);
-                const isUpdating = Boolean(materialNeedUpdating[entry.id]);
-                return (
-                  <li key={`material-need-${entry.id}`} className="materials-item">
-                    <div className="materials-item-main">
-                      <b>{entry.item}</b>
-                      <small>
-                        {language === "de" ? "Projekt" : "Project"}:{" "}
-                        <button
-                          type="button"
-                          className="linklike"
-                          onClick={() => {
-                            if (!project) return;
-                            setActiveProjectId(project.id);
-                            setProjectTab("overview");
-                            setProjectBackView(null);
-                            setMainView("project");
-                          }}
-                        >
-                          {projectLabel}
-                        </button>
-                      </small>
-                      <small>
-                        {language === "de" ? "Berichtdatum" : "Report date"}:{" "}
-                        {entry.report_date ? formatDayLabel(entry.report_date, language) : "-"}
-                      </small>
-                    </div>
-                    <div className="materials-item-actions">
-                      <button
-                        type="button"
-                        className={`materials-status-badge materials-status-toggle ${statusClass}`}
-                        disabled={isUpdating}
-                        onClick={() => void updateMaterialNeedState(entry.id, nextMaterialNeedStatus(normalizedStatus))}
-                        title={
-                          language === "de"
-                            ? `Status wechseln zu: ${materialNeedStatusLabel(nextMaterialNeedStatus(normalizedStatus), language)}`
-                            : `Change status to: ${materialNeedStatusLabel(nextMaterialNeedStatus(normalizedStatus), language)}`
-                        }
-                      >
-                        {materialNeedStatusLabel(normalizedStatus, language)}
-                      </button>
-                      {normalizedStatus === "available" && (
-                        <button
-                          type="button"
-                          className="materials-complete-btn"
-                          disabled={isUpdating}
-                          onClick={() => void updateMaterialNeedState(entry.id, "completed")}
-                        >
-                          {language === "de" ? "Erledigt" : "Complete"}
-                        </button>
-                      )}
-                    </div>
-                  </li>
-                );
-              })}
-              {materialNeedRows.length === 0 && (
-                <li className="muted">
-                  {language === "de" ? "Kein offener Materialbedarf aus Berichten." : "No material needs found in reports."}
-                </li>
-              )}
-            </ul>
+            <div className="materials-view-layout">
+              <div className="materials-panel">
+                <h4>{language === "de" ? "Bedarfsliste" : "Needs list"}</h4>
+                <ul className="materials-list">
+                  {materialNeedRows.map((entry) => {
+                    const normalizedStatus = normalizeMaterialNeedStatus(entry.status);
+                    const statusClass = materialNeedStatusClass(normalizedStatus);
+                    const project = projectsById.get(entry.project_id) ?? null;
+                    const projectLabel = formatProjectTitleParts(
+                      entry.project_number,
+                      entry.customer_name ?? project?.customer_name ?? null,
+                      entry.project_name,
+                      entry.project_id,
+                    );
+                    const isUpdating = Boolean(materialNeedUpdating[entry.id]);
+                    return (
+                      <li key={`material-need-${entry.id}`} className="materials-item">
+                        {entry.image_url ? (
+                          <div className="materials-item-image-wrap">
+                            <img
+                              src={entry.image_url}
+                              alt={entry.item}
+                              className="materials-item-image"
+                              loading="lazy"
+                              referrerPolicy="no-referrer"
+                              onError={(event) => {
+                                event.currentTarget.style.display = "none";
+                              }}
+                            />
+                          </div>
+                        ) : (
+                          <div className="materials-item-image-wrap materials-item-image-empty" aria-hidden />
+                        )}
+                        <div className="materials-item-main">
+                          <b>{entry.item}</b>
+                          {(entry.article_no || entry.quantity || entry.unit) && (
+                            <small>
+                              {entry.article_no ? `${language === "de" ? "Art.-Nr." : "Article"}: ${entry.article_no}` : ""}
+                              {entry.quantity ? ` | ${language === "de" ? "Menge" : "Qty"}: ${entry.quantity}` : ""}
+                              {entry.unit ? ` ${entry.unit}` : ""}
+                            </small>
+                          )}
+                          <small>
+                            {language === "de" ? "Projekt" : "Project"}:{" "}
+                            <button
+                              type="button"
+                              className="linklike"
+                              onClick={() => {
+                                if (!project) return;
+                                setActiveProjectId(project.id);
+                                setProjectTab("overview");
+                                setProjectBackView(null);
+                                setMainView("project");
+                              }}
+                            >
+                              {projectLabel.title}
+                            </button>
+                          </small>
+                          {projectLabel.subtitle && <small className="project-name-subtle">{projectLabel.subtitle}</small>}
+                          <small>
+                            {language === "de" ? "Berichtdatum" : "Report date"}:{" "}
+                            {entry.report_date ? formatDayLabel(entry.report_date, language) : "-"}
+                          </small>
+                        </div>
+                        <div className="materials-item-actions">
+                          <button
+                            type="button"
+                            className={`materials-status-badge materials-status-toggle ${statusClass}`}
+                            disabled={isUpdating}
+                            onClick={() => void updateMaterialNeedState(entry.id, nextMaterialNeedStatus(normalizedStatus))}
+                            title={
+                              language === "de"
+                                ? `Status wechseln zu: ${materialNeedStatusLabel(nextMaterialNeedStatus(normalizedStatus), language)}`
+                                : `Change status to: ${materialNeedStatusLabel(nextMaterialNeedStatus(normalizedStatus), language)}`
+                            }
+                          >
+                            {materialNeedStatusLabel(normalizedStatus, language)}
+                          </button>
+                          {normalizedStatus === "available" && (
+                            <button
+                              type="button"
+                              className="materials-complete-btn"
+                              disabled={isUpdating}
+                              onClick={() => void updateMaterialNeedState(entry.id, "completed")}
+                            >
+                              {language === "de" ? "Erledigt" : "Complete"}
+                            </button>
+                          )}
+                        </div>
+                      </li>
+                    );
+                  })}
+                  {materialNeedRows.length === 0 && (
+                    <li className="muted">
+                      {language === "de" ? "Kein offener Materialbedarf gefunden." : "No open material needs found."}
+                    </li>
+                  )}
+                </ul>
+              </div>
+
+              <div className="materials-panel materials-catalog-panel">
+                <h4>{language === "de" ? "Materialkatalog" : "Material catalog"}</h4>
+                <div className="materials-catalog-controls">
+                  <div className="materials-catalog-search-field">
+                    <b>{language === "de" ? "Projekt suchen" : "Search project"}</b>
+                    <input
+                      className="materials-catalog-search-input"
+                      value={materialCatalogProjectSearch}
+                      onFocus={(event) => {
+                        const input = event.currentTarget;
+                        setMaterialCatalogProjectSearchFocused(true);
+                        window.requestAnimationFrame(() => {
+                          input.select();
+                        });
+                      }}
+                      onBlur={() => {
+                        setMaterialCatalogProjectSearchFocused(false);
+                        setMaterialCatalogProjectSearch(selectedMaterialCatalogProjectLabel);
+                      }}
+                      onChange={(event) => setMaterialCatalogProjectSearch(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key !== "Enter") return;
+                        event.preventDefault();
+                        const first = materialCatalogProjectSuggestions[0];
+                        if (first) selectMaterialCatalogProject(first);
+                      }}
+                    />
+                    {materialCatalogProjectSearchFocused && materialCatalogProjectSuggestions.length > 0 && (
+                      <div className="assignee-suggestions">
+                        {materialCatalogProjectSuggestions.map((project) => (
+                          <button
+                            key={`material-catalog-project-suggestion-${project.id}`}
+                            type="button"
+                            className="assignee-suggestion-btn"
+                            onMouseDown={(event) => {
+                              event.preventDefault();
+                            }}
+                            onClick={() => selectMaterialCatalogProject(project)}
+                          >
+                            {projectSearchLabel(project)}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <label className="materials-catalog-search-field">
+                    <b>{language === "de" ? "Material suchen" : "Search material"}</b>
+                    <input
+                      className="materials-catalog-search-input"
+                      value={materialCatalogQuery}
+                      onChange={(event) => setMaterialCatalogQuery(event.target.value)}
+                      placeholder={
+                        language === "de" ? "Artikelnummer oder Bezeichnung" : "Article number or item name"
+                      }
+                    />
+                  </label>
+                </div>
+                {materialCatalogState && materialCatalogState.duplicates_skipped > 0 && (
+                  <p className="muted materials-import-note">
+                    {language === "de"
+                      ? `${materialCatalogState.duplicates_skipped} Duplikate wurden beim Import übersprungen.`
+                      : `${materialCatalogState.duplicates_skipped} duplicates were skipped during import.`}
+                  </p>
+                )}
+                {materialCatalogLoading && <p className="muted">{language === "de" ? "Lädt..." : "Loading..."}</p>}
+                <ul className="materials-list materials-catalog-list">
+                  {!materialCatalogLoading &&
+                    materialCatalogRows.map((catalogItem) => {
+                      const isAdding = Boolean(materialCatalogAdding[catalogItem.id]);
+                      const catalogMeta = [
+                        catalogItem.article_no
+                          ? `${language === "de" ? "Art.-Nr." : "Article"}: ${catalogItem.article_no}`
+                          : "",
+                        catalogItem.unit ? `${language === "de" ? "Einheit" : "Unit"}: ${catalogItem.unit}` : "",
+                        catalogItem.manufacturer
+                          ? `${language === "de" ? "Hersteller" : "Manufacturer"}: ${catalogItem.manufacturer}`
+                          : "",
+                        catalogItem.ean ? `EAN: ${catalogItem.ean}` : "",
+                        catalogItem.price_text ? `${language === "de" ? "Preis" : "Price"}: ${catalogItem.price_text}` : "",
+                      ]
+                        .filter((entry) => entry)
+                        .join(" | ");
+                      return (
+                        <li key={`catalog-item-${catalogItem.id}`} className="materials-item">
+                          {catalogItem.image_url ? (
+                            <div className="materials-item-image-wrap">
+                              <img
+                                src={catalogItem.image_url}
+                                alt={catalogItem.item_name}
+                                className="materials-item-image"
+                                loading="lazy"
+                                referrerPolicy="no-referrer"
+                                onError={(event) => {
+                                  event.currentTarget.style.display = "none";
+                                }}
+                              />
+                            </div>
+                          ) : (
+                            <div className="materials-item-image-wrap materials-item-image-empty" aria-hidden />
+                          )}
+                          <div className="materials-item-main">
+                            <b>{catalogItem.item_name}</b>
+                            {catalogMeta && <small>{catalogMeta}</small>}
+                          </div>
+                          <div className="materials-item-actions">
+                            <button
+                              type="button"
+                              className="materials-add-btn"
+                              disabled={isAdding || !materialCatalogProjectId}
+                              onClick={() => void addCatalogMaterialNeed(catalogItem)}
+                            >
+                              {language === "de" ? "Hinzufügen" : "Add"}
+                            </button>
+                          </div>
+                        </li>
+                      );
+                    })}
+                  {!materialCatalogLoading && materialCatalogRows.length === 0 && (
+                    <li className="muted">
+                      {language === "de"
+                        ? "Keine Katalogeinträge gefunden. Prüfe den Ordner Datanorm_Neuanlage."
+                        : "No catalog entries found. Check the Datanorm_Neuanlage folder."}
+                    </li>
+                  )}
+                </ul>
+              </div>
+            </div>
           </section>
         )}
 
@@ -9229,6 +9955,12 @@ export function App() {
             <ul className="overview-list projects-all-list">
               {filteredProjectsAll.map((row) => {
                 const projectId = Number(row.project_id);
+                const projectLabel = formatProjectTitleParts(
+                  String(row.project_number ?? ""),
+                  String(row.customer_name ?? ""),
+                  String(row.project_name ?? ""),
+                  projectId,
+                );
                 const lastEditedLabel =
                   row.last_updated_at && Number(row.last_updated_timestamp) > 0
                     ? formatServerDateTime(row.last_updated_at, language)
@@ -9245,9 +9977,8 @@ export function App() {
                         setMainView("project");
                       }}
                     >
-                      <b>
-                        {formatProjectTitle(String(row.project_number ?? ""), String(row.project_name ?? ""), projectId)}
-                      </b>
+                      <b>{projectLabel.title}</b>
+                      {projectLabel.subtitle && <small className="project-name-subtle">{projectLabel.subtitle}</small>}
                       <small>
                         {language === "de" ? "Offene Aufgaben" : "Open tasks"}: {row.open_tasks} |{" "}
                         {language === "de" ? "Standorte" : "Sites"}: {row.sites} |{" "}
@@ -9275,6 +10006,7 @@ export function App() {
             <h3>{language === "de" ? "Projektarchiv" : "Project archive"}</h3>
             <ul className="overview-list">
               {archivedProjects.map((project) => {
+                const projectLabel = projectTitleParts(project);
                 const lastEditedLabel = project.last_status_at
                   ? formatServerDateTime(project.last_status_at, language)
                   : "-";
@@ -9289,8 +10021,8 @@ export function App() {
                         .filter(Boolean)
                         .join(" ")}
                     >
-                      <b>{projectTitle(project)}</b>
-                      {(project.customer_name ?? "").trim() && <small>{(project.customer_name ?? "").trim()}</small>}
+                      <b>{projectLabel.title}</b>
+                      {projectLabel.subtitle && <small className="project-name-subtle">{projectLabel.subtitle}</small>}
                       <small>
                         {language === "de" ? "Letzter Stand" : "Last state"}: {project.last_state || "-"} |{" "}
                         {language === "de" ? "Letzte Änderung" : "Last edited"}: {lastEditedLabel}
@@ -9360,6 +10092,7 @@ export function App() {
                 const expanded = expandedMyTaskId === task.id;
                 const taskMaterials = taskMaterialsDisplay(task.materials_required, language);
                 const taskSubtasks = (task.subtasks ?? []).map((row) => row.trim()).filter((row) => row.length > 0);
+                const taskProjectLabel = taskProjectTitleParts(task);
                 return (
                   <li
                     key={task.id}
@@ -9388,13 +10121,14 @@ export function App() {
                       <small>
                         {language === "de" ? "Projekt" : "Project"}:{" "}
                         <button type="button" className="linklike" onClick={() => openProjectFromTask(task)}>
-                          {taskProjectTitle(task)}
+                          {taskProjectLabel.title}
                         </button>{" "}
                         |{" "}
                         {language === "de" ? "Fällig" : "Due"}: {task.due_date ?? "-"}
                         {task.start_time ? ` ${language === "de" ? "um" : "at"} ${formatTaskStartTime(task.start_time)}` : ""} |{" "}
                         {language === "de" ? "Status" : "Status"}: {taskStatusLabel(displayStatus, language)}
                       </small>
+                      {taskProjectLabel.subtitle && <small className="project-name-subtle">{taskProjectLabel.subtitle}</small>}
                       {expanded && (
                         <div className="task-expanded-content">
                           <small>
@@ -9605,6 +10339,7 @@ export function App() {
                 const isOverdue = isTaskOverdue(task, todayIso);
                 const displayStatus = taskDisplayStatus(task, todayIso);
                 const taskMaterials = taskMaterialsDisplay(task.materials_required, language);
+                const taskProjectLabel = taskProjectTitleParts(task);
                 return (
                   <li
                     key={`office-task-${task.id}`}
@@ -9623,12 +10358,13 @@ export function App() {
                       <small>
                         {language === "de" ? "Projekt" : "Project"}:{" "}
                         <button type="button" className="linklike" onClick={() => openProjectFromTask(task, "office_tasks")}>
-                          {taskProjectTitle(task)}
+                          {taskProjectLabel.title}
                         </button>{" "}
                         | {language === "de" ? "Fällig" : "Due"}: {task.due_date ?? "-"}
                         {task.start_time ? ` ${language === "de" ? "um" : "at"} ${formatTaskStartTime(task.start_time)}` : ""} |{" "}
                         {language === "de" ? "Mitarbeiter" : "Assignees"}: {getTaskAssigneeLabel(task)}
                       </small>
+                      {taskProjectLabel.subtitle && <small className="project-name-subtle">{taskProjectLabel.subtitle}</small>}
                       <small>
                         {language === "de" ? "Typ" : "Type"}: {taskTypeLabel(normalizeTaskTypeValue(task.task_type), language)}
                         {task.storage_box_number
@@ -9921,6 +10657,48 @@ export function App() {
               )}
             </div>
 
+            {workspaceMode === "office" && (
+              <div className="card project-overview-office-notes">
+                <h3 className="project-overview-title">
+                  {language === "de" ? "Büro-Nacharbeit aus Berichten" : "Office follow-up from reports"}
+                </h3>
+                <ul className="overview-list">
+                  {(projectOverviewDetails?.office_notes ?? []).map((entry) => {
+                    const reportLabel =
+                      entry.report_number != null ? `#${entry.report_number}` : `#${entry.report_id}`;
+                    return (
+                      <li key={`project-office-note-${entry.report_id}`}>
+                        <div className="project-office-note-row">
+                          <b>
+                            {language === "de" ? "Bericht" : "Report"} {reportLabel} (
+                            {formatDayLabel(entry.report_date, language)})
+                          </b>
+                          <small>{formatServerDateTime(entry.created_at, language)}</small>
+                          {entry.office_rework && (
+                            <small className="project-office-note-text">
+                              {language === "de" ? "Nacharbeit" : "Rework"}: {entry.office_rework}
+                            </small>
+                          )}
+                          {entry.office_next_steps && (
+                            <small className="project-office-note-text">
+                              {language === "de" ? "Nächste Schritte" : "Next steps"}: {entry.office_next_steps}
+                            </small>
+                          )}
+                        </div>
+                      </li>
+                    );
+                  })}
+                  {(projectOverviewDetails?.office_notes ?? []).length === 0 && (
+                    <li className="muted">
+                      {language === "de"
+                        ? "Noch keine Büro-Nacharbeit oder nächste Schritte aus Berichten."
+                        : "No office rework or next-step notes from reports yet."}
+                    </li>
+                  )}
+                </ul>
+              </div>
+            )}
+
             <div className="card project-overview-changes">
               <h3 className="project-overview-title">{language === "de" ? "Letzte Änderungen" : "Recent changes"}</h3>
               <ul className="overview-list">
@@ -9991,6 +10769,7 @@ export function App() {
                   const displayStatus = taskDisplayStatus(task, todayIso);
                   const canOpenInMyTasks = isMine && task.status !== "done";
                   const taskMaterials = taskMaterialsDisplay(task.materials_required, language);
+                  const taskProjectLabel = taskProjectTitleParts(task);
                   return (
                     <li
                       key={task.id}
@@ -10029,13 +10808,14 @@ export function App() {
                               openProjectFromTask(task, null);
                             }}
                           >
-                            {taskProjectTitle(task)}
+                            {taskProjectLabel.title}
                           </button>{" "}
                           |{" "}
                           {language === "de" ? "Fällig" : "Due"}: {task.due_date ?? "-"}
                           {task.start_time ? ` ${language === "de" ? "um" : "at"} ${formatTaskStartTime(task.start_time)}` : ""} |{" "}
                           {language === "de" ? "Mitarbeiter" : "Assignees"}: {getTaskAssigneeLabel(task)}
                         </small>
+                        {taskProjectLabel.subtitle && <small className="project-name-subtle">{taskProjectLabel.subtitle}</small>}
                         {(task.description || taskMaterials || task.storage_box_number) && (
                           <small>
                             {task.description ? `${language === "de" ? "Info" : "Info"}: ${task.description}` : ""}
@@ -10206,7 +10986,7 @@ export function App() {
                   return (
                     <li
                       key={`project-material-${entry.item}-${entry.unit ?? ""}-${entry.article_no ?? ""}-${index}`}
-                      className="materials-item"
+                      className="materials-item project-materials-item"
                     >
                       <div className="materials-item-main">
                         <b>{entry.item}</b>
@@ -10331,6 +11111,7 @@ export function App() {
                               ))}
                               {dayTasks.map((task) => {
                                 const isMine = isTaskAssignedToCurrentUser(task);
+                                const taskProjectLabel = taskProjectTitleParts(task);
                                 return (
                                   <li
                                     key={`calendar-task-${day.date}-${task.id}`}
@@ -10365,10 +11146,11 @@ export function App() {
                                           openProjectFromTask(task, null);
                                         }}
                                       >
-                                        {taskProjectTitle(task)}
+                                        {taskProjectLabel.title}
                                       </button>
                                       {task.start_time ? ` | ${formatTaskStartTime(task.start_time)}` : ""}
                                     </small>
+                                    {taskProjectLabel.subtitle && <small className="project-name-subtle">{taskProjectLabel.subtitle}</small>}
                                   </li>
                                 );
                               })}
@@ -10477,6 +11259,7 @@ export function App() {
                     ))}
                     {dayTasks.map((task) => {
                       const isMine = isTaskAssignedToCurrentUser(task);
+                      const taskProjectLabel = taskProjectTitleParts(task);
                       return (
                         <li
                           key={task.id}
@@ -10505,10 +11288,11 @@ export function App() {
                                 openProjectFromTask(task, null);
                               }}
                             >
-                              {taskProjectTitle(task)}
+                              {taskProjectLabel.title}
                             </button>{" "}
                             {task.start_time ? ` | ${formatTaskStartTime(task.start_time)}` : ""} | {getTaskAssigneeLabel(task)}
                           </small>
+                          {taskProjectLabel.subtitle && <small className="project-name-subtle">{taskProjectLabel.subtitle}</small>}
                           <div className="row wrap task-actions task-actions-left">
                             {canManageTasks && (
                               <button
@@ -11184,39 +11968,43 @@ export function App() {
               )}
               {archivedThreads.length > 0 && (
                 <ul className="thread-list">
-                  {archivedThreads.map((thread) => (
-                    <li key={`archived-thread-${thread.id}`}>
-                      <div className="thread-archive-row">
-                        <div className="thread-item-main">
-                          <span className="thread-title-main">
-                            <b>{thread.name}</b>
-                            {(thread.is_restricted || thread.visibility === "restricted") && (
-                              <span className="thread-visibility-badge">
-                                {language === "de" ? "Eingeschränkt" : "Restricted"}
-                              </span>
+                  {archivedThreads.map((thread) => {
+                    const threadProjectLabel = threadProjectTitleParts(thread);
+                    return (
+                      <li key={`archived-thread-${thread.id}`}>
+                        <div className="thread-archive-row">
+                          <div className="thread-item-main">
+                            <span className="thread-title-main">
+                              <b>{thread.name}</b>
+                              {(thread.is_restricted || thread.visibility === "restricted") && (
+                                <span className="thread-visibility-badge">
+                                  {language === "de" ? "Eingeschränkt" : "Restricted"}
+                                </span>
+                              )}
+                            </span>
+                            <small>{threadProjectLabel.title || (language === "de" ? "Allgemein" : "General")}</small>
+                            {threadProjectLabel.subtitle && <small className="project-name-subtle">{threadProjectLabel.subtitle}</small>}
+                          </div>
+                          <div className="thread-archive-actions">
+                            {thread.can_edit && (
+                              <>
+                                <button type="button" onClick={() => void restoreArchivedThread(thread.id)}>
+                                  {language === "de" ? "Wiederherstellen" : "Restore"}
+                                </button>
+                                <button
+                                  type="button"
+                                  className="danger-btn"
+                                  onClick={() => void deleteThread(thread)}
+                                >
+                                  {language === "de" ? "Löschen" : "Delete"}
+                                </button>
+                              </>
                             )}
-                          </span>
-                          <small>{thread.project_name ?? (language === "de" ? "Allgemein" : "General")}</small>
+                          </div>
                         </div>
-                        <div className="thread-archive-actions">
-                          {thread.can_edit && (
-                            <>
-                              <button type="button" onClick={() => void restoreArchivedThread(thread.id)}>
-                                {language === "de" ? "Wiederherstellen" : "Restore"}
-                              </button>
-                              <button
-                                type="button"
-                                className="danger-btn"
-                                onClick={() => void deleteThread(thread)}
-                              >
-                                {language === "de" ? "Löschen" : "Delete"}
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    </li>
-                  ))}
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
               <div className="row wrap">
@@ -11279,7 +12067,7 @@ export function App() {
                   </option>
                   {projects.map((project) => (
                     <option key={project.id} value={String(project.id)}>
-                      {project.project_number} - {project.name}
+                      {formatProjectTitle(project.project_number, project.customer_name, project.name, project.id)}
                     </option>
                   ))}
                 </select>
@@ -11382,6 +12170,7 @@ export function App() {
                       inputMode="numeric"
                       maxLength={5}
                       onChange={(e) => updateReportWorker(index, "start_time", formatTimeInputForTyping(e.target.value))}
+                      onBlur={(event) => updateReportWorker(index, "start_time", formatTimeInputForBlur(event.target.value))}
                     />
                     <input
                       value={worker.end_time}
@@ -11389,6 +12178,7 @@ export function App() {
                       inputMode="numeric"
                       maxLength={5}
                       onChange={(e) => updateReportWorker(index, "end_time", formatTimeInputForTyping(e.target.value))}
+                      onBlur={(event) => updateReportWorker(index, "end_time", formatTimeInputForBlur(event.target.value))}
                     />
                     <button type="button" onClick={() => removeReportWorkerRow(index)}>
                       {language === "de" ? "Entfernen" : "Remove"}
@@ -11426,6 +12216,9 @@ export function App() {
                         value={row.item}
                         placeholder={language === "de" ? "Artikel" : "Item"}
                         onChange={(event) => updateReportMaterialRow(index, "item", event.target.value)}
+                        onBlur={() => {
+                          void enrichReportMaterialRowFromCatalog(index, "item");
+                        }}
                       />
                       <input
                         value={row.qty}
@@ -11442,6 +12235,9 @@ export function App() {
                         value={row.article_no}
                         placeholder={language === "de" ? "ArtNr" : "Article"}
                         onChange={(event) => updateReportMaterialRow(index, "article_no", event.target.value)}
+                        onBlur={() => {
+                          void enrichReportMaterialRowFromCatalog(index, "article_no");
+                        }}
                       />
                       <button type="button" onClick={() => removeReportMaterialRow(index)} disabled={reportSubmitting}>
                         {language === "de" ? "Entfernen" : "Remove"}
@@ -11478,6 +12274,9 @@ export function App() {
                         value={row.item}
                         placeholder={language === "de" ? "Artikel" : "Item"}
                         onChange={(event) => updateReportOfficeMaterialRow(index, "item", event.target.value)}
+                        onBlur={() => {
+                          void enrichReportOfficeMaterialRowFromCatalog(index, "item");
+                        }}
                       />
                       <input
                         value={row.qty}
@@ -11494,6 +12293,9 @@ export function App() {
                         value={row.article_no}
                         placeholder={language === "de" ? "ArtNr" : "Article"}
                         onChange={(event) => updateReportOfficeMaterialRow(index, "article_no", event.target.value)}
+                        onBlur={() => {
+                          void enrichReportOfficeMaterialRowFromCatalog(index, "article_no");
+                        }}
                       />
                       <button type="button" onClick={() => removeReportOfficeMaterialRow(index)} disabled={reportSubmitting}>
                         {language === "de" ? "Entfernen" : "Remove"}
@@ -11789,39 +12591,41 @@ export function App() {
                 </div>
               </div>
               <ul className="thread-list">
-                {threads.map((thread) => (
-                  <li key={thread.id}>
-                    <button
-                      className={activeThreadId === thread.id ? "active thread-item" : "thread-item"}
-                      onClick={() => setActiveThreadId(thread.id)}
-                    >
-                      <ThreadIconBadge
-                        threadId={thread.id}
-                        initials={threadInitials(thread.name)}
-                        hasIcon={Boolean(thread.icon_updated_at)}
-                        versionKey={thread.icon_updated_at || "0"}
-                        className="thread-avatar-sm"
-                      />
-                      <span className="thread-item-main">
-                        <span className="thread-title-row">
-                          <span className="thread-title-main">
-                            <b>{thread.name}</b>
-                            {(thread.is_restricted || thread.visibility === "restricted") && (
-                              <span className="thread-visibility-badge">
-                                {language === "de" ? "Eingeschränkt" : "Restricted"}
-                              </span>
-                            )}
+                {threads.map((thread) => {
+                  const threadProjectLabel = threadProjectTitleParts(thread);
+                  return (
+                    <li key={thread.id}>
+                      <button
+                        className={activeThreadId === thread.id ? "active thread-item" : "thread-item"}
+                        onClick={() => setActiveThreadId(thread.id)}
+                      >
+                        <ThreadIconBadge
+                          threadId={thread.id}
+                          initials={threadInitials(thread.name)}
+                          hasIcon={Boolean(thread.icon_updated_at)}
+                          versionKey={thread.icon_updated_at || "0"}
+                          className="thread-avatar-sm"
+                        />
+                        <span className="thread-item-main">
+                          <span className="thread-title-row">
+                            <span className="thread-title-main">
+                              <b>{thread.name}</b>
+                              {(thread.is_restricted || thread.visibility === "restricted") && (
+                                <span className="thread-visibility-badge">
+                                  {language === "de" ? "Eingeschränkt" : "Restricted"}
+                                </span>
+                              )}
+                            </span>
+                            {thread.unread_count > 0 && <span className="thread-unread-badge">{thread.unread_count}</span>}
                           </span>
-                          {thread.unread_count > 0 && <span className="thread-unread-badge">{thread.unread_count}</span>}
+                          <small>{threadProjectLabel.title || (language === "de" ? "Allgemein" : "General")}</small>
+                          {threadProjectLabel.subtitle && <small className="project-name-subtle">{threadProjectLabel.subtitle}</small>}
+                          <small>{thread.last_message_preview ?? "-"}</small>
                         </span>
-                        <small>
-                          {thread.project_name ? `${thread.project_name} | ` : ""}
-                          {thread.last_message_preview ?? "-"}
-                        </small>
-                      </span>
-                    </button>
-                  </li>
-                ))}
+                      </button>
+                    </li>
+                  );
+                })}
               </ul>
             </aside>
 
@@ -11829,8 +12633,10 @@ export function App() {
               {!activeThread && (
                 <div className="chat-empty">{language === "de" ? "Bitte einen Thread wählen." : "Please select a thread."}</div>
               )}
-              {activeThread && (
-                <>
+              {activeThread && (() => {
+                const activeThreadProjectLabel = threadProjectTitleParts(activeThread);
+                return (
+                  <>
                   <div className="chat-panel-head">
                     <div className="chat-thread-meta">
                       <ThreadIconBadge
@@ -11848,7 +12654,8 @@ export function App() {
                             </span>
                           )}
                         </span>
-                        <small>{activeThread.project_name ?? (language === "de" ? "Allgemein" : "General")}</small>
+                        <small>{activeThreadProjectLabel.title || (language === "de" ? "Allgemein" : "General")}</small>
+                        {activeThreadProjectLabel.subtitle && <small className="project-name-subtle">{activeThreadProjectLabel.subtitle}</small>}
                       </div>
                     </div>
                     {activeThread.can_edit && (
@@ -11999,7 +12806,8 @@ export function App() {
                     </button>
                   </form>
                 </>
-              )}
+                );
+              })()}
             </div>
           </section>
         )}

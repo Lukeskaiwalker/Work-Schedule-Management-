@@ -15,6 +15,27 @@
 - Local browser smoke (manual automation):
   - Start local API + web dev servers, then run Playwright CLI flow for login/project/report submit.
 
+## Latest Result (2026-03-04, material images + duplicate reporting)
+- Targeted API coverage:
+  - `docker compose run --build --rm api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_material_catalog.py'`: pass (`3 passed`).
+  - Added assertions for:
+    - duplicate row skip counting via `GET /api/materials/catalog/state`,
+    - automatic catalog-item image enrichment propagation to material needs responses.
+- One-command checks:
+  - `./scripts/test.sh`: pass (`64 passed`, web build pass).
+- Frontend build:
+  - `cd apps/web && npm run build`: pass.
+
+## Latest Result (2026-03-04, DATANORM material catalog correction)
+- One-command checks:
+  - `./scripts/test.sh`: pass (`63 passed`, web build pass).
+- Targeted API coverage:
+  - `docker compose run --build --rm api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_material_catalog.py'`: pass (`2 passed`).
+  - New assertions verify DATANORM `A/B` parsing maps article, combined item text, unit, manufacturer derivation, EAN, and formatted price.
+- Runtime deploy validation:
+  - `docker compose up --build -d api web caddy`: pass.
+  - Material catalog reimport executed with new parser signature; DB sample rows confirm corrected DATANORM field mapping.
+
 ## Latest Result (2026-02-26, admin nickname + anonymized report submitter)
 - Frontend:
   - `cd apps/web && npm run build`: pass.
@@ -1464,3 +1485,164 @@
   - Local web health: `200`.
   - Local API health via Caddy: `200`.
   - Browser render: pass (`SMPL Workflow` login page visible, no startup ReferenceError after fix).
+
+## Iteration Result (2026-03-04, DATANORM material catalog + materials picker menu)
+- Commands run:
+  - `docker compose run --rm --build api env PYTHONPATH=/app pytest -q tests/test_material_catalog.py`
+  - `docker compose run --rm --build api env PYTHONPATH=/app pytest -q tests/test_material_catalog.py tests/test_workflows.py -k "material_catalog or project_task_planning_ticket_file_and_report_flow"`
+  - `./scripts/test.sh`
+  - `cd apps/web && npm run build`
+- Results:
+  - New catalog API test: pass.
+  - Targeted workflow + catalog tests: pass (`2 passed`, filtered).
+  - Full default test/build script: pass (`62 passed`, web build pass).
+  - Standalone web production build: pass.
+- Coverage notes:
+  - Added `tests/test_material_catalog.py` to verify DATANORM-source ingestion (CSV-style input), catalog search, adding catalog items to material needs, and project-access enforcement.
+
+## Iteration Result (2026-03-05, task modal accidental-close guard)
+- Commands run:
+  - `cd apps/web && npm run build`
+- Results:
+  - Web production build: pass.
+- Coverage notes:
+  - Verified frontend compiles with pointer-guarded backdrop handling for task create/edit modals.
+
+## Iteration Result (2026-03-05, project overview office rework/next-steps box)
+- Commands run:
+  - `docker compose run --rm api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_workflows.py::test_project_task_planning_ticket_file_and_report_flow'`
+  - `cd apps/web && npm run build`
+  - `docker compose up -d --build api web caddy`
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/`
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/api`
+- Results:
+  - Targeted API workflow test: pass (`1 passed`).
+  - Web production build: pass.
+  - Local stack rebuild/restart: pass.
+  - Health checks: `200` for web and API through Caddy.
+- Coverage notes:
+  - Added assertions in `test_project_task_planning_ticket_file_and_report_flow` verifying `office_notes` content in project overview after report submission.
+
+## Iteration Result (2026-03-05, office-only visibility for project overview office notes card)
+- Commands run:
+  - `cd apps/web && npm run build`
+  - `docker compose up -d --build web caddy`
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/`
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/api`
+- Results:
+  - Web production build: pass.
+  - Local stack refresh: pass.
+  - Health checks: `200` for web and API through Caddy.
+- Coverage notes:
+  - Verified frontend compiles with workspace-mode gate for the office-notes card.
+
+## Iteration Result (2026-03-05, materials catalog search cap + stale-search guard + searchable project picker)
+- Commands run:
+  - `docker compose run --rm --build api python -m pytest -q tests/test_material_catalog.py`
+  - `./scripts/test.sh`
+  - `docker compose up -d --build api web caddy`
+  - `curl -sk -o /dev/null -w "web:%{http_code}\n" https://localhost/`
+  - `curl -sk -o /dev/null -w "api:%{http_code}\n" https://localhost/api`
+- Results:
+  - Material catalog API tests: pass (`4 passed`).
+  - Full default test/build script: pass (`65 passed`, web build pass).
+  - Stack rebuild/restart: pass.
+  - Health checks: `web:200`, `api:200`.
+- Coverage notes:
+  - Added API test `test_material_catalog_search_caps_results_to_ten_items` to validate backend cap behavior even when client requests a larger limit.
+
+## Iteration Result (2026-03-05, materials catalog selected-project persistence + search bar alignment)
+- Commands run:
+  - `cd apps/web && npm run build`
+- Results:
+  - Web production build: pass.
+- Coverage notes:
+  - Verified frontend compiles with the new materials project combobox (selected chip inside search bar) and unified search-field sizing/alignment styles.
+
+## Iteration Result (2026-03-05, materials project combobox overflow fix)
+- Commands run:
+  - `cd apps/web && npm run build`
+  - `docker compose up -d --build web caddy`
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/`
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/api`
+- Results:
+  - Web production build: pass.
+  - Stack refresh: pass.
+  - Health checks: `200` for web and API.
+- Coverage notes:
+  - Verified combobox CSS compiles and deploys with overflow-safe long selected project labels.
+
+## Iteration Result (2026-03-05, materials selected project plain-text input display)
+- Commands run:
+  - `cd apps/web && npm run build`
+  - `docker compose up -d --build web caddy`
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/`
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/api`
+- Results:
+  - Web production build: pass.
+  - Stack refresh: pass.
+  - Health checks: `200` for web and API.
+- Coverage notes:
+  - Verified materials project picker renders selected project as plain input text with no inline chip/hint helper text.
+
+## Iteration Result (2026-03-05, materials project search overwrite loop fix)
+- Commands run:
+  - `cd apps/web && npm run build`
+  - `docker compose up -d --build web caddy`
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/`
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/api`
+- Results:
+  - Web production build: pass.
+  - Stack refresh: pass.
+  - Health checks: `200` for web and API.
+- Coverage notes:
+  - Verified materials project input supports overwrite search flow without immediate selected-text reinsertion while editing.
+
+## Iteration Result (2026-03-05, office material comma-splitting fix in construction report flow)
+- Commands run:
+  - `docker compose run --rm api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_workflows.py -k "construction_report_office_material_need_keeps_commas_in_single_item"'`
+  - `docker compose run --rm api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_workflows.py -k "project_task_planning_ticket_file_and_report_flow"'`
+- Results:
+  - API regression test for comma-containing office material item: pass.
+  - Existing construction report end-to-end workflow test: pass.
+- Coverage notes:
+  - Added `test_construction_report_office_material_need_keeps_commas_in_single_item` to ensure one office-material line with comma creates exactly one material need entry.
+
+## Iteration Result (2026-03-05, material ID autofill in task/report forms + project materials layout fix)
+- Commands run:
+  - `cd apps/web && npm run build`
+  - `docker compose up -d --build web caddy`
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/`
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/api`
+- Results:
+  - Web production build: pass.
+  - Stack refresh: pass.
+  - Health checks: `200` for web and API.
+- Coverage notes:
+  - Manual UI behavior coverage: blur-based catalog autofill now wired into task create/edit and construction report material rows.
+  - Project materials tab now renders rows in a full-width readable layout.
+
+## Iteration Result (2026-03-05, automatic zero-padding for time inputs)
+- Commands run:
+  - `cd apps/web && npm run build`
+  - `docker compose up -d --build web caddy`
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/`
+  - `curl -k -s -o /dev/null -w "%{http_code}" https://localhost/api`
+- Results:
+  - Web production build: pass.
+  - Stack refresh: pass.
+  - Health checks: `200` for web and API.
+- Coverage notes:
+  - Verified task start-time and report worker time inputs now normalize to `HH:MM` on blur with automatic leading-zero padding.
+
+## Iteration Result (2026-03-05, release metadata automation + release prep)
+- Commands run:
+  - `./scripts/test.sh`
+  - `bash -n scripts/update_release_metadata.sh scripts/safe_update.sh`
+  - `docker compose config`
+- Results:
+  - Full validation script: pass (`66 passed`, web build pass).
+  - Shell syntax checks for updated/new scripts: pass.
+  - Compose config validation for optional generated release env file: pass.
+- Coverage notes:
+  - Validated release metadata generation path (`scripts/update_release_metadata.sh`) and compose/runtime wiring (`apps/api/.release.env` optional load).

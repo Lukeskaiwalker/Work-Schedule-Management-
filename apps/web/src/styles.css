@@ -361,6 +361,13 @@ button[type="submit"] {
   font-size: 0.78rem;
 }
 
+.project-name-subtle {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 500;
+  line-height: 1.25;
+}
+
 .project-item.project-item-archived {
   background: #edf2f8;
   border-color: #c3d0de;
@@ -657,6 +664,48 @@ button[type="submit"] {
   align-content: start;
 }
 
+.materials-view-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: 0.85rem;
+  align-items: start;
+}
+
+.materials-panel {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  padding: 0.65rem;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.materials-panel h4 {
+  margin: 0;
+}
+
+.materials-catalog-controls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.55rem;
+  align-items: start;
+}
+
+.materials-catalog-search-field {
+  display: grid;
+  gap: 0.45rem;
+  align-content: start;
+  min-width: 0;
+}
+
+.materials-catalog-search-field b {
+  line-height: 1.2;
+}
+
+.materials-catalog-search-input {
+  min-height: 40px;
+}
+
 .materials-view-head {
   display: flex;
   align-items: center;
@@ -683,9 +732,30 @@ button[type="submit"] {
   background: #fff;
   padding: 0.55rem 0.6rem;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: 58px minmax(0, 1fr) auto;
   gap: 0.7rem;
   align-items: center;
+}
+
+.materials-item-image-wrap {
+  width: 58px;
+  height: 58px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: #f7f9fc;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+}
+
+.materials-item-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.materials-item-image-empty {
+  background: #fbfcff;
 }
 
 .materials-item-main {
@@ -707,6 +777,10 @@ button[type="submit"] {
   display: grid;
   gap: 0.38rem;
   justify-items: end;
+}
+
+.materials-import-note {
+  margin: 0;
 }
 
 .materials-status-badge {
@@ -770,6 +844,23 @@ button[type="submit"] {
 }
 
 .materials-complete-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+.materials-add-btn {
+  border: 1px solid #bfd5ee;
+  border-radius: 999px;
+  padding: 0.18rem 0.56rem;
+  background: #edf5ff;
+  color: #1e4f86;
+  font-size: 0.76rem;
+  font-weight: 700;
+  line-height: 1.1;
+  cursor: pointer;
+}
+
+.materials-add-btn:disabled {
   cursor: not-allowed;
   opacity: 0.7;
 }
@@ -1270,6 +1361,7 @@ label {
 .project-overview-meta,
 .project-overview-contact,
 .project-overview-note,
+.project-overview-office-notes,
 .project-overview-changes,
 .project-finance-card,
 .project-hours-card {
@@ -1297,6 +1389,17 @@ label {
   gap: 0.1rem;
 }
 
+.project-office-note-row {
+  display: grid;
+  gap: 0.2rem;
+}
+
+.project-office-note-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.project-overview-office-notes .overview-list,
 .project-overview-changes .overview-list {
   max-height: 230px;
   overflow-y: auto;
@@ -1376,6 +1479,16 @@ label {
   gap: 0.55rem;
 }
 
+.project-materials-item {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.45rem;
+  align-items: start;
+}
+
+.project-materials-item .materials-item-main {
+  gap: 0.24rem;
+}
+
 .project-map-frame {
   width: 100%;
   height: 170px;
@@ -1408,6 +1521,14 @@ label {
 }
 
 @media (max-width: 860px) {
+  .materials-view-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .materials-catalog-controls {
+    grid-template-columns: 1fr;
+  }
+
   .project-finance-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1421,11 +1542,13 @@ label {
   }
 
   .materials-item {
-    grid-template-columns: 1fr;
+    grid-template-columns: 58px minmax(0, 1fr);
+    align-items: start;
   }
 
   .materials-item-actions {
     justify-items: start;
+    grid-column: 1 / -1;
   }
 }
 

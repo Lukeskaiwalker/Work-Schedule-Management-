@@ -23,6 +23,10 @@ class Settings(BaseSettings):
     file_encryption_key: str = Field(default="", description="Fernet key")
     uploads_dir: str = "/data/uploads"
     wiki_root_dir: str = "/data/wiki"
+    material_catalog_dir: str = "/data/Datanorm_Neuanlage"
+    material_catalog_image_lookup_enabled: bool = True
+    material_catalog_image_lookup_retry_hours: int = 168
+    material_catalog_image_lookup_max_per_request: int = 4
     report_processing_mode: str = "worker"
     report_job_max_attempts: int = 3
     report_worker_poll_seconds: float = 1.0

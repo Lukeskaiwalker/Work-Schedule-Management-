@@ -2,10 +2,10 @@
 
 Self-hosted construction operations platform (FastAPI + React + PostgreSQL + Docker Compose) with role-based workflows for projects, planning, reports, files, chat, and operations.
 
-## First Release
+## Current Release
 
-Version: `v1.0.0`  
-Release date: `2026-02-23`
+Version: `v1.4.0`  
+Release date: `2026-03-05`
 
 ## Last Changes Included In This Release
 
@@ -36,6 +36,7 @@ Release date: `2026-02-23`
 - Operations hardening:
   - additional Alembic migrations,
   - updated security, setup, state, decisions, and testing docs.
+  - release metadata now auto-refreshes from git on every `safe_update` run (`scripts/update_release_metadata.sh`), so the UI version label no longer stays on a stale hardcoded value.
 
 ## Download And Install This Release
 
@@ -44,7 +45,7 @@ You can install/upgrade without losing existing project data.
 ### Option A: In-App Admin Update Menu
 
 1. Open `Admin` -> `System updates`.
-2. Click `Check now` and verify `v1.0.0`.
+2. Click `Check now` and verify the displayed release matches the deployed git tag/commit metadata.
 3. Run `Dry run` first.
 4. Run `Install update`.
 

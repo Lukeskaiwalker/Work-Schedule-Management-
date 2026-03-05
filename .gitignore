@@ -13,12 +13,14 @@ apps/web/dist/
 # Env / secrets
 .env
 apps/api/.env
+apps/api/.release.env
 config/telegram.env
 config/*.key
 
 # Data
 backups/
 data/
+Datanorm_Neuanlage/
 *.tar
 *.tar.enc
 *.xlsx
