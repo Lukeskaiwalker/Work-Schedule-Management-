@@ -35,8 +35,10 @@
   - `MATERIAL_CATALOG_IMAGE_LOOKUP_MAX_PER_REQUEST=<int>` (default `4`)
 - Material image behavior:
   - image lookup is EAN-driven and automatic for newly touched items (catalog search/add-to-needs).
-  - lookup order is manufacturer-site first, then open EAN sources.
-  - resolved image URLs are cached in DB and reused across catalog reimports.
+  - phase 1 lookup order starts with `unielektro.de` (EAN-based).
+  - phase 2 fallback (manufacturer site + open EAN sources) runs only after all pending items were processed once in phase 1.
+  - resolved image binaries are cached locally under uploads storage and served via `/api/materials/catalog/images/{external_key}`.
+  - lookup/state progress is visible via `GET /api/materials/catalog/state` (`image_lookup_phase`, pending/waiting counters).
 - If catalog changes are not visible in UI, rebuild/restart API and web:
   - `docker compose up --build -d api web caddy`
 
@@ -901,3 +903,14 @@ Expected:
   - Top-level pages are lazy-loaded as independent chunks and fetched on first navigation.
   - Login view is also loaded via suspense boundary.
   - Build artifacts now include readable chunk names in `apps/web/dist/chunks/`.
+
+## Iteration Setup Notes (2026-03-09, dual project addresses + construction-site fallback)
+- Migration required:
+  - `docker compose run --rm api sh -lc 'cd /app && alembic upgrade head'`
+  - applies revision `20260309_0035` (`construction_site_address` on `projects`).
+- Deploy/restart:
+  - `docker compose up -d --build api web caddy`
+- Operational behavior update:
+  - Project form now captures both customer and construction-site addresses.
+  - Project map/weather use construction-site address; if empty, they fall back to customer address.
+  - Project overview contact box now displays both addresses.

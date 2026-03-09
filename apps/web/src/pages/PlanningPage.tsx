@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { useAppContext } from "../context/AppContext";
 import { addDaysISO, normalizeWeekStartISO, formatDayLabel } from "../utils/dates";
 import { sortTasksByDueTime, formatTaskStartTime } from "../utils/tasks";
@@ -25,6 +26,30 @@ export function PlanningPage() {
     markTaskDone,
     menuUserNameById,
   } = useAppContext();
+
+  const [isPhoneViewport, setIsPhoneViewport] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.matchMedia("(max-width: 480px)").matches;
+  });
+  const [mobileDayIndex, setMobileDayIndex] = useState(0);
+  const planningDays = planningWeek?.days ?? [];
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const media = window.matchMedia("(max-width: 480px)");
+    const onChange = () => setIsPhoneViewport(media.matches);
+    onChange();
+    media.addEventListener("change", onChange);
+    return () => media.removeEventListener("change", onChange);
+  }, []);
+
+  useEffect(() => {
+    if (!planningDays.length) {
+      setMobileDayIndex(0);
+      return;
+    }
+    setMobileDayIndex((current) => (current < planningDays.length ? current : 0));
+  }, [planningDays.length]);
 
   if (mainView !== "planning") return null;
 
@@ -65,6 +90,33 @@ export function PlanningPage() {
           />
         </label>
       </div>
+      {isPhoneViewport && planningDays.length > 0 && (
+        <div className="row planning-mobile-day-nav" role="group" aria-label={language === "de" ? "Tag wechseln" : "Change day"}>
+          <button
+            type="button"
+            className="icon-btn"
+            aria-label={language === "de" ? "Vorheriger Tag" : "Previous day"}
+            title={language === "de" ? "Vorheriger Tag" : "Previous day"}
+            onClick={() => setMobileDayIndex((current) => Math.max(0, current - 1))}
+            disabled={mobileDayIndex <= 0}
+          >
+            ←
+          </button>
+          <div className="planning-mobile-day-label">
+            {formatDayLabel(planningDays[mobileDayIndex].date, language)}
+          </div>
+          <button
+            type="button"
+            className="icon-btn"
+            aria-label={language === "de" ? "Nächster Tag" : "Next day"}
+            title={language === "de" ? "Nächster Tag" : "Next day"}
+            onClick={() => setMobileDayIndex((current) => Math.min(planningDays.length - 1, current + 1))}
+            disabled={mobileDayIndex >= planningDays.length - 1}
+          >
+            →
+          </button>
+        </div>
+      )}
       <div className="row wrap task-view-toggle planning-task-type-toggle">
         <button
           type="button"
@@ -90,10 +142,21 @@ export function PlanningPage() {
       </div>
       <div className="planning-calendar-scroll">
         <div className="planning-calendar">
-        {(planningWeek?.days ?? []).map((day) => {
+        {planningDays.map((day, dayIndex) => {
           const dayTasks = sortTasksByDueTime(day.tasks);
+          const dayClassName = [
+            day.date === todayIso ? "planning-day planning-day-today" : "planning-day",
+            "planning-day-col",
+            isPhoneViewport
+              ? dayIndex === mobileDayIndex
+                ? "planning-day-mobile-active"
+                : "planning-day-mobile-hidden"
+              : "",
+          ]
+            .filter(Boolean)
+            .join(" ");
           return (
-            <div key={day.date} className={day.date === todayIso ? "planning-day planning-day-today" : "planning-day"}>
+            <div key={day.date} className={dayClassName}>
               <div className="planning-day-head">{formatDayLabel(day.date, language)}</div>
               <ul>
               {(day.absences ?? []).map((absence: any, index: number) => (

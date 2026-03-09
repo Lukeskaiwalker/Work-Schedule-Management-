@@ -126,6 +126,7 @@ import {
   isArchivedProjectStatus,
   formatProjectTitle,
   formatProjectTitleParts,
+  projectLocationAddress,
   projectPayloadFromForm,
 } from "./utils/projects";
 import {
@@ -208,6 +209,7 @@ export function App() {
 
   const [user, setUser] = useState<User | null>(null);
   const [mainView, setMainView] = useState<MainView>("overview");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [overviewShortcutBackVisible, setOverviewShortcutBackVisible] = useState(false);
   const [projectTab, setProjectTab] = useState<ProjectTab>("overview");
   const [error, setError] = useState<string>("");
@@ -449,6 +451,10 @@ export function App() {
   }, [materialCatalogQuery]);
 
   useEffect(() => {
+    setSidebarOpen(false);
+  }, [mainView]);
+
+  useEffect(() => {
     return () => {
       reportImageFilesRef.current.forEach((entry) => {
         URL.revokeObjectURL(entry.preview_url);
@@ -516,10 +522,7 @@ export function App() {
     return formatServerDateTime(raw, language);
   }, [projectOverviewDetails?.project?.last_updated_at, activeProject?.last_updated_at, language]);
   const activeProjectAddress = useMemo(() => {
-    if (!activeProject) return "";
-    const address = (activeProject.customer_address ?? "").trim();
-    if (address) return address;
-    return "";
+    return projectLocationAddress(activeProject);
   }, [activeProject]);
   const activeProjectMapQuery = useMemo(() => {
     if (!activeProjectAddress) return "";
@@ -626,6 +629,7 @@ export function App() {
           project.name,
           project.customer_name ?? "",
           project.customer_address ?? "",
+          project.construction_site_address ?? "",
         ]
           .join(" ")
           .toLowerCase();
@@ -842,6 +846,7 @@ export function App() {
           project.name,
           project.customer_name ?? "",
           project.customer_address ?? "",
+          project.construction_site_address ?? "",
         ]
           .join(" ")
           .toLowerCase();
@@ -1236,13 +1241,13 @@ export function App() {
     return formatDateISOLocal(parsed);
   }, [activeProject?.last_status_at]);
   const activeProjectTicketAddress = useMemo(() => {
-    const address = (activeProject?.customer_address ?? "").trim();
+    const address = projectLocationAddress(activeProject);
     if (address) return address;
     const fallback = [(activeProject?.customer_name ?? "").trim(), (activeProject?.name ?? "").trim()]
       .filter((part) => part.length > 0)
       .join(", ");
     return fallback || "-";
-  }, [activeProject?.customer_address, activeProject?.customer_name, activeProject?.name]);
+  }, [activeProject]);
   const projectReportedHoursTotal = useMemo(() => {
     const raw = projectOverviewDetails?.finance?.reported_hours_total ?? projectFinance?.reported_hours_total ?? 0;
     const parsed = Number(raw);
@@ -2958,6 +2963,7 @@ export function App() {
       last_status_at: isoToLocalDateTimeInput(project.last_status_at),
       customer_name: project.customer_name ?? "",
       customer_address: project.customer_address ?? "",
+      construction_site_address: project.construction_site_address ?? "",
       customer_contact: project.customer_contact ?? "",
       customer_email: project.customer_email ?? "",
       customer_phone: project.customer_phone ?? "",
@@ -3161,7 +3167,7 @@ export function App() {
       `Assignees: ${getTaskAssigneeLabel(task)}`,
     ].filter((line) => line.length > 0);
 
-    const location = (project?.customer_address ?? "").trim();
+    const location = projectLocationAddress(project);
     const ics = [
       "BEGIN:VCALENDAR",
       "VERSION:2.0",
@@ -3663,6 +3669,7 @@ export function App() {
             "last_status_at",
             "customer_name",
             "customer_address",
+            "construction_site_address",
             "customer_contact",
             "customer_email",
             "customer_phone",
@@ -4032,6 +4039,7 @@ export function App() {
             last_status_at: null,
             customer_name: "",
             customer_address: "",
+            construction_site_address: "",
             customer_contact: "",
             customer_email: "",
             customer_phone: "",
@@ -5908,6 +5916,8 @@ export function App() {
     // ── Navigation ────────────────────────────────────────────────────────────
     mainView,
     setMainView,
+    sidebarOpen,
+    setSidebarOpen,
     overviewShortcutBackVisible,
     setOverviewShortcutBackVisible,
     projectTab,

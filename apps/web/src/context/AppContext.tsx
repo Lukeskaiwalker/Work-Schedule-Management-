@@ -88,6 +88,8 @@ export interface AppContextValue {
   // ── Navigation ─────────────────────────────────────────────────────────────
   mainView: MainView;
   setMainView: (view: MainView) => void;
+  sidebarOpen: boolean;
+  setSidebarOpen: (open: boolean | ((current: boolean) => boolean)) => void;
   overviewShortcutBackVisible: boolean;
   setOverviewShortcutBackVisible: (visible: boolean) => void;
   projectTab: ProjectTab;

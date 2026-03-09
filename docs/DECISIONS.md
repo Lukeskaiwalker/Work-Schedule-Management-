@@ -14,9 +14,20 @@
   - Pros: avoids per-test schema churn and aligns tests with long-lived schema assumptions.
   - Cons: SQL reset helper is slightly more complex than `drop_all/create_all`.
 
-## 2026-03-04 - Material catalog image enrichment is lazy, EAN-based, and cached
+## 2026-03-09 - Material catalog image lookup runs in gated phases and caches binaries locally
 - Status: accepted
-- Decision: Resolve product images by EAN at runtime for newly touched material catalog rows (search results and add-to-needs), not as a full import-time batch. Lookup order is manufacturer-site first, then open EAN sources. Persist lookup result metadata (`image_url`, `image_source`, `image_checked_at`) in catalog rows and preserve it across reimports.
+- Decision:
+  - run image resolution in two phases:
+    - phase 1: EAN lookup on `unielektro.de`,
+    - phase 2: manufacturer/open-EAN fallback only after phase 1 finished for all currently pending rows.
+  - cache resolved image binaries in local uploads storage and expose them via stable API URLs (`/api/materials/catalog/images/{external_key}`) instead of relying only on third-party hotlinks.
+- Tradeoffs:
+  - Pros: aligns lookup order with operational requirement, improves deterministic progress visibility, and keeps thumbnails available across app updates/redeploys.
+  - Cons: adds local storage usage and one extra image-serving endpoint that must remain available for cached thumbnails.
+
+## 2026-03-04 - Material catalog image enrichment is lazy, EAN-based, and cached
+- Status: superseded (see 2026-03-09 phased lookup/cache decision)
+- Decision: Resolve product images by EAN at runtime for newly touched material catalog rows (search results and add-to-needs), not as a full import-time batch. Persist lookup result metadata (`image_url`, `image_source`, `image_checked_at`) in catalog rows and preserve it across reimports.
 - Tradeoffs:
   - Pros: avoids expensive full-catalog internet lookups on large DATANORM imports and still provides automatic thumbnails for active items.
   - Cons: first lookup for an unseen item can add slight latency until cached; image coverage depends on external source availability.
@@ -1846,3 +1857,14 @@
 - Tradeoffs:
   - Pros: smaller initial JS payload and faster first paint on slower clients; page code downloads on demand.
   - Cons: first navigation to a not-yet-loaded page can show a brief suspense fallback under high latency.
+
+## 2026-03-09 - Split customer and construction-site addresses on projects
+- Status: accepted
+- Decision:
+  - Keep `customer_address` as contact/customer data and introduce separate `construction_site_address` on projects.
+  - Resolve map/weather/location features from `construction_site_address` first, with automatic fallback to `customer_address`.
+  - Show both addresses explicitly in project overview contact details to avoid ambiguity.
+  - Extend import/template headers so construction-site address can be populated from admin project imports.
+- Tradeoffs:
+  - Pros: clearer data semantics and correct location behavior for field operations (weather/map), while preserving backward compatibility with existing customer-address-only data.
+  - Cons: one additional field across model/schema/UI/import paths and an extra migration to maintain.

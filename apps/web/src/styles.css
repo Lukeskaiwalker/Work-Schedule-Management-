@@ -11,6 +11,8 @@
   --ok-bg: #e9f7f0;
   --ok-line: #b5e0c2;
   --radius: 14px;
+  --sidebar-width: 320px;
+  --sidebar-mobile-width: 280px;
 }
 
 * {
@@ -41,7 +43,7 @@ code {
 }
 
 .app-error-boundary {
-  min-height: 100vh;
+  min-height: 100dvh;
   display: grid;
   place-items: center;
   padding: 1rem;
@@ -73,7 +75,7 @@ code {
 }
 
 .login-shell {
-  min-height: 100vh;
+  min-height: 100dvh;
   display: grid;
   place-items: center;
   padding: 1rem;
@@ -81,7 +83,7 @@ code {
 
 .app-shell {
   display: grid;
-  min-height: 100vh;
+  min-height: 100dvh;
   grid-template-columns: 1fr;
 }
 
@@ -93,6 +95,10 @@ code {
   flex-direction: column;
   gap: 1rem;
   min-height: 0;
+}
+
+.sidebar-overlay {
+  display: none;
 }
 
 .sidebar-main {
@@ -609,6 +615,18 @@ button[type="submit"] {
   min-width: 0;
 }
 
+.sidebar-toggle {
+  display: none;
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  padding: 0;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  line-height: 1;
+}
+
 .workspace-header h1 {
   margin: 0;
 }
@@ -631,6 +649,10 @@ button[type="submit"] {
   display: flex;
   align-items: center;
   gap: 0.6rem;
+}
+
+.workspace-header-actions {
+  min-width: 0;
 }
 
 .linklike {
@@ -2185,13 +2207,13 @@ li {
 
 .planning-only {
   margin-top: 1rem;
-  min-height: calc(100vh - 210px);
+  min-height: calc(100dvh - 210px);
   align-content: start;
 }
 
 .calendar-overview {
   margin-top: 1rem;
-  min-height: calc(100vh - 210px);
+  min-height: calc(100dvh - 210px);
   align-content: start;
 }
 
@@ -2232,6 +2254,22 @@ li {
 
 .planning-week-picker {
   min-width: min(220px, 100%);
+}
+
+.planning-mobile-day-nav {
+  margin-top: -0.1rem;
+  margin-bottom: 0.25rem;
+  justify-content: space-between;
+}
+
+.planning-mobile-day-label {
+  min-width: 0;
+  text-align: center;
+  font-weight: 700;
+  padding: 0.4rem 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
 }
 
 .calendar-weeks-grid {
@@ -3143,6 +3181,12 @@ li {
   gap: 0.7rem;
 }
 
+.chat-mobile-back-btn {
+  display: none;
+  white-space: nowrap;
+  min-height: 32px;
+}
+
 .chat-thread-meta {
   display: flex;
   align-items: center;
@@ -3865,6 +3909,12 @@ table {
   border-collapse: collapse;
 }
 
+.table-responsive {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
 th,
 td {
   border-bottom: 1px solid var(--line);
@@ -3873,9 +3923,13 @@ td {
 }
 
 @media (min-width: 900px) {
+  .sidebar-toggle {
+    display: none;
+  }
+
   .app-shell {
-    grid-template-columns: 320px 1fr;
-    height: 100vh;
+    grid-template-columns: var(--sidebar-width) 1fr;
+    height: 100dvh;
     overflow: hidden;
   }
 
@@ -3883,13 +3937,18 @@ td {
     border-bottom: 0;
     border-right: 1px solid var(--line);
     min-height: 0;
-    height: 100vh;
+    height: 100dvh;
+    width: var(--sidebar-width);
+    position: relative;
+    inset: auto;
+    transform: translateX(0);
+    box-shadow: none;
     overflow: hidden;
   }
 
   .content {
     min-height: 0;
-    height: 100vh;
+    height: 100dvh;
     overflow-y: auto;
   }
 
@@ -3928,6 +3987,49 @@ td {
 }
 
 @media (max-width: 899px) {
+  .sidebar-toggle {
+    display: inline-flex;
+  }
+
+  .app-shell {
+    position: relative;
+    min-height: 100dvh;
+  }
+
+  .sidebar {
+    position: fixed;
+    inset: 0 auto 0 0;
+    width: min(var(--sidebar-mobile-width), calc(100vw - 2rem));
+    height: 100dvh;
+    border-right: 1px solid var(--line);
+    border-bottom: 0;
+    transform: translateX(-100%);
+    transition: transform 0.22s ease;
+    visibility: hidden;
+    pointer-events: none;
+    z-index: 200;
+    box-shadow: 0 10px 32px rgba(12, 29, 44, 0.22);
+    overflow-y: auto;
+  }
+
+  .sidebar.sidebar--open {
+    transform: translateX(0);
+    visibility: visible;
+    pointer-events: auto;
+  }
+
+  .sidebar-overlay.active {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(8, 15, 24, 0.4);
+    z-index: 199;
+  }
+
+  .content {
+    min-height: 100dvh;
+  }
+
   .project-weather-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -4008,6 +4110,116 @@ td {
   .required-hours-row {
     align-items: stretch;
     flex-direction: column;
+  }
+}
+
+/* ── 768 px — tablet portrait ─────────────────────────────── */
+@media (max-width: 768px) {
+  .workspace-header {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+  }
+
+  .workspace-header-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .table-responsive table {
+    min-width: 600px;
+  }
+
+  .worker-grid-head {
+    display: none;
+  }
+
+  .worker-grid-row {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .worker-grid-row button {
+    grid-column: span 2;
+  }
+
+  .report-material-grid-head {
+    display: none;
+  }
+
+  .report-material-grid-row {
+    grid-template-columns: 1fr;
+  }
+
+  .report-material-grid-row button {
+    grid-column: auto;
+  }
+
+  .chat-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .chat-thread-list {
+    display: grid;
+  }
+
+  .chat-message-pane {
+    display: none;
+  }
+
+  .chat-layout.thread-selected .chat-thread-list {
+    display: none;
+  }
+
+  .chat-layout.thread-selected .chat-message-pane {
+    display: grid;
+  }
+
+  .chat-mobile-back-btn {
+    display: inline-flex;
+  }
+
+  .project-overview-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ── 480 px — phone ───────────────────────────────────────── */
+@media (max-width: 480px) {
+  .sidebar {
+    width: min(92vw, var(--sidebar-mobile-width));
+  }
+
+  .planning-calendar {
+    display: block;
+    min-width: 100%;
+  }
+
+  .planning-day-col {
+    margin-bottom: 0.85rem;
+  }
+
+  .planning-day-mobile-hidden {
+    display: none;
+  }
+
+  .planning-day-mobile-active {
+    display: grid;
+  }
+
+  .planning-day {
+    min-height: 220px;
+    max-height: none;
+  }
+
+  .planning-mobile-day-nav {
+    margin-bottom: 0.4rem;
+  }
+
+  .planning-mobile-day-label {
+    flex: 1 1 auto;
+  }
+
+  .chat-panel {
+    --chat-panel-height: calc(100dvh - 170px);
   }
 }
 

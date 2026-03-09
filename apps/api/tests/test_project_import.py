@@ -150,6 +150,28 @@ def test_import_projects_from_excel_maps_german_status_and_notiz(tmp_path: Path)
         db.close()
 
 
+def test_import_projects_from_excel_maps_construction_site_address(tmp_path: Path):
+    file_path = tmp_path / "projects_site_address.xlsx"
+    _write_workbook(
+        file_path,
+        [
+            ["Projektnummer", "Projektname", "Kundenadresse", "Baustellenadresse"],
+            ["2026-4201", "PV Umbau", "Kundenweg 1, 12345 Berlin", "Baustellenweg 77, 12349 Berlin"],
+        ],
+    )
+
+    db = SessionLocal()
+    try:
+        stats = import_projects_from_excel(db, str(file_path), source_label=file_path.name)
+        assert stats.created == 1
+        project = db.scalars(select(Project).where(Project.project_number == "2026-4201")).first()
+        assert project is not None
+        assert project.customer_address == "Kundenweg 1, 12345 Berlin"
+        assert project.construction_site_address == "Baustellenweg 77, 12349 Berlin"
+    finally:
+        db.close()
+
+
 def test_import_projects_from_excel_imports_last_status_datetime_and_deduplicates(tmp_path: Path):
     file_path = tmp_path / "projects_multi_sheet.xlsx"
     wb = Workbook()

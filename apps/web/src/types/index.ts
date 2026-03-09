@@ -29,6 +29,7 @@ export type Project = {
   last_updated_at?: string | null;
   customer_name?: string | null;
   customer_address?: string | null;
+  construction_site_address?: string | null;
   customer_contact?: string | null;
   customer_email?: string | null;
   customer_phone?: string | null;
@@ -163,11 +164,13 @@ export type MaterialCatalogImportState = {
   duplicates_skipped: number;
   imported_at?: string | null;
   image_lookup_enabled?: boolean;
+  image_lookup_phase?: string | null;
   image_last_run_processed?: number;
   image_total_items?: number;
   image_items_with_image?: number;
   image_items_checked?: number;
   image_items_pending?: number;
+  image_items_waiting_fallback?: number;
   image_items_waiting_retry?: number;
   image_items_not_found?: number;
   image_last_checked_at?: string | null;
@@ -539,6 +542,7 @@ export type ProjectFormState = {
   last_status_at: string;
   customer_name: string;
   customer_address: string;
+  construction_site_address: string;
   customer_contact: string;
   customer_email: string;
   customer_phone: string;

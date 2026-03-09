@@ -118,12 +118,24 @@
 - This reduces risk of silent schema drift and inconsistent authorization/data semantics between environments.
 - Added top-level React error boundary to fail safe with a controlled recovery screen instead of rendering broken/undefined UI states after runtime component crashes.
 
+## Iteration Security Notes (2026-03-09, phased material image lookup + local cache)
+- Material catalog lookup flow now enforces phase ordering:
+  - phase 1 hits `unielektro.de` by EAN,
+  - phase 2 (manufacturer/open-EAN fallback) only starts after phase 1 has covered all pending rows.
+- Resolved product images are now downloaded and cached into local uploads storage (`/data/uploads/material_catalog_images`) and served via API path `/api/materials/catalog/images/{external_key}`.
+- Outbound lookup safety controls remain in place:
+  - only `http/https`,
+  - localhost/private/link-local/restricted IP targets are rejected before fetch.
+- Download safety controls for cached binaries:
+  - only image media types are accepted for local cache writes,
+  - per-image size cap is enforced (`8 MB`) to limit abuse/memory pressure.
+
 ## Iteration Security Notes (2026-03-04, material image lookup)
 - Catalog image enrichment now performs outbound HTTP lookups by EAN. To reduce abuse surface:
   - only `http/https` URLs are accepted,
   - localhost/private/link-local IP targets are rejected,
   - manufacturer-first lookup is domain-filtered before page fetch.
-- Image data is stored as URL metadata only (`image_url`), not as downloaded binary blobs, so no new file-at-rest storage path is introduced.
+- This iteration behavior was superseded on 2026-03-09 by local binary caching in uploads storage.
 - Lookup attempts are cached with `image_checked_at` and throttled via retry window (`MATERIAL_CATALOG_IMAGE_LOOKUP_RETRY_HOURS`) to limit repeated outbound calls.
 - Duplicate import rows continue to be ignored deterministically, and skipped counts are now surfaced to users/operators for import transparency.
 
@@ -647,3 +659,9 @@
 - No authentication or authorization model changes.
 - Change scope is frontend bundling/render strategy only (`React.lazy`, `Suspense`, conditional page mounting).
 - No API endpoint, permission boundary, or data-access path changes.
+
+## Iteration Security Notes (2026-03-09, dual project addresses + weather/map source selection)
+- No authentication or authorization model changes.
+- New `construction_site_address` field is project metadata under existing project access controls.
+- Weather endpoint still requires normal project visibility/access; only source-address selection logic changed (construction-site first, customer fallback).
+- No new external providers, credentials, or network destinations introduced.

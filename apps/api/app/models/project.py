@@ -21,6 +21,7 @@ class Project(Base):
     last_updated_at: Mapped[datetime | None] = mapped_column(DateTime, default=utcnow, nullable=True)
     customer_name: Mapped[str | None] = mapped_column(String(255))
     customer_address: Mapped[str | None] = mapped_column(String(500))
+    construction_site_address: Mapped[str | None] = mapped_column(String(500))
     customer_contact: Mapped[str | None] = mapped_column(String(255))
     customer_email: Mapped[str | None] = mapped_column(String(255))
     customer_phone: Mapped[str | None] = mapped_column(String(128))

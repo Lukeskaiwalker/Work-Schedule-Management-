@@ -13,6 +13,7 @@ class ProjectCreate(BaseModel):
     last_status_at: datetime | None = None
     customer_name: str | None = None
     customer_address: str | None = None
+    construction_site_address: str | None = None
     customer_contact: str | None = None
     customer_email: str | None = None
     customer_phone: str | None = None
@@ -32,6 +33,7 @@ class ProjectUpdate(BaseModel):
     last_status_at: datetime | None = None
     customer_name: str | None = None
     customer_address: str | None = None
+    construction_site_address: str | None = None
     customer_contact: str | None = None
     customer_email: str | None = None
     customer_phone: str | None = None
@@ -52,6 +54,7 @@ class ProjectOut(BaseModel):
     last_updated_at: datetime | None = None
     customer_name: str | None = None
     customer_address: str | None = None
+    construction_site_address: str | None = None
     customer_contact: str | None = None
     customer_email: str | None = None
     customer_phone: str | None = None

@@ -397,7 +397,8 @@ export function ProfilePage() {
       {isAdmin && (
         <div className="card profile-admin-center-card">
           <h3>{language === "de" ? "Admin Center" : "Admin Center"}</h3>
-          <table>
+          <div className="table-responsive">
+            <table>
             <thead>
               <tr>
                 <th>ID</th>
@@ -527,7 +528,8 @@ export function ProfilePage() {
                 </tr>
               )}
             </tbody>
-          </table>
+            </table>
+          </div>
           <div className="admin-users-archive">
             <h4>{language === "de" ? "Benutzerarchiv" : "User archive"}</h4>
             <ul className="task-list">

@@ -154,6 +154,23 @@ export function ProjectModal() {
             </small>
           </label>
           <label>
+            {language === "de" ? "Baustellenadresse" : "Construction site address"}
+            <textarea
+              value={projectForm.construction_site_address}
+              onChange={(event) => updateProjectFormField("construction_site_address", event.target.value)}
+              placeholder={
+                language === "de"
+                  ? "Strasse Hausnummer, PLZ Ort, Land"
+                  : "Street and number, ZIP City, Country"
+              }
+            />
+            <small className="muted">
+              {language === "de"
+                ? "Wird für Karte und Wetter genutzt. Falls leer, wird die Kundenadresse verwendet."
+                : "Used for map and weather. If empty, customer address is used."}
+            </small>
+          </label>
+          <label>
             {language === "de" ? "Kontaktperson" : "Contact person"}
             <input
               value={projectForm.customer_contact}

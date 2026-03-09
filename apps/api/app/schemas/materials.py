@@ -25,11 +25,13 @@ class MaterialCatalogImportStateOut(BaseModel):
     duplicates_skipped: int = 0
     imported_at: datetime | None = None
     image_lookup_enabled: bool = False
+    image_lookup_phase: str | None = None
     image_last_run_processed: int = 0
     image_total_items: int = 0
     image_items_with_image: int = 0
     image_items_checked: int = 0
     image_items_pending: int = 0
+    image_items_waiting_fallback: int = 0
     image_items_waiting_retry: int = 0
     image_items_not_found: int = 0
     image_last_checked_at: datetime | None = None

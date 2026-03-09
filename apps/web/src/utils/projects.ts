@@ -120,6 +120,13 @@ export function preferredProjectDisplayName(customerName?: string | null, projec
   return String(projectName ?? "").trim();
 }
 
+export function projectLocationAddress(project: Pick<Project, "construction_site_address" | "customer_address"> | null | undefined) {
+  if (!project) return "";
+  const constructionSiteAddress = String(project.construction_site_address ?? "").trim();
+  if (constructionSiteAddress) return constructionSiteAddress;
+  return String(project.customer_address ?? "").trim();
+}
+
 export function formatProjectTitle(
   projectNumber?: string | null,
   customerName?: string | null,
@@ -166,6 +173,7 @@ export function projectPayloadFromForm(form: ProjectFormState) {
     last_status_at: localDateTimeInputToIso(form.last_status_at),
     customer_name: form.customer_name.trim(),
     customer_address: normalizeAddressInput(form.customer_address),
+    construction_site_address: normalizeAddressInput(form.construction_site_address),
     customer_contact: form.customer_contact.trim(),
     customer_email: form.customer_email.trim(),
     customer_phone: form.customer_phone.trim(),

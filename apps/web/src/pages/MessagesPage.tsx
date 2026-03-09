@@ -38,11 +38,21 @@ export function MessagesPage() {
     deleteThread,
   } = useAppContext();
 
+  const [mobileThreadListOpen, setMobileThreadListOpen] = React.useState(true);
+
+  React.useEffect(() => {
+    if (mainView === "messages") {
+      setMobileThreadListOpen(true);
+    }
+  }, [mainView]);
+
   if (mainView !== "messages") return null;
 
+  const threadSelected = !mobileThreadListOpen;
+
   return (
-    <section className="chat-layout">
-      <aside className="thread-panel">
+    <section className={threadSelected ? "chat-layout thread-selected" : "chat-layout"}>
+      <aside className="thread-panel chat-thread-list">
         <div className="row thread-panel-head">
           <h3>{language === "de" ? "Threads" : "Threads"}</h3>
           <div className="thread-panel-actions">
@@ -73,7 +83,10 @@ export function MessagesPage() {
               <li key={thread.id}>
                 <button
                   className={activeThreadId === thread.id ? "active thread-item" : "thread-item"}
-                  onClick={() => setActiveThreadId(thread.id)}
+                  onClick={() => {
+                    setActiveThreadId(thread.id);
+                    setMobileThreadListOpen(false);
+                  }}
                 >
                   <ThreadIconBadge
                     threadId={thread.id}
@@ -105,7 +118,7 @@ export function MessagesPage() {
         </ul>
       </aside>
 
-      <div className="chat-panel">
+      <div className="chat-panel chat-message-pane">
         {!activeThread && (
           <div className="chat-empty">{language === "de" ? "Bitte einen Thread wählen." : "Please select a thread."}</div>
         )}
@@ -114,6 +127,14 @@ export function MessagesPage() {
           return (
             <>
             <div className="chat-panel-head">
+              <button
+                type="button"
+                className="icon-btn chat-mobile-back-btn"
+                onClick={() => setMobileThreadListOpen(true)}
+                aria-label={language === "de" ? "Zur Thread-Liste" : "Back to thread list"}
+              >
+                ← {language === "de" ? "Threads" : "Threads"}
+              </button>
               <div className="chat-thread-meta">
                 <ThreadIconBadge
                   threadId={activeThread.id}

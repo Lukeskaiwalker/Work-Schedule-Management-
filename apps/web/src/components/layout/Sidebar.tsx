@@ -1,4 +1,4 @@
-import type { RefObject } from "react";
+import { useEffect, useState, type RefObject } from "react";
 import { useAppContext } from "../../context/AppContext";
 import { NotificationPanel } from "../NotificationPanel";
 import { BellIcon, SidebarNavIcon, SearchIcon } from "../icons";
@@ -13,6 +13,8 @@ export function Sidebar() {
     workspaceModeLabel,
     mainView,
     setMainView,
+    sidebarOpen,
+    setSidebarOpen,
     navViews,
     mainLabels,
     hasUnreadThreads,
@@ -52,8 +54,36 @@ export function Sidebar() {
     projectTitleParts,
   } = useAppContext();
 
+  const [isMobileSidebarViewport, setIsMobileSidebarViewport] = useState(() =>
+    typeof window !== "undefined" ? window.innerWidth <= 899 : false,
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const onResize = () => setIsMobileSidebarViewport(window.innerWidth <= 899);
+    onResize();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  useEffect(() => {
+    if (!isMobileSidebarViewport || !sidebarOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setSidebarOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isMobileSidebarViewport, sidebarOpen, setSidebarOpen]);
+
+  const sidebarVisible = !isMobileSidebarViewport || sidebarOpen;
+  const closeSidebar = () => setSidebarOpen(false);
+
   return (
-    <aside className="sidebar">
+    <>
+      <aside
+        className={sidebarVisible ? "sidebar sidebar--open" : "sidebar"}
+        aria-hidden={isMobileSidebarViewport ? !sidebarOpen : false}
+      >
       <div className="sidebar-main">
         <div className="brand-block">
           <img src="/logo.jpeg" alt="Company logo" className="brand-logo" />
@@ -64,14 +94,20 @@ export function Sidebar() {
                 <button
                   type="button"
                   className={workspaceMode === "construction" ? "active" : ""}
-                  onClick={() => setWorkspaceMode("construction")}
+                  onClick={() => {
+                    setWorkspaceMode("construction");
+                    closeSidebar();
+                  }}
                 >
                   {language === "de" ? "Baustelle" : "Construction"}
                 </button>
                 <button
                   type="button"
                   className={workspaceMode === "office" ? "active" : ""}
-                  onClick={() => setWorkspaceMode("office")}
+                  onClick={() => {
+                    setWorkspaceMode("office");
+                    closeSidebar();
+                  }}
                 >
                   {language === "de" ? "Büro" : "Office"}
                 </button>
@@ -94,6 +130,7 @@ export function Sidebar() {
                 setConstructionBackView(null);
                 if (item === "my_tasks" || item === "office_tasks") setMyTasksBackProjectId(null);
                 setMainView(item);
+                closeSidebar();
               }}
             >
               <span className="nav-item-content">
@@ -135,7 +172,10 @@ export function Sidebar() {
               <button
                 type="button"
                 className="create-new-btn"
-                onClick={openCreateProjectModal}
+                onClick={() => {
+                  openCreateProjectModal();
+                  closeSidebar();
+                }}
                 aria-label={language === "de" ? "Neues Projekt erstellen" : "Create new project"}
                 title={language === "de" ? "Neues Projekt erstellen" : "Create new project"}
               >
@@ -173,6 +213,7 @@ export function Sidebar() {
                       setOverviewShortcutBackVisible(false);
                       setConstructionBackView(null);
                       setMainView("projects_archive");
+                      closeSidebar();
                       return;
                     }
                     setActiveProjectId(project.id);
@@ -181,6 +222,7 @@ export function Sidebar() {
                     setOverviewShortcutBackVisible(false);
                     setConstructionBackView(null);
                     setMainView("project");
+                    closeSidebar();
                   }}
                 >
                   <span className="project-item-main">
@@ -208,6 +250,7 @@ export function Sidebar() {
                   setOverviewShortcutBackVisible(false);
                   setConstructionBackView(null);
                   setMainView("projects_archive");
+                  closeSidebar();
                 }}
               >
                 {language === "de" ? "Projektarchiv" : "Project archive"}
@@ -251,12 +294,14 @@ export function Sidebar() {
                     }
                     setMyTasksBackProjectId(null);
                     setMainView("my_tasks");
+                    closeSidebar();
                     return;
                   }
                   if (notif.project_id) {
                     setActiveProjectId(notif.project_id);
                     setProjectTab("overview");
                     setMainView("project");
+                    closeSidebar();
                   }
                 }}
               />
@@ -282,10 +327,24 @@ export function Sidebar() {
                   EN
                 </button>
               </div>
-              <button type="button" className="pre-user-action" onClick={openProfileViewFromMenu}>
+              <button
+                type="button"
+                className="pre-user-action"
+                onClick={() => {
+                  openProfileViewFromMenu();
+                  closeSidebar();
+                }}
+              >
                 {language === "de" ? "Benutzerdaten" : "User data"}
               </button>
-              <button type="button" className="pre-user-action" onClick={signOut}>
+              <button
+                type="button"
+                className="pre-user-action"
+                onClick={() => {
+                  signOut();
+                  closeSidebar();
+                }}
+              >
                 {language === "de" ? "Abmelden" : "Sign out"}
               </button>
               <div className="pre-user-meta">
@@ -338,6 +397,14 @@ export function Sidebar() {
           <small>{sidebarNowLabel}</small>
         </div>
       </div>
-    </aside>
+      </aside>
+      {isMobileSidebarViewport && sidebarOpen && (
+        <div
+          className="sidebar-overlay active"
+          aria-hidden="true"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+    </>
   );
 }

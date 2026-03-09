@@ -15,6 +15,18 @@
 - Local browser smoke (manual automation):
   - Start local API + web dev servers, then run Playwright CLI flow for login/project/report submit.
 
+## Latest Result (2026-03-09, phased material image lookup + local cache endpoint)
+- Targeted API coverage:
+  - `docker compose run --rm api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_material_catalog.py'`: pass (`7 passed`).
+  - Added assertions for:
+    - strict two-pass lookup behavior (`unielektro` first, fallback on next pass),
+    - cached image endpoint delivery (`/api/materials/catalog/images/{external_key}`),
+    - state payload fields for lookup phase and waiting-fallback counts.
+- One-command checks:
+  - `./scripts/test.sh`: pass (`79 passed`, web build pass).
+- Frontend build:
+  - `cd apps/web && npm run build`: pass.
+
 ## Latest Result (2026-03-09, migration + error-boundary + bell-icon follow-on)
 - One-command checks:
   - `./scripts/test.sh`: pass (`76 passed`, web build pass).
@@ -1679,3 +1691,20 @@
   - Full validation script: pass (`76 passed`, web build pass).
 - Coverage notes:
   - Verified lazy/suspense conversion compiles and bundles correctly with readable chunk names.
+
+## Iteration Result (2026-03-09, dual project addresses + construction-site weather/map fallback)
+- Commands run:
+  - `docker compose run --rm api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_projects.py tests/test_project_import.py'`
+  - `cd apps/web && npx tsc --noEmit`
+  - `cd apps/web && npm run build`
+  - `./scripts/test.sh`
+  - `docker compose run --rm api sh -lc 'cd /app && alembic upgrade head'`
+- Results:
+  - Targeted API tests: pass (`11 passed`).
+  - TypeScript compile check: pass (0 errors).
+  - Web production build: pass.
+  - Full validation script: pass (`78 passed`, web build pass).
+  - Alembic migration check: pass (`20260309_0035` applied).
+- Coverage notes:
+  - Added weather behavior checks to ensure construction-site address is preferred and customer-address fallback works.
+  - Added import mapping check for dedicated construction-site address column.

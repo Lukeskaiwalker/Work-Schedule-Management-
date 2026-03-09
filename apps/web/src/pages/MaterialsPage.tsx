@@ -41,8 +41,10 @@ export function MaterialsPage() {
   const imageWithImage = materialCatalogState?.image_items_with_image ?? 0;
   const imagePending = materialCatalogState?.image_items_pending ?? 0;
   const imageNotFound = materialCatalogState?.image_items_not_found ?? 0;
+  const imageWaitingFallback = materialCatalogState?.image_items_waiting_fallback ?? 0;
   const imageWaitingRetry = materialCatalogState?.image_items_waiting_retry ?? 0;
   const imageLastProcessed = materialCatalogState?.image_last_run_processed ?? 0;
+  const imageLookupPhase = materialCatalogState?.image_lookup_phase ?? null;
   const imageProgress = imageTotal > 0 ? Math.round((imageWithImage / imageTotal) * 100) : 0;
 
   return (
@@ -240,10 +242,23 @@ export function MaterialsPage() {
                   </small>
                   <small className="muted">
                     {language === "de"
-                      ? `Offen: ${imagePending} | Ohne Treffer: ${imageNotFound} | Wartezeit: ${imageWaitingRetry}`
-                      : `Pending: ${imagePending} | Not found: ${imageNotFound} | Waiting retry: ${imageWaitingRetry}`}
+                      ? `Offen: ${imagePending} | Ohne Treffer: ${imageNotFound} | 2. Durchlauf: ${imageWaitingFallback} | Wartezeit: ${imageWaitingRetry}`
+                      : `Pending: ${imagePending} | Not found: ${imageNotFound} | Waiting fallback: ${imageWaitingFallback} | Waiting retry: ${imageWaitingRetry}`}
                   </small>
                   <small className="muted">
+                    {imageLookupPhase
+                      ? `${
+                          language === "de" ? "Phase" : "Phase"
+                        }: ${
+                          imageLookupPhase === "unielektro_first_pass"
+                            ? language === "de"
+                              ? "1. Durchlauf (EAN auf unielektro.de)"
+                              : "Pass 1 (EAN on unielektro.de)"
+                            : language === "de"
+                              ? "2. Durchlauf (Hersteller/Open EAN)"
+                              : "Pass 2 (manufacturer/open EAN)"
+                        } | `
+                      : ""}
                     {language === "de"
                       ? `Letzter Durchlauf: ${imageLastProcessed} Einträge`
                       : `Last run: ${imageLastProcessed} items`}

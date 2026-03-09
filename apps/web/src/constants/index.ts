@@ -188,6 +188,7 @@ export const EMPTY_PROJECT_FORM: ProjectFormState = {
   last_status_at: "",
   customer_name: "",
   customer_address: "",
+  construction_site_address: "",
   customer_contact: "",
   customer_email: "",
   customer_phone: "",
@@ -224,4 +225,3 @@ export const EMPTY_THREAD_MODAL_FORM: ThreadModalState = {
   participant_role_query: "",
   participant_roles: [],
 };
-

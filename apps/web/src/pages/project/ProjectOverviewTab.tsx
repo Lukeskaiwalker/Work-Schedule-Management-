@@ -73,7 +73,7 @@ export function ProjectOverviewTab() {
 
       <aside className="card project-map-card project-map-card-full">
         <div className="project-overview-card-head">
-          <h3 className="project-overview-title">{language === "de" ? "Projektadresse" : "Project location"}</h3>
+          <h3 className="project-overview-title">{language === "de" ? "Baustellenkarte" : "Construction site map"}</h3>
           <button
             type="button"
             className="icon-btn task-edit-icon-btn project-map-copy-btn"
@@ -103,7 +103,9 @@ export function ProjectOverviewTab() {
           </a>
         ) : (
           <small className="muted">
-            {language === "de" ? "Keine Projektadresse hinterlegt." : "No project address available."}
+            {language === "de"
+              ? "Keine Baustellen- oder Kundenadresse hinterlegt."
+              : "No construction site or customer address available."}
           </small>
         )}
       </aside>
@@ -156,6 +158,14 @@ export function ProjectOverviewTab() {
         </small>
         <small>
           {language === "de" ? "Telefon" : "Phone"}: <b>{(activeProject.customer_phone ?? "").trim() || "-"}</b>
+        </small>
+        <small>
+          {language === "de" ? "Kundenadresse" : "Customer address"}:{" "}
+          <b>{(activeProject.customer_address ?? "").trim() || "-"}</b>
+        </small>
+        <small>
+          {language === "de" ? "Baustellenadresse" : "Construction site address"}:{" "}
+          <b>{(activeProject.construction_site_address ?? "").trim() || "-"}</b>
         </small>
         <small>
           {language === "de" ? "Zugang Baustelle" : "Site access"}:{" "}

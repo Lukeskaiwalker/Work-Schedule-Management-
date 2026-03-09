@@ -8,6 +8,13 @@ from app.routers.workflow_helpers import *  # noqa: F401,F403
 router = APIRouter(prefix="", tags=["projects"])
 
 
+def _project_weather_query_address(project: Project) -> str:
+    site_address = _normalize_weather_address(project.construction_site_address)
+    if site_address:
+        return site_address
+    return _normalize_weather_address(project.customer_address)
+
+
 @router.post("/projects", response_model=ProjectOut)
 def create_project(
     payload: ProjectCreate,
@@ -35,6 +42,7 @@ def create_project(
         last_updated_at=utcnow(),
         customer_name=payload.customer_name,
         customer_address=payload.customer_address,
+        construction_site_address=payload.construction_site_address,
         customer_contact=payload.customer_contact,
         customer_email=payload.customer_email,
         customer_phone=payload.customer_phone,
@@ -123,6 +131,7 @@ def update_project(
         "last_status_at",
         "customer_name",
         "customer_address",
+        "construction_site_address",
         "customer_contact",
         "customer_email",
         "customer_phone",
@@ -398,7 +407,7 @@ def get_project_weather(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    query_address = _normalize_weather_address(project.customer_address)
+    query_address = _project_weather_query_address(project)
     cache_row = db.get(ProjectWeatherCache, project_id)
     has_cached_days = bool(cache_row and isinstance(cache_row.payload, dict) and cache_row.payload.get("days"))
     weather_language = _sanitize_weather_language(lang)
@@ -416,7 +425,7 @@ def get_project_weather(
             stale=has_cached_days,
             from_cache=has_cached_days,
             can_refresh=False,
-            message="Project address is missing",
+            message="Project construction site/customer address is missing",
         )
 
     api_key = _effective_openweather_api_key(db)

@@ -6,6 +6,8 @@ export function Header() {
   const {
     language,
     mainView,
+    sidebarOpen,
+    setSidebarOpen,
     setMainView,
     mainLabels,
     showOverviewBackButton,
@@ -29,6 +31,31 @@ export function Header() {
   return (
     <header className="workspace-header">
       <div className="workspace-header-main">
+        <button
+          type="button"
+          className="icon-btn sidebar-toggle"
+          onClick={() => setSidebarOpen((current) => !current)}
+          aria-label={
+            sidebarOpen
+              ? language === "de"
+                ? "Navigation schließen"
+                : "Close navigation"
+              : language === "de"
+                ? "Navigation öffnen"
+                : "Open navigation"
+          }
+          title={
+            sidebarOpen
+              ? language === "de"
+                ? "Navigation schließen"
+                : "Close navigation"
+              : language === "de"
+                ? "Navigation öffnen"
+                : "Open navigation"
+          }
+        >
+          <span aria-hidden="true">{sidebarOpen ? "✕" : "☰"}</span>
+        </button>
         {showOverviewBackButton && (
           <button
             type="button"
@@ -60,7 +87,7 @@ export function Header() {
           )}
         </div>
       </div>
-      <div className="header-tools">
+      <div className="header-tools workspace-header-actions">
         {mainView === "planning" && canManageTasks && (
           <button
             type="button"

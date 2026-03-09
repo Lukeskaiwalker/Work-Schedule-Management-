@@ -77,7 +77,13 @@ CUSTOMER_ADDRESS_KEYS = {
     "adresse",
     "anschrift",
     "kundenadresse",
+}
+
+CONSTRUCTION_SITE_ADDRESS_KEYS = {
+    "construction_site_address",
     "baustellenadresse",
+    "site_address",
+    "baustelle",
 }
 
 CUSTOMER_CONTACT_KEYS = {
@@ -467,11 +473,19 @@ def _load_csv_rows(file_path: Path) -> list[RowData]:
     return rows
 
 
-def _build_fallback_identity(customer_value: Any, name_value: Any, address_value: Any) -> str | None:
+def _build_fallback_identity(
+    customer_value: Any,
+    name_value: Any,
+    customer_address_value: Any,
+    construction_site_address_value: Any,
+) -> str | None:
     identity_parts = [
         _normalize_key(_as_clean_string(customer_value)) if not _is_empty(customer_value) else "",
         _normalize_key(_as_clean_string(name_value)) if not _is_empty(name_value) else "",
-        _normalize_key(_as_clean_string(address_value)) if not _is_empty(address_value) else "",
+        _normalize_key(_as_clean_string(customer_address_value)) if not _is_empty(customer_address_value) else "",
+        _normalize_key(_as_clean_string(construction_site_address_value))
+        if not _is_empty(construction_site_address_value)
+        else "",
     ]
     if any(identity_parts):
         return f"fallback:{'|'.join(identity_parts)}"
@@ -483,12 +497,23 @@ def _row_fallback_identity(row: RowData) -> str | None:
     if _is_empty(name_value):
         name_value = _first_value(row.normalized, {"projekt_anfrage", "customer_name", "kunde"})
     customer_value = _first_value(row.normalized, CUSTOMER_NAME_KEYS)
-    address_value = _first_value(row.normalized, CUSTOMER_ADDRESS_KEYS)
-    return _build_fallback_identity(customer_value, name_value, address_value)
+    customer_address_value = _first_value(row.normalized, CUSTOMER_ADDRESS_KEYS)
+    construction_site_address_value = _first_value(row.normalized, CONSTRUCTION_SITE_ADDRESS_KEYS)
+    return _build_fallback_identity(
+        customer_value,
+        name_value,
+        customer_address_value,
+        construction_site_address_value,
+    )
 
 
 def _project_fallback_identity(project: Project) -> str | None:
-    return _build_fallback_identity(project.customer_name, project.name, project.customer_address)
+    return _build_fallback_identity(
+        project.customer_name,
+        project.name,
+        project.customer_address,
+        project.construction_site_address,
+    )
 
 
 def _row_identity_key(row: RowData) -> str:
@@ -665,6 +690,7 @@ def _import_projects_from_rows(
         last_status_at = _parse_datetime(last_status_at_value)
         customer_name = _first_value(row.normalized, CUSTOMER_NAME_KEYS)
         customer_address = _first_value(row.normalized, CUSTOMER_ADDRESS_KEYS)
+        construction_site_address = _first_value(row.normalized, CONSTRUCTION_SITE_ADDRESS_KEYS)
         customer_contact = _first_value(row.normalized, CUSTOMER_CONTACT_KEYS)
         customer_email = _first_value(row.normalized, CUSTOMER_EMAIL_KEYS)
         customer_phone = _first_value(row.normalized, CUSTOMER_PHONE_KEYS)
@@ -688,6 +714,7 @@ def _import_projects_from_rows(
                 last_status_at=last_status_at,
                 customer_name=_string_or_none(customer_name),
                 customer_address=_string_or_none(customer_address),
+                construction_site_address=_string_or_none(construction_site_address),
                 customer_contact=_string_or_none(customer_contact),
                 customer_email=_string_or_none(customer_email),
                 customer_phone=_string_or_none(customer_phone),
@@ -737,6 +764,13 @@ def _import_projects_from_rows(
         changed = applied or changed
         stats.skipped_project_fields += int(skipped)
         applied, skipped = _set_if_missing(project, "customer_address", _string_or_none(customer_address))
+        changed = applied or changed
+        stats.skipped_project_fields += int(skipped)
+        applied, skipped = _set_if_missing(
+            project,
+            "construction_site_address",
+            _string_or_none(construction_site_address),
+        )
         changed = applied or changed
         stats.skipped_project_fields += int(skipped)
         applied, skipped = _set_if_missing(project, "customer_contact", _string_or_none(customer_contact))

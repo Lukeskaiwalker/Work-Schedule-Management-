@@ -25,6 +25,18 @@
 3. Projects/tasks/planning/tickets/time/files/chat/report: completed (MVP scope).
 4. Backup/restore + docs + test hardening: completed.
 
+## Compacted Update (2026-03-09, material image pipeline hardening)
+- Changed:
+  - material catalog image lookup now runs in two phases:
+    - phase 1: EAN lookup on `unielektro.de`,
+    - phase 2: fallback lookup on manufacturer/open EAN sources only after phase 1 has run across all pending items.
+  - successful lookups are now cached to local disk under uploads storage and exposed through stable API URLs (`/api/materials/catalog/images/{external_key}`), so image assets survive app updates/redeploys.
+  - material catalog state endpoint now exposes lookup phase and waiting-fallback counters for live sync visibility.
+- Verified:
+  - `docker compose run --rm api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_material_catalog.py'`: pass (`7 passed`).
+  - `./scripts/test.sh`: pass (`79 passed`, web build pass).
+- Blockers: none.
+
 ## Compacted Update (2026-03-09, migration hardening + runtime UI resilience)
 - Changed:
   - removed API runtime `create_all()` bootstrap path; API startup now expects migrated schema and raises a clear error when DB schema is missing/outdated.
@@ -2524,4 +2536,21 @@
   - `cd apps/web && npm run build` pass.
   - `ls -lh apps/web/dist/chunks/ | sort -k5 -rh | head -20` shows per-page chunks (`AdminPage-*`, `TimePage-*`, `ProjectPage-*`, etc.).
   - `./scripts/test.sh` pass (`76 passed`, web build pass).
+- Blockers: none.
+
+## Compacted Update (2026-03-09, dual project addresses + construction-site map/weather fallback)
+- Changed:
+  - Added `construction_site_address` to project model/schema/API payloads and responses.
+  - Added Alembic migration `20260309_0035_project_construction_site_address.py` to persist the new DB column.
+  - Updated project weather endpoint to prefer construction-site address and fall back to customer address when missing.
+  - Updated project create/edit UI to capture both addresses.
+  - Updated project overview contact card to display both addresses.
+  - Updated project map/ticket/calendar location resolution to use construction-site address first, then customer address.
+  - Updated project import/header mapping to recognize/import dedicated construction-site address fields.
+- Verified:
+  - `docker compose run --rm api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_projects.py tests/test_project_import.py'` pass (`11 passed`).
+  - `cd apps/web && npx tsc --noEmit` pass.
+  - `cd apps/web && npm run build` pass.
+  - `./scripts/test.sh` pass (`78 passed`, web build pass).
+  - `docker compose run --rm api sh -lc 'cd /app && alembic upgrade head'` pass (applies `20260309_0035`).
 - Blockers: none.
