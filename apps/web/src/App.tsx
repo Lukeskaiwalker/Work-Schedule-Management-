@@ -1,2502 +1,200 @@
 import { ChangeEvent, FormEvent, MouseEvent, PointerEvent, useEffect, useMemo, useRef, useState } from "react";
+import { AppContext } from "./context/AppContext";
+import type { AppContextValue } from "./context/AppContext";
 
 import { apiFetch, apiUploadWithProgress } from "./api/client";
-
-type Language = "en" | "de";
-type TaskView = "my" | "all_open" | "completed" | "projects_overview";
-type TaskType = "construction" | "office" | "customer_appointment";
-
-type User = {
-  id: number;
-  email: string;
-  full_name: string;
-  nickname?: string | null;
-  display_name: string;
-  nickname_set_at?: string | null;
-  role: "admin" | "ceo" | "accountant" | "planning" | "employee";
-  is_active: boolean;
-  required_daily_hours: number;
-  avatar_updated_at?: string | null;
-  invite_sent_at?: string | null;
-  invite_accepted_at?: string | null;
-  password_reset_sent_at?: string | null;
-};
-
-type Project = {
-  id: number;
-  project_number: string;
-  name: string;
-  description?: string;
-  status: string;
-  last_state?: string | null;
-  last_status_at?: string | null;
-  last_updated_at?: string | null;
-  customer_name?: string | null;
-  customer_address?: string | null;
-  customer_contact?: string | null;
-  customer_email?: string | null;
-  customer_phone?: string | null;
-  site_access_type?: string | null;
-  site_access_note?: string | null;
-  extra_attributes?: Record<string, any> | null;
-};
-
-type ProjectClassTaskTemplate = {
-  title: string;
-  description?: string | null;
-  task_type: string;
-};
-
-type ProjectClassTemplate = {
-  id: number;
-  name: string;
-  materials_required?: string | null;
-  tools_required?: string | null;
-  task_templates: ProjectClassTaskTemplate[];
-};
-
-type ProjectFinance = {
-  project_id: number;
-  order_value_net?: number | null;
-  down_payment_35?: number | null;
-  main_components_50?: number | null;
-  final_invoice_15?: number | null;
-  planned_costs?: number | null;
-  actual_costs?: number | null;
-  contribution_margin?: number | null;
-  reported_hours_total?: number | null;
-  planned_hours_total?: number | null;
-  updated_by?: number | null;
-  updated_at?: string | null;
-};
-
-type ProjectActivity = {
-  id: number;
-  project_id: number;
-  actor_user_id?: number | null;
-  actor_name?: string | null;
-  event_type: string;
-  message: string;
-  details?: Record<string, any>;
-  created_at: string;
-};
-
-type ProjectOfficeNote = {
-  report_id: number;
-  report_number?: number | null;
-  report_date: string;
-  created_at: string;
-  office_rework?: string | null;
-  office_next_steps?: string | null;
-};
-
-type ProjectOverviewDetails = {
-  project: Project;
-  open_tasks: number;
-  my_open_tasks: number;
-  finance: ProjectFinance;
-  office_notes: ProjectOfficeNote[];
-  recent_changes: ProjectActivity[];
-};
-
-type ProjectWeatherDay = {
-  date: string;
-  temp_min?: number | null;
-  temp_max?: number | null;
-  description?: string | null;
-  icon?: string | null;
-  precipitation_probability?: number | null;
-  wind_speed?: number | null;
-};
-
-type ProjectWeather = {
-  project_id: number;
-  provider: string;
-  query_address: string;
-  fetched_at?: string | null;
-  next_refresh_at?: string | null;
-  stale: boolean;
-  from_cache: boolean;
-  can_refresh: boolean;
-  message?: string | null;
-  days: ProjectWeatherDay[];
-};
-
-type MaterialNeedStatus = "order" | "on_the_way" | "available" | "completed";
-
-type ProjectMaterialNeed = {
-  id: number;
-  project_id: number;
-  project_number: string;
-  project_name: string;
-  customer_name?: string | null;
-  construction_report_id?: number | null;
-  report_date?: string | null;
-  item: string;
-  material_catalog_item_id?: number | null;
-  article_no?: string | null;
-  unit?: string | null;
-  quantity?: string | null;
-  image_url?: string | null;
-  image_source?: string | null;
-  status: MaterialNeedStatus | string;
-  created_by?: number | null;
-  updated_by?: number | null;
-  created_at: string;
-  updated_at: string;
-};
-
-type MaterialCatalogItem = {
-  id: number;
-  article_no?: string | null;
-  item_name: string;
-  unit?: string | null;
-  manufacturer?: string | null;
-  ean?: string | null;
-  price_text?: string | null;
-  image_url?: string | null;
-  image_source?: string | null;
-  image_checked_at?: string | null;
-  source_file: string;
-  source_line: number;
-};
-
-type MaterialCatalogImportState = {
-  file_count: number;
-  item_count: number;
-  duplicates_skipped: number;
-  imported_at?: string | null;
-};
-
-type ProjectTrackedMaterial = {
-  item: string;
-  unit?: string | null;
-  article_no?: string | null;
-  quantity_total?: number | null;
-  quantity_notes: string[];
-  occurrence_count: number;
-  report_count: number;
-  last_report_date?: string | null;
-};
-
-type Task = {
-  id: number;
-  project_id: number;
-  title: string;
-  description?: string | null;
-  subtasks?: string[];
-  materials_required?: string | null;
-  storage_box_number?: number | null;
-  task_type?: string | null;
-  class_template_id?: number | null;
-  status: string;
-  is_overdue?: boolean | null;
-  due_date?: string | null;
-  start_time?: string | null;
-  assignee_id?: number | null;
-  assignee_ids?: number[];
-  week_start?: string | null;
-  updated_at?: string | null;
-};
-
-type AssignableUser = {
-  id: number;
-  full_name: string;
-  nickname?: string | null;
-  display_name: string;
-  role: string;
-  required_daily_hours: number;
-  avatar_updated_at?: string | null;
-};
-
-type WikiLibraryFile = {
-  path: string;
-  brand: string;
-  folder: string;
-  stem: string;
-  extension: string;
-  file_name: string;
-  mime_type: string;
-  previewable: boolean;
-  size_bytes: number;
-  modified_at: string;
-};
-
-type Ticket = { id: number; title: string; site_address: string; ticket_date: string };
-
-type Thread = {
-  id: number;
-  name: string;
-  visibility?: string;
-  status?: string;
-  is_restricted?: boolean;
-  is_archived?: boolean;
-  created_by?: number | null;
-  project_id?: number | null;
-  project_name?: string | null;
-  site_id?: number | null;
-  icon_updated_at?: string | null;
-  participant_user_ids?: number[];
-  participant_roles?: string[];
-  message_count: number;
-  unread_count: number;
-  last_message_at?: string | null;
-  last_message_preview?: string | null;
-  can_edit?: boolean;
-};
-
-type MessageAttachment = {
-  id: number;
-  file_name: string;
-  content_type: string;
-  created_at: string;
-};
-
-type Message = {
-  id: number;
-  body?: string | null;
-  sender_id: number;
-  created_at: string;
-  attachments: MessageAttachment[];
-};
-
-type ChatRenderRow =
-  | {
-      kind: "day";
-      key: string;
-      label: string;
-    }
-  | {
-      kind: "message";
-      key: string;
-      message: Message;
-      mine: boolean;
-      showAvatar: boolean;
-      showSenderName: boolean;
-      timeLabel: string;
-    };
-
-type TimeCurrent = {
-  server_time: string;
-  clock_entry_id?: number | null;
-  clock_in?: string | null;
-  break_open: boolean;
-  worked_hours_live: number;
-  break_hours_live: number;
-  required_break_hours_live: number;
-  deducted_break_hours_live: number;
-  net_hours_live: number;
-  required_daily_hours: number;
-  daily_net_hours: number;
-  progress_percent_live: number;
-};
-
-type TimeEntry = {
-  id: number;
-  user_id: number;
-  clock_in: string;
-  clock_out?: string | null;
-  is_open: boolean;
-  break_hours: number;
-  required_break_hours: number;
-  deducted_break_hours: number;
-  net_hours: number;
-};
-
-type TimesheetSummary = {
-  user_id: number;
-  total_hours: number;
-  period_start: string;
-  period_end: string;
-};
-
-type MonthWeekRange = {
-  weekStart: string;
-  weekEnd: string;
-  weekNumber: number;
-  weekYear: number;
-  weekdaysInWeek: number;
-};
-
-type MonthWeekHours = MonthWeekRange & {
-  workedHours: number;
-  requiredHours: number;
-};
-
-type PlanningDay = {
-  date: string;
-  tasks: Task[];
-  absences?: PlanningAbsence[];
-};
-
-type PlanningWeek = {
-  week_start: string;
-  week_end: string;
-  days: PlanningDay[];
-};
-
-type PlanningAbsence = {
-  type: "vacation" | "school";
-  user_id: number;
-  user_name: string;
-  label: string;
-  status?: string | null;
-};
-
-type ProjectFolder = {
-  path: string;
-  is_protected: boolean;
-};
-
-type ProjectFile = {
-  id: number;
-  project_id: number;
-  folder?: string;
-  path?: string;
-  file_name: string;
-  content_type: string;
-  created_at: string;
-};
-
-type VacationRequest = {
-  id: number;
-  user_id: number;
-  user_name: string;
-  start_date: string;
-  end_date: string;
-  note?: string | null;
-  status: string;
-  reviewed_by?: number | null;
-  reviewed_at?: string | null;
-  created_at: string;
-};
-
-type SchoolAbsence = {
-  id: number;
-  user_id: number;
-  user_name: string;
-  title: string;
-  start_date: string;
-  end_date: string;
-  recurrence_weekday?: number | null;
-  recurrence_until?: string | null;
-  created_by?: number | null;
-  created_at: string;
-};
-
-type InviteDispatchResponse = {
-  ok: boolean;
-  user_id: number;
-  email: string;
-  sent: boolean;
-  invite_link: string;
-  expires_at: string;
-};
-
-type PasswordResetDispatchResponse = {
-  ok: boolean;
-  user_id: number;
-  email: string;
-  sent: boolean;
-  reset_link: string;
-  expires_at: string;
-};
-
-type NicknameAvailability = {
-  nickname: string;
-  available: boolean;
-  locked: boolean;
-  reason?: string | null;
-};
-
-type WeatherSettings = {
-  provider: string;
-  configured: boolean;
-  masked_api_key: string;
-};
-
-type UpdateStatus = {
-  repository: string;
-  branch: string;
-  current_version?: string | null;
-  current_commit?: string | null;
-  latest_version?: string | null;
-  latest_commit?: string | null;
-  latest_published_at?: string | null;
-  latest_url?: string | null;
-  update_available?: boolean | null;
-  install_supported: boolean;
-  install_mode: string;
-  install_steps: string[];
-  message?: string | null;
-};
-
-type UpdateInstallResponse = {
-  ok: boolean;
-  mode: string;
-  detail: string;
-  ran_steps: string[];
-  dry_run: boolean;
-};
-
-type ReportWorker = {
-  name: string;
-  start_time: string;
-  end_time: string;
-};
-
-type ReportDraft = {
-  customer: string;
-  customer_address: string;
-  customer_contact: string;
-  customer_email: string;
-  customer_phone: string;
-  project_name: string;
-  project_number: string;
-};
-
-type ReportMaterialRow = {
-  id: string;
-  item: string;
-  qty: string;
-  unit: string;
-  article_no: string;
-};
-
-type ConstructionReportCreateResponse = {
-  id: number;
-  project_id: number | null;
-  report_number?: number | null;
-  telegram_sent: boolean;
-  telegram_mode: string;
-  attachment_file_name: string | null;
-  report_images: Array<{ id: string; file_name: string; content_type: string }>;
-  processing_status: string;
-  processing_error?: string | null;
-  follow_up_task_id?: number | null;
-  follow_up_subtask_count?: number;
-};
-
-type ConstructionReportProcessingResponse = {
-  report_id: number;
-  project_id: number | null;
-  report_number?: number | null;
-  processing_status: string;
-  processing_error?: string | null;
-  processed_at?: string | null;
-  telegram_sent: boolean;
-  telegram_mode: string;
-  attachment_file_name: string | null;
-};
-
-type RecentConstructionReport = {
-  id: number;
-  project_id: number | null;
-  report_number?: number | null;
-  user_id?: number | null;
-  user_display_name?: string | null;
-  project_number?: string | null;
-  project_name?: string | null;
-  report_date: string;
-  created_at: string;
-  processing_status: string;
-  attachment_file_name?: string | null;
-  attachment_id?: number | null;
-};
-
-type ReportImageSelection = {
-  key: string;
-  file: File;
-  preview_url: string;
-};
-
-type TaskReportPrefill = {
-  task_id: number;
-  report_date: string;
-  work_done: string;
-  incidents: string;
-  materials: string;
-  subtasks: string[];
-};
-
-type ReportTaskChecklistItem = {
-  id: string;
-  label: string;
-  done: boolean;
-};
-
-type ProjectFormState = {
-  project_number: string;
-  name: string;
-  description: string;
-  status: string;
-  last_state: string;
-  last_status_at: string;
-  customer_name: string;
-  customer_address: string;
-  customer_contact: string;
-  customer_email: string;
-  customer_phone: string;
-  site_access_type: string;
-  site_access_note: string;
-  class_template_ids: number[];
-};
-
-type ProjectTaskFormState = {
-  title: string;
-  description: string;
-  subtasks_raw: string;
-  materials_required: string;
-  has_storage_box: boolean;
-  storage_box_number: string;
-  task_type: TaskType;
-  class_template_id: string;
-  due_date: string;
-  start_time: string;
-  assignee_query: string;
-  assignee_ids: number[];
-};
-
-type ProjectFinanceFormState = {
-  order_value_net: string;
-  down_payment_35: string;
-  main_components_50: string;
-  final_invoice_15: string;
-  planned_costs: string;
-  actual_costs: string;
-  contribution_margin: string;
-};
-
-type TaskModalState = {
-  title: string;
-  description: string;
-  subtasks_raw: string;
-  materials_required: string;
-  has_storage_box: boolean;
-  storage_box_number: string;
-  task_type: TaskType;
-  class_template_id: string;
-  project_id: string;
-  project_query: string;
-  due_date: string;
-  start_time: string;
-  assignee_query: string;
-  assignee_ids: number[];
-  create_project_from_task: boolean;
-  new_project_name: string;
-  new_project_number: string;
-};
-
-type TaskEditFormState = {
-  id: number | null;
-  project_id: number | null;
-  title: string;
-  description: string;
-  subtasks_raw: string;
-  materials_required: string;
-  has_storage_box: boolean;
-  storage_box_number: string;
-  task_type: TaskType;
-  class_template_id: string;
-  status: string;
-  due_date: string;
-  start_time: string;
-  assignee_query: string;
-  assignee_ids: number[];
-  week_start: string;
-};
-
-type WorkspaceMode = "construction" | "office";
-
-type MainView =
-  | "overview"
-  | "materials"
-  | "projects_all"
-  | "projects_archive"
-  | "my_tasks"
-  | "office_tasks"
-  | "project"
-  | "calendar"
-  | "planning"
-  | "construction"
-  | "wiki"
-  | "messages"
-  | "time"
-  | "profile"
-  | "admin";
-type ProjectTab = "overview" | "tasks" | "hours" | "materials" | "tickets" | "files" | "finances";
-
-const MAIN_LABELS: Record<Language, Record<MainView, string>> = {
-  en: {
-    overview: "Overview",
-    materials: "Materials",
-    projects_all: "All Projects",
-    projects_archive: "Project Archive",
-    my_tasks: "My Tasks",
-    office_tasks: "Tasks",
-    project: "Project",
-    calendar: "Calendar",
-    planning: "Weekly Planning",
-    construction: "Construction Report",
-    wiki: "Wiki",
-    messages: "Chat",
-    time: "Time Tracking",
-    profile: "Profile",
-    admin: "Admin",
-  },
-  de: {
-    overview: "Übersicht",
-    materials: "Material",
-    projects_all: "Alle Projekte",
-    projects_archive: "Projektarchiv",
-    my_tasks: "Meine Aufgaben",
-    office_tasks: "Aufgaben",
-    project: "Projekt",
-    calendar: "Kalender",
-    planning: "Wochenplanung",
-    construction: "Baustellenbericht",
-    wiki: "Wiki",
-    messages: "Chat",
-    time: "Zeiterfassung",
-    profile: "Profil",
-    admin: "Admin",
-  },
-};
-
-const TAB_LABELS: Record<Language, Record<ProjectTab, string>> = {
-  en: {
-    overview: "Overview",
-    tasks: "Tasks",
-    hours: "Project Hours",
-    materials: "Materials",
-    tickets: "Job Tickets",
-    files: "Files",
-    finances: "Finances",
-  },
-  de: {
-    overview: "Übersicht",
-    tasks: "Aufgaben",
-    hours: "Projektstunden",
-    materials: "Material",
-    tickets: "Job Tickets",
-    files: "Dateien",
-    finances: "Finanzen",
-  },
-};
-
-const PROJECT_STATUS_PRESETS = [
-  "active",
-  "archived",
-  "on_hold",
-  "completed",
-  "Anfrage erhalten",
-  "Angebot erstellen",
-  "Angebot abgeschickt",
-  "Kundentermin angefragt",
-  "Kundentermin vereinbart",
-  "Auftrag angenommen",
-  "In Durchführung",
-  "Rechnung erstellen",
-  "Rückfragen klären",
-];
-const PROJECT_SITE_ACCESS_PRESETS = [
-  "customer_on_site",
-  "freely_accessible",
-  "key_in_office",
-  "key_pickup",
-  "code_access",
-  "key_box",
-  "call_before_departure",
-] as const;
-const PROJECT_SITE_ACCESS_WITH_NOTE = new Set<string>(["key_pickup", "code_access", "key_box"]);
-const DEFAULT_THREAD_PARTICIPANT_ROLES = ["admin", "ceo", "accountant", "planning", "employee"] as const;
-const MATERIAL_UNIT_EXAMPLES = ["pcs", "m", "cm", "mm", "m2", "m3", "kg", "g", "l", "ml", "set", "pack", "box", "roll"];
-const MATERIAL_CATALOG_SEARCH_LIMIT = 10;
-const WORKSPACE_MODE_STORAGE_KEY = "smpl_workspace_mode";
-
-const HHMM_PATTERN = "^([01]\\d|2[0-3]):[0-5]\\d$";
-const HHMM_REGEX = /^([01]\d|2[0-3]):[0-5]\d$/;
-
-function isPlaceholderReleaseVersion(value: string | null | undefined): boolean {
-  return String(value || "").trim().toLowerCase() === "local-production";
-}
-
-function commitRefsMatch(left: string | null | undefined, right: string | null | undefined): boolean {
-  const leftValue = String(left || "").trim().toLowerCase();
-  const rightValue = String(right || "").trim().toLowerCase();
-  if (!leftValue || !rightValue) return false;
-  return leftValue === rightValue || leftValue.startsWith(rightValue) || rightValue.startsWith(leftValue);
-}
-
-function resolveCurrentReleaseVersion(updateStatus: UpdateStatus | null): string | null {
-  const currentVersion = String(updateStatus?.current_version || "").trim();
-  const latestVersion = String(updateStatus?.latest_version || "").trim();
-  if (currentVersion && !isPlaceholderReleaseVersion(currentVersion)) return currentVersion;
-  if (!latestVersion) return null;
-  if (updateStatus?.update_available === false) return latestVersion;
-  if (commitRefsMatch(updateStatus?.current_commit, updateStatus?.latest_commit)) return latestVersion;
-  return null;
-}
-
-function roleOptionLabel(role: string, language: Language): string {
-  const normalized = String(role || "").trim().toLowerCase();
-  if (language === "de") {
-    if (normalized === "admin") return "Admins";
-    if (normalized === "ceo") return "Geschäftsführung";
-    if (normalized === "accountant") return "Buchhaltung";
-    if (normalized === "planning") return "Planung";
-    if (normalized === "employee") return "Mitarbeiter";
-    return normalized || role;
-  }
-  if (normalized === "admin") return "Admins";
-  if (normalized === "ceo") return "Management";
-  if (normalized === "accountant") return "Accountants";
-  if (normalized === "planning") return "Planners";
-  if (normalized === "employee") return "Employees";
-  return normalized || role;
-}
-
-function initialsFromName(name: string, fallback: string) {
-  const parts = (name || "")
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean);
-  if (parts.length === 0) return fallback;
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
-}
-
-type CompactNameParts = {
-  first: string;
-  lastInitial: string;
-};
-
-function splitCompactNameParts(name: string): CompactNameParts {
-  const parts = (name || "")
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean);
-  if (parts.length === 0) return { first: "", lastInitial: "" };
-  const first = parts[0];
-  const last = parts.length > 1 ? parts[parts.length - 1] : "";
-  return { first, lastInitial: last ? last[0].toUpperCase() : "" };
-}
-
-function compactNameLabel(name: string, withLastInitial: boolean): string {
-  const parts = splitCompactNameParts(name);
-  if (!parts.first) return "";
-  if (withLastInitial && parts.lastInitial) return `${parts.first} ${parts.lastInitial}.`;
-  return parts.first;
-}
-
-function buildCompactUserNameMap(entries: Array<{ id: number; name: string }>): Map<number, string> {
-  const distinctEntries = new Map<number, string>();
-  entries.forEach(({ id, name }) => {
-    if (!distinctEntries.has(id)) {
-      distinctEntries.set(id, name);
-    }
-  });
-
-  const firstNameCounts = new Map<string, number>();
-  const partsByUserId = new Map<number, CompactNameParts>();
-  distinctEntries.forEach((name, userId) => {
-    const parts = splitCompactNameParts(name);
-    partsByUserId.set(userId, parts);
-    if (!parts.first) return;
-    const key = parts.first.toLowerCase();
-    firstNameCounts.set(key, (firstNameCounts.get(key) ?? 0) + 1);
-  });
-
-  const result = new Map<number, string>();
-  distinctEntries.forEach((name, userId) => {
-    const parts = partsByUserId.get(userId);
-    if (!parts || !parts.first) {
-      result.set(userId, name.trim() || `#${userId}`);
-      return;
-    }
-    const duplicateFirstName = (firstNameCounts.get(parts.first.toLowerCase()) ?? 0) > 1;
-    result.set(userId, compactNameLabel(name, duplicateFirstName));
-  });
-  return result;
-}
-
-function preferredDisplayName(entry: { display_name?: string | null; full_name?: string | null }): string {
-  return String(entry.display_name ?? entry.full_name ?? "").trim();
-}
-
-function parseServerDateTime(value?: string | null) {
-  if (!value) return null;
-  const raw = String(value).trim();
-  if (!raw) return null;
-  const hasTimePart = raw.includes("T");
-  const hasTimezone = /(?:[zZ]|[+\-]\d{2}:\d{2})$/.test(raw);
-  const normalized = hasTimePart && !hasTimezone ? `${raw}Z` : raw;
-  const parsed = new Date(normalized);
-  if (Number.isNaN(parsed.getTime())) return null;
-  return parsed;
-}
-
-function formatServerDateTime(value: string | null | undefined, language: Language) {
-  const parsed = parseServerDateTime(value);
-  if (!parsed) return value ? String(value) : "";
-  return parsed.toLocaleString(language === "de" ? "de-DE" : "en-US");
-}
-
-function chatDayKey(value: string, index: number) {
-  const date = parseServerDateTime(value);
-  if (!date) return `unknown-${index}`;
-  return date.toISOString().slice(0, 10);
-}
-
-function formatChatDayLabel(value: string, language: Language) {
-  const date = parseServerDateTime(value);
-  if (!date) return value;
-  return date.toLocaleDateString(language === "de" ? "de-DE" : "en-US", {
-    weekday: "short",
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-  });
-}
-
-function formatChatTimeLabel(value: string) {
-  const date = parseServerDateTime(value);
-  if (!date) return "--:--";
-  return date.toLocaleTimeString("de-DE", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
-}
-
-function SidebarNavIcon({ view }: { view: MainView }) {
-  if (view === "overview") {
-    return (
-      <svg viewBox="0 0 24 24" aria-hidden="true" className="nav-icon">
-        <path d="M3 11.5 12 4l9 7.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-        <path d="M6 10.5v9h12v-9" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-    );
-  }
-  if (view === "materials") {
-    return (
-      <svg viewBox="0 0 24 24" aria-hidden="true" className="nav-icon">
-        <path d="M4.5 7.5h15v11h-15zM4.5 7.5 12 3l7.5 4.5M12 12.2v6.3" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-    );
-  }
-  if (view === "my_tasks" || view === "office_tasks") {
-    return (
-      <svg viewBox="0 0 24 24" aria-hidden="true" className="nav-icon">
-        <path d="M7 7h14M7 12h14M7 17h14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-        <path d="m3.5 7.2 1.5 1.5 2.4-2.8m-3.9 6.9 1.5 1.5 2.4-2.8m-3.9 6.9 1.5 1.5 2.4-2.8" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-    );
-  }
-  if (view === "planning") {
-    return (
-      <svg viewBox="0 0 24 24" aria-hidden="true" className="nav-icon">
-        <rect x="3.5" y="5.5" width="17" height="15" rx="2.4" fill="none" stroke="currentColor" strokeWidth="1.8" />
-        <path d="M8 3.5v4M16 3.5v4M3.5 10h17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-      </svg>
-    );
-  }
-  if (view === "calendar") {
-    return (
-      <svg viewBox="0 0 24 24" aria-hidden="true" className="nav-icon">
-        <rect x="3.5" y="4.5" width="17" height="16" rx="2.4" fill="none" stroke="currentColor" strokeWidth="1.8" />
-        <path d="M8 2.5v4M16 2.5v4M3.5 9.3h17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-        <path d="M8 12.6h2.4M13.8 12.6h2.4M8 16.4h2.4M13.8 16.4h2.4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-      </svg>
-    );
-  }
-  if (view === "construction") {
-    return (
-      <svg viewBox="0 0 24 24" aria-hidden="true" className="nav-icon">
-        <rect x="6" y="3.5" width="12" height="17" rx="2.4" fill="none" stroke="currentColor" strokeWidth="1.8" />
-        <path d="M9 8h6M9 12h6M9 16h4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-      </svg>
-    );
-  }
-  if (view === "wiki") {
-    return (
-      <svg viewBox="0 0 24 24" aria-hidden="true" className="nav-icon">
-        <path d="M5 4.5h11a3 3 0 0 1 3 3V19a2 2 0 0 0-2-2H6.5A2.5 2.5 0 0 0 4 19V6.5a2 2 0 0 1 2-2Z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
-        <path d="M8 8h7M8 11.5h7" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-      </svg>
-    );
-  }
-  if (view === "messages") {
-    return (
-      <svg viewBox="0 0 24 24" aria-hidden="true" className="nav-icon">
-        <path d="M4.5 6.5h15a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-8l-4 3v-3h-3a2 2 0 0 1-2-2V8.5a2 2 0 0 1 2-2Z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
-      </svg>
-    );
-  }
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" className="nav-icon">
-      <circle cx="12" cy="12" r="8" fill="none" stroke="currentColor" strokeWidth="1.8" />
-      <path d="M12 7.8v4.7l3 1.8" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function PenIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" className="task-edit-pen-icon">
-      <path
-        d="M4 20h4.2L19 9.2a1.4 1.4 0 0 0 0-2L16.8 5a1.4 1.4 0 0 0-2 0L4 15.8V20Z"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path d="m13.8 6 4.2 4.2" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function BackIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" className="task-edit-pen-icon">
-      <path
-        d="M15.5 5.5 8.5 12l7 6.5M9 12h11"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
-function SearchIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" className="task-edit-pen-icon">
-      <circle cx="11" cy="11" r="6.3" fill="none" stroke="currentColor" strokeWidth="1.8" />
-      <path d="m15.6 15.6 4 4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function CopyIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true" className="task-edit-pen-icon">
-      <rect x="9" y="9" width="10.5" height="10.5" rx="1.8" fill="none" stroke="currentColor" strokeWidth="1.8" />
-      <path
-        d="M6.4 15H5.8a1.8 1.8 0 0 1-1.8-1.8V5.8A1.8 1.8 0 0 1 5.8 4h7.4A1.8 1.8 0 0 1 15 5.8v.6"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
-function parseListLines(value: string) {
-  return value
-    .split("\n")
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0);
-}
-
-function parseTaskSubtasks(rawValue: string) {
-  const seen = new Set<string>();
-  const rows: string[] = [];
-  parseListLines(rawValue).forEach((line) => {
-    const key = line.toLocaleLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    rows.push(line);
-  });
-  return rows;
-}
-
-function subtasksToTextareaValue(subtasks?: string[] | null) {
-  return (subtasks ?? []).map((value) => String(value || "").trim()).filter((value) => value.length > 0).join("\n");
-}
-
-function sameStringList(left: string[], right: string[]) {
-  if (left.length !== right.length) return false;
-  return left.every((value, index) => value === right[index]);
-}
-
-function buildReportTaskChecklist(subtasks: string[]): ReportTaskChecklistItem[] {
-  return subtasks.map((label, index) => ({
-    id: `subtask-${index}-${label.toLocaleLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
-    label,
-    done: false,
-  }));
-}
-
-function sleep(ms: number) {
-  return new Promise((resolve) => {
-    window.setTimeout(resolve, ms);
-  });
-}
-
-function buildClientFileKey(file: File) {
-  return `${file.name}:${file.size}:${file.lastModified}`;
-}
-
-let reportMaterialRowCounter = 0;
-
-function nextReportMaterialRowId(prefix: "materials" | "office_materials") {
-  reportMaterialRowCounter += 1;
-  return `${prefix}-${Date.now()}-${reportMaterialRowCounter}`;
-}
-
-function createReportMaterialRow(
-  prefix: "materials" | "office_materials",
-  values?: Partial<Omit<ReportMaterialRow, "id">>,
-): ReportMaterialRow {
-  return {
-    id: nextReportMaterialRowId(prefix),
-    item: values?.item ?? "",
-    qty: values?.qty ?? "",
-    unit: values?.unit ?? "",
-    article_no: values?.article_no ?? "",
-  };
-}
-
-function parseReportMaterialRows(
-  rawValue: string | null | undefined,
-  prefix: "materials" | "office_materials",
-): ReportMaterialRow[] {
-  const rows = parseListLines(String(rawValue || "")).map((line) => {
-    const [item, qty, unit, article_no] = line.split("|").map((entry) => entry.trim());
-    if (!qty && !unit && !article_no) {
-      return createReportMaterialRow(prefix, { item: line.trim() });
-    }
-    return createReportMaterialRow(prefix, {
-      item: item || "",
-      qty: qty || "",
-      unit: unit || "",
-      article_no: article_no || "",
-    });
-  });
-  if (rows.length > 0) return rows;
-  return [createReportMaterialRow(prefix)];
-}
-
-function serializeTaskMaterialRows(rows: ReportMaterialRow[]) {
-  const lines = rows
-    .map((row) => {
-      const item = row.item.trim();
-      if (!item) return "";
-      const qty = row.qty.trim();
-      const unit = row.unit.trim();
-      const articleNo = row.article_no.trim();
-      if (!qty && !unit && !articleNo) return item;
-      return [item, qty, unit, articleNo].join(" | ");
-    })
-    .filter((line) => line.length > 0);
-  return lines.join("\n");
-}
-
-function taskMaterialsDisplay(rawValue: string | null | undefined, language: Language) {
-  const rows = parseReportMaterialRows(rawValue, "materials")
-    .map((row) => {
-      const item = row.item.trim();
-      if (!item) return "";
-      const qtyUnit = [row.qty.trim(), row.unit.trim()].filter((value) => value.length > 0).join(" ");
-      const articleNo = row.article_no.trim();
-      const parts = [item];
-      if (qtyUnit) parts.push(qtyUnit);
-      if (articleNo) parts.push(`${language === "de" ? "ArtNr" : "ArtNo"} ${articleNo}`);
-      return parts.join(" - ");
-    })
-    .filter((line) => line.length > 0);
-  return rows.join(", ");
-}
-
-function serializeOfficeMaterialRows(rows: ReportMaterialRow[]) {
-  const lines = rows
-    .map((row) => {
-      const item = row.item.trim();
-      if (!item) return "";
-      const qtyUnit = [row.qty.trim(), row.unit.trim()].filter((value) => value.length > 0).join(" ");
-      const articleNo = row.article_no.trim();
-      const parts = [item];
-      if (qtyUnit) parts.push(qtyUnit);
-      if (articleNo) parts.push(`ArtNr ${articleNo}`);
-      return parts.join(" - ");
-    })
-    .filter((line) => line.length > 0);
-  return lines.join("\n");
-}
-
-function isoToLocalDateTimeInput(value?: string | null) {
-  const d = parseServerDateTime(value);
-  if (!d) return "";
-  const offset = d.getTimezoneOffset();
-  const local = new Date(d.getTime() - offset * 60_000);
-  return local.toISOString().slice(0, 16);
-}
-
-function localDateTimeInputToIso(value: string) {
-  if (!value) return null;
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return null;
-  return d.toISOString();
-}
-
-function normalizeAddressInput(value: string) {
-  if (!value) return "";
-  return value
-    .replace(/\r/g, " ")
-    .replace(/\n/g, ", ")
-    .replace(/,\s*/g, ", ")
-    .replace(/(,\s*){2,}/g, ", ")
-    .replace(/\s{2,}/g, " ")
-    .trim()
-    .replace(/^[,\s]+|[,\s]+$/g, "");
-}
-
-function formatDateISOLocal(date: Date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
-
-function startOfWeekISO(source: Date) {
-  const monday = new Date(source);
-  monday.setHours(12, 0, 0, 0);
-  const diff = (monday.getDay() + 6) % 7;
-  monday.setDate(monday.getDate() - diff);
-  return formatDateISOLocal(monday);
-}
-
-function addDaysISO(isoDate: string, days: number) {
-  const d = new Date(`${isoDate}T12:00:00`);
-  if (Number.isNaN(d.getTime())) return isoDate;
-  d.setDate(d.getDate() + days);
-  return formatDateISOLocal(d);
-}
-
-function normalizeWeekStartISO(isoDate: string) {
-  const d = new Date(`${isoDate}T12:00:00`);
-  if (Number.isNaN(d.getTime())) return isoDate;
-  return startOfWeekISO(d);
-}
-
-function isoWeekInfo(isoDate: string) {
-  const [year, month, day] = isoDate.split("-").map((part) => Number(part));
-  if (!year || !month || !day) return { week: 0, year: 0 };
-  const date = new Date(Date.UTC(year, month - 1, day));
-  const dayOfWeek = date.getUTCDay() || 7;
-  date.setUTCDate(date.getUTCDate() + 4 - dayOfWeek);
-  const weekYear = date.getUTCFullYear();
-  const yearStart = new Date(Date.UTC(weekYear, 0, 1));
-  const week = Math.ceil(((date.getTime() - yearStart.getTime()) / 86_400_000 + 1) / 7);
-  return { week, year: weekYear };
-}
-
-function formatDayLabel(dateIso: string, language: Language) {
-  const d = new Date(`${dateIso}T00:00:00`);
-  return d.toLocaleDateString(language === "de" ? "de-DE" : "en-US", {
-    weekday: "short",
-    day: "2-digit",
-    month: "2-digit",
-  });
-}
-
-function schoolWeekdayLabel(dayIndex: number, language: Language) {
-  const en = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
-  const de = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag"];
-  if (dayIndex < 0 || dayIndex > 4) return String(dayIndex);
-  return language === "de" ? de[dayIndex] : en[dayIndex];
-}
-
-function formatDayMonth(isoDate: string) {
-  const d = new Date(`${isoDate}T00:00:00`);
-  const day = String(d.getDate()).padStart(2, "0");
-  const month = String(d.getMonth() + 1).padStart(2, "0");
-  return `${day}.${month}.`;
-}
-
-function daysInMonth(year: number, monthIndex: number) {
-  return new Date(year, monthIndex + 1, 0).getDate();
-}
-
-function weekdaysBetweenIso(startIso: string, endIso: string) {
-  const start = new Date(`${startIso}T12:00:00`);
-  const end = new Date(`${endIso}T12:00:00`);
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) return 0;
-  const cursor = new Date(start);
-  let count = 0;
-  while (cursor <= end) {
-    const day = cursor.getDay();
-    if (day >= 1 && day <= 5) count += 1;
-    cursor.setDate(cursor.getDate() + 1);
-  }
-  return count;
-}
-
-function isIsoDateWithinRange(targetIso: string, startIso: string, endIso: string) {
-  const target = targetIso.trim();
-  const start = startIso.trim();
-  const end = endIso.trim() || start;
-  if (!target || !start || !end) return false;
-  const from = start <= end ? start : end;
-  const until = start <= end ? end : start;
-  return target >= from && target <= until;
-}
-
-function isoWeekdayMondayFirst(isoDate: string) {
-  const date = new Date(`${isoDate}T12:00:00`);
-  if (Number.isNaN(date.getTime())) return -1;
-  return (date.getDay() + 6) % 7;
-}
-
-function formatShortIsoDate(isoDate: string, language: Language) {
-  const date = new Date(`${isoDate}T12:00:00`);
-  if (Number.isNaN(date.getTime())) return isoDate;
-  return date.toLocaleDateString(language === "de" ? "de-DE" : "en-US", {
-    day: "2-digit",
-    month: "2-digit",
-  });
-}
-
-function monthWeekRanges(reference: Date): MonthWeekRange[] {
-  const year = reference.getFullYear();
-  const monthIndex = reference.getMonth();
-  const monthStart = new Date(year, monthIndex, 1, 12, 0, 0, 0);
-  const monthEnd = new Date(year, monthIndex, daysInMonth(year, monthIndex), 12, 0, 0, 0);
-  const monthStartIso = formatDateISOLocal(monthStart);
-  const monthEndIso = formatDateISOLocal(monthEnd);
-
-  const weekCursor = new Date(monthStart);
-  const diffToMonday = (weekCursor.getDay() + 6) % 7;
-  weekCursor.setDate(weekCursor.getDate() - diffToMonday);
-
-  const ranges: MonthWeekRange[] = [];
-  while (weekCursor <= monthEnd) {
-    const weekStart = formatDateISOLocal(weekCursor);
-    const weekEnd = addDaysISO(weekStart, 6);
-    const info = isoWeekInfo(weekStart);
-    ranges.push({
-      weekStart,
-      weekEnd,
-      weekNumber: info.week,
-      weekYear: info.year,
-      weekdaysInWeek: weekdaysBetweenIso(weekStart, weekEnd),
-    });
-    weekCursor.setDate(weekCursor.getDate() + 7);
-  }
-  return ranges;
-}
-
-function shiftMonthStart(source: Date, delta: number) {
-  return new Date(source.getFullYear(), source.getMonth() + delta, 1);
-}
-
-function formatHours(hours: number) {
-  return `${hours.toFixed(2)}h`;
-}
-
-function formatMaterialQuantity(value: number, language: Language) {
-  if (!Number.isFinite(value)) return "";
-  return new Intl.NumberFormat(language === "de" ? "de-DE" : "en-US", {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 3,
-  }).format(value);
-}
-
-function parseNullableDecimalInput(value: string): number | null {
-  const normalized = value.trim().replace(",", ".");
-  if (!normalized) return null;
-  const parsed = Number(normalized);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-const WEATHER_DESCRIPTION_DE_LABELS: Record<string, string> = {
-  clear: "Klar",
-  "clear sky": "Klarer Himmel",
-  clouds: "Bewoelkt",
-  "few clouds": "Leicht bewoelkt",
-  "scattered clouds": "Aufgelockerte Bewoelkung",
-  "broken clouds": "Stark bewoelkt",
-  "overcast clouds": "Bedeckt",
-  rain: "Regen",
-  "light rain": "Leichter Regen",
-  "moderate rain": "Maessiger Regen",
-  "heavy intensity rain": "Starker Regen",
-  "very heavy rain": "Sehr starker Regen",
-  "extreme rain": "Extremer Regen",
-  drizzle: "Nieselregen",
-  "light intensity drizzle": "Leichter Nieselregen",
-  "drizzle rain": "Nieselregen",
-  "shower rain": "Schauer",
-  thunderstorm: "Gewitter",
-  snow: "Schnee",
-  "light snow": "Leichter Schneefall",
-  mist: "Dunst",
-  haze: "Dunst",
-  fog: "Nebel",
-  smoke: "Rauch",
-  dust: "Staub",
-  sand: "Sand",
-  ash: "Asche",
-  squall: "Boeen",
-  tornado: "Tornado",
-  "thunderstorm with light rain": "Gewitter mit leichtem Regen",
-  "thunderstorm with rain": "Gewitter mit Regen",
-  "thunderstorm with heavy rain": "Gewitter mit starkem Regen",
-  "light thunderstorm": "Leichtes Gewitter",
-  "heavy thunderstorm": "Starkes Gewitter",
-  "ragged thunderstorm": "Unregelmaessiges Gewitter",
-  "thunderstorm with light drizzle": "Gewitter mit leichtem Nieselregen",
-  "thunderstorm with drizzle": "Gewitter mit Nieselregen",
-  "thunderstorm with heavy drizzle": "Gewitter mit starkem Nieselregen",
-  "heavy intensity drizzle": "Starker Nieselregen",
-  "light intensity drizzle rain": "Leichter Nieselregen",
-  "heavy intensity drizzle rain": "Starker Nieselregen",
-  "shower rain and drizzle": "Regenschauer mit Nieselregen",
-  "heavy shower rain and drizzle": "Starke Regenschauer mit Nieselregen",
-  "shower drizzle": "Nieselregen-Schauer",
-  "freezing rain": "Gefrierender Regen",
-  "light intensity shower rain": "Leichter Regenschauer",
-  "heavy intensity shower rain": "Starker Regenschauer",
-  "ragged shower rain": "Unregelmaessige Regenschauer",
-  "heavy snow": "Starker Schneefall",
-  sleet: "Schneeregen",
-  "light shower sleet": "Leichter Schneeregen-Schauer",
-  "shower sleet": "Schneeregen-Schauer",
-  "light rain and snow": "Leichter Regen und Schnee",
-  "rain and snow": "Regen und Schnee",
-  "light shower snow": "Leichter Schneeschauer",
-  "shower snow": "Schneeschauer",
-  "heavy shower snow": "Starker Schneeschauer",
-  "sand/dust whirls": "Sand-/Staubwirbel",
-  "volcanic ash": "Vulkanasche",
-  squalls: "Boeen",
-  light: "Leicht",
-  moderate: "Maessig",
-  heavy: "Stark",
-  very: "Sehr",
-  extreme: "Extrem",
-  intensity: "",
-  with: "mit",
-  and: "und",
-  few: "Wenige",
-  scattered: "Aufgelockerte",
-  broken: "Stark",
-  overcast: "Bedeckt",
-  shower: "Schauer",
-  whirls: "Wirbel",
-  volcanic: "Vulkan",
-};
-
-function weatherDescriptionLabel(description: string | null | undefined, language: Language) {
-  const raw = String(description ?? "").trim();
-  if (!raw) return "";
-  if (language !== "de") return raw;
-  const normalized = raw.toLowerCase();
-  const direct = WEATHER_DESCRIPTION_DE_LABELS[normalized];
-  if (direct) return direct;
-  return raw
-    .split(/\s+/)
-    .map((part) => {
-      const leading = part.match(/^[^a-zA-Z0-9]+/)?.[0] ?? "";
-      const trailing = part.match(/[^a-zA-Z0-9]+$/)?.[0] ?? "";
-      const core = part.replace(/^[^a-zA-Z0-9]+|[^a-zA-Z0-9]+$/g, "");
-      if (!core) return part;
-      const translated = WEATHER_DESCRIPTION_DE_LABELS[core.toLowerCase()] ?? core;
-      return `${leading}${translated}${trailing}`;
-    })
-    .filter((part) => part.trim().length > 0)
-    .join(" ");
-}
-
-function statusLabel(value: string, language: Language) {
-  const raw = String(value || "").trim();
-  const normalized = raw
-    .trim()
-    .toLowerCase();
-  if (normalized === "active") return language === "de" ? "Aktiv" : "Active";
-  if (normalized === "on_hold") return language === "de" ? "Pausiert" : "On hold";
-  if (normalized === "completed") return language === "de" ? "Abgeschlossen" : "Completed";
-  return raw || (language === "de" ? "Aktiv" : "Active");
-}
-
-function normalizeMaterialNeedStatus(value?: string | null): MaterialNeedStatus {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase();
-  if (
-    normalized === "on_the_way" ||
-    normalized === "on-the-way" ||
-    normalized === "on the way" ||
-    normalized === "on its way" ||
-    normalized === "unterwegs"
-  ) {
-    return "on_the_way";
-  }
-  if (normalized === "available" || normalized === "verfuegbar" || normalized === "verfügbar") {
-    return "available";
-  }
-  if (
-    normalized === "completed" ||
-    normalized === "complete" ||
-    normalized === "done" ||
-    normalized === "erledigt" ||
-    normalized === "abgeschlossen"
-  ) {
-    return "completed";
-  }
-  return "order";
-}
-
-function materialNeedStatusLabel(status: MaterialNeedStatus, language: Language) {
-  if (status === "completed") return language === "de" ? "Erledigt" : "Completed";
-  if (status === "on_the_way") return language === "de" ? "Unterwegs" : "On its way";
-  if (status === "available") return language === "de" ? "Verfügbar" : "Available";
-  return language === "de" ? "Bestellen" : "Order";
-}
-
-function materialNeedStatusClass(status: MaterialNeedStatus) {
-  if (status === "completed") return "completed";
-  if (status === "on_the_way") return "on-the-way";
-  if (status === "available") return "available";
-  return "order";
-}
-
-function nextMaterialNeedStatus(status: MaterialNeedStatus): MaterialNeedStatus {
-  if (status === "order") return "on_the_way";
-  if (status === "on_the_way") return "available";
-  if (status === "available") return "order";
-  return "order";
-}
-
-function normalizeTaskTypeValue(value?: string | null): TaskType {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase();
-  if (
-    normalized === "customer_appointment" ||
-    normalized === "customer-appointment" ||
-    normalized === "customer appointment" ||
-    normalized === "appointment" ||
-    normalized === "kundentermin" ||
-    normalized === "kundentermine" ||
-    normalized === "termin"
-  ) {
-    return "customer_appointment";
-  }
-  if (normalized === "office" || normalized === "buero" || normalized === "büro") return "office";
-  return "construction";
-}
-
-function taskTypeLabel(taskType: TaskType, language: Language) {
-  if (taskType === "customer_appointment") {
-    return language === "de" ? "Kundentermin" : "Customer appointment";
-  }
-  if (taskType === "office") {
-    return language === "de" ? "Büroaufgabe" : "Office task";
-  }
-  return language === "de" ? "Baustellenaufgabe" : "Construction task";
-}
-
-function taskStatusLabel(value: string, language: Language) {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase();
-  if (normalized === "open") return language === "de" ? "Offen" : "Open";
-  if (normalized === "in_progress") return language === "de" ? "In Arbeit" : "In progress";
-  if (normalized === "overdue") return language === "de" ? "Überfällig" : "Overdue";
-  if (normalized === "done" || normalized === "completed") return language === "de" ? "Erledigt" : "Done";
-  if (normalized === "on_hold") return language === "de" ? "Pausiert" : "On hold";
-  return String(value || "").trim() || "-";
-}
-
-function isTaskDoneStatus(value: string | null | undefined) {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase();
-  return normalized === "done" || normalized === "completed";
-}
-
-function isTaskOverdue(task: Task, referenceIsoDate: string) {
-  if (task.is_overdue === true) return true;
-  const rawStatus = String(task.status || "")
-    .trim()
-    .toLowerCase();
-  if (rawStatus === "overdue") return true;
-  if (isTaskDoneStatus(rawStatus)) return false;
-  const dueDate = String(task.due_date || "").trim();
-  if (!dueDate) return false;
-  return dueDate < referenceIsoDate;
-}
-
-function taskDisplayStatus(task: Task, referenceIsoDate: string) {
-  return isTaskOverdue(task, referenceIsoDate) ? "overdue" : String(task.status || "").trim();
-}
-
-function normalizeProjectSiteAccessType(value?: string | null) {
-  const normalized = String(value || "").trim();
-  if (!normalized) return "";
-  return PROJECT_SITE_ACCESS_PRESETS.includes(normalized as (typeof PROJECT_SITE_ACCESS_PRESETS)[number]) ? normalized : "";
-}
-
-function projectSiteAccessRequiresNote(value?: string | null) {
-  return PROJECT_SITE_ACCESS_WITH_NOTE.has(normalizeProjectSiteAccessType(value));
-}
-
-function projectSiteAccessLabel(value: string | null | undefined, language: Language) {
-  const normalized = normalizeProjectSiteAccessType(value);
-  if (normalized === "customer_on_site") {
-    return language === "de" ? "Kunde ist Vorort" : "Customer is on site";
-  }
-  if (normalized === "freely_accessible") {
-    return language === "de" ? "frei zugänglich" : "Freely accessible";
-  }
-  if (normalized === "key_in_office") {
-    return language === "de" ? "Schlüssel im Büro" : "Key in office";
-  }
-  if (normalized === "key_pickup") {
-    return language === "de" ? "Schlüssel abholen bei" : "Pick up key at";
-  }
-  if (normalized === "code_access") {
-    return language === "de" ? "Zugang über Code" : "Access via code";
-  }
-  if (normalized === "key_box") {
-    return language === "de" ? "Schlüsselbox" : "Key box";
-  }
-  if (normalized === "call_before_departure") {
-    return language === "de" ? "Anrufen vor Abfahrt" : "Call before departure";
-  }
-  return "";
-}
-
-function projectSiteAccessDisplay(value: string | null | undefined, note: string | null | undefined, language: Language) {
-  const label = projectSiteAccessLabel(value, language);
-  if (!label) return "-";
-  const normalizedNote = (note ?? "").trim();
-  if (projectSiteAccessRequiresNote(value) && normalizedNote) return `${label}: ${normalizedNote}`;
-  return label;
-}
-
-function classTemplateMaterialsText(template: ProjectClassTemplate | null, language: Language): string {
-  if (!template) return "";
-  const materials = (template.materials_required ?? "").trim();
-  const tools = (template.tools_required ?? "").trim();
-  const sections: string[] = [];
-  if (materials) {
-    sections.push(`${language === "de" ? "Materialien" : "Materials"}:\n${materials}`);
-  }
-  if (tools) {
-    sections.push(`${language === "de" ? "Werkzeuge" : "Tools"}:\n${tools}`);
-  }
-  return sections.join("\n\n").trim();
-}
-
-function financeLabel(field: keyof ProjectFinanceFormState, language: Language) {
-  const labels: Record<keyof ProjectFinanceFormState, { de: string; en: string }> = {
-    order_value_net: { de: "Auftragswert netto", en: "Order value (net)" },
-    down_payment_35: { de: "35% Anzahlung", en: "35% down payment" },
-    main_components_50: { de: "50% Hauptkomponenten", en: "50% main components" },
-    final_invoice_15: { de: "15% Schlussrechnung", en: "15% final invoice" },
-    planned_costs: { de: "Geplante Kosten", en: "Planned costs" },
-    actual_costs: { de: "Tatsächliche Kosten", en: "Actual costs" },
-    contribution_margin: { de: "Deckungsbeitrag", en: "Contribution margin" },
-  };
-  return language === "de" ? labels[field].de : labels[field].en;
-}
-
-function activityEventLabel(eventType: string, language: Language) {
-  const map: Record<string, { de: string; en: string }> = {
-    "project.created": { de: "Projekt erstellt", en: "Project created" },
-    "project.classes_updated": { de: "Projektklassen aktualisiert", en: "Project classes updated" },
-    "project.state_changed": { de: "Status geändert", en: "State changed" },
-    "project.note_updated": { de: "Notiz aktualisiert", en: "Note updated" },
-    "task.created": { de: "Aufgabe erstellt", en: "Task created" },
-    "task.updated": { de: "Aufgabe aktualisiert", en: "Task updated" },
-    "task.deleted": { de: "Aufgabe gelöscht", en: "Task deleted" },
-    "ticket.created": { de: "Ticket erstellt", en: "Ticket created" },
-    "ticket.updated": { de: "Ticket aktualisiert", en: "Ticket updated" },
-    "file.uploaded": { de: "Datei hochgeladen", en: "File uploaded" },
-    "file.deleted": { de: "Datei gelöscht", en: "File deleted" },
-    "report.created": { de: "Bericht erstellt", en: "Report created" },
-    "material.created": { de: "Materialbedarf erstellt", en: "Material need created" },
-    "material.status_updated": { de: "Materialstatus aktualisiert", en: "Material status updated" },
-    "finance.updated": { de: "Finanzen aktualisiert", en: "Finances updated" },
-  };
-  return map[eventType] ? (language === "de" ? map[eventType].de : map[eventType].en) : eventType;
-}
-
-function formatMoney(value: number | null | undefined, language: Language) {
-  if (value == null || Number.isNaN(value)) return "-";
-  const locale = language === "de" ? "de-DE" : "en-US";
-  return new Intl.NumberFormat(locale, {
-    style: "currency",
-    currency: "EUR",
-    maximumFractionDigits: 2,
-  }).format(value);
-}
-
-function formatTaskStartTime(value?: string | null) {
-  if (!value) return "";
-  const text = String(value);
-  if (text.length >= 5) return text.slice(0, 5);
-  return text;
-}
-
-function preferredProjectDisplayName(customerName?: string | null, projectName?: string | null) {
-  const customer = String(customerName ?? "").trim();
-  if (customer) return customer;
-  return String(projectName ?? "").trim();
-}
-
-type ProjectTitleParts = {
-  title: string;
-  subtitle: string;
-};
-
-function formatProjectTitle(
-  projectNumber?: string | null,
-  customerName?: string | null,
-  projectName?: string | null,
-  fallbackId?: number | null,
-) {
-  const number = String(projectNumber ?? "").trim();
-  const name = preferredProjectDisplayName(customerName, projectName);
-  if (number && name) return `${number} - ${name}`;
-  if (number) return number;
-  if (name) return name;
-  if (typeof fallbackId === "number" && Number.isFinite(fallbackId)) return String(fallbackId);
-  return "-";
-}
-
-function formatProjectSubtitle(customerName?: string | null, projectName?: string | null) {
-  const customer = String(customerName ?? "").trim();
-  const project = String(projectName ?? "").trim();
-  if (!customer || !project) return "";
-  if (customer.localeCompare(project, undefined, { sensitivity: "base" }) === 0) return "";
-  return project;
-}
-
-function formatProjectTitleParts(
-  projectNumber?: string | null,
-  customerName?: string | null,
-  projectName?: string | null,
-  fallbackId?: number | null,
-): ProjectTitleParts {
-  return {
-    title: formatProjectTitle(projectNumber, customerName, projectName, fallbackId),
-    subtitle: formatProjectSubtitle(customerName, projectName),
-  };
-}
-
-function taskStartTimeMinutes(task: Task): number | null {
-  const hhmm = formatTaskStartTime(task.start_time);
-  if (!/^\d{2}:\d{2}$/.test(hhmm)) return null;
-  const [hoursText, minutesText] = hhmm.split(":");
-  const hours = Number(hoursText);
-  const minutes = Number(minutesText);
-  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
-  return hours * 60 + minutes;
-}
-
-function sortTasksByDueTime(tasks: Task[]): Task[] {
-  return [...tasks].sort((left, right) => {
-    const leftDate = String(left.due_date ?? "");
-    const rightDate = String(right.due_date ?? "");
-    if (leftDate && rightDate && leftDate !== rightDate) return leftDate.localeCompare(rightDate);
-    if (leftDate && !rightDate) return -1;
-    if (!leftDate && rightDate) return 1;
-
-    const leftStartMinutes = taskStartTimeMinutes(left);
-    const rightStartMinutes = taskStartTimeMinutes(right);
-    if (leftStartMinutes != null && rightStartMinutes != null && leftStartMinutes !== rightStartMinutes) {
-      return leftStartMinutes - rightStartMinutes;
-    }
-    if (leftStartMinutes != null && rightStartMinutes == null) return -1;
-    if (leftStartMinutes == null && rightStartMinutes != null) return 1;
-
-    const titleCompare = left.title.localeCompare(right.title, undefined, { sensitivity: "base" });
-    if (titleCompare !== 0) return titleCompare;
-    return left.id - right.id;
-  });
-}
-
-function isValidTimeHHMM(value: string) {
-  return HHMM_REGEX.test(value.trim());
-}
-
-function formatTimeInputForTyping(value?: string | null) {
-  const raw = String(value || "").trim();
-  if (!raw) return "";
-  const compact = raw.replace(/[^\d:]/g, "");
-  const colonIndex = compact.indexOf(":");
-  if (colonIndex >= 0) {
-    const hours = compact.slice(0, colonIndex).replace(/\D/g, "").slice(0, 2);
-    const minutes = compact.slice(colonIndex + 1).replace(/\D/g, "").slice(0, 2);
-    if (!hours) return "";
-    if (minutes.length === 0) return `${hours}:`;
-    return `${hours}:${minutes}`;
-  }
-  const digits = compact.replace(/\D/g, "").slice(0, 4);
-  if (raw.endsWith(":") && digits.length <= 2) return `${digits}:`;
-  if (digits.length <= 2) return digits;
-  if (digits.length === 3) {
-    const leadingPair = Number(digits.slice(0, 2));
-    if (Number.isFinite(leadingPair) && leadingPair <= 23) {
-      return `${digits.slice(0, 2)}:${digits.slice(2)}`;
-    }
-    return `${digits.slice(0, 1)}:${digits.slice(1)}`;
-  }
-  return `${digits.slice(0, 2)}:${digits.slice(2)}`;
-}
-
-function normalizeTimeHHMM(value?: string | null) {
-  const raw = String(value || "").trim();
-  if (!raw) return "";
-  const compact = raw.replace(/\D/g, "");
-  if (compact.length === 3) {
-    return `0${compact[0]}:${compact.slice(1)}`;
-  }
-  if (compact.length >= 4) {
-    return `${compact.slice(0, 2)}:${compact.slice(2, 4)}`;
-  }
-  const match = raw.match(/^(\d{1,2}):(\d{1,2})$/);
-  if (match) {
-    return `${match[1].padStart(2, "0").slice(0, 2)}:${match[2].padStart(2, "0").slice(0, 2)}`;
-  }
-  return raw.slice(0, 5);
-}
-
-function formatTimeInputForBlur(value?: string | null) {
-  const raw = String(value || "").trim();
-  if (!raw) return "";
-  const normalized = normalizeTimeHHMM(raw);
-  if (normalized && isValidTimeHHMM(normalized)) return normalized;
-  const digits = raw.replace(/\D/g, "");
-  if (digits.length === 1) {
-    const candidate = `0${digits}:00`;
-    if (isValidTimeHHMM(candidate)) return candidate;
-  }
-  if (digits.length === 2) {
-    const asHour = Number(digits);
-    if (Number.isFinite(asHour) && asHour >= 0 && asHour <= 23) return `${digits}:00`;
-  }
-  return raw.slice(0, 5);
-}
-
-function projectUpdatedTimestamp(project: Project) {
-  const byLastUpdate = project.last_updated_at ? parseServerDateTime(project.last_updated_at)?.getTime() : Number.NaN;
-  if (Number.isFinite(byLastUpdate)) return byLastUpdate;
-  const direct = project.last_status_at ? parseServerDateTime(project.last_status_at)?.getTime() : Number.NaN;
-  if (Number.isFinite(direct)) return direct;
-  const fromExtra = project.extra_attributes?.["Letzter Status Datum"];
-  if (typeof fromExtra === "string") {
-    const parsed = parseServerDateTime(fromExtra)?.getTime();
-    if (Number.isFinite(parsed)) return parsed;
-  }
-  return 0;
-}
-
-function parseTimestampValue(value: unknown) {
-  if (typeof value !== "string") return 0;
-  const parsed = parseServerDateTime(value)?.getTime();
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function isArchivedProjectStatus(value: string | null | undefined) {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase();
-  if (!normalized) return false;
-  return normalized === "archived" || normalized === "archiviert" || normalized.includes("archiv");
-}
-
-function taskNotificationDigest(rows: Task[]) {
-  const chunks = rows
-    .map((task) => {
-      const assigneeIds = [...(task.assignee_ids ?? [])].sort((a, b) => a - b).join(",");
-      return [
-        task.id,
-        task.project_id,
-        task.status || "",
-        task.due_date || "",
-        task.start_time || "",
-        task.week_start || "",
-        assigneeIds,
-      ].join(":");
-    })
-    .sort();
-  return chunks.join("|");
-}
-
-function isLikelyJwtToken(value: string) {
-  return /^[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+$/.test(value.trim());
-}
-
-function readStoredToken() {
-  try {
-    const raw = localStorage.getItem("smpl_token");
-    if (!raw) return null;
-    const clean = raw.trim();
-    if (!clean || !isLikelyJwtToken(clean)) {
-      localStorage.removeItem("smpl_token");
-      return null;
-    }
-    return clean;
-  } catch {
-    return null;
-  }
-}
-
-function readStoredWorkspaceMode(): WorkspaceMode {
-  try {
-    const raw = (localStorage.getItem(WORKSPACE_MODE_STORAGE_KEY) || "").trim().toLowerCase();
-    if (raw === "office") return "office";
-    return "construction";
-  } catch {
-    return "construction";
-  }
-}
-
-function detectPublicAuthMode() {
-  const normalizedPath = window.location.pathname.replace(/\/+$/, "");
-  if (normalizedPath === "/invite") return "invite" as const;
-  if (normalizedPath === "/reset-password") return "reset" as const;
-  return null;
-}
-
-function readPublicTokenParam() {
-  try {
-    const params = new URLSearchParams(window.location.search);
-    return (params.get("token") || "").trim();
-  } catch {
-    return "";
-  }
-}
-
-function toIcsUtcDateTime(value: Date) {
-  const yyyy = value.getUTCFullYear();
-  const mm = String(value.getUTCMonth() + 1).padStart(2, "0");
-  const dd = String(value.getUTCDate()).padStart(2, "0");
-  const hh = String(value.getUTCHours()).padStart(2, "0");
-  const mi = String(value.getUTCMinutes()).padStart(2, "0");
-  const ss = String(value.getUTCSeconds()).padStart(2, "0");
-  return `${yyyy}${mm}${dd}T${hh}${mi}${ss}Z`;
-}
-
-function toIcsDate(value: Date) {
-  const yyyy = value.getFullYear();
-  const mm = String(value.getMonth() + 1).padStart(2, "0");
-  const dd = String(value.getDate()).padStart(2, "0");
-  return `${yyyy}${mm}${dd}`;
-}
-
-function escapeIcs(value: string) {
-  return value.replace(/\\/g, "\\\\").replace(/\r?\n/g, "\\n").replace(/;/g, "\\;").replace(/,/g, "\\,");
-}
-
-function WorkHoursGauge({
-  language,
-  netHours,
-  requiredHours,
-  compact = false,
-}: {
-  language: Language;
-  netHours: number;
-  requiredHours: number;
-  compact?: boolean;
-}) {
-  const required = requiredHours > 0 ? requiredHours : 8;
-  const worked = Math.max(netHours, 0);
-  const progressPercent = required > 0 ? (worked / required) * 100 : 0;
-  const ringPercent = progressPercent >= 100 ? 100 : clamp(progressPercent, 0, 100);
-  const overtimeBlend = clamp((progressPercent - 100) / 100, 0, 1);
-  const overtimeColor = `rgb(${Math.round(47 + (180 - 47) * overtimeBlend)}, ${Math.round(111 + (54 - 111) * overtimeBlend)}, ${Math.round(127 + (65 - 127) * overtimeBlend)})`;
-  const ringFillBackground =
-    progressPercent > 100
-      ? `conic-gradient(from -90deg, #2f6f7f 0%, ${overtimeColor} 100%)`
-      : `conic-gradient(#2f6f7f ${ringPercent}%, #f1ece3 ${ringPercent}% 100%)`;
-  const remaining = Math.max(required - worked, 0);
-  const overtime = Math.max(worked - required, 0);
-
-  return (
-    <div className={compact ? "work-gauge compact" : "work-gauge"}>
-      <div className="work-gauge-head">
-        <b>{language === "de" ? "Tagesziel" : "Daily target"}</b>
-        <span>{progressPercent.toFixed(0)}%</span>
-      </div>
-      <div
-        className="work-gauge-ring"
-        role="meter"
-        aria-valuemin={0}
-        aria-valuenow={progressPercent}
-        aria-valuetext={`${progressPercent.toFixed(0)}%`}
-        style={{ background: ringFillBackground }}
-      >
-        <div className="work-gauge-ring-inner">
-          <strong className="work-gauge-value">{formatHours(worked)}</strong>
-          <small>{language === "de" ? "heute" : "today"}</small>
-        </div>
-      </div>
-      <div className="work-gauge-meta">
-        <small>
-          {language === "de" ? "Geleistet" : "Worked"}: {formatHours(worked)}
-        </small>
-        <small>
-          {language === "de" ? "Soll" : "Required"}: {formatHours(required)}
-        </small>
-        <small>
-          {overtime > 0
-            ? `${language === "de" ? "Überstunden" : "Overtime"}: ${formatHours(overtime)}`
-            : `${language === "de" ? "Rest" : "Remaining"}: ${formatHours(remaining)}`}
-        </small>
-      </div>
-    </div>
-  );
-}
-
-function ProjectHoursGauge({
-  language,
-  plannedHours,
-  workedHours,
-}: {
-  language: Language;
-  plannedHours: number;
-  workedHours: number;
-}) {
-  const planned = plannedHours > 0 ? plannedHours : 0;
-  const worked = Math.max(workedHours, 0);
-  const progressPercent = planned > 0 ? (worked / planned) * 100 : 0;
-  const ringPercent = clamp(progressPercent, 0, 100);
-  const overtimeBlend = clamp((progressPercent - 100) / 100, 0, 1);
-  const overtimeColor = `rgb(${Math.round(47 + (180 - 47) * overtimeBlend)}, ${Math.round(111 + (54 - 111) * overtimeBlend)}, ${Math.round(127 + (65 - 127) * overtimeBlend)})`;
-  const ringFillBackground =
-    planned <= 0
-      ? "conic-gradient(#f1ece3 0% 100%)"
-      : progressPercent > 100
-        ? `conic-gradient(from -90deg, #2f6f7f 0%, ${overtimeColor} 100%)`
-        : `conic-gradient(#2f6f7f ${ringPercent}%, #f1ece3 ${ringPercent}% 100%)`;
-  const remaining = planned > 0 ? Math.max(planned - worked, 0) : 0;
-  const overtime = planned > 0 ? Math.max(worked - planned, 0) : 0;
-
-  return (
-    <div className="work-gauge">
-      <div className="work-gauge-head">
-        <b>{language === "de" ? "Projektstunden" : "Project hours"}</b>
-        <span>{planned > 0 ? `${progressPercent.toFixed(0)}%` : "-"}</span>
-      </div>
-      <div
-        className="work-gauge-ring"
-        role="meter"
-        aria-valuemin={0}
-        aria-valuenow={progressPercent}
-        aria-valuetext={planned > 0 ? `${progressPercent.toFixed(0)}%` : "not set"}
-        style={{ background: ringFillBackground }}
-      >
-        <div className="work-gauge-ring-inner">
-          <strong className="work-gauge-value">{formatHours(worked)}</strong>
-          <small>{language === "de" ? "berichtet" : "reported"}</small>
-        </div>
-      </div>
-      <div className="work-gauge-meta">
-        <small>
-          {language === "de" ? "Geplant" : "Planned"}: {planned > 0 ? formatHours(planned) : "-"}
-        </small>
-        <small>
-          {language === "de" ? "Ist" : "Actual"}: {formatHours(worked)}
-        </small>
-        <small>
-          {planned <= 0
-            ? language === "de"
-              ? "Keine geplanten Stunden gesetzt"
-              : "No planned hours set"
-            : overtime > 0
-              ? `${language === "de" ? "Ueber Plan" : "Over plan"}: ${formatHours(overtime)}`
-              : `${language === "de" ? "Rest" : "Remaining"}: ${formatHours(remaining)}`}
-        </small>
-      </div>
-    </div>
-  );
-}
-
-function WeeklyHoursGauge({
-  language,
-  row,
-}: {
-  language: Language;
-  row: MonthWeekHours;
-}) {
-  const percent = row.requiredHours > 0 ? (row.workedHours / row.requiredHours) * 100 : 0;
-  const fillPercent = clamp(percent, 0, 100);
-  const rangeLabel = `${formatDayMonth(row.weekStart)} - ${formatDayMonth(row.weekEnd)}`;
-  return (
-    <div className={row.weekStart === startOfWeekISO(new Date()) ? "weekly-hours-row current" : "weekly-hours-row"}>
-      <div className="weekly-hours-head">
-        <b>
-          <span className="weekly-week-number">KW {row.weekNumber}</span> {rangeLabel}
-        </b>
-        <div className="weekly-hours-values">
-          <span>{formatHours(row.workedHours)}</span>
-          <span className="weekly-hours-separator">|</span>
-          <span>{formatHours(row.requiredHours)}</span>
-        </div>
-      </div>
-      <div className="weekly-hours-track" role="meter" aria-valuemin={0} aria-valuenow={percent} aria-valuetext={`${percent.toFixed(0)}%`}>
-        <div className="weekly-hours-fill" style={{ width: `${fillPercent}%` }} />
-      </div>
-      <small className="muted">
-        {language === "de" ? "Ist / Soll" : "Worked / Required"}: {percent.toFixed(0)}%
-      </small>
-    </div>
-  );
-}
-
-function MonthlyHoursGauge({
-  language,
-  workedHours,
-  requiredHours,
-}: {
-  language: Language;
-  workedHours: number;
-  requiredHours: number;
-}) {
-  const required = requiredHours > 0 ? requiredHours : 1;
-  const percent = (workedHours / required) * 100;
-  const shownPercent = clamp(percent, 0, 100);
-  const radius = 102;
-  const arcLength = Math.PI * radius;
-  const filledLength = (shownPercent / 100) * arcLength;
-  return (
-    <div className="monthly-gauge-wrap">
-      <svg viewBox="0 0 260 160" className="monthly-gauge" role="meter" aria-valuemin={0} aria-valuenow={percent} aria-valuetext={`${percent.toFixed(0)}%`}>
-        <path
-          d={`M 28 132 A ${radius} ${radius} 0 0 1 232 132`}
-          className="monthly-gauge-track"
-          pathLength={arcLength}
-          strokeDasharray={`${arcLength} ${arcLength}`}
-        />
-        <path
-          d={`M 28 132 A ${radius} ${radius} 0 0 1 232 132`}
-          className="monthly-gauge-fill"
-          pathLength={arcLength}
-          strokeDasharray={`${filledLength} ${arcLength}`}
-        />
-      </svg>
-      <div className="monthly-gauge-center">
-        <strong>{formatHours(workedHours)}</strong>
-        <small>{formatHours(Math.max(requiredHours, 0))}</small>
-      </div>
-    </div>
-  );
-}
-
-function reportDraftFromProject(project: Project | null): ReportDraft {
-  if (!project) return { ...EMPTY_REPORT_DRAFT };
-  return {
-    customer: project.customer_name ?? "",
-    customer_address: project.customer_address ?? "",
-    customer_contact: project.customer_contact ?? "",
-    customer_email: project.customer_email ?? "",
-    customer_phone: project.customer_phone ?? "",
-    project_name: project.name ?? "",
-    project_number: project.project_number ?? "",
-  };
-}
-
-const EMPTY_PROJECT_FORM: ProjectFormState = {
-  project_number: "",
-  name: "",
-  description: "",
-  status: "active",
-  last_state: "",
-  last_status_at: "",
-  customer_name: "",
-  customer_address: "",
-  customer_contact: "",
-  customer_email: "",
-  customer_phone: "",
-  site_access_type: "",
-  site_access_note: "",
-  class_template_ids: [],
-};
-
-function buildEmptyProjectTaskFormState(): ProjectTaskFormState {
-  return {
-    title: "",
-    description: "",
-    subtasks_raw: "",
-    materials_required: "",
-    has_storage_box: false,
-    storage_box_number: "",
-    task_type: "construction",
-    class_template_id: "",
-    due_date: "",
-    start_time: "",
-    assignee_query: "",
-    assignee_ids: [],
-  };
-}
-
-const EMPTY_PROJECT_FINANCE_FORM: ProjectFinanceFormState = {
-  order_value_net: "",
-  down_payment_35: "",
-  main_components_50: "",
-  final_invoice_15: "",
-  planned_costs: "",
-  actual_costs: "",
-  contribution_margin: "",
-};
-
-function projectFinanceToFormState(finance: ProjectFinance | null): ProjectFinanceFormState {
-  if (!finance) return { ...EMPTY_PROJECT_FINANCE_FORM };
-  return {
-    order_value_net: finance.order_value_net == null ? "" : String(finance.order_value_net),
-    down_payment_35: finance.down_payment_35 == null ? "" : String(finance.down_payment_35),
-    main_components_50: finance.main_components_50 == null ? "" : String(finance.main_components_50),
-    final_invoice_15: finance.final_invoice_15 == null ? "" : String(finance.final_invoice_15),
-    planned_costs: finance.planned_costs == null ? "" : String(finance.planned_costs),
-    actual_costs: finance.actual_costs == null ? "" : String(finance.actual_costs),
-    contribution_margin: finance.contribution_margin == null ? "" : String(finance.contribution_margin),
-  };
-}
-
-function buildTaskModalFormState(defaults?: {
-  projectId?: number | null;
-  dueDate?: string;
-  projectQuery?: string;
-  taskType?: TaskType;
-}): TaskModalState {
-  return {
-    title: "",
-    description: "",
-    subtasks_raw: "",
-    materials_required: "",
-    has_storage_box: false,
-    storage_box_number: "",
-    task_type: defaults?.taskType ?? "construction",
-    class_template_id: "",
-    project_id: defaults?.projectId ? String(defaults.projectId) : "",
-    project_query: defaults?.projectQuery ?? "",
-    due_date: defaults?.dueDate ?? "",
-    start_time: "",
-    assignee_query: "",
-    assignee_ids: [],
-    create_project_from_task: false,
-    new_project_name: "",
-    new_project_number: "",
-  };
-}
-
-function buildTaskEditFormState(task?: Task | null): TaskEditFormState {
-  const assigneeIds =
-    task?.assignee_ids && task.assignee_ids.length > 0
-      ? task.assignee_ids
-      : task?.assignee_id
-        ? [task.assignee_id]
-        : [];
-  return {
-    id: task?.id ?? null,
-    project_id: task?.project_id ?? null,
-    title: task?.title ?? "",
-    description: task?.description ?? "",
-    subtasks_raw: subtasksToTextareaValue(task?.subtasks),
-    materials_required: task?.materials_required ?? "",
-    has_storage_box: task?.storage_box_number != null,
-    storage_box_number: task?.storage_box_number != null ? String(task.storage_box_number) : "",
-    task_type: normalizeTaskTypeValue(task?.task_type),
-    class_template_id: task?.class_template_id != null ? String(task.class_template_id) : "",
-    status: task?.status ?? "open",
-    due_date: task?.due_date ?? "",
-    start_time: task?.start_time ? formatTaskStartTime(task.start_time) : "",
-    assignee_query: "",
-    assignee_ids: assigneeIds,
-    week_start: task?.week_start ?? "",
-  };
-}
-
-function sameNumberSet(left: number[], right: number[]) {
-  if (left.length !== right.length) return false;
-  const sortedLeft = [...left].sort((a, b) => a - b);
-  const sortedRight = [...right].sort((a, b) => a - b);
-  return sortedLeft.every((value, index) => value === sortedRight[index]);
-}
-
-function projectPayloadFromForm(form: ProjectFormState) {
-  const normalizedSiteAccessType = normalizeProjectSiteAccessType(form.site_access_type);
-  return {
-    project_number: form.project_number.trim(),
-    name: form.name.trim(),
-    description: form.description.trim(),
-    status: form.status.trim() || "active",
-    last_state: form.last_state.trim() || null,
-    last_status_at: localDateTimeInputToIso(form.last_status_at),
-    customer_name: form.customer_name.trim(),
-    customer_address: normalizeAddressInput(form.customer_address),
-    customer_contact: form.customer_contact.trim(),
-    customer_email: form.customer_email.trim(),
-    customer_phone: form.customer_phone.trim(),
-    site_access_type: normalizedSiteAccessType || null,
-    site_access_note: projectSiteAccessRequiresNote(normalizedSiteAccessType)
-      ? form.site_access_note.trim() || null
-      : null,
-    class_template_ids: form.class_template_ids,
-  };
-}
-
-function taskEditPayloadFromForm(form: TaskEditFormState, normalizedStartTime: string | null) {
-  const dueDate = form.due_date.trim() || null;
-  const storageBoxNumber =
-    form.has_storage_box && form.storage_box_number.trim()
-      ? Number(form.storage_box_number)
-      : null;
-  const classTemplateId =
-    form.class_template_id.trim().length > 0 ? Number(form.class_template_id) : null;
-  const weekStartValue = dueDate ? normalizeWeekStartISO(dueDate) : form.week_start.trim() || null;
-  return {
-    title: form.title.trim(),
-    description: form.description.trim() || null,
-    subtasks: parseTaskSubtasks(form.subtasks_raw),
-    materials_required: form.materials_required.trim() || null,
-    storage_box_number: storageBoxNumber,
-    task_type: form.task_type,
-    class_template_id: classTemplateId,
-    status: form.status.trim() || "open",
-    due_date: dueDate,
-    start_time: normalizedStartTime,
-    assignee_ids: form.assignee_ids,
-    week_start: weekStartValue,
-  };
-}
-
-const EMPTY_REPORT_DRAFT: ReportDraft = {
-  customer: "",
-  customer_address: "",
-  customer_contact: "",
-  customer_email: "",
-  customer_phone: "",
-  project_name: "",
-  project_number: "",
-};
-
-type ThreadModalState = {
-  name: string;
-  project_id: string;
-  participant_user_query: string;
-  participant_user_ids: number[];
-  participant_role_query: string;
-  participant_roles: string[];
-};
-
-const EMPTY_THREAD_MODAL_FORM: ThreadModalState = {
-  name: "",
-  project_id: "",
-  participant_user_query: "",
-  participant_user_ids: [],
-  participant_role_query: "",
-  participant_roles: [],
-};
-
-type AvatarUploadResponse = {
-  ok: boolean;
-  avatar_updated_at?: string | null;
-};
-
-type AvatarDeleteResponse = {
-  ok: boolean;
-  deleted: boolean;
-  avatar_updated_at?: string | null;
-};
-
-type AvatarImageSize = {
-  width: number;
-  height: number;
-};
-
-type AvatarCropOutput = {
-  mimeType: string;
-  extension: string;
-};
-
-const IMAGE_INPUT_ACCEPT = "image/*,.heic,.heif";
-const IMAGE_EXTENSIONS = new Set(["jpg", "jpeg", "png", "gif", "webp", "bmp", "tif", "tiff", "heic", "heif"]);
-const HEIC_EXTENSIONS = new Set(["heic", "heif"]);
-
-function clamp(value: number, min: number, max: number) {
-  return Math.min(max, Math.max(min, value));
-}
-
-function fileExtension(fileName: string): string {
-  const normalized = String(fileName || "").trim().toLowerCase();
-  if (!normalized.includes(".")) return "";
-  return normalized.split(".").pop() ?? "";
-}
-
-function isHeicFile(file: File): boolean {
-  const mime = String(file.type || "").trim().toLowerCase();
-  if (mime === "image/heic" || mime === "image/heif") return true;
-  return HEIC_EXTENSIONS.has(fileExtension(file.name));
-}
-
-function isImageUploadFile(file: File): boolean {
-  const mime = String(file.type || "").trim().toLowerCase();
-  if (mime.startsWith("image/")) return true;
-  return IMAGE_EXTENSIONS.has(fileExtension(file.name));
-}
-
-function avatarCropOutput(file: File | null): AvatarCropOutput {
-  if (file && isHeicFile(file)) return { mimeType: "image/jpeg", extension: "jpg" };
-  const mime = String(file?.type || "").trim().toLowerCase();
-  if (mime === "image/png") return { mimeType: "image/png", extension: "png" };
-  if (mime === "image/webp") return { mimeType: "image/webp", extension: "webp" };
-  if (mime === "image/jpeg" || mime === "image/jpg") return { mimeType: "image/jpeg", extension: "jpg" };
-
-  const extension = file ? fileExtension(file.name) : "";
-  if (extension === "png") return { mimeType: "image/png", extension: "png" };
-  if (extension === "webp") return { mimeType: "image/webp", extension: "webp" };
-  if (extension === "jpg" || extension === "jpeg") return { mimeType: "image/jpeg", extension: "jpg" };
-
-  return { mimeType: "image/jpeg", extension: "jpg" };
-}
-
-function loadImage(source: string): Promise<HTMLImageElement> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error("Image could not be loaded"));
-    img.src = source;
-  });
-}
-
-async function buildAvatarCropDataUrl(
-  source: string,
-  zoom: number,
-  offsetXPercent: number,
-  offsetYPercent: number,
-  outputSize = 320,
-  outputMimeType = "image/jpeg",
-): Promise<string> {
-  const img = await loadImage(source);
-  const canvas = document.createElement("canvas");
-  canvas.width = outputSize;
-  canvas.height = outputSize;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("Canvas context unavailable");
-
-  const baseCropSize = Math.min(img.width, img.height);
-  const safeZoom = clamp(zoom, 1, 3);
-  const cropSize = baseCropSize / safeZoom;
-  const maxShiftX = Math.max(0, (img.width - cropSize) / 2);
-  const maxShiftY = Math.max(0, (img.height - cropSize) / 2);
-  const targetCenterX = img.width / 2 + clamp(offsetXPercent, -100, 100) * (maxShiftX / 100);
-  const targetCenterY = img.height / 2 + clamp(offsetYPercent, -100, 100) * (maxShiftY / 100);
-  const sx = clamp(targetCenterX - cropSize / 2, 0, img.width - cropSize);
-  const sy = clamp(targetCenterY - cropSize / 2, 0, img.height - cropSize);
-
-  ctx.drawImage(img, sx, sy, cropSize, cropSize, 0, 0, outputSize, outputSize);
-  const safeMime = outputMimeType === "image/png" || outputMimeType === "image/webp" ? outputMimeType : "image/jpeg";
-  return canvas.toDataURL(safeMime, 0.92);
-}
-
-function avatarStageMetrics(
-  imageSize: AvatarImageSize | null,
-  stageSize: number,
-  zoom: number,
-  offsetXPercent: number,
-  offsetYPercent: number,
-) {
-  if (!imageSize || stageSize <= 0) {
-    return { maxPanX: 0, maxPanY: 0, translateX: 0, translateY: 0 };
-  }
-  const coverScale = Math.max(stageSize / imageSize.width, stageSize / imageSize.height);
-  const renderedWidth = imageSize.width * coverScale * zoom;
-  const renderedHeight = imageSize.height * coverScale * zoom;
-  const maxPanX = Math.max(0, (renderedWidth - stageSize) / 2);
-  const maxPanY = Math.max(0, (renderedHeight - stageSize) / 2);
-  const translateX = (clamp(offsetXPercent, -100, 100) / 100) * maxPanX;
-  const translateY = (clamp(offsetYPercent, -100, 100) / 100) * maxPanY;
-  return { maxPanX, maxPanY, translateX, translateY };
-}
-
-function AvatarBadge({
-  userId,
-  initials,
-  hasAvatar,
-  versionKey,
-  className,
-}: {
-  userId: number;
-  initials: string;
-  hasAvatar: boolean;
-  versionKey: string;
-  className?: string;
-}) {
-  const [failed, setFailed] = useState(false);
-  const classNames = className ? `sidebar-user-avatar ${className}` : "sidebar-user-avatar";
-
-  useEffect(() => {
-    setFailed(false);
-  }, [userId, hasAvatar, versionKey]);
-
-  return (
-    <div className={classNames} aria-hidden="true">
-      {hasAvatar && !failed && (
-        <img
-          src={`/api/users/${userId}/avatar?v=${encodeURIComponent(versionKey)}`}
-          alt=""
-          onError={() => setFailed(true)}
-        />
-      )}
-      <span>{initials}</span>
-    </div>
-  );
-}
-
-function threadInitials(name: string) {
-  const parts = (name || "")
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean);
-  if (parts.length === 0) return "T";
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
-}
-
-function ThreadIconBadge({
-  threadId,
-  initials,
-  hasIcon,
-  versionKey,
-  className,
-}: {
-  threadId: number;
-  initials: string;
-  hasIcon: boolean;
-  versionKey: string;
-  className?: string;
-}) {
-  const [failed, setFailed] = useState(false);
-  const classNames = className ? `thread-avatar ${className}` : "thread-avatar";
-
-  useEffect(() => {
-    setFailed(false);
-  }, [threadId, hasIcon, versionKey]);
-
-  return (
-    <div className={classNames} aria-hidden="true">
-      {hasIcon && !failed && (
-        <img
-          src={`/api/threads/${threadId}/icon?v=${encodeURIComponent(versionKey)}`}
-          alt=""
-          onError={() => setFailed(true)}
-        />
-      )}
-      <span>{initials}</span>
-    </div>
-  );
-}
+import type {
+  Language,
+  TaskView,
+  TaskType,
+  User,
+  Project,
+  ProjectClassTemplate,
+  ProjectFinance,
+  ProjectOverviewDetails,
+  ProjectWeather,
+  MaterialNeedStatus,
+  ProjectMaterialNeed,
+  MaterialCatalogItem,
+  MaterialCatalogImportState,
+  ProjectTrackedMaterial,
+  Task,
+  AssignableUser,
+  WikiLibraryFile,
+  Ticket,
+  Thread,
+  Message,
+  ChatRenderRow,
+  TimeCurrent,
+  TimeEntry,
+  TimesheetSummary,
+  MonthWeekHours,
+  PlanningWeek,
+  ProjectFolder,
+  ProjectFile,
+  VacationRequest,
+  SchoolAbsence,
+  InviteDispatchResponse,
+  PasswordResetDispatchResponse,
+  NicknameAvailability,
+  WeatherSettings,
+  UpdateStatus,
+  UpdateInstallResponse,
+  ReportWorker,
+  ReportDraft,
+  ReportMaterialRow,
+  ConstructionReportCreateResponse,
+  ConstructionReportProcessingResponse,
+  RecentConstructionReport,
+  ReportImageSelection,
+  TaskReportPrefill,
+  ReportTaskChecklistItem,
+  ProjectFormState,
+  ProjectTaskFormState,
+  ProjectFinanceFormState,
+  TaskModalState,
+  TaskEditFormState,
+  WorkspaceMode,
+  MainView,
+  ProjectTab,
+  ProjectTitleParts,
+  ThreadModalState,
+  AvatarUploadResponse,
+  AvatarDeleteResponse,
+  AvatarImageSize,
+} from "./types";
+import {
+  MAIN_LABELS,
+  TAB_LABELS,
+  PROJECT_STATUS_PRESETS,
+  DEFAULT_THREAD_PARTICIPANT_ROLES,
+  MATERIAL_UNIT_EXAMPLES,
+  MATERIAL_CATALOG_SEARCH_LIMIT,
+  WORKSPACE_MODE_STORAGE_KEY,
+  EMPTY_PROJECT_FORM,
+  EMPTY_PROJECT_FINANCE_FORM,
+  EMPTY_REPORT_DRAFT,
+  EMPTY_THREAD_MODAL_FORM,
+} from "./constants";
+import {
+  parseServerDateTime,
+  formatServerDateTime,
+  chatDayKey,
+  formatChatDayLabel,
+  formatChatTimeLabel,
+  isoToLocalDateTimeInput,
+  localDateTimeInputToIso,
+  formatDateISOLocal,
+  startOfWeekISO,
+  addDaysISO,
+  normalizeWeekStartISO,
+  isoWeekInfo,
+  daysInMonth,
+  weekdaysBetweenIso,
+  isIsoDateWithinRange,
+  isoWeekdayMondayFirst,
+  formatShortIsoDate,
+  monthWeekRanges,
+  parseTimestampValue,
+} from "./utils/dates";
+import {
+  initialsFromName,
+  compactNameLabel,
+  buildCompactUserNameMap,
+  preferredDisplayName,
+} from "./utils/names";
+import {
+  parseListLines,
+  parseTaskSubtasks,
+  sameStringList,
+  buildReportTaskChecklist,
+  sortTasksByDueTime,
+  isValidTimeHHMM,
+  normalizeTimeHHMM,
+  taskDisplayStatus,
+  isTaskOverdue,
+  taskNotificationDigest,
+  formatTaskStartTime,
+} from "./utils/tasks";
+import {
+  normalizeMaterialNeedStatus,
+} from "./utils/materials";
+import {
+  normalizeProjectSiteAccessType,
+  projectSiteAccessRequiresNote,
+  classTemplateMaterialsText,
+  projectUpdatedTimestamp,
+  isArchivedProjectStatus,
+  formatProjectTitle,
+  formatProjectTitleParts,
+  projectPayloadFromForm,
+} from "./utils/projects";
+import {
+  sleep,
+  buildClientFileKey,
+  createReportMaterialRow,
+  parseReportMaterialRows,
+  serializeTaskMaterialRows,
+  taskMaterialsDisplay,
+  serializeOfficeMaterialRows,
+  buildEmptyProjectTaskFormState,
+  buildTaskModalFormState,
+  buildTaskEditFormState,
+  taskEditPayloadFromForm,
+  reportDraftFromProject,
+  sameNumberSet,
+} from "./utils/reports";
+import {
+  projectFinanceToFormState,
+  parseNullableDecimalInput,
+} from "./utils/finance";
+import {
+  isLikelyJwtToken,
+  readStoredToken,
+  readStoredWorkspaceMode,
+  detectPublicAuthMode,
+  readPublicTokenParam,
+} from "./utils/auth";
+import { toIcsUtcDateTime, toIcsDate, escapeIcs } from "./utils/ics";
+import {
+  clamp,
+  isImageUploadFile,
+  avatarCropOutput,
+  loadImage,
+  buildAvatarCropDataUrl,
+  avatarStageMetrics,
+  resolveCurrentReleaseVersion,
+  roleOptionLabel,
+} from "./utils/misc";
+import { SidebarNavIcon, PenIcon, BackIcon, SearchIcon, CopyIcon } from "./components/icons";
+import { WorkHoursGauge, ProjectHoursGauge, WeeklyHoursGauge, MonthlyHoursGauge } from "./components/gauges";
+import { ThreadIconBadge, threadInitials } from "./components/shared/ThreadIconBadge";
+import { Sidebar } from "./components/layout/Sidebar";
+import { Header } from "./components/layout/Header";
+import { ProjectModal } from "./components/modals/ProjectModal";
+import { TaskModal } from "./components/modals/TaskModal";
+import { TaskEditModal } from "./components/modals/TaskEditModal";
+import { FileUploadModal } from "./components/modals/FileUploadModal";
+import { ThreadModal } from "./components/modals/ThreadModal";
+import { ArchivedThreadsModal } from "./components/modals/ArchivedThreadsModal";
+import { LoginPage } from "./pages/LoginPage";
+import { ProjectsArchivePage } from "./pages/ProjectsArchivePage";
+import { ProjectsAllPage } from "./pages/ProjectsAllPage";
+import { MyTasksPage } from "./pages/MyTasksPage";
+import { OfficeTasksPage } from "./pages/OfficeTasksPage";
+import { WikiPage } from "./pages/WikiPage";
+import { CalendarPage } from "./pages/CalendarPage";
+import { MaterialsPage } from "./pages/MaterialsPage";
+import { OverviewPage } from "./pages/OverviewPage";
+import { PlanningPage } from "./pages/PlanningPage";
+import { ProjectPage } from "./pages/ProjectPage";
+import { MessagesPage } from "./pages/MessagesPage";
+import { ConstructionPage } from "./pages/ConstructionPage";
+import { TimePage } from "./pages/TimePage";
+import { ProfilePage } from "./pages/ProfilePage";
+import { AdminPage } from "./pages/AdminPage";
+import { AvatarModal } from "./components/modals/AvatarModal";
+import { useServerEvents, type ServerEvent } from "./hooks/useServerEvents";
 
 export function App() {
   const [token, setToken] = useState<string | null>(() => readStoredToken());
@@ -3047,7 +745,7 @@ export function App() {
       .map((projectId) => projectsById.get(projectId))
       .filter((project): project is Project => Boolean(project))
       .sort((a, b) => {
-        const delta = projectUpdatedTimestamp(b) - projectUpdatedTimestamp(a);
+        const delta = (projectUpdatedTimestamp(b) ?? 0) - (projectUpdatedTimestamp(a) ?? 0);
         if (delta !== 0) return delta;
         return b.id - a.id;
       })
@@ -3745,12 +1443,12 @@ export function App() {
     const onEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") setPreUserMenuOpen(false);
     };
-    document.addEventListener("mousedown", onPointerOutside);
-    document.addEventListener("touchstart", onPointerOutside);
+    document.addEventListener("mousedown", onPointerOutside as EventListener);
+    document.addEventListener("touchstart", onPointerOutside as EventListener);
     document.addEventListener("keydown", onEscape);
     return () => {
-      document.removeEventListener("mousedown", onPointerOutside);
-      document.removeEventListener("touchstart", onPointerOutside);
+      document.removeEventListener("mousedown", onPointerOutside as EventListener);
+      document.removeEventListener("touchstart", onPointerOutside as EventListener);
       document.removeEventListener("keydown", onEscape);
     };
   }, [preUserMenuOpen]);
@@ -3765,12 +1463,12 @@ export function App() {
     const onEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") setTimeInfoOpen(false);
     };
-    document.addEventListener("mousedown", onPointerOutside);
-    document.addEventListener("touchstart", onPointerOutside);
+    document.addEventListener("mousedown", onPointerOutside as EventListener);
+    document.addEventListener("touchstart", onPointerOutside as EventListener);
     document.addEventListener("keydown", onEscape);
     return () => {
-      document.removeEventListener("mousedown", onPointerOutside);
-      document.removeEventListener("touchstart", onPointerOutside);
+      document.removeEventListener("mousedown", onPointerOutside as EventListener);
+      document.removeEventListener("touchstart", onPointerOutside as EventListener);
       document.removeEventListener("keydown", onEscape);
     };
   }, [timeInfoOpen]);
@@ -3786,12 +1484,12 @@ export function App() {
     const onEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") setAdminUserMenuOpenId(null);
     };
-    document.addEventListener("mousedown", onPointerOutside);
-    document.addEventListener("touchstart", onPointerOutside);
+    document.addEventListener("mousedown", onPointerOutside as EventListener);
+    document.addEventListener("touchstart", onPointerOutside as EventListener);
     document.addEventListener("keydown", onEscape);
     return () => {
-      document.removeEventListener("mousedown", onPointerOutside);
-      document.removeEventListener("touchstart", onPointerOutside);
+      document.removeEventListener("mousedown", onPointerOutside as EventListener);
+      document.removeEventListener("touchstart", onPointerOutside as EventListener);
       document.removeEventListener("keydown", onEscape);
     };
   }, [adminUserMenuOpenId]);
@@ -3807,12 +1505,12 @@ export function App() {
     const onEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") setThreadActionMenuOpen(false);
     };
-    document.addEventListener("mousedown", onPointerOutside);
-    document.addEventListener("touchstart", onPointerOutside);
+    document.addEventListener("mousedown", onPointerOutside as EventListener);
+    document.addEventListener("touchstart", onPointerOutside as EventListener);
     document.addEventListener("keydown", onEscape);
     return () => {
-      document.removeEventListener("mousedown", onPointerOutside);
-      document.removeEventListener("touchstart", onPointerOutside);
+      document.removeEventListener("mousedown", onPointerOutside as EventListener);
+      document.removeEventListener("touchstart", onPointerOutside as EventListener);
       document.removeEventListener("keydown", onEscape);
     };
   }, [threadActionMenuOpen]);
@@ -4014,6 +1712,17 @@ export function App() {
     }, 220);
     return () => window.clearTimeout(timeout);
   }, [mainView, token, user, materialCatalogQuery]);
+
+  useEffect(() => {
+    if (!token || !user) return;
+    if (mainView !== "materials") return;
+    const poll = window.setInterval(() => {
+      apiFetch<MaterialCatalogImportState>("/materials/catalog/state", token)
+        .then((state) => setMaterialCatalogState(state))
+        .catch(() => undefined);
+    }, 5000);
+    return () => window.clearInterval(poll);
+  }, [mainView, token, user]);
 
   useEffect(() => {
     if (!token || !user) return;
@@ -4256,6 +1965,115 @@ export function App() {
     }, 15000);
     return () => window.clearInterval(poll);
   }, [token, mainView]);
+
+  async function refreshRealtimeProjectLists() {
+    if (!token) return;
+    try {
+      const [projectData, projectOverview] = await Promise.all([
+        apiFetch<Project[]>("/projects", token),
+        apiFetch<any[]>("/projects-overview", token),
+      ]);
+      setProjects(projectData);
+      setOverview(projectOverview);
+    } catch {
+      // Silent by design for background realtime sync.
+    }
+  }
+
+  async function refreshActiveViewRealtime() {
+    if (!token || !user) return;
+    try {
+      if (mainView === "project" && activeProjectId) {
+        if (projectTab === "overview") await loadProjectOverview(activeProjectId);
+        if (projectTab === "tasks") await loadTasks(taskView, activeProjectId);
+        if (projectTab === "tickets") await loadSitesAndTickets(activeProjectId);
+        if (projectTab === "files") {
+          await Promise.all([loadFiles(activeProjectId), loadProjectFolders(activeProjectId)]);
+        }
+        if (projectTab === "finances" || projectTab === "hours") await loadProjectFinance(activeProjectId);
+        if (projectTab === "materials") await loadProjectTrackedMaterials(activeProjectId);
+        return;
+      }
+
+      if (mainView === "overview" || mainView === "my_tasks") {
+        await loadTasks("my", null);
+        if (mainView === "overview") {
+          await loadRecentConstructionReports(10);
+        }
+        return;
+      }
+
+      if (mainView === "office_tasks") {
+        await loadTasks("projects_overview", null);
+        return;
+      }
+
+      if (mainView === "planning") {
+        await loadPlanningWeek(null, planningWeekStart, planningTaskTypeView);
+        return;
+      }
+
+      if (mainView === "calendar") {
+        await loadPlanningWindow(null, calendarWeekStart, 4);
+        return;
+      }
+
+      if (mainView === "materials") {
+        await Promise.all([loadMaterialNeeds(), loadMaterialCatalog(materialCatalogQuery)]);
+        return;
+      }
+
+      if (mainView === "messages") {
+        await loadThreads();
+        if (activeThreadId) {
+          await loadMessages(activeThreadId);
+        }
+        return;
+      }
+
+      if (mainView === "construction") {
+        const targetProjectId = Number(reportProjectId);
+        await loadConstructionReportFiles(targetProjectId > 0 ? targetProjectId : null);
+        return;
+      }
+
+      if (mainView === "wiki") {
+        await loadWikiLibraryFiles();
+        return;
+      }
+
+      if (mainView === "time") {
+        await refreshTimeData();
+      }
+    } catch {
+      // Silent by design for background realtime sync.
+    }
+  }
+
+  function handleServerEvent(event: ServerEvent) {
+    const eventType = String(event.type || "").trim().toLowerCase();
+    if (!eventType) return;
+
+    // Keep project headers/sidebars in sync for task/project mutations.
+    if (eventType.startsWith("task.") || eventType.startsWith("project.")) {
+      void refreshRealtimeProjectLists();
+    }
+
+    // Keep thread list fresh even outside the messages view.
+    if (eventType.startsWith("message.") || eventType.startsWith("thread.")) {
+      void loadThreads();
+    }
+
+    void refreshActiveViewRealtime();
+  }
+
+  useServerEvents(token, {
+    onEvent: handleServerEvent,
+    onReconnect: () => {
+      void refreshActiveViewRealtime();
+      void refreshRealtimeProjectLists();
+    },
+  });
 
   async function loadBaseData() {
     try {
@@ -5281,7 +3099,7 @@ export function App() {
 
   async function exportTaskCalendar(task: Task) {
     const taskAssignees = getTaskAssigneeIds(task);
-    if (!taskAssignees.includes(user.id)) {
+    if (!user || !taskAssignees.includes(user.id)) {
       setError(language === "de" ? "Nur zugewiesene Mitarbeiter können den Termin exportieren" : "Only assigned users can export this task");
       return;
     }
@@ -5360,6 +3178,7 @@ export function App() {
   }
 
   function userNameById(userId: number): string {
+    if (!user) return "";
     if (userId === user.id) return language === "de" ? "Ich" : "Me";
     return menuUserNameById(
       userId,
@@ -5371,11 +3190,13 @@ export function App() {
   }
 
   function userInitialsById(userId: number) {
+    if (!user) return "";
     if (userId === user.id) return userInitials;
     return initialsFromName(userNameById(userId), "U");
   }
 
   function userAvatarVersionById(userId: number) {
+    if (!user) return "0";
     if (userId === user.id) return user.avatar_updated_at || avatarVersionKey;
     return (
       assignableUsersById.get(userId)?.avatar_updated_at ||
@@ -5385,6 +3206,7 @@ export function App() {
   }
 
   function userHasAvatar(userId: number) {
+    if (!user) return false;
     if (userId === user.id) return Boolean(user.avatar_updated_at);
     return Boolean(assignableUsersById.get(userId)?.avatar_updated_at || adminUsersById.get(userId)?.avatar_updated_at);
   }
@@ -7037,7 +4859,7 @@ export function App() {
   }
 
   async function deleteAvatar() {
-    if (!user.avatar_updated_at) return;
+    if (!user || !user.avatar_updated_at) return;
     const confirmed = window.confirm(
       language === "de" ? "Profilbild entfernen?" : "Remove profile picture?",
     );
@@ -7562,7 +5384,7 @@ export function App() {
           ? "Passwort-Reset per E-Mail versendet"
           : "Password reset email sent";
     }
-    const linkValue = type === "invite" ? result.invite_link : result.reset_link;
+    const linkValue = "invite_link" in result ? result.invite_link : result.reset_link;
     return language === "de"
       ? `Kein SMTP aktiv. Link lokal erzeugt: ${linkValue}`
       : `SMTP not configured. Generated local link: ${linkValue}`;
@@ -8048,537 +5870,721 @@ export function App() {
     }
   }
 
-  if (!user) {
-    const isPublicTokenFlow = publicAuthMode === "invite" || publicAuthMode === "reset";
-    return (
-      <main className="login-shell">
-        {isPublicTokenFlow ? (
-          <form
-            className="card auth-card"
-            onSubmit={publicAuthMode === "invite" ? submitPublicInviteAccept : submitPublicPasswordReset}
-          >
-            <img src="/logo.jpeg" alt="Company logo" className="brand-logo large" />
-            <h1>SMPL Workflow</h1>
-            <p>
-              {publicAuthMode === "invite"
-                ? language === "de"
-                  ? "Einladung annehmen"
-                  : "Accept invitation"
-                : language === "de"
-                  ? "Passwort zurücksetzen"
-                  : "Reset password"}
-            </p>
-            <label>
-              Token
-              <input value={publicToken} onChange={(event) => setPublicToken(event.target.value)} required />
-            </label>
-            {publicAuthMode === "invite" && (
-              <>
-                <label>
-                  {language === "de" ? "Name (optional)" : "Name (optional)"}
-                  <input value={publicFullName} onChange={(event) => setPublicFullName(event.target.value)} />
-                </label>
-                <label>
-                  {language === "de" ? "E-Mail (optional)" : "Email (optional)"}
-                  <input
-                    type="email"
-                    value={publicEmail}
-                    onChange={(event) => setPublicEmail(event.target.value)}
-                  />
-                </label>
-              </>
-            )}
-            <label>
-              {language === "de" ? "Neues Passwort" : "New password"}
-              <input
-                type="password"
-                minLength={8}
-                value={publicNewPassword}
-                onChange={(event) => setPublicNewPassword(event.target.value)}
-                required
-              />
-            </label>
-            <label>
-              {language === "de" ? "Passwort bestätigen" : "Confirm password"}
-              <input
-                type="password"
-                minLength={8}
-                value={publicConfirmPassword}
-                onChange={(event) => setPublicConfirmPassword(event.target.value)}
-                required
-              />
-            </label>
-            <div className="row wrap">
-              <button type="submit">
-                {publicAuthMode === "invite"
-                  ? language === "de"
-                    ? "Einladung bestätigen"
-                    : "Accept invite"
-                  : language === "de"
-                    ? "Passwort setzen"
-                    : "Set password"}
-              </button>
-              <button type="button" onClick={resetPublicAuthRoute}>
-                {language === "de" ? "Zur Anmeldung" : "Back to sign in"}
-              </button>
-              <button type="button" onClick={() => setLanguage(language === "de" ? "en" : "de")}>
-                {language === "de" ? "EN" : "DE"}
-              </button>
-            </div>
-            {error && <div className="error">{error}</div>}
-            {notice && <div className="notice">{notice}</div>}
-          </form>
-        ) : (
-          <form className="card auth-card" onSubmit={onLogin}>
-            <img src="/logo.jpeg" alt="Company logo" className="brand-logo large" />
-            <h1>SMPL Workflow</h1>
-            <p>{language === "de" ? "Private, selbst gehostete Workflow-App" : "Private self-hosted workflow app"}</p>
-            <label>
-              Email
-              <input value={email} onChange={(e) => setEmail(e.target.value)} />
-            </label>
-            <label>
-              {language === "de" ? "Passwort" : "Password"}
-              <input type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
-            </label>
-            <div className="row">
-              <button type="submit">{language === "de" ? "Anmelden" : "Sign in"}</button>
-              <button type="button" onClick={() => setLanguage(language === "de" ? "en" : "de")}>
-                {language === "de" ? "EN" : "DE"}
-              </button>
-            </div>
-            {error && <div className="error">{error}</div>}
-            {notice && <div className="notice">{notice}</div>}
-          </form>
-        )}
-      </main>
-    );
-  }
+  const contextValue: AppContextValue = {
+    // ── Core auth / session ───────────────────────────────────────────────────
+    token,
+    setToken,
+    language,
+    setLanguage,
+    workspaceMode,
+    setWorkspaceMode,
+    now,
 
-  const renderAdminUpdateMenu = () => {
-    if (!isAdmin) return null;
-    const currentLabel = currentReleaseLabel;
-    const latestLabel =
-      updateStatus?.latest_version || updateStatus?.latest_commit || (language === "de" ? "unbekannt" : "unknown");
-    let statusLabel = language === "de" ? "Status unbekannt" : "Status unknown";
-    if (updateStatus?.update_available === true) {
-      statusLabel = language === "de" ? "Update verfügbar" : "Update available";
-    } else if (updateStatus?.update_available === false) {
-      statusLabel = language === "de" ? "Bereits aktuell" : "Up to date";
-    }
-    return (
-      <div className="metric-stack admin-update-tools">
-        <b>{language === "de" ? "System-Updates" : "System updates"}</b>
-        <small className="muted">
-          {updateStatus?.repository ? `${updateStatus.repository} (${updateStatus.branch})` : "-"}
-        </small>
-        <small className="muted">
-          {language === "de" ? "Aktuell" : "Current"}: {currentLabel}
-        </small>
-        <small className="muted">
-          {language === "de" ? "Neueste Version" : "Latest"}: {latestLabel}
-        </small>
-        <small className="muted">
-          {language === "de" ? "Ergebnis" : "Result"}: {statusLabel}
-        </small>
-        <small className="muted">
-          {language === "de"
-            ? "Sicherheitsablauf: Snapshot + Migrations-Preflight vor echter DB-Migration."
-            : "Safety flow: snapshot + migration preflight before real DB migration."}
-        </small>
-        {updateStatus?.message && <small className="muted">{updateStatus.message}</small>}
-        {updateStatus?.latest_url && (
-          <a href={updateStatus.latest_url} target="_blank" rel="noreferrer">
-            {language === "de" ? "Release auf GitHub öffnen" : "Open release on GitHub"}
-          </a>
-        )}
-        <div className="row wrap">
-          <button type="button" disabled={updateStatusLoading || updateInstallRunning} onClick={() => void loadUpdateStatus(true)}>
-            {updateStatusLoading
-              ? language === "de"
-                ? "Prüfe..."
-                : "Checking..."
-              : language === "de"
-                ? "Jetzt prüfen"
-                : "Check now"}
-          </button>
-          <button
-            type="button"
-            disabled={updateInstallRunning}
-            onClick={() => void installSystemUpdate(true)}
-          >
-            {updateInstallRunning
-              ? language === "de"
-                ? "Läuft..."
-                : "Running..."
-              : language === "de"
-                ? "Dry run"
-                : "Dry run"}
-          </button>
-          <button
-            type="button"
-            disabled={!updateStatus?.install_supported || updateInstallRunning}
-            onClick={() => void installSystemUpdate(false)}
-          >
-            {updateInstallRunning
-              ? language === "de"
-                ? "Installiere..."
-                : "Installing..."
-              : language === "de"
-                ? "Update installieren"
-                : "Install update"}
-          </button>
-        </div>
-        {!updateStatus?.install_supported && updateStatus?.install_steps?.length ? (
-          <>
-            <small className="muted">
-              {language === "de"
-                ? "Automatische Installation ist hier nicht verfügbar. Manuelle Schritte:"
-                : "Automatic install is not available here. Manual steps:"}
-            </small>
-            <ul className="admin-update-step-list">
-              {updateStatus.install_steps.map((step) => (
-                <li key={`update-step-${step}`}>
-                  <code>{step}</code>
-                </li>
-              ))}
-            </ul>
-          </>
-        ) : null}
-      </div>
-    );
+    // ── Current user ──────────────────────────────────────────────────────────
+    user,
+    setUser,
+
+    // ── Navigation ────────────────────────────────────────────────────────────
+    mainView,
+    setMainView,
+    overviewShortcutBackVisible,
+    setOverviewShortcutBackVisible,
+    projectTab,
+    setProjectTab,
+    projectBackView,
+    setProjectBackView,
+    constructionBackView,
+    setConstructionBackView,
+
+    // ── Error / notice ────────────────────────────────────────────────────────
+    error,
+    setError,
+    notice,
+    setNotice,
+
+    // ── Login form ────────────────────────────────────────────────────────────
+    email,
+    setEmail,
+    password,
+    setPassword,
+    publicAuthMode,
+    setPublicAuthMode,
+    publicToken,
+    setPublicToken,
+    publicFullName,
+    setPublicFullName,
+    publicEmail,
+    setPublicEmail,
+    publicNewPassword,
+    setPublicNewPassword,
+    publicConfirmPassword,
+    setPublicConfirmPassword,
+
+    // ── Users ─────────────────────────────────────────────────────────────────
+    users,
+    setUsers,
+    assignableUsers,
+    setAssignableUsers,
+    threadParticipantRoles,
+    setThreadParticipantRoles,
+
+    // ── Projects ──────────────────────────────────────────────────────────────
+    projects,
+    setProjects,
+    activeProjectId,
+    setActiveProjectId,
+    highlightedArchivedProjectId,
+    setHighlightedArchivedProjectId,
+    overview,
+    setOverview,
+    overviewStatusFilter,
+    setOverviewStatusFilter,
+    projectsAllSearch,
+    setProjectsAllSearch,
+    projectsAllStateFilter,
+    setProjectsAllStateFilter,
+    projectsAllEditedFilter,
+    setProjectsAllEditedFilter,
+    projectSidebarSearchOpen,
+    setProjectSidebarSearchOpen,
+    projectSidebarSearchQuery,
+    setProjectSidebarSearchQuery,
+
+    // ── Project class templates ───────────────────────────────────────────────
+    projectClassTemplates,
+    setProjectClassTemplates,
+    projectClassTemplatesByProjectId,
+    setProjectClassTemplatesByProjectId,
+
+    // ── Project overview details ──────────────────────────────────────────────
+    projectOverviewDetails,
+    setProjectOverviewDetails,
+    projectOverviewOpenTasks,
+    setProjectOverviewOpenTasks,
+
+    // ── Project weather ───────────────────────────────────────────────────────
+    projectWeather,
+    setProjectWeather,
+    projectWeatherLoading,
+    setProjectWeatherLoading,
+
+    // ── Project finance ───────────────────────────────────────────────────────
+    projectFinance,
+    setProjectFinance,
+    projectHoursPlannedInput,
+    setProjectHoursPlannedInput,
+    projectFinanceEditing,
+    setProjectFinanceEditing,
+    projectFinanceForm,
+    setProjectFinanceForm,
+
+    // ── Project note ──────────────────────────────────────────────────────────
+    projectNoteEditing,
+    setProjectNoteEditing,
+    projectNoteDraft,
+    setProjectNoteDraft,
+
+    // ── Project modal ─────────────────────────────────────────────────────────
+    projectModalMode,
+    setProjectModalMode,
+    projectForm,
+    setProjectForm,
+    projectFormBase,
+    setProjectFormBase,
+    projectEditExpectedLastUpdatedAt,
+    setProjectEditExpectedLastUpdatedAt,
+
+    // ── Materials ─────────────────────────────────────────────────────────────
+    materialNeeds,
+    setMaterialNeeds,
+    materialNeedUpdating,
+    setMaterialNeedUpdating,
+    materialCatalogRows,
+    setMaterialCatalogRows,
+    materialCatalogState,
+    setMaterialCatalogState,
+    materialCatalogQuery,
+    setMaterialCatalogQuery,
+    materialCatalogLoading,
+    setMaterialCatalogLoading,
+    materialCatalogProjectId,
+    setMaterialCatalogProjectId,
+    materialCatalogProjectSearch,
+    setMaterialCatalogProjectSearch,
+    materialCatalogProjectSearchFocused,
+    setMaterialCatalogProjectSearchFocused,
+    materialCatalogAdding,
+    setMaterialCatalogAdding,
+    projectTrackedMaterials,
+    setProjectTrackedMaterials,
+
+    // ── Tasks ─────────────────────────────────────────────────────────────────
+    taskView,
+    setTaskView,
+    tasks,
+    setTasks,
+    officeTaskStatusFilter,
+    setOfficeTaskStatusFilter,
+    officeTaskAssigneeFilter,
+    setOfficeTaskAssigneeFilter,
+    officeTaskDueDateFilter,
+    setOfficeTaskDueDateFilter,
+    officeTaskNoDueDateFilter,
+    setOfficeTaskNoDueDateFilter,
+    officeTaskProjectFilterQuery,
+    setOfficeTaskProjectFilterQuery,
+    officeTaskProjectFilterIds,
+    setOfficeTaskProjectFilterIds,
+    expandedMyTaskId,
+    setExpandedMyTaskId,
+    myTasksBackProjectId,
+    setMyTasksBackProjectId,
+    hasTaskNotifications,
+    setHasTaskNotifications,
+
+    // ── Project task form ─────────────────────────────────────────────────────
+    projectTaskForm,
+    setProjectTaskForm,
+    projectTaskMaterialRows,
+    setProjectTaskMaterialRows,
+
+    // ── Task modal ────────────────────────────────────────────────────────────
+    taskModalOpen,
+    setTaskModalOpen,
+    taskModalForm,
+    setTaskModalForm,
+    taskModalMaterialRows,
+    setTaskModalMaterialRows,
+
+    // ── Task edit modal ───────────────────────────────────────────────────────
+    taskEditModalOpen,
+    setTaskEditModalOpen,
+    taskEditForm,
+    setTaskEditForm,
+    taskEditMaterialRows,
+    setTaskEditMaterialRows,
+    taskEditFormBase,
+    setTaskEditFormBase,
+    taskEditExpectedUpdatedAt,
+    setTaskEditExpectedUpdatedAt,
+
+    // ── Tickets ───────────────────────────────────────────────────────────────
+    tickets,
+    setTickets,
+
+    // ── Files ─────────────────────────────────────────────────────────────────
+    files,
+    setFiles,
+    projectFolders,
+    setProjectFolders,
+    fileQuery,
+    setFileQuery,
+    fileUploadModalOpen,
+    setFileUploadModalOpen,
+    fileUploadFolder,
+    setFileUploadFolder,
+    newProjectFolderPath,
+    setNewProjectFolderPath,
+
+    // ── Construction reports ──────────────────────────────────────────────────
+    recentConstructionReports,
+    setRecentConstructionReports,
+    reportProjectId,
+    setReportProjectId,
+    reportDraft,
+    setReportDraft,
+    reportTaskPrefill,
+    setReportTaskPrefill,
+    reportSourceTaskId,
+    setReportSourceTaskId,
+    reportTaskChecklist,
+    setReportTaskChecklist,
+    reportMaterialRows,
+    setReportMaterialRows,
+    reportOfficeMaterialRows,
+    setReportOfficeMaterialRows,
+    reportImageFiles,
+    setReportImageFiles,
+    reportSubmitting,
+    setReportSubmitting,
+    reportUploadPercent,
+    setReportUploadPercent,
+    reportUploadPhase,
+    setReportUploadPhase,
+    reportWorkers,
+    setReportWorkers,
+
+    // ── Wiki ──────────────────────────────────────────────────────────────────
+    wikiFiles,
+    setWikiFiles,
+    wikiSearch,
+    setWikiSearch,
+    activeWikiPath,
+    setActiveWikiPath,
+
+    // ── Planning ──────────────────────────────────────────────────────────────
+    planningWeekStart,
+    setPlanningWeekStart,
+    planningTaskTypeView,
+    setPlanningTaskTypeView,
+    planningWeek,
+    setPlanningWeek,
+    calendarWeekStart,
+    setCalendarWeekStart,
+    calendarWeeks,
+    setCalendarWeeks,
+    calendarLoading,
+    setCalendarLoading,
+
+    // ── Threads / messages ────────────────────────────────────────────────────
+    threads,
+    setThreads,
+    archivedThreads,
+    setArchivedThreads,
+    archivedThreadsModalOpen,
+    setArchivedThreadsModalOpen,
+    messages,
+    setMessages,
+    messageBody,
+    setMessageBody,
+    messageAttachment,
+    setMessageAttachment,
+    activeThreadId,
+    setActiveThreadId,
+    threadModalMode,
+    setThreadModalMode,
+    threadModalForm,
+    setThreadModalForm,
+    threadIconFile,
+    setThreadIconFile,
+    threadIconPreviewUrl,
+    setThreadIconPreviewUrl,
+    threadActionMenuOpen,
+    setThreadActionMenuOpen,
+
+    // ── Time ──────────────────────────────────────────────────────────────────
+    timeCurrent,
+    setTimeCurrent,
+    timeEntries,
+    setTimeEntries,
+    timeMonthRows,
+    setTimeMonthRows,
+    vacationRequests,
+    setVacationRequests,
+    schoolAbsences,
+    setSchoolAbsences,
+    vacationRequestForm,
+    setVacationRequestForm,
+    schoolAbsenceForm,
+    setSchoolAbsenceForm,
+    timeMonthCursor,
+    setTimeMonthCursor,
+    timeInfoOpen,
+    setTimeInfoOpen,
+    timeTargetUserId,
+    setTimeTargetUserId,
+    requiredHoursDrafts,
+    setRequiredHoursDrafts,
+
+    // ── Profile settings ──────────────────────────────────────────────────────
+    profileSettingsForm,
+    setProfileSettingsForm,
+    nicknameCheckState,
+    setNicknameCheckState,
+    nicknameCheckMessage,
+    setNicknameCheckMessage,
+
+    // ── Admin / invite ────────────────────────────────────────────────────────
+    inviteCreateForm,
+    setInviteCreateForm,
+    backupExporting,
+    setBackupExporting,
+    weatherSettings,
+    setWeatherSettings,
+    weatherApiKeyInput,
+    setWeatherApiKeyInput,
+    weatherSettingsSaving,
+    setWeatherSettingsSaving,
+    updateStatus,
+    setUpdateStatus,
+    updateStatusLoading,
+    setUpdateStatusLoading,
+    updateInstallRunning,
+    setUpdateInstallRunning,
+    preUserMenuOpen,
+    setPreUserMenuOpen,
+    adminUserMenuOpenId,
+    setAdminUserMenuOpenId,
+
+    // ── Avatar ────────────────────────────────────────────────────────────────
+    avatarModalOpen,
+    setAvatarModalOpen,
+    avatarSourceUrl,
+    setAvatarSourceUrl,
+    avatarZoom,
+    setAvatarZoom,
+    avatarOffsetX,
+    setAvatarOffsetX,
+    avatarOffsetY,
+    setAvatarOffsetY,
+    avatarNaturalSize,
+    setAvatarNaturalSize,
+    avatarStageSize,
+    setAvatarStageSize,
+    avatarIsDragging,
+    setAvatarIsDragging,
+    avatarPreviewDataUrl,
+    setAvatarPreviewDataUrl,
+    avatarSelectedFile,
+    setAvatarSelectedFile,
+    avatarVersionKey,
+    setAvatarVersionKey,
+
+    // ── Refs ──────────────────────────────────────────────────────────────────
+    constructionFormRef,
+    avatarCropStageRef,
+    messageListRef,
+    reportImageInputRef,
+    messageAttachmentInputRef,
+    avatarDragRef,
+    preUserMenuRef,
+
+    // ── Derived booleans ──────────────────────────────────────────────────────
+    isAdmin,
+    canAdjustRequiredHours,
+    canCreateProject,
+    canManageTasks,
+    isTimeManager,
+    canApproveVacation,
+    canManageSchoolAbsences,
+    canManageProjectImport,
+    canUseProtectedFolders,
+    canManageFinance,
+    hasMessageText,
+    canSendMessage,
+    viewingOwnTime,
+    threadModalIsRestricted,
+
+    // ── Derived labels ────────────────────────────────────────────────────────
+    mainLabels,
+    tabLabels,
+    workspaceModeLabel,
+
+    // ── Derived numeric values ────────────────────────────────────────────────
+    requiredDailyHours,
+    dailyNetHours,
+    gaugeNetHours,
+
+    // ── useMemo values ────────────────────────────────────────────────────────
+    activeProject,
+    activeProjectDavRef,
+    activeProjectDavUrl,
+    activeProjectHeader,
+    activeProjectLastState,
+    activeProjectLastStatusAtLabel,
+    activeProjectLastUpdatedLabel,
+    activeProjectAddress,
+    activeProjectMapQuery,
+    activeProjectMapEmbedUrl,
+    activeProjectMapOpenUrl,
+    activeProjectTicketDate,
+    activeProjectTicketAddress,
+    activeProjectClassTemplates,
+    taskModalProjectClassTemplates,
+    taskEditProjectClassTemplates,
+    projectStatusOptions,
+    projectStatusSelectOptions,
+    overviewStatusOptions,
+    projectsById,
+    overviewProjectsById,
+    materialNeedRows,
+    activeProjects,
+    archivedProjects,
+    materialCatalogProjectOptions,
+    selectedMaterialCatalogProject,
+    selectedMaterialCatalogProjectLabel,
+    materialCatalogProjectSuggestions,
+    filteredSidebarProjects,
+    detailedOverviewRows,
+    filteredDetailedOverview,
+    filteredProjectsAll,
+    recentAssignedProjects,
+    sortedTasks,
+    overviewActionCards,
+    overviewActionCardWidth,
+    projectTaskAssigneeSuggestions,
+    taskModalAssigneeSuggestions,
+    taskEditAssigneeSuggestions,
+    threadModalUserSuggestions,
+    threadModalRoleSuggestions,
+    taskModalProjectSuggestions,
+    selectedTaskModalProject,
+    activeThread,
+    hasUnreadThreads,
+    assignableUsersById,
+    adminUsersById,
+    compactMenuUserNamesById,
+    threadModalSelectedUsers,
+    activeAdminUsers,
+    archivedAdminUsers,
+    chatRenderRows,
+    showOverviewBackButton,
+    selectedReportProject,
+    planningWeekInfo,
+    taskStatusOptions,
+    officeTaskStatusOptions,
+    officeTaskAssigneeOptions,
+    officeTaskProjectOptions,
+    officeTaskSelectedProjectFilters,
+    officeTaskProjectSuggestions,
+    officeFilteredTasks,
+    navViews,
+    projectTabs,
+    fileRows,
+    wikiRows,
+    activeWikiFile,
+    projectReportedHoursTotal,
+    projectPlannedHoursTotal,
+    projectHoursUsagePercent,
+    userInitials,
+    todayIso,
+    calendarRangeLabel,
+    timeTargetUser,
+    monthWeekDefs,
+    monthCursorLabel,
+    monthlyWorkedHours,
+    monthlyRequiredHours,
+    pendingVacationRequests,
+    approvedVacationRequests,
+    approvedVacationRequestsByUserId,
+    schoolAbsencesByUserId,
+    sidebarNowLabel,
+    avatarStageState,
+    firmwareBuild,
+    resolvedCurrentReleaseVersion,
+    currentReleaseLabel,
+
+    // ── Sync helper functions ─────────────────────────────────────────────────
+    assigneeAvailabilityHint,
+    getTaskAssigneeIds,
+    isTaskAssignedToCurrentUser,
+    menuUserNameById,
+    getTaskAssigneeLabel,
+    projectTitleParts,
+    projectTitle,
+    taskProjectTitleParts,
+    recentReportProjectTitleParts,
+    threadProjectTitleParts,
+    ensureProjectVisibleById,
+    openProjectById,
+    projectSearchLabel,
+    openCreateProjectModal,
+    openEditProjectModal,
+    closeProjectModal,
+    onProjectModalBackdropPointerDown,
+    onProjectModalBackdropPointerUp,
+    resetProjectModalBackdropPointerState,
+    updateProjectFormField,
+    updateProjectSiteAccessType,
+    toggleProjectClassTemplate,
+    updateProjectFinanceFormField,
+    financeFormPayload,
+    validateTimeInputOrSetError,
+    updateProjectTaskFormField,
+    updateProjectTaskMaterialRow,
+    addProjectTaskMaterialRow,
+    removeProjectTaskMaterialRow,
+    selectProjectTaskClassTemplate,
+    addProjectTaskAssignee,
+    removeProjectTaskAssignee,
+    addFirstMatchingProjectTaskAssignee,
+    openTaskModal,
+    closeTaskModal,
+    onTaskModalBackdropPointerDown,
+    onTaskModalBackdropPointerUp,
+    resetTaskModalBackdropPointerState,
+    updateTaskModalField,
+    updateTaskModalMaterialRow,
+    addTaskModalMaterialRow,
+    removeTaskModalMaterialRow,
+    selectTaskModalClassTemplate,
+    addTaskModalAssignee,
+    removeTaskModalAssignee,
+    addFirstMatchingTaskModalAssignee,
+    selectTaskModalProject,
+    openTaskEditModal,
+    closeTaskEditModal,
+    onTaskEditModalBackdropPointerDown,
+    onTaskEditModalBackdropPointerUp,
+    resetTaskEditModalBackdropPointerState,
+    updateTaskEditField,
+    updateTaskEditMaterialRow,
+    addTaskEditMaterialRow,
+    removeTaskEditMaterialRow,
+    selectTaskEditClassTemplate,
+    addTaskEditAssignee,
+    removeTaskEditAssignee,
+    addFirstMatchingTaskEditAssignee,
+    addOfficeTaskProjectFilter,
+    removeOfficeTaskProjectFilter,
+    addFirstMatchingOfficeTaskProjectFilter,
+    openConstructionReportFromTask,
+    openProjectFromTask,
+    openTaskFromProject,
+    openTaskFromPlanning,
+    userNameById,
+    userInitialsById,
+    userAvatarVersionById,
+    userHasAvatar,
+    isThreadArchived,
+    openCreateThreadModal,
+    openEditThreadModal,
+    closeThreadModal,
+    onThreadIconFileChange,
+    addThreadModalUser,
+    removeThreadModalUser,
+    addFirstMatchingThreadModalUser,
+    addThreadModalRole,
+    removeThreadModalRole,
+    addFirstMatchingThreadModalRole,
+    closeArchivedThreadsModal,
+    openAvatarModal,
+    closeAvatarModal,
+    onAvatarFileChange,
+    onAvatarDragStart,
+    onAvatarDragMove,
+    onAvatarDragEnd,
+    onMessageAttachmentChange,
+    scrollMessageListToBottom,
+    clearMessageAttachment,
+    onMessageListScroll,
+    fileDownloadUrl,
+    filePreviewUrl,
+    isPreviewable,
+    wikiFileUrl,
+    formatFileSize,
+    updateReportWorker,
+    addReportWorkerRow,
+    removeReportWorkerRow,
+    applyReportProjectSelection,
+    toggleReportTaskChecklistItem,
+    updateReportDraftField,
+    updateReportMaterialRow,
+    addReportMaterialRow,
+    removeReportMaterialRow,
+    updateReportOfficeMaterialRow,
+    addReportOfficeMaterialRow,
+    removeReportOfficeMaterialRow,
+    onReportImagesChange,
+    removeReportImage,
+    onReportImageRemoveClick,
+    clearReportImages,
+    formatActionLinkNotice,
+    toggleSchoolRecurrenceWeekday,
+    openProfileViewFromMenu,
+    signOut,
+    selectMaterialCatalogProject,
+    normalizeMaterialCatalogLookupKey,
+    isLikelyMaterialCatalogIdentifier,
+    mergeMaterialRowWithCatalogItem,
+    findMaterialCatalogMatch,
+    resetPublicAuthRoute,
+
+    // ── Async functions ───────────────────────────────────────────────────────
+    loadBaseData,
+    loadProjectClassTemplates,
+    loadTasks,
+    loadMaterialNeeds,
+    loadMaterialCatalog,
+    lookupMaterialCatalogByIdentifier,
+    enrichTaskModalMaterialRowFromCatalog,
+    enrichTaskEditMaterialRowFromCatalog,
+    enrichReportMaterialRowFromCatalog,
+    enrichReportOfficeMaterialRowFromCatalog,
+    addCatalogMaterialNeed,
+    updateMaterialNeedState,
+    loadProjectOverview,
+    loadProjectWeather,
+    loadProjectFinance,
+    loadProjectTrackedMaterials,
+    saveWeatherSettings,
+    loadUpdateStatus,
+    installSystemUpdate,
+    loadPlanningWeek,
+    loadPlanningWindow,
+    loadSitesAndTickets,
+    loadFiles,
+    loadProjectFolders,
+    loadConstructionReportFiles,
+    loadRecentConstructionReports,
+    loadWikiLibraryFiles,
+    loadThreads,
+    loadArchivedThreads,
+    loadMessages,
+    refreshTimeData,
+    onLogin,
+    submitPublicInviteAccept,
+    submitPublicPasswordReset,
+    submitProjectForm,
+    saveProjectInternalNote,
+    saveProjectFinance,
+    saveProjectHours,
+    archiveActiveProject,
+    deleteActiveProject,
+    unarchiveProject,
+    deleteProjectById,
+    createTask,
+    createWeeklyPlanTask,
+    saveTaskEdit,
+    markTaskDone,
+    deleteTaskFromEdit,
+    exportTaskCalendar,
+    createTicket,
+    uploadTicketAttachment,
+    clockIn,
+    clockOut,
+    startBreak,
+    endBreak,
+    updateTimeEntry,
+    submitThreadModal,
+    archiveActiveThread,
+    openArchivedThreadsModal,
+    restoreArchivedThread,
+    deleteThread,
+    sendMessage,
+    uploadFile,
+    createProjectFolderFromInput,
+    saveAvatar,
+    deleteAvatar,
+    applyTemplate,
+    updateRole,
+    updateRequiredDailyHours,
+    saveProfileSettings,
+    sendInviteToUser,
+    sendPasswordResetToUser,
+    softDeleteUser,
+    restoreArchivedUser,
+    submitCreateInvite,
+    exportEncryptedDatabaseBackup,
+    submitVacationRequest,
+    reviewVacationRequest,
+    submitSchoolAbsence,
+    removeSchoolAbsence,
+    downloadProjectCsvTemplate,
+    downloadProjectClassTemplateCsv,
+    importProjectsCsv,
+    importProjectClassTemplateCsv,
+    submitConstructionReport,
+    copyToClipboard,
   };
 
   return (
-    <div className={`app-shell workspace-mode-${workspaceMode}`}>
-      <aside className="sidebar">
-        <div className="sidebar-main">
-          <div className="brand-block">
-            <img src="/logo.jpeg" alt="Company logo" className="brand-logo" />
-            <div className="brand-meta">
-              <div className="brand-title-row">
-                <h2>SMPL</h2>
-                <div className="workspace-mode-switch" role="group" aria-label={language === "de" ? "Ansicht wählen" : "Select view"}>
-                  <button
-                    type="button"
-                    className={workspaceMode === "construction" ? "active" : ""}
-                    onClick={() => setWorkspaceMode("construction")}
-                  >
-                    {language === "de" ? "Baustelle" : "Construction"}
-                  </button>
-                  <button
-                    type="button"
-                    className={workspaceMode === "office" ? "active" : ""}
-                    onClick={() => setWorkspaceMode("office")}
-                  >
-                    {language === "de" ? "Büro" : "Office"}
-                  </button>
-                </div>
-              </div>
-              <small className="role">
-                {language === "de" ? "Workflow-App" : "Workflow app"} | {workspaceModeLabel}
-              </small>
-            </div>
-          </div>
-
-          <nav className="main-nav">
-            {navViews.map((item) => (
-              <button
-                key={item}
-                className={item === mainView ? "active" : ""}
-                onClick={() => {
-                  setProjectBackView(null);
-                  setOverviewShortcutBackVisible(false);
-                  setConstructionBackView(null);
-                  if (item === "my_tasks" || item === "office_tasks") setMyTasksBackProjectId(null);
-                  setMainView(item);
-                }}
-              >
-                <span className="nav-item-content">
-                  <span className="nav-icon-wrap">
-                    <SidebarNavIcon view={item} />
-                    {item === "messages" && hasUnreadThreads && <span className="nav-unread-dot" />}
-                    {(item === "my_tasks" || item === "office_tasks" || item === "planning" || item === "calendar") &&
-                      hasTaskNotifications && (
-                      <span className="nav-unread-dot" />
-                    )}
-                  </span>
-                  <span>{mainLabels[item]}</span>
-                </span>
-              </button>
-            ))}
-          </nav>
-
-          <div className="project-list">
-            <div className="project-list-title-row">
-              <div className="project-list-title-group">
-                <div className="project-list-title">{language === "de" ? "Projekte" : "Projects"}</div>
-                <button
-                  type="button"
-                  className={projectSidebarSearchOpen ? "icon-btn project-search-toggle active" : "icon-btn project-search-toggle"}
-                  onClick={() => {
-                    setProjectSidebarSearchOpen((current) => {
-                      const next = !current;
-                      if (!next) setProjectSidebarSearchQuery("");
-                      return next;
-                    });
-                  }}
-                  aria-label={language === "de" ? "Projekt-Suche" : "Project search"}
-                  title={language === "de" ? "Projekt-Suche" : "Project search"}
-                >
-                  <SearchIcon />
-                </button>
-              </div>
-              {canCreateProject && (
-                <button
-                  type="button"
-                  className="create-new-btn"
-                  onClick={openCreateProjectModal}
-                  aria-label={language === "de" ? "Neues Projekt erstellen" : "Create new project"}
-                  title={language === "de" ? "Neues Projekt erstellen" : "Create new project"}
-                >
-                  +
-                </button>
-              )}
-            </div>
-            {projectSidebarSearchOpen && (
-              <input
-                autoFocus
-                className="project-sidebar-search-input"
-                value={projectSidebarSearchQuery}
-                onChange={(event) => setProjectSidebarSearchQuery(event.target.value)}
-                placeholder={language === "de" ? "Projekt suchen..." : "Search project..."}
-                aria-label={language === "de" ? "Projekt suchen" : "Search project"}
-              />
-            )}
-            <div className={projectSidebarSearchOpen ? "project-list-scroll with-search" : "project-list-scroll"}>
-              {filteredSidebarProjects.map(({ project, isArchived }) => {
-                const projectLabel = projectTitleParts(project);
-                return (
-                  <button
-                    key={project.id}
-                    className={[
-                      "project-item",
-                      project.id === activeProjectId && mainView === "project" ? "active" : "",
-                      isArchived ? "project-item-archived" : "",
-                    ]
-                      .filter(Boolean)
-                      .join(" ")}
-                    onClick={() => {
-                      if (isArchived) {
-                        setHighlightedArchivedProjectId(project.id);
-                        setProjectBackView(null);
-                        setOverviewShortcutBackVisible(false);
-                        setConstructionBackView(null);
-                        setMainView("projects_archive");
-                        return;
-                      }
-                      setActiveProjectId(project.id);
-                      setProjectTab("overview");
-                      setProjectBackView(null);
-                      setOverviewShortcutBackVisible(false);
-                      setConstructionBackView(null);
-                      setMainView("project");
-                    }}
-                  >
-                    <span className="project-item-main">
-                      <b>{projectLabel.title}</b>
-                      {projectLabel.subtitle && <small className="project-name-subtle">{projectLabel.subtitle}</small>}
-                      {isArchived && (
-                        <small className="project-item-archive-mark">
-                          {language === "de" ? "Archiviert" : "Archived"}
-                        </small>
-                      )}
-                    </span>
-                  </button>
-                );
-              })}
-              {filteredSidebarProjects.length === 0 && (
-                <small>{projectSidebarSearchQuery ? (language === "de" ? "Keine Treffer" : "No matching projects") : language === "de" ? "Keine Projekte" : "No projects"}</small>
-              )}
-              <div className="project-list-archive-entry">
-                <div className="project-list-divider" />
-                <button
-                  type="button"
-                  className={mainView === "projects_archive" ? "project-archive-btn active" : "project-archive-btn"}
-                  onClick={() => {
-                    setProjectBackView(null);
-                    setOverviewShortcutBackVisible(false);
-                    setConstructionBackView(null);
-                    setMainView("projects_archive");
-                  }}
-                >
-                  {language === "de" ? "Projektarchiv" : "Project archive"}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-        <div className="sidebar-footer">
-          <div className="pre-user-menu-wrap" ref={preUserMenuRef}>
-            {preUserMenuOpen && (
-              <div className="pre-user-menu-popup">
-                <div className="row lang-row lang-row-small pre-user-lang">
-                  <button
-                    type="button"
-                    onClick={() => setLanguage("de")}
-                    className={language === "de" ? "active" : ""}
-                  >
-                    DE
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setLanguage("en")}
-                    className={language === "en" ? "active" : ""}
-                  >
-                    EN
-                  </button>
-                </div>
-                <button type="button" className="pre-user-action" onClick={openProfileViewFromMenu}>
-                  {language === "de" ? "Benutzerdaten" : "User data"}
-                </button>
-                <button type="button" className="pre-user-action" onClick={signOut}>
-                  {language === "de" ? "Abmelden" : "Sign out"}
-                </button>
-                <div className="pre-user-meta">
-                  <small>
-                    {language === "de" ? "Release-Version" : "Release version"}: <b>{currentReleaseLabel}</b>
-                  </small>
-                  <small>
-                    {language === "de" ? "Mitarbeiter-ID" : "Employee ID"}: <b>{user.id}</b>
-                  </small>
-                </div>
-              </div>
-            )}
-            <button
-              type="button"
-              className={mainView === "profile" ? "sidebar-user-btn active" : "sidebar-user-btn"}
-              onClick={() => setPreUserMenuOpen((open) => !open)}
-              aria-expanded={preUserMenuOpen}
-              aria-label={language === "de" ? "Benutzermenü öffnen" : "Open user menu"}
-            >
-              <div className="sidebar-user">
-                <AvatarBadge
-                  userId={user.id}
-                  initials={userInitials}
-                  hasAvatar={Boolean(user.avatar_updated_at)}
-                  versionKey={avatarVersionKey}
-                />
-                <div className="sidebar-user-meta">
-                  <b>{menuUserNameById(user.id, user.display_name || user.full_name)}</b>
-                  <small className="role">Role: {user.role}</small>
-                </div>
-              </div>
-            </button>
-          </div>
-          <div className="sidebar-now">
-            <small>{sidebarNowLabel}</small>
-          </div>
-        </div>
-      </aside>
+    <AppContext.Provider value={contextValue}>
+    {!user ? <LoginPage /> : <div className={`app-shell workspace-mode-${workspaceMode}`}>
+      <Sidebar />
 
       <main className="content">
-        <header className="workspace-header">
-          <div className="workspace-header-main">
-            {showOverviewBackButton && (
-              <button
-                type="button"
-                className="icon-btn header-back-btn"
-                onClick={() => {
-                  setOverviewShortcutBackVisible(false);
-                  setMainView("overview");
-                }}
-              >
-                <BackIcon />
-                <span>{language === "de" ? "Zurück" : "Back"}</span>
-              </button>
-            )}
-              <div>
-              {mainView === "project" && activeProject ? (
-                <>
-                  <h1>{activeProjectHeader.title}</h1>
-                  {activeProjectHeader.subtitle && <small className="project-name-subtle">{activeProjectHeader.subtitle}</small>}
-                </>
-              ) : (
-                <h1>{mainLabels[mainView]}</h1>
-              )}
-              {mainView === "project" && activeProject && (
-                <small>
-                  {activeProject.project_number} | {language === "de" ? "Status" : "Status"}:{" "}
-                  {statusLabel(activeProject.status, language)} |{" "}
-                  {language === "de" ? "Letzte Änderung" : "Last update"}: {activeProjectLastUpdatedLabel || "-"}
-                </small>
-              )}
-            </div>
-          </div>
-          <div className="header-tools">
-            {mainView === "planning" && canManageTasks && (
-              <button
-                type="button"
-                onClick={() => openTaskModal({ dueDate: planningWeekStart, taskType: planningTaskTypeView })}
-              >
-                {language === "de" ? "Neue Aufgabe" : "Add task"}
-              </button>
-            )}
-            {mainView === "construction" && constructionBackView && (
-              <button
-                type="button"
-                className="icon-btn header-back-btn"
-                onClick={() => {
-                  if (constructionBackView === "project") {
-                    setProjectTab("tasks");
-                  }
-                  setMainView(constructionBackView);
-                  setConstructionBackView(null);
-                }}
-              >
-                <BackIcon />
-                <span>{language === "de" ? "Zurück" : "Back"}</span>
-              </button>
-            )}
-            {mainView === "project" && projectBackView === "my_tasks" && (
-              <button
-                type="button"
-                onClick={() => {
-                  setMainView("my_tasks");
-                }}
-              >
-                {language === "de" ? "Zurück zu Meine Aufgaben" : "Back to My Tasks"}
-              </button>
-            )}
-            {mainView === "project" && projectBackView === "office_tasks" && (
-              <button
-                type="button"
-                onClick={() => {
-                  setMainView("office_tasks");
-                }}
-              >
-                {language === "de" ? "Zurück zu Aufgaben" : "Back to Tasks"}
-              </button>
-            )}
-            {mainView === "project" && projectBackView === "projects_all" && (
-              <button
-                type="button"
-                onClick={() => {
-                  setMainView("projects_all");
-                }}
-              >
-                {language === "de" ? "Zurück zu Alle Projekte" : "Back to All Projects"}
-              </button>
-            )}
-            {canCreateProject && mainView === "project" && activeProject && (
-              <button
-                type="button"
-                className="icon-btn"
-                onClick={() => openEditProjectModal(activeProject)}
-                aria-label={language === "de" ? "Projekt bearbeiten" : "Edit project"}
-                title={language === "de" ? "Projekt bearbeiten" : "Edit project"}
-              >
-                <PenIcon />
-              </button>
-            )}
-          </div>
-        </header>
+        <Header />
 
         {mainView === "project" && activeProject && (
           <div className="top-tabs">
@@ -8605,1812 +6611,23 @@ export function App() {
           ))}
         </datalist>
 
-        {projectModalMode && (
-          <div
-            className="modal-backdrop"
-            onPointerDown={onProjectModalBackdropPointerDown}
-            onPointerUp={onProjectModalBackdropPointerUp}
-            onPointerCancel={resetProjectModalBackdropPointerState}
-            onPointerLeave={resetProjectModalBackdropPointerState}
-          >
-            <div className="card modal-card" onClick={(event) => event.stopPropagation()}>
-              <h3>
-                {projectModalMode === "create"
-                  ? language === "de"
-                    ? "Neues Projekt"
-                    : "Create new project"
-                  : language === "de"
-                    ? "Projekt bearbeiten"
-                    : "Edit project"}
-              </h3>
-              <form className="modal-form" onSubmit={submitProjectForm}>
-                <label>
-                  {language === "de" ? "Projektnummer" : "Project number"}
-                  <input
-                    value={projectForm.project_number}
-                    onChange={(event) => updateProjectFormField("project_number", event.target.value)}
-                    placeholder={language === "de" ? "z.B. 2026-104" : "e.g. 2026-104"}
-                    required
-                  />
-                </label>
-                <label>
-                  {language === "de" ? "Projektname" : "Project name"}
-                  <input
-                    value={projectForm.name}
-                    onChange={(event) => updateProjectFormField("name", event.target.value)}
-                    required
-                  />
-                </label>
-                <label>
-                  {language === "de" ? "Status" : "Status"}
-                  <select
-                    value={projectForm.status}
-                    onChange={(event) => updateProjectFormField("status", event.target.value)}
-                    required
-                  >
-                    {projectStatusSelectOptions.map((statusValue) => (
-                      <option key={statusValue} value={statusValue}>
-                        {statusLabel(statusValue, language)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <div className="project-class-picker">
-                  <b>{language === "de" ? "Projektklassen" : "Project classes"}</b>
-                  {projectClassTemplates.length > 0 ? (
-                    <div className="project-class-grid">
-                      {projectClassTemplates.map((template) => {
-                        const checked = projectForm.class_template_ids.includes(template.id);
-                        return (
-                          <label key={`project-class-template-${template.id}`} className="project-class-option">
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={(event) => toggleProjectClassTemplate(template.id, event.target.checked)}
-                            />
-                            <span>{template.name}</span>
-                          </label>
-                        );
-                      })}
-                    </div>
-                  ) : (
-                    <small className="muted">
-                      {language === "de"
-                        ? "Keine Klassen-Templates vorhanden. Bitte im Admin-Bereich CSV importieren."
-                        : "No class templates available. Import a CSV in Admin tools."}
-                    </small>
-                  )}
-                </div>
-                <label>
-                  {language === "de" ? "Interne Notiz" : "Internal note"}
-                  <textarea
-                    value={projectForm.description}
-                    onChange={(event) => updateProjectFormField("description", event.target.value)}
-                  />
-                </label>
-                <label>
-                  {language === "de" ? "Letzter Stand" : "Last state"}
-                  <textarea
-                    value={projectForm.last_state}
-                    onChange={(event) => updateProjectFormField("last_state", event.target.value)}
-                  />
-                </label>
-                <label>
-                  {language === "de" ? "Letztes Status-Datum" : "Last status update"}
-                  <input
-                    type="datetime-local"
-                    value={projectForm.last_status_at}
-                    onChange={(event) => updateProjectFormField("last_status_at", event.target.value)}
-                  />
-                </label>
-                <label>
-                  {language === "de" ? "Kunde" : "Customer name"}
-                  <input
-                    value={projectForm.customer_name}
-                    onChange={(event) => updateProjectFormField("customer_name", event.target.value)}
-                  />
-                </label>
-                <label>
-                  {language === "de" ? "Kundenadresse" : "Customer address"}
-                  <textarea
-                    value={projectForm.customer_address}
-                    onChange={(event) => updateProjectFormField("customer_address", event.target.value)}
-                    placeholder={
-                      language === "de"
-                        ? "Strasse Hausnummer, PLZ Ort, Land"
-                        : "Street and number, ZIP City, Country"
-                    }
-                  />
-                  <small className="muted">
-                    {language === "de"
-                      ? "Format: Strasse Hausnummer, PLZ Ort, Land"
-                      : "Format: Street and number, ZIP City, Country"}
-                  </small>
-                </label>
-                <label>
-                  {language === "de" ? "Kontaktperson" : "Contact person"}
-                  <input
-                    value={projectForm.customer_contact}
-                    onChange={(event) => updateProjectFormField("customer_contact", event.target.value)}
-                  />
-                </label>
-                <label>
-                  {language === "de" ? "Kontakt E-Mail" : "Contact email"}
-                  <input
-                    type="email"
-                    value={projectForm.customer_email}
-                    onChange={(event) => updateProjectFormField("customer_email", event.target.value)}
-                  />
-                </label>
-                <label>
-                  {language === "de" ? "Kontakt Telefon" : "Contact phone"}
-                  <input
-                    value={projectForm.customer_phone}
-                    onChange={(event) => updateProjectFormField("customer_phone", event.target.value)}
-                  />
-                </label>
-                <label>
-                  {language === "de" ? "Zugang zur Baustelle" : "Construction site access"}
-                  <select
-                    value={projectForm.site_access_type}
-                    onChange={(event) => updateProjectSiteAccessType(event.target.value)}
-                  >
-                    <option value="">{language === "de" ? "Bitte auswählen" : "Please select"}</option>
-                    {PROJECT_SITE_ACCESS_PRESETS.map((entry) => (
-                      <option key={`project-site-access-${entry}`} value={entry}>
-                        {projectSiteAccessLabel(entry, language)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                {projectSiteAccessRequiresNote(projectForm.site_access_type) && (
-                  <label>
-                    {language === "de" ? "Zusätzliche Info" : "Additional info"}
-                    <input
-                      value={projectForm.site_access_note}
-                      onChange={(event) => updateProjectFormField("site_access_note", event.target.value)}
-                      placeholder={
-                        projectForm.site_access_type === "key_pickup"
-                          ? language === "de"
-                            ? "z.B. Hausverwaltung, Nachbar, Adresse"
-                            : "e.g. building management, neighbor, address"
-                          : projectForm.site_access_type === "code_access"
-                            ? language === "de"
-                              ? "z.B. Türcode, Hinweise"
-                              : "e.g. door code, notes"
-                            : language === "de"
-                              ? "z.B. Position, Bedienhinweis"
-                              : "e.g. location, handling note"
-                      }
-                    />
-                  </label>
-                )}
-                <div className="row wrap">
-                  <button type="submit">{language === "de" ? "Speichern" : "Save"}</button>
-                  {projectModalMode === "edit" && (
-                    <button type="button" onClick={() => void archiveActiveProject()}>
-                      {language === "de" ? "Archivieren" : "Archive"}
-                    </button>
-                  )}
-                  {projectModalMode === "edit" && (
-                    <button type="button" className="danger-btn" onClick={() => void deleteActiveProject()}>
-                      {language === "de" ? "Löschen" : "Delete"}
-                    </button>
-                  )}
-                  <button type="button" onClick={closeProjectModal}>
-                    {language === "de" ? "Abbrechen" : "Cancel"}
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        )}
+        <ProjectModal />
 
-        {taskModalOpen && (
-          <div
-            className="modal-backdrop"
-            onPointerDown={onTaskModalBackdropPointerDown}
-            onPointerUp={onTaskModalBackdropPointerUp}
-            onPointerCancel={resetTaskModalBackdropPointerState}
-            onPointerLeave={resetTaskModalBackdropPointerState}
-          >
-            <div className="card modal-card" onClick={(event) => event.stopPropagation()}>
-              <h3>{language === "de" ? "Neue Aufgabe" : "New task"}</h3>
-              <form
-                className="modal-form"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void createWeeklyPlanTask();
-                }}
-              >
-                <label>
-                  {language === "de" ? "Titel" : "Title"}
-                  <input
-                    value={taskModalForm.title}
-                    onChange={(event) => updateTaskModalField("title", event.target.value)}
-                    placeholder={language === "de" ? "Aufgabentitel" : "Task title"}
-                    required
-                  />
-                </label>
-                <label>
-                  {language === "de" ? "Information" : "Information"}
-                  <textarea
-                    value={taskModalForm.description}
-                    onChange={(event) => updateTaskModalField("description", event.target.value)}
-                    placeholder={language === "de" ? "Beschreibung der Aufgabe" : "Task description"}
-                  />
-                </label>
-                <label>
-                  {language === "de" ? "Unteraufgaben" : "Sub-tasks"}
-                  <textarea
-                    value={taskModalForm.subtasks_raw}
-                    onChange={(event) => updateTaskModalField("subtasks_raw", event.target.value)}
-                    placeholder={
-                      language === "de"
-                        ? "Eine Unteraufgabe pro Zeile"
-                        : "One sub-task per line"
-                    }
-                  />
-                </label>
-                <div className="report-material-block">
-                  <b>{language === "de" ? "Benötigte Materialien" : "Required materials"}</b>
-                  <div className="report-material-grid">
-                    <div className="report-material-grid-head">
-                      <span>{language === "de" ? "Artikel" : "Item"}</span>
-                      <span>{language === "de" ? "Menge" : "Qty"}</span>
-                      <span>{language === "de" ? "Einheit" : "Unit"}</span>
-                      <span>{language === "de" ? "Artikel-Nr." : "Article no."}</span>
-                      <span />
-                    </div>
-                    {taskModalMaterialRows.map((row, index) => (
-                      <div key={row.id} className="report-material-grid-row">
-                        <input
-                          value={row.item}
-                          onChange={(event) => updateTaskModalMaterialRow(index, "item", event.target.value)}
-                          onBlur={() => {
-                            void enrichTaskModalMaterialRowFromCatalog(index, "item");
-                          }}
-                          placeholder={language === "de" ? "z.B. Kabel NYM" : "e.g. cable NYM"}
-                        />
-                        <input
-                          value={row.qty}
-                          onChange={(event) => updateTaskModalMaterialRow(index, "qty", event.target.value)}
-                          placeholder="1"
-                        />
-                        <input
-                          value={row.unit}
-                          list="material-unit-options"
-                          onChange={(event) => updateTaskModalMaterialRow(index, "unit", event.target.value)}
-                          placeholder={language === "de" ? "Stk" : "pcs"}
-                        />
-                        <input
-                          value={row.article_no}
-                          onChange={(event) => updateTaskModalMaterialRow(index, "article_no", event.target.value)}
-                          onBlur={() => {
-                            void enrichTaskModalMaterialRowFromCatalog(index, "article_no");
-                          }}
-                          placeholder="A-1001"
-                        />
-                        <button type="button" onClick={() => removeTaskModalMaterialRow(index)} aria-label="Remove">
-                          ×
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                  <button type="button" onClick={addTaskModalMaterialRow}>
-                    {language === "de" ? "Materialzeile hinzufügen" : "Add material row"}
-                  </button>
-                </div>
-                <label>
-                  {language === "de" ? "Aufgabentyp" : "Task type"}
-                  <select
-                    value={taskModalForm.task_type}
-                    onChange={(event) => updateTaskModalField("task_type", normalizeTaskTypeValue(event.target.value))}
-                  >
-                    <option value="construction">{taskTypeLabel("construction", language)}</option>
-                    <option value="office">{taskTypeLabel("office", language)}</option>
-                    <option value="customer_appointment">{taskTypeLabel("customer_appointment", language)}</option>
-                  </select>
-                </label>
-                <label>
-                  {language === "de" ? "Projektklasse (optional)" : "Project class (optional)"}
-                  <select
-                    value={taskModalForm.class_template_id}
-                    onChange={(event) => selectTaskModalClassTemplate(event.target.value)}
-                  >
-                    <option value="">{language === "de" ? "Keine Klasse" : "No class"}</option>
-                    {taskModalProjectClassTemplates.map((entry) => (
-                      <option key={`task-modal-class-template-${entry.id}`} value={String(entry.id)}>
-                        {entry.name}
-                      </option>
-                    ))}
-                  </select>
-                  {Number(taskModalForm.project_id) > 0 && taskModalProjectClassTemplates.length === 0 && (
-                    <small className="muted">
-                      {language === "de"
-                        ? "Dem ausgewählten Projekt sind keine Klassen zugewiesen."
-                        : "No classes are assigned to the selected project."}
-                    </small>
-                  )}
-                </label>
-                <label className="checkbox-inline">
-                  <input
-                    type="checkbox"
-                    checked={taskModalForm.has_storage_box}
-                    onChange={(event) =>
-                      setTaskModalForm((current) => ({
-                        ...current,
-                        has_storage_box: event.target.checked,
-                        storage_box_number: event.target.checked ? current.storage_box_number : "",
-                      }))
-                    }
-                  />
-                  {language === "de" ? "Material aus Lagerbox verwenden" : "Use materials from warehouse box"}
-                </label>
-                {taskModalForm.has_storage_box && (
-                  <label>
-                    {language === "de" ? "Lagerbox-Nummer" : "Storage box number"}
-                    <input
-                      type="number"
-                      min={1}
-                      step={1}
-                      value={taskModalForm.storage_box_number}
-                      onChange={(event) => updateTaskModalField("storage_box_number", event.target.value)}
-                      required
-                    />
-                  </label>
-                )}
-                <div className="assignee-search-block">
-                  <b>{language === "de" ? "Projekt zuweisen" : "Assign project"}</b>
-                  <input
-                    value={taskModalForm.project_query}
-                    onChange={(event) => {
-                      const nextQuery = event.target.value;
-                      setTaskModalForm((current) => {
-                        if (!current.project_id) return { ...current, project_query: nextQuery };
-                        const currentProject = projects.find((project) => String(project.id) === current.project_id);
-                        if (!currentProject) {
-                          return { ...current, project_query: nextQuery, project_id: "", class_template_id: "" };
-                        }
-                        return projectSearchLabel(currentProject) === nextQuery
-                          ? { ...current, project_query: nextQuery }
-                          : { ...current, project_query: nextQuery, project_id: "", class_template_id: "" };
-                      });
-                    }}
-                    onKeyDown={(event) => {
-                      if (event.key !== "Enter") return;
-                      event.preventDefault();
-                      const first = taskModalProjectSuggestions[0];
-                      if (first) selectTaskModalProject(first);
-                    }}
-                    placeholder={
-                      language === "de"
-                        ? "Projektnummer, Kunde oder Projektname"
-                        : "Project number, customer, or project name"
-                    }
-                  />
-                  {taskModalProjectSuggestions.length > 0 && (
-                    <div className="assignee-suggestions">
-                      {taskModalProjectSuggestions.map((project) => (
-                        <button
-                          key={project.id}
-                          type="button"
-                          className="assignee-suggestion-btn"
-                          onClick={() => selectTaskModalProject(project)}
-                        >
-                          {projectSearchLabel(project)}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                  <div className="assignee-chip-list">
-                    {selectedTaskModalProject ? (
-                      <button
-                        type="button"
-                        className="assignee-chip"
-                        onClick={() =>
-                          setTaskModalForm((current) => ({
-                            ...current,
-                            project_id: "",
-                            project_query: "",
-                            class_template_id: "",
-                          }))
-                        }
-                        title={language === "de" ? "Entfernen" : "Remove"}
-                      >
-                        {projectSearchLabel(selectedTaskModalProject) + " ×"}
-                      </button>
-                    ) : (
-                      <small className="muted">
-                        {language === "de" ? "Noch kein Projekt ausgewählt." : "No project selected yet."}
-                      </small>
-                    )}
-                  </div>
-                </div>
-                {!selectedTaskModalProject && canCreateProject && (
-                  <>
-                    <label className="checkbox-inline">
-                      <input
-                        type="checkbox"
-                        checked={taskModalForm.create_project_from_task}
-                        onChange={(event) => updateTaskModalField("create_project_from_task", event.target.checked)}
-                      />
-                      {language === "de"
-                        ? "Falls nötig, neues Projekt aus dieser Aufgabe erstellen"
-                        : "Create a new project from this task if needed"}
-                    </label>
-                    {taskModalForm.create_project_from_task && (
-                      <div className="row wrap modal-subgrid">
-                        <label>
-                          {language === "de" ? "Projektname" : "Project name"}
-                          <input
-                            value={taskModalForm.new_project_name}
-                            onChange={(event) => updateTaskModalField("new_project_name", event.target.value)}
-                            placeholder={language === "de" ? "Standard: Aufgabentitel" : "Default: task title"}
-                          />
-                        </label>
-                        <label>
-                          {language === "de" ? "Projektnummer" : "Project number"}
-                          <input
-                            value={taskModalForm.new_project_number}
-                            onChange={(event) => updateTaskModalField("new_project_number", event.target.value)}
-                            placeholder={language === "de" ? "Optional (auto: T...)" : "Optional (auto: T...)"}
-                          />
-                        </label>
-                      </div>
-                    )}
-                  </>
-                )}
-                <div className="row wrap">
-                  <label>
-                    {language === "de" ? "Fälligkeitsdatum" : "Due date"}
-                    <input
-                      type="date"
-                      value={taskModalForm.due_date}
-                      onChange={(event) => updateTaskModalField("due_date", event.target.value)}
-                    />
-                  </label>
-                  <label>
-                    {language === "de" ? "Startzeit" : "Start time"}
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      placeholder="HH:MM"
-                      pattern={HHMM_PATTERN}
-                      title="HH:MM (24h)"
-                      maxLength={5}
-                      value={taskModalForm.start_time}
-                      onChange={(event) => updateTaskModalField("start_time", formatTimeInputForTyping(event.target.value))}
-                      onBlur={(event) => updateTaskModalField("start_time", formatTimeInputForBlur(event.target.value))}
-                    />
-                  </label>
-                </div>
-                <div className="assignee-search-block">
-                  <b>{language === "de" ? "Personen zuweisen" : "Assign people"}</b>
-                  <input
-                    value={taskModalForm.assignee_query}
-                    onChange={(event) => updateTaskModalField("assignee_query", event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key !== "Enter") return;
-                      event.preventDefault();
-                      addFirstMatchingTaskModalAssignee();
-                    }}
-                    placeholder={
-                      language === "de"
-                        ? "Namen eingeben und auswählen"
-                        : "Type user name and select"
-                    }
-                  />
-                  {taskModalAssigneeSuggestions.length > 0 && (
-                    <div className="assignee-suggestions">
-                      {taskModalAssigneeSuggestions.map((assignee) => {
-                        const hint = assigneeAvailabilityHint(assignee.id, taskModalForm.due_date);
-                        return (
-                          <button
-                            key={assignee.id}
-                            type="button"
-                            className="assignee-suggestion-btn task-assignee-suggestion-btn"
-                            onClick={() => addTaskModalAssignee(assignee.id)}
-                          >
-                            <span className="assignee-primary-label">
-                              {menuUserNameById(assignee.id, assignee.display_name || assignee.full_name)} (#{assignee.id})
-                            </span>
-                            {hint ? <small className="assignee-availability-note">{hint}</small> : null}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                  <div className="assignee-chip-list">
-                    {taskModalForm.assignee_ids.map((assigneeId) => {
-                      const assignee = assignableUsers.find((entry) => entry.id === assigneeId);
-                      const hint = assignee ? assigneeAvailabilityHint(assignee.id, taskModalForm.due_date) : "";
-                      return (
-                        <button
-                          key={assigneeId}
-                          type="button"
-                          className="assignee-chip task-assignee-chip"
-                          onClick={() => removeTaskModalAssignee(assigneeId)}
-                          title={language === "de" ? "Entfernen" : "Remove"}
-                        >
-                          <span>
-                            {(assignee
-                              ? menuUserNameById(assignee.id, assignee.display_name || assignee.full_name)
-                              : `#${assigneeId}`) + " ×"}
-                          </span>
-                          {hint ? <small className="assignee-availability-note">{hint}</small> : null}
-                        </button>
-                      );
-                    })}
-                    {taskModalForm.assignee_ids.length === 0 && (
-                      <small className="muted">
-                        {language === "de"
-                          ? "Noch keine Personen ausgewählt."
-                          : "No people selected yet."}
-                      </small>
-                    )}
-                  </div>
-                </div>
-                <div className="row wrap">
-                  <button type="submit">{language === "de" ? "Speichern" : "Save"}</button>
-                  <button type="button" onClick={closeTaskModal}>
-                    {language === "de" ? "Abbrechen" : "Cancel"}
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        )}
+        <TaskModal />
 
-        {taskEditModalOpen && (
-          <div
-            className="modal-backdrop"
-            onPointerDown={onTaskEditModalBackdropPointerDown}
-            onPointerUp={onTaskEditModalBackdropPointerUp}
-            onPointerCancel={resetTaskEditModalBackdropPointerState}
-            onPointerLeave={resetTaskEditModalBackdropPointerState}
-          >
-            <div className="card modal-card" onClick={(event) => event.stopPropagation()}>
-              <h3>{language === "de" ? "Aufgabe bearbeiten" : "Edit task"}</h3>
-              <form
-                className="modal-form"
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void saveTaskEdit();
-                }}
-              >
-                <label>
-                  {language === "de" ? "Titel" : "Title"}
-                  <input
-                    value={taskEditForm.title}
-                    onChange={(event) => updateTaskEditField("title", event.target.value)}
-                    placeholder={language === "de" ? "Aufgabentitel" : "Task title"}
-                    required
-                  />
-                </label>
-                <label>
-                  {language === "de" ? "Information" : "Information"}
-                  <textarea
-                    value={taskEditForm.description}
-                    onChange={(event) => updateTaskEditField("description", event.target.value)}
-                    placeholder={language === "de" ? "Beschreibung der Aufgabe" : "Task description"}
-                  />
-                </label>
-                <label>
-                  {language === "de" ? "Unteraufgaben" : "Sub-tasks"}
-                  <textarea
-                    value={taskEditForm.subtasks_raw}
-                    onChange={(event) => updateTaskEditField("subtasks_raw", event.target.value)}
-                    placeholder={
-                      language === "de"
-                        ? "Eine Unteraufgabe pro Zeile"
-                        : "One sub-task per line"
-                    }
-                  />
-                </label>
-                <div className="report-material-block">
-                  <b>{language === "de" ? "Benötigte Materialien" : "Required materials"}</b>
-                  <div className="report-material-grid">
-                    <div className="report-material-grid-head">
-                      <span>{language === "de" ? "Artikel" : "Item"}</span>
-                      <span>{language === "de" ? "Menge" : "Qty"}</span>
-                      <span>{language === "de" ? "Einheit" : "Unit"}</span>
-                      <span>{language === "de" ? "Artikel-Nr." : "Article no."}</span>
-                      <span />
-                    </div>
-                    {taskEditMaterialRows.map((row, index) => (
-                      <div key={row.id} className="report-material-grid-row">
-                        <input
-                          value={row.item}
-                          onChange={(event) => updateTaskEditMaterialRow(index, "item", event.target.value)}
-                          onBlur={() => {
-                            void enrichTaskEditMaterialRowFromCatalog(index, "item");
-                          }}
-                          placeholder={language === "de" ? "z.B. Kabel NYM" : "e.g. cable NYM"}
-                        />
-                        <input
-                          value={row.qty}
-                          onChange={(event) => updateTaskEditMaterialRow(index, "qty", event.target.value)}
-                          placeholder="1"
-                        />
-                        <input
-                          value={row.unit}
-                          list="material-unit-options"
-                          onChange={(event) => updateTaskEditMaterialRow(index, "unit", event.target.value)}
-                          placeholder={language === "de" ? "Stk" : "pcs"}
-                        />
-                        <input
-                          value={row.article_no}
-                          onChange={(event) => updateTaskEditMaterialRow(index, "article_no", event.target.value)}
-                          onBlur={() => {
-                            void enrichTaskEditMaterialRowFromCatalog(index, "article_no");
-                          }}
-                          placeholder="A-1001"
-                        />
-                        <button type="button" onClick={() => removeTaskEditMaterialRow(index)} aria-label="Remove">
-                          ×
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                  <button type="button" onClick={addTaskEditMaterialRow}>
-                    {language === "de" ? "Materialzeile hinzufügen" : "Add material row"}
-                  </button>
-                </div>
-                <label>
-                  {language === "de" ? "Aufgabentyp" : "Task type"}
-                  <select
-                    value={taskEditForm.task_type}
-                    onChange={(event) => updateTaskEditField("task_type", normalizeTaskTypeValue(event.target.value))}
-                  >
-                    <option value="construction">{taskTypeLabel("construction", language)}</option>
-                    <option value="office">{taskTypeLabel("office", language)}</option>
-                    <option value="customer_appointment">{taskTypeLabel("customer_appointment", language)}</option>
-                  </select>
-                </label>
-                <label>
-                  {language === "de" ? "Projektklasse (optional)" : "Project class (optional)"}
-                  <select
-                    value={taskEditForm.class_template_id}
-                    onChange={(event) => selectTaskEditClassTemplate(event.target.value)}
-                  >
-                    <option value="">{language === "de" ? "Keine Klasse" : "No class"}</option>
-                    {taskEditProjectClassTemplates.map((entry) => (
-                      <option key={`task-edit-class-template-${entry.id}`} value={String(entry.id)}>
-                        {entry.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="checkbox-inline">
-                  <input
-                    type="checkbox"
-                    checked={taskEditForm.has_storage_box}
-                    onChange={(event) =>
-                      setTaskEditForm((current) => ({
-                        ...current,
-                        has_storage_box: event.target.checked,
-                        storage_box_number: event.target.checked ? current.storage_box_number : "",
-                      }))
-                    }
-                  />
-                  {language === "de" ? "Material aus Lagerbox verwenden" : "Use materials from warehouse box"}
-                </label>
-                {taskEditForm.has_storage_box && (
-                  <label>
-                    {language === "de" ? "Lagerbox-Nummer" : "Storage box number"}
-                    <input
-                      type="number"
-                      min={1}
-                      step={1}
-                      value={taskEditForm.storage_box_number}
-                      onChange={(event) => updateTaskEditField("storage_box_number", event.target.value)}
-                      required
-                    />
-                  </label>
-                )}
-                <div className="row wrap">
-                  <label>
-                    {language === "de" ? "Status" : "Status"}
-                    <select
-                      value={taskEditForm.status}
-                      onChange={(event) => updateTaskEditField("status", event.target.value)}
-                      required
-                    >
-                      {taskStatusOptions.map((statusValue) => (
-                        <option key={statusValue} value={statusValue}>
-                          {statusValue}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    {language === "de" ? "Zuletzt bearbeitet" : "Last edited"}
-                    <input
-                      type="text"
-                      value={
-                        taskEditExpectedUpdatedAt
-                          ? formatServerDateTime(taskEditExpectedUpdatedAt, language)
-                          : language === "de"
-                            ? "Unbekannt"
-                            : "Unknown"
-                      }
-                      readOnly
-                    />
-                  </label>
-                </div>
-                <div className="row wrap">
-                  <label>
-                    {language === "de" ? "Fälligkeitsdatum" : "Due date"}
-                    <input
-                      type="date"
-                      value={taskEditForm.due_date}
-                      onChange={(event) => updateTaskEditField("due_date", event.target.value)}
-                    />
-                  </label>
-                  <label>
-                    {language === "de" ? "Startzeit" : "Start time"}
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      placeholder="HH:MM"
-                      pattern={HHMM_PATTERN}
-                      title="HH:MM (24h)"
-                      maxLength={5}
-                      value={taskEditForm.start_time}
-                      onChange={(event) => updateTaskEditField("start_time", formatTimeInputForTyping(event.target.value))}
-                      onBlur={(event) => updateTaskEditField("start_time", formatTimeInputForBlur(event.target.value))}
-                    />
-                  </label>
-                </div>
-                <div className="assignee-search-block">
-                  <b>{language === "de" ? "Personen zuweisen" : "Assign people"}</b>
-                  <input
-                    value={taskEditForm.assignee_query}
-                    onChange={(event) => updateTaskEditField("assignee_query", event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key !== "Enter") return;
-                      event.preventDefault();
-                      addFirstMatchingTaskEditAssignee();
-                    }}
-                    placeholder={
-                      language === "de" ? "Namen eingeben und auswählen" : "Type user name and select"
-                    }
-                  />
-                  {taskEditAssigneeSuggestions.length > 0 && (
-                    <div className="assignee-suggestions">
-                      {taskEditAssigneeSuggestions.map((assignee) => {
-                        const hint = assigneeAvailabilityHint(assignee.id, taskEditForm.due_date);
-                        return (
-                          <button
-                            key={assignee.id}
-                            type="button"
-                            className="assignee-suggestion-btn task-assignee-suggestion-btn"
-                            onClick={() => addTaskEditAssignee(assignee.id)}
-                          >
-                            <span className="assignee-primary-label">
-                              {menuUserNameById(assignee.id, assignee.display_name || assignee.full_name)} (#{assignee.id})
-                            </span>
-                            {hint ? <small className="assignee-availability-note">{hint}</small> : null}
-                          </button>
-                        );
-                      })}
-                    </div>
-                  )}
-                  <div className="assignee-chip-list">
-                    {taskEditForm.assignee_ids.map((assigneeId) => {
-                      const assignee = assignableUsers.find((entry) => entry.id === assigneeId);
-                      const hint = assignee ? assigneeAvailabilityHint(assignee.id, taskEditForm.due_date) : "";
-                      return (
-                        <button
-                          key={assigneeId}
-                          type="button"
-                          className="assignee-chip task-assignee-chip"
-                          onClick={() => removeTaskEditAssignee(assigneeId)}
-                          title={language === "de" ? "Entfernen" : "Remove"}
-                        >
-                          <span>
-                            {(assignee
-                              ? menuUserNameById(assignee.id, assignee.display_name || assignee.full_name)
-                              : `#${assigneeId}`) + " ×"}
-                          </span>
-                          {hint ? <small className="assignee-availability-note">{hint}</small> : null}
-                        </button>
-                      );
-                    })}
-                    {taskEditForm.assignee_ids.length === 0 && (
-                      <small className="muted">
-                        {language === "de" ? "Noch keine Personen ausgewählt." : "No people selected yet."}
-                      </small>
-                    )}
-                  </div>
-                </div>
-                <div className="row wrap">
-                  <button type="submit">{language === "de" ? "Speichern" : "Save"}</button>
-                  {canManageTasks && (
-                    <button type="button" className="danger-btn" onClick={() => void deleteTaskFromEdit()}>
-                      {language === "de" ? "Löschen" : "Delete"}
-                    </button>
-                  )}
-                  <button type="button" onClick={closeTaskEditModal}>
-                    {language === "de" ? "Abbrechen" : "Cancel"}
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        )}
+        <TaskEditModal />
 
-        {mainView === "overview" && (
-          <section className="overview-layout">
-            <div className="overview-shortcuts">
-              {overviewActionCards.map((action) => (
-                <button
-                  key={action.view}
-                  type="button"
-                  className="overview-shortcut-card"
-                  style={{ width: overviewActionCardWidth }}
-                  onClick={() => {
-                    setProjectBackView(null);
-                    setOverviewShortcutBackVisible(true);
-                    setConstructionBackView(null);
-                    setMainView(action.view);
-                  }}
-                >
-                  <SidebarNavIcon view={action.view} />
-                  <span>{action.label}</span>
-                </button>
-              ))}
-            </div>
+        <OverviewPage />
 
-            <div className="overview-main-grid">
-              <div className="overview-primary-column">
-                <div className="card overview-card overview-status-card">
-                  <h3>{language === "de" ? "Mein aktueller Status" : "My current status"}</h3>
-                  <small className="muted">
-                    {language === "de" ? "Aktuelle Uhrzeit" : "Current time"}:{" "}
-                    <b>{now.toLocaleTimeString(language === "de" ? "de-DE" : "en-US")}</b>
-                  </small>
-                  <WorkHoursGauge
-                    language={language}
-                    netHours={gaugeNetHours}
-                    requiredHours={requiredDailyHours}
-                    compact
-                  />
-                  {timeCurrent?.clock_entry_id ? (
-                    <div className="overview-status-shift-row">
-                      <button className="overview-shift-action-btn" onClick={clockOut}>
-                        {language === "de" ? "Ausstempeln" : "Clock out"}
-                      </button>
-                      <small className="muted overview-status-shift-info">
-                        {language === "de" ? "Schicht seit" : "Shift since"}:{" "}
-                        {parseServerDateTime(timeCurrent.clock_in || "")?.toLocaleTimeString(language === "de" ? "de-DE" : "en-US") || "-"}
-                      </small>
-                    </div>
-                  ) : (
-                    <div className="overview-status-shift-row">
-                      <button className="overview-shift-action-btn" onClick={clockIn}>
-                        {language === "de" ? "Einstempeln" : "Clock in"}
-                      </button>
-                      <small className="muted overview-status-shift-info">
-                        {language === "de" ? "Keine offene Schicht." : "No open shift."}
-                      </small>
-                    </div>
-                  )}
-                </div>
+        <MaterialsPage />
 
-                <div className="card overview-card overview-recent-reports-card">
-                  <h3>{language === "de" ? "Neueste Baustellenberichte" : "Latest construction reports"}</h3>
-                  <ul className="overview-list">
-                    {recentConstructionReports.map((report) => {
-                      const reportProjectLabel = recentReportProjectTitleParts(report);
-                      return (
-                        <li key={`recent-report-${report.id}`} className="task-list-item">
-                          <div className="task-list-main">
-                            <b>
-                              {(language === "de" ? "Bericht" : "Report")}{" "}
-                              {report.report_number != null ? `#${report.report_number}` : `#${report.id}`}
-                            </b>
-                            <small>
-                              {language === "de" ? "Projekt" : "Project"}: {reportProjectLabel.title}
-                            </small>
-                            {reportProjectLabel.subtitle && <small className="project-name-subtle">{reportProjectLabel.subtitle}</small>}
-                            <small>
-                              {language === "de" ? "Erstellt" : "Created"}: {formatServerDateTime(report.created_at, language)}
-                            </small>
-                          </div>
-                          <div className="row wrap task-actions">
-                            {report.attachment_id ? (
-                              <a href={filePreviewUrl(report.attachment_id)} target="_blank" rel="noreferrer">
-                                {language === "de" ? "Öffnen" : "Open"}
-                              </a>
-                            ) : (
-                              <small className="muted">
-                                {language === "de" ? "Wird verarbeitet" : "Processing"}
-                              </small>
-                            )}
-                            {report.project_id ? (
-                              <button type="button" onClick={() => openProjectById(report.project_id!, null)}>
-                                {language === "de" ? "Projekt" : "Project"}
-                              </button>
-                            ) : null}
-                          </div>
-                        </li>
-                      );
-                    })}
-                    {recentConstructionReports.length === 0 && (
-                      <li className="muted">
-                        {language === "de" ? "Keine Berichte vorhanden." : "No reports found."}
-                      </li>
-                    )}
-                  </ul>
-                </div>
-              </div>
+        <ProjectsAllPage />
 
-              <div className="card overview-card">
-                <h3>{language === "de" ? "Meine Projekte" : "My projects"}</h3>
-                <ul className="overview-list">
-                  {recentAssignedProjects.map((project) => {
-                    const projectLabel = projectTitleParts(project);
-                    return (
-                      <li key={project.id}>
-                        <button
-                          className="linklike overview-list-item"
-                          onClick={() => {
-                            setActiveProjectId(project.id);
-                            setProjectTab("overview");
-                            setProjectBackView(null);
-                            setMainView("project");
-                          }}
-                        >
-                          <b>{projectLabel.title}</b>
-                          {projectLabel.subtitle && <small className="project-name-subtle">{projectLabel.subtitle}</small>}
-                        </button>
-                      </li>
-                    );
-                  })}
-                  {recentAssignedProjects.length === 0 && (
-                    <li className="muted">
-                      {language === "de" ? "Keine zugewiesenen Projekte." : "No assigned projects."}
-                    </li>
-                  )}
-                </ul>
-              </div>
+        <ProjectsArchivePage />
 
-              <div className="card overview-card">
-                <div className="overview-filter-row">
-                  <div className="overview-filter-title-row">
-                    <h3>{language === "de" ? "Projektübersicht" : "Projects overview"}</h3>
-                    <button
-                      type="button"
-                      className="icon-btn overview-open-full-btn"
-                      onClick={() => {
-                        setProjectBackView(null);
-                        setMainView("projects_all");
-                      }}
-                      aria-label={language === "de" ? "Alle Projekte öffnen" : "Open all projects"}
-                      title={language === "de" ? "Alle Projekte öffnen" : "Open all projects"}
-                    >
-                      <span aria-hidden>≡</span>
-                      <span>{language === "de" ? "Liste" : "List"}</span>
-                    </button>
-                  </div>
-                  <div className="overview-state-filter">
-                    <span>{language === "de" ? "Status" : "State"}</span>
-                    <select
-                      aria-label={language === "de" ? "Status auswählen" : "Select state"}
-                      value={overviewStatusFilter}
-                      onChange={(event) => setOverviewStatusFilter(event.target.value)}
-                    >
-                      <option value="all">{language === "de" ? "Alle Status" : "All states"}</option>
-                      {overviewStatusOptions.map((statusValue) => (
-                        <option key={statusValue} value={statusValue}>
-                          {statusLabel(statusValue, language)}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-	                <ul className="overview-list">
-                  {filteredDetailedOverview.map((row) => {
-                    const projectId = Number(row.project_id);
-                    const projectNumber = row.project_number ?? row.project_id;
-                    const projectLabel = formatProjectTitleParts(
-                      String(projectNumber),
-                      String(row.customer_name ?? ""),
-                      String(row.project_name ?? ""),
-                      projectId,
-                    );
-                    return (
-                      <li key={row.project_id}>
-                        <button
-                          className="linklike overview-list-item"
-                          onClick={() => {
-                            if (!projectId) return;
-                            setActiveProjectId(projectId);
-                            setProjectTab("overview");
-                            setProjectBackView(null);
-                            setMainView("project");
-                          }}
-                        >
-                          <b>{projectLabel.title}</b>
-                          {projectLabel.subtitle && <small className="project-name-subtle">{projectLabel.subtitle}</small>}
-                          <small>
-                            {language === "de" ? "Offene Aufgaben" : "Open tasks"}: {row.open_tasks} |{" "}
-                            {language === "de" ? "Standorte" : "Sites"}: {row.sites} |{" "}
-                            {statusLabel(String(row.status ?? ""), language)}
-                          </small>
-                        </button>
-                      </li>
-                    );
-                  })}
-                  {filteredDetailedOverview.length === 0 && (
-                    <li className="muted">
-                      {language === "de" ? "Keine Projekte in diesem Status." : "No projects in this state."}
-                    </li>
-                  )}
-                </ul>
-              </div>
+        <MyTasksPage />
 
-            </div>
-	          </section>
-	        )}
-
-        {mainView === "materials" && (
-          <section className="card materials-view-card">
-            <div className="materials-view-head">
-              <h3>{language === "de" ? "Materialbedarf" : "Material needs"}</h3>
-              <button
-                type="button"
-                onClick={() => {
-                  void loadMaterialNeeds();
-                  void loadMaterialCatalog(materialCatalogQuery);
-                }}
-              >
-                {language === "de" ? "Aktualisieren" : "Refresh"}
-              </button>
-            </div>
-            <div className="materials-view-layout">
-              <div className="materials-panel">
-                <h4>{language === "de" ? "Bedarfsliste" : "Needs list"}</h4>
-                <ul className="materials-list">
-                  {materialNeedRows.map((entry) => {
-                    const normalizedStatus = normalizeMaterialNeedStatus(entry.status);
-                    const statusClass = materialNeedStatusClass(normalizedStatus);
-                    const project = projectsById.get(entry.project_id) ?? null;
-                    const projectLabel = formatProjectTitleParts(
-                      entry.project_number,
-                      entry.customer_name ?? project?.customer_name ?? null,
-                      entry.project_name,
-                      entry.project_id,
-                    );
-                    const isUpdating = Boolean(materialNeedUpdating[entry.id]);
-                    return (
-                      <li key={`material-need-${entry.id}`} className="materials-item">
-                        {entry.image_url ? (
-                          <div className="materials-item-image-wrap">
-                            <img
-                              src={entry.image_url}
-                              alt={entry.item}
-                              className="materials-item-image"
-                              loading="lazy"
-                              referrerPolicy="no-referrer"
-                              onError={(event) => {
-                                event.currentTarget.style.display = "none";
-                              }}
-                            />
-                          </div>
-                        ) : (
-                          <div className="materials-item-image-wrap materials-item-image-empty" aria-hidden />
-                        )}
-                        <div className="materials-item-main">
-                          <b>{entry.item}</b>
-                          {(entry.article_no || entry.quantity || entry.unit) && (
-                            <small>
-                              {entry.article_no ? `${language === "de" ? "Art.-Nr." : "Article"}: ${entry.article_no}` : ""}
-                              {entry.quantity ? ` | ${language === "de" ? "Menge" : "Qty"}: ${entry.quantity}` : ""}
-                              {entry.unit ? ` ${entry.unit}` : ""}
-                            </small>
-                          )}
-                          <small>
-                            {language === "de" ? "Projekt" : "Project"}:{" "}
-                            <button
-                              type="button"
-                              className="linklike"
-                              onClick={() => {
-                                if (!project) return;
-                                setActiveProjectId(project.id);
-                                setProjectTab("overview");
-                                setProjectBackView(null);
-                                setMainView("project");
-                              }}
-                            >
-                              {projectLabel.title}
-                            </button>
-                          </small>
-                          {projectLabel.subtitle && <small className="project-name-subtle">{projectLabel.subtitle}</small>}
-                          <small>
-                            {language === "de" ? "Berichtdatum" : "Report date"}:{" "}
-                            {entry.report_date ? formatDayLabel(entry.report_date, language) : "-"}
-                          </small>
-                        </div>
-                        <div className="materials-item-actions">
-                          <button
-                            type="button"
-                            className={`materials-status-badge materials-status-toggle ${statusClass}`}
-                            disabled={isUpdating}
-                            onClick={() => void updateMaterialNeedState(entry.id, nextMaterialNeedStatus(normalizedStatus))}
-                            title={
-                              language === "de"
-                                ? `Status wechseln zu: ${materialNeedStatusLabel(nextMaterialNeedStatus(normalizedStatus), language)}`
-                                : `Change status to: ${materialNeedStatusLabel(nextMaterialNeedStatus(normalizedStatus), language)}`
-                            }
-                          >
-                            {materialNeedStatusLabel(normalizedStatus, language)}
-                          </button>
-                          {normalizedStatus === "available" && (
-                            <button
-                              type="button"
-                              className="materials-complete-btn"
-                              disabled={isUpdating}
-                              onClick={() => void updateMaterialNeedState(entry.id, "completed")}
-                            >
-                              {language === "de" ? "Erledigt" : "Complete"}
-                            </button>
-                          )}
-                        </div>
-                      </li>
-                    );
-                  })}
-                  {materialNeedRows.length === 0 && (
-                    <li className="muted">
-                      {language === "de" ? "Kein offener Materialbedarf gefunden." : "No open material needs found."}
-                    </li>
-                  )}
-                </ul>
-              </div>
-
-              <div className="materials-panel materials-catalog-panel">
-                <h4>{language === "de" ? "Materialkatalog" : "Material catalog"}</h4>
-                <div className="materials-catalog-controls">
-                  <div className="materials-catalog-search-field">
-                    <b>{language === "de" ? "Projekt suchen" : "Search project"}</b>
-                    <input
-                      className="materials-catalog-search-input"
-                      value={materialCatalogProjectSearch}
-                      onFocus={(event) => {
-                        const input = event.currentTarget;
-                        setMaterialCatalogProjectSearchFocused(true);
-                        window.requestAnimationFrame(() => {
-                          input.select();
-                        });
-                      }}
-                      onBlur={() => {
-                        setMaterialCatalogProjectSearchFocused(false);
-                        setMaterialCatalogProjectSearch(selectedMaterialCatalogProjectLabel);
-                      }}
-                      onChange={(event) => setMaterialCatalogProjectSearch(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (event.key !== "Enter") return;
-                        event.preventDefault();
-                        const first = materialCatalogProjectSuggestions[0];
-                        if (first) selectMaterialCatalogProject(first);
-                      }}
-                    />
-                    {materialCatalogProjectSearchFocused && materialCatalogProjectSuggestions.length > 0 && (
-                      <div className="assignee-suggestions">
-                        {materialCatalogProjectSuggestions.map((project) => (
-                          <button
-                            key={`material-catalog-project-suggestion-${project.id}`}
-                            type="button"
-                            className="assignee-suggestion-btn"
-                            onMouseDown={(event) => {
-                              event.preventDefault();
-                            }}
-                            onClick={() => selectMaterialCatalogProject(project)}
-                          >
-                            {projectSearchLabel(project)}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                  <label className="materials-catalog-search-field">
-                    <b>{language === "de" ? "Material suchen" : "Search material"}</b>
-                    <input
-                      className="materials-catalog-search-input"
-                      value={materialCatalogQuery}
-                      onChange={(event) => setMaterialCatalogQuery(event.target.value)}
-                      placeholder={
-                        language === "de" ? "Artikelnummer oder Bezeichnung" : "Article number or item name"
-                      }
-                    />
-                  </label>
-                </div>
-                {materialCatalogState && materialCatalogState.duplicates_skipped > 0 && (
-                  <p className="muted materials-import-note">
-                    {language === "de"
-                      ? `${materialCatalogState.duplicates_skipped} Duplikate wurden beim Import übersprungen.`
-                      : `${materialCatalogState.duplicates_skipped} duplicates were skipped during import.`}
-                  </p>
-                )}
-                {materialCatalogLoading && <p className="muted">{language === "de" ? "Lädt..." : "Loading..."}</p>}
-                <ul className="materials-list materials-catalog-list">
-                  {!materialCatalogLoading &&
-                    materialCatalogRows.map((catalogItem) => {
-                      const isAdding = Boolean(materialCatalogAdding[catalogItem.id]);
-                      const catalogMeta = [
-                        catalogItem.article_no
-                          ? `${language === "de" ? "Art.-Nr." : "Article"}: ${catalogItem.article_no}`
-                          : "",
-                        catalogItem.unit ? `${language === "de" ? "Einheit" : "Unit"}: ${catalogItem.unit}` : "",
-                        catalogItem.manufacturer
-                          ? `${language === "de" ? "Hersteller" : "Manufacturer"}: ${catalogItem.manufacturer}`
-                          : "",
-                        catalogItem.ean ? `EAN: ${catalogItem.ean}` : "",
-                        catalogItem.price_text ? `${language === "de" ? "Preis" : "Price"}: ${catalogItem.price_text}` : "",
-                      ]
-                        .filter((entry) => entry)
-                        .join(" | ");
-                      return (
-                        <li key={`catalog-item-${catalogItem.id}`} className="materials-item">
-                          {catalogItem.image_url ? (
-                            <div className="materials-item-image-wrap">
-                              <img
-                                src={catalogItem.image_url}
-                                alt={catalogItem.item_name}
-                                className="materials-item-image"
-                                loading="lazy"
-                                referrerPolicy="no-referrer"
-                                onError={(event) => {
-                                  event.currentTarget.style.display = "none";
-                                }}
-                              />
-                            </div>
-                          ) : (
-                            <div className="materials-item-image-wrap materials-item-image-empty" aria-hidden />
-                          )}
-                          <div className="materials-item-main">
-                            <b>{catalogItem.item_name}</b>
-                            {catalogMeta && <small>{catalogMeta}</small>}
-                          </div>
-                          <div className="materials-item-actions">
-                            <button
-                              type="button"
-                              className="materials-add-btn"
-                              disabled={isAdding || !materialCatalogProjectId}
-                              onClick={() => void addCatalogMaterialNeed(catalogItem)}
-                            >
-                              {language === "de" ? "Hinzufügen" : "Add"}
-                            </button>
-                          </div>
-                        </li>
-                      );
-                    })}
-                  {!materialCatalogLoading && materialCatalogRows.length === 0 && (
-                    <li className="muted">
-                      {language === "de"
-                        ? "Keine Katalogeinträge gefunden. Prüfe den Ordner Datanorm_Neuanlage."
-                        : "No catalog entries found. Check the Datanorm_Neuanlage folder."}
-                    </li>
-                  )}
-                </ul>
-              </div>
-            </div>
-          </section>
-        )}
-
-        {mainView === "projects_all" && (
-          <section className="card projects-all-card">
-            <div className="projects-all-head">
-              <button
-                type="button"
-                onClick={() => {
-                  setProjectBackView(null);
-                  setMainView("overview");
-                }}
-              >
-                {language === "de" ? "Zur Übersicht" : "Back to overview"}
-              </button>
-            </div>
-            <div className="projects-all-filters">
-              <label className="projects-all-search">
-                {language === "de" ? "Projektsuche" : "Project search"}
-                <input
-                  value={projectsAllSearch}
-                  onChange={(event) => setProjectsAllSearch(event.target.value)}
-                  placeholder={language === "de" ? "Nummer, Kunde oder Projektname" : "Number, customer, or project name"}
-                />
-              </label>
-              <label>
-                {language === "de" ? "Status" : "State"}
-                <select
-                  value={projectsAllStateFilter}
-                  onChange={(event) => setProjectsAllStateFilter(event.target.value)}
-                >
-                  <option value="all">{language === "de" ? "Alle Status" : "All states"}</option>
-                  {overviewStatusOptions.map((statusValue) => (
-                    <option key={statusValue} value={statusValue}>
-                      {statusLabel(statusValue, language)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                {language === "de" ? "Letzte Änderung" : "Last edited"}
-                <select
-                  value={projectsAllEditedFilter}
-                  onChange={(event) => setProjectsAllEditedFilter(event.target.value)}
-                >
-                  <option value="all">{language === "de" ? "Alle" : "Any time"}</option>
-                  <option value="7d">{language === "de" ? "Letzte 7 Tage" : "Last 7 days"}</option>
-                  <option value="30d">{language === "de" ? "Letzte 30 Tage" : "Last 30 days"}</option>
-                  <option value="90d">{language === "de" ? "Letzte 90 Tage" : "Last 90 days"}</option>
-                  <option value="older">{language === "de" ? "Älter als 90 Tage" : "Older than 90 days"}</option>
-                  <option value="missing">{language === "de" ? "Ohne Datum" : "Without date"}</option>
-                </select>
-              </label>
-            </div>
-
-            <ul className="overview-list projects-all-list">
-              {filteredProjectsAll.map((row) => {
-                const projectId = Number(row.project_id);
-                const projectLabel = formatProjectTitleParts(
-                  String(row.project_number ?? ""),
-                  String(row.customer_name ?? ""),
-                  String(row.project_name ?? ""),
-                  projectId,
-                );
-                const lastEditedLabel =
-                  row.last_updated_at && Number(row.last_updated_timestamp) > 0
-                    ? formatServerDateTime(row.last_updated_at, language)
-                    : "-";
-                return (
-                  <li key={`all-project-${row.project_id}`}>
-                    <button
-                      className="linklike overview-list-item"
-                      onClick={() => {
-                        if (!projectId) return;
-                        setActiveProjectId(projectId);
-                        setProjectTab("overview");
-                        setProjectBackView("projects_all");
-                        setMainView("project");
-                      }}
-                    >
-                      <b>{projectLabel.title}</b>
-                      {projectLabel.subtitle && <small className="project-name-subtle">{projectLabel.subtitle}</small>}
-                      <small>
-                        {language === "de" ? "Offene Aufgaben" : "Open tasks"}: {row.open_tasks} |{" "}
-                        {language === "de" ? "Standorte" : "Sites"}: {row.sites} |{" "}
-                        {statusLabel(String(row.status ?? ""), language)}
-                      </small>
-                      <small>
-                        {language === "de" ? "Letzter Stand" : "Last state"}: {row.last_state} |{" "}
-                        {language === "de" ? "Letzte Änderung" : "Last edited"}: {lastEditedLabel}
-                      </small>
-                    </button>
-                  </li>
-                );
-              })}
-              {filteredProjectsAll.length === 0 && (
-                <li className="muted">
-                  {language === "de" ? "Keine Projekte mit diesem Filter." : "No projects for this filter."}
-                </li>
-              )}
-            </ul>
-          </section>
-        )}
-
-        {mainView === "projects_archive" && (
-          <section className="card">
-            <h3>{language === "de" ? "Projektarchiv" : "Project archive"}</h3>
-            <ul className="overview-list">
-              {archivedProjects.map((project) => {
-                const projectLabel = projectTitleParts(project);
-                const lastEditedLabel = project.last_status_at
-                  ? formatServerDateTime(project.last_status_at, language)
-                  : "-";
-                return (
-                  <li key={`archive-project-${project.id}`}>
-                    <div
-                      className={[
-                        "overview-list-item",
-                        "archive-list-item",
-                        highlightedArchivedProjectId === project.id ? "archive-list-item-highlighted" : "",
-                      ]
-                        .filter(Boolean)
-                        .join(" ")}
-                    >
-                      <b>{projectLabel.title}</b>
-                      {projectLabel.subtitle && <small className="project-name-subtle">{projectLabel.subtitle}</small>}
-                      <small>
-                        {language === "de" ? "Letzter Stand" : "Last state"}: {project.last_state || "-"} |{" "}
-                        {language === "de" ? "Letzte Änderung" : "Last edited"}: {lastEditedLabel}
-                      </small>
-                      <div className="row wrap task-actions task-actions-left">
-                        {canCreateProject ? (
-                          <>
-                            <button
-                              type="button"
-                              onClick={() => void unarchiveProject(project.id, project.last_updated_at ?? null)}
-                            >
-                              {language === "de" ? "Wiederherstellen" : "Unarchive"}
-                            </button>
-                            <button
-                              type="button"
-                              className="danger-btn"
-                              onClick={() => void deleteProjectById(project.id)}
-                            >
-                              {language === "de" ? "Löschen" : "Delete"}
-                            </button>
-                          </>
-                        ) : (
-                          <small className="muted">
-                            {language === "de"
-                              ? "Keine Rechte zum Bearbeiten des Archivs."
-                              : "No permission to modify archive entries."}
-                          </small>
-                        )}
-                      </div>
-                    </div>
-                  </li>
-                );
-              })}
-              {archivedProjects.length === 0 && (
-                <li className="muted">{language === "de" ? "Keine archivierten Projekte." : "No archived projects."}</li>
-              )}
-            </ul>
-          </section>
-        )}
-
-        {mainView === "my_tasks" && (
-          <section className="card my-tasks-section">
-            <div className="tasks-list-head tasks-header-row">
-              <h3>{language === "de" ? "Meine Aufgaben" : "My tasks"}</h3>
-              {myTasksBackProjectId && (
-                <button
-                  type="button"
-                  className="icon-btn header-back-btn"
-                  onClick={() => {
-                    setActiveProjectId(myTasksBackProjectId);
-                    setProjectTab("tasks");
-                    setProjectBackView(null);
-                    setMainView("project");
-                    setMyTasksBackProjectId(null);
-                  }}
-                >
-                  <BackIcon />
-                  <span>{language === "de" ? "Zurück zum Projekt" : "Back to project"}</span>
-                </button>
-              )}
-            </div>
-            <ul className="task-list">
-              {sortedTasks.map((task) => {
-                const isMine = isTaskAssignedToCurrentUser(task);
-                const isOverdue = isTaskOverdue(task, todayIso);
-                const displayStatus = taskDisplayStatus(task, todayIso);
-                const expanded = expandedMyTaskId === task.id;
-                const taskMaterials = taskMaterialsDisplay(task.materials_required, language);
-                const taskSubtasks = (task.subtasks ?? []).map((row) => row.trim()).filter((row) => row.length > 0);
-                const taskProjectLabel = taskProjectTitleParts(task);
-                return (
-                  <li
-                    key={task.id}
-                    className={[
-                      "task-list-item",
-                      isMine ? "task-list-item-mine" : "",
-                      isOverdue ? "task-list-item-overdue" : "",
-                    ]
-                      .filter((value) => value.length > 0)
-                      .join(" ")}
-                  >
-                    <div className="task-list-main">
-                      <button
-                        type="button"
-                        className="task-expand-header"
-                        onClick={() => setExpandedMyTaskId(expanded ? null : task.id)}
-                        aria-expanded={expanded}
-                      >
-                        <b>
-                          {task.title}
-                        </b>
-                        <span className="task-expand-chevron" aria-hidden="true">
-                          {expanded ? "▾" : "▸"}
-                        </span>
-                      </button>
-                      <small>
-                        {language === "de" ? "Projekt" : "Project"}:{" "}
-                        <button type="button" className="linklike" onClick={() => openProjectFromTask(task)}>
-                          {taskProjectLabel.title}
-                        </button>{" "}
-                        |{" "}
-                        {language === "de" ? "Fällig" : "Due"}: {task.due_date ?? "-"}
-                        {task.start_time ? ` ${language === "de" ? "um" : "at"} ${formatTaskStartTime(task.start_time)}` : ""} |{" "}
-                        {language === "de" ? "Status" : "Status"}: {taskStatusLabel(displayStatus, language)}
-                      </small>
-                      {taskProjectLabel.subtitle && <small className="project-name-subtle">{taskProjectLabel.subtitle}</small>}
-                      {expanded && (
-                        <div className="task-expanded-content">
-                          <small>
-                            {language === "de" ? "Mitarbeiter" : "Assignees"}: <b>{getTaskAssigneeLabel(task)}</b>
-                          </small>
-                          <small>
-                            {language === "de" ? "Information" : "Information"}: <b>{task.description || "-"}</b>
-                          </small>
-                          <small>
-                            {language === "de" ? "Material" : "Materials"}: <b>{taskMaterials || "-"}</b>
-                          </small>
-                          <small>
-                            {language === "de" ? "Lagerbox" : "Storage box"}: <b>{task.storage_box_number ?? "-"}</b>
-                          </small>
-                          <div className="task-subtask-list">
-                            <small>
-                              {language === "de" ? "Unteraufgaben" : "Sub-tasks"}:{" "}
-                              <b>{taskSubtasks.length > 0 ? taskSubtasks.length : "-"}</b>
-                            </small>
-                            {taskSubtasks.length > 0 && (
-                              <ul>
-                                {taskSubtasks.map((subtask, index) => (
-                                  <li key={`task-${task.id}-subtask-${index}`}>{subtask}</li>
-                                ))}
-                              </ul>
-                            )}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                    <div className="row wrap task-actions">
-                      {canManageTasks && (
-                        <button
-                          type="button"
-                          className="icon-btn task-edit-icon-btn"
-                          onClick={() => openTaskEditModal(task)}
-                          aria-label={language === "de" ? "Aufgabe bearbeiten" : "Edit task"}
-                          title={language === "de" ? "Aufgabe bearbeiten" : "Edit task"}
-                        >
-                          <PenIcon />
-                        </button>
-                      )}
-                      {isMine && (
-                        <button type="button" onClick={() => void exportTaskCalendar(task)}>
-                          {language === "de" ? "Kalender" : "Calendar"}
-                        </button>
-                      )}
-                      {isMine && (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            task.status !== "done"
-                              ? void markTaskDone(task, { openReportFromTask: task, reportBackView: "my_tasks" })
-                              : openConstructionReportFromTask(task, "my_tasks")
-                          }
-                        >
-                          {language === "de" ? "Bericht aus Aufgabe" : "Report from task"}
-                        </button>
-                      )}
-                      {isMine && task.status !== "done" && (
-                        <button type="button" onClick={() => void markTaskDone(task)}>
-                          {language === "de" ? "Als erledigt markieren" : "Mark complete"}
-                        </button>
-                      )}
-                    </div>
-                  </li>
-                );
-              })}
-              {sortedTasks.length === 0 && <li className="muted">{language === "de" ? "Keine Aufgaben." : "No tasks."}</li>}
-            </ul>
-          </section>
-        )}
-
-        {mainView === "office_tasks" && (
-          <section className="card my-tasks-section">
-            <div className="tasks-list-head tasks-header-row">
-              <h3>{language === "de" ? "Aufgaben" : "Tasks"}</h3>
-              {canManageTasks && (
-                <button
-                  type="button"
-                  className="icon-btn task-add-icon-btn"
-                  onClick={() => openTaskModal({ taskType: "office" })}
-                  aria-label={language === "de" ? "Aufgabe hinzufügen" : "Add task"}
-                  title={language === "de" ? "Aufgabe hinzufügen" : "Add task"}
-                >
-                  +
-                </button>
-              )}
-            </div>
-            <small className="muted office-task-filter-hint">
-              {language === "de"
-                ? "Zeigt alle verfügbaren Aufgaben, auch ohne Zuweisung."
-                : "Shows all available tasks, including unassigned tasks."}
-            </small>
-            <div className="row wrap office-task-filter-row">
-              <label className="office-task-filter-field">
-                {language === "de" ? "Status" : "Status"}
-                <select value={officeTaskStatusFilter} onChange={(event) => setOfficeTaskStatusFilter(event.target.value)}>
-                  <option value="all">{language === "de" ? "Alle" : "All"}</option>
-                  {officeTaskStatusOptions.map((statusValue) => (
-                    <option key={`office-task-status-${statusValue}`} value={statusValue}>
-                      {taskStatusLabel(statusValue, language)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="office-task-filter-field">
-                {language === "de" ? "Zugewiesen an" : "Assigned to"}
-                <select
-                  value={officeTaskAssigneeFilter}
-                  onChange={(event) => setOfficeTaskAssigneeFilter(event.target.value)}
-                >
-                  <option value="all">{language === "de" ? "Alle" : "All"}</option>
-                  <option value="unassigned">{language === "de" ? "Nicht zugewiesen" : "Unassigned"}</option>
-                  {officeTaskAssigneeOptions.map((entry) => (
-                    <option key={`office-task-assignee-${entry.id}`} value={String(entry.id)}>
-                      {entry.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="office-task-filter-field">
-                {language === "de" ? "Fälligkeitsdatum" : "Due date"}
-                <input
-                  type="date"
-                  value={officeTaskDueDateFilter}
-                  onChange={(event) => {
-                    const nextValue = event.target.value;
-                    setOfficeTaskDueDateFilter(nextValue);
-                    if (nextValue) setOfficeTaskNoDueDateFilter(false);
-                  }}
-                  disabled={officeTaskNoDueDateFilter}
-                />
-                <label className="checkbox-inline office-task-no-date-toggle">
-                  <input
-                    type="checkbox"
-                    checked={officeTaskNoDueDateFilter}
-                    onChange={(event) => {
-                      const nextChecked = event.target.checked;
-                      setOfficeTaskNoDueDateFilter(nextChecked);
-                      if (nextChecked) setOfficeTaskDueDateFilter("");
-                    }}
-                  />
-                  {language === "de" ? "Ohne Fälligkeitsdatum" : "No due date"}
-                </label>
-              </label>
-              <div className="office-task-filter-field office-task-filter-field-project">
-                <span>{language === "de" ? "Projekte" : "Projects"}</span>
-                <input
-                  value={officeTaskProjectFilterQuery}
-                  onChange={(event) => setOfficeTaskProjectFilterQuery(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key !== "Enter") return;
-                    event.preventDefault();
-                    addFirstMatchingOfficeTaskProjectFilter();
-                  }}
-                  placeholder={language === "de" ? "Projekt suchen und auswählen" : "Search and select project"}
-                />
-                {officeTaskProjectSuggestions.length > 0 && (
-                  <div className="assignee-suggestions">
-                    {officeTaskProjectSuggestions.map((entry) => (
-                      <button
-                        key={`office-task-project-suggestion-${entry.id}`}
-                        type="button"
-                        className="assignee-suggestion-btn"
-                        onClick={() => addOfficeTaskProjectFilter(entry.id)}
-                      >
-                        {entry.label}
-                      </button>
-                    ))}
-                  </div>
-                )}
-                <div className="assignee-chip-list">
-                  {officeTaskSelectedProjectFilters.map((entry) => (
-                    <button
-                      key={`office-task-project-chip-${entry.id}`}
-                      type="button"
-                      className="assignee-chip"
-                      onClick={() => removeOfficeTaskProjectFilter(entry.id)}
-                      title={language === "de" ? "Entfernen" : "Remove"}
-                    >
-                      {entry.label} ×
-                    </button>
-                  ))}
-                  {officeTaskSelectedProjectFilters.length === 0 && (
-                    <small className="muted">{language === "de" ? "Alle Projekte" : "All projects"}</small>
-                  )}
-                </div>
-              </div>
-              <button
-                type="button"
-                className="office-task-filter-reset"
-                onClick={() => {
-                  setOfficeTaskStatusFilter("all");
-                  setOfficeTaskAssigneeFilter("all");
-                  setOfficeTaskDueDateFilter("");
-                  setOfficeTaskNoDueDateFilter(false);
-                  setOfficeTaskProjectFilterQuery("");
-                  setOfficeTaskProjectFilterIds([]);
-                }}
-              >
-                {language === "de" ? "Filter zurücksetzen" : "Reset filters"}
-              </button>
-            </div>
-            <ul className="task-list">
-              {officeFilteredTasks.map((task) => {
-                const isMine = isTaskAssignedToCurrentUser(task);
-                const isOverdue = isTaskOverdue(task, todayIso);
-                const displayStatus = taskDisplayStatus(task, todayIso);
-                const taskMaterials = taskMaterialsDisplay(task.materials_required, language);
-                const taskProjectLabel = taskProjectTitleParts(task);
-                return (
-                  <li
-                    key={`office-task-${task.id}`}
-                    className={[
-                      "task-list-item",
-                      isMine ? "task-list-item-mine" : "",
-                      isOverdue ? "task-list-item-overdue" : "",
-                    ]
-                      .filter((value) => value.length > 0)
-                      .join(" ")}
-                  >
-                    <div className="task-list-main">
-                      <b>
-                        {task.title} [{taskStatusLabel(displayStatus, language)}]
-                      </b>
-                      <small>
-                        {language === "de" ? "Projekt" : "Project"}:{" "}
-                        <button type="button" className="linklike" onClick={() => openProjectFromTask(task, "office_tasks")}>
-                          {taskProjectLabel.title}
-                        </button>{" "}
-                        | {language === "de" ? "Fällig" : "Due"}: {task.due_date ?? "-"}
-                        {task.start_time ? ` ${language === "de" ? "um" : "at"} ${formatTaskStartTime(task.start_time)}` : ""} |{" "}
-                        {language === "de" ? "Mitarbeiter" : "Assignees"}: {getTaskAssigneeLabel(task)}
-                      </small>
-                      {taskProjectLabel.subtitle && <small className="project-name-subtle">{taskProjectLabel.subtitle}</small>}
-                      <small>
-                        {language === "de" ? "Typ" : "Type"}: {taskTypeLabel(normalizeTaskTypeValue(task.task_type), language)}
-                        {task.storage_box_number
-                          ? ` | ${language === "de" ? "Lagerbox" : "Storage box"}: ${task.storage_box_number}`
-                          : ""}
-                      </small>
-                      {(task.description || taskMaterials) && (
-                        <small>
-                          {task.description ? `${language === "de" ? "Info" : "Info"}: ${task.description}` : ""}
-                          {task.description && taskMaterials ? " | " : ""}
-                          {taskMaterials ? `${language === "de" ? "Material" : "Materials"}: ${taskMaterials}` : ""}
-                        </small>
-                      )}
-                    </div>
-                    <div className="row wrap task-actions">
-                      {canManageTasks && (
-                        <button
-                          type="button"
-                          className="icon-btn task-edit-icon-btn"
-                          onClick={() => openTaskEditModal(task)}
-                          aria-label={language === "de" ? "Aufgabe bearbeiten" : "Edit task"}
-                          title={language === "de" ? "Aufgabe bearbeiten" : "Edit task"}
-                        >
-                          <PenIcon />
-                        </button>
-                      )}
-                      {isMine && (
-                        <button type="button" onClick={() => void exportTaskCalendar(task)}>
-                          {language === "de" ? "Kalender" : "Calendar"}
-                        </button>
-                      )}
-                      {isMine && task.status !== "done" && (
-                        <button type="button" onClick={() => void markTaskDone(task)}>
-                          {language === "de" ? "Als erledigt markieren" : "Mark complete"}
-                        </button>
-                      )}
-                    </div>
-                  </li>
-                );
-              })}
-              {officeFilteredTasks.length === 0 && (
-                <li className="muted">{language === "de" ? "Keine Aufgaben für den Filter." : "No tasks match the filters."}</li>
-              )}
-            </ul>
-          </section>
-        )}
+        <OfficeTasksPage />
 
         {mainView === "project" && !activeProject && (
           <section className="card">
@@ -10423,3353 +6640,33 @@ export function App() {
           </section>
         )}
 
-        {mainView === "project" && activeProject && projectTab === "overview" && (
-          <section className="grid project-overview-grid">
-            <div className="card project-overview-glance">
-              <h3 className="project-overview-title">{language === "de" ? "Projektüberblick" : "Project glance"}</h3>
-              <small className="project-overview-subheading">
-                {language === "de" ? "Offene Aufgaben" : "Open tasks"}
-              </small>
-              <div className="project-overview-open-task-list">
-                <ul className="overview-list">
-                  {projectOverviewOpenTasks.map((task) => (
-                    <li key={`project-overview-open-task-${task.id}`}>
-                      <div className="overview-list-item">
-                        <b>{task.title}</b>
-                        <small>
-                          {task.due_date
-                            ? `${language === "de" ? "Fällig" : "Due"}: ${formatDayLabel(task.due_date, language)}`
-                            : language === "de"
-                              ? "Ohne Fälligkeitsdatum"
-                              : "No due date"}
-                        </small>
-                        <small>
-                          {language === "de" ? "Zugewiesen" : "Assigned"}: {getTaskAssigneeLabel(task)}
-                        </small>
-                      </div>
-                    </li>
-                  ))}
-                  {projectOverviewOpenTasks.length === 0 && (
-                    <li className="muted">
-                      {language === "de" ? "Keine offenen Aufgaben." : "No open tasks."}
-                    </li>
-                  )}
-                </ul>
-              </div>
-            </div>
+        <ProjectPage />
 
-            <aside className="card project-map-card project-map-card-full">
-              <div className="project-overview-card-head">
-                <h3 className="project-overview-title">{language === "de" ? "Projektadresse" : "Project location"}</h3>
-                <button
-                  type="button"
-                  className="icon-btn task-edit-icon-btn project-map-copy-btn"
-                  onClick={() => void copyToClipboard(activeProjectAddress, "address")}
-                  disabled={!activeProjectAddress}
-                  aria-label={language === "de" ? "Adresse kopieren" : "Copy address"}
-                  title={language === "de" ? "Adresse kopieren" : "Copy address"}
-                >
-                  <CopyIcon />
-                </button>
-              </div>
-              {activeProjectMapEmbedUrl ? (
-                <a
-                  className="project-map-link"
-                  target="_blank"
-                  rel="noreferrer"
-                  href={activeProjectMapOpenUrl}
-                  title={language === "de" ? "In Karten öffnen" : "Open in maps"}
-                >
-                  <iframe
-                    title={language === "de" ? "Projektkarte" : "Project map"}
-                    className="project-map-frame"
-                    src={activeProjectMapEmbedUrl}
-                    loading="lazy"
-                    referrerPolicy="no-referrer-when-downgrade"
-                  />
-                </a>
-              ) : (
-                <small className="muted">
-                  {language === "de" ? "Keine Projektadresse hinterlegt." : "No project address available."}
-                </small>
-              )}
-            </aside>
+        <CalendarPage />
 
-            <div className="card project-overview-meta">
-              <h3 className="project-overview-title">{language === "de" ? "Projektdaten" : "Project data"}</h3>
-              <small>
-                {language === "de" ? "Projekt-ID" : "Project ID"}: <b>{activeProject.project_number}</b>
-              </small>
-              <small>
-                {language === "de" ? "Status" : "State"}: <b>{statusLabel(activeProject.status, language)}</b>
-              </small>
-              <small>
-                {language === "de" ? "Letzte Änderung" : "Last update"}: <b>{activeProjectLastUpdatedLabel || "-"}</b>
-              </small>
-              <small>
-                {language === "de" ? "Gemeldete Stunden (Berichte)" : "Reported hours (reports)"}:{" "}
-                <b>{formatHours(projectReportedHoursTotal)}</b>
-              </small>
-              <small>
-                {language === "de" ? "Geplante Projektstunden" : "Planned project hours"}:{" "}
-                <b>{projectPlannedHoursTotal > 0 ? formatHours(projectPlannedHoursTotal) : "-"}</b>
-              </small>
-              <small>
-                {language === "de" ? "Kunde" : "Customer"}: <b>{(activeProject.customer_name ?? "").trim() || "-"}</b>
-              </small>
-              <small>
-                {language === "de" ? "Letzter Stand" : "Last state"}: <b>{activeProjectLastState || "-"}</b>
-              </small>
-              <small>
-                {language === "de" ? "Projektklassen" : "Project classes"}:{" "}
-                <b>
-                  {activeProjectClassTemplates.length > 0
-                    ? activeProjectClassTemplates.map((entry) => entry.name).join(", ")
-                    : "-"}
-                </b>
-              </small>
-              <small>
-                {language === "de" ? "Letztes Status-Datum" : "Last status update"}: <b>{activeProjectLastStatusAtLabel || "-"}</b>
-              </small>
-            </div>
+        <PlanningPage />
 
-            <div className="card project-overview-contact">
-              <h3 className="project-overview-title">{language === "de" ? "Kontakt" : "Contact"}</h3>
-              <small>
-                {language === "de" ? "Kontaktperson" : "Contact person"}: <b>{(activeProject.customer_contact ?? "").trim() || "-"}</b>
-              </small>
-              <small>
-                {language === "de" ? "E-Mail" : "E-mail"}: <b>{(activeProject.customer_email ?? "").trim() || "-"}</b>
-              </small>
-              <small>
-                {language === "de" ? "Telefon" : "Phone"}: <b>{(activeProject.customer_phone ?? "").trim() || "-"}</b>
-              </small>
-              <small>
-                {language === "de" ? "Zugang Baustelle" : "Site access"}:{" "}
-                <b>{projectSiteAccessDisplay(activeProject.site_access_type, activeProject.site_access_note, language)}</b>
-              </small>
-            </div>
+        <FileUploadModal />
 
-            <div className="card project-overview-weather">
-              <h3 className="project-overview-title">{language === "de" ? "Wetter" : "Weather"}</h3>
-              {projectWeatherLoading && (
-                <small className="muted">{language === "de" ? "Lade Wetterdaten..." : "Loading weather..."}</small>
-              )}
-              {!projectWeatherLoading && projectWeather?.days?.length ? (
-                <>
-                  <small className="muted">
-                    {(language === "de" ? "Adresse" : "Address")}: {projectWeather.query_address}
-                  </small>
-                  <small className="muted">
-                    {(language === "de" ? "Aktualisiert" : "Updated")}:{" "}
-                    {projectWeather.fetched_at
-                      ? formatServerDateTime(projectWeather.fetched_at, language)
-                      : "-"}
-                    {projectWeather.stale
-                      ? ` • ${language === "de" ? "Zwischenspeicher (offline)" : "Cached (offline)"}`
-                      : ""}
-                  </small>
-                  <div className="project-weather-grid">
-                    {projectWeather.days.map((day, index) => {
-                      const dayDate = new Date(day.date);
-                      const dayDescription = weatherDescriptionLabel(day.description, language);
-                      const dayLabel = Number.isNaN(dayDate.getTime())
-                        ? day.date
-                        : dayDate.toLocaleDateString(language === "de" ? "de-DE" : "en-US", {
-                            weekday: "short",
-                            day: "2-digit",
-                            month: "2-digit",
-                          });
-                      const iconUrl = day.icon
-                        ? `https://openweathermap.org/img/wn/${encodeURIComponent(day.icon)}@2x.png`
-                        : "";
-                      return (
-                        <div key={`project-weather-day-${index}-${day.date}`} className="project-weather-day-card">
-                          <small>{dayLabel}</small>
-                          {iconUrl ? (
-                            <img
-                              src={iconUrl}
-                              alt={dayDescription || (language === "de" ? "Wetter" : "Weather")}
-                              loading="lazy"
-                            />
-                          ) : null}
-                          <b>
-                            {day.temp_min != null && day.temp_max != null
-                              ? `${Math.round(day.temp_min)}° / ${Math.round(day.temp_max)}°`
-                              : "-"}
-                          </b>
-                          <small>{dayDescription || "-"}</small>
-                          <small>
-                            {language === "de" ? "Regen" : "Rain"}:{" "}
-                            {day.precipitation_probability != null ? `${Math.round(day.precipitation_probability)}%` : "-"}
-                          </small>
-                        </div>
-                      );
-                    })}
-                  </div>
-                  {projectWeather.message && <small className="muted">{projectWeather.message}</small>}
-                </>
-              ) : null}
-              {!projectWeatherLoading && (!projectWeather || projectWeather.days.length === 0) && (
-                <small className="muted">
-                  {projectWeather?.message ||
-                    (language === "de"
-                      ? "Noch keine Wetterdaten verfügbar."
-                      : "No weather data available yet.")}
-                </small>
-              )}
-            </div>
+        <AvatarModal />
 
-            <div className="card project-overview-note">
-              <div className="project-overview-card-head">
-                <h3 className="project-overview-title">{language === "de" ? "Interne Notiz" : "Internal note"}</h3>
-                <button
-                  type="button"
-                  className="icon-btn"
-                  onClick={() => {
-                    setProjectNoteDraft(activeProject.description ?? "");
-                    setProjectNoteEditing((open) => !open);
-                  }}
-                  aria-label={language === "de" ? "Notiz bearbeiten" : "Edit note"}
-                  title={language === "de" ? "Notiz bearbeiten" : "Edit note"}
-                >
-                  <PenIcon />
-                </button>
-              </div>
-              {projectNoteEditing ? (
-                <div className="project-note-edit">
-                  <textarea
-                    value={projectNoteDraft}
-                    onChange={(event) => setProjectNoteDraft(event.target.value)}
-                    placeholder={language === "de" ? "Interne Notiz" : "Internal note"}
-                  />
-                  <div className="row wrap">
-                    <button type="button" onClick={() => void saveProjectInternalNote()}>
-                      {language === "de" ? "Speichern" : "Save"}
-                    </button>
-                    <button type="button" onClick={() => setProjectNoteEditing(false)}>
-                      {language === "de" ? "Abbrechen" : "Cancel"}
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <small>{(activeProject.description ?? "").trim() || "-"}</small>
-              )}
-            </div>
+        <ThreadModal />
 
-            {workspaceMode === "office" && (
-              <div className="card project-overview-office-notes">
-                <h3 className="project-overview-title">
-                  {language === "de" ? "Büro-Nacharbeit aus Berichten" : "Office follow-up from reports"}
-                </h3>
-                <ul className="overview-list">
-                  {(projectOverviewDetails?.office_notes ?? []).map((entry) => {
-                    const reportLabel =
-                      entry.report_number != null ? `#${entry.report_number}` : `#${entry.report_id}`;
-                    return (
-                      <li key={`project-office-note-${entry.report_id}`}>
-                        <div className="project-office-note-row">
-                          <b>
-                            {language === "de" ? "Bericht" : "Report"} {reportLabel} (
-                            {formatDayLabel(entry.report_date, language)})
-                          </b>
-                          <small>{formatServerDateTime(entry.created_at, language)}</small>
-                          {entry.office_rework && (
-                            <small className="project-office-note-text">
-                              {language === "de" ? "Nacharbeit" : "Rework"}: {entry.office_rework}
-                            </small>
-                          )}
-                          {entry.office_next_steps && (
-                            <small className="project-office-note-text">
-                              {language === "de" ? "Nächste Schritte" : "Next steps"}: {entry.office_next_steps}
-                            </small>
-                          )}
-                        </div>
-                      </li>
-                    );
-                  })}
-                  {(projectOverviewDetails?.office_notes ?? []).length === 0 && (
-                    <li className="muted">
-                      {language === "de"
-                        ? "Noch keine Büro-Nacharbeit oder nächste Schritte aus Berichten."
-                        : "No office rework or next-step notes from reports yet."}
-                    </li>
-                  )}
-                </ul>
-              </div>
-            )}
+        <ArchivedThreadsModal />
 
-            <div className="card project-overview-changes">
-              <h3 className="project-overview-title">{language === "de" ? "Letzte Änderungen" : "Recent changes"}</h3>
-              <ul className="overview-list">
-                {(projectOverviewDetails?.recent_changes ?? []).map((change) => (
-                  <li key={`project-change-${change.id}`}>
-                    <div className="project-change-row">
-                      <b>{activityEventLabel(change.event_type, language)}</b>
-                      <small>
-                        {formatServerDateTime(change.created_at, language)}
-                        {change.actor_name ? ` • ${change.actor_name}` : ""}
-                      </small>
-                      <small>{change.message}</small>
-                    </div>
-                  </li>
-                ))}
-                {(projectOverviewDetails?.recent_changes ?? []).length === 0 && (
-                  <li className="muted">{language === "de" ? "Keine Änderungen vorhanden." : "No changes yet."}</li>
-                )}
-              </ul>
-            </div>
-          </section>
-        )}
+        <ConstructionPage />
 
-        {mainView === "project" && activeProject && projectTab === "tasks" && (
-          <section className="grid">
-            <div className="card tasks-list-card">
-              <div className="tasks-list-head">
-                <h3>{language === "de" ? "Aufgaben" : "Tasks"}</h3>
-                {canManageTasks && (
-                  <button
-                    type="button"
-                    className="icon-btn task-add-icon-btn"
-                    onClick={() => openTaskModal({ projectId: activeProject.id })}
-                    aria-label={language === "de" ? "Aufgabe hinzufügen" : "Add task"}
-                    title={language === "de" ? "Aufgabe hinzufügen" : "Add task"}
-                  >
-                    +
-                  </button>
-                )}
-              </div>
-              <div className="row wrap task-view-toggle">
-                <button
-                  type="button"
-                  className={taskView === "my" ? "active" : ""}
-                  onClick={() => setTaskView("my")}
-                >
-                  {language === "de" ? "Meine Aufgaben" : "My tasks"}
-                </button>
-                <button
-                  type="button"
-                  className={taskView === "all_open" ? "active" : ""}
-                  onClick={() => setTaskView("all_open")}
-                >
-                  {language === "de" ? "Alle offenen Aufgaben" : "All open tasks"}
-                </button>
-                <button
-                  type="button"
-                  className={taskView === "completed" ? "active" : ""}
-                  onClick={() => setTaskView("completed")}
-                >
-                  {language === "de" ? "Abgeschlossene Aufgaben" : "Completed tasks"}
-                </button>
-              </div>
-              <ul>
-                {sortedTasks.map((task) => {
-                  const isMine = isTaskAssignedToCurrentUser(task);
-                  const isOverdue = isTaskOverdue(task, todayIso);
-                  const displayStatus = taskDisplayStatus(task, todayIso);
-                  const canOpenInMyTasks = isMine && task.status !== "done";
-                  const taskMaterials = taskMaterialsDisplay(task.materials_required, language);
-                  const taskProjectLabel = taskProjectTitleParts(task);
-                  return (
-                    <li
-                      key={task.id}
-                      className={[
-                        "task-list-item",
-                        canOpenInMyTasks ? "task-list-item-mine task-list-item-clickable" : "",
-                        isOverdue ? "task-list-item-overdue" : "",
-                      ]
-                        .filter((value) => value.length > 0)
-                        .join(" ")}
-                      onClick={canOpenInMyTasks ? () => openTaskFromProject(task) : undefined}
-                      onKeyDown={
-                        canOpenInMyTasks
-                          ? (event) => {
-                              if (event.key === "Enter" || event.key === " ") {
-                                event.preventDefault();
-                                openTaskFromProject(task);
-                              }
-                            }
-                          : undefined
-                      }
-                      role={canOpenInMyTasks ? "button" : undefined}
-                      tabIndex={canOpenInMyTasks ? 0 : undefined}
-                    >
-                      <div className="task-list-main">
-                        <b>
-                          {task.title} [{taskStatusLabel(displayStatus, language)}]
-                        </b>
-                        <small>
-                          {language === "de" ? "Projekt" : "Project"}:{" "}
-                          <button
-                            type="button"
-                            className="linklike"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              openProjectFromTask(task, null);
-                            }}
-                          >
-                            {taskProjectLabel.title}
-                          </button>{" "}
-                          |{" "}
-                          {language === "de" ? "Fällig" : "Due"}: {task.due_date ?? "-"}
-                          {task.start_time ? ` ${language === "de" ? "um" : "at"} ${formatTaskStartTime(task.start_time)}` : ""} |{" "}
-                          {language === "de" ? "Mitarbeiter" : "Assignees"}: {getTaskAssigneeLabel(task)}
-                        </small>
-                        {taskProjectLabel.subtitle && <small className="project-name-subtle">{taskProjectLabel.subtitle}</small>}
-                        {(task.description || taskMaterials || task.storage_box_number) && (
-                          <small>
-                            {task.description ? `${language === "de" ? "Info" : "Info"}: ${task.description}` : ""}
-                            {task.description && (taskMaterials || task.storage_box_number) ? " | " : ""}
-                            {taskMaterials
-                              ? `${language === "de" ? "Material" : "Materials"}: ${taskMaterials}`
-                              : ""}
-                            {task.storage_box_number
-                              ? ` | ${language === "de" ? "Lagerbox" : "Storage box"}: ${task.storage_box_number}`
-                              : ""}
-                          </small>
-                        )}
-                      </div>
-                      <div className="row wrap task-actions">
-                        {canManageTasks && (
-                          <button
-                            type="button"
-                            className="icon-btn task-edit-icon-btn"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              openTaskEditModal(task);
-                            }}
-                            aria-label={language === "de" ? "Aufgabe bearbeiten" : "Edit task"}
-                            title={language === "de" ? "Aufgabe bearbeiten" : "Edit task"}
-                          >
-                            <PenIcon />
-                          </button>
-                        )}
-                        {getTaskAssigneeIds(task).includes(user.id) && (
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              void exportTaskCalendar(task);
-                            }}
-                          >
-                            {language === "de" ? "Kalender" : "Calendar"}
-                          </button>
-                        )}
-                        {getTaskAssigneeIds(task).includes(user.id) && task.status !== "done" && (
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              void markTaskDone(task);
-                            }}
-                          >
-                            {language === "de" ? "Erledigt" : "Complete"}
-                          </button>
-                        )}
-                      </div>
-                    </li>
-                  );
-                })}
-                {sortedTasks.length === 0 && (
-                  <li className="muted">
-                    {taskView === "completed"
-                      ? language === "de"
-                        ? "Keine abgeschlossenen Aufgaben."
-                        : "No completed tasks."
-                      : taskView === "all_open"
-                        ? language === "de"
-                          ? "Keine offenen Aufgaben."
-                          : "No open tasks."
-                        : language === "de"
-                          ? "Keine Aufgaben."
-                          : "No tasks."}
-                  </li>
-                )}
-              </ul>
-            </div>
-          </section>
-        )}
+        <WikiPage />
 
-        {mainView === "project" && activeProject && projectTab === "hours" && (
-          <section className="grid">
-            <div className="card project-hours-card">
-              <div className="project-overview-card-head">
-                <h3>{language === "de" ? "Projektstunden" : "Project Hours"}</h3>
-              </div>
-              <div className="project-hours-layout">
-                <ProjectHoursGauge
-                  language={language}
-                  plannedHours={projectPlannedHoursTotal}
-                  workedHours={projectReportedHoursTotal}
-                />
-                <div className="project-hours-side">
-                  <div className="project-hours-metrics">
-                    <small>
-                      {language === "de" ? "Gemeldete Stunden (aus Berichten)" : "Reported hours (from reports)"}:{" "}
-                      <b>{formatHours(projectReportedHoursTotal)}</b>
-                    </small>
-                    <small>
-                      {language === "de" ? "Geplante Stunden" : "Planned hours"}:{" "}
-                      <b>{projectPlannedHoursTotal > 0 ? formatHours(projectPlannedHoursTotal) : "-"}</b>
-                    </small>
-                    <small>
-                      {language === "de" ? "Planverbrauch" : "Plan usage"}:{" "}
-                      <b>{projectPlannedHoursTotal > 0 ? `${projectHoursUsagePercent.toFixed(1)}%` : "-"}</b>
-                    </small>
-                  </div>
-                  {canManageFinance ? (
-                    <form
-                      className="project-hours-edit"
-                      onSubmit={(event) => {
-                        event.preventDefault();
-                        void saveProjectHours();
-                      }}
-                    >
-                      <label>
-                        {language === "de" ? "Geplante Stunden" : "Planned hours"}
-                        <input
-                          type="text"
-                          inputMode="decimal"
-                          value={projectHoursPlannedInput}
-                          onChange={(event) => setProjectHoursPlannedInput(event.target.value)}
-                          placeholder="0.00"
-                        />
-                      </label>
-                      <div className="row wrap">
-                        <button type="submit">{language === "de" ? "Speichern" : "Save"}</button>
-                        <button type="button" onClick={() => setProjectHoursPlannedInput("")}>
-                          {language === "de" ? "Leeren" : "Clear"}
-                        </button>
-                      </div>
-                    </form>
-                  ) : (
-                    <small className="muted">
-                      {language === "de"
-                        ? "Nur mit Finanzrechten bearbeitbar."
-                        : "Editable only with finance permissions."}
-                    </small>
-                  )}
-                </div>
-              </div>
-            </div>
-          </section>
-        )}
+        <MessagesPage />
 
-        {mainView === "project" && activeProject && projectTab === "materials" && (
-          <section className="grid">
-            <div className="card project-materials-card">
-              <div className="project-overview-card-head">
-                <h3>{language === "de" ? "Material aus Berichten" : "Materials from reports"}</h3>
-                <button type="button" onClick={() => void loadProjectTrackedMaterials(activeProject.id)}>
-                  {language === "de" ? "Aktualisieren" : "Refresh"}
-                </button>
-              </div>
-              <small className="muted">
-                {language === "de"
-                  ? "Gleiche Positionen (Artikel + Einheit + ArtNr) werden zusammengeführt."
-                  : "Matching rows (item + unit + article no.) are merged."}
-              </small>
-              <ul className="project-materials-list">
-                {projectTrackedMaterials.map((entry, index) => {
-                  const quantityParts: string[] = [];
-                  if (entry.quantity_total != null) {
-                    quantityParts.push(formatMaterialQuantity(entry.quantity_total, language));
-                  }
-                  if (entry.unit) quantityParts.push(entry.unit);
-                  const quantityLabel = quantityParts.join(" ").trim();
-                  const quantityNotes =
-                    entry.quantity_notes.length > 0
-                      ? entry.quantity_notes.join(", ")
-                      : language === "de"
-                        ? "keine"
-                        : "none";
-                  return (
-                    <li
-                      key={`project-material-${entry.item}-${entry.unit ?? ""}-${entry.article_no ?? ""}-${index}`}
-                      className="materials-item project-materials-item"
-                    >
-                      <div className="materials-item-main">
-                        <b>{entry.item}</b>
-                        <small>
-                          {language === "de" ? "Menge" : "Qty"}: <b>{quantityLabel || "-"}</b>
-                        </small>
-                        <small>
-                          {language === "de" ? "Manuelle Mengenangaben" : "Manual qty notes"}: <b>{quantityNotes}</b>
-                        </small>
-                        {entry.article_no && (
-                          <small>
-                            {language === "de" ? "ArtNr" : "Article"}: <b>{entry.article_no}</b>
-                          </small>
-                        )}
-                        <small>
-                          {language === "de" ? "Einträge" : "Entries"}: <b>{entry.occurrence_count}</b> |{" "}
-                          {language === "de" ? "Berichte" : "Reports"}: <b>{entry.report_count}</b>
-                          {entry.last_report_date
-                            ? ` | ${language === "de" ? "Zuletzt im Bericht" : "Last report"}: ${formatShortIsoDate(entry.last_report_date, language)}`
-                            : ""}
-                        </small>
-                      </div>
-                    </li>
-                  );
-                })}
-                {projectTrackedMaterials.length === 0 && (
-                  <li className="muted">
-                    {language === "de"
-                      ? "Noch kein Material in Berichten erfasst."
-                      : "No materials tracked in reports yet."}
-                  </li>
-                )}
-              </ul>
-            </div>
-          </section>
-        )}
+        <TimePage />
 
-        {mainView === "calendar" && (
-          <section className="card calendar-overview">
-            <div className="row wrap planning-toolbar">
-              <h3>{language === "de" ? "4-Wochen-Übersicht" : "4-week overview"}</h3>
-              <div
-                className="row planning-week-nav"
-                role="group"
-                aria-label={language === "de" ? "Kalenderzeitraum wechseln" : "Switch calendar range"}
-              >
-                <button
-                  type="button"
-                  className="icon-btn"
-                  aria-label={language === "de" ? "Vier Wochen zurück" : "Back four weeks"}
-                  title={language === "de" ? "Vier Wochen zurück" : "Back four weeks"}
-                  onClick={() => setCalendarWeekStart((current) => normalizeWeekStartISO(addDaysISO(current, -28)))}
-                >
-                  ←
-                </button>
-                <div className="calendar-range-pill">{calendarRangeLabel}</div>
-                <button
-                  type="button"
-                  className="icon-btn"
-                  aria-label={language === "de" ? "Vier Wochen vor" : "Forward four weeks"}
-                  title={language === "de" ? "Vier Wochen vor" : "Forward four weeks"}
-                  onClick={() => setCalendarWeekStart((current) => normalizeWeekStartISO(addDaysISO(current, 28)))}
-                >
-                  →
-                </button>
-              </div>
-              <label className="planning-week-picker">
-                {language === "de" ? "Startwoche (Montag)" : "Start week (Monday)"}
-                <input
-                  type="date"
-                  value={calendarWeekStart}
-                  onChange={(event) => setCalendarWeekStart(normalizeWeekStartISO(event.target.value))}
-                  required
-                />
-              </label>
-            </div>
+        <ProfilePage />
 
-            {calendarLoading ? (
-              <small className="muted">{language === "de" ? "Lade Kalender..." : "Loading calendar..."}</small>
-            ) : (
-              <div className="calendar-weeks-grid">
-                {calendarWeeks.map((week) => {
-                  const weekInfo = isoWeekInfo(week.week_start);
-                  return (
-                    <section key={`calendar-week-${week.week_start}`} className="calendar-week-card">
-                      <div className="calendar-week-head">
-                        <b>
-                          {language === "de" ? "KW" : "CW"} {weekInfo.week}/{weekInfo.year}
-                        </b>
-                        <small>
-                          {formatDayLabel(week.week_start, language)} - {formatDayLabel(week.week_end, language)}
-                        </small>
-                      </div>
-                      <div className="calendar-week-days">
-                        {week.days.map((day) => {
-                          const dayTasks = sortTasksByDueTime(day.tasks);
-                          return (
-                            <article
-                              key={`calendar-day-${week.week_start}-${day.date}`}
-                              className={day.date === todayIso ? "calendar-day-cell today" : "calendar-day-cell"}
-                            >
-                              <div className="calendar-day-head">{formatDayLabel(day.date, language)}</div>
-                              <ul className="calendar-day-list">
-                              {(day.absences ?? []).map((absence, index) => (
-                                <li
-                                  key={`calendar-absence-${day.date}-${absence.type}-${absence.user_id}-${index}`}
-                                  className="calendar-absence"
-                                >
-                                  <b>
-                                    {menuUserNameById(absence.user_id, absence.user_name)}: {absence.label}
-                                  </b>
-                                  <small>
-                                    {absence.type === "vacation"
-                                      ? language === "de"
-                                        ? "Urlaub"
-                                        : "Vacation"
-                                      : language === "de"
-                                        ? "Schule"
-                                        : "School"}
-                                  </small>
-                                </li>
-                              ))}
-                              {dayTasks.map((task) => {
-                                const isMine = isTaskAssignedToCurrentUser(task);
-                                const taskProjectLabel = taskProjectTitleParts(task);
-                                return (
-                                  <li
-                                    key={`calendar-task-${day.date}-${task.id}`}
-                                    className={[
-                                      "calendar-task",
-                                      isMine ? "calendar-task-mine calendar-task-clickable" : "",
-                                      task.status === "done" ? "calendar-task-done" : "",
-                                    ]
-                                      .filter(Boolean)
-                                      .join(" ")}
-                                    onClick={isMine ? () => openTaskFromPlanning(task) : undefined}
-                                    onKeyDown={
-                                      isMine
-                                        ? (event) => {
-                                            if (event.key === "Enter" || event.key === " ") {
-                                              event.preventDefault();
-                                              openTaskFromPlanning(task);
-                                            }
-                                          }
-                                        : undefined
-                                    }
-                                    role={isMine ? "button" : undefined}
-                                    tabIndex={isMine ? 0 : undefined}
-                                  >
-                                    <b>{task.title}</b>
-                                    <small>
-                                      <button
-                                        type="button"
-                                        className="linklike"
-                                        onClick={(event) => {
-                                          event.stopPropagation();
-                                          openProjectFromTask(task, null);
-                                        }}
-                                      >
-                                        {taskProjectLabel.title}
-                                      </button>
-                                      {task.start_time ? ` | ${formatTaskStartTime(task.start_time)}` : ""}
-                                    </small>
-                                    {taskProjectLabel.subtitle && <small className="project-name-subtle">{taskProjectLabel.subtitle}</small>}
-                                  </li>
-                                );
-                              })}
-                              {dayTasks.length === 0 && (day.absences ?? []).length === 0 && (
-                                <li className="muted">-</li>
-                              )}
-                              </ul>
-                            </article>
-                          );
-                        })}
-                      </div>
-                    </section>
-                  );
-                })}
-                {calendarWeeks.length === 0 && (
-                  <small className="muted">{language === "de" ? "Keine Kalendereinträge." : "No calendar entries."}</small>
-                )}
-              </div>
-            )}
-          </section>
-        )}
-
-        {mainView === "planning" && (
-          <section className="card planning-only">
-            <div className="row wrap planning-toolbar">
-              <h3>{language === "de" ? "Kalenderansicht" : "Calendar view"}</h3>
-              <div className="row planning-week-nav" role="group" aria-label={language === "de" ? "Wochenwechsel" : "Week switch"}>
-                <button
-                  type="button"
-                  className="icon-btn"
-                  aria-label={language === "de" ? "Vorherige Woche" : "Previous week"}
-                  title={language === "de" ? "Vorherige Woche" : "Previous week"}
-                  onClick={() => setPlanningWeekStart((current) => normalizeWeekStartISO(addDaysISO(current, -7)))}
-                >
-                  ←
-                </button>
-                <div className="planning-week-number">
-                  {language === "de" ? "KW" : "CW"} {planningWeekInfo.week}/{planningWeekInfo.year}
-                </div>
-                <button
-                  type="button"
-                  className="icon-btn"
-                  aria-label={language === "de" ? "Nächste Woche" : "Next week"}
-                  title={language === "de" ? "Nächste Woche" : "Next week"}
-                  onClick={() => setPlanningWeekStart((current) => normalizeWeekStartISO(addDaysISO(current, 7)))}
-                >
-                  →
-                </button>
-              </div>
-              <label className="planning-week-picker">
-                {language === "de" ? "Wochenstart (Montag)" : "Week start (Monday)"}
-                <input
-                  type="date"
-                  value={planningWeekStart}
-                  onChange={(e) => setPlanningWeekStart(normalizeWeekStartISO(e.target.value))}
-                  required
-                />
-              </label>
-            </div>
-            <div className="row wrap task-view-toggle planning-task-type-toggle">
-              <button
-                type="button"
-                className={planningTaskTypeView === "construction" ? "active" : ""}
-                onClick={() => setPlanningTaskTypeView("construction")}
-              >
-                {language === "de" ? "Baustellenaufgaben" : "Construction tasks"}
-              </button>
-              <button
-                type="button"
-                className={planningTaskTypeView === "office" ? "active" : ""}
-                onClick={() => setPlanningTaskTypeView("office")}
-              >
-                {language === "de" ? "Büroaufgaben" : "Office tasks"}
-              </button>
-              <button
-                type="button"
-                className={planningTaskTypeView === "customer_appointment" ? "active" : ""}
-                onClick={() => setPlanningTaskTypeView("customer_appointment")}
-              >
-                {language === "de" ? "Kundentermine" : "Customer appointments"}
-              </button>
-            </div>
-            <div className="planning-calendar-scroll">
-              <div className="planning-calendar">
-              {(planningWeek?.days ?? []).map((day) => {
-                const dayTasks = sortTasksByDueTime(day.tasks);
-                return (
-                  <div key={day.date} className={day.date === todayIso ? "planning-day planning-day-today" : "planning-day"}>
-                    <div className="planning-day-head">{formatDayLabel(day.date, language)}</div>
-                    <ul>
-                    {(day.absences ?? []).map((absence, index) => (
-                      <li key={`absence-${day.date}-${absence.type}-${absence.user_id}-${index}`} className="planning-absence">
-                        <b>
-                          {menuUserNameById(absence.user_id, absence.user_name)}: {absence.label}
-                        </b>
-                        <small>
-                          {absence.type === "vacation"
-                            ? language === "de"
-                              ? "Urlaub"
-                              : "Vacation"
-                            : language === "de"
-                              ? "Schule"
-                              : "School"}
-                        </small>
-                      </li>
-                    ))}
-                    {dayTasks.map((task) => {
-                      const isMine = isTaskAssignedToCurrentUser(task);
-                      const taskProjectLabel = taskProjectTitleParts(task);
-                      return (
-                        <li
-                          key={task.id}
-                          className={isMine ? "planning-task planning-task-mine planning-task-clickable" : "planning-task"}
-                          onClick={isMine ? () => openTaskFromPlanning(task) : undefined}
-                          onKeyDown={
-                            isMine
-                              ? (event) => {
-                                  if (event.key === "Enter" || event.key === " ") {
-                                    event.preventDefault();
-                                    openTaskFromPlanning(task);
-                                  }
-                                }
-                              : undefined
-                          }
-                          role={isMine ? "button" : undefined}
-                          tabIndex={isMine ? 0 : undefined}
-                        >
-                          <b>{task.title}</b>
-                          <small>
-                            <button
-                              type="button"
-                              className="linklike"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                openProjectFromTask(task, null);
-                              }}
-                            >
-                              {taskProjectLabel.title}
-                            </button>{" "}
-                            {task.start_time ? ` | ${formatTaskStartTime(task.start_time)}` : ""} | {getTaskAssigneeLabel(task)}
-                          </small>
-                          {taskProjectLabel.subtitle && <small className="project-name-subtle">{taskProjectLabel.subtitle}</small>}
-                          <div className="row wrap task-actions task-actions-left">
-                            {canManageTasks && (
-                              <button
-                                type="button"
-                                className="icon-btn task-edit-icon-btn"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  openTaskEditModal(task);
-                                }}
-                                aria-label={language === "de" ? "Aufgabe bearbeiten" : "Edit task"}
-                                title={language === "de" ? "Aufgabe bearbeiten" : "Edit task"}
-                              >
-                                <PenIcon />
-                              </button>
-                            )}
-                            {isMine && (
-                              <button
-                                type="button"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  void exportTaskCalendar(task);
-                                }}
-                              >
-                                {language === "de" ? "Kalender" : "Calendar"}
-                              </button>
-                            )}
-                            {isMine && task.status !== "done" && (
-                              <button
-                                type="button"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  void markTaskDone(task);
-                                }}
-                              >
-                                {language === "de" ? "Erledigt" : "Complete"}
-                              </button>
-                            )}
-                          </div>
-                        </li>
-                      );
-                    })}
-                    {dayTasks.length === 0 && (day.absences ?? []).length === 0 && <li className="muted">-</li>}
-                    </ul>
-                  </div>
-                );
-              })}
-              </div>
-            </div>
-          </section>
-        )}
-
-        {mainView === "project" && activeProject && projectTab === "tickets" && (
-          <section className="grid">
-            <form className="card" onSubmit={createTicket}>
-              <h3>{language === "de" ? "Job Ticket erstellen" : "Create job ticket"}</h3>
-              <input name="title" placeholder="Title" required />
-              <small className="muted">
-                {language === "de" ? "Projektadresse" : "Project address"}: <b>{activeProjectTicketAddress}</b>
-              </small>
-              <small className="muted">
-                {language === "de" ? "Projektdatum" : "Project date"}: <b>{activeProjectTicketDate}</b>
-              </small>
-              <input
-                name="assigned_crew"
-                placeholder={language === "de" ? "Team (kommagetrennt)" : "Crew (comma separated)"}
-              />
-              <textarea name="notes" placeholder={language === "de" ? "Notizen" : "Notes"} />
-              <button type="submit">{language === "de" ? "Ticket speichern" : "Save ticket"}</button>
-            </form>
-            <div className="card">
-              <h3>Tickets</h3>
-              <ul>
-                {tickets.map((ticket) => (
-                  <li key={ticket.id}>
-                    <span>
-                      {ticket.title} ({ticket.ticket_date})
-                    </span>
-                    <a target="_blank" rel="noreferrer" href={`/api/projects/${activeProjectId}/job-tickets/${ticket.id}/print`}>
-                      {language === "de" ? "Drucken" : "Print"}
-                    </a>
-                  </li>
-                ))}
-              </ul>
-            </div>
-            <form className="card" onSubmit={uploadTicketAttachment}>
-              <h3>{language === "de" ? "Ticket-Anhang" : "Ticket attachment"}</h3>
-              <input type="number" name="ticket_id" placeholder="Ticket ID" required />
-              <input type="file" name="file" required />
-              <button type="submit">{language === "de" ? "Hochladen" : "Upload"}</button>
-            </form>
-          </section>
-        )}
-
-        {mainView === "project" && activeProject && projectTab === "files" && (
-          <section className="grid files-grid">
-            <div className="card">
-              <div className="file-explorer-head">
-                <h3>{language === "de" ? "Online Datei-Explorer" : "Online file explorer"}</h3>
-                <div className="row">
-                  <input
-                    value={fileQuery}
-                    onChange={(e) => setFileQuery(e.target.value)}
-                    placeholder={language === "de" ? "Datei suchen" : "Search file"}
-                  />
-                  <button
-                    type="button"
-                    className="icon-btn upload-arrow-btn"
-                    aria-label={language === "de" ? "Datei hochladen" : "Upload file"}
-                    title={language === "de" ? "Datei hochladen" : "Upload file"}
-                    onClick={() => {
-                      if (!fileUploadFolder) {
-                        const fallback = projectFolders.find((folder) => canUseProtectedFolders || !folder.is_protected);
-                        setFileUploadFolder(fallback?.path ?? "/");
-                      }
-                      setFileUploadModalOpen(true);
-                    }}
-                  >
-                    ↑
-                  </button>
-                  <div className="webdav-help">
-                    <button type="button" className="icon-btn" aria-label="WebDAV info">
-                      ⚙
-                    </button>
-                    <div className="webdav-tooltip">
-                      <p>
-                        {language === "de"
-                          ? "Dateien wie in SharePoint per WebDAV im Betriebssystem einbinden:"
-                          : "SharePoint-like OS integration via WebDAV:"}
-                      </p>
-                      <small>{language === "de" ? "Alle Projekte:" : "All projects:"}</small>
-                      <div className="webdav-copy-row">
-                        <code>{`${window.location.origin}/api/dav/projects/`}</code>
-                        <button
-                          type="button"
-                          className="webdav-copy-btn"
-                          onClick={() => void copyToClipboard(`${window.location.origin}/api/dav/projects/`, "all")}
-                        >
-                          {language === "de" ? "Kopieren" : "Copy"}
-                        </button>
-                      </div>
-                      <small>{language === "de" ? "Nur aktuelles Projekt:" : "Current project only:"}</small>
-                      <div className="webdav-copy-row">
-                        <code>{activeProjectDavUrl}</code>
-                        <button
-                          type="button"
-                          className="webdav-copy-btn"
-                          onClick={() => void copyToClipboard(activeProjectDavUrl, "project")}
-                        >
-                          {language === "de" ? "Kopieren" : "Copy"}
-                        </button>
-                      </div>
-                      <small>
-                        {language === "de"
-                          ? "Jede berechtigte Person kann denselben Link mit eigenen App-Zugangsdaten verbinden."
-                          : "Any authorized user can connect the same link with their own app credentials."}
-                      </small>
-                      <small>
-                        {language === "de"
-                          ? "macOS Finder: Gehe zu > Mit Server verbinden (Cmd+K). Anmeldung mit App-E-Mail + Passwort."
-                          : "macOS Finder: Go > Connect to Server (Cmd+K). Sign in with app email + password."}
-                      </small>
-                      <small>
-                        {language === "de"
-                          ? "Wichtig: URL mit abschließendem / verwenden. Für andere Geräte im LAN: http://<SERVER-LAN-IP>/api/dav/projects/PROJEKTNUMMER/"
-                          : "Important: use URL with trailing /. For other devices on LAN: http://<SERVER-LAN-IP>/api/dav/projects/PROJECT_NUMBER/"}
-                      </small>
-                      <small>
-                        {language === "de"
-                          ? "Wenn HTTPS-Zertifikat auf fremden Geräten fehlschlägt, LAN-HTTP nur im vertrauenswürdigen Netzwerk nutzen."
-                          : "If HTTPS certificate trust fails on other devices, use LAN HTTP only on trusted networks."}
-                      </small>
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <div className="file-explorer">
-                <div className="file-row file-row-head">
-                  <b>{language === "de" ? "Datei" : "File"}</b>
-                  <b>{language === "de" ? "Ordner" : "Folder"}</b>
-                  <b>{language === "de" ? "Typ" : "Type"}</b>
-                  <b>{language === "de" ? "Hochgeladen" : "Uploaded"}</b>
-                  <b>{language === "de" ? "Aktion" : "Action"}</b>
-                </div>
-                {fileRows.map((file) => (
-                  <div key={file.id} className="file-row">
-                    <span>{file.file_name}</span>
-                    <small>{file.folder || "/"}</small>
-                    <small>{file.content_type}</small>
-                    <small>{formatServerDateTime(file.created_at, language)}</small>
-                    <div className="row wrap">
-                      {isPreviewable(file) && (
-                        <a href={filePreviewUrl(file.id)} target="_blank" rel="noreferrer">
-                          {language === "de" ? "Vorschau" : "Preview"}
-                        </a>
-                      )}
-                      <a href={fileDownloadUrl(file.id)} target="_blank" rel="noreferrer">
-                        {language === "de" ? "Download" : "Download"}
-                      </a>
-                    </div>
-                  </div>
-                ))}
-                {fileRows.length === 0 && <small className="muted">{language === "de" ? "Keine Treffer" : "No files found"}</small>}
-              </div>
-            </div>
-          </section>
-        )}
-
-        {mainView === "project" && activeProject && projectTab === "finances" && (
-          <section className="grid">
-            <div className="card project-finance-card">
-              <div className="project-overview-card-head">
-                <h3>{language === "de" ? "Finanzen" : "Finances"}</h3>
-                {canManageFinance && (
-                  <button
-                    type="button"
-                    className="icon-btn"
-                    onClick={() => {
-                      if (!projectFinanceEditing) {
-                        setProjectFinanceForm(projectFinanceToFormState(projectFinance));
-                      }
-                      setProjectFinanceEditing((open) => !open);
-                    }}
-                    aria-label={language === "de" ? "Finanzen bearbeiten" : "Edit finances"}
-                    title={language === "de" ? "Finanzen bearbeiten" : "Edit finances"}
-                  >
-                    <PenIcon />
-                  </button>
-                )}
-              </div>
-              {projectFinanceEditing && canManageFinance ? (
-                <form
-                  className="project-finance-form"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    void saveProjectFinance();
-                  }}
-                >
-                  {(
-                    [
-                      "order_value_net",
-                      "down_payment_35",
-                      "main_components_50",
-                      "final_invoice_15",
-                      "planned_costs",
-                      "actual_costs",
-                      "contribution_margin",
-                    ] as (keyof ProjectFinanceFormState)[]
-                  ).map((field) => (
-                    <label key={`finance-field-${field}`}>
-                      {financeLabel(field, language)}
-                      <input
-                        type="text"
-                        inputMode="decimal"
-                        value={projectFinanceForm[field]}
-                        onChange={(event) => updateProjectFinanceFormField(field, event.target.value)}
-                        placeholder="0.00"
-                      />
-                    </label>
-                  ))}
-                  <div className="row wrap">
-                    <button type="submit">{language === "de" ? "Speichern" : "Save"}</button>
-                    <button type="button" onClick={() => setProjectFinanceEditing(false)}>
-                      {language === "de" ? "Abbrechen" : "Cancel"}
-                    </button>
-                  </div>
-                </form>
-              ) : (
-                <>
-                  <small className="project-finance-last-update">
-                    {language === "de" ? "Zuletzt aktualisiert" : "Last updated"}:{" "}
-                    <b>
-                      {projectFinance?.updated_at
-                        ? formatServerDateTime(projectFinance.updated_at, language)
-                        : "-"}
-                    </b>
-                  </small>
-                  <div className="project-finance-grid">
-                    <div className="project-finance-metric">
-                      <small className="project-finance-metric-label">
-                        {language === "de" ? "Auftragswert netto" : "Order value (net)"}
-                      </small>
-                      <b className="project-finance-metric-value">{formatMoney(projectFinance?.order_value_net, language)}</b>
-                    </div>
-                    <div className="project-finance-metric">
-                      <small className="project-finance-metric-label">
-                        {language === "de" ? "35% Anzahlung" : "35% down payment"}
-                      </small>
-                      <b className="project-finance-metric-value">{formatMoney(projectFinance?.down_payment_35, language)}</b>
-                    </div>
-                    <div className="project-finance-metric">
-                      <small className="project-finance-metric-label">
-                        {language === "de" ? "50% Hauptkomponenten" : "50% main components"}
-                      </small>
-                      <b className="project-finance-metric-value">{formatMoney(projectFinance?.main_components_50, language)}</b>
-                    </div>
-                    <div className="project-finance-metric">
-                      <small className="project-finance-metric-label">
-                        {language === "de" ? "15% Schlussrechnung" : "15% final invoice"}
-                      </small>
-                      <b className="project-finance-metric-value">{formatMoney(projectFinance?.final_invoice_15, language)}</b>
-                    </div>
-                    <div className="project-finance-metric">
-                      <small className="project-finance-metric-label">
-                        {language === "de" ? "Geplante Kosten" : "Planned costs"}
-                      </small>
-                      <b className="project-finance-metric-value">{formatMoney(projectFinance?.planned_costs, language)}</b>
-                    </div>
-                    <div className="project-finance-metric">
-                      <small className="project-finance-metric-label">
-                        {language === "de" ? "Tatsächliche Kosten" : "Actual costs"}
-                      </small>
-                      <b className="project-finance-metric-value">{formatMoney(projectFinance?.actual_costs, language)}</b>
-                    </div>
-                    <div className="project-finance-metric">
-                      <small className="project-finance-metric-label">
-                        {language === "de" ? "Deckungsbeitrag" : "Contribution margin"}
-                      </small>
-                      <b className="project-finance-metric-value">
-                        {formatMoney(projectFinance?.contribution_margin, language)}
-                      </b>
-                    </div>
-                  </div>
-                </>
-              )}
-            </div>
-          </section>
-        )}
-
-        {fileUploadModalOpen && mainView === "project" && activeProject && projectTab === "files" && (
-          <div className="modal-backdrop" onClick={() => setFileUploadModalOpen(false)}>
-            <div className="card modal-card modal-card-sm" onClick={(event) => event.stopPropagation()}>
-              <h3>{language === "de" ? "Datei hochladen" : "Upload file"}</h3>
-              <form className="modal-form" onSubmit={uploadFile}>
-                <label>
-                  {language === "de" ? "Zielordner" : "Target folder"}
-                  <select value={fileUploadFolder} onChange={(event) => setFileUploadFolder(event.target.value)}>
-                    <option value="/">{language === "de" ? "Hauptordner (/)" : "Base folder (/)"}</option>
-                    {projectFolders
-                      .filter((folder) => canUseProtectedFolders || !folder.is_protected)
-                      .map((folder) => (
-                        <option key={folder.path} value={folder.path}>
-                          {folder.path}
-                        </option>
-                      ))}
-                  </select>
-                </label>
-                <div className="row wrap">
-                  <input
-                    value={newProjectFolderPath}
-                    onChange={(event) => setNewProjectFolderPath(event.target.value)}
-                    placeholder={
-                      language === "de"
-                        ? "Neuer Ordnerpfad (optional, z.B. Bilder/Tag2)"
-                        : "New folder path (optional, e.g. Bilder/Tag2)"
-                    }
-                  />
-                  <button type="button" onClick={() => void createProjectFolderFromInput()}>
-                    {language === "de" ? "Ordner anlegen" : "Create folder"}
-                  </button>
-                </div>
-                <small className="muted">
-                  {language === "de"
-                    ? "Wenn ein neuer Ordnerpfad gesetzt ist, wird er beim Upload automatisch erstellt und genutzt."
-                    : "If a new folder path is set, upload auto-creates it and uploads there."}
-                </small>
-                <input type="file" name="file" required />
-                <div className="row wrap">
-                  <button type="submit">{language === "de" ? "Hochladen" : "Upload"}</button>
-                  <button type="button" onClick={() => setFileUploadModalOpen(false)}>
-                    {language === "de" ? "Abbrechen" : "Cancel"}
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        )}
-
-        {avatarModalOpen && (
-          <div className="modal-backdrop" onClick={closeAvatarModal}>
-            <div className="card modal-card modal-card-sm" onClick={(event) => event.stopPropagation()}>
-              <h3>{language === "de" ? "Profilbild anpassen" : "Adjust profile picture"}</h3>
-              <label>
-                {language === "de" ? "Bilddatei" : "Image file"}
-                <input type="file" accept={IMAGE_INPUT_ACCEPT} onChange={onAvatarFileChange} />
-              </label>
-              {!avatarSourceUrl && (
-                <small className="muted">
-                  {language === "de"
-                    ? "Bild auswählen, dann Bild mit der Maus/Finger verschieben und Zoom anpassen."
-                    : "Choose an image, then drag the picture and adjust zoom."}
-                </small>
-              )}
-              {avatarSelectedFile && isHeicFile(avatarSelectedFile) && !avatarPreviewDataUrl && (
-                <small className="muted">
-                  {language === "de"
-                    ? "HEIC-Vorschau ist im Browser eventuell nicht verfügbar. Speichern lädt das Original hoch."
-                    : "HEIC preview may be unavailable in your browser. Save uploads the original file."}
-                </small>
-              )}
-              {avatarSourceUrl && (
-                <div className="avatar-crop-section">
-                  <div className="avatar-crop-editor">
-                    <div
-                      className={avatarIsDragging ? "avatar-crop-stage dragging" : "avatar-crop-stage"}
-                      ref={avatarCropStageRef}
-                      onPointerDown={onAvatarDragStart}
-                      onPointerMove={onAvatarDragMove}
-                      onPointerUp={onAvatarDragEnd}
-                      onPointerCancel={onAvatarDragEnd}
-                    >
-                      <img
-                        src={avatarSourceUrl}
-                        alt=""
-                        className="avatar-crop-image"
-                        draggable={false}
-                        style={{
-                          transform: `translate(${avatarStageState.translateX}px, ${avatarStageState.translateY}px) scale(${avatarZoom})`,
-                        }}
-                      />
-                      <div className="avatar-crop-focus" />
-                    </div>
-                    <div className="avatar-crop-preview-wrap">
-                      {avatarPreviewDataUrl ? (
-                        <img src={avatarPreviewDataUrl} alt="" className="avatar-crop-preview" />
-                      ) : (
-                        <div className="avatar-crop-preview avatar-crop-placeholder" />
-                      )}
-                    </div>
-                  </div>
-                  <div className="avatar-crop-controls">
-                    <label>
-                      {language === "de" ? "Zoom" : "Zoom"}
-                      <input
-                        type="range"
-                        min={1}
-                        max={3}
-                        step={0.05}
-                        value={avatarZoom}
-                        onChange={(event) => setAvatarZoom(Number(event.target.value))}
-                      />
-                    </label>
-                  </div>
-                </div>
-              )}
-              <div className="row wrap">
-                <button
-                  type="button"
-                  className="danger-btn"
-                  onClick={() => void deleteAvatar()}
-                  disabled={!user.avatar_updated_at}
-                >
-                  {language === "de" ? "Profilbild entfernen" : "Remove profile picture"}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void saveAvatar()}
-                  disabled={!avatarPreviewDataUrl && !(avatarSelectedFile && isHeicFile(avatarSelectedFile))}
-                >
-                  {language === "de" ? "Speichern" : "Save"}
-                </button>
-                <button type="button" onClick={closeAvatarModal}>
-                  {language === "de" ? "Abbrechen" : "Cancel"}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {threadModalMode && mainView === "messages" && (
-          <div className="modal-backdrop" onClick={closeThreadModal}>
-            <div className="card modal-card modal-card-sm" onClick={(event) => event.stopPropagation()}>
-              <h3>
-                {threadModalMode === "edit"
-                  ? language === "de"
-                    ? "Thread bearbeiten"
-                    : "Edit thread"
-                  : language === "de"
-                    ? "Chat erstellen"
-                    : "Create chat thread"}
-              </h3>
-              <form className="modal-form" onSubmit={submitThreadModal}>
-                <label>
-                  {language === "de" ? "Thread-Name" : "Thread name"}
-                  <input
-                    name="name"
-                    value={threadModalForm.name}
-                    onChange={(event) =>
-                      setThreadModalForm((current) => ({ ...current, name: event.target.value }))
-                    }
-                    placeholder={language === "de" ? "Thread-Name" : "Thread name"}
-                    required
-                    autoFocus
-                  />
-                </label>
-                <label>
-                  {language === "de" ? "Projekt (optional)" : "Project (optional)"}
-                  <select
-                    value={threadModalForm.project_id}
-                    onChange={(event) =>
-                      setThreadModalForm((current) => ({ ...current, project_id: event.target.value }))
-                    }
-                  >
-                    <option value="">{language === "de" ? "Allgemeiner Thread" : "General thread"}</option>
-                    {projects.map((project) => (
-                      <option key={`thread-project-${project.id}`} value={String(project.id)}>
-                        {projectTitle(project)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <small className="muted">
-                  {language === "de"
-                    ? "Wenn du niemanden auswählst, ist der Chat für alle sichtbar."
-                    : "If you select nobody, the chat is visible to everyone."}
-                </small>
-                <div className="assignee-search-block">
-                  <b>{language === "de" ? "Nutzer (optional)" : "Users (optional)"}</b>
-                  <input
-                    value={threadModalForm.participant_user_query}
-                    onChange={(event) =>
-                      setThreadModalForm((current) => ({
-                        ...current,
-                        participant_user_query: event.target.value,
-                      }))
-                    }
-                    onKeyDown={(event) => {
-                      if (event.key !== "Enter") return;
-                      event.preventDefault();
-                      addFirstMatchingThreadModalUser();
-                    }}
-                    placeholder={
-                      language === "de"
-                        ? "Namen eingeben und auswählen"
-                        : "Type user name and select"
-                    }
-                  />
-                  {threadModalUserSuggestions.length > 0 && (
-                    <div className="assignee-suggestions">
-                      {threadModalUserSuggestions.map((entry) => (
-                        <button
-                          key={`thread-user-suggestion-${entry.id}`}
-                          type="button"
-                          className="assignee-suggestion-btn"
-                          onClick={() => addThreadModalUser(entry.id)}
-                        >
-                          {menuUserNameById(entry.id, entry.display_name || entry.full_name)} (#{entry.id})
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                  <div className="assignee-chip-list">
-                    {threadModalSelectedUsers.map((entry) => (
-                      <button
-                        key={`thread-user-chip-${entry.id}`}
-                        type="button"
-                        className="assignee-chip"
-                        onClick={() => removeThreadModalUser(entry.id)}
-                        title={language === "de" ? "Entfernen" : "Remove"}
-                      >
-                        {entry.label}
-                        {entry.archived ? ` (${language === "de" ? "archiviert" : "archived"})` : ""}
-                        {" ×"}
-                      </button>
-                    ))}
-                    {threadModalSelectedUsers.length === 0 && (
-                      <small className="muted">
-                        {language === "de"
-                          ? "Noch keine Nutzer ausgewählt."
-                          : "No users selected yet."}
-                      </small>
-                    )}
-                  </div>
-                </div>
-                <div className="assignee-search-block">
-                  <b>{language === "de" ? "Rollen (optional)" : "Roles (optional)"}</b>
-                  <input
-                    value={threadModalForm.participant_role_query}
-                    onChange={(event) =>
-                      setThreadModalForm((current) => ({
-                        ...current,
-                        participant_role_query: event.target.value,
-                      }))
-                    }
-                    onKeyDown={(event) => {
-                      if (event.key !== "Enter") return;
-                      event.preventDefault();
-                      addFirstMatchingThreadModalRole();
-                    }}
-                    placeholder={
-                      language === "de"
-                        ? "Rolle eingeben und auswählen"
-                        : "Type role and select"
-                    }
-                  />
-                  {threadModalRoleSuggestions.length > 0 && (
-                    <div className="assignee-suggestions">
-                      {threadModalRoleSuggestions.map((role) => (
-                        <button
-                          key={`thread-role-suggestion-${role}`}
-                          type="button"
-                          className="assignee-suggestion-btn"
-                          onClick={() => addThreadModalRole(role)}
-                        >
-                          {roleOptionLabel(role, language)}
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                  <div className="assignee-chip-list">
-                    {threadModalForm.participant_roles.map((role) => (
-                      <button
-                        key={`thread-role-chip-${role}`}
-                        type="button"
-                        className="assignee-chip"
-                        onClick={() => removeThreadModalRole(role)}
-                        title={language === "de" ? "Entfernen" : "Remove"}
-                      >
-                        {roleOptionLabel(role, language) + " ×"}
-                      </button>
-                    ))}
-                    {threadModalForm.participant_roles.length === 0 && (
-                      <small className="muted">
-                        {language === "de"
-                          ? "Noch keine Rollen ausgewählt."
-                          : "No roles selected yet."}
-                      </small>
-                    )}
-                  </div>
-                </div>
-                {threadModalIsRestricted && (
-                  <small className="muted">
-                    {language === "de"
-                      ? "Sichtbar nur für ausgewählte Nutzer/Rollen."
-                      : "Visible only to selected users/roles."}
-                  </small>
-                )}
-                <label>
-                  {language === "de" ? "Thread-Bild" : "Thread picture"}
-                  <input type="file" accept={IMAGE_INPUT_ACCEPT} onChange={onThreadIconFileChange} />
-                </label>
-                {threadIconPreviewUrl && (
-                  <div className="thread-modal-icon-preview">
-                    <img src={threadIconPreviewUrl} alt="" />
-                  </div>
-                )}
-                <div className="row wrap">
-                  <button type="submit">
-                    {threadModalMode === "edit"
-                      ? language === "de"
-                        ? "Speichern"
-                        : "Save"
-                      : language === "de"
-                        ? "Erstellen"
-                        : "Create"}
-                  </button>
-                  <button type="button" onClick={closeThreadModal}>
-                    {language === "de" ? "Abbrechen" : "Cancel"}
-                  </button>
-                </div>
-              </form>
-            </div>
-          </div>
-        )}
-
-        {archivedThreadsModalOpen && mainView === "messages" && (
-          <div className="modal-backdrop" onClick={closeArchivedThreadsModal}>
-            <div className="card modal-card modal-card-sm" onClick={(event) => event.stopPropagation()}>
-              <h3>{language === "de" ? "Archivierte Chats" : "Archived chats"}</h3>
-              {archivedThreads.length === 0 && (
-                <small className="muted">
-                  {language === "de" ? "Keine archivierten Chats vorhanden." : "No archived chats available."}
-                </small>
-              )}
-              {archivedThreads.length > 0 && (
-                <ul className="thread-list">
-                  {archivedThreads.map((thread) => {
-                    const threadProjectLabel = threadProjectTitleParts(thread);
-                    return (
-                      <li key={`archived-thread-${thread.id}`}>
-                        <div className="thread-archive-row">
-                          <div className="thread-item-main">
-                            <span className="thread-title-main">
-                              <b>{thread.name}</b>
-                              {(thread.is_restricted || thread.visibility === "restricted") && (
-                                <span className="thread-visibility-badge">
-                                  {language === "de" ? "Eingeschränkt" : "Restricted"}
-                                </span>
-                              )}
-                            </span>
-                            <small>{threadProjectLabel.title || (language === "de" ? "Allgemein" : "General")}</small>
-                            {threadProjectLabel.subtitle && <small className="project-name-subtle">{threadProjectLabel.subtitle}</small>}
-                          </div>
-                          <div className="thread-archive-actions">
-                            {thread.can_edit && (
-                              <>
-                                <button type="button" onClick={() => void restoreArchivedThread(thread.id)}>
-                                  {language === "de" ? "Wiederherstellen" : "Restore"}
-                                </button>
-                                <button
-                                  type="button"
-                                  className="danger-btn"
-                                  onClick={() => void deleteThread(thread)}
-                                >
-                                  {language === "de" ? "Löschen" : "Delete"}
-                                </button>
-                              </>
-                            )}
-                          </div>
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
-              <div className="row wrap">
-                <button type="button" onClick={closeArchivedThreadsModal}>
-                  {language === "de" ? "Schließen" : "Close"}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {mainView === "construction" && (
-          <section className="grid">
-            <form ref={constructionFormRef} className="card report-form" onSubmit={submitConstructionReport}>
-              <h3>{language === "de" ? "Baustellenbericht" : "Construction report"}</h3>
-              {reportTaskPrefill && (
-                <small className="muted">
-                  {language === "de"
-                    ? `Vorlage aus Aufgabe #${reportTaskPrefill.task_id}`
-                    : `Template from task #${reportTaskPrefill.task_id}`}
-                </small>
-              )}
-              {reportSourceTaskId && reportTaskChecklist.length > 0 && (
-                <div className="report-subtask-checklist">
-                  <b>
-                    {language === "de"
-                      ? `Unteraufgaben aus Aufgabe #${reportSourceTaskId}`
-                      : `Sub-tasks from task #${reportSourceTaskId}`}
-                  </b>
-                  <small className="muted">
-                    {language === "de"
-                      ? "Abhaken, was erledigt wurde. Offene Punkte erzeugen automatisch eine neue, nicht zugewiesene Folgeaufgabe."
-                      : "Tick completed items. Open items will create a new unassigned follow-up task automatically."}
-                  </small>
-                  <div className="report-subtask-checklist-items">
-                    {reportTaskChecklist.map((entry) => (
-                      <label key={entry.id} className="report-subtask-item">
-                        <input
-                          type="checkbox"
-                          checked={entry.done}
-                          onChange={(event) => toggleReportTaskChecklistItem(entry.id, event.target.checked)}
-                        />
-                        <span>{entry.label}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              )}
-              <label>
-                {language === "de" ? "Projekt" : "Project"}
-                <select
-                  name="project_id"
-                  value={reportProjectId}
-                  onChange={(event) => applyReportProjectSelection(event.target.value)}
-                >
-                  <option value="">
-                    {language === "de"
-                      ? "Allgemeiner Bericht (ohne Projekt)"
-                      : "General report (without project)"}
-                  </option>
-                  {projects.map((project) => (
-                    <option key={project.id} value={String(project.id)}>
-                      {formatProjectTitle(project.project_number, project.customer_name, project.name, project.id)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                {language === "de" ? "Datum" : "Date"}
-                <input type="date" name="report_date" defaultValue={todayIso} required />
-              </label>
-              <label>
-                {language === "de" ? "Kunde" : "Customer"}
-                <input
-                  name="customer"
-                  value={reportDraft.customer}
-                  onChange={(event) => updateReportDraftField("customer", event.target.value)}
-                  placeholder={language === "de" ? "Kundenname" : "Customer name"}
-                />
-              </label>
-              <label>
-                {language === "de" ? "Kundenadresse" : "Customer address"}
-                <textarea
-                  name="customer_address"
-                  value={reportDraft.customer_address}
-                  onChange={(event) => updateReportDraftField("customer_address", event.target.value)}
-                />
-              </label>
-              <label>
-                {language === "de" ? "Kontaktperson" : "Contact person"}
-                <input
-                  name="customer_contact"
-                  value={reportDraft.customer_contact}
-                  onChange={(event) => updateReportDraftField("customer_contact", event.target.value)}
-                />
-              </label>
-              <label>
-                {language === "de" ? "Kontakt E-Mail" : "Contact email"}
-                <input
-                  type="email"
-                  name="customer_email"
-                  value={reportDraft.customer_email}
-                  onChange={(event) => updateReportDraftField("customer_email", event.target.value)}
-                />
-              </label>
-              <label>
-                {language === "de" ? "Kontakt Telefon" : "Contact phone"}
-                <input
-                  name="customer_phone"
-                  value={reportDraft.customer_phone}
-                  onChange={(event) => updateReportDraftField("customer_phone", event.target.value)}
-                />
-              </label>
-              <label>
-                {language === "de" ? "Projektname" : "Project name"}
-                <input
-                  name="project_name"
-                  value={selectedReportProject?.name ?? reportDraft.project_name}
-                  onChange={(event) => updateReportDraftField("project_name", event.target.value)}
-                  readOnly={Boolean(selectedReportProject)}
-                  placeholder={language === "de" ? "Optional bei allgemeinem Bericht" : "Optional for general report"}
-                />
-              </label>
-              <label>
-                {language === "de" ? "Projektnummer" : "Project number"}
-                <input
-                  name="project_number"
-                  value={selectedReportProject?.project_number ?? reportDraft.project_number}
-                  onChange={(event) => updateReportDraftField("project_number", event.target.value)}
-                  readOnly={Boolean(selectedReportProject)}
-                  placeholder={language === "de" ? "Optional bei allgemeinem Bericht" : "Optional for general report"}
-                />
-              </label>
-
-              <label>
-                {language === "de" ? "Arbeiten" : "Work done"}
-                <textarea name="work_done" placeholder={language === "de" ? "Was wurde gemacht?" : "What was completed?"} />
-              </label>
-
-              <label>
-                {language === "de" ? "Vorkommnisse / Absprachen" : "Incidents / agreements"}
-                <textarea name="incidents" />
-              </label>
-
-              <div className="worker-grid">
-                <div className="worker-grid-head">
-                  <b>{language === "de" ? "Mitarbeiter" : "Worker"}</b>
-                  <b>{language === "de" ? "Start" : "Start"}</b>
-                  <b>{language === "de" ? "Ende" : "End"}</b>
-                  <span />
-                </div>
-                {reportWorkers.map((worker, index) => (
-                  <div key={`worker-${index}`} className="worker-grid-row">
-                    <input
-                      value={worker.name}
-                      list="report-worker-options"
-                      placeholder={language === "de" ? "Name suchen" : "Search name"}
-                      onChange={(e) => updateReportWorker(index, "name", e.target.value)}
-                    />
-                    <input
-                      value={worker.start_time}
-                      placeholder="0730"
-                      inputMode="numeric"
-                      maxLength={5}
-                      onChange={(e) => updateReportWorker(index, "start_time", formatTimeInputForTyping(e.target.value))}
-                      onBlur={(event) => updateReportWorker(index, "start_time", formatTimeInputForBlur(event.target.value))}
-                    />
-                    <input
-                      value={worker.end_time}
-                      placeholder="1600"
-                      inputMode="numeric"
-                      maxLength={5}
-                      onChange={(e) => updateReportWorker(index, "end_time", formatTimeInputForTyping(e.target.value))}
-                      onBlur={(event) => updateReportWorker(index, "end_time", formatTimeInputForBlur(event.target.value))}
-                    />
-                    <button type="button" onClick={() => removeReportWorkerRow(index)}>
-                      {language === "de" ? "Entfernen" : "Remove"}
-                    </button>
-                  </div>
-                ))}
-                <datalist id="report-worker-options">
-                  {assignableUsers.map((entry) => (
-                    <option key={`report-worker-option-${entry.id}`} value={entry.full_name} />
-                  ))}
-                </datalist>
-                <button type="button" onClick={addReportWorkerRow}>
-                  {language === "de" ? "Mitarbeiter hinzufügen" : "Add worker"}
-                </button>
-                <small className="muted">
-                  {language === "de"
-                    ? "Tipp: Mitarbeitende über Namenssuche wählen, Zeiten als 4 Ziffern eingeben (z. B. 0730)."
-                    : "Tip: search workers by name and enter times as 4 digits (for example 0730)."}
-                </small>
-              </div>
-
-              <div className="report-material-block">
-                <b>{language === "de" ? "Material" : "Materials"}</b>
-                <div className="report-material-grid">
-                  <div className="report-material-grid-head">
-                    <b>{language === "de" ? "Artikel" : "Item"}</b>
-                    <b>{language === "de" ? "Menge" : "Qty"}</b>
-                    <b>{language === "de" ? "Einheit" : "Unit"}</b>
-                    <b>{language === "de" ? "ArtNr" : "Article"}</b>
-                    <span />
-                  </div>
-                  {reportMaterialRows.map((row, index) => (
-                    <div key={row.id} className="report-material-grid-row">
-                      <input
-                        value={row.item}
-                        placeholder={language === "de" ? "Artikel" : "Item"}
-                        onChange={(event) => updateReportMaterialRow(index, "item", event.target.value)}
-                        onBlur={() => {
-                          void enrichReportMaterialRowFromCatalog(index, "item");
-                        }}
-                      />
-                      <input
-                        value={row.qty}
-                        placeholder={language === "de" ? "Menge" : "Qty"}
-                        onChange={(event) => updateReportMaterialRow(index, "qty", event.target.value)}
-                      />
-                      <input
-                        value={row.unit}
-                        list="material-unit-options"
-                        placeholder={language === "de" ? "Einheit" : "Unit"}
-                        onChange={(event) => updateReportMaterialRow(index, "unit", event.target.value)}
-                      />
-                      <input
-                        value={row.article_no}
-                        placeholder={language === "de" ? "ArtNr" : "Article"}
-                        onChange={(event) => updateReportMaterialRow(index, "article_no", event.target.value)}
-                        onBlur={() => {
-                          void enrichReportMaterialRowFromCatalog(index, "article_no");
-                        }}
-                      />
-                      <button type="button" onClick={() => removeReportMaterialRow(index)} disabled={reportSubmitting}>
-                        {language === "de" ? "Entfernen" : "Remove"}
-                      </button>
-                    </div>
-                  ))}
-                  <button type="button" onClick={addReportMaterialRow} disabled={reportSubmitting}>
-                    {language === "de" ? "Materialzeile hinzufügen" : "Add material row"}
-                  </button>
-                  <small className="muted">
-                    {language === "de"
-                      ? "Einheiten aus der Vorschlagsliste wählen oder frei eingeben."
-                      : "Pick a unit from the dropdown suggestions or type your own."}
-                  </small>
-                </div>
-              </div>
-              <label>
-                {language === "de" ? "Zusatzarbeiten (eine Zeile: Beschreibung|Grund)" : "Extras (one line: Description|Reason)"}
-                <textarea name="extras" />
-              </label>
-              <div className="report-material-block">
-                <b>{language === "de" ? "Büro Materialbedarf" : "Office material need"}</b>
-                <div className="report-material-grid">
-                  <div className="report-material-grid-head">
-                    <b>{language === "de" ? "Artikel" : "Item"}</b>
-                    <b>{language === "de" ? "Menge" : "Qty"}</b>
-                    <b>{language === "de" ? "Einheit" : "Unit"}</b>
-                    <b>{language === "de" ? "ArtNr" : "Article"}</b>
-                    <span />
-                  </div>
-                  {reportOfficeMaterialRows.map((row, index) => (
-                    <div key={row.id} className="report-material-grid-row">
-                      <input
-                        value={row.item}
-                        placeholder={language === "de" ? "Artikel" : "Item"}
-                        onChange={(event) => updateReportOfficeMaterialRow(index, "item", event.target.value)}
-                        onBlur={() => {
-                          void enrichReportOfficeMaterialRowFromCatalog(index, "item");
-                        }}
-                      />
-                      <input
-                        value={row.qty}
-                        placeholder={language === "de" ? "Menge" : "Qty"}
-                        onChange={(event) => updateReportOfficeMaterialRow(index, "qty", event.target.value)}
-                      />
-                      <input
-                        value={row.unit}
-                        list="material-unit-options"
-                        placeholder={language === "de" ? "Einheit" : "Unit"}
-                        onChange={(event) => updateReportOfficeMaterialRow(index, "unit", event.target.value)}
-                      />
-                      <input
-                        value={row.article_no}
-                        placeholder={language === "de" ? "ArtNr" : "Article"}
-                        onChange={(event) => updateReportOfficeMaterialRow(index, "article_no", event.target.value)}
-                        onBlur={() => {
-                          void enrichReportOfficeMaterialRowFromCatalog(index, "article_no");
-                        }}
-                      />
-                      <button type="button" onClick={() => removeReportOfficeMaterialRow(index)} disabled={reportSubmitting}>
-                        {language === "de" ? "Entfernen" : "Remove"}
-                      </button>
-                    </div>
-                  ))}
-                  <button type="button" onClick={addReportOfficeMaterialRow} disabled={reportSubmitting}>
-                    {language === "de" ? "Büro-Materialzeile hinzufügen" : "Add office material row"}
-                  </button>
-                  <small className="muted">
-                    {language === "de"
-                      ? "Einheiten aus der Vorschlagsliste wählen oder frei eingeben."
-                      : "Pick a unit from the dropdown suggestions or type your own."}
-                  </small>
-                </div>
-              </div>
-              <label>
-                {language === "de" ? "Büro Nacharbeiten" : "Office rework"}
-                <textarea name="office_rework" />
-              </label>
-              <label>
-                {language === "de" ? "Büro nächste Schritte" : "Office next steps"}
-                <textarea name="office_next_steps" />
-              </label>
-              <label>
-                {language === "de" ? "Fotos" : "Photos"}
-                <div className="report-image-upload">
-                  <input
-                    ref={reportImageInputRef}
-                    className="report-image-input"
-                    type="file"
-                    accept={IMAGE_INPUT_ACCEPT}
-                    multiple
-                    onChange={onReportImagesChange}
-                  />
-                  <button
-                    type="button"
-                    className={reportImageFiles.length ? "report-image-add has-files" : "report-image-add"}
-                    onClick={() => reportImageInputRef.current?.click()}
-                    disabled={reportSubmitting}
-                  >
-                    {reportImageFiles.length > 0
-                      ? language === "de"
-                        ? "Weitere Fotos hinzufügen"
-                        : "Add more photos"
-                      : language === "de"
-                        ? "Fotos auswählen"
-                        : "Select photos"}
-                  </button>
-                  {reportImageFiles.length > 0 && (
-                    <>
-                      <small className="muted">
-                        {language === "de"
-                          ? `${reportImageFiles.length} Datei(en) ausgewählt`
-                          : `${reportImageFiles.length} file(s) selected`}
-                      </small>
-                      <div className="report-image-list">
-                        {reportImageFiles.map((entry) => {
-                          return (
-                            <div key={entry.key} className="report-image-item" title={entry.file.name}>
-                              <img className="report-image-thumb" src={entry.preview_url} alt={entry.file.name} />
-                              <button
-                                type="button"
-                                className="report-image-remove"
-                                onClick={(event) => onReportImageRemoveClick(event, entry.key)}
-                                aria-label={language === "de" ? "Foto entfernen" : "Remove photo"}
-                                title={language === "de" ? "Foto entfernen" : "Remove photo"}
-                                disabled={reportSubmitting}
-                              >
-                                ×
-                              </button>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </>
-                  )}
-                </div>
-              </label>
-              <label className="report-send-option">
-                <span className="report-send-head">
-                  <input type="checkbox" name="send_telegram" />
-                  {language === "de"
-                    ? "Per Telegram Bot senden (optional)"
-                    : "Send via Telegram bot (optional)"}
-                </span>
-                <small className="muted">
-                  {language === "de"
-                    ? "Ohne lokale Bot-Konfiguration bleibt der Versand im Stub-Modus."
-                    : "Without local bot configuration, sending stays in stub mode."}
-                </small>
-              </label>
-              {reportSubmitting && (
-                <div className="report-upload-progress" role="status" aria-live="polite">
-                  <div className="report-upload-progress-track">
-                    <span
-                      className="report-upload-progress-fill"
-                      style={{
-                        width: `${Math.max(0, Math.min(100, reportUploadPercent ?? 4))}%`,
-                      }}
-                    />
-                  </div>
-                  <small className="muted">
-                    {reportUploadPhase === "processing"
-                      ? language === "de"
-                        ? "Upload abgeschlossen, Bericht wird verarbeitet..."
-                        : "Upload complete, report is being processed..."
-                      : language === "de"
-                        ? `Upload läuft${reportUploadPercent != null ? `: ${reportUploadPercent}%` : "..."}`
-                        : `Uploading${reportUploadPercent != null ? `: ${reportUploadPercent}%` : "..."}`}
-                  </small>
-                </div>
-              )}
-              <button type="submit" disabled={reportSubmitting}>
-                {reportSubmitting
-                  ? language === "de"
-                    ? "Wird hochgeladen..."
-                    : "Uploading..."
-                  : language === "de"
-                    ? "Bericht speichern"
-                    : "Save report"}
-              </button>
-            </form>
-
-            <div className="card">
-              <h3>
-                {reportProjectId
-                  ? language === "de"
-                    ? "Projektdateien (inkl. Berichte/Fotos)"
-                    : "Project files (reports/photos)"
-                  : language === "de"
-                    ? "Allgemeiner Berichtsordner"
-                    : "General reports folder"}
-              </h3>
-              <ul>
-                {files.map((file) => (
-                  <li key={file.id}>
-                    <a href={filePreviewUrl(file.id)} target="_blank" rel="noreferrer">
-                      {file.file_name}
-                    </a>
-                  </li>
-                ))}
-                {files.length === 0 && (
-                  <li className="muted">
-                    {language === "de" ? "Keine Berichtsdateien vorhanden." : "No report files available."}
-                  </li>
-                )}
-              </ul>
-            </div>
-          </section>
-        )}
-
-        {mainView === "wiki" && (
-          <section className="grid wiki-grid wiki-library-grid">
-            <div className="card wiki-library-card">
-              <div className="row wrap wiki-library-head">
-                <h3>{language === "de" ? "Lokale Wiki-Dateien" : "Local wiki files"}</h3>
-                <input
-                  value={wikiSearch}
-                  onChange={(event) => setWikiSearch(event.target.value)}
-                  placeholder={language === "de" ? "Datei, Marke oder Ordner suchen" : "Search file, brand, or folder"}
-                />
-                <button type="button" onClick={() => void loadWikiLibraryFiles()}>
-                  {language === "de" ? "Neu laden" : "Refresh"}
-                </button>
-              </div>
-              <small className="muted">
-                {language === "de" ? "Dateien gesamt" : "Total files"}: {wikiFiles.length}
-              </small>
-              <div className="wiki-library-scroll">
-                {wikiRows.map((brand) => (
-                  <details key={brand.name} className="wiki-brand-group" open>
-                    <summary>
-                      <b>{brand.name}</b>
-                      <small>{brand.folders.length}</small>
-                    </summary>
-                    {brand.folders.map((folder) => (
-                      <details key={`${brand.name}-${folder.path || "__root"}`} className="wiki-folder-group" open>
-                        <summary>
-                          <span>{folder.path || "/"}</span>
-                        </summary>
-                        <ul className="wiki-doc-list">
-                          {folder.documents.map((document) => (
-                            <li key={`${brand.name}-${folder.path}-${document.key}`} className="wiki-doc-item">
-                              <div className="wiki-doc-main">
-                                <b>{document.label}</b>
-                                <small>{document.variants.length} {language === "de" ? "Varianten" : "variants"}</small>
-                              </div>
-                              <div className="row wrap wiki-doc-actions">
-                                {document.variants.map((variant) => (
-                                  <button
-                                    key={variant.path}
-                                    type="button"
-                                    className={activeWikiPath === variant.path ? "active" : ""}
-                                    onClick={() => setActiveWikiPath(variant.path)}
-                                  >
-                                    {variant.extension ? variant.extension.toUpperCase() : language === "de" ? "DATEI" : "FILE"}
-                                  </button>
-                                ))}
-                              </div>
-                            </li>
-                          ))}
-                        </ul>
-                      </details>
-                    ))}
-                  </details>
-                ))}
-                {wikiRows.length === 0 && (
-                  <p className="muted">
-                    {language === "de"
-                      ? "Keine Wiki-Dateien für diese Suche gefunden."
-                      : "No wiki files found for this search."}
-                  </p>
-                )}
-              </div>
-            </div>
-
-            <div className="card wiki-preview-card">
-              <div className="row wrap wiki-preview-head">
-                <h3>{language === "de" ? "Vorschau" : "Preview"}</h3>
-                {activeWikiFile && (
-                  <div className="row wrap">
-                    <a href={wikiFileUrl(activeWikiFile.path)} target="_blank" rel="noreferrer">
-                      {language === "de" ? "In neuem Tab öffnen" : "Open in new tab"}
-                    </a>
-                    <a href={wikiFileUrl(activeWikiFile.path, true)} target="_blank" rel="noreferrer">
-                      {language === "de" ? "Download" : "Download"}
-                    </a>
-                  </div>
-                )}
-              </div>
-              {!activeWikiFile && (
-                <p className="muted">
-                  {language === "de"
-                    ? "Bitte links eine Datei auswählen."
-                    : "Please select a file on the left."}
-                </p>
-              )}
-              {activeWikiFile && (
-                <>
-                  <div className="wiki-preview-meta">
-                    <b>{activeWikiFile.file_name}</b>
-                    <small>{activeWikiFile.path}</small>
-                    <small>
-                      {formatFileSize(activeWikiFile.size_bytes)} |{" "}
-                      {formatServerDateTime(activeWikiFile.modified_at, language)}
-                    </small>
-                  </div>
-                  {activeWikiFile.previewable ? (
-                    <iframe
-                      key={activeWikiFile.path}
-                      src={wikiFileUrl(activeWikiFile.path)}
-                      title={activeWikiFile.file_name}
-                      className="wiki-preview-frame"
-                    />
-                  ) : (
-                    <p className="muted">
-                      {language === "de"
-                        ? "Dateityp nicht direkt im Browser darstellbar. Bitte herunterladen."
-                        : "This file type is not directly previewable. Please download it."}
-                    </p>
-                  )}
-                </>
-              )}
-            </div>
-          </section>
-        )}
-
-        {mainView === "messages" && (
-          <section className="chat-layout">
-            <aside className="thread-panel">
-              <div className="row thread-panel-head">
-                <h3>{language === "de" ? "Threads" : "Threads"}</h3>
-                <div className="thread-panel-actions">
-                  <button
-                    type="button"
-                    className="icon-btn thread-archive-list-btn"
-                    onClick={() => void openArchivedThreadsModal()}
-                    aria-label={language === "de" ? "Archivierte Chats" : "Archived chats"}
-                    title={language === "de" ? "Archivierte Chats" : "Archived chats"}
-                  >
-                    {language === "de" ? "Archiv" : "Archive"}
-                  </button>
-                  <button
-                    type="button"
-                    className="create-new-btn thread-create-btn"
-                    onClick={openCreateThreadModal}
-                    aria-label={language === "de" ? "Thread erstellen" : "Create thread"}
-                    title={language === "de" ? "Thread erstellen" : "Create thread"}
-                  >
-                    +
-                  </button>
-                </div>
-              </div>
-              <ul className="thread-list">
-                {threads.map((thread) => {
-                  const threadProjectLabel = threadProjectTitleParts(thread);
-                  return (
-                    <li key={thread.id}>
-                      <button
-                        className={activeThreadId === thread.id ? "active thread-item" : "thread-item"}
-                        onClick={() => setActiveThreadId(thread.id)}
-                      >
-                        <ThreadIconBadge
-                          threadId={thread.id}
-                          initials={threadInitials(thread.name)}
-                          hasIcon={Boolean(thread.icon_updated_at)}
-                          versionKey={thread.icon_updated_at || "0"}
-                          className="thread-avatar-sm"
-                        />
-                        <span className="thread-item-main">
-                          <span className="thread-title-row">
-                            <span className="thread-title-main">
-                              <b>{thread.name}</b>
-                              {(thread.is_restricted || thread.visibility === "restricted") && (
-                                <span className="thread-visibility-badge">
-                                  {language === "de" ? "Eingeschränkt" : "Restricted"}
-                                </span>
-                              )}
-                            </span>
-                            {thread.unread_count > 0 && <span className="thread-unread-badge">{thread.unread_count}</span>}
-                          </span>
-                          <small>{threadProjectLabel.title || (language === "de" ? "Allgemein" : "General")}</small>
-                          {threadProjectLabel.subtitle && <small className="project-name-subtle">{threadProjectLabel.subtitle}</small>}
-                          <small>{thread.last_message_preview ?? "-"}</small>
-                        </span>
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            </aside>
-
-            <div className="chat-panel">
-              {!activeThread && (
-                <div className="chat-empty">{language === "de" ? "Bitte einen Thread wählen." : "Please select a thread."}</div>
-              )}
-              {activeThread && (() => {
-                const activeThreadProjectLabel = threadProjectTitleParts(activeThread);
-                return (
-                  <>
-                  <div className="chat-panel-head">
-                    <div className="chat-thread-meta">
-                      <ThreadIconBadge
-                        threadId={activeThread.id}
-                        initials={threadInitials(activeThread.name)}
-                        hasIcon={Boolean(activeThread.icon_updated_at)}
-                        versionKey={activeThread.icon_updated_at || "0"}
-                      />
-                      <div>
-                        <span className="thread-title-main">
-                          <b>{activeThread.name}</b>
-                          {(activeThread.is_restricted || activeThread.visibility === "restricted") && (
-                            <span className="thread-visibility-badge">
-                              {language === "de" ? "Eingeschränkt" : "Restricted"}
-                            </span>
-                          )}
-                        </span>
-                        <small>{activeThreadProjectLabel.title || (language === "de" ? "Allgemein" : "General")}</small>
-                        {activeThreadProjectLabel.subtitle && <small className="project-name-subtle">{activeThreadProjectLabel.subtitle}</small>}
-                      </div>
-                    </div>
-                    {activeThread.can_edit && (
-                      <div className="thread-head-actions">
-                        <div className="thread-actions-menu-wrap">
-                          <button
-                            type="button"
-                            className="thread-actions-trigger"
-                            aria-haspopup="menu"
-                            aria-expanded={threadActionMenuOpen}
-                            aria-label={language === "de" ? "Thread-Aktionen öffnen" : "Open thread actions"}
-                            title={language === "de" ? "Thread-Aktionen" : "Thread actions"}
-                            onClick={() => setThreadActionMenuOpen((current) => !current)}
-                          >
-                            &#8942;
-                          </button>
-                          {threadActionMenuOpen && (
-                            <div className="thread-actions-menu" role="menu">
-                              <button
-                                type="button"
-                                role="menuitem"
-                                onClick={() => {
-                                  setThreadActionMenuOpen(false);
-                                  openEditThreadModal(activeThread);
-                                }}
-                              >
-                                {language === "de" ? "Thread bearbeiten" : "Edit thread"}
-                              </button>
-                              <button
-                                type="button"
-                                role="menuitem"
-                                onClick={() => {
-                                  setThreadActionMenuOpen(false);
-                                  void archiveActiveThread();
-                                }}
-                              >
-                                {language === "de" ? "Archivieren" : "Archive"}
-                              </button>
-                              <button
-                                type="button"
-                                role="menuitem"
-                                className="danger"
-                                onClick={() => {
-                                  setThreadActionMenuOpen(false);
-                                  void deleteThread(activeThread);
-                                }}
-                              >
-                                {language === "de" ? "Löschen" : "Delete"}
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  <ul ref={messageListRef} onScroll={onMessageListScroll} className="message-list">
-                    {chatRenderRows.map((row) => {
-                      if (row.kind === "day") {
-                        return (
-                          <li key={row.key} className="message-day-divider">
-                            <span>{row.label}</span>
-                          </li>
-                        );
-                      }
-                      const message = row.message;
-                      const senderId = message.sender_id;
-                      const senderName = userNameById(senderId);
-                      return (
-                        <li key={row.key} className={row.mine ? "message-row mine" : "message-row other"}>
-                          {!row.mine && (
-                            <span className="message-avatar-slot" aria-hidden="true">
-                              {row.showAvatar ? (
-                                <AvatarBadge
-                                  userId={senderId}
-                                  initials={userInitialsById(senderId)}
-                                  hasAvatar={userHasAvatar(senderId)}
-                                  versionKey={String(userAvatarVersionById(senderId))}
-                                  className="message-sender-avatar"
-                                />
-                              ) : (
-                                <span className="message-avatar-placeholder" />
-                              )}
-                            </span>
-                          )}
-                          <div className={row.mine ? "message-bubble mine" : "message-bubble other"}>
-                            {row.showSenderName && <small className="message-sender-name">{senderName}</small>}
-                            {message.body && <p>{message.body}</p>}
-                            {message.attachments.map((attachment) => (
-                              <div key={attachment.id} className="chat-attachment">
-                                {attachment.content_type.startsWith("image/") && (
-                                  <img src={filePreviewUrl(attachment.id)} alt={attachment.file_name} />
-                                )}
-                                <div className="row wrap">
-                                  <a href={filePreviewUrl(attachment.id)} target="_blank" rel="noreferrer">
-                                    {language === "de" ? "Vorschau" : "Preview"}
-                                  </a>
-                                  <a href={fileDownloadUrl(attachment.id)}>{attachment.file_name}</a>
-                                </div>
-                              </div>
-                            ))}
-                            <small className={row.mine ? "message-time mine" : "message-time other"}>{row.timeLabel}</small>
-                          </div>
-                        </li>
-                      );
-                    })}
-                  </ul>
-
-                  <form onSubmit={sendMessage} className="chat-compose">
-                    <label
-                      className={messageAttachment ? "chat-attach-btn has-file" : "chat-attach-btn"}
-                      aria-label={language === "de" ? "Datei anhängen" : "Attach file"}
-                      title={language === "de" ? "Datei anhängen" : "Attach file"}
-                    >
-                      <span>+</span>
-                      <input ref={messageAttachmentInputRef} type="file" name="attachment" onChange={onMessageAttachmentChange} />
-                    </label>
-                    <div className="chat-compose-main">
-                      <input
-                        name="body"
-                        value={messageBody}
-                        onChange={(event) => setMessageBody(event.target.value)}
-                        placeholder={language === "de" ? "Nachricht eingeben" : "Type message"}
-                      />
-                      {messageAttachment && (
-                        <div className="chat-pending-attachment">
-                          <small title={messageAttachment.name}>{messageAttachment.name}</small>
-                          <button
-                            type="button"
-                            className="chat-attachment-remove"
-                            onClick={clearMessageAttachment}
-                            aria-label={language === "de" ? "Anhang entfernen" : "Remove attachment"}
-                            title={language === "de" ? "Anhang entfernen" : "Remove attachment"}
-                          >
-                            ×
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                    <button
-                      type="submit"
-                      className={canSendMessage ? "chat-send-btn" : "chat-send-btn is-muted"}
-                      disabled={!canSendMessage}
-                      aria-label={language === "de" ? "Senden" : "Send"}
-                      title={language === "de" ? "Senden" : "Send"}
-                    >
-                      <span className="chat-send-arrow">➤</span>
-                    </button>
-                  </form>
-                </>
-                );
-              })()}
-            </div>
-          </section>
-        )}
-
-        {mainView === "time" && (
-          <section className="grid time-grid">
-            <div className="card time-current-card">
-              <div className="row wrap time-current-head">
-                <h3>{language === "de" ? "Aktuelle Schicht" : "Current shift"}</h3>
-                <div ref={timeInfoRef} className={timeInfoOpen ? "time-info-wrap open" : "time-info-wrap"}>
-                  <button
-                    type="button"
-                    className="time-info-trigger"
-                    onClick={() => setTimeInfoOpen((current) => !current)}
-                    aria-expanded={timeInfoOpen}
-                    aria-label={language === "de" ? "Schichtdetails anzeigen" : "Show shift details"}
-                  >
-                    <small className="muted">
-                      {language === "de" ? "Aktuelle Uhrzeit" : "Current time"}:{" "}
-                      <b>{now.toLocaleTimeString(language === "de" ? "de-DE" : "en-US")}</b>
-                    </small>
-                  </button>
-                  <div className="time-info-popover">
-                    {timeCurrent?.clock_entry_id ? (
-                      <div className="metric-grid time-info-metrics">
-                        <div><b>{language === "de" ? "Schicht-ID" : "Shift ID"}:</b> {timeCurrent.clock_entry_id}</div>
-                        <div>
-                          <b>{language === "de" ? "Eingestempelt" : "Clocked in"}:</b>{" "}
-                          {formatServerDateTime(timeCurrent.clock_in || "", language)}
-                        </div>
-                        <div><b>{language === "de" ? "Arbeitszeit" : "Worked"}:</b> {timeCurrent.worked_hours_live}h</div>
-                        <div><b>{language === "de" ? "Pause" : "Break"}:</b> {timeCurrent.break_hours_live}h</div>
-                        <div><b>{language === "de" ? "Gesetzliche Pause" : "Legal break"}:</b> {timeCurrent.required_break_hours_live}h</div>
-                        <div><b>{language === "de" ? "Nettozeit Schicht" : "Net shift hours"}:</b> {timeCurrent.net_hours_live}h</div>
-                      </div>
-                    ) : (
-                      <p className="muted">{language === "de" ? "Keine offene Schicht." : "No open shift."}</p>
-                    )}
-                    <small className="muted">
-                      {language === "de"
-                        ? "Gesetzliche Pause: über 6h = 30 Min, über 9h = 45 Min."
-                        : "German legal break defaults: over 6h = 30m, over 9h = 45m."}
-                    </small>
-                  </div>
-                </div>
-              </div>
-              <div className="time-current-main">
-                <WorkHoursGauge language={language} netHours={gaugeNetHours} requiredHours={requiredDailyHours} />
-              </div>
-              <div className="row wrap time-current-actions">
-                {timeCurrent?.clock_entry_id ? (
-                  <button onClick={clockOut} disabled={!viewingOwnTime}>
-                    {language === "de" ? "Ausstempeln" : "Clock out"}
-                  </button>
-                ) : (
-                  <button onClick={clockIn} disabled={!viewingOwnTime}>
-                    {language === "de" ? "Einstempeln" : "Clock in"}
-                  </button>
-                )}
-                {Boolean(timeCurrent?.clock_entry_id) &&
-                  (timeCurrent?.break_open ? (
-                    <button onClick={endBreak} disabled={!viewingOwnTime}>
-                      {language === "de" ? "Pause Ende" : "Break end"}
-                    </button>
-                  ) : (
-                    <button onClick={startBreak} disabled={!viewingOwnTime}>
-                      {language === "de" ? "Pause Start" : "Break start"}
-                    </button>
-                  ))}
-                <a
-                  href={`/api/time/timesheet/export.csv${isTimeManager && timeTargetUserId ? `?user_id=${Number(timeTargetUserId)}` : ""}`}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  {language === "de" ? "CSV Export" : "CSV export"}
-                </a>
-              </div>
-              {!viewingOwnTime && (
-                <small className="muted">
-                  {language === "de"
-                    ? "Sie sehen die Zeitdaten eines Mitarbeiters. Clock-In/Out ist deaktiviert."
-                    : "You are viewing another employee. Clock actions are disabled."}
-                </small>
-              )}
-            </div>
-
-            <div className="card time-month-card">
-              <h3>{language === "de" ? "Monats- und Wochenstunden" : "Monthly and weekly hours"}</h3>
-              <div className="time-month-nav">
-                <button
-                  type="button"
-                  className="icon-btn"
-                  onClick={() => setTimeMonthCursor((current) => shiftMonthStart(current, -1))}
-                  aria-label={language === "de" ? "Vorheriger Monat" : "Previous month"}
-                >
-                  ←
-                </button>
-                <b>{monthCursorLabel}</b>
-                <button
-                  type="button"
-                  className="icon-btn"
-                  onClick={() => setTimeMonthCursor((current) => shiftMonthStart(current, 1))}
-                  aria-label={language === "de" ? "Nächster Monat" : "Next month"}
-                >
-                  →
-                </button>
-              </div>
-              <MonthlyHoursGauge
-                language={language}
-                workedHours={monthlyWorkedHours}
-                requiredHours={monthlyRequiredHours}
-              />
-              {monthlyWorkedHours > monthlyRequiredHours && (
-                <small className="muted">
-                  {language === "de" ? "Überstunden" : "Overtime"}: {formatHours(monthlyWorkedHours - monthlyRequiredHours)}
-                </small>
-              )}
-              <div className="weekly-hours-list">
-                {timeMonthRows.map((row) => (
-                  <WeeklyHoursGauge key={`${row.weekYear}-${row.weekNumber}-${row.weekStart}`} language={language} row={row} />
-                ))}
-              </div>
-            </div>
-
-            <div className="card time-entries-card">
-              <div className="row wrap">
-                <h3>{language === "de" ? "Wochenbuchungen" : "Weekly entries"}</h3>
-                {isTimeManager && (
-                  <input
-                    type="number"
-                    placeholder={language === "de" ? "Mitarbeiter-ID filtern" : "Filter by user ID"}
-                    value={timeTargetUserId}
-                    onChange={(e) => setTimeTargetUserId(e.target.value)}
-                  />
-                )}
-                {isTimeManager && timeTargetUser && (
-                  <small className="muted">
-                    {language === "de" ? "Filter aktiv" : "Filter active"}:{" "}
-                    {menuUserNameById(timeTargetUser.id, timeTargetUser.display_name || timeTargetUser.full_name)}
-                  </small>
-                )}
-              </div>
-              <div className="time-entry-list">
-                {timeEntries.map((entry) => (
-                  <form key={entry.id} className="time-entry" onSubmit={(event) => updateTimeEntry(event, entry.id)}>
-                    <div className="row wrap">
-                      <b>#{entry.id}</b>
-                      <span>user {entry.user_id}</span>
-                      <span>{entry.net_hours}h</span>
-                    </div>
-                    <div className="grid compact">
-                      <label>
-                        Clock in
-                        <input type="datetime-local" name="clock_in" required defaultValue={isoToLocalDateTimeInput(entry.clock_in)} />
-                      </label>
-                      <label>
-                        Clock out
-                        <input type="datetime-local" name="clock_out" defaultValue={isoToLocalDateTimeInput(entry.clock_out)} />
-                      </label>
-                      <label>
-                        Break min
-                        <input type="number" name="break_minutes" min={0} defaultValue={Math.round(entry.break_hours * 60)} />
-                      </label>
-                    </div>
-                    <div className="row wrap">
-                      <small>
-                        break: {entry.break_hours}h | legal: {entry.required_break_hours}h | deducted: {entry.deducted_break_hours}h
-                      </small>
-                      <button type="submit">{language === "de" ? "Ändern" : "Update"}</button>
-                    </div>
-                  </form>
-                ))}
-              </div>
-            </div>
-
-            <div className="card time-requests-card">
-              <h3>{language === "de" ? "Urlaubsanträge" : "Vacation requests"}</h3>
-              <form className="modal-form" onSubmit={submitVacationRequest}>
-                <div className="row wrap">
-                  <label>
-                    {language === "de" ? "Von" : "From"}
-                    <input
-                      type="date"
-                      value={vacationRequestForm.start_date}
-                      onChange={(event) =>
-                        setVacationRequestForm((current) => ({ ...current, start_date: event.target.value }))
-                      }
-                      required
-                    />
-                  </label>
-                  <label>
-                    {language === "de" ? "Bis" : "Until"}
-                    <input
-                      type="date"
-                      value={vacationRequestForm.end_date}
-                      onChange={(event) =>
-                        setVacationRequestForm((current) => ({ ...current, end_date: event.target.value }))
-                      }
-                      required
-                    />
-                  </label>
-                </div>
-                <label>
-                  {language === "de" ? "Notiz" : "Note"}
-                  <textarea
-                    value={vacationRequestForm.note}
-                    onChange={(event) =>
-                      setVacationRequestForm((current) => ({ ...current, note: event.target.value }))
-                    }
-                  />
-                </label>
-                <button type="submit">{language === "de" ? "Antrag senden" : "Submit request"}</button>
-              </form>
-
-              {canApproveVacation && (
-                <div className="metric-stack">
-                  <b>{language === "de" ? "Offene Anträge" : "Pending requests"}</b>
-                  <ul className="overview-list">
-                    {pendingVacationRequests.map((row) => (
-                      <li key={`vacation-pending-${row.id}`} className="task-list-item">
-                        <div className="task-list-main">
-                          <b>{menuUserNameById(row.user_id, row.user_name)}</b>
-                          <small>
-                            {row.start_date} - {row.end_date}
-                          </small>
-                          {row.note && <small>{row.note}</small>}
-                        </div>
-                        <div className="row wrap task-actions">
-                          <button type="button" onClick={() => void reviewVacationRequest(row.id, "approved")}>
-                            {language === "de" ? "Genehmigen" : "Approve"}
-                          </button>
-                          <button type="button" onClick={() => void reviewVacationRequest(row.id, "rejected")}>
-                            {language === "de" ? "Ablehnen" : "Reject"}
-                          </button>
-                        </div>
-                      </li>
-                    ))}
-                    {pendingVacationRequests.length === 0 && (
-                      <li className="muted">{language === "de" ? "Keine offenen Anträge." : "No pending requests."}</li>
-                    )}
-                  </ul>
-                </div>
-              )}
-
-              <div className="metric-stack">
-                <b>{language === "de" ? "Genehmigter Urlaub" : "Approved vacation"}</b>
-                <ul className="overview-list">
-                  {approvedVacationRequests.map((row) => (
-                    <li key={`vacation-approved-${row.id}`}>
-                      <small>
-                        {menuUserNameById(row.user_id, row.user_name)}: {row.start_date} - {row.end_date}
-                      </small>
-                    </li>
-                  ))}
-                  {approvedVacationRequests.length === 0 && (
-                    <li className="muted">{language === "de" ? "Keine genehmigten Urlaube." : "No approved vacations."}</li>
-                  )}
-                </ul>
-              </div>
-            </div>
-
-            <div className="card time-school-card">
-              <h3>{language === "de" ? "Schulzeiten / Abwesenheiten" : "School dates / absences"}</h3>
-              {canManageSchoolAbsences && (
-                <form className="modal-form" onSubmit={submitSchoolAbsence}>
-                  <label>
-                    {language === "de" ? "Mitarbeiter" : "Employee"}
-                    <select
-                      value={schoolAbsenceForm.user_id}
-                      onChange={(event) =>
-                        setSchoolAbsenceForm((current) => ({ ...current, user_id: event.target.value }))
-                      }
-                      required
-                    >
-                      <option value="">{language === "de" ? "Bitte auswählen" : "Please select"}</option>
-                      {assignableUsers.map((entry) => (
-                        <option key={`school-user-${entry.id}`} value={String(entry.id)}>
-                          {menuUserNameById(entry.id, entry.display_name || entry.full_name)} (#{entry.id})
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label>
-                    {language === "de" ? "Titel" : "Title"}
-                    <input
-                      value={schoolAbsenceForm.title}
-                      onChange={(event) =>
-                        setSchoolAbsenceForm((current) => ({ ...current, title: event.target.value }))
-                      }
-                      required
-                    />
-                  </label>
-                  <div className="row wrap">
-                    <label>
-                      {language === "de" ? "Start" : "Start"}
-                      <input
-                        type="date"
-                        value={schoolAbsenceForm.start_date}
-                        onChange={(event) =>
-                          setSchoolAbsenceForm((current) => ({ ...current, start_date: event.target.value }))
-                        }
-                        required
-                      />
-                    </label>
-                    <label>
-                      {language === "de" ? "Ende" : "End"}
-                      <input
-                        type="date"
-                        value={schoolAbsenceForm.end_date}
-                        onChange={(event) =>
-                          setSchoolAbsenceForm((current) => ({ ...current, end_date: event.target.value }))
-                        }
-                        required
-                      />
-                    </label>
-                  </div>
-                  <div className="row wrap">
-                    <div className="weekday-checkbox-group">
-                      <small>{language === "de" ? "Wiederholung (Mo-Fr)" : "Recurring days (Mon-Fri)"}</small>
-                      <div className="weekday-checkbox-row">
-                        {[0, 1, 2, 3, 4].map((day) => (
-                          <label key={`school-day-${day}`} className="weekday-checkbox-item">
-                            <input
-                              type="checkbox"
-                              checked={schoolAbsenceForm.recurrence_weekdays.includes(day)}
-                              onChange={(event) => toggleSchoolRecurrenceWeekday(day, event.target.checked)}
-                            />
-                            <span>{schoolWeekdayLabel(day, language)}</span>
-                          </label>
-                        ))}
-                      </div>
-                    </div>
-                    <label>
-                      {language === "de" ? "Intervall bis (optional)" : "Recurring until (optional)"}
-                      <input
-                        type="date"
-                        value={schoolAbsenceForm.recurrence_until}
-                        onChange={(event) =>
-                          setSchoolAbsenceForm((current) => ({ ...current, recurrence_until: event.target.value }))
-                        }
-                      />
-                    </label>
-                  </div>
-                  <button type="submit">{language === "de" ? "Schulzeit speichern" : "Save school date"}</button>
-                </form>
-              )}
-              <ul className="overview-list">
-                {schoolAbsences.map((row) => (
-                  <li key={`school-${row.id}`} className="task-list-item">
-                    <div className="task-list-main">
-                      <b>{menuUserNameById(row.user_id, row.user_name)}</b>
-                      <small>
-                        {row.title}: {row.start_date} - {row.end_date}
-                      </small>
-                      {row.recurrence_weekday !== null && row.recurrence_weekday !== undefined && (
-                        <small>
-                          {language === "de" ? "Woechentlich" : "Weekly"}:{" "}
-                          {schoolWeekdayLabel(row.recurrence_weekday, language)}
-                          {row.recurrence_until ? ` | ${language === "de" ? "bis" : "until"} ${row.recurrence_until}` : ""}
-                        </small>
-                      )}
-                    </div>
-                    {canManageSchoolAbsences && (
-                      <div className="row wrap task-actions">
-                        <button type="button" className="danger-btn" onClick={() => void removeSchoolAbsence(row.id)}>
-                          {language === "de" ? "Löschen" : "Delete"}
-                        </button>
-                      </div>
-                    )}
-                  </li>
-                ))}
-                {schoolAbsences.length === 0 && (
-                  <li className="muted">{language === "de" ? "Keine Schulzeiten vorhanden." : "No school dates found."}</li>
-                )}
-              </ul>
-            </div>
-          </section>
-        )}
-
-        {mainView === "profile" && (
-          <section className="profile-layout">
-            <div className="profile-left-stack">
-              <div className="card profile-settings-card">
-                <h3>{language === "de" ? "Profil & Einstellungen" : "Profile & settings"}</h3>
-                <div className="row wrap profile-head-row">
-                  <button
-                    type="button"
-                    className="profile-avatar-trigger"
-                    onClick={openAvatarModal}
-                    aria-label={language === "de" ? "Profilbild ändern" : "Change profile picture"}
-                    title={language === "de" ? "Profilbild ändern" : "Change profile picture"}
-                  >
-                    <AvatarBadge
-                      userId={user.id}
-                      initials={userInitials}
-                      hasAvatar={Boolean(user.avatar_updated_at)}
-                      versionKey={avatarVersionKey}
-                      className="profile-avatar"
-                    />
-                    <span className="profile-avatar-overlay">{language === "de" ? "Ändern" : "Change"}</span>
-                  </button>
-                  <div className="metric-stack">
-                    <b>{menuUserNameById(user.id, user.display_name || user.full_name)}</b>
-                    <small>{user.email}</small>
-                    <small>Role: {user.role}</small>
-                  </div>
-                </div>
-                <form className="modal-form" onSubmit={saveProfileSettings}>
-                  <label>
-                    {language === "de" ? "Name" : "Name"}
-                    <input
-                      value={profileSettingsForm.full_name}
-                      onChange={(event) =>
-                        setProfileSettingsForm((current) => ({ ...current, full_name: event.target.value }))
-                      }
-                      required
-                    />
-                  </label>
-                  <label>
-                    {language === "de" ? "E-Mail" : "Email"}
-                    <input
-                      type="email"
-                      value={profileSettingsForm.email}
-                      onChange={(event) =>
-                        setProfileSettingsForm((current) => ({ ...current, email: event.target.value }))
-                      }
-                      required
-                    />
-                  </label>
-                  {isAdmin && (
-                    <label>
-                      {language === "de" ? "Nickname (optional)" : "Nickname (optional)"}
-                      <input
-                        value={profileSettingsForm.nickname}
-                        onChange={(event) => {
-                          const nextValue = event.target.value;
-                          setProfileSettingsForm((current) => ({ ...current, nickname: nextValue }));
-                          setNicknameCheckState("idle");
-                          setNicknameCheckMessage("");
-                        }}
-                        placeholder={language === "de" ? "z. B. SiteWolf" : "for example SiteWolf"}
-                      />
-                      <small className="muted">
-                        {language === "de"
-                          ? "Wird in Berichten und Exporten statt des echten Namens verwendet. Leer lassen, um den Nickname zu entfernen."
-                          : "Used in reports and exports instead of the real name. Leave empty to remove nickname."}
-                      </small>
-                      {nicknameCheckState !== "idle" && nicknameCheckMessage && (
-                        <small className="muted">{nicknameCheckMessage}</small>
-                      )}
-                    </label>
-                  )}
-                  <label>
-                    {language === "de" ? "Aktuelles Passwort" : "Current password"}
-                    <input
-                      type="password"
-                      value={profileSettingsForm.current_password}
-                      onChange={(event) =>
-                        setProfileSettingsForm((current) => ({ ...current, current_password: event.target.value }))
-                      }
-                      placeholder={language === "de" ? "Nur für E-Mail/Passwort Änderung" : "Needed for email/password changes"}
-                    />
-                  </label>
-                  <label>
-                    {language === "de" ? "Neues Passwort" : "New password"}
-                    <input
-                      type="password"
-                      minLength={8}
-                      value={profileSettingsForm.new_password}
-                      onChange={(event) =>
-                        setProfileSettingsForm((current) => ({ ...current, new_password: event.target.value }))
-                      }
-                      placeholder={language === "de" ? "Leer lassen für keine Änderung" : "Leave empty to keep current"}
-                    />
-                  </label>
-                  <div className="row wrap">
-                    <button type="submit">{language === "de" ? "Profil speichern" : "Save profile"}</button>
-                  </div>
-                </form>
-                <small className="muted">
-                  {language === "de"
-                    ? "Sprachwechsel und Abmelden sind unten in der Seitenleiste."
-                    : "Language switch and sign-out are available in the sidebar footer."}
-                </small>
-              </div>
-
-              {(canManageProjectImport || canManageSchoolAbsences || isAdmin) && (
-                <div className="card">
-                  <h3>{language === "de" ? "Admin Werkzeuge" : "Admin tools"}</h3>
-                  {renderAdminUpdateMenu()}
-                  {isAdmin && (
-                    <div className="metric-stack">
-                      <b>{language === "de" ? "Einladung senden" : "Send invite"}</b>
-                      <form className="modal-form" onSubmit={submitCreateInvite}>
-                        <label>
-                          {language === "de" ? "Name" : "Name"}
-                          <input
-                            value={inviteCreateForm.full_name}
-                            onChange={(event) =>
-                              setInviteCreateForm((current) => ({ ...current, full_name: event.target.value }))
-                            }
-                            required
-                          />
-                        </label>
-                        <label>
-                          {language === "de" ? "E-Mail" : "Email"}
-                          <input
-                            type="email"
-                            value={inviteCreateForm.email}
-                            onChange={(event) =>
-                              setInviteCreateForm((current) => ({ ...current, email: event.target.value }))
-                            }
-                            required
-                          />
-                        </label>
-                        <label>
-                          {language === "de" ? "Rolle" : "Role"}
-                          <select
-                            value={inviteCreateForm.role}
-                            onChange={(event) =>
-                              setInviteCreateForm((current) => ({
-                                ...current,
-                                role: event.target.value as User["role"],
-                              }))
-                            }
-                          >
-                            <option value="admin">admin</option>
-                            <option value="ceo">ceo</option>
-                            <option value="accountant">accountant</option>
-                            <option value="planning">planning</option>
-                            <option value="employee">employee</option>
-                          </select>
-                        </label>
-                        <button type="submit">{language === "de" ? "Einladung senden" : "Send invite"}</button>
-                      </form>
-                    </div>
-                  )}
-                  {isAdmin && (
-                    <div className="metric-stack">
-                      <b>{language === "de" ? "Datenbank-Backup exportieren" : "Export database backup"}</b>
-                      <small className="muted">
-                        {language === "de"
-                          ? "Die Sicherung ist verschlüsselt und kann nur mit derselben Schlüsseldatei entschlüsselt werden."
-                          : "Backup is encrypted and can only be decrypted with the same key file."}
-                      </small>
-                      <form className="row wrap" onSubmit={exportEncryptedDatabaseBackup}>
-                        <input type="file" name="key_file" required />
-                        <button type="submit" disabled={backupExporting}>
-                          {backupExporting
-                            ? language === "de"
-                              ? "Export läuft..."
-                              : "Exporting..."
-                            : language === "de"
-                              ? "Backup herunterladen"
-                              : "Download backup"}
-                        </button>
-                      </form>
-                    </div>
-                  )}
-                  {canManageProjectImport && (
-                    <div className="metric-stack">
-                      <b>{language === "de" ? "OpenWeather API" : "OpenWeather API"}</b>
-                        <small className="muted">
-                          {language === "de"
-                            ? "Schlüssel für die 5-Tage-Projektwettervorhersage."
-                            : "Key for 5-day project weather forecast."}
-                        </small>
-                      <small className="muted">
-                        {language === "de" ? "Aktuell" : "Current"}:{" "}
-                        {weatherSettings?.configured
-                          ? weatherSettings.masked_api_key || (language === "de" ? "gesetzt" : "configured")
-                          : language === "de"
-                            ? "nicht konfiguriert"
-                            : "not configured"}
-                      </small>
-                      <form className="row wrap" onSubmit={saveWeatherSettings}>
-                        <input
-                          type="password"
-                          value={weatherApiKeyInput}
-                          onChange={(event) => setWeatherApiKeyInput(event.target.value)}
-                          placeholder={
-                            language === "de"
-                              ? "Neuen API-Schlüssel eingeben (leer = entfernen)"
-                              : "Enter new API key (empty = clear)"
-                          }
-                        />
-                        <button type="submit" disabled={weatherSettingsSaving}>
-                          {weatherSettingsSaving
-                            ? language === "de"
-                              ? "Speichern..."
-                              : "Saving..."
-                            : language === "de"
-                              ? "Speichern"
-                              : "Save"}
-                        </button>
-                      </form>
-                    </div>
-                  )}
-                  {canManageProjectImport && (
-                    <div className="metric-stack">
-                      <b>{language === "de" ? "Projektklassen-Template" : "Project class template"}</b>
-                      <small className="muted">
-                        {language === "de"
-                          ? "CSV mit Projektklassen, Standard-Materialien/Werkzeugen und Aufgaben."
-                          : "CSV containing project classes, default materials/tools, and tasks."}
-                      </small>
-                      <div className="row wrap">
-                        <button type="button" onClick={downloadProjectClassTemplateCsv}>
-                          {language === "de" ? "Template herunterladen" : "Download template"}
-                        </button>
-                      </div>
-                      <form className="row wrap" onSubmit={importProjectClassTemplateCsv}>
-                        <input type="file" name="file" accept=".csv,text/csv" required />
-                        <button type="submit">{language === "de" ? "Template importieren" : "Import template"}</button>
-                      </form>
-                    </div>
-                  )}
-                  {canManageProjectImport && (
-                    <div className="metric-stack">
-                      <b>{language === "de" ? "Projekt-CSV Import" : "Project CSV import"}</b>
-                      <div className="row wrap">
-                        <button type="button" onClick={downloadProjectCsvTemplate}>
-                          {language === "de" ? "CSV-Template herunterladen" : "Download CSV template"}
-                        </button>
-                      </div>
-                      <form className="row wrap" onSubmit={importProjectsCsv}>
-                        <input type="file" name="file" accept=".csv,text/csv" required />
-                        <button type="submit">{language === "de" ? "CSV importieren" : "Import CSV"}</button>
-                      </form>
-                    </div>
-                  )}
-                  {canManageSchoolAbsences && (
-                    <div className="metric-stack">
-                      <b>{language === "de" ? "Berufsschule verwalten" : "Manage school dates"}</b>
-                      <small className="muted">
-                        {language === "de"
-                          ? "Sie können Schulblöcke oder wiederkehrende Schultage hinzufügen."
-                          : "You can add school blocks or recurring school days."}
-                      </small>
-                      <form className="modal-form" onSubmit={submitSchoolAbsence}>
-                        <label>
-                          {language === "de" ? "Mitarbeiter" : "Employee"}
-                          <select
-                            value={schoolAbsenceForm.user_id}
-                            onChange={(event) =>
-                              setSchoolAbsenceForm((current) => ({ ...current, user_id: event.target.value }))
-                            }
-                            required
-                          >
-                            <option value="">{language === "de" ? "Bitte auswählen" : "Please select"}</option>
-                            {assignableUsers.map((entry) => (
-                              <option key={`profile-school-user-${entry.id}`} value={String(entry.id)}>
-                                {menuUserNameById(entry.id, entry.display_name || entry.full_name)} (#{entry.id})
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                        <div className="row wrap">
-                          <label>
-                            {language === "de" ? "Start" : "Start"}
-                            <input
-                              type="date"
-                              value={schoolAbsenceForm.start_date}
-                              onChange={(event) =>
-                                setSchoolAbsenceForm((current) => ({ ...current, start_date: event.target.value }))
-                              }
-                              required
-                            />
-                          </label>
-                          <label>
-                            {language === "de" ? "Ende" : "End"}
-                            <input
-                              type="date"
-                              value={schoolAbsenceForm.end_date}
-                              onChange={(event) =>
-                                setSchoolAbsenceForm((current) => ({ ...current, end_date: event.target.value }))
-                              }
-                              required
-                            />
-                          </label>
-                        </div>
-                        <div className="weekday-checkbox-group">
-                          <small>{language === "de" ? "Wiederholung (Mo-Fr)" : "Recurring days (Mon-Fri)"}</small>
-                          <div className="weekday-checkbox-row">
-                            {[0, 1, 2, 3, 4].map((day) => (
-                              <label key={`profile-school-day-${day}`} className="weekday-checkbox-item">
-                                <input
-                                  type="checkbox"
-                                  checked={schoolAbsenceForm.recurrence_weekdays.includes(day)}
-                                  onChange={(event) => toggleSchoolRecurrenceWeekday(day, event.target.checked)}
-                                />
-                                <span>{schoolWeekdayLabel(day, language)}</span>
-                              </label>
-                            ))}
-                          </div>
-                        </div>
-                        <label>
-                          {language === "de" ? "Intervall bis (optional)" : "Recurring until (optional)"}
-                          <input
-                            type="date"
-                            value={schoolAbsenceForm.recurrence_until}
-                            onChange={(event) =>
-                              setSchoolAbsenceForm((current) => ({ ...current, recurrence_until: event.target.value }))
-                            }
-                          />
-                        </label>
-                        <button type="submit">{language === "de" ? "Schulzeit speichern" : "Save school date"}</button>
-                      </form>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-            {isAdmin && (
-              <div className="card profile-admin-center-card">
-                <h3>{language === "de" ? "Admin Center" : "Admin Center"}</h3>
-                <table>
-                  <thead>
-                    <tr>
-                      <th>ID</th>
-                      <th>{language === "de" ? "Name" : "Name"}</th>
-                      <th>Email</th>
-                      <th>{language === "de" ? "Rolle" : "Role"}</th>
-                      <th>{language === "de" ? "Soll (h/Tag)" : "Required (h/day)"}</th>
-                      <th>{language === "de" ? "Template" : "Template"}</th>
-                      <th>{language === "de" ? "Einladung" : "Invite"}</th>
-                      <th>{language === "de" ? "Aktionen" : "Actions"}</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {activeAdminUsers.map((u) => (
-                      <tr key={u.id}>
-                        <td>{u.id}</td>
-                        <td>
-                          <div className="metric-stack">
-                            <span>{u.full_name}</span>
-                          </div>
-                        </td>
-                        <td>{u.email}</td>
-                        <td>
-                          <select value={u.role} onChange={(e) => updateRole(u.id, e.target.value as User["role"])}>
-                            <option value="admin">admin</option>
-                            <option value="ceo">ceo</option>
-                            <option value="accountant">accountant</option>
-                            <option value="planning">planning</option>
-                            <option value="employee">employee</option>
-                          </select>
-                        </td>
-                        <td>
-                          <div className="row wrap admin-required-hours-cell">
-                            <input
-                              type="number"
-                              min={1}
-                              max={24}
-                              step={0.25}
-                              value={requiredHoursDrafts[u.id] ?? String(u.required_daily_hours ?? 8)}
-                              onChange={(event) =>
-                                setRequiredHoursDrafts((current) => ({ ...current, [u.id]: event.target.value }))
-                              }
-                            />
-                            <button type="button" onClick={() => void updateRequiredDailyHours(u.id)}>
-                              {language === "de" ? "Speichern" : "Save"}
-                            </button>
-                          </div>
-                        </td>
-                        <td>
-                          <button onClick={() => applyTemplate(u.id)}>
-                            {language === "de" ? "Default anwenden" : "Apply default"}
-                          </button>
-                        </td>
-                        <td>
-                          <small>
-                            {u.invite_sent_at
-                              ? formatServerDateTime(u.invite_sent_at, language)
-                              : "-"}
-                          </small>
-                          <br />
-                          <small className="muted">
-                            {u.invite_accepted_at
-                              ? language === "de"
-                                ? "Angenommen"
-                                : "Accepted"
-                              : language === "de"
-                                ? "Offen"
-                                : "Pending"}
-                          </small>
-                        </td>
-                        <td>
-                          <div className="admin-actions-menu-wrap">
-                            <button
-                              type="button"
-                              className="admin-actions-trigger"
-                              aria-haspopup="menu"
-                              aria-expanded={adminUserMenuOpenId === u.id}
-                              aria-label={language === "de" ? "Benutzeraktionen öffnen" : "Open user actions"}
-                              onClick={() =>
-                                setAdminUserMenuOpenId((current) => (current === u.id ? null : u.id))
-                              }
-                            >
-                              &#8942;
-                            </button>
-                            {adminUserMenuOpenId === u.id && (
-                              <div className="admin-actions-menu" role="menu">
-                                <button
-                                  type="button"
-                                  role="menuitem"
-                                  onClick={() => void sendInviteToUser(u.id)}
-                                >
-                                  {u.invite_sent_at
-                                    ? language === "de"
-                                      ? "Einladung erneut senden"
-                                      : "Resend invite"
-                                    : language === "de"
-                                      ? "Einladung senden"
-                                      : "Send invite"}
-                                </button>
-                                <button
-                                  type="button"
-                                  role="menuitem"
-                                  onClick={() => void sendPasswordResetToUser(u.id)}
-                                >
-                                  {language === "de" ? "Passwort-Reset senden" : "Send reset link"}
-                                </button>
-                                <button
-                                  type="button"
-                                  role="menuitem"
-                                  className="danger"
-                                  disabled={u.id === user?.id}
-                                  onClick={() => void softDeleteUser(u.id)}
-                                >
-                                  {language === "de" ? "Benutzer löschen" : "Delete user"}
-                                </button>
-                              </div>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                    {activeAdminUsers.length === 0 && (
-                      <tr>
-                        <td colSpan={8} className="muted">
-                          {language === "de" ? "Keine aktiven Benutzer." : "No active users."}
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-                <div className="admin-users-archive">
-                  <h4>{language === "de" ? "Benutzerarchiv" : "User archive"}</h4>
-                  <ul className="task-list">
-                    {archivedAdminUsers.map((u) => (
-                      <li key={`admin-archive-${u.id}`} className="archive-list-item admin-user-archive-item">
-                        <div className="metric-stack">
-                          <b>
-                            {u.full_name} (#{u.id})
-                          </b>
-                          <small>{u.email}</small>
-                          <small>{u.role}</small>
-                        </div>
-                        <button type="button" onClick={() => void restoreArchivedUser(u.id)}>
-                          {language === "de" ? "Wiederherstellen" : "Restore"}
-                        </button>
-                      </li>
-                    ))}
-                    {archivedAdminUsers.length === 0 && (
-                      <li className="muted">{language === "de" ? "Keine archivierten Benutzer." : "No archived users."}</li>
-                    )}
-                  </ul>
-                </div>
-              </div>
-            )}
-          </section>
-        )}
-
-        {mainView === "admin" && isAdmin && (
-          <section className="card">
-            <h3>{language === "de" ? "Benutzerverwaltung" : "User administration"}</h3>
-            {renderAdminUpdateMenu()}
-            <table>
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>{language === "de" ? "Name" : "Name"}</th>
-                  <th>Email</th>
-                  <th>{language === "de" ? "Rolle" : "Role"}</th>
-                  <th>{language === "de" ? "Soll (h/Tag)" : "Required (h/day)"}</th>
-                  <th>{language === "de" ? "Template" : "Template"}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {activeAdminUsers.map((u) => (
-                  <tr key={u.id}>
-                    <td>{u.id}</td>
-                    <td>{u.full_name}</td>
-                    <td>{u.email}</td>
-                    <td>
-                      <select value={u.role} onChange={(e) => updateRole(u.id, e.target.value as User["role"])}>
-                        <option value="admin">admin</option>
-                        <option value="ceo">ceo</option>
-                        <option value="accountant">accountant</option>
-                        <option value="planning">planning</option>
-                        <option value="employee">employee</option>
-                      </select>
-                    </td>
-                    <td>
-                      <div className="row wrap admin-required-hours-cell">
-                        <input
-                          type="number"
-                          min={1}
-                          max={24}
-                          step={0.25}
-                          value={requiredHoursDrafts[u.id] ?? String(u.required_daily_hours ?? 8)}
-                          onChange={(event) =>
-                            setRequiredHoursDrafts((current) => ({ ...current, [u.id]: event.target.value }))
-                          }
-                        />
-                        <button type="button" onClick={() => void updateRequiredDailyHours(u.id)}>
-                          {language === "de" ? "Speichern" : "Save"}
-                        </button>
-                      </div>
-                    </td>
-                    <td>
-                      <button onClick={() => applyTemplate(u.id)}>
-                        {language === "de" ? "Default anwenden" : "Apply default"}
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-                {activeAdminUsers.length === 0 && (
-                  <tr>
-                    <td colSpan={6} className="muted">
-                      {language === "de" ? "Keine aktiven Benutzer." : "No active users."}
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-            <div className="admin-users-archive">
-              <h4>{language === "de" ? "Benutzerarchiv" : "User archive"}</h4>
-              <ul className="task-list">
-                {archivedAdminUsers.map((u) => (
-                  <li key={`admin-view-archive-${u.id}`} className="archive-list-item admin-user-archive-item">
-                    <div className="metric-stack">
-                      <b>
-                        {u.full_name} (#{u.id})
-                      </b>
-                      <small>{u.email}</small>
-                      <small>{u.role}</small>
-                    </div>
-                    <button type="button" onClick={() => void restoreArchivedUser(u.id)}>
-                      {language === "de" ? "Wiederherstellen" : "Restore"}
-                    </button>
-                  </li>
-                ))}
-                {archivedAdminUsers.length === 0 && (
-                  <li className="muted">{language === "de" ? "Keine archivierten Benutzer." : "No archived users."}</li>
-                )}
-              </ul>
-            </div>
-          </section>
-        )}
+        <AdminPage />
       </main>
-    </div>
+    </div>}
+    </AppContext.Provider>
   );
 }
