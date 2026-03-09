@@ -236,3 +236,83 @@ def test_material_catalog_enriches_image_for_selected_item(
     queue_entry = next((row for row in material_queue.json() if row["id"] == created["id"]), None)
     assert queue_entry is not None
     assert queue_entry["image_url"] == "https://images.example.test/abb/7612271471699.jpg"
+
+
+def test_material_catalog_import_inserts_in_bounded_batches(
+    client: TestClient,
+    admin_token: str,
+    monkeypatch,
+):
+    employee = _create_user(client, admin_token, "catalog-batch@example.com", "employee")
+    employee_token = _login(client, employee["email"])
+
+    catalog_dir = _reset_catalog_dir()
+    catalog_file = catalog_dir / "batch-materials.csv"
+    lines = ["Artikelnummer;Bezeichnung;Einheit;Hersteller;Preis"]
+    for index in range(1, 121):
+        lines.append(f"B-{index:05d};Batch Cable {index};m;SMPL;10,00")
+    catalog_file.write_text("\n".join(lines), encoding="utf-8")
+
+    monkeypatch.setattr(material_catalog_service, "CATALOG_IMPORT_BATCH_SIZE", 25)
+    original_insert_batch = material_catalog_service._insert_catalog_batch
+    observed_batch_sizes: list[int] = []
+
+    def tracked_insert_batch(db, rows):
+        observed_batch_sizes.append(len(rows))
+        return original_insert_batch(db, rows)
+
+    monkeypatch.setattr(material_catalog_service, "_insert_catalog_batch", tracked_insert_batch)
+
+    search_catalog = client.get("/api/materials/catalog?q=Batch", headers=auth_headers(employee_token))
+    assert search_catalog.status_code == 200
+    assert len(search_catalog.json()) == 10
+
+    assert observed_batch_sizes
+    assert max(observed_batch_sizes) <= 25
+    assert sum(observed_batch_sizes) == 120
+
+
+def test_material_catalog_state_reports_image_sync_progress(
+    client: TestClient,
+    admin_token: str,
+    monkeypatch,
+):
+    employee = _create_user(client, admin_token, "catalog-image-state@example.com", "employee")
+    employee_token = _login(client, employee["email"])
+
+    monkeypatch.setattr(material_catalog_service, "_image_lookup_enabled", lambda: True)
+    monkeypatch.setattr(material_catalog_service, "_image_lookup_max_items_per_request", lambda: 1)
+
+    def fake_lookup(*, ean: str | None, manufacturer: str | None, item_name: str | None = None, article_no: str | None = None):
+        if ean == "7612271471699":
+            return MaterialImageLookupResult(
+                image_url="https://images.example.test/abb/7612271471699.jpg",
+                source="manufacturer_site",
+            )
+        return None
+
+    monkeypatch.setattr(material_catalog_service, "resolve_material_catalog_image", fake_lookup)
+
+    catalog_dir = _reset_catalog_dir()
+    datanorm_file = catalog_dir / "Datanorm.001"
+    datanorm_file.write_text(
+        "\n".join(
+            [
+                "V 060226UNI ELEKTRO Fachgrosshandel GMBh&Co. Reg65760 Eschborn , Ludwig-Erhard-Strasse 2Copyright UNI ELEKTRO Fachgrosshand04EUR",
+                "A;N;01000130;00;ABB S804PV-SP10;Strangsicherung 1.500V DC, 10A, 4-polig;1;0;ST;60400;;010;;",
+                "B;N;01000130;S804PV-SP10;;;;;;7612271471699;;999;;;;;",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    response = client.get("/api/materials/catalog/state", headers=auth_headers(employee_token))
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["image_lookup_enabled"] is True
+    assert payload["image_last_run_processed"] == 1
+    assert payload["image_total_items"] == 1
+    assert payload["image_items_with_image"] == 1
+    assert payload["image_items_pending"] == 0
+    assert payload["image_items_not_found"] == 0
+    assert payload["image_last_checked_at"]
