@@ -11,4 +11,12 @@ export default defineConfig({
       },
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        // Give lazy-loaded page chunks readable names instead of hash-only names
+        chunkFileNames: "chunks/[name]-[hash].js",
+      },
+    },
+  },
 });

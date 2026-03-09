@@ -1,4 +1,4 @@
-import { ChangeEvent, FormEvent, MouseEvent, PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, lazy, MouseEvent, PointerEvent, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppContext } from "./context/AppContext";
 import type { AppContextValue } from "./context/AppContext";
 
@@ -177,24 +177,28 @@ import { TaskEditModal } from "./components/modals/TaskEditModal";
 import { FileUploadModal } from "./components/modals/FileUploadModal";
 import { ThreadModal } from "./components/modals/ThreadModal";
 import { ArchivedThreadsModal } from "./components/modals/ArchivedThreadsModal";
-import { LoginPage } from "./pages/LoginPage";
-import { ProjectsArchivePage } from "./pages/ProjectsArchivePage";
-import { ProjectsAllPage } from "./pages/ProjectsAllPage";
-import { MyTasksPage } from "./pages/MyTasksPage";
-import { OfficeTasksPage } from "./pages/OfficeTasksPage";
-import { WikiPage } from "./pages/WikiPage";
-import { CalendarPage } from "./pages/CalendarPage";
-import { MaterialsPage } from "./pages/MaterialsPage";
-import { OverviewPage } from "./pages/OverviewPage";
-import { PlanningPage } from "./pages/PlanningPage";
-import { ProjectPage } from "./pages/ProjectPage";
-import { MessagesPage } from "./pages/MessagesPage";
-import { ConstructionPage } from "./pages/ConstructionPage";
-import { TimePage } from "./pages/TimePage";
-import { ProfilePage } from "./pages/ProfilePage";
-import { AdminPage } from "./pages/AdminPage";
 import { AvatarModal } from "./components/modals/AvatarModal";
 import { useServerEvents, type ServerEvent } from "./hooks/useServerEvents";
+
+// Pages — loaded on first navigation, never on initial load
+const AdminPage = lazy(() => import("./pages/AdminPage").then((m) => ({ default: m.AdminPage })));
+const CalendarPage = lazy(() => import("./pages/CalendarPage").then((m) => ({ default: m.CalendarPage })));
+const ConstructionPage = lazy(() => import("./pages/ConstructionPage").then((m) => ({ default: m.ConstructionPage })));
+const LoginPage = lazy(() => import("./pages/LoginPage").then((m) => ({ default: m.LoginPage })));
+const MaterialsPage = lazy(() => import("./pages/MaterialsPage").then((m) => ({ default: m.MaterialsPage })));
+const MessagesPage = lazy(() => import("./pages/MessagesPage").then((m) => ({ default: m.MessagesPage })));
+const MyTasksPage = lazy(() => import("./pages/MyTasksPage").then((m) => ({ default: m.MyTasksPage })));
+const OfficeTasksPage = lazy(() => import("./pages/OfficeTasksPage").then((m) => ({ default: m.OfficeTasksPage })));
+const OverviewPage = lazy(() => import("./pages/OverviewPage").then((m) => ({ default: m.OverviewPage })));
+const PlanningPage = lazy(() => import("./pages/PlanningPage").then((m) => ({ default: m.PlanningPage })));
+const ProfilePage = lazy(() => import("./pages/ProfilePage").then((m) => ({ default: m.ProfilePage })));
+const ProjectPage = lazy(() => import("./pages/ProjectPage").then((m) => ({ default: m.ProjectPage })));
+const ProjectsAllPage = lazy(() => import("./pages/ProjectsAllPage").then((m) => ({ default: m.ProjectsAllPage })));
+const ProjectsArchivePage = lazy(() =>
+  import("./pages/ProjectsArchivePage").then((m) => ({ default: m.ProjectsArchivePage }))
+);
+const TimePage = lazy(() => import("./pages/TimePage").then((m) => ({ default: m.TimePage })));
+const WikiPage = lazy(() => import("./pages/WikiPage").then((m) => ({ default: m.WikiPage })));
 
 export function App() {
   const [token, setToken] = useState<string | null>(() => readStoredToken());
@@ -6601,7 +6605,11 @@ export function App() {
 
   return (
     <AppContext.Provider value={contextValue}>
-    {!user ? <LoginPage /> : <div className={`app-shell workspace-mode-${workspaceMode}`}>
+    {!user ? (
+      <Suspense fallback={<div className="page-loading-spinner" aria-hidden="true" />}>
+        <LoginPage />
+      </Suspense>
+    ) : <div className={`app-shell workspace-mode-${workspaceMode}`}>
       <Sidebar />
 
       <main className="content">
@@ -6638,35 +6646,6 @@ export function App() {
 
         <TaskEditModal />
 
-        <OverviewPage />
-
-        <MaterialsPage />
-
-        <ProjectsAllPage />
-
-        <ProjectsArchivePage />
-
-        <MyTasksPage />
-
-        <OfficeTasksPage />
-
-        {mainView === "project" && !activeProject && (
-          <section className="card">
-            <h3>{language === "de" ? "Kein Projekt ausgewählt" : "No project selected"}</h3>
-            <p>
-              {language === "de"
-                ? "Waehle links ein Projekt aus."
-                : "Select a project from the left list."}
-            </p>
-          </section>
-        )}
-
-        <ProjectPage />
-
-        <CalendarPage />
-
-        <PlanningPage />
-
         <FileUploadModal />
 
         <AvatarModal />
@@ -6675,17 +6654,33 @@ export function App() {
 
         <ArchivedThreadsModal />
 
-        <ConstructionPage />
-
-        <WikiPage />
-
-        <MessagesPage />
-
-        <TimePage />
-
-        <ProfilePage />
-
-        <AdminPage />
+        <Suspense fallback={<div className="page-loading-spinner" aria-hidden="true" />}>
+          {mainView === "overview" && <OverviewPage />}
+          {mainView === "materials" && <MaterialsPage />}
+          {mainView === "projects_all" && <ProjectsAllPage />}
+          {mainView === "projects_archive" && <ProjectsArchivePage />}
+          {mainView === "my_tasks" && <MyTasksPage />}
+          {mainView === "office_tasks" && <OfficeTasksPage />}
+          {mainView === "project" && !activeProject && (
+            <section className="card">
+              <h3>{language === "de" ? "Kein Projekt ausgewählt" : "No project selected"}</h3>
+              <p>
+                {language === "de"
+                  ? "Waehle links ein Projekt aus."
+                  : "Select a project from the left list."}
+              </p>
+            </section>
+          )}
+          {mainView === "project" && <ProjectPage />}
+          {mainView === "calendar" && <CalendarPage />}
+          {mainView === "planning" && <PlanningPage />}
+          {mainView === "construction" && <ConstructionPage />}
+          {mainView === "wiki" && <WikiPage />}
+          {mainView === "messages" && <MessagesPage />}
+          {mainView === "time" && <TimePage />}
+          {mainView === "profile" && <ProfilePage />}
+          {mainView === "admin" && <AdminPage />}
+        </Suspense>
       </main>
     </div>}
     </AppContext.Provider>

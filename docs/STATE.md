@@ -2511,3 +2511,17 @@
   - `docker compose run --rm --build api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_auth_rbac.py -k "update_status or install_update"'` pass (`6 passed`).
   - `./scripts/test.sh` pass (`66 passed` + web build pass).
 - Blockers: none.
+
+## Compacted Update (2026-03-09, Task I lazy-loaded page chunks)
+- Changed:
+  - Converted all 16 page imports in `apps/web/src/App.tsx` from static imports to `React.lazy()` with named-export adapters.
+  - Wrapped login view and main page area in `Suspense` fallbacks and switched to `mainView`-conditional page rendering.
+  - Kept modals (`FileUploadModal`, `AvatarModal`, `ThreadModal`, `ArchivedThreadsModal`) eagerly mounted outside `Suspense`.
+  - Added `.page-loading-spinner` CSS fallback in `apps/web/src/styles.css`.
+  - Added readable lazy chunk naming in `apps/web/vite.config.ts` via `build.rollupOptions.output.chunkFileNames`.
+- Verified:
+  - `cd apps/web && npx tsc --noEmit` pass.
+  - `cd apps/web && npm run build` pass.
+  - `ls -lh apps/web/dist/chunks/ | sort -k5 -rh | head -20` shows per-page chunks (`AdminPage-*`, `TimePage-*`, `ProjectPage-*`, etc.).
+  - `./scripts/test.sh` pass (`76 passed`, web build pass).
+- Blockers: none.

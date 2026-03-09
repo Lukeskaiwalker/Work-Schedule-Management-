@@ -642,3 +642,8 @@
 - No authentication or authorization model changes.
 - Admin update flow now executes one additional local script (`./scripts/update_release_metadata.sh`) after git pull; permission boundary for invoking updates remains admin/CEO-only.
 - No new external network destinations or privilege expansion introduced by this step.
+
+## Iteration Security Notes (2026-03-09, Task I frontend page lazy-loading)
+- No authentication or authorization model changes.
+- Change scope is frontend bundling/render strategy only (`React.lazy`, `Suspense`, conditional page mounting).
+- No API endpoint, permission boundary, or data-access path changes.

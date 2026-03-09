@@ -1835,3 +1835,14 @@
 - Tradeoffs:
   - Pros: release/commit labels stay synchronized across both shell-based and in-app update paths.
   - Cons: auto-install now has one additional script dependency in repo root.
+
+## 2026-03-09 - Lazy-load all page views from App shell
+- Status: accepted
+- Decision:
+  - Replace static imports of all top-level page components in `App.tsx` with `React.lazy(() => import(...))`.
+  - Render pages conditionally by `mainView` so only the active route view mounts and triggers chunk fetch.
+  - Wrap login and in-shell page region with `Suspense` fallback spinner; keep global modals eagerly mounted outside suspense.
+  - Configure Rollup chunk naming (`chunks/[name]-[hash].js`) for inspectable build outputs.
+- Tradeoffs:
+  - Pros: smaller initial JS payload and faster first paint on slower clients; page code downloads on demand.
+  - Cons: first navigation to a not-yet-loaded page can show a brief suspense fallback under high latency.

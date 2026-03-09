@@ -1665,3 +1665,17 @@
   - Full validation script: pass (`66 passed`, web build pass).
 - Coverage notes:
   - Verified admin manual/auto update paths include `./scripts/update_release_metadata.sh` step without regressing update status/install behaviors.
+
+## Iteration Result (2026-03-09, Task I page lazy-loading/code splitting)
+- Commands run:
+  - `cd apps/web && npx tsc --noEmit`
+  - `cd apps/web && npm run build`
+  - `ls -lh apps/web/dist/chunks/ | sort -k5 -rh | head -20`
+  - `./scripts/test.sh`
+- Results:
+  - TypeScript compile check: pass (0 errors).
+  - Web production build: pass.
+  - Chunk inspection: pass; build now emits per-page lazy chunks (`AdminPage-*`, `OverviewPage-*`, `ProjectPage-*`, etc.).
+  - Full validation script: pass (`76 passed`, web build pass).
+- Coverage notes:
+  - Verified lazy/suspense conversion compiles and bundles correctly with readable chunk names.

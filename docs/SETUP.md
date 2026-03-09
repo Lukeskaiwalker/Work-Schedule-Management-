@@ -892,3 +892,12 @@ Expected:
   - auto-install flow in admin backend executes the same script before migrations.
 - Operational note:
   - this keeps displayed release version/commit aligned after in-app update execution, not only shell-based `safe_update` runs.
+
+## Iteration Setup Notes (2026-03-09, Task I frontend lazy-loading/code splitting)
+- No migration required.
+- Frontend rebuild/deploy is sufficient:
+  - `docker compose up -d --build web caddy`
+- Operational behavior update:
+  - Top-level pages are lazy-loaded as independent chunks and fetched on first navigation.
+  - Login view is also loaded via suspense boundary.
+  - Build artifacts now include readable chunk names in `apps/web/dist/chunks/`.
