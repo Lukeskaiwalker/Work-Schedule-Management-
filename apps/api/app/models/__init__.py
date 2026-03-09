@@ -1,4 +1,7 @@
+# __init__.py — re-exports subset of models for backward compatibility.
+# All models still importable from app.models.entities too.
 from __future__ import annotations
+
 from app.models.entities import (
     Attachment,
     AuditLog,
