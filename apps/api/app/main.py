@@ -1,5 +1,7 @@
 from __future__ import annotations
+import asyncio
 from collections import defaultdict, deque
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 
@@ -16,10 +18,40 @@ from app.core.security import get_password_hash, verify_password
 from app.core.time import utcnow
 from app.models.entities import User
 from app.routers import admin, auth, events, time_tracking, workflow, workflow_notifications
+from app.services.material_catalog import sync_pending_material_catalog_images
 from app.services.runtime_settings import (
     is_initial_admin_bootstrap_completed,
     mark_initial_admin_bootstrap_completed,
 )
+
+# One thread dedicated to image fetching so it never competes with request handling.
+_image_thread_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="img-catalog")
+
+
+async def _image_loop() -> None:
+    """Continuously process pending material catalog image lookups in the background.
+
+    Runs every 30 seconds, processing IMAGE_BATCH_SIZE items per cycle.
+    Isolated to a single executor thread so blocking HTTP calls can't affect
+    the asyncio event loop or request workers.
+    """
+    IMAGE_BATCH_SIZE = 10
+    IMAGE_INTERVAL_SECONDS = 30
+    STARTUP_GRACE_SECONDS = 15  # allow the server to finish startup before first run
+
+    await asyncio.sleep(STARTUP_GRACE_SECONDS)
+    loop = asyncio.get_running_loop()
+
+    while True:
+        try:
+            def _run_batch() -> None:
+                with SessionLocal() as db:
+                    sync_pending_material_catalog_images(db, limit=IMAGE_BATCH_SIZE)
+
+            await loop.run_in_executor(_image_thread_pool, _run_batch)
+        except Exception:
+            pass  # never crash the loop; errors are already handled inside the service
+        await asyncio.sleep(IMAGE_INTERVAL_SECONDS)
 
 settings = get_settings()
 
@@ -66,7 +98,15 @@ def _initialize_runtime_data() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     _initialize_runtime_data()
-    yield
+    image_task = asyncio.create_task(_image_loop())
+    try:
+        yield
+    finally:
+        image_task.cancel()
+        try:
+            await image_task
+        except asyncio.CancelledError:
+            pass
 
 
 app = FastAPI(title=settings.app_name, lifespan=lifespan)

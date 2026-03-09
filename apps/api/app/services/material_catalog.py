@@ -5,6 +5,8 @@ import csv
 import hashlib
 import os
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 from io import StringIO
@@ -16,7 +18,12 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.time import utcnow
 from app.models.entities import MaterialCatalogImportState, MaterialCatalogItem
-from app.services.material_catalog_images import resolve_material_catalog_image
+from app.services.material_catalog_images import (
+    cache_material_catalog_image,
+    has_cached_material_catalog_image,
+    resolve_material_catalog_image_fallback,
+    resolve_material_catalog_image_unielektro,
+)
 
 HEADER_ARTICLE_HINTS = {
     "art",
@@ -91,6 +98,11 @@ DATANORM_CURRENCY_RE = re.compile(r"(\d{2})([A-Z]{3})\s*$")
 DATANORM_COMPARE_RE = re.compile(r"[^a-z0-9]+")
 CATALOG_PARSER_SIGNATURE = "material-catalog-parser-v3-datanorm-images"
 CATALOG_IMPORT_BATCH_SIZE = 1000
+IMAGE_SOURCE_NOT_FOUND_UNIELEKTRO = "not_found_unielektro"
+IMAGE_SOURCE_NOT_FOUND = "not_found"
+IMAGE_LOOKUP_PHASE_FIRST_PASS = "unielektro_first_pass"
+IMAGE_LOOKUP_PHASE_FALLBACK = "fallback"
+IMAGE_LOOKUP_PHASE_IDLE = "idle"
 
 
 @dataclass(slots=True)
@@ -120,10 +132,12 @@ class DatanormArticleBuffer:
 @dataclass(slots=True)
 class MaterialCatalogImageStatus:
     lookup_enabled: bool
+    lookup_phase: str
     total_items: int
     items_with_image: int
     items_checked: int
     items_pending: int
+    items_waiting_fallback: int
     items_waiting_retry: int
     items_not_found: int
     last_checked_at: datetime | None
@@ -184,7 +198,7 @@ def search_material_catalog(
     else:
         query_stmt = query_stmt.order_by(MaterialCatalogItem.item_name.asc(), MaterialCatalogItem.id.asc())
     rows = list(db.scalars(query_stmt.limit(capped_limit)).all())
-    ensure_material_catalog_images(db, rows)
+    # Image lookups are handled by the background loop in main.py — not on the request path.
     return rows
 
 
@@ -200,15 +214,16 @@ def ensure_material_catalog_images(db: Session, rows: list[MaterialCatalogItem])
     if max_items <= 0:
         return
     now = utcnow()
+    lookup_phase = _image_lookup_phase(db)
     changed = False
     checked = 0
     for row in rows:
         if checked >= max_items:
             break
-        if not _should_lookup_image(row, now=now):
+        if not _should_lookup_image(row, now=now, lookup_phase=lookup_phase):
             continue
         checked += 1
-        if _refresh_catalog_item_image(row, checked_at=now):
+        if _refresh_catalog_item_image(row, checked_at=now, lookup_phase=lookup_phase):
             db.add(row)
             changed = True
     if changed:
@@ -219,9 +234,10 @@ def ensure_material_catalog_item_image(db: Session, row: MaterialCatalogItem) ->
     if not _image_lookup_enabled():
         return
     now = utcnow()
-    if not _should_lookup_image(row, now=now):
+    lookup_phase = _image_lookup_phase(db)
+    if not _should_lookup_image(row, now=now, lookup_phase=lookup_phase):
         return
-    if not _refresh_catalog_item_image(row, checked_at=now):
+    if not _refresh_catalog_item_image(row, checked_at=now, lookup_phase=lookup_phase):
         return
     db.add(row)
     db.commit()
@@ -238,65 +254,116 @@ def sync_pending_material_catalog_images(db: Session, *, limit: int | None = Non
         return 0
 
     now = utcnow()
+    lookup_phase = _image_lookup_phase(db)
     retry_after = _image_lookup_retry_after()
     retry_cutoff = now - retry_after
     image_missing = or_(MaterialCatalogItem.image_url.is_(None), MaterialCatalogItem.image_url == "")
+    image_hotlink = and_(MaterialCatalogItem.image_url.is_not(None), MaterialCatalogItem.image_url.like("http%"))
     has_ean = and_(MaterialCatalogItem.ean.is_not(None), MaterialCatalogItem.ean != "")
-    eligible_for_retry = or_(
-        MaterialCatalogItem.image_checked_at.is_(None),
-        MaterialCatalogItem.image_checked_at <= retry_cutoff,
+    source_empty = or_(MaterialCatalogItem.image_source.is_(None), MaterialCatalogItem.image_source == "")
+    hotlink_due = and_(
+        has_ean,
+        image_hotlink,
+        or_(MaterialCatalogItem.image_checked_at.is_(None), MaterialCatalogItem.image_checked_at <= retry_cutoff),
     )
-    rows = list(
+    fallback_due = or_(
+        MaterialCatalogItem.image_source == IMAGE_SOURCE_NOT_FOUND_UNIELEKTRO,
+        and_(
+            MaterialCatalogItem.image_source == IMAGE_SOURCE_NOT_FOUND,
+            or_(MaterialCatalogItem.image_checked_at.is_(None), MaterialCatalogItem.image_checked_at <= retry_cutoff),
+        ),
+    )
+    if lookup_phase == IMAGE_LOOKUP_PHASE_FIRST_PASS:
+        pending = or_(and_(has_ean, image_missing, source_empty), hotlink_due)
+        row_order = [
+            case((hotlink_due, 0), else_=1).asc(),
+            case((MaterialCatalogItem.image_checked_at.is_(None), 0), else_=1).asc(),
+            MaterialCatalogItem.image_checked_at.asc(),
+            MaterialCatalogItem.id.asc(),
+        ]
+    else:
+        pending = or_(and_(has_ean, image_missing, fallback_due), hotlink_due)
+        row_order = [
+            case((hotlink_due, 0), else_=1).asc(),
+            case((MaterialCatalogItem.image_source == IMAGE_SOURCE_NOT_FOUND_UNIELEKTRO, 0), else_=1).asc(),
+            case((MaterialCatalogItem.image_checked_at.is_(None), 0), else_=1).asc(),
+            MaterialCatalogItem.image_checked_at.asc(),
+            MaterialCatalogItem.id.asc(),
+        ]
+    candidates = list(
         db.scalars(
             select(MaterialCatalogItem)
-            .where(has_ean, image_missing, eligible_for_retry)
-            .order_by(
-                case((MaterialCatalogItem.image_checked_at.is_(None), 0), else_=1).asc(),
-                MaterialCatalogItem.image_checked_at.asc(),
-                MaterialCatalogItem.id.asc(),
-            )
+            .where(pending)
+            .order_by(*row_order)
             .limit(effective_limit)
         ).all()
     )
 
-    changed = False
-    processed = 0
-    for row in rows:
-        if processed >= effective_limit:
-            break
-        if not _should_lookup_image(row, now=now):
-            continue
-        processed += 1
-        if _refresh_catalog_item_image(row, checked_at=now):
+    # Secondary filter: the DB query already restricts via `pending`, but
+    # _should_lookup_image catches items that became ineligible between the
+    # query and now (e.g. another process already cached the hotlink).
+    eligible = [row for row in candidates if _should_lookup_image(row, now=now, lookup_phase=lookup_phase)]
+    if not eligible:
+        return 0
+
+    changed_rows: list[MaterialCatalogItem] = []
+    lock = threading.Lock()
+
+    def _process(row: MaterialCatalogItem) -> None:
+        did_change = _refresh_catalog_item_image(row, checked_at=now, lookup_phase=lookup_phase)
+        if did_change:
+            with lock:
+                changed_rows.append(row)
+
+    # Process up to 4 items concurrently. Each call is I/O-bound (HTTP fetches),
+    # so threads don't compete for the GIL and genuine parallelism is achieved.
+    n_workers = min(4, len(eligible))
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        list(pool.map(_process, eligible))
+
+    if changed_rows:
+        for row in changed_rows:
             db.add(row)
-            changed = True
-    if changed:
         db.commit()
-    return processed
+
+    return len(eligible)
 
 
 def get_material_catalog_image_status(db: Session) -> MaterialCatalogImageStatus:
     ensure_material_catalog_up_to_date(db)
+    lookup_phase = _image_lookup_phase(db)
     total_items = int(db.scalar(select(func.count(MaterialCatalogItem.id))) or 0)
     if total_items <= 0:
         return MaterialCatalogImageStatus(
             lookup_enabled=_image_lookup_enabled(),
+            lookup_phase=IMAGE_LOOKUP_PHASE_IDLE,
             total_items=0,
             items_with_image=0,
             items_checked=0,
             items_pending=0,
+            items_waiting_fallback=0,
             items_waiting_retry=0,
             items_not_found=0,
             last_checked_at=None,
         )
 
     image_present = and_(MaterialCatalogItem.image_url.is_not(None), MaterialCatalogItem.image_url != "")
+    image_hotlink = and_(MaterialCatalogItem.image_url.is_not(None), MaterialCatalogItem.image_url.like("http%"))
     image_missing = or_(MaterialCatalogItem.image_url.is_(None), MaterialCatalogItem.image_url == "")
     has_ean = and_(MaterialCatalogItem.ean.is_not(None), MaterialCatalogItem.ean != "")
+    source_empty = or_(MaterialCatalogItem.image_source.is_(None), MaterialCatalogItem.image_source == "")
     retry_cutoff = utcnow() - _image_lookup_retry_after()
-    due_now = or_(
-        MaterialCatalogItem.image_checked_at.is_(None),
-        MaterialCatalogItem.image_checked_at <= retry_cutoff,
+    hotlink_due = and_(
+        has_ean,
+        image_hotlink,
+        or_(MaterialCatalogItem.image_checked_at.is_(None), MaterialCatalogItem.image_checked_at <= retry_cutoff),
+    )
+    fallback_due = or_(
+        MaterialCatalogItem.image_source == IMAGE_SOURCE_NOT_FOUND_UNIELEKTRO,
+        and_(
+            MaterialCatalogItem.image_source == IMAGE_SOURCE_NOT_FOUND,
+            or_(MaterialCatalogItem.image_checked_at.is_(None), MaterialCatalogItem.image_checked_at <= retry_cutoff),
+        ),
     )
 
     items_with_image = int(db.scalar(select(func.count(MaterialCatalogItem.id)).where(image_present)) or 0)
@@ -304,14 +371,35 @@ def get_material_catalog_image_status(db: Session) -> MaterialCatalogImageStatus
         db.scalar(select(func.count(MaterialCatalogItem.id)).where(MaterialCatalogItem.image_checked_at.is_not(None))) or 0
     )
     items_not_found = int(
-        db.scalar(select(func.count(MaterialCatalogItem.id)).where(MaterialCatalogItem.image_source == "not_found")) or 0
+        db.scalar(select(func.count(MaterialCatalogItem.id)).where(MaterialCatalogItem.image_source == IMAGE_SOURCE_NOT_FOUND))
+        or 0
     )
-    items_pending = int(db.scalar(select(func.count(MaterialCatalogItem.id)).where(has_ean, image_missing, due_now)) or 0)
+    items_waiting_fallback = int(
+        db.scalar(
+            select(func.count(MaterialCatalogItem.id)).where(
+                has_ean,
+                image_missing,
+                MaterialCatalogItem.image_source == IMAGE_SOURCE_NOT_FOUND_UNIELEKTRO,
+            )
+        )
+        or 0
+    )
+    if lookup_phase == IMAGE_LOOKUP_PHASE_FIRST_PASS:
+        first_pass_pending = int(
+            db.scalar(select(func.count(MaterialCatalogItem.id)).where(has_ean, image_missing, source_empty)) or 0
+        )
+        hotlink_pending = int(db.scalar(select(func.count(MaterialCatalogItem.id)).where(hotlink_due)) or 0)
+        items_pending = first_pass_pending + hotlink_pending
+    else:
+        fallback_pending = int(db.scalar(select(func.count(MaterialCatalogItem.id)).where(has_ean, image_missing, fallback_due)) or 0)
+        hotlink_pending = int(db.scalar(select(func.count(MaterialCatalogItem.id)).where(hotlink_due)) or 0)
+        items_pending = fallback_pending + hotlink_pending
     items_waiting_retry = int(
         db.scalar(
             select(func.count(MaterialCatalogItem.id)).where(
                 has_ean,
                 image_missing,
+                MaterialCatalogItem.image_source == IMAGE_SOURCE_NOT_FOUND,
                 MaterialCatalogItem.image_checked_at.is_not(None),
                 MaterialCatalogItem.image_checked_at > retry_cutoff,
             )
@@ -321,10 +409,12 @@ def get_material_catalog_image_status(db: Session) -> MaterialCatalogImageStatus
     last_checked_at = db.scalar(select(func.max(MaterialCatalogItem.image_checked_at)))
     return MaterialCatalogImageStatus(
         lookup_enabled=_image_lookup_enabled(),
+        lookup_phase=lookup_phase,
         total_items=total_items,
         items_with_image=items_with_image,
         items_checked=items_checked,
         items_pending=items_pending,
+        items_waiting_fallback=items_waiting_fallback,
         items_waiting_retry=items_waiting_retry,
         items_not_found=items_not_found,
         last_checked_at=last_checked_at,
@@ -424,34 +514,73 @@ def _insert_catalog_batch(db: Session, rows: list[dict[str, object | None]]) -> 
     db.execute(insert(MaterialCatalogItem), rows)
 
 
-def _should_lookup_image(row: MaterialCatalogItem, *, now) -> bool:
+def _should_lookup_image(row: MaterialCatalogItem, *, now, lookup_phase: str) -> bool:
     ean = (row.ean or "").strip()
     if not ean:
         return False
-    if (row.image_url or "").strip():
+    image_url = (row.image_url or "").strip()
+    if image_url:
+        if _is_local_catalog_image_url(image_url):
+            return not has_cached_material_catalog_image(
+                external_key=row.external_key,
+                uploads_dir=get_settings().uploads_dir,
+            )
+        return _image_retry_due(row.image_checked_at, now=now)
+    source = (row.image_source or "").strip().lower()
+    if lookup_phase == IMAGE_LOOKUP_PHASE_FIRST_PASS:
+        return not source
+    if source == IMAGE_SOURCE_NOT_FOUND_UNIELEKTRO:
+        return True
+    if source != IMAGE_SOURCE_NOT_FOUND:
         return False
-    if row.image_checked_at is None:
-        return True
-    retry_after = _image_lookup_retry_after()
-    if retry_after.total_seconds() <= 0:
-        return True
-    return row.image_checked_at <= now - retry_after
+    return _image_retry_due(row.image_checked_at, now=now)
 
 
-def _refresh_catalog_item_image(row: MaterialCatalogItem, *, checked_at) -> bool:
+def _refresh_catalog_item_image(row: MaterialCatalogItem, *, checked_at, lookup_phase: str) -> bool:
     previous = ((row.image_url or "").strip(), (row.image_source or "").strip(), row.image_checked_at)
-    lookup = resolve_material_catalog_image(
-        ean=row.ean,
-        manufacturer=row.manufacturer,
-        item_name=row.item_name,
-        article_no=row.article_no,
-    )
+    existing_image_url = (row.image_url or "").strip()
+    if existing_image_url and not _is_local_catalog_image_url(existing_image_url):
+        cached = cache_material_catalog_image(
+            image_url=existing_image_url,
+            external_key=row.external_key,
+            uploads_dir=get_settings().uploads_dir,
+        )
+        row.image_checked_at = checked_at
+        if cached is not None:
+            row.image_url = cached.public_url[:1000]
+        current = ((row.image_url or "").strip(), (row.image_source or "").strip(), row.image_checked_at)
+        return current != previous
+
+    if lookup_phase == IMAGE_LOOKUP_PHASE_FIRST_PASS:
+        lookup = resolve_material_catalog_image_unielektro(
+            ean=row.ean,
+            manufacturer=row.manufacturer,
+            item_name=row.item_name,
+            article_no=row.article_no,
+        )
+    else:
+        lookup = resolve_material_catalog_image_fallback(
+            ean=row.ean,
+            manufacturer=row.manufacturer,
+            item_name=row.item_name,
+            article_no=row.article_no,
+        )
     row.image_checked_at = checked_at
     if lookup is not None:
-        row.image_url = lookup.image_url[:1000]
+        cached = cache_material_catalog_image(
+            image_url=lookup.image_url,
+            external_key=row.external_key,
+            uploads_dir=get_settings().uploads_dir,
+        )
+        if cached is not None:
+            row.image_url = cached.public_url[:1000]
+        else:
+            row.image_url = lookup.image_url[:1000]
         row.image_source = lookup.source[:64]
+    elif lookup_phase == IMAGE_LOOKUP_PHASE_FIRST_PASS:
+        row.image_source = IMAGE_SOURCE_NOT_FOUND_UNIELEKTRO
     elif not (row.image_url or "").strip():
-        row.image_source = "not_found"
+        row.image_source = IMAGE_SOURCE_NOT_FOUND
     current = ((row.image_url or "").strip(), (row.image_source or "").strip(), row.image_checked_at)
     return current != previous
 
@@ -468,6 +597,29 @@ def _image_lookup_max_items_per_request() -> int:
 def _image_lookup_retry_after() -> timedelta:
     hours = max(1, int(get_settings().material_catalog_image_lookup_retry_hours))
     return timedelta(hours=hours)
+
+
+def _image_retry_due(checked_at: datetime | None, *, now) -> bool:
+    if checked_at is None:
+        return True
+    retry_after = _image_lookup_retry_after()
+    if retry_after.total_seconds() <= 0:
+        return True
+    return checked_at <= now - retry_after
+
+
+def _image_lookup_phase(db: Session) -> str:
+    image_missing = or_(MaterialCatalogItem.image_url.is_(None), MaterialCatalogItem.image_url == "")
+    has_ean = and_(MaterialCatalogItem.ean.is_not(None), MaterialCatalogItem.ean != "")
+    source_empty = or_(MaterialCatalogItem.image_source.is_(None), MaterialCatalogItem.image_source == "")
+    first_pass_pending = int(db.scalar(select(func.count(MaterialCatalogItem.id)).where(has_ean, image_missing, source_empty)) or 0)
+    if first_pass_pending > 0:
+        return IMAGE_LOOKUP_PHASE_FIRST_PASS
+    return IMAGE_LOOKUP_PHASE_FALLBACK
+
+
+def _is_local_catalog_image_url(value: str) -> bool:
+    return value.startswith("/api/materials/catalog/images/")
 
 
 def _resolve_material_catalog_dir() -> Path | None:

@@ -5,8 +5,10 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from app.core.db import SessionLocal
 from app.services import material_catalog as material_catalog_service
-from app.services.material_catalog_images import MaterialImageLookupResult
+from app.services.material_catalog import sync_pending_material_catalog_images
+from app.services.material_catalog_images import MaterialImageCacheResult, MaterialImageLookupResult
 
 
 def auth_headers(token: str) -> dict[str, str]:
@@ -191,15 +193,40 @@ def test_material_catalog_enriches_image_for_selected_item(
 
     monkeypatch.setattr(material_catalog_service, "_image_lookup_enabled", lambda: True)
 
-    def fake_lookup(*, ean: str | None, manufacturer: str | None, item_name: str | None = None, article_no: str | None = None):
+    def fake_unielektro_lookup(
+        *,
+        ean: str | None,
+        manufacturer: str | None,
+        item_name: str | None = None,
+        article_no: str | None = None,
+    ):
         if ean == "7612271471699":
             return MaterialImageLookupResult(
-                image_url="https://images.example.test/abb/7612271471699.jpg",
-                source="manufacturer_site",
+                image_url="https://images.example.test/unielektro/7612271471699.jpg",
+                source="unielektro_ean",
             )
         return None
 
-    monkeypatch.setattr(material_catalog_service, "resolve_material_catalog_image", fake_lookup)
+    def fake_fallback_lookup(
+        *,
+        ean: str | None,
+        manufacturer: str | None,
+        item_name: str | None = None,
+        article_no: str | None = None,
+    ):
+        return None
+
+    def fake_cache(*, image_url: str, external_key: str, uploads_dir: str):
+        return MaterialImageCacheResult(
+            public_url=f"/api/materials/catalog/images/{external_key}",
+            stored_path=f"{uploads_dir}/material_catalog_images/{external_key}.jpg",
+            content_type="image/jpeg",
+            byte_size=256,
+        )
+
+    monkeypatch.setattr(material_catalog_service, "resolve_material_catalog_image_unielektro", fake_unielektro_lookup)
+    monkeypatch.setattr(material_catalog_service, "resolve_material_catalog_image_fallback", fake_fallback_lookup)
+    monkeypatch.setattr(material_catalog_service, "cache_material_catalog_image", fake_cache)
 
     catalog_dir = _reset_catalog_dir()
     datanorm_file = catalog_dir / "Datanorm.001"
@@ -214,12 +241,22 @@ def test_material_catalog_enriches_image_for_selected_item(
         encoding="utf-8",
     )
 
+    # First search triggers the catalog import (no images yet — lookup is off the request path).
+    seed_search = client.get("/api/materials/catalog?q=S804PV-SP10", headers=auth_headers(employee_token))
+    assert seed_search.status_code == 200
+    assert any(row["article_no"] == "01000130" for row in seed_search.json())
+
+    # Simulate one background-loop cycle to enrich images.
+    with SessionLocal() as db:
+        sync_pending_material_catalog_images(db, limit=1)
+
+    # After background processing the image should be populated.
     search_catalog = client.get("/api/materials/catalog?q=S804PV-SP10", headers=auth_headers(employee_token))
     assert search_catalog.status_code == 200
     selected = next((row for row in search_catalog.json() if row["article_no"] == "01000130"), None)
     assert selected is not None
-    assert selected["image_url"] == "https://images.example.test/abb/7612271471699.jpg"
-    assert selected["image_source"] == "manufacturer_site"
+    assert selected["image_url"].startswith("/api/materials/catalog/images/")
+    assert selected["image_source"] == "unielektro_ean"
 
     add_material_need = client.post(
         "/api/materials",
@@ -228,14 +265,98 @@ def test_material_catalog_enriches_image_for_selected_item(
     )
     assert add_material_need.status_code == 200
     created = add_material_need.json()
-    assert created["image_url"] == "https://images.example.test/abb/7612271471699.jpg"
-    assert created["image_source"] == "manufacturer_site"
+    assert created["image_url"].startswith("/api/materials/catalog/images/")
+    assert created["image_source"] == "unielektro_ean"
 
     material_queue = client.get("/api/materials", headers=auth_headers(employee_token))
     assert material_queue.status_code == 200
     queue_entry = next((row for row in material_queue.json() if row["id"] == created["id"]), None)
     assert queue_entry is not None
-    assert queue_entry["image_url"] == "https://images.example.test/abb/7612271471699.jpg"
+    assert queue_entry["image_url"].startswith("/api/materials/catalog/images/")
+
+
+def test_material_catalog_cached_image_endpoint_serves_local_file(
+    client: TestClient,
+    admin_token: str,
+    monkeypatch,
+):
+    employee = _create_user(client, admin_token, "catalog-image-asset@example.com", "employee")
+    employee_token = _login(client, employee["email"])
+
+    monkeypatch.setattr(material_catalog_service, "_image_lookup_enabled", lambda: True)
+
+    def fake_unielektro_lookup(
+        *,
+        ean: str | None,
+        manufacturer: str | None,
+        item_name: str | None = None,
+        article_no: str | None = None,
+    ):
+        if ean == "7612271471699":
+            return MaterialImageLookupResult(
+                image_url="https://images.example.test/unielektro/7612271471699.jpg",
+                source="unielektro_ean",
+            )
+        return None
+
+    def fake_fallback_lookup(
+        *,
+        ean: str | None,
+        manufacturer: str | None,
+        item_name: str | None = None,
+        article_no: str | None = None,
+    ):
+        return None
+
+    def fake_cache(*, image_url: str, external_key: str, uploads_dir: str):
+        cache_dir = Path(uploads_dir) / "material_catalog_images"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        stored_path = cache_dir / f"{external_key}.jpg"
+        payload = b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x02\x00\x00\x01\x00\x01\x00\x00\xff\xd9"
+        stored_path.write_bytes(payload)
+        return MaterialImageCacheResult(
+            public_url=f"/api/materials/catalog/images/{external_key}",
+            stored_path=str(stored_path),
+            content_type="image/jpeg",
+            byte_size=len(payload),
+        )
+
+    monkeypatch.setattr(material_catalog_service, "resolve_material_catalog_image_unielektro", fake_unielektro_lookup)
+    monkeypatch.setattr(material_catalog_service, "resolve_material_catalog_image_fallback", fake_fallback_lookup)
+    monkeypatch.setattr(material_catalog_service, "cache_material_catalog_image", fake_cache)
+
+    catalog_dir = _reset_catalog_dir()
+    datanorm_file = catalog_dir / "Datanorm.001"
+    datanorm_file.write_text(
+        "\n".join(
+            [
+                "V 060226UNI ELEKTRO Fachgrosshandel GMBh&Co. Reg65760 Eschborn , Ludwig-Erhard-Strasse 2Copyright UNI ELEKTRO Fachgrosshand04EUR",
+                "A;N;01000130;00;ABB S804PV-SP10;Strangsicherung 1.500V DC, 10A, 4-polig;1;0;ST;60400;;010;;",
+                "B;N;01000130;S804PV-SP10;;;;;;7612271471699;;999;;;;;",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    # Seed search to trigger catalog import.
+    seed_search = client.get("/api/materials/catalog?q=S804PV-SP10", headers=auth_headers(employee_token))
+    assert seed_search.status_code == 200
+
+    # Simulate one background-loop cycle to cache the image locally.
+    with SessionLocal() as db:
+        sync_pending_material_catalog_images(db, limit=1)
+
+    # Now the item should have a local cached image URL.
+    search_catalog = client.get("/api/materials/catalog?q=S804PV-SP10", headers=auth_headers(employee_token))
+    assert search_catalog.status_code == 200
+    selected = next((row for row in search_catalog.json() if row["article_no"] == "01000130"), None)
+    assert selected is not None
+    assert selected["image_url"].startswith("/api/materials/catalog/images/")
+
+    image_response = client.get(selected["image_url"])
+    assert image_response.status_code == 200
+    assert image_response.headers["content-type"].startswith("image/jpeg")
+    assert image_response.content.startswith(b"\xff\xd8")
 
 
 def test_material_catalog_import_inserts_in_bounded_batches(
@@ -282,8 +403,25 @@ def test_material_catalog_state_reports_image_sync_progress(
 
     monkeypatch.setattr(material_catalog_service, "_image_lookup_enabled", lambda: True)
     monkeypatch.setattr(material_catalog_service, "_image_lookup_max_items_per_request", lambda: 1)
+    fallback_calls = {"count": 0}
 
-    def fake_lookup(*, ean: str | None, manufacturer: str | None, item_name: str | None = None, article_no: str | None = None):
+    def fake_unielektro_lookup(
+        *,
+        ean: str | None,
+        manufacturer: str | None,
+        item_name: str | None = None,
+        article_no: str | None = None,
+    ):
+        return None
+
+    def fake_fallback_lookup(
+        *,
+        ean: str | None,
+        manufacturer: str | None,
+        item_name: str | None = None,
+        article_no: str | None = None,
+    ):
+        fallback_calls["count"] += 1
         if ean == "7612271471699":
             return MaterialImageLookupResult(
                 image_url="https://images.example.test/abb/7612271471699.jpg",
@@ -291,7 +429,17 @@ def test_material_catalog_state_reports_image_sync_progress(
             )
         return None
 
-    monkeypatch.setattr(material_catalog_service, "resolve_material_catalog_image", fake_lookup)
+    def fake_cache(*, image_url: str, external_key: str, uploads_dir: str):
+        return MaterialImageCacheResult(
+            public_url=f"/api/materials/catalog/images/{external_key}",
+            stored_path=f"{uploads_dir}/material_catalog_images/{external_key}.jpg",
+            content_type="image/jpeg",
+            byte_size=123,
+        )
+
+    monkeypatch.setattr(material_catalog_service, "resolve_material_catalog_image_unielektro", fake_unielektro_lookup)
+    monkeypatch.setattr(material_catalog_service, "resolve_material_catalog_image_fallback", fake_fallback_lookup)
+    monkeypatch.setattr(material_catalog_service, "cache_material_catalog_image", fake_cache)
 
     catalog_dir = _reset_catalog_dir()
     datanorm_file = catalog_dir / "Datanorm.001"
@@ -306,13 +454,38 @@ def test_material_catalog_state_reports_image_sync_progress(
         encoding="utf-8",
     )
 
-    response = client.get("/api/materials/catalog/state", headers=auth_headers(employee_token))
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["image_lookup_enabled"] is True
-    assert payload["image_last_run_processed"] == 1
-    assert payload["image_total_items"] == 1
-    assert payload["image_items_with_image"] == 1
-    assert payload["image_items_pending"] == 0
-    assert payload["image_items_not_found"] == 0
-    assert payload["image_last_checked_at"]
+    # Seed: trigger catalog import via state endpoint, then run the first background cycle
+    # (unielektro pass — item has no image yet, so it gets marked not_found_unielektro).
+    seed_state = client.get("/api/materials/catalog/state", headers=auth_headers(employee_token))
+    assert seed_state.status_code == 200
+
+    with SessionLocal() as db:
+        processed_first = sync_pending_material_catalog_images(db, limit=1)
+    assert processed_first == 1
+
+    # State endpoint is now a pure read — image_last_run_processed is always 0.
+    first_run = client.get("/api/materials/catalog/state", headers=auth_headers(employee_token))
+    assert first_run.status_code == 200
+    first_payload = first_run.json()
+    assert first_payload["image_lookup_enabled"] is True
+    assert first_payload["image_last_run_processed"] == 0
+    assert first_payload["image_lookup_phase"] == "fallback"
+    assert first_payload["image_items_with_image"] == 0
+    assert first_payload["image_items_waiting_fallback"] == 1
+    assert fallback_calls["count"] == 0
+
+    # Run the second background cycle (fallback pass — item gets image from fake_fallback_lookup).
+    with SessionLocal() as db:
+        processed_second = sync_pending_material_catalog_images(db, limit=1)
+    assert processed_second == 1
+    assert fallback_calls["count"] == 1
+
+    second_run = client.get("/api/materials/catalog/state", headers=auth_headers(employee_token))
+    assert second_run.status_code == 200
+    second_payload = second_run.json()
+    assert second_payload["image_last_run_processed"] == 0
+    assert second_payload["image_total_items"] == 1
+    assert second_payload["image_items_with_image"] == 1
+    assert second_payload["image_items_pending"] == 0
+    assert second_payload["image_items_not_found"] == 0
+    assert second_payload["image_last_checked_at"]

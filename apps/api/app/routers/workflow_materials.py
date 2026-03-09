@@ -1,8 +1,26 @@
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, BackgroundTasks
+from fastapi.responses import FileResponse, RedirectResponse
 
+from app.core.config import get_settings
+from app.core.db import SessionLocal
 from app.routers.workflow_helpers import *  # noqa: F401,F403
+from app.services.material_catalog_images import (
+    normalize_material_catalog_image_external_key,
+    resolve_cached_material_catalog_image_file,
+)
+
+
+def _kick_catalog_item_image_bg(item_id: int) -> None:
+    """Background task: open a fresh session and attempt image lookup for one catalog item."""
+    try:
+        with SessionLocal() as db:
+            item = db.get(MaterialCatalogItem, item_id)
+            if item is not None:
+                ensure_material_catalog_item_image(db, item)
+    except Exception:
+        pass
 
 router = APIRouter(prefix="", tags=["materials"])
 
@@ -74,13 +92,46 @@ def list_material_catalog_items(
     rows = search_material_catalog(db, query=q, limit=min(limit, 10))
     return [_material_catalog_item_out(row) for row in rows]
 
+
+@router.get("/materials/catalog/images/{external_key}")
+def get_material_catalog_image_asset(
+    external_key: str,
+    db: Session = Depends(get_db),
+):
+    normalized_key = normalize_material_catalog_image_external_key(external_key)
+    if not normalized_key:
+        raise HTTPException(status_code=404, detail="Catalog image not found")
+
+    catalog_row = db.scalar(select(MaterialCatalogItem).where(MaterialCatalogItem.external_key == normalized_key))
+    if catalog_row is None:
+        raise HTTPException(status_code=404, detail="Catalog image not found")
+
+    cached = resolve_cached_material_catalog_image_file(
+        external_key=normalized_key,
+        uploads_dir=get_settings().uploads_dir,
+    )
+    if cached is not None:
+        return FileResponse(
+            path=cached.path,
+            media_type=cached.content_type,
+            headers={
+                "Cache-Control": "public, max-age=86400",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    fallback_url = str(catalog_row.image_url or "").strip()
+    if fallback_url.startswith("http://") or fallback_url.startswith("https://"):
+        return RedirectResponse(url=fallback_url, status_code=307)
+    raise HTTPException(status_code=404, detail="Catalog image not found")
+
 @router.get("/materials/catalog/state", response_model=MaterialCatalogImportStateOut)
 def get_material_catalog_state(
     _: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    # Pure read-only: image processing is handled by the background loop in main.py.
     state = get_material_catalog_import_state(db)
-    processed = sync_pending_material_catalog_images(db, limit=1)
     image_status = get_material_catalog_image_status(db)
     return MaterialCatalogImportStateOut(
         file_count=(state.file_count if state is not None else 0),
@@ -88,11 +139,13 @@ def get_material_catalog_state(
         duplicates_skipped=(state.duplicates_skipped if state is not None else 0),
         imported_at=(state.imported_at if state is not None else None),
         image_lookup_enabled=image_status.lookup_enabled,
-        image_last_run_processed=processed,
+        image_lookup_phase=image_status.lookup_phase,
+        image_last_run_processed=0,
         image_total_items=image_status.total_items,
         image_items_with_image=image_status.items_with_image,
         image_items_checked=image_status.items_checked,
         image_items_pending=image_status.items_pending,
+        image_items_waiting_fallback=image_status.items_waiting_fallback,
         image_items_waiting_retry=image_status.items_waiting_retry,
         image_items_not_found=image_status.items_not_found,
         image_last_checked_at=image_status.last_checked_at,
@@ -101,6 +154,7 @@ def get_material_catalog_state(
 @router.post("/materials", response_model=ProjectMaterialNeedOut)
 def create_project_material_need(
     payload: ProjectMaterialNeedCreate,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -132,7 +186,7 @@ def create_project_material_need(
             normalized_article = _normalize_report_material_text(selected_catalog_item.article_no)
         if not normalized_unit:
             normalized_unit = _normalize_report_material_text(selected_catalog_item.unit)
-        ensure_material_catalog_item_image(db, selected_catalog_item)
+        background_tasks.add_task(_kick_catalog_item_image_bg, selected_catalog_item.id)
 
     row = ProjectMaterialNeed(
         project_id=payload.project_id,

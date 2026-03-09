@@ -3,13 +3,16 @@ from __future__ import annotations
 import html
 import ipaddress
 import json
+import mimetypes
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import quote_plus, urljoin, urlparse
 
 import httpx
 
 EAN_RE = re.compile(r"^\d{8,14}$")
+EXTERNAL_KEY_RE = re.compile(r"^[a-f0-9]{40}$")
 RSS_LINK_RE = re.compile(r"<link>([^<]+)</link>", re.IGNORECASE)
 META_IMAGE_RE = re.compile(
     r"<meta[^>]+(?:property|name)\s*=\s*[\"'](?:og:image|twitter:image|twitter:image:src)[\"'][^>]+content\s*=\s*[\"']([^\"']+)[\"']",
@@ -42,6 +45,16 @@ MANUFACTURER_DOMAIN_OVERRIDES: dict[str, tuple[str, ...]] = {
     "riegel": ("riegel.de",),
 }
 USER_AGENT = "SMPLMaterialCatalogBot/1.0 (+https://localhost)"
+CATALOG_IMAGE_CACHE_SUBDIR = "material_catalog_images"
+CATALOG_IMAGE_MAX_BYTES = 8 * 1024 * 1024
+CATALOG_IMAGE_PUBLIC_URL_PREFIX = "/api/materials/catalog/images/"
+IMAGE_CONTENT_TYPE_TO_EXT: dict[str, str] = {
+    "image/jpeg": "jpg",
+    "image/png": "png",
+    "image/webp": "webp",
+    "image/gif": "gif",
+}
+IMAGE_EXT_TO_CONTENT_TYPE: dict[str, str] = {ext: content_type for content_type, ext in IMAGE_CONTENT_TYPE_TO_EXT.items()}
 
 
 @dataclass(slots=True)
@@ -50,7 +63,60 @@ class MaterialImageLookupResult:
     source: str
 
 
+@dataclass(slots=True)
+class MaterialImageCacheResult:
+    public_url: str
+    stored_path: str
+    content_type: str
+    byte_size: int
+
+
+@dataclass(slots=True)
+class CachedMaterialImageFile:
+    path: Path
+    content_type: str
+
+
 def resolve_material_catalog_image(
+    *,
+    ean: str | None,
+    manufacturer: str | None,
+    item_name: str | None = None,
+    article_no: str | None = None,
+) -> MaterialImageLookupResult | None:
+    return resolve_material_catalog_image_fallback(
+        ean=ean,
+        manufacturer=manufacturer,
+        item_name=item_name,
+        article_no=article_no,
+    )
+
+
+def resolve_material_catalog_image_unielektro(
+    *,
+    ean: str | None,
+    manufacturer: str | None = None,
+    item_name: str | None = None,
+    article_no: str | None = None,
+) -> MaterialImageLookupResult | None:
+    normalized_ean = _normalize_ean(ean)
+    if not normalized_ean:
+        return None
+    timeout = httpx.Timeout(connect=2.0, read=4.0, write=4.0, pool=2.0)
+    headers = {"User-Agent": USER_AGENT, "Accept": "text/html,application/json;q=0.9,*/*;q=0.8"}
+    try:
+        with httpx.Client(timeout=timeout, follow_redirects=True, headers=headers) as client:
+            return _lookup_on_unielektro(
+                client,
+                ean=normalized_ean,
+                article_no=article_no,
+                item_name=item_name,
+            )
+    except httpx.HTTPError:
+        return None
+
+
+def resolve_material_catalog_image_fallback(
     *,
     ean: str | None,
     manufacturer: str | None,
@@ -77,6 +143,148 @@ def resolve_material_catalog_image(
         return None
 
 
+def cache_material_catalog_image(
+    *,
+    image_url: str,
+    external_key: str,
+    uploads_dir: str,
+) -> MaterialImageCacheResult | None:
+    normalized_key = normalize_material_catalog_image_external_key(external_key)
+    if not normalized_key:
+        return None
+    candidate_url = str(image_url or "").strip()
+    if not _is_public_http_url(candidate_url):
+        return None
+
+    cache_dir = _material_catalog_image_cache_dir(uploads_dir)
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+
+    timeout = httpx.Timeout(connect=2.0, read=6.0, write=6.0, pool=2.0)
+    headers = {"User-Agent": USER_AGENT, "Accept": "image/*;q=0.9,*/*;q=0.1"}
+    try:
+        with httpx.Client(timeout=timeout, follow_redirects=True, headers=headers) as client:
+            with client.stream("GET", candidate_url) as response:
+                if response.status_code != 200:
+                    return None
+                content_type = _normalized_image_content_type(
+                    response.headers.get("content-type"),
+                    url=candidate_url,
+                )
+                if not content_type:
+                    return None
+                extension = IMAGE_CONTENT_TYPE_TO_EXT.get(content_type)
+                if not extension:
+                    return None
+                declared_length = _parse_content_length(response.headers.get("content-length"))
+                if declared_length is not None and declared_length > CATALOG_IMAGE_MAX_BYTES:
+                    return None
+                temp_path = cache_dir / f"{normalized_key}.{extension}.tmp"
+                total_bytes = 0
+                try:
+                    with temp_path.open("wb") as handle:
+                        for chunk in response.iter_bytes():
+                            if not chunk:
+                                continue
+                            total_bytes += len(chunk)
+                            if total_bytes > CATALOG_IMAGE_MAX_BYTES:
+                                temp_path.unlink(missing_ok=True)
+                                return None
+                            handle.write(chunk)
+                except OSError:
+                    temp_path.unlink(missing_ok=True)
+                    return None
+                if total_bytes <= 0:
+                    temp_path.unlink(missing_ok=True)
+                    return None
+                final_path = cache_dir / f"{normalized_key}.{extension}"
+                _remove_cached_material_image_variants(cache_dir, normalized_key, keep={final_path.name, temp_path.name})
+                final_path.unlink(missing_ok=True)
+                temp_path.replace(final_path)
+                _remove_cached_material_image_variants(cache_dir, normalized_key, keep={final_path.name})
+                return MaterialImageCacheResult(
+                    public_url=f"{CATALOG_IMAGE_PUBLIC_URL_PREFIX}{normalized_key}",
+                    stored_path=str(final_path),
+                    content_type=content_type,
+                    byte_size=total_bytes,
+                )
+    except httpx.HTTPError:
+        return None
+    return None
+
+
+def resolve_cached_material_catalog_image_file(*, external_key: str, uploads_dir: str) -> CachedMaterialImageFile | None:
+    normalized_key = normalize_material_catalog_image_external_key(external_key)
+    if not normalized_key:
+        return None
+    cache_dir = _material_catalog_image_cache_dir(uploads_dir)
+    if not cache_dir.exists() or not cache_dir.is_dir():
+        return None
+    candidates = sorted(path for path in cache_dir.glob(f"{normalized_key}.*") if path.is_file())
+    for candidate in candidates:
+        if candidate.suffix.lower() == ".tmp":
+            continue
+        extension = candidate.suffix.lower().lstrip(".")
+        content_type = IMAGE_EXT_TO_CONTENT_TYPE.get(extension)
+        if not content_type:
+            guessed, _ = mimetypes.guess_type(candidate.name)
+            if guessed and guessed.lower().startswith("image/"):
+                content_type = guessed.lower()
+        if not content_type:
+            continue
+        return CachedMaterialImageFile(path=candidate, content_type=content_type)
+    return None
+
+
+def has_cached_material_catalog_image(*, external_key: str, uploads_dir: str) -> bool:
+    return resolve_cached_material_catalog_image_file(external_key=external_key, uploads_dir=uploads_dir) is not None
+
+
+def normalize_material_catalog_image_external_key(value: str | None) -> str | None:
+    normalized = str(value or "").strip().lower()
+    if not EXTERNAL_KEY_RE.fullmatch(normalized):
+        return None
+    return normalized
+
+
+def _lookup_on_unielektro(
+    client: httpx.Client,
+    *,
+    ean: str,
+    article_no: str | None,
+    item_name: str | None,
+) -> MaterialImageLookupResult | None:
+    for query in (f"site:unielektro.de {ean}", f"site:shop.unielektro.de {ean}"):
+        for link in _bing_search_links(client, query):
+            if not (_url_host_matches_domain(link, "unielektro.de") or _url_host_matches_domain(link, "shop.unielektro.de")):
+                continue
+            image_url = _extract_best_image_from_page(
+                client,
+                link,
+                ean=ean,
+                article_no=article_no,
+                item_name=item_name,
+                allow_barcode=False,
+            )
+            if image_url:
+                return MaterialImageLookupResult(image_url=image_url, source="unielektro_ean")
+
+    search_url = f"https://www.unielektro.de/search?sSearch={quote_plus(ean)}"
+    image_url = _extract_best_image_from_page(
+        client,
+        search_url,
+        ean=ean,
+        article_no=article_no,
+        item_name=item_name,
+        allow_barcode=False,
+    )
+    if image_url:
+        return MaterialImageLookupResult(image_url=image_url, source="unielektro_ean")
+    return None
+
+
 def _lookup_on_manufacturer_site(
     client: httpx.Client,
     *,
@@ -87,7 +295,7 @@ def _lookup_on_manufacturer_site(
     domains = _manufacturer_domain_candidates(manufacturer)
     if not domains:
         return None
-    for domain in domains[:3]:
+    for domain in domains[:2]:
         query = f"site:{domain} {ean}"
         for link in _bing_search_links(client, query):
             if not _url_host_matches_domain(link, domain):
@@ -182,7 +390,7 @@ def _bing_search_links(client: httpx.Client, query: str) -> list[str]:
             continue
         seen.add(candidate)
         links.append(candidate)
-        if len(links) >= 6:
+        if len(links) >= 3:
             break
     return links
 
@@ -357,3 +565,39 @@ def _normalize_item_tokens(value: str | None) -> set[str]:
         if len(tokens) >= 5:
             break
     return tokens
+
+
+def _material_catalog_image_cache_dir(uploads_dir: str) -> Path:
+    return Path(uploads_dir).expanduser().resolve() / CATALOG_IMAGE_CACHE_SUBDIR
+
+
+def _parse_content_length(raw: str | None) -> int | None:
+    if raw is None:
+        return None
+    try:
+        parsed = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    if parsed < 0:
+        return None
+    return parsed
+
+
+def _normalized_image_content_type(raw: str | None, *, url: str) -> str | None:
+    header_type = str(raw or "").split(";", 1)[0].strip().lower()
+    if header_type in IMAGE_CONTENT_TYPE_TO_EXT:
+        return header_type
+    guessed, _ = mimetypes.guess_type(url)
+    guessed_type = (guessed or "").strip().lower()
+    if guessed_type in IMAGE_CONTENT_TYPE_TO_EXT:
+        return guessed_type
+    return None
+
+
+def _remove_cached_material_image_variants(cache_dir: Path, external_key: str, *, keep: set[str]) -> None:
+    for candidate in cache_dir.glob(f"{external_key}.*"):
+        if not candidate.is_file():
+            continue
+        if candidate.name in keep:
+            continue
+        candidate.unlink(missing_ok=True)
