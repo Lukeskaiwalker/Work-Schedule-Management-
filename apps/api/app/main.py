@@ -14,7 +14,7 @@ from app.core.permissions import ROLE_ADMIN
 from app.core.security import get_password_hash, verify_password
 from app.core.time import utcnow
 from app.models.entities import User
-from app.routers import admin, auth, time_tracking, workflow
+from app.routers import admin, auth, events, time_tracking, workflow
 from app.services.runtime_settings import (
     is_initial_admin_bootstrap_completed,
     mark_initial_admin_bootstrap_completed,
@@ -92,6 +92,8 @@ async def basic_rate_limit(request: Request, call_next):
     # WebDAV clients can burst aggressively, so keep separate, higher buckets.
     if request.method == "OPTIONS":
         return await call_next(request)
+    if request.url.path.startswith("/api/events"):
+        return await call_next(request)
     ip = request.client.host if request.client else "unknown"
     scope, limit = _rate_scope(request.url.path)
     bucket_key = f"{ip}:{scope}"
@@ -108,6 +110,7 @@ async def basic_rate_limit(request: Request, call_next):
 
 app.include_router(auth.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
+app.include_router(events.router, prefix="/api")
 app.include_router(workflow.router, prefix="/api")
 app.include_router(time_tracking.router, prefix="/api")
 

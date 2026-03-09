@@ -81,3 +81,26 @@ def assert_project_access(db: Session, user: User, project_id: int, manage_requi
 
 def db_session() -> Generator[Session, None, None]:
     yield from get_db()
+
+
+def get_current_user_from_token(token: str, db: Session) -> User:
+    """
+    Validate a raw JWT string and return the active User.
+
+    Used by the SSE endpoint where the token arrives via query parameter
+    (EventSource does not support custom authorization headers).
+    """
+    payload = decode_token(token)
+    if not payload:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication token")
+
+    raw_sub = payload.get("sub")
+    try:
+        user_id = int(raw_sub)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication token")
+
+    user = db.get(User, user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
+    return user
