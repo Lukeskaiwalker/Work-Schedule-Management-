@@ -3,9 +3,39 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.core.events import notify
+from app.models.notification import Notification
 from app.routers.workflow_helpers import *  # noqa: F401,F403
 
 router = APIRouter(prefix="", tags=["tasks"])
+
+
+def _create_assignment_notifications(
+    db: Session,
+    task: "Task",
+    new_assignee_ids: list[int],
+    actor: "User",
+) -> None:
+    """
+    Write a Notification row for each newly added assignee.
+    Skips the actor (no self-notifications).
+    Call this BEFORE db.commit() so the notifications commit atomically
+    with the task data, then call notify() for SSE after commit.
+    """
+    actor_display = actor.display_name or actor.full_name or actor.email
+    for uid in new_assignee_ids:
+        if uid == actor.id:
+            continue
+        db.add(
+            Notification(
+                user_id=uid,
+                actor_user_id=actor.id,
+                event_type="task.assigned",
+                entity_type="task",
+                entity_id=task.id,
+                project_id=task.project_id,
+                message=f"{actor_display} assigned you to \"{task.title}\"",
+            )
+        )
 
 
 @router.get("/tasks", response_model=list[TaskOut])
@@ -71,6 +101,7 @@ def create_task(
     db.add(task)
     db.flush()
     _sync_task_assignments(db, task, assignee_ids)
+    _create_assignment_notifications(db, task, assignee_ids, current_user)
     _record_project_activity(
         db,
         project_id=task.project_id,
@@ -83,6 +114,9 @@ def create_task(
     db.refresh(task)
     created = _task_out(task, assignee_ids)
     notify(db, "task.created", created.model_dump(mode="json"))
+    for uid in assignee_ids:
+        if uid != current_user.id:
+            notify(db, "notification.created", {"user_id": uid})
     return created
 
 @router.patch("/tasks/{task_id}", response_model=TaskOut)
@@ -97,6 +131,7 @@ def update_task(
         raise HTTPException(status_code=404, detail="Task not found")
 
     existing_assignee_ids = _task_assignee_map(db, [task]).get(task.id, [])
+    added_assignee_ids: list[int] = []
     previous_status = task.status
     previous_due_date = task.due_date.isoformat() if task.due_date else None
     previous_start_time = task.start_time.isoformat() if task.start_time else None
@@ -158,8 +193,11 @@ def update_task(
                 next_assignee_candidates.append(payload.assignee_id)
             next_assignee_ids = _normalize_assignee_ids(next_assignee_candidates)
             _validate_assignee_ids(db, next_assignee_ids)
+            prev_assignee_ids: set[int] = set(existing_assignee_ids)
             _sync_task_assignments(db, task, next_assignee_ids)
             existing_assignee_ids = next_assignee_ids
+            added_assignee_ids = list(set(next_assignee_ids) - prev_assignee_ids)
+            _create_assignment_notifications(db, task, added_assignee_ids, current_user)
 
     db.add(task)
     if task.status != previous_status or (task.due_date.isoformat() if task.due_date else None) != previous_due_date or (
@@ -182,6 +220,9 @@ def update_task(
     db.refresh(task)
     updated = _task_out(task, existing_assignee_ids)
     notify(db, "task.updated", updated.model_dump(mode="json"))
+    for uid in added_assignee_ids:
+        if uid != current_user.id:
+            notify(db, "notification.created", {"user_id": uid})
     return updated
 
 @router.delete("/tasks/{task_id}")

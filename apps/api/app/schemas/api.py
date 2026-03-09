@@ -27,6 +27,7 @@ from app.schemas.materials import (
     ProjectMaterialNeedUpdate,
     ProjectTrackedMaterialOut,
 )
+from app.schemas.notification import NotificationOut
 from app.schemas.project import (
     ProjectActivityOut,
     ProjectClassTaskTemplateOut,
@@ -123,6 +124,7 @@ __all__ = [
     "ProjectClassTaskTemplateOut",
     "ProjectClassTemplateOut",
     "ProjectImportStatsOut",
+    "NotificationOut",
     "MaterialCatalogItemOut",
     "MaterialCatalogImportStateOut",
     "ProjectMaterialNeedOut",

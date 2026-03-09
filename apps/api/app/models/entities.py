@@ -26,6 +26,7 @@ from app.models.chat import (
 )
 from app.models.report import ConstructionReport, ConstructionReportJob
 from app.models.materials import MaterialCatalogItem, MaterialCatalogImportState, ProjectMaterialNeed
+from app.models.notification import Notification
 from app.models.wiki import WikiPage
 from app.models.files import Attachment, ProjectFolder
 from app.models.time_models import ClockEntry, BreakEntry, VacationRequest, SchoolAbsence
@@ -50,6 +51,7 @@ __all__ = [
     "MaterialCatalogImportState",
     "MaterialCatalogItem",
     "Message",
+    "Notification",
     "Project",
     "ProjectActivity",
     "ProjectClassAssignment",

@@ -488,7 +488,8 @@ def _unique_wiki_slug(db: Session, title: str, *, exclude_page_id: int | None = 
 
 
 def _wiki_root_dir() -> Path:
-    return Path(settings.wiki_root_dir).expanduser().resolve()
+    configured = (os.environ.get("WIKI_ROOT_DIR") or settings.wiki_root_dir or "").strip()
+    return Path(configured).expanduser().resolve()
 
 
 def _wiki_previewable_mime(media_type: str) -> bool:

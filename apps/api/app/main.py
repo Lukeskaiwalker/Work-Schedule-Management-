@@ -6,15 +6,16 @@ from datetime import datetime, timedelta
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import OperationalError, ProgrammingError
 from sqlalchemy import select
 
 from app.core.config import get_settings
-from app.core.db import Base, SessionLocal, engine
+from app.core.db import SessionLocal
 from app.core.permissions import ROLE_ADMIN
 from app.core.security import get_password_hash, verify_password
 from app.core.time import utcnow
 from app.models.entities import User
-from app.routers import admin, auth, events, time_tracking, workflow
+from app.routers import admin, auth, events, time_tracking, workflow, workflow_notifications
 from app.services.runtime_settings import (
     is_initial_admin_bootstrap_completed,
     mark_initial_admin_bootstrap_completed,
@@ -24,38 +25,42 @@ settings = get_settings()
 
 
 def _initialize_runtime_data() -> None:
-    Base.metadata.create_all(bind=engine)
     if not settings.initial_admin_bootstrap:
         return
-    with SessionLocal() as db:
-        if is_initial_admin_bootstrap_completed(db):
-            return
+    try:
+        with SessionLocal() as db:
+            if is_initial_admin_bootstrap_completed(db):
+                return
 
-        normalized_admin_email = settings.initial_admin_email.strip().lower()
-        existing = db.scalars(select(User).where(User.email == normalized_admin_email)).first()
-        if existing:
-            if not verify_password(settings.initial_admin_password, existing.password_hash):
+            normalized_admin_email = settings.initial_admin_email.strip().lower()
+            existing = db.scalars(select(User).where(User.email == normalized_admin_email)).first()
+            if existing:
+                if not verify_password(settings.initial_admin_password, existing.password_hash):
+                    mark_initial_admin_bootstrap_completed(db)
+                    db.commit()
+                return
+
+            active_admin_exists = db.scalars(
+                select(User.id).where(User.role == ROLE_ADMIN, User.is_active.is_(True)).limit(1)
+            ).first()
+            if active_admin_exists:
                 mark_initial_admin_bootstrap_completed(db)
                 db.commit()
-            return
+                return
 
-        active_admin_exists = db.scalars(
-            select(User.id).where(User.role == ROLE_ADMIN, User.is_active.is_(True)).limit(1)
-        ).first()
-        if active_admin_exists:
-            mark_initial_admin_bootstrap_completed(db)
+            admin_user = User(
+                email=normalized_admin_email,
+                password_hash=get_password_hash(settings.initial_admin_password),
+                full_name=settings.initial_admin_name,
+                role=ROLE_ADMIN,
+                is_active=True,
+            )
+            db.add(admin_user)
             db.commit()
-            return
-
-        admin_user = User(
-            email=normalized_admin_email,
-            password_hash=get_password_hash(settings.initial_admin_password),
-            full_name=settings.initial_admin_name,
-            role=ROLE_ADMIN,
-            is_active=True,
-        )
-        db.add(admin_user)
-        db.commit()
+    except (OperationalError, ProgrammingError) as exc:
+        raise RuntimeError(
+            "Database schema is not ready. Run `alembic upgrade head` before starting the API."
+        ) from exc
 
 
 @asynccontextmanager
@@ -112,6 +117,7 @@ app.include_router(auth.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
 app.include_router(events.router, prefix="/api")
 app.include_router(workflow.router, prefix="/api")
+app.include_router(workflow_notifications.router, prefix="/api")
 app.include_router(time_tracking.router, prefix="/api")
 
 

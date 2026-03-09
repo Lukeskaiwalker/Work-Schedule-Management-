@@ -6,6 +6,8 @@ Clients connect with:
 """
 from __future__ import annotations
 
+import json
+
 from fastapi import APIRouter, HTTPException, Query, Request
 from sqlalchemy import select
 from sse_starlette.sse import EventSourceResponse
@@ -31,9 +33,7 @@ async def sse_events(
     One long-lived HTTP connection per browser tab.
     """
     settings = get_settings()
-
-    if not settings.database_url.startswith("postgres"):
-        raise HTTPException(status_code=503, detail="Event stream requires PostgreSQL")
+    use_postgres_stream = settings.database_url.startswith("postgres")
 
     db = SessionLocal()
     try:
@@ -41,9 +41,10 @@ async def sse_events(
         user_id = int(user.id)
         is_admin = user.role in {"admin", "ceo"}
 
-        # Project visibility scope.
         project_ids: set[int] = set()
-        if not is_admin:
+        thread_ids: set[int] = set()
+        if use_postgres_stream and not is_admin:
+            # Project visibility scope.
             if user.role in {"planning"}:
                 project_ids = set(db.execute(select(Project.id)).scalars().all())
             else:
@@ -55,9 +56,7 @@ async def sse_events(
                     .all()
                 )
 
-        # Thread visibility scope.
-        thread_ids: set[int] = set()
-        if not is_admin:
+            # Thread visibility scope.
             threads = db.execute(select(ChatThread)).scalars().all()
             thread_ids = {thread.id for thread in threads if _thread_visible_to_user(db, user, thread)}
 
@@ -71,16 +70,23 @@ async def sse_events(
         db.close()
 
     async def event_generator():
-        async for chunk in listen_for_events(
-            database_url=settings.database_url,
-            user_id=user_id,
-            project_ids=project_ids,
-            thread_ids=thread_ids,
-            is_admin=is_admin,
-        ):
-            if await request.is_disconnected():
-                break
-            yield chunk
+        if use_postgres_stream:
+            async for chunk in listen_for_events(
+                database_url=settings.database_url,
+                user_id=user_id,
+                project_ids=project_ids,
+                thread_ids=thread_ids,
+                is_admin=is_admin,
+            ):
+                if await request.is_disconnected():
+                    break
+                yield chunk
+            return
+
+        # Test/local fallback for non-PostgreSQL environments.
+        # Emit the handshake event and end the stream so TestClient requests
+        # complete deterministically in SQLite-based test runs.
+        yield json.dumps({"type": "connected"})
 
     return EventSourceResponse(
         event_generator(),

@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
 import csv
 import hashlib
+import os
 import re
 from datetime import datetime, timedelta
 from dataclasses import dataclass
+from io import StringIO
 from pathlib import Path
 
-from sqlalchemy import case, delete, func, select
+from sqlalchemy import and_, case, delete, func, insert, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -87,6 +90,7 @@ ALPHA_RE = re.compile(r"[A-Za-zÄÖÜäöüß]")
 DATANORM_CURRENCY_RE = re.compile(r"(\d{2})([A-Z]{3})\s*$")
 DATANORM_COMPARE_RE = re.compile(r"[^a-z0-9]+")
 CATALOG_PARSER_SIGNATURE = "material-catalog-parser-v3-datanorm-images"
+CATALOG_IMPORT_BATCH_SIZE = 1000
 
 
 @dataclass(slots=True)
@@ -114,9 +118,15 @@ class DatanormArticleBuffer:
 
 
 @dataclass(slots=True)
-class ParsedCatalogFilesResult:
-    rows: list[ParsedCatalogRow]
-    duplicates_skipped: int = 0
+class MaterialCatalogImageStatus:
+    lookup_enabled: bool
+    total_items: int
+    items_with_image: int
+    items_checked: int
+    items_pending: int
+    items_waiting_retry: int
+    items_not_found: int
+    last_checked_at: datetime | None
 
 
 def ensure_material_catalog_up_to_date(db: Session) -> None:
@@ -129,36 +139,21 @@ def ensure_material_catalog_up_to_date(db: Session) -> None:
     if state and state.source_signature == signature:
         return
 
-    parsed = _parse_catalog_files(source_dir, files)
     preserved_images = _collect_preserved_images(db)
     db.execute(delete(MaterialCatalogItem))
-    for row in parsed.rows:
-        external_key = _external_key_for_row(row)
-        preserved = preserved_images.get(external_key)
-        db.add(
-            MaterialCatalogItem(
-                external_key=external_key,
-                source_file=row.source_file,
-                source_line=row.source_line,
-                article_no=row.article_no,
-                item_name=row.item_name,
-                unit=row.unit,
-                manufacturer=row.manufacturer,
-                ean=row.ean,
-                price_text=row.price_text,
-                image_url=preserved[0] if preserved else None,
-                image_source=preserved[1] if preserved else None,
-                image_checked_at=preserved[2] if preserved else None,
-                search_text=_search_text_for_row(row),
-            )
-        )
+    item_count, duplicates_skipped = _import_catalog_rows_in_batches(
+        db,
+        source_dir=source_dir,
+        files=files,
+        preserved_images=preserved_images,
+    )
     if state is None:
         state = MaterialCatalogImportState(id=1, source_dir=str(source_dir), source_signature=signature)
     state.source_dir = str(source_dir)
     state.source_signature = signature
     state.file_count = len(files)
-    state.item_count = len(parsed.rows)
-    state.duplicates_skipped = parsed.duplicates_skipped
+    state.item_count = item_count
+    state.duplicates_skipped = duplicates_skipped
     state.imported_at = utcnow()
     db.add(state)
     db.commit()
@@ -233,6 +228,109 @@ def ensure_material_catalog_item_image(db: Session, row: MaterialCatalogItem) ->
     db.refresh(row)
 
 
+def sync_pending_material_catalog_images(db: Session, *, limit: int | None = None) -> int:
+    if not _image_lookup_enabled():
+        return 0
+    configured_limit = _image_lookup_max_items_per_request()
+    effective_limit = configured_limit if limit is None else int(limit)
+    effective_limit = max(0, min(effective_limit, 50))
+    if effective_limit <= 0:
+        return 0
+
+    now = utcnow()
+    retry_after = _image_lookup_retry_after()
+    retry_cutoff = now - retry_after
+    image_missing = or_(MaterialCatalogItem.image_url.is_(None), MaterialCatalogItem.image_url == "")
+    has_ean = and_(MaterialCatalogItem.ean.is_not(None), MaterialCatalogItem.ean != "")
+    eligible_for_retry = or_(
+        MaterialCatalogItem.image_checked_at.is_(None),
+        MaterialCatalogItem.image_checked_at <= retry_cutoff,
+    )
+    rows = list(
+        db.scalars(
+            select(MaterialCatalogItem)
+            .where(has_ean, image_missing, eligible_for_retry)
+            .order_by(
+                case((MaterialCatalogItem.image_checked_at.is_(None), 0), else_=1).asc(),
+                MaterialCatalogItem.image_checked_at.asc(),
+                MaterialCatalogItem.id.asc(),
+            )
+            .limit(effective_limit)
+        ).all()
+    )
+
+    changed = False
+    processed = 0
+    for row in rows:
+        if processed >= effective_limit:
+            break
+        if not _should_lookup_image(row, now=now):
+            continue
+        processed += 1
+        if _refresh_catalog_item_image(row, checked_at=now):
+            db.add(row)
+            changed = True
+    if changed:
+        db.commit()
+    return processed
+
+
+def get_material_catalog_image_status(db: Session) -> MaterialCatalogImageStatus:
+    ensure_material_catalog_up_to_date(db)
+    total_items = int(db.scalar(select(func.count(MaterialCatalogItem.id))) or 0)
+    if total_items <= 0:
+        return MaterialCatalogImageStatus(
+            lookup_enabled=_image_lookup_enabled(),
+            total_items=0,
+            items_with_image=0,
+            items_checked=0,
+            items_pending=0,
+            items_waiting_retry=0,
+            items_not_found=0,
+            last_checked_at=None,
+        )
+
+    image_present = and_(MaterialCatalogItem.image_url.is_not(None), MaterialCatalogItem.image_url != "")
+    image_missing = or_(MaterialCatalogItem.image_url.is_(None), MaterialCatalogItem.image_url == "")
+    has_ean = and_(MaterialCatalogItem.ean.is_not(None), MaterialCatalogItem.ean != "")
+    retry_cutoff = utcnow() - _image_lookup_retry_after()
+    due_now = or_(
+        MaterialCatalogItem.image_checked_at.is_(None),
+        MaterialCatalogItem.image_checked_at <= retry_cutoff,
+    )
+
+    items_with_image = int(db.scalar(select(func.count(MaterialCatalogItem.id)).where(image_present)) or 0)
+    items_checked = int(
+        db.scalar(select(func.count(MaterialCatalogItem.id)).where(MaterialCatalogItem.image_checked_at.is_not(None))) or 0
+    )
+    items_not_found = int(
+        db.scalar(select(func.count(MaterialCatalogItem.id)).where(MaterialCatalogItem.image_source == "not_found")) or 0
+    )
+    items_pending = int(db.scalar(select(func.count(MaterialCatalogItem.id)).where(has_ean, image_missing, due_now)) or 0)
+    items_waiting_retry = int(
+        db.scalar(
+            select(func.count(MaterialCatalogItem.id)).where(
+                has_ean,
+                image_missing,
+                MaterialCatalogItem.image_checked_at.is_not(None),
+                MaterialCatalogItem.image_checked_at > retry_cutoff,
+            )
+        )
+        or 0
+    )
+    last_checked_at = db.scalar(select(func.max(MaterialCatalogItem.image_checked_at)))
+    return MaterialCatalogImageStatus(
+        lookup_enabled=_image_lookup_enabled(),
+        total_items=total_items,
+        items_with_image=items_with_image,
+        items_checked=items_checked,
+        items_pending=items_pending,
+        items_waiting_retry=items_waiting_retry,
+        items_not_found=items_not_found,
+        last_checked_at=last_checked_at,
+    )
+
+
 def _collect_preserved_images(
     db: Session,
 ) -> dict[str, tuple[str | None, str | None, datetime | None]]:
@@ -256,6 +354,74 @@ def _collect_preserved_images(
             image_checked_at,
         )
     return preserved
+
+
+def _import_catalog_rows_in_batches(
+    db: Session,
+    *,
+    source_dir: Path,
+    files: list[Path],
+    preserved_images: dict[str, tuple[str | None, str | None, datetime | None]],
+) -> tuple[int, int]:
+    article_dedupe_seen: set[str] = set()
+    fallback_dedupe_seen: set[tuple[str, str, str, str, str]] = set()
+    pending_rows: list[dict[str, object | None]] = []
+    duplicates_skipped = 0
+    item_count = 0
+    for row in _iter_catalog_rows(source_dir, files):
+        article_key = (row.article_no or "").strip().lower()
+        if article_key:
+            if article_key in article_dedupe_seen:
+                duplicates_skipped += 1
+                continue
+            article_dedupe_seen.add(article_key)
+        else:
+            dedupe_key = (
+                article_key,
+                row.item_name.strip().lower(),
+                (row.unit or "").strip().lower(),
+                (row.manufacturer or "").strip().lower(),
+                (row.ean or "").strip().lower(),
+            )
+            if dedupe_key in fallback_dedupe_seen:
+                duplicates_skipped += 1
+                continue
+            fallback_dedupe_seen.add(dedupe_key)
+
+        external_key = _external_key_for_row(row)
+        preserved = preserved_images.get(external_key)
+        pending_rows.append(
+            {
+                "external_key": external_key,
+                "source_file": row.source_file,
+                "source_line": row.source_line,
+                "article_no": row.article_no,
+                "item_name": row.item_name,
+                "unit": row.unit,
+                "manufacturer": row.manufacturer,
+                "ean": row.ean,
+                "price_text": row.price_text,
+                "image_url": preserved[0] if preserved else None,
+                "image_source": preserved[1] if preserved else None,
+                "image_checked_at": preserved[2] if preserved else None,
+                "search_text": _search_text_for_row(row),
+            }
+        )
+        item_count += 1
+        if len(pending_rows) >= CATALOG_IMPORT_BATCH_SIZE:
+            _insert_catalog_batch(db, pending_rows)
+            pending_rows.clear()
+
+    if pending_rows:
+        _insert_catalog_batch(db, pending_rows)
+
+    return item_count, duplicates_skipped
+
+
+def _insert_catalog_batch(db: Session, rows: list[dict[str, object | None]]) -> None:
+    if not rows:
+        return
+    db.execute(insert(MaterialCatalogItem), rows)
 
 
 def _should_lookup_image(row: MaterialCatalogItem, *, now) -> bool:
@@ -306,7 +472,7 @@ def _image_lookup_retry_after() -> timedelta:
 
 def _resolve_material_catalog_dir() -> Path | None:
     settings = get_settings()
-    configured = (settings.material_catalog_dir or "").strip()
+    configured = (os.environ.get("MATERIAL_CATALOG_DIR") or settings.material_catalog_dir or "").strip()
     candidates: list[Path] = []
     if configured:
         configured_path = Path(configured)
@@ -347,47 +513,31 @@ def _catalog_signature(source_dir: Path, files: list[Path]) -> str:
     return digest.hexdigest()
 
 
-def _parse_catalog_files(source_dir: Path, files: list[Path]) -> ParsedCatalogFilesResult:
-    article_dedupe_seen: set[str] = set()
-    fallback_dedupe_seen: set[tuple[str, str, str, str, str]] = set()
-    rows: list[ParsedCatalogRow] = []
-    duplicates_skipped = 0
+def _iter_catalog_rows(source_dir: Path, files: list[Path]) -> Iterator[ParsedCatalogRow]:
     for file_path in files:
         relative_name = str(file_path.relative_to(source_dir))
-        for candidate in _parse_catalog_file(file_path, relative_name):
-            article_key = (candidate.article_no or "").strip().lower()
-            if article_key:
-                if article_key in article_dedupe_seen:
-                    duplicates_skipped += 1
-                    continue
-                article_dedupe_seen.add(article_key)
-            else:
-                dedupe_key = (
-                    article_key,
-                    candidate.item_name.strip().lower(),
-                    (candidate.unit or "").strip().lower(),
-                    (candidate.manufacturer or "").strip().lower(),
-                    (candidate.ean or "").strip().lower(),
-                )
-                if dedupe_key in fallback_dedupe_seen:
-                    duplicates_skipped += 1
-                    continue
-                fallback_dedupe_seen.add(dedupe_key)
-            rows.append(candidate)
-    return ParsedCatalogFilesResult(rows=rows, duplicates_skipped=duplicates_skipped)
+        yield from _iter_catalog_file_rows(file_path, relative_name)
 
 
-def _parse_catalog_file(path: Path, relative_name: str) -> list[ParsedCatalogRow]:
+def _iter_catalog_file_rows(path: Path, relative_name: str) -> Iterator[ParsedCatalogRow]:
     text = _decode_payload(path.read_bytes())
     if not text.strip():
-        return []
-    datanorm_rows = _parse_datanorm_rows(text, relative_name)
-    if datanorm_rows:
-        return datanorm_rows
-    parsed = _parse_delimited_rows(text, relative_name)
-    if parsed:
-        return parsed
-    return _parse_linewise_rows(text, relative_name)
+        return
+    if _looks_like_datanorm_payload(text):
+        yield from _iter_datanorm_rows(text, relative_name)
+        return
+    saw_delimited = False
+    for row in _iter_delimited_rows(text, relative_name):
+        saw_delimited = True
+        yield row
+    if saw_delimited:
+        return
+    yield from _iter_linewise_rows(text, relative_name)
+
+
+def _iter_text_lines(text: str) -> Iterator[str]:
+    for raw_line in StringIO(text):
+        yield raw_line.rstrip("\r\n")
 
 
 def _decode_payload(raw: bytes) -> str:
@@ -399,13 +549,11 @@ def _decode_payload(raw: bytes) -> str:
     return raw.decode("utf-8", errors="ignore")
 
 
-def _parse_datanorm_rows(text: str, relative_name: str) -> list[ParsedCatalogRow]:
-    if not _looks_like_datanorm_payload(text):
-        return []
+def _iter_datanorm_rows(text: str, relative_name: str) -> Iterator[ParsedCatalogRow]:
     currency = _parse_datanorm_currency(text)
     by_article_no: dict[str, DatanormArticleBuffer] = {}
     article_order: list[str] = []
-    for line_number, raw_line in enumerate(text.splitlines(), start=1):
+    for line_number, raw_line in enumerate(_iter_text_lines(text), start=1):
         line = _clean_token(raw_line)
         if not line:
             continue
@@ -441,7 +589,6 @@ def _parse_datanorm_rows(text: str, relative_name: str) -> list[ParsedCatalogRow
                 article_order.append(article_no)
             row.match_code = _clean_token(parts[3]) or None
             row.ean = _clean_token(parts[9]) or None
-    parsed_rows: list[ParsedCatalogRow] = []
     for article_no in article_order:
         source = by_article_no[article_no]
         item_name = _build_datanorm_item_name(
@@ -451,26 +598,23 @@ def _parse_datanorm_rows(text: str, relative_name: str) -> list[ParsedCatalogRow
             article_no=source.article_no,
         )
         manufacturer = _derive_datanorm_manufacturer(source.short_text, match_code=source.match_code)
-        parsed_rows.append(
-            ParsedCatalogRow(
-                source_file=relative_name,
-                source_line=source.source_line,
-                article_no=source.article_no,
-                item_name=item_name[:500],
-                unit=source.unit,
-                manufacturer=manufacturer,
-                ean=source.ean,
-                price_text=_format_datanorm_price(source.price_raw, currency=currency),
-            )
+        yield ParsedCatalogRow(
+            source_file=relative_name,
+            source_line=source.source_line,
+            article_no=source.article_no,
+            item_name=item_name[:500],
+            unit=source.unit,
+            manufacturer=manufacturer,
+            ean=source.ean,
+            price_text=_format_datanorm_price(source.price_raw, currency=currency),
         )
-    return parsed_rows
 
 
 def _looks_like_datanorm_payload(text: str) -> bool:
     saw_a = False
     saw_b = False
     inspected = 0
-    for raw_line in text.splitlines():
+    for raw_line in _iter_text_lines(text):
         line = _clean_token(raw_line)
         if not line:
             continue
@@ -493,7 +637,7 @@ def _looks_like_datanorm_payload(text: str) -> bool:
 
 
 def _parse_datanorm_currency(text: str) -> str | None:
-    for raw_line in text.splitlines():
+    for raw_line in _iter_text_lines(text):
         line = _clean_token(raw_line)
         if not line:
             continue
@@ -559,26 +703,39 @@ def _format_datanorm_price(raw_value: str | None, *, currency: str | None) -> st
     return value
 
 
-def _parse_delimited_rows(text: str, relative_name: str) -> list[ParsedCatalogRow]:
-    lines = [line for line in text.splitlines() if line.strip()]
-    if len(lines) < 2:
-        return []
-    delimiter = _detect_delimiter(lines[:30])
+def _iter_delimited_rows(text: str, relative_name: str) -> Iterator[ParsedCatalogRow]:
+    sample_lines = [line for line in _iter_text_lines(text) if line.strip()][:30]
+    if len(sample_lines) < 2:
+        return
+    delimiter = _detect_delimiter(sample_lines)
     if not delimiter:
-        return []
-    reader = csv.reader(lines, delimiter=delimiter)
-    rows = [[_clean_token(cell) for cell in row] for row in reader]
-    rows = [row for row in rows if any(row)]
-    if not rows:
-        return []
-    header_map = _header_map(rows[0])
-    start_index = 1 if header_map else 0
-    parsed_rows: list[ParsedCatalogRow] = []
-    for index, row in enumerate(rows[start_index:], start=start_index + 1):
-        parsed = _parse_tabular_row(row, relative_name, index, header_map)
+        return
+    reader = csv.reader(StringIO(text), delimiter=delimiter)
+
+    first_row: list[str] | None = None
+    first_index = 0
+    for index, row in enumerate(reader, start=1):
+        cleaned = [_clean_token(cell) for cell in row]
+        if any(cleaned):
+            first_row = cleaned
+            first_index = index
+            break
+    if first_row is None:
+        return
+
+    header_map = _header_map(first_row)
+    if not header_map:
+        parsed = _parse_tabular_row(first_row, relative_name, first_index, header_map=None)
         if parsed is not None:
-            parsed_rows.append(parsed)
-    return parsed_rows
+            yield parsed
+
+    for index, row in enumerate(reader, start=first_index + 1):
+        cleaned = [_clean_token(cell) for cell in row]
+        if not any(cleaned):
+            continue
+        parsed = _parse_tabular_row(cleaned, relative_name, index, header_map)
+        if parsed is not None:
+            yield parsed
 
 
 def _detect_delimiter(lines: list[str]) -> str | None:
@@ -665,9 +822,8 @@ def _column_value(row: list[str], header_map: dict[str, int] | None, field: str)
     return _clean_token(row[index])
 
 
-def _parse_linewise_rows(text: str, relative_name: str) -> list[ParsedCatalogRow]:
-    rows: list[ParsedCatalogRow] = []
-    for line_number, raw_line in enumerate(text.splitlines(), start=1):
+def _iter_linewise_rows(text: str, relative_name: str) -> Iterator[ParsedCatalogRow]:
+    for line_number, raw_line in enumerate(_iter_text_lines(text), start=1):
         line = _clean_token(raw_line)
         if not line:
             continue
@@ -696,19 +852,16 @@ def _parse_linewise_rows(text: str, relative_name: str) -> list[ParsedCatalogRow
         item_name = _clean_token(item_name)
         if len(item_name) < 2:
             continue
-        rows.append(
-            ParsedCatalogRow(
-                source_file=relative_name,
-                source_line=line_number,
-                article_no=article_no,
-                item_name=item_name[:500],
-                unit=unit,
-                manufacturer=manufacturer,
-                ean=ean,
-                price_text=price_text,
-            )
+        yield ParsedCatalogRow(
+            source_file=relative_name,
+            source_line=line_number,
+            article_no=article_no,
+            item_name=item_name[:500],
+            unit=unit,
+            manufacturer=manufacturer,
+            ean=ean,
+            price_text=price_text,
         )
-    return rows
 
 
 def _looks_like_header(tokens: list[str]) -> bool:

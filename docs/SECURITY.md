@@ -113,6 +113,11 @@
 - Parser-signature versioning forces a controlled one-time reimport when parser logic changes, preventing stale/misparsed cached catalog data from persisting indefinitely.
 - DATANORM source folder handling remains read-only mount-based (`/data/Datanorm_Neuanlage:ro`) and does not introduce new write surfaces.
 
+## Iteration Security Notes (2026-03-09, schema bootstrap hardening + frontend fail-safe)
+- API startup no longer attempts implicit schema creation via `create_all`; deploys must apply Alembic migrations explicitly.
+- This reduces risk of silent schema drift and inconsistent authorization/data semantics between environments.
+- Added top-level React error boundary to fail safe with a controlled recovery screen instead of rendering broken/undefined UI states after runtime component crashes.
+
 ## Iteration Security Notes (2026-03-04, material image lookup)
 - Catalog image enrichment now performs outbound HTTP lookups by EAN. To reduce abuse surface:
   - only `http/https` URLs are accepted,

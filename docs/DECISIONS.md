@@ -1,5 +1,19 @@
 # Architecture Decision Records
 
+## 2026-03-09 - API startup no longer runs `create_all`; schema changes flow through Alembic
+- Status: accepted
+- Decision: remove runtime `Base.metadata.create_all()` from API startup bootstrap and require schema readiness via Alembic (`alembic upgrade head`) before service runtime.
+- Tradeoffs:
+  - Pros: production schema evolution is migration-driven and reproducible; avoids silent drift between model metadata and real DB schema.
+  - Cons: operators must ensure migration step runs during deploy/startup flows.
+
+## 2026-03-09 - Test DB reset keeps schema stable and clears rows between tests
+- Status: accepted
+- Decision: stop dropping/recreating schema per test in `tests/conftest.py`; keep a one-time schema init and clear table rows per test.
+- Tradeoffs:
+  - Pros: avoids per-test schema churn and aligns tests with long-lived schema assumptions.
+  - Cons: SQL reset helper is slightly more complex than `drop_all/create_all`.
+
 ## 2026-03-04 - Material catalog image enrichment is lazy, EAN-based, and cached
 - Status: accepted
 - Decision: Resolve product images by EAN at runtime for newly touched material catalog rows (search results and add-to-needs), not as a full import-time batch. Lookup order is manufacturer-site first, then open EAN sources. Persist lookup result metadata (`image_url`, `image_source`, `image_checked_at`) in catalog rows and preserve it across reimports.

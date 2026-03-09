@@ -4,12 +4,14 @@
  * Opens an EventSource connection to /api/events with the JWT.
  * EventSource handles reconnects automatically.
  */
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 export type ServerEvent = {
   type: string;
   data: Record<string, unknown>;
 };
+
+export type SseStatus = "connecting" | "connected" | "reconnecting" | "disconnected";
 
 type Options = {
   onEvent: (event: ServerEvent) => void;
@@ -19,21 +21,27 @@ type Options = {
 export function useServerEvents(
   token: string | null,
   { onEvent, onReconnect }: Options,
-): void {
+): { status: SseStatus } {
   const onEventRef = useRef(onEvent);
   const onReconnectRef = useRef(onReconnect);
   onEventRef.current = onEvent;
   onReconnectRef.current = onReconnect;
 
   const hasConnectedRef = useRef(false);
+  const [status, setStatus] = useState<SseStatus>(token ? "connecting" : "disconnected");
 
   useEffect(() => {
-    if (!token) return;
+    if (!token) {
+      setStatus("disconnected");
+      return;
+    }
 
+    setStatus("connecting");
     const url = `/api/events?token=${encodeURIComponent(token)}`;
     const eventSource = new EventSource(url);
 
     eventSource.onopen = () => {
+      setStatus("connected");
       if (hasConnectedRef.current) {
         onReconnectRef.current?.();
       }
@@ -51,12 +59,16 @@ export function useServerEvents(
     };
 
     eventSource.onerror = () => {
-      // no-op: EventSource reconnects automatically
+      // EventSource reconnects automatically; onopen fires on successful reconnect.
+      setStatus("reconnecting");
     };
 
     return () => {
       eventSource.close();
+      setStatus("disconnected");
       hasConnectedRef.current = false;
     };
   }, [token]);
+
+  return { status };
 }

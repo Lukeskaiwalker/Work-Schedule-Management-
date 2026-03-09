@@ -1,4 +1,4 @@
-import { ChangeEvent, FormEvent, MouseEvent, PointerEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, FormEvent, MouseEvent, PointerEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppContext } from "./context/AppContext";
 import type { AppContextValue } from "./context/AppContext";
 
@@ -113,7 +113,6 @@ import {
   normalizeTimeHHMM,
   taskDisplayStatus,
   isTaskOverdue,
-  taskNotificationDigest,
   formatTaskStartTime,
 } from "./utils/tasks";
 import {
@@ -169,6 +168,7 @@ import {
 import { SidebarNavIcon, PenIcon, BackIcon, SearchIcon, CopyIcon } from "./components/icons";
 import { WorkHoursGauge, ProjectHoursGauge, WeeklyHoursGauge, MonthlyHoursGauge } from "./components/gauges";
 import { ThreadIconBadge, threadInitials } from "./components/shared/ThreadIconBadge";
+import type { AppNotification } from "./components/NotificationPanel";
 import { Sidebar } from "./components/layout/Sidebar";
 import { Header } from "./components/layout/Header";
 import { ProjectModal } from "./components/modals/ProjectModal";
@@ -257,7 +257,9 @@ export function App() {
   const [officeTaskProjectFilterIds, setOfficeTaskProjectFilterIds] = useState<number[]>([]);
   const [expandedMyTaskId, setExpandedMyTaskId] = useState<number | null>(null);
   const [myTasksBackProjectId, setMyTasksBackProjectId] = useState<number | null>(null);
-  const [hasTaskNotifications, setHasTaskNotifications] = useState(false);
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [notifPanelOpen, setNotifPanelOpen] = useState(false);
+  const hasTaskNotifications = notifications.some((entry) => entry.read_at === null);
 
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [files, setFiles] = useState<ProjectFile[]>([]);
@@ -426,7 +428,6 @@ export function App() {
   const constructionFormRef = useRef<HTMLFormElement | null>(null);
   const reportImageInputRef = useRef<HTMLInputElement | null>(null);
   const reportImageFilesRef = useRef<ReportImageSelection[]>([]);
-  const taskNotificationSnapshotRef = useRef("");
   const shouldFollowMessagesRef = useRef(true);
   const forceScrollToBottomRef = useRef(false);
   const materialCatalogRequestSeqRef = useRef(0);
@@ -1646,6 +1647,13 @@ export function App() {
   useEffect(() => {
     if (!token || !user) return;
     void loadBaseData();
+    void loadNotifications();
+  }, [token, user]);
+
+  useEffect(() => {
+    if (token && user) return;
+    setNotifications([]);
+    setNotifPanelOpen(false);
   }, [token, user]);
 
   useEffect(() => {
@@ -1847,52 +1855,9 @@ export function App() {
   }, [mainView, token, user]);
 
   useEffect(() => {
-    if (mainView === "my_tasks" || mainView === "office_tasks" || mainView === "planning" || mainView === "calendar") {
-      setHasTaskNotifications(false);
-    }
-  }, [mainView]);
-
-  useEffect(() => {
     if (mainView === "projects_archive") return;
     setHighlightedArchivedProjectId(null);
   }, [mainView]);
-
-  useEffect(() => {
-    if (!token || !user) {
-      taskNotificationSnapshotRef.current = "";
-      return;
-    }
-    let canceled = false;
-    const pollMyTaskChanges = async () => {
-      try {
-        const taskRows = await apiFetch<Task[]>("/tasks?view=my", token);
-        if (canceled) return;
-        const nextDigest = taskNotificationDigest(taskRows);
-        const currentDigest = taskNotificationSnapshotRef.current;
-        if (
-          currentDigest &&
-          currentDigest !== nextDigest &&
-          mainView !== "my_tasks" &&
-          mainView !== "office_tasks" &&
-          mainView !== "planning" &&
-          mainView !== "calendar"
-        ) {
-          setHasTaskNotifications(true);
-        }
-        taskNotificationSnapshotRef.current = nextDigest;
-      } catch {
-        // keep UX silent for background indicator polling
-      }
-    };
-    void pollMyTaskChanges();
-    const interval = window.setInterval(() => {
-      void pollMyTaskChanges();
-    }, 10000);
-    return () => {
-      canceled = true;
-      window.clearInterval(interval);
-    };
-  }, [token, user, mainView]);
 
   useEffect(() => {
     if (!token || !user) return;
@@ -2050,13 +2015,23 @@ export function App() {
     }
   }
 
-  function handleServerEvent(event: ServerEvent) {
+  const handleServerEvent = useCallback((event: ServerEvent) => {
     const eventType = String(event.type || "").trim().toLowerCase();
     if (!eventType) return;
+
+    let planningRefreshed = false;
 
     // Keep project headers/sidebars in sync for task/project mutations.
     if (eventType.startsWith("task.") || eventType.startsWith("project.")) {
       void refreshRealtimeProjectLists();
+    }
+
+    if (eventType === "task.created" || eventType === "task.updated" || eventType === "task.deleted") {
+      // Re-fetch planning week if the planning view is currently open.
+      if (mainView === "planning") {
+        void loadPlanningWeek(null, planningWeekStart, planningTaskTypeView ?? null);
+        planningRefreshed = true;
+      }
     }
 
     // Keep thread list fresh even outside the messages view.
@@ -2064,12 +2039,29 @@ export function App() {
       void loadThreads();
     }
 
-    void refreshActiveViewRealtime();
-  }
+    if (eventType === "notification.created") {
+      void loadNotifications();
+      return;
+    }
 
-  useServerEvents(token, {
+    if (!planningRefreshed) {
+      void refreshActiveViewRealtime();
+    }
+  }, [
+    loadNotifications,
+    loadPlanningWeek,
+    loadThreads,
+    mainView,
+    planningTaskTypeView,
+    planningWeekStart,
+    refreshActiveViewRealtime,
+    refreshRealtimeProjectLists,
+  ]);
+
+  const { status: sseStatus } = useServerEvents(token, {
     onEvent: handleServerEvent,
     onReconnect: () => {
+      void loadNotifications();
       void refreshActiveViewRealtime();
       void refreshRealtimeProjectLists();
     },
@@ -2696,6 +2688,31 @@ export function App() {
       setWikiFiles(files);
     } catch (err: any) {
       setError(err.message ?? "Failed to load wiki files");
+    }
+  }
+
+  async function loadNotifications() {
+    if (!token) return;
+    try {
+      const data = await apiFetch<AppNotification[]>("/notifications", token);
+      setNotifications(data);
+    } catch {
+      // Notifications are non-critical.
+    }
+  }
+
+  async function markAllNotificationsRead() {
+    if (!token) return;
+    try {
+      await apiFetch<{ marked_read: number }>("/notifications/read-all", token, {
+        method: "PATCH",
+      });
+      const readAt = new Date().toISOString();
+      setNotifications((current) =>
+        current.map((entry) => ({ ...entry, read_at: entry.read_at ?? readAt })),
+      );
+    } catch {
+      // Notifications are non-critical.
     }
   }
 
@@ -6040,7 +6057,10 @@ export function App() {
     myTasksBackProjectId,
     setMyTasksBackProjectId,
     hasTaskNotifications,
-    setHasTaskNotifications,
+    notifications,
+    notifPanelOpen,
+    setNotifPanelOpen,
+    markAllNotificationsRead,
 
     // ── Project task form ─────────────────────────────────────────────────────
     projectTaskForm,
@@ -6321,6 +6341,7 @@ export function App() {
     selectedTaskModalProject,
     activeThread,
     hasUnreadThreads,
+    sseStatus,
     assignableUsersById,
     adminUsersById,
     compactMenuUserNamesById,

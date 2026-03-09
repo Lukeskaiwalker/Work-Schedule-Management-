@@ -15,6 +15,15 @@
 - Local browser smoke (manual automation):
   - Start local API + web dev servers, then run Playwright CLI flow for login/project/report submit.
 
+## Latest Result (2026-03-09, migration + error-boundary + bell-icon follow-on)
+- One-command checks:
+  - `./scripts/test.sh`: pass (`76 passed`, web build pass).
+- Type checks:
+  - `cd apps/web && npx tsc --noEmit`: pass (`0` errors).
+- Migration validation:
+  - `docker compose exec -T api alembic upgrade head`: pass.
+  - Postgres schema check confirms `notifications` table and expected indexes.
+
 ## Latest Result (2026-03-04, material images + duplicate reporting)
 - Targeted API coverage:
   - `docker compose run --build --rm api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_material_catalog.py'`: pass (`3 passed`).

@@ -25,6 +25,20 @@
 3. Projects/tasks/planning/tickets/time/files/chat/report: completed (MVP scope).
 4. Backup/restore + docs + test hardening: completed.
 
+## Compacted Update (2026-03-09, migration hardening + runtime UI resilience)
+- Changed:
+  - removed API runtime `create_all()` bootstrap path; API startup now expects migrated schema and raises a clear error when DB schema is missing/outdated.
+  - added Alembic revision `20260309_0034` for `notifications` table/indexes.
+  - made notifications migration tolerant of environments where the table already exists (legacy `create_all` drift).
+  - replaced per-test DB drop/recreate with row-reset strategy to keep test schema stable across test cases.
+  - added top-level React error boundary to prevent full white-screen on component render crashes.
+  - replaced notification bell placeholder emoji with a shared SVG icon consistent with app iconography.
+- Verified:
+  - `./scripts/test.sh`: pass (`76 passed`, web build pass).
+  - `cd apps/web && npx tsc --noEmit`: pass.
+  - `docker compose exec -T api alembic upgrade head`: pass.
+- Blockers: none.
+
 ## Compacted Update (2026-03-04, material image enrichment + duplicate import reporting)
 - Changed:
   - material catalog items now store image metadata (`image_url`, `image_source`, `image_checked_at`).

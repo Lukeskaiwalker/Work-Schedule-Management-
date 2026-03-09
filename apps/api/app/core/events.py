@@ -133,7 +133,10 @@ def _should_deliver(
     thread_ids: set[int],
     is_admin: bool,
 ) -> bool:
-    del user_id
+    # Personal notifications are always filtered to one recipient.
+    if event_type == "notification.created":
+        return data.get("user_id") == user_id
+
     if is_admin:
         return True
 

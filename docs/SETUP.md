@@ -6,6 +6,7 @@
 2. Start stack:
    - `docker compose up --build -d`
    - Stack now includes `api_worker` (background report-processing worker) in addition to `db/api/web/caddy`.
+   - API schema is migration-driven; ensure `alembic upgrade head` is part of deploy/update flow (the API no longer uses runtime `create_all()` bootstrap).
 3. Trust local TLS root on macOS (Safari/Chrome):
    - `./scripts/trust_caddy_root_macos.sh`
 4. Open app:
