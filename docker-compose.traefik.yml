@@ -1,0 +1,23 @@
+services:
+  caddy:
+    networks:
+      - default
+      - traefik_proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=${SMPL_TRAEFIK_NETWORK:-mac_default}"
+      - "traefik.http.routers.smplall.rule=Host(`${SMPL_TRAEFIK_HOST:-smpl-office.duckdns.org}`)"
+      - "traefik.http.routers.smplall.entrypoints=websecure"
+      - "traefik.http.routers.smplall.tls=true"
+      - "traefik.http.routers.smplall.tls.certresolver=${SMPL_TRAEFIK_CERT_RESOLVER:-tmhttpchallenge}"
+      - "traefik.http.services.smplall.loadbalancer.server.port=80"
+      - "traefik.http.routers.smplall-http.rule=Host(`${SMPL_TRAEFIK_HOST:-smpl-office.duckdns.org}`)"
+      - "traefik.http.routers.smplall-http.entrypoints=web"
+      - "traefik.http.routers.smplall-http.middlewares=smplall-https-redirect"
+      - "traefik.http.middlewares.smplall-https-redirect.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.smplall-https-redirect.redirectscheme.permanent=true"
+
+networks:
+  traefik_proxy:
+    external: true
+    name: "${SMPL_TRAEFIK_NETWORK:-mac_default}"

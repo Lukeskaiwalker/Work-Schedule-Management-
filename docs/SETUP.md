@@ -16,6 +16,16 @@
    - If custom Caddy HTTPS port is set, include it in URL (example: `https://localhost:8443`).
    - Use `localhost` (not `127.0.0.1`) for browser access.
 
+## Behind Existing Traefik (domain routing)
+- Use the optional Traefik override file when another Traefik instance already owns host ports `80/443`.
+- Set env values (example):
+  - `SMPL_TRAEFIK_HOST=smpl-office.duckdns.org`
+  - `SMPL_TRAEFIK_NETWORK=mac_default`
+  - `SMPL_TRAEFIK_CERT_RESOLVER=tmhttpchallenge`
+- Start with both compose files:
+  - `docker compose -f docker-compose.yml -f docker-compose.traefik.yml up -d --build`
+- This keeps direct Caddy host ports configurable via `SMPL_CADDY_HTTP_PORT` / `SMPL_CADDY_HTTPS_PORT` and adds Traefik host-based routing to the `caddy` service.
+
 ## Local Wiki Source Folder
 - Put wiki files under repo folder:
   - `local wiki/<brand>/<folder>/...`
