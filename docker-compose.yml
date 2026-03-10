@@ -71,8 +71,8 @@ services:
     image: caddy:2.10.2-alpine
     restart: unless-stopped
     ports:
-      - "80:80"
-      - "443:443"
+      - "${SMPL_CADDY_HTTP_PORT:-80}:80"
+      - "${SMPL_CADDY_HTTPS_PORT:-443}:443"
     volumes:
       - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

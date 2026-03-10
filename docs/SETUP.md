@@ -7,10 +7,13 @@
    - `docker compose up --build -d`
    - Stack now includes `api_worker` (background report-processing worker) in addition to `db/api/web/caddy`.
    - API schema is migration-driven; ensure `alembic upgrade head` is part of deploy/update flow (the API no longer uses runtime `create_all()` bootstrap).
+   - If ports `80/443` are already used (for example by Traefik), override Caddy host ports:
+     - `SMPL_CADDY_HTTP_PORT=8080 SMPL_CADDY_HTTPS_PORT=8443 docker compose up --build -d`
 3. Trust local TLS root on macOS (Safari/Chrome):
    - `./scripts/trust_caddy_root_macos.sh`
 4. Open app:
    - `https://localhost`
+   - If custom Caddy HTTPS port is set, include it in URL (example: `https://localhost:8443`).
    - Use `localhost` (not `127.0.0.1`) for browser access.
 
 ## Local Wiki Source Folder
