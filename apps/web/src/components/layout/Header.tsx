@@ -69,7 +69,7 @@ export function Header() {
             <span>{language === "de" ? "Zurück" : "Back"}</span>
           </button>
         )}
-          <div>
+          <div className="workspace-header-title">
           {mainView === "project" && activeProject ? (
             <>
               <h1>{activeProjectHeader.title}</h1>

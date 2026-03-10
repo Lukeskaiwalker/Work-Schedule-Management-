@@ -26,7 +26,7 @@ apps/
       api/                    HTTP client wrapper
       utils/                  Pure utility functions
       types/                  Shared TypeScript types
-      styles.css              Global stylesheet
+      styles.css              Global stylesheet (~4 100 lines); breakpoints: ≥900px desktop, ≤899px mobile, ≤768px tablet, ≤480px phone; uses 100dvh throughout
 docs/                         Living project docs (STATE, DECISIONS, TESTING, SECURITY, SETUP)
 scripts/                      Ops helpers (test.sh, backup.sh, safe_update.sh)
 docker-compose.yml            Services: db, api, web, caddy
@@ -157,6 +157,7 @@ Key state variables in `App.tsx`:
 - `user: User | null` — authenticated user
 - `token: string | null` — JWT (stored in localStorage as `smpl_token`)
 - `mainView: MainView` — active page key (see table below)
+- `sidebarOpen: boolean` / `setSidebarOpen` — mobile nav drawer; auto-closes on `setMainView`
 - `projects: Project[]`, `tasks: Task[]`, `threads: Thread[]`, `messages: Message[]`
 - `notifications: AppNotification[]`
 - `planningWeek: PlanningWeek | null`, `planningWeekStart: string`
@@ -187,8 +188,8 @@ Key state variables in `App.tsx`:
 
 | Path | Purpose |
 |------|---------|
-| `layout/Sidebar.tsx` | Main nav sidebar — nav items, notification bell, SSE dot, user menu |
-| `layout/Header.tsx` | Top header bar |
+| `layout/Sidebar.tsx` | Nav sidebar — off-canvas drawer on mobile (≤899 px), fixed at desktop; reads `sidebarOpen` from context; Escape key and overlay click close it; scroll-locks body when open |
+| `layout/Header.tsx` | Top header bar — hamburger toggle (hidden ≥900 px), back buttons, page title |
 | `modals/ProjectModal.tsx` | Create / edit project |
 | `modals/TaskModal.tsx` | Create task |
 | `modals/TaskEditModal.tsx` | Edit task |

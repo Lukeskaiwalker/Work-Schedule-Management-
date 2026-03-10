@@ -54,17 +54,22 @@ export function Sidebar() {
     projectTitleParts,
   } = useAppContext();
 
-  const [isMobileSidebarViewport, setIsMobileSidebarViewport] = useState(() =>
-    typeof window !== "undefined" ? window.innerWidth <= 899 : false,
+  const mobileQuery =
+    typeof window !== "undefined"
+      ? window.matchMedia("(max-width: 899px)")
+      : null;
+
+  const [isMobileSidebarViewport, setIsMobileSidebarViewport] = useState(
+    () => mobileQuery?.matches ?? false,
   );
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    const onResize = () => setIsMobileSidebarViewport(window.innerWidth <= 899);
-    onResize();
-    window.addEventListener("resize", onResize);
-    return () => window.removeEventListener("resize", onResize);
-  }, []);
+    if (!mobileQuery) return;
+    const onChange = (e: MediaQueryListEvent) =>
+      setIsMobileSidebarViewport(e.matches);
+    mobileQuery.addEventListener("change", onChange);
+    return () => mobileQuery.removeEventListener("change", onChange);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!isMobileSidebarViewport || !sidebarOpen) return;
@@ -74,6 +79,15 @@ export function Sidebar() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [isMobileSidebarViewport, sidebarOpen, setSidebarOpen]);
+
+  useEffect(() => {
+    if (!isMobileSidebarViewport || !sidebarOpen) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = prev;
+    };
+  }, [isMobileSidebarViewport, sidebarOpen]);
 
   const sidebarVisible = !isMobileSidebarViewport || sidebarOpen;
   const closeSidebar = () => setSidebarOpen(false);

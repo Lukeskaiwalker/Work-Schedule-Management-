@@ -13,6 +13,25 @@
   --radius: 14px;
   --sidebar-width: 320px;
   --sidebar-mobile-width: 280px;
+
+  /* ── Z-index scale (never assign raw numbers outside this block) ──────
+     99  — dropdowns, tooltips anchored to static elements
+     100 — sticky table headers / floating action buttons
+     199 — sidebar backdrop overlay
+     200 — sidebar drawer (mobile off-canvas)
+     201 — notification panel (must clear sidebar + overlay)
+     300 — modal backdrops
+     301 — modal dialogs
+     400 — toast / snackbar notifications
+  ─────────────────────────────────────────────────────────────────────── */
+  --z-dropdown:     99;
+  --z-sticky:      100;
+  --z-overlay:     199;
+  --z-sidebar:     200;
+  --z-notif-panel: 201;
+  --z-modal-bg:    300;
+  --z-modal:       301;
+  --z-toast:       400;
 }
 
 * {
@@ -364,7 +383,7 @@ button[type="submit"] {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  z-index: 200;
+  z-index: var(--z-notif-panel);
 }
 
 .notification-panel-header {
@@ -627,14 +646,6 @@ button[type="submit"] {
   line-height: 1;
 }
 
-.workspace-header h1 {
-  margin: 0;
-}
-
-.workspace-header small {
-  display: block;
-}
-
 .header-back-btn {
   min-width: 40px;
   height: 36px;
@@ -653,6 +664,30 @@ button[type="submit"] {
 
 .workspace-header-actions {
   min-width: 0;
+}
+
+/* Title block inside the header left-group.
+   flex: 1 1 0 lets it grow/shrink; min-width: 0 allows shrinking below content
+   width so it never pushes sibling buttons off-screen. */
+.workspace-header-title {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.workspace-header-title h1,
+.workspace-header h1 {
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.workspace-header-title small {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .linklike {
@@ -4007,7 +4042,7 @@ td {
     transition: transform 0.22s ease;
     visibility: hidden;
     pointer-events: none;
-    z-index: 200;
+    z-index: var(--z-sidebar);
     box-shadow: 0 10px 32px rgba(12, 29, 44, 0.22);
     overflow-y: auto;
   }
@@ -4023,7 +4058,7 @@ td {
     position: fixed;
     inset: 0;
     background: rgba(8, 15, 24, 0.4);
-    z-index: 199;
+    z-index: var(--z-overlay);
   }
 
   .content {
@@ -4066,9 +4101,16 @@ td {
   }
 
   .notification-panel {
-    left: 0;
-    bottom: calc(100% + 8px);
-    width: min(92vw, 320px);
+    /* Escape the sidebar's overflow-y:auto stacking context so the panel
+       is never clipped. position:fixed makes coordinates viewport-relative. */
+    position: fixed;
+    left: 0.75rem;
+    right: 0.75rem;
+    top: 3.75rem;  /* below the top header bar */
+    bottom: auto;
+    width: auto;
+    max-height: 70dvh;
+    z-index: var(--z-notif-panel);
   }
 
   .profile-avatar {
@@ -4111,10 +4153,9 @@ td {
     align-items: stretch;
     flex-direction: column;
   }
-}
 
-/* ── 768 px — tablet portrait ─────────────────────────────── */
-@media (max-width: 768px) {
+  /* Header adapts as soon as the hamburger appears (≤899px).
+     Wrapping here prevents back-buttons from colliding with the title. */
   .workspace-header {
     flex-wrap: wrap;
     gap: 0.5rem;
@@ -4124,6 +4165,10 @@ td {
     width: 100%;
     justify-content: flex-end;
   }
+}
+
+/* ── 768 px — tablet portrait ─────────────────────────────── */
+@media (max-width: 768px) {
 
   .table-responsive table {
     min-width: 600px;
