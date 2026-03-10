@@ -4019,6 +4019,17 @@ td {
   .project-overview-weather {
     grid-column: span 2;
   }
+
+  /* The sidebar has overflow:hidden (prevents internal scroll bleed).
+     position:fixed escapes that clipping context so the panel is never cut off.
+     left anchors it just past the sidebar's right edge. */
+  .notification-panel {
+    position: fixed;
+    left: calc(var(--sidebar-width) + 0.5rem);
+    bottom: 1rem;
+    top: auto;
+    right: auto;
+  }
 }
 
 @media (max-width: 899px) {
