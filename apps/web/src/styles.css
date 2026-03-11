@@ -1848,6 +1848,167 @@ label {
 
 .admin-settings-card h4 { margin: 0 0 0.35rem; }
 
+/* ── Permission matrix ─────────────────────────────────────────────────────── */
+
+.perm-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.perm-heading {
+  margin: 0 0 0.25rem;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.perm-subline {
+  margin: 0;
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.perm-matrix-wrapper {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.perm-matrix {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.84rem;
+  min-width: 640px;
+}
+
+.perm-matrix thead th {
+  background: var(--surface);
+  border-bottom: 2px solid var(--line);
+  padding: 0.6rem 0.75rem;
+  text-align: center;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.perm-col-label {
+  text-align: left !important;
+  width: 220px;
+  min-width: 180px;
+}
+
+.perm-col-role {
+  min-width: 90px;
+}
+
+.perm-role-header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.perm-role-name {
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.perm-reset-btn {
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.78rem;
+  line-height: 1;
+  padding: 0.2rem 0.45rem;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.perm-reset-btn:hover:not(:disabled) {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.perm-reset-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* Group separator rows */
+.perm-group-row {
+  background: var(--surface-raised, var(--surface));
+}
+
+.perm-group-row td {
+  border-top: 2px solid var(--line);
+  padding: 0.45rem 0.75rem;
+}
+
+.perm-group-label {
+  font-weight: 600;
+  font-size: 0.8rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* Individual permission rows */
+.perm-perm-row {
+  border-bottom: 1px solid var(--line-faint, var(--line));
+}
+
+.perm-perm-row:last-child {
+  border-bottom: none;
+}
+
+.perm-perm-row:hover {
+  background: var(--hover-bg, rgba(0,0,0,0.02));
+}
+
+.perm-perm-label {
+  padding: 0.45rem 0.75rem 0.45rem 1.25rem;
+  color: var(--text);
+  font-size: 0.84rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.perm-key {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  font-family: var(--font-mono, monospace);
+  background: none;
+  padding: 0;
+}
+
+.perm-cell {
+  text-align: center;
+  padding: 0.45rem 0.5rem;
+  vertical-align: middle;
+}
+
+.perm-cell--group {
+  background: var(--surface-raised, var(--surface));
+}
+
+.perm-toggle-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.perm-checkbox {
+  width: 1.1rem;
+  height: 1.1rem;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
 /* ── Admin mobile adjustments ─────────────────────── */
 @media (max-width: 768px) {
   .admin-user-row {

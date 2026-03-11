@@ -64,6 +64,7 @@ import type {
   AvatarUploadResponse,
   AvatarDeleteResponse,
   AvatarImageSize,
+  RolePermissionsMeta,
 } from "./types";
 import {
   MAIN_LABELS,
@@ -343,6 +344,8 @@ export function App() {
   const [employeeGroupsLoading, setEmployeeGroupsLoading] = useState(false);
   const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
   const [auditLogsLoading, setAuditLogsLoading] = useState(false);
+  const [rolePermissionsMeta, setRolePermissionsMeta] = useState<RolePermissionsMeta | null>(null);
+  const [rolePermissionsLoading, setRolePermissionsLoading] = useState(false);
   const [weatherSettings, setWeatherSettings] = useState<WeatherSettings | null>(null);
   const [weatherApiKeyInput, setWeatherApiKeyInput] = useState("");
   const [weatherSettingsSaving, setWeatherSettingsSaving] = useState(false);
@@ -5685,6 +5688,73 @@ export function App() {
     }
   };
 
+  const loadRolePermissions = async () => {
+    if (!token) return;
+    setRolePermissionsLoading(true);
+    try {
+      const res = await fetch("/api/admin/role-permissions", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setRolePermissionsMeta(data);
+      }
+    } catch {
+      // silently ignore
+    } finally {
+      setRolePermissionsLoading(false);
+    }
+  };
+
+  const setRolePermission = async (role: string, permission: string, enabled: boolean) => {
+    if (!token || !rolePermissionsMeta) return;
+    // Optimistic update — UI reflects change immediately
+    const current = rolePermissionsMeta.permissions[role] ?? [];
+    const next = enabled
+      ? [...new Set([...current, permission])]
+      : current.filter((p) => p !== permission);
+    setRolePermissionsMeta({
+      ...rolePermissionsMeta,
+      permissions: { ...rolePermissionsMeta.permissions, [role]: next },
+    });
+    try {
+      const res = await fetch(`/api/admin/role-permissions/${role}`, {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ permissions: next }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setRolePermissionsMeta((prev) =>
+          prev ? { ...prev, permissions: data.permissions } : prev,
+        );
+      } else {
+        // Revert on server error
+        await loadRolePermissions();
+      }
+    } catch {
+      await loadRolePermissions();
+    }
+  };
+
+  const resetRoleToDefaults = async (role: string) => {
+    if (!token) return;
+    try {
+      const res = await fetch(`/api/admin/role-permissions/${role}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setRolePermissionsMeta((prev) =>
+          prev ? { ...prev, permissions: data.permissions } : prev,
+        );
+      }
+    } catch {
+      // silently ignore
+    }
+  };
+
   async function submitVacationRequest(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const startDate = vacationRequestForm.start_date;
@@ -6353,6 +6423,11 @@ export function App() {
     updateEmployeeGroup,
     deleteEmployeeGroup,
     loadAuditLogs,
+    rolePermissionsMeta,
+    rolePermissionsLoading,
+    loadRolePermissions,
+    setRolePermission,
+    resetRoleToDefaults,
 
     // ── Avatar ────────────────────────────────────────────────────────────────
     avatarModalOpen,

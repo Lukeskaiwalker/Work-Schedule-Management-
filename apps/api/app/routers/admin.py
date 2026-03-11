@@ -26,7 +26,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.core.deps import get_current_user, require_admin
-from app.core.permissions import ALL_ROLES, ROLE_EMPLOYEE, TEMPLATES
+from app.core.permissions import ALL_PERMISSIONS, ALL_ROLES, PERMISSION_GROUPS, PERMISSION_LABELS, ROLE_EMPLOYEE, TEMPLATES, get_effective_permissions
 from app.core.security import get_password_hash
 from app.core.time import utcnow
 from app.models.entities import AuditLog, EmployeeGroup, EmployeeGroupMember, ProjectClassTemplate, User, UserActionToken
@@ -49,7 +49,12 @@ from app.schemas.api import (
 from app.services.audit import log_admin_action
 from app.services.emailer import send_email_message
 from app.services.project_import import import_projects_from_csv
-from app.services.runtime_settings import get_openweather_api_key, set_openweather_api_key
+from app.services.runtime_settings import (
+    get_openweather_api_key,
+    reset_role_to_defaults,
+    save_role_permissions_to_db,
+    set_openweather_api_key,
+)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 settings = get_settings()
@@ -1664,3 +1669,74 @@ def install_updates(
         ran_steps=ran_steps,
         dry_run=False,
     )
+
+
+# ── Role permissions ──────────────────────────────────────────────────────────
+
+
+@router.get("/role-permissions")
+def get_role_permissions(
+    _: User = Depends(require_admin),
+) -> dict:
+    """Return the currently effective permission map plus metadata for the UI."""
+    return {
+        "permissions": get_effective_permissions(),
+        "all_permissions": sorted(ALL_PERMISSIONS),
+        "permission_labels": PERMISSION_LABELS,
+        "permission_groups": PERMISSION_GROUPS,
+        "all_roles": ALL_ROLES,
+    }
+
+
+class RolePermissionsUpdate(dict):
+    """Plain dict body: { role: string, permissions: list[str] }"""
+
+
+@router.put("/role-permissions/{role}")
+def update_role_permissions(
+    role: str,
+    payload: dict,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Set the permission list for a single role.  Returns the full effective map."""
+    if role not in ALL_ROLES:
+        raise HTTPException(status_code=400, detail=f"Unknown role: {role}")
+
+    permissions: list[str] = payload.get("permissions", [])
+    if not isinstance(permissions, list):
+        raise HTTPException(status_code=400, detail="'permissions' must be a list")
+
+    invalid = [p for p in permissions if p not in ALL_PERMISSIONS]
+    if invalid:
+        raise HTTPException(status_code=400, detail=f"Unknown permissions: {invalid}")
+
+    # Load current map, apply update for this role, save.
+    current = get_effective_permissions()  # returns dict[str, list[str]]
+    current[role] = sorted(set(permissions))
+    updated = save_role_permissions_to_db(db, current)
+
+    log_admin_action(
+        db,
+        admin,
+        "role_permissions.update",
+        "role",
+        role,
+        {"permissions": sorted(permissions)},
+    )
+    return {"permissions": updated}
+
+
+@router.delete("/role-permissions/{role}")
+def reset_role_permissions(
+    role: str,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Reset a single role's permissions back to hard-coded defaults."""
+    if role not in ALL_ROLES:
+        raise HTTPException(status_code=400, detail=f"Unknown role: {role}")
+
+    updated = reset_role_to_defaults(db, role)
+    log_admin_action(db, admin, "role_permissions.reset", "role", role, {})
+    return {"permissions": updated}

@@ -3,7 +3,7 @@ import { useAppContext } from "../context/AppContext";
 import { AdminUpdateMenu } from "../components/shared/AdminUpdateMenu";
 import type { User, EmployeeGroup } from "../types";
 
-type AdminTab = "users" | "groups" | "audit" | "settings" | "system";
+type AdminTab = "users" | "groups" | "roles" | "audit" | "settings" | "system";
 
 const ALL_ROLES: User["role"][] = ["admin", "ceo", "accountant", "planning", "employee"];
 
@@ -54,6 +54,11 @@ export function AdminPage() {
     auditLogs,
     auditLogsLoading,
     loadAuditLogs,
+    rolePermissionsMeta,
+    rolePermissionsLoading,
+    loadRolePermissions,
+    setRolePermission,
+    resetRoleToDefaults,
     weatherSettings,
     weatherApiKeyInput,
     setWeatherApiKeyInput,
@@ -69,10 +74,12 @@ export function AdminPage() {
   const [groupDraft, setGroupDraft] = useState<GroupDraft | null>(null);
   const [editingGroupId, setEditingGroupId] = useState<number | null>(null);
   const [auditSearch, setAuditSearch] = useState("");
+  const [resettingRole, setResettingRole] = useState<string | null>(null);
 
   useEffect(() => {
     if (tab === "groups") void loadEmployeeGroups();
     if (tab === "audit") void loadAuditLogs();
+    if (tab === "roles") void loadRolePermissions();
   }, [tab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (mainView !== "admin" || !isAdmin) return null;
@@ -82,6 +89,7 @@ export function AdminPage() {
   const TABS: { id: AdminTab; label: string; count?: number }[] = [
     { id: "users",    label: de ? "Benutzer"       : "Users",     count: activeAdminUsers.length },
     { id: "groups",   label: de ? "Gruppen"        : "Groups" },
+    { id: "roles",    label: de ? "Rollen"         : "Roles" },
     { id: "audit",    label: de ? "Protokoll"      : "Audit Log" },
     { id: "settings", label: de ? "Einstellungen"  : "Settings" },
     { id: "system",   label: "System" },
@@ -551,6 +559,141 @@ export function AdminPage() {
               </table>
             </div>
           )}
+        </div>
+      )}
+
+      {/* ── Roles ────────────────────────────────────────────────────────── */}
+      {tab === "roles" && (
+        <div className="admin-tab-pane">
+          <div className="perm-header">
+            <div>
+              <h4 className="perm-heading">
+                {de ? "Rollenberechtigungen" : "Role Permissions"}
+              </h4>
+              <p className="perm-subline muted">
+                {de
+                  ? "Legen Sie fest, welche Aktionen jede Rolle ausführen darf. Änderungen gelten sofort."
+                  : "Define what each role is allowed to do. Changes take effect immediately."}
+              </p>
+            </div>
+          </div>
+
+          {rolePermissionsLoading && !rolePermissionsMeta && (
+            <p className="muted" style={{ padding: "1rem 0" }}>
+              {de ? "Lade…" : "Loading…"}
+            </p>
+          )}
+
+          {rolePermissionsMeta && (() => {
+            const { permissions, permission_groups, permission_labels, all_roles } = rolePermissionsMeta;
+
+            // Capitalise role labels for display
+            const roleLabel = (r: string) =>
+              r.charAt(0).toUpperCase() + r.slice(1);
+
+            // Check if a role's permissions differ from their defaults
+            // (we don't track defaults in the meta, so we rely on the admin endpoint
+            //  returning the full effective map — we just show a reset button always)
+            const hasPermission = (role: string, perm: string) =>
+              (permissions[role] ?? []).includes(perm);
+
+            const groupAllEnabled = (group: { permissions: string[] }, role: string) =>
+              group.permissions.every((p) => hasPermission(role, p));
+
+            const toggleGroupForRole = (group: { permissions: string[] }, role: string, enable: boolean) => {
+              group.permissions.forEach((perm) => {
+                const current = hasPermission(role, perm);
+                if (current !== enable) {
+                  void setRolePermission(role, perm, enable);
+                }
+              });
+            };
+
+            const handleReset = async (role: string) => {
+              setResettingRole(role);
+              try {
+                await resetRoleToDefaults(role);
+              } finally {
+                setResettingRole(null);
+              }
+            };
+
+            return (
+              <div className="perm-matrix-wrapper">
+                <table className="perm-matrix">
+                  <thead>
+                    <tr>
+                      <th className="perm-col-label">{de ? "Berechtigung" : "Permission"}</th>
+                      {all_roles.map((role) => (
+                        <th key={role} className="perm-col-role">
+                          <div className="perm-role-header">
+                            <span className="perm-role-name">{roleLabel(role)}</span>
+                            <button
+                              type="button"
+                              className="perm-reset-btn"
+                              title={de ? "Auf Standard zurücksetzen" : "Reset to defaults"}
+                              disabled={resettingRole === role}
+                              onClick={() => void handleReset(role)}
+                            >
+                              {resettingRole === role ? "…" : "↺"}
+                            </button>
+                          </div>
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {permission_groups.map((group) => (
+                      <>
+                        {/* Group header row with toggle-all checkboxes */}
+                        <tr key={`group-${group.key}`} className="perm-group-row">
+                          <td className="perm-group-label">{group.label}</td>
+                          {all_roles.map((role) => {
+                            const allOn = groupAllEnabled(group, role);
+                            return (
+                              <td key={role} className="perm-cell perm-cell--group">
+                                <label className="perm-toggle-label" title={allOn
+                                  ? (de ? "Alle deaktivieren" : "Disable all")
+                                  : (de ? "Alle aktivieren" : "Enable all")}>
+                                  <input
+                                    type="checkbox"
+                                    className="perm-checkbox"
+                                    checked={allOn}
+                                    onChange={(e) => toggleGroupForRole(group, role, e.target.checked)}
+                                  />
+                                </label>
+                              </td>
+                            );
+                          })}
+                        </tr>
+                        {/* Individual permission rows */}
+                        {group.permissions.map((perm) => (
+                          <tr key={perm} className="perm-perm-row">
+                            <td className="perm-perm-label">
+                              {permission_labels[perm] ?? perm}
+                              <code className="perm-key">{perm}</code>
+                            </td>
+                            {all_roles.map((role) => (
+                              <td key={role} className="perm-cell">
+                                <label className="perm-toggle-label">
+                                  <input
+                                    type="checkbox"
+                                    className="perm-checkbox"
+                                    checked={hasPermission(role, perm)}
+                                    onChange={(e) => void setRolePermission(role, perm, e.target.checked)}
+                                  />
+                                </label>
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            );
+          })()}
         </div>
       )}
 

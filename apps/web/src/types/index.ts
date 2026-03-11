@@ -641,6 +641,22 @@ export type CompactNameParts = {
   lastInitial: string;
 };
 
+/** Map of role → sorted list of permission strings (e.g. "time:manage"). */
+export type RolePermissionsMap = Record<string, string[]>;
+
+/** Full metadata payload returned by GET /admin/role-permissions */
+export type RolePermissionsMeta = {
+  permissions: RolePermissionsMap;
+  all_permissions: string[];
+  permission_labels: Record<string, string>;
+  permission_groups: Array<{
+    key: string;
+    label: string;
+    permissions: string[];
+  }>;
+  all_roles: string[];
+};
+
 export type ProjectTitleParts = {
   title: string;
   subtitle: string;

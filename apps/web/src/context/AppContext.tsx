@@ -71,6 +71,7 @@ import type {
   AvatarDeleteResponse,
   AvatarImageSize,
   AvatarCropOutput,
+  RolePermissionsMeta,
 } from "../types";
 
 export interface AppContextValue {
@@ -456,6 +457,13 @@ export interface AppContextValue {
   updateEmployeeGroup: (id: number, patch: { name?: string; member_user_ids?: number[] }) => Promise<void>;
   deleteEmployeeGroup: (id: number) => Promise<void>;
   loadAuditLogs: () => Promise<void>;
+
+  // ── Role permissions ──────────────────────────────────────────────────────────
+  rolePermissionsMeta: RolePermissionsMeta | null;
+  rolePermissionsLoading: boolean;
+  loadRolePermissions: () => Promise<void>;
+  setRolePermission: (role: string, permission: string, enabled: boolean) => Promise<void>;
+  resetRoleToDefaults: (role: string) => Promise<void>;
 
   // ── Avatar ──────────────────────────────────────────────────────────────────
   avatarModalOpen: boolean;

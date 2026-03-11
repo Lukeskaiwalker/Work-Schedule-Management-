@@ -21,6 +21,7 @@ from app.routers import admin, auth, events, time_tracking, workflow, workflow_n
 from app.services.material_catalog import sync_pending_material_catalog_images
 from app.services.runtime_settings import (
     is_initial_admin_bootstrap_completed,
+    load_role_permissions_from_db,
     mark_initial_admin_bootstrap_completed,
 )
 
@@ -95,9 +96,20 @@ def _initialize_runtime_data() -> None:
         ) from exc
 
 
+def _load_role_permissions() -> None:
+    """Load any custom role-permission overrides from the DB into the in-process
+    cache so that has_permission() uses them on the very first request."""
+    try:
+        with SessionLocal() as db:
+            load_role_permissions_from_db(db)
+    except (OperationalError, ProgrammingError):
+        pass  # DB not yet migrated — silently fall back to hard-coded defaults
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     _initialize_runtime_data()
+    _load_role_permissions()
     image_task = asyncio.create_task(_image_loop())
     try:
         yield
