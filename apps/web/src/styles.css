@@ -1126,11 +1126,95 @@ button[type="submit"] {
   font-weight: 700;
   line-height: 1.1;
   cursor: pointer;
+  white-space: nowrap;
 }
 
 .materials-add-btn:disabled {
   cursor: not-allowed;
   opacity: 0.7;
+}
+
+/* ── Shopping-cart UX ───────────────────────────────────────── */
+
+/* Numbered step rows in the catalog panel */
+.materials-shop-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  margin-bottom: 0.55rem;
+  position: relative;
+}
+
+.materials-shop-step-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 50%;
+  background: var(--accent, #1e4f86);
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 800;
+  flex-shrink: 0;
+  margin-top: 1.35rem; /* align with the input */
+}
+
+.materials-shop-step-badge--dim {
+  background: var(--muted-bg, #d8dde4);
+  color: var(--muted, #8a929e);
+}
+
+.materials-shop-step-check {
+  display: inline-flex;
+  align-items: center;
+  color: #2d9e61;
+  font-size: 1rem;
+  margin-top: 1.35rem;
+  flex-shrink: 0;
+}
+
+/* Completed project selection input */
+.materials-catalog-search-input.materials-step-done {
+  border-color: #2d9e61;
+  background: #f0faf4;
+}
+
+/* Actions area for cart items: quantity + add button */
+.materials-cart-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.3rem;
+  min-width: 5rem;
+}
+
+/* Small quantity text input */
+.materials-qty-input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.2rem 0.4rem;
+  font-size: 0.78rem;
+  background: var(--bg);
+  color: var(--text);
+  text-align: center;
+}
+
+.materials-qty-input::placeholder {
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
+.materials-qty-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Hint text between step 2 and the list */
+.materials-shop-hint {
+  font-size: 0.78rem;
+  margin: 0.2rem 0 0.35rem;
 }
 
 .card {
@@ -4297,7 +4381,11 @@ td {
     width: var(--sidebar-width);
     position: relative;
     inset: auto;
-    transform: translateX(0);
+    /* Keep the desktop sidebar untransformed.
+       A transformed ancestor traps position:fixed descendants, which caused
+       the notification panel to be clipped to the sidebar instead of
+       floating over the workspace. */
+    transform: none;
     box-shadow: none;
     overflow: hidden;
   }
@@ -4380,7 +4468,9 @@ td {
   }
 
   .sidebar.sidebar--open {
-    transform: translateX(0);
+    /* Remove the transform once the drawer is open so the fixed-position
+       notification panel is viewport-relative and no longer clipped. */
+    transform: none;
     visibility: visible;
     pointer-events: auto;
   }

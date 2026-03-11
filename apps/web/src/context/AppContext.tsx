@@ -752,7 +752,7 @@ export interface AppContextValue {
   enrichTaskEditMaterialRowFromCatalog: (index: number, lookupField: "item" | "article_no") => Promise<void>;
   enrichReportMaterialRowFromCatalog: (index: number, lookupField: "item" | "article_no") => Promise<void>;
   enrichReportOfficeMaterialRowFromCatalog: (index: number, lookupField: "item" | "article_no") => Promise<void>;
-  addCatalogMaterialNeed: (materialCatalogItem: MaterialCatalogItem) => Promise<void>;
+  addCatalogMaterialNeed: (materialCatalogItem: MaterialCatalogItem, quantity?: string) => Promise<void>;
   updateMaterialNeedState: (materialNeedId: number, nextStatus: MaterialNeedStatus) => Promise<void>;
   loadProjectOverview: (projectId: number) => Promise<void>;
   loadProjectWeather: (projectId: number, refresh: boolean) => Promise<void>;

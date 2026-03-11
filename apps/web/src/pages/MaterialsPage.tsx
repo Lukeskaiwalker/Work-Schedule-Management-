@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useAppContext } from "../context/AppContext";
 import { formatDayLabel, formatServerDateTime } from "../utils/dates";
 import { normalizeMaterialNeedStatus, materialNeedStatusLabel, materialNeedStatusClass, nextMaterialNeedStatus } from "../utils/materials";
@@ -35,6 +36,9 @@ export function MaterialsPage() {
     addCatalogMaterialNeed,
   } = useAppContext();
 
+  // Per-item quantity inputs keyed by catalog item ID
+  const [itemQuantities, setItemQuantities] = useState<Record<number, string>>({});
+
   if (mainView !== "materials") return null;
 
   const imageTotal = materialCatalogState?.image_total_items ?? materialCatalogState?.item_count ?? 0;
@@ -46,6 +50,23 @@ export function MaterialsPage() {
   const imageLastProcessed = materialCatalogState?.image_last_run_processed ?? 0;
   const imageLookupPhase = materialCatalogState?.image_lookup_phase ?? null;
   const imageProgress = imageTotal > 0 ? Math.round((imageWithImage / imageTotal) * 100) : 0;
+
+  const projectSelected = Boolean(materialCatalogProjectId);
+
+  function setItemQty(itemId: number, value: string) {
+    setItemQuantities((prev) => ({ ...prev, [itemId]: value }));
+  }
+
+  async function handleAddItem(catalogItem: { id: number; item_name: string; [k: string]: unknown }) {
+    const qty = itemQuantities[catalogItem.id] ?? "";
+    await addCatalogMaterialNeed(catalogItem as Parameters<typeof addCatalogMaterialNeed>[0], qty || undefined);
+    // Clear the quantity field after successful add
+    setItemQuantities((prev) => {
+      const next = { ...prev };
+      delete next[catalogItem.id];
+      return next;
+    });
+  }
 
   return (
     <section className="card materials-view-card">
@@ -61,7 +82,9 @@ export function MaterialsPage() {
           {language === "de" ? "Aktualisieren" : "Refresh"}
         </button>
       </div>
+
       <div className="materials-view-layout">
+        {/* ── Left: needs list ──────────────────────────────────────── */}
         <div className="materials-panel">
           <h4>{language === "de" ? "Bedarfsliste" : "Needs list"}</h4>
           <ul className="materials-list">
@@ -161,20 +184,23 @@ export function MaterialsPage() {
           </ul>
         </div>
 
+        {/* ── Right: catalog / shopping panel ─────────────────────── */}
         <div className="materials-panel materials-catalog-panel">
           <h4>{language === "de" ? "Materialkatalog" : "Material catalog"}</h4>
-          <div className="materials-catalog-controls">
-            <div className="materials-catalog-search-field">
-              <b>{language === "de" ? "Projekt suchen" : "Search project"}</b>
+
+          {/* Step 1 — choose project */}
+          <div className="materials-shop-step">
+            <span className="materials-shop-step-badge">1</span>
+            <div className="materials-catalog-search-field" style={{ flex: 1 }}>
+              <b>{language === "de" ? "Projekt wählen" : "Choose project"}</b>
               <input
-                className="materials-catalog-search-input"
+                className={`materials-catalog-search-input${projectSelected ? " materials-step-done" : ""}`}
                 value={materialCatalogProjectSearch}
+                placeholder={language === "de" ? "Projektname oder Nummer…" : "Project name or number…"}
                 onFocus={(event) => {
                   const input = event.currentTarget;
                   setMaterialCatalogProjectSearchFocused(true);
-                  window.requestAnimationFrame(() => {
-                    input.select();
-                  });
+                  window.requestAnimationFrame(() => { input.select(); });
                 }}
                 onBlur={() => {
                   setMaterialCatalogProjectSearchFocused(false);
@@ -195,9 +221,7 @@ export function MaterialsPage() {
                       key={`material-catalog-project-suggestion-${project.id}`}
                       type="button"
                       className="assignee-suggestion-btn"
-                      onMouseDown={(event) => {
-                        event.preventDefault();
-                      }}
+                      onMouseDown={(event) => { event.preventDefault(); }}
                       onClick={() => selectMaterialCatalogProject(project)}
                     >
                       {projectSearchLabel(project)}
@@ -206,25 +230,27 @@ export function MaterialsPage() {
                 </div>
               )}
             </div>
-            <label className="materials-catalog-search-field">
-              <b>{language === "de" ? "Material suchen" : "Search material"}</b>
+            {projectSelected && (
+              <span className="materials-shop-step-check" aria-hidden>✓</span>
+            )}
+          </div>
+
+          {/* Step 2 — search items */}
+          <div className="materials-shop-step">
+            <span className={`materials-shop-step-badge${projectSelected ? "" : " materials-shop-step-badge--dim"}`}>2</span>
+            <label className="materials-catalog-search-field" style={{ flex: 1 }}>
+              <b>{language === "de" ? "Material suchen" : "Search items"}</b>
               <input
                 className="materials-catalog-search-input"
                 value={materialCatalogQuery}
                 onChange={(event) => setMaterialCatalogQuery(event.target.value)}
-                placeholder={
-                  language === "de" ? "Artikelnummer oder Bezeichnung" : "Article number or item name"
-                }
+                placeholder={language === "de" ? "Name, Artikel-Nr., Hersteller…" : "Name, article no., manufacturer…"}
+                disabled={!projectSelected}
               />
             </label>
           </div>
-          {materialCatalogState && materialCatalogState.duplicates_skipped > 0 && (
-            <p className="muted materials-import-note">
-              {language === "de"
-                ? `${materialCatalogState.duplicates_skipped} Duplikate wurden beim Import übersprungen.`
-                : `${materialCatalogState.duplicates_skipped} duplicates were skipped during import.`}
-            </p>
-          )}
+
+          {/* Image sync status */}
           {materialCatalogState && (
             <div className="materials-image-sync-box">
               {materialCatalogState.image_lookup_enabled === false ? (
@@ -247,49 +273,58 @@ export function MaterialsPage() {
                   </small>
                   <small className="muted">
                     {imageLookupPhase
-                      ? `${
-                          language === "de" ? "Phase" : "Phase"
-                        }: ${
-                          imageLookupPhase === "unielektro_first_pass"
-                            ? language === "de"
-                              ? "1. Durchlauf (EAN auf unielektro.de)"
-                              : "Pass 1 (EAN on unielektro.de)"
-                            : language === "de"
-                              ? "2. Durchlauf (Hersteller/Open EAN)"
-                              : "Pass 2 (manufacturer/open EAN)"
+                      ? `Phase: ${imageLookupPhase === "unielektro_first_pass"
+                          ? language === "de" ? "1. Durchlauf" : "Pass 1"
+                          : language === "de" ? "2. Durchlauf" : "Pass 2"
                         } | `
                       : ""}
                     {language === "de"
                       ? `Letzter Durchlauf: ${imageLastProcessed} Einträge`
                       : `Last run: ${imageLastProcessed} items`}
                     {materialCatalogState.image_last_checked_at
-                      ? ` | ${
-                          language === "de" ? "Letzte Prüfung" : "Last check"
-                        }: ${formatServerDateTime(materialCatalogState.image_last_checked_at, language)}`
+                      ? ` | ${language === "de" ? "Letzte Prüfung" : "Last check"}: ${formatServerDateTime(materialCatalogState.image_last_checked_at, language)}`
                       : ""}
                   </small>
                 </>
               )}
             </div>
           )}
+
+          {materialCatalogState && materialCatalogState.duplicates_skipped > 0 && (
+            <p className="muted materials-import-note">
+              {language === "de"
+                ? `${materialCatalogState.duplicates_skipped} Duplikate wurden beim Import übersprungen.`
+                : `${materialCatalogState.duplicates_skipped} duplicates were skipped during import.`}
+            </p>
+          )}
+
           {materialCatalogLoading && <p className="muted">{language === "de" ? "Lädt..." : "Loading..."}</p>}
+
+          {/* Step 3 — pick items with quantities */}
+          {!materialCatalogLoading && materialCatalogRows.length > 0 && (
+            <p className="materials-shop-hint muted">
+              {language === "de"
+                ? "Menge eingeben und hinzufügen:"
+                : "Enter quantity and add to project:"}
+            </p>
+          )}
           <ul className="materials-list materials-catalog-list">
             {!materialCatalogLoading &&
               materialCatalogRows.map((catalogItem) => {
                 const isAdding = Boolean(materialCatalogAdding[catalogItem.id]);
+                const qty = itemQuantities[catalogItem.id] ?? "";
                 const catalogMeta = [
                   catalogItem.article_no
-                    ? `${language === "de" ? "Art.-Nr." : "Article"}: ${catalogItem.article_no}`
+                    ? `${language === "de" ? "Art.-Nr." : "Art."}: ${catalogItem.article_no}`
                     : "",
                   catalogItem.unit ? `${language === "de" ? "Einheit" : "Unit"}: ${catalogItem.unit}` : "",
-                  catalogItem.manufacturer
-                    ? `${language === "de" ? "Hersteller" : "Manufacturer"}: ${catalogItem.manufacturer}`
+                  catalogItem.manufacturer ? catalogItem.manufacturer : "",
+                  catalogItem.price_text
+                    ? `${language === "de" ? "Preis" : "Price"}: ${catalogItem.price_text}`
                     : "",
-                  catalogItem.ean ? `EAN: ${catalogItem.ean}` : "",
-                  catalogItem.price_text ? `${language === "de" ? "Preis" : "Price"}: ${catalogItem.price_text}` : "",
                 ]
                   .filter((entry) => entry)
-                  .join(" | ");
+                  .join(" · ");
                 return (
                   <li key={`catalog-item-${catalogItem.id}`} className="materials-item">
                     {catalogItem.image_url ? (
@@ -312,24 +347,64 @@ export function MaterialsPage() {
                       <b>{catalogItem.item_name}</b>
                       {catalogMeta && <small>{catalogMeta}</small>}
                     </div>
-                    <div className="materials-item-actions">
+                    <div className="materials-item-actions materials-cart-actions">
+                      <input
+                        type="text"
+                        className="materials-qty-input"
+                        value={qty}
+                        onChange={(event) => setItemQty(catalogItem.id, event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            event.preventDefault();
+                            if (!isAdding && projectSelected) {
+                              void handleAddItem(catalogItem);
+                            }
+                          }
+                        }}
+                        placeholder={language === "de" ? "Menge" : "Qty"}
+                        aria-label={language === "de" ? "Menge" : "Quantity"}
+                        disabled={isAdding || !projectSelected}
+                      />
                       <button
                         type="button"
                         className="materials-add-btn"
-                        disabled={isAdding || !materialCatalogProjectId}
-                        onClick={() => void addCatalogMaterialNeed(catalogItem)}
+                        disabled={isAdding || !projectSelected}
+                        onClick={() => void handleAddItem(catalogItem)}
+                        title={
+                          !projectSelected
+                            ? language === "de"
+                              ? "Zuerst ein Projekt auswählen"
+                              : "Select a project first"
+                            : undefined
+                        }
                       >
-                        {language === "de" ? "Hinzufügen" : "Add"}
+                        {isAdding
+                          ? language === "de" ? "…" : "…"
+                          : language === "de" ? "Hinzufügen" : "Add"}
                       </button>
                     </div>
                   </li>
                 );
               })}
-            {!materialCatalogLoading && materialCatalogRows.length === 0 && (
+            {!materialCatalogLoading && materialCatalogRows.length === 0 && projectSelected && materialCatalogQuery && (
               <li className="muted">
                 {language === "de"
-                  ? "Keine Katalogeinträge gefunden. Prüfe den Ordner Datanorm_Neuanlage."
-                  : "No catalog entries found. Check the Datanorm_Neuanlage folder."}
+                  ? `Keine Einträge für "${materialCatalogQuery}" gefunden.`
+                  : `No items found for "${materialCatalogQuery}".`}
+              </li>
+            )}
+            {!materialCatalogLoading && materialCatalogRows.length === 0 && !projectSelected && (
+              <li className="muted">
+                {language === "de"
+                  ? "Wähle zuerst ein Projekt, dann suche nach Materialien."
+                  : "Select a project first, then search for materials."}
+              </li>
+            )}
+            {!materialCatalogLoading && materialCatalogRows.length === 0 && projectSelected && !materialCatalogQuery && (
+              <li className="muted">
+                {language === "de"
+                  ? "Gib einen Suchbegriff ein um Materialien zu finden."
+                  : "Enter a search term to find materials."}
               </li>
             )}
           </ul>

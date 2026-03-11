@@ -2431,7 +2431,7 @@ export function App() {
     setMaterialCatalogProjectSearchFocused(false);
   }
 
-  async function addCatalogMaterialNeed(materialCatalogItem: MaterialCatalogItem) {
+  async function addCatalogMaterialNeed(materialCatalogItem: MaterialCatalogItem, quantity?: string) {
     const projectId = Number(materialCatalogProjectId);
     if (!projectId) {
       setError(language === "de" ? "Bitte zuerst ein Projekt auswählen." : "Please select a project first.");
@@ -2439,12 +2439,16 @@ export function App() {
     }
     setMaterialCatalogAdding((current) => ({ ...current, [materialCatalogItem.id]: true }));
     try {
+      const body: Record<string, unknown> = {
+        project_id: projectId,
+        material_catalog_item_id: materialCatalogItem.id,
+      };
+      if (quantity && quantity.trim()) {
+        body.quantity = quantity.trim();
+      }
       const created = await apiFetch<ProjectMaterialNeed>("/materials", token, {
         method: "POST",
-        body: JSON.stringify({
-          project_id: projectId,
-          material_catalog_item_id: materialCatalogItem.id,
-        }),
+        body: JSON.stringify(body),
       });
       setMaterialNeeds((current) => [created, ...current]);
       setNotice(

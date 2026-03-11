@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Iterator
 import csv
 import hashlib
@@ -104,6 +105,42 @@ IMAGE_LOOKUP_PHASE_FIRST_PASS = "unielektro_first_pass"
 IMAGE_LOOKUP_PHASE_FALLBACK = "fallback"
 IMAGE_LOOKUP_PHASE_IDLE = "idle"
 
+# How long to cache the catalog-up-to-date check (avoids file-system stat() on
+# every search request). Catalog imports happen manually via admin, so 60 s is
+# plenty generous.
+_CATALOG_UP_TO_DATE_CACHE_SECONDS = 60
+
+# In-memory ring buffer of catalog item IDs that were recently returned by
+# search_material_catalog().  The background image loop drains these first so
+# that items the user is actively browsing get their images resolved as fast
+# as possible.  maxlen=500 is intentionally small — we only care about the
+# most recent searches.
+_recently_searched_ids: deque[int] = deque(maxlen=500)
+_recently_searched_lock = threading.Lock()
+
+# Cache for catalog up-to-date check: (last_checked_ts, last_signature)
+_catalog_check_cache: tuple[float, str] | None = None
+_catalog_check_lock = threading.Lock()
+
+
+def record_searched_item_ids(item_ids: list[int]) -> None:
+    """Record IDs of catalog items returned by a search so the image loop can
+    prioritise them.  Thread-safe, O(n) where n = len(item_ids)."""
+    if not item_ids:
+        return
+    with _recently_searched_lock:
+        _recently_searched_ids.extend(item_ids)
+
+
+def _pop_recently_searched_ids() -> list[int]:
+    """Drain the recently-searched deque and return a deduplicated list.
+    Called exclusively by the background image loop."""
+    with _recently_searched_lock:
+        # dict.fromkeys preserves insertion order and deduplicates
+        ids = list(dict.fromkeys(_recently_searched_ids))
+        _recently_searched_ids.clear()
+        return ids
+
 
 @dataclass(slots=True)
 class ParsedCatalogRow:
@@ -144,11 +181,28 @@ class MaterialCatalogImageStatus:
 
 
 def ensure_material_catalog_up_to_date(db: Session) -> None:
+    global _catalog_check_cache
     source_dir = _resolve_material_catalog_dir()
     if source_dir is None:
         return
+
     files = _list_catalog_files(source_dir)
     signature = _catalog_signature(source_dir, files)
+
+    # Fast path: if the signature hasn't changed since our last check within
+    # the cache window, skip the DB round-trip entirely.
+    import time as _time
+    now_ts = _time.monotonic()
+    with _catalog_check_lock:
+        cached = _catalog_check_cache
+        if cached is not None:
+            last_ts, last_sig = cached
+            if (now_ts - last_ts) < _CATALOG_UP_TO_DATE_CACHE_SECONDS and last_sig == signature:
+                return
+        # Update cache regardless — even if we re-import we still record the
+        # new signature so the next call within the window is fast.
+        _catalog_check_cache = (now_ts, signature)
+
     state = db.get(MaterialCatalogImportState, 1)
     if state and state.source_signature == signature:
         return
@@ -198,7 +252,9 @@ def search_material_catalog(
     else:
         query_stmt = query_stmt.order_by(MaterialCatalogItem.item_name.asc(), MaterialCatalogItem.id.asc())
     rows = list(db.scalars(query_stmt.limit(capped_limit)).all())
-    # Image lookups are handled by the background loop in main.py — not on the request path.
+    # Tell the background image loop which items the user is actively browsing
+    # so it can prioritise their image resolution.
+    record_searched_item_ids([r.id for r in rows])
     return rows
 
 
@@ -290,19 +346,36 @@ def sync_pending_material_catalog_images(db: Session, *, limit: int | None = Non
             MaterialCatalogItem.image_checked_at.asc(),
             MaterialCatalogItem.id.asc(),
         ]
-    candidates = list(
-        db.scalars(
-            select(MaterialCatalogItem)
-            .where(pending)
-            .order_by(*row_order)
-            .limit(effective_limit)
-        ).all()
-    )
 
-    # Secondary filter: the DB query already restricts via `pending`, but
-    # _should_lookup_image catches items that became ineligible between the
-    # query and now (e.g. another process already cached the hotlink).
-    eligible = [row for row in candidates if _should_lookup_image(row, now=now, lookup_phase=lookup_phase)]
+    # ── Priority pass: process items the user recently searched for first ──
+    # Drain the deque before the normal DB-ordered scan so that items
+    # currently visible in the UI get their images resolved immediately.
+    recently_searched = _pop_recently_searched_ids()
+    priority_candidates: list[MaterialCatalogItem] = []
+    if recently_searched:
+        priority_rows = list(
+            db.scalars(
+                select(MaterialCatalogItem)
+                .where(MaterialCatalogItem.id.in_(recently_searched), pending)
+            ).all()
+        )
+        priority_candidates = [r for r in priority_rows if _should_lookup_image(r, now=now, lookup_phase=lookup_phase)]
+
+    # Fill remaining slots from the normal ordered query, excluding IDs already
+    # handled in the priority pass.
+    remaining_slots = effective_limit - len(priority_candidates)
+    normal_candidates: list[MaterialCatalogItem] = []
+    if remaining_slots > 0:
+        exclude_ids = {r.id for r in priority_candidates}
+        normal_stmt = select(MaterialCatalogItem).where(pending)
+        if exclude_ids:
+            normal_stmt = normal_stmt.where(MaterialCatalogItem.id.notin_(exclude_ids))
+        normal_stmt = normal_stmt.order_by(*row_order).limit(remaining_slots)
+        normal_rows = list(db.scalars(normal_stmt).all())
+        normal_candidates = [r for r in normal_rows if _should_lookup_image(r, now=now, lookup_phase=lookup_phase)]
+
+    # Secondary filter already applied above via _should_lookup_image.
+    eligible = priority_candidates + normal_candidates
     if not eligible:
         return 0
 
