@@ -675,3 +675,27 @@ export type AvatarCropOutput = {
   mimeType: string;
   extension: string;
 };
+
+export type EmployeeGroupMember = {
+  user_id: number;
+  full_name: string;
+  display_name: string;
+  is_active: boolean;
+};
+
+export type EmployeeGroup = {
+  id: number;
+  name: string;
+  member_user_ids: number[];
+  members: EmployeeGroupMember[];
+};
+
+export type AuditLogEntry = {
+  id: number;
+  actor_user_id: number | null;
+  action: string;
+  target_type: string | null;
+  target_id: number | null;
+  details: Record<string, unknown> | null;
+  created_at: string;
+};

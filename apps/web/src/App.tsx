@@ -38,6 +38,8 @@ import type {
   PasswordResetDispatchResponse,
   NicknameAvailability,
   WeatherSettings,
+  EmployeeGroup,
+  AuditLogEntry,
   UpdateStatus,
   UpdateInstallResponse,
   ReportWorker,
@@ -337,6 +339,10 @@ export function App() {
     role: "employee" as User["role"],
   });
   const [backupExporting, setBackupExporting] = useState(false);
+  const [employeeGroups, setEmployeeGroups] = useState<EmployeeGroup[]>([]);
+  const [employeeGroupsLoading, setEmployeeGroupsLoading] = useState(false);
+  const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
+  const [auditLogsLoading, setAuditLogsLoading] = useState(false);
   const [weatherSettings, setWeatherSettings] = useState<WeatherSettings | null>(null);
   const [weatherApiKeyInput, setWeatherApiKeyInput] = useState("");
   const [weatherSettingsSaving, setWeatherSettingsSaving] = useState(false);
@@ -5591,6 +5597,90 @@ export function App() {
     }
   }
 
+  const loadEmployeeGroups = async () => {
+    if (!token) return;
+    setEmployeeGroupsLoading(true);
+    try {
+      const res = await fetch("/api/admin/employee-groups", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setEmployeeGroups(data);
+      }
+    } catch {
+      // silently ignore
+    } finally {
+      setEmployeeGroupsLoading(false);
+    }
+  };
+
+  const createEmployeeGroup = async (name: string, memberIds: number[]) => {
+    if (!token) return;
+    const res = await fetch("/api/admin/employee-groups", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ name, member_user_ids: memberIds }),
+    });
+    if (res.ok) {
+      const created = await res.json();
+      setEmployeeGroups((prev) => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)));
+    } else {
+      setError("Failed to create group");
+    }
+  };
+
+  const updateEmployeeGroup = async (
+    id: number,
+    patch: { name?: string; member_user_ids?: number[] },
+  ) => {
+    if (!token) return;
+    const res = await fetch(`/api/admin/employee-groups/${id}`, {
+      method: "PATCH",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    if (res.ok) {
+      const updated = await res.json();
+      setEmployeeGroups((prev) =>
+        prev.map((g) => (g.id === id ? updated : g)).sort((a, b) => a.name.localeCompare(b.name)),
+      );
+    } else {
+      setError("Failed to update group");
+    }
+  };
+
+  const deleteEmployeeGroup = async (id: number) => {
+    if (!token) return;
+    const res = await fetch(`/api/admin/employee-groups/${id}`, {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (res.ok) {
+      setEmployeeGroups((prev) => prev.filter((g) => g.id !== id));
+    } else {
+      setError("Failed to delete group");
+    }
+  };
+
+  const loadAuditLogs = async () => {
+    if (!token) return;
+    setAuditLogsLoading(true);
+    try {
+      const res = await fetch("/api/admin/audit-logs", {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setAuditLogs(data);
+      }
+    } catch {
+      // silently ignore
+    } finally {
+      setAuditLogsLoading(false);
+    }
+  };
+
   async function submitVacationRequest(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const startDate = vacationRequestForm.start_date;
@@ -6249,6 +6339,16 @@ export function App() {
     setPreUserMenuOpen,
     adminUserMenuOpenId,
     setAdminUserMenuOpenId,
+    employeeGroups,
+    setEmployeeGroups,
+    employeeGroupsLoading,
+    auditLogs,
+    auditLogsLoading,
+    loadEmployeeGroups,
+    createEmployeeGroup,
+    updateEmployeeGroup,
+    deleteEmployeeGroup,
+    loadAuditLogs,
 
     // ── Avatar ────────────────────────────────────────────────────────────────
     avatarModalOpen,

@@ -44,6 +44,8 @@ import type {
   PasswordResetDispatchResponse,
   NicknameAvailability,
   WeatherSettings,
+  EmployeeGroup,
+  AuditLogEntry,
   UpdateStatus,
   UpdateInstallResponse,
   ReportWorker,
@@ -438,6 +440,22 @@ export interface AppContextValue {
   setPreUserMenuOpen: (open: boolean) => void;
   adminUserMenuOpenId: number | null;
   setAdminUserMenuOpenId: (id: number | null) => void;
+
+  // ── Employee groups ──────────────────────────────────────────────────────────
+  employeeGroups: EmployeeGroup[];
+  setEmployeeGroups: (groups: EmployeeGroup[]) => void;
+  employeeGroupsLoading: boolean;
+
+  // ── Audit log ────────────────────────────────────────────────────────────────
+  auditLogs: AuditLogEntry[];
+  auditLogsLoading: boolean;
+
+  // ── Admin async functions ─────────────────────────────────────────────────────
+  loadEmployeeGroups: () => Promise<void>;
+  createEmployeeGroup: (name: string, memberIds: number[]) => Promise<void>;
+  updateEmployeeGroup: (id: number, patch: { name?: string; member_user_ids?: number[] }) => Promise<void>;
+  deleteEmployeeGroup: (id: number) => Promise<void>;
+  loadAuditLogs: () => Promise<void>;
 
   // ── Avatar ──────────────────────────────────────────────────────────────────
   avatarModalOpen: boolean;
