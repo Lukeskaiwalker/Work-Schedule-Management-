@@ -1276,6 +1276,10 @@ def update_user(user_id: int, payload: UserUpdate, admin: User = Depends(require
     if payload.role and payload.role not in ALL_ROLES:
         raise HTTPException(status_code=400, detail="Invalid role")
 
+    # Prevent an admin from changing their own role (self-lockout protection)
+    if payload.role and user_id == admin.id:
+        raise HTTPException(status_code=403, detail="You cannot change your own role")
+
     for field in ["full_name", "role", "is_active", "required_daily_hours"]:
         value = getattr(payload, field)
         if value is not None:
@@ -1703,6 +1707,10 @@ def update_role_permissions(
     if role not in ALL_ROLES:
         raise HTTPException(status_code=400, detail=f"Unknown role: {role}")
 
+    # The admin role always retains full permissions — prevent accidental lockout
+    if role == "admin":
+        raise HTTPException(status_code=403, detail="The admin role permissions cannot be modified")
+
     permissions: list[str] = payload.get("permissions", [])
     if not isinstance(permissions, list):
         raise HTTPException(status_code=400, detail="'permissions' must be a list")
@@ -1736,6 +1744,9 @@ def reset_role_permissions(
     """Reset a single role's permissions back to hard-coded defaults."""
     if role not in ALL_ROLES:
         raise HTTPException(status_code=400, detail=f"Unknown role: {role}")
+
+    if role == "admin":
+        raise HTTPException(status_code=403, detail="The admin role permissions cannot be modified")
 
     updated = reset_role_to_defaults(db, role)
     log_admin_action(db, admin, "role_permissions.reset", "role", role, {})

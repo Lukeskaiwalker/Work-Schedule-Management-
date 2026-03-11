@@ -30,6 +30,7 @@ export function AdminPage() {
   const {
     mainView,
     isAdmin,
+    user,
     language,
     activeAdminUsers,
     archivedAdminUsers,
@@ -282,6 +283,8 @@ export function AdminPage() {
                   <select
                     value={u.role}
                     className="admin-role-select"
+                    disabled={u.id === user?.id}
+                    title={u.id === user?.id ? (de ? "Eigene Rolle kann nicht geändert werden" : "Cannot change your own role") : undefined}
                     onChange={(e) => void updateRole(u.id, e.target.value as User["role"])}
                   >
                     {ALL_ROLES.map((r) => (
@@ -628,15 +631,24 @@ export function AdminPage() {
                         <th key={role} className="perm-col-role">
                           <div className="perm-role-header">
                             <span className="perm-role-name">{roleLabel(role)}</span>
-                            <button
-                              type="button"
-                              className="perm-reset-btn"
-                              title={de ? "Auf Standard zurücksetzen" : "Reset to defaults"}
-                              disabled={resettingRole === role}
-                              onClick={() => void handleReset(role)}
-                            >
-                              {resettingRole === role ? "…" : "↺"}
-                            </button>
+                            {role === "admin" ? (
+                              <span
+                                className="perm-locked-badge"
+                                title={de ? "Admin-Rolle ist immer vollständig — schreibgeschützt" : "Admin role always has full access — read-only"}
+                              >
+                                🔒
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                className="perm-reset-btn"
+                                title={de ? "Auf Standard zurücksetzen" : "Reset to defaults"}
+                                disabled={resettingRole === role}
+                                onClick={() => void handleReset(role)}
+                              >
+                                {resettingRole === role ? "…" : "↺"}
+                              </button>
+                            )}
                           </div>
                         </th>
                       ))}
@@ -650,16 +662,20 @@ export function AdminPage() {
                           <td className="perm-group-label">{group.label}</td>
                           {all_roles.map((role) => {
                             const allOn = groupAllEnabled(group, role);
+                            const isLocked = role === "admin";
                             return (
                               <td key={role} className="perm-cell perm-cell--group">
-                                <label className="perm-toggle-label" title={allOn
-                                  ? (de ? "Alle deaktivieren" : "Disable all")
-                                  : (de ? "Alle aktivieren" : "Enable all")}>
+                                <label className="perm-toggle-label" title={isLocked
+                                  ? (de ? "Admin-Rolle ist schreibgeschützt" : "Admin role is read-only")
+                                  : allOn
+                                    ? (de ? "Alle deaktivieren" : "Disable all")
+                                    : (de ? "Alle aktivieren" : "Enable all")}>
                                   <input
                                     type="checkbox"
                                     className="perm-checkbox"
                                     checked={allOn}
-                                    onChange={(e) => toggleGroupForRole(group, role, e.target.checked)}
+                                    disabled={isLocked}
+                                    onChange={(e) => !isLocked && toggleGroupForRole(group, role, e.target.checked)}
                                   />
                                 </label>
                               </td>
@@ -673,18 +689,23 @@ export function AdminPage() {
                               {permission_labels[perm] ?? perm}
                               <code className="perm-key">{perm}</code>
                             </td>
-                            {all_roles.map((role) => (
-                              <td key={role} className="perm-cell">
-                                <label className="perm-toggle-label">
-                                  <input
-                                    type="checkbox"
-                                    className="perm-checkbox"
-                                    checked={hasPermission(role, perm)}
-                                    onChange={(e) => void setRolePermission(role, perm, e.target.checked)}
-                                  />
-                                </label>
-                              </td>
-                            ))}
+                            {all_roles.map((role) => {
+                              const isLocked = role === "admin";
+                              return (
+                                <td key={role} className="perm-cell">
+                                  <label className="perm-toggle-label"
+                                    title={isLocked ? (de ? "Admin-Rolle ist schreibgeschützt" : "Admin role is read-only") : undefined}>
+                                    <input
+                                      type="checkbox"
+                                      className="perm-checkbox"
+                                      checked={hasPermission(role, perm)}
+                                      disabled={isLocked}
+                                      onChange={(e) => !isLocked && void setRolePermission(role, perm, e.target.checked)}
+                                    />
+                                  </label>
+                                </td>
+                              );
+                            })}
                           </tr>
                         ))}
                       </>
