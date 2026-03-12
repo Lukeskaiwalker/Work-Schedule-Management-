@@ -3403,78 +3403,130 @@ li {
   user-select: none;
 }
 
-.planning-calendar {
-  --planning-day-min-width: 210px;
-  display: grid;
-  gap: 0.6rem;
-  grid-template-columns: repeat(7, minmax(var(--planning-day-min-width), 1fr));
-  min-width: max(100%, calc(var(--planning-day-min-width) * 7 + 3.6rem));
-  min-height: 0;
-}
+/* ── Redesigned unified planning grid ─────────────── */
 
 .planning-calendar-scroll {
   width: 100%;
   overflow-x: auto;
   overflow-y: hidden;
+  margin-top: 0.6rem;
+  border-radius: 12px;
+  border: 1px solid var(--line);
 }
 
-.planning-day {
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 0.55rem;
+.planning-grid-unified {
+  --planning-col-min: 198px;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(var(--planning-col-min), 1fr));
+  min-width: max(100%, calc(var(--planning-col-min) * 7));
+  gap: 1px;
+  background: var(--line);
+}
+
+/* Individual day column */
+.planning-col {
   background: #fff;
-  min-height: 300px;
-  max-height: 62vh;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
-  gap: 0.35rem;
+  min-height: 320px;
+  max-height: 62vh;
 }
 
-.planning-day-today {
-  border-color: #d08f72;
-  box-shadow: inset 0 0 0 1px #efc6b3;
-  background: #fff8f4;
+.planning-weekend-col {
+  background: #fafbfe;
 }
 
-.planning-day-today .planning-day-head {
-  color: #8f4a2e;
+.planning-today-col {
+  background: #fffbf5;
 }
 
-.planning-day-head {
+/* Column header: day-name label + date number badge */
+.planning-col-head {
+  display: flex;
+  align-items: center;
+  gap: 0.32rem;
+  padding: 0.45rem 0.55rem;
+  border-bottom: 1px solid var(--line);
+  background: #edf2f8;
+  flex-shrink: 0;
+}
+
+.planning-weekend-col .planning-col-head {
+  background: #ece8f5;
+}
+
+.planning-today-col .planning-col-head {
+  background: #f0ece2;
+}
+
+.planning-col-day-name {
+  font-size: 0.68rem;
   font-weight: 700;
-  margin-bottom: 0.4rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
 }
 
-.planning-day ul {
+.planning-col-day-num {
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--ink);
+  flex-shrink: 0;
+}
+
+/* Today badge: accent-filled circle */
+.planning-col-day-num.today-num {
+  background: var(--accent);
+  color: #fff;
+}
+
+/* Month abbreviation shown only on day 1 */
+.planning-col-month-label {
+  font-size: 0.65rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* Task / absence list */
+.planning-col ul {
   list-style: none;
-  padding: 0;
+  padding: 0.45rem;
   margin: 0;
-  display: grid;
-  gap: 0.45rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.38rem;
   align-content: start;
   min-height: 0;
   overflow-y: auto;
-  padding-right: 0.2rem;
 }
 
+/* Left-accent pill tasks */
 .planning-task {
   margin: 0;
   display: grid;
-  gap: 0.3rem;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  padding: 0.45rem;
-  background: #fff;
+  gap: 0.25rem;
+  border-left: 3px solid var(--line);
+  border-radius: 0 6px 6px 0;
+  padding: 0.38rem 0.42rem 0.38rem 0.38rem;
+  background: #f4f8fc;
 }
 
 .planning-absence {
   margin: 0;
   display: grid;
-  gap: 0.2rem;
-  border: 1px dashed #c5b59e;
-  border-radius: 10px;
-  padding: 0.42rem;
-  background: #fffaf3;
+  gap: 0.15rem;
+  border-left: 3px solid #c9aa82;
+  border-radius: 0 6px 6px 0;
+  padding: 0.36rem 0.4rem 0.36rem 0.36rem;
+  background: #fffaf2;
 }
 
 .planning-absence b {
@@ -3486,12 +3538,31 @@ li {
 }
 
 .planning-task-mine {
-  border-color: #73a0d8;
-  background: #f1f7ff;
+  border-left-color: var(--accent);
+  background: #eef5ff;
 }
 
-.planning-day li small {
+.planning-col li small {
   color: var(--muted);
+}
+
+.planning-empty-cell {
+  color: var(--muted);
+  font-size: 0.8rem;
+  opacity: 0.5;
+  user-select: none;
+}
+
+/* Mobile: show only the active column */
+@media (max-width: 480px) {
+  .planning-grid-unified {
+    grid-template-columns: 1fr;
+    min-width: 0;
+  }
+
+  .planning-day-mobile-hidden {
+    display: none;
+  }
 }
 
 .task-list {
@@ -3850,8 +3921,8 @@ li {
 
 .planning-task-clickable:hover,
 .planning-task-clickable:focus-visible {
-  border-color: #5f94d1;
-  box-shadow: 0 0 0 1px rgba(95, 148, 209, 0.35);
+  background: #e3eefa;
+  outline: none;
 }
 
 .danger-btn {
