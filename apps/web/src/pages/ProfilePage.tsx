@@ -212,12 +212,22 @@ export function ProfilePage() {
                   {browserNotifIsIosPwa ? (
                     <>
                       <p className="notif-pwa-hint-title" style={{ marginBottom: "0.35rem" }}>
-                        {de ? "Benachrichtigungen blockiert" : "Notifications blocked"}
+                        {de ? "Benachrichtigungen nicht aktiviert" : "Notifications not enabled"}
                       </p>
-                      <p className="muted" style={{ fontSize: "0.85rem", margin: 0 }}>
+                      <p className="muted" style={{ fontSize: "0.85rem", margin: "0 0 0.6rem" }}>
                         {de
-                          ? "Aktiviere sie in den iOS-Einstellungen:"
-                          : "Enable them in iOS Settings:"}
+                          ? "Tippe zuerst auf den Button. Falls kein Dialogfeld erscheint, aktiviere Benachrichtigungen manuell in den Einstellungen."
+                          : "Tap the button first. If no system prompt appears, enable notifications manually in Settings."}
+                      </p>
+                      <button
+                        type="button"
+                        style={{ marginBottom: "0.85rem" }}
+                        onClick={requestBrowserNotifPermission}
+                      >
+                        {de ? "Benachrichtigungen aktivieren" : "Enable notifications"}
+                      </button>
+                      <p className="muted" style={{ fontSize: "0.82rem", margin: "0 0 0.35rem" }}>
+                        {de ? "Falls der Button nichts bewirkt:" : "If the button does nothing:"}
                       </p>
                       <ol className="notif-pwa-steps">
                         <li>
