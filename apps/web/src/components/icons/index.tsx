@@ -183,9 +183,22 @@ export function ShieldIcon() {
 export function ResetIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true" className="task-edit-pen-icon">
-      <path d="M4.5 12A7.5 7.5 0 0 1 12 4.5a7.5 7.5 0 0 1 7.3 5.7" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-      <path d="M19.5 12A7.5 7.5 0 0 1 12 19.5a7.5 7.5 0 0 1-7.3-5.7" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-      <path d="M16 4.5l3.5 5.7-3.5.3" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      <path
+        d="M20 11a8 8 0 1 0-2.34 5.66"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.9"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M20 4v7h-7"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.9"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
     </svg>
   );
 }

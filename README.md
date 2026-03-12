@@ -4,39 +4,29 @@ Self-hosted construction operations platform (FastAPI + React + PostgreSQL + Doc
 
 ## Current Release
 
-Version: `v1.4.1`  
-Release date: `2026-03-05`
+Version: `v1.6.0`  
+Release date: `2026-03-12`
 
 ## Last Changes Included In This Release
 
-- Admin update center:
-  - check latest GitHub release/commit from the Admin panel,
-  - run dry-run update checks,
-  - run safe install flow with migration step and manual fallback guidance.
-- Project and task workflow improvements:
-  - completed/open task separation,
-  - archive-aware project handling and search behavior,
-  - improved project overview consistency and activity visibility.
-- Planning updates:
-  - calendar-style weekly planning with task type support (construction, office, customer appointment).
-- Project data extensions:
-  - project classes/templates with CSV import/export in admin,
-  - class-based default task creation and material/tool prefills,
-  - construction-site access details in project contact section.
-- Reporting and finance:
-  - construction report hours aggregated into project finance,
-  - project-hours tab with planned vs actual tracking and gauge.
-- Materials workflow:
-  - dedicated materials module for office material demand with state tracking (`Order`, `On its way`, `Available`).
-- UX and reliability updates:
-  - weather localization/caching improvements,
-  - mobile report entry improvements,
-  - profile image removal support,
-  - user archive handling for deleted users.
-- Operations hardening:
-  - additional Alembic migrations,
-  - updated security, setup, state, decisions, and testing docs.
-  - release metadata now auto-refreshes from git on every `safe_update` run (`scripts/update_release_metadata.sh`), so the UI version label no longer stays on a stale hardcoded value.
+- Admin Center RBAC expansion:
+  - dedicated Admin Center navigation from the sidebar user menu,
+  - redesigned admin workspace with role-permission matrix and per-user permission overrides,
+  - admin self-lockout prevention and locked admin-role permissions,
+  - follow-up UI fixes for Safari/WebKit layout, role reset icon, and control readability.
+- Notifications and PWA:
+  - browser push notifications for tasks and messages,
+  - PWA manifest and iOS install/notification guidance,
+  - iOS-specific notification permission handling and `showNotification()` fallback.
+- Workspace redesign:
+  - calendar and weekly planning reworked into a unified grid style,
+  - overview/dashboard visual refresh,
+  - notification panel/sidebar layout fixes.
+- Materials improvements:
+  - faster search, image prioritization, shopping-cart UX refinements,
+  - Unielektro image lookup expansion and `/brand/` fallback hardening.
+- Operations:
+  - release metadata continues to derive from git during safe updates via `scripts/update_release_metadata.sh`.
 
 ## Download And Install This Release
 
