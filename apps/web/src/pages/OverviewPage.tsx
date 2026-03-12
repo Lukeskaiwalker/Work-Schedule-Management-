@@ -74,7 +74,7 @@ export function OverviewPage() {
             />
             {timeCurrent?.clock_entry_id ? (
               <div className="overview-status-shift-row">
-                <button className="overview-shift-action-btn" onClick={clockOut}>
+                <button className="overview-shift-action-btn overview-shift-action-btn-clockout" onClick={clockOut}>
                   {language === "de" ? "Ausstempeln" : "Clock out"}
                 </button>
                 <small className="muted overview-status-shift-info">
@@ -84,7 +84,7 @@ export function OverviewPage() {
               </div>
             ) : (
               <div className="overview-status-shift-row">
-                <button className="overview-shift-action-btn" onClick={clockIn}>
+                <button className="overview-shift-action-btn overview-shift-action-btn-clockin" onClick={clockIn}>
                   {language === "de" ? "Einstempeln" : "Clock in"}
                 </button>
                 <small className="muted overview-status-shift-info">
@@ -100,7 +100,7 @@ export function OverviewPage() {
               {recentConstructionReports.map((report) => {
                 const reportProjectLabel = recentReportProjectTitleParts(report);
                 return (
-                  <li key={`recent-report-${report.id}`} className="task-list-item">
+                  <li key={`recent-report-${report.id}`} className="overview-report-item">
                     <div className="task-list-main">
                       <b>
                         {(language === "de" ? "Bericht" : "Report")}{" "}
@@ -230,11 +230,14 @@ export function OverviewPage() {
                   >
                     <b>{projectLabel.title}</b>
                     {projectLabel.subtitle && <small className="project-name-subtle">{projectLabel.subtitle}</small>}
-                    <small>
-                      {language === "de" ? "Offene Aufgaben" : "Open tasks"}: {row.open_tasks} |{" "}
-                      {language === "de" ? "Standorte" : "Sites"}: {row.sites} |{" "}
-                      {statusLabel(String(row.status ?? ""), language)}
-                    </small>
+                    <div className="overview-project-meta">
+                      <small className="muted">
+                        {row.open_tasks} {language === "de" ? "Aufg." : "tasks"} · {row.sites} {language === "de" ? "Orte" : "sites"}
+                      </small>
+                      <span className={`overview-status-badge status-${String(row.status ?? "unknown").replace(/_/g, "-")}`}>
+                        {statusLabel(String(row.status ?? ""), language)}
+                      </span>
+                    </div>
                   </button>
                 </li>
               );
