@@ -1,4 +1,4 @@
-import { useState, useEffect, type FormEvent } from "react";
+import { useState, useEffect, useRef, type FormEvent } from "react";
 import { useAppContext } from "../context/AppContext";
 import { AvatarBadge } from "../components/shared/AvatarBadge";
 import { AdminUpdateMenu } from "../components/shared/AdminUpdateMenu";
@@ -106,6 +106,9 @@ export function AdminPage() {
   // Local draft for per-user permission overrides while editing
   const [permDraft, setPermDraft] = useState<{ extra: Set<string>; denied: Set<string> } | null>(null);
   const [permSaving, setPermSaving] = useState(false);
+  const userPermPanelRefs = useRef<Record<number, HTMLDivElement | null>>({});
+  // Floating tooltip for permission descriptions in the roles matrix
+  const [permTooltip, setPermTooltip] = useState<{ text: string; x: number; y: number } | null>(null);
 
   // When the server returns fresh data for the open user, sync the draft.
   useEffect(() => {
@@ -125,6 +128,16 @@ export function AdminPage() {
     if (tab === "roles") void loadRolePermissions();
     // user-level permissions are loaded lazily when a row panel is opened
   }, [tab]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (expandedPermUserId == null) return;
+    const panel = userPermPanelRefs.current[expandedPermUserId];
+    if (!panel) return;
+    const frame = requestAnimationFrame(() => {
+      panel.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [expandedPermUserId, permDraft, rolePermissionsMeta]);
 
   if (mainView !== "admin" || !canAccess) return null;
 
@@ -192,6 +205,9 @@ export function AdminPage() {
       denied: new Set(existing?.denied ?? []),
     });
     setExpandedPermUserId(userId);
+    if (!rolePermissionsMeta) {
+      void loadRolePermissions();
+    }
     // Fetch fresh data from the server; the useEffect above will sync the draft.
     void loadUserPermissions(userId);
   };
@@ -260,6 +276,7 @@ export function AdminPage() {
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
+    <>
     <section className="card admin-center">
       <h3 className="admin-center-title">
         {de ? "Verwaltungszentrum" : "Admin Center"}
@@ -389,20 +406,25 @@ export function AdminPage() {
                     </div>
                   </div>
                   <div className="admin-user-controls">
-                    <select
-                      value={u.role}
-                      className="admin-role-select"
-                      disabled={u.id === user?.id}
-                      title={u.id === user?.id
-                        ? (de ? "Eigene Rolle kann nicht geändert werden" : "Cannot change your own role")
-                        : undefined}
-                      onChange={(e) => void updateRole(u.id, e.target.value as User["role"])}
-                    >
-                      {ALL_ROLES.map((r) => (
-                        <option key={r} value={r}>{r}</option>
-                      ))}
-                    </select>
-                    <div className="row admin-hours-row">
+                    <div className="admin-user-control-row">
+                      <span className="admin-user-control-label">{de ? "Rolle" : "Role"}</span>
+                      <select
+                        value={u.role}
+                        className="admin-role-select"
+                        aria-label={de ? `Rolle fuer ${u.full_name}` : `Role for ${u.full_name}`}
+                        disabled={u.id === user?.id}
+                        title={u.id === user?.id
+                          ? (de ? "Eigene Rolle kann nicht geändert werden" : "Cannot change your own role")
+                          : undefined}
+                        onChange={(e) => void updateRole(u.id, e.target.value as User["role"])}
+                      >
+                        {ALL_ROLES.map((r) => (
+                          <option key={r} value={r}>{r}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="admin-user-control-row admin-hours-row">
+                      <span className="admin-user-control-label">{de ? "Soll h/Tag" : "Req. h/day"}</span>
                       <input
                         type="number"
                         min={1}
@@ -413,7 +435,7 @@ export function AdminPage() {
                         className="admin-hours-input"
                         aria-label={de ? "Pflichtarbeitszeit h/Tag" : "Required h/day"}
                       />
-                      <span className="muted" style={{ fontSize: "0.78rem" }}>h/d</span>
+                      <span className="admin-hours-unit muted">h/d</span>
                       <button
                         type="button"
                         className="admin-save-btn"
@@ -462,7 +484,10 @@ export function AdminPage() {
 
                 {/* ── Per-user permission panel ─────────────────────────── */}
                 {expandedPermUserId === u.id && permDraft && rolePermissionsMeta && (
-                  <div className="admin-user-perm-panel">
+                  <div
+                    ref={(node) => { userPermPanelRefs.current[u.id] = node; }}
+                    className="admin-user-perm-panel"
+                  >
                     <div className="admin-user-perm-header">
                       <span className="admin-user-perm-title">
                         {de ? "Individuelle Berechtigungen" : "Custom permissions"}
@@ -695,7 +720,7 @@ export function AdminPage() {
           )}
 
           {rolePermissionsMeta && (() => {
-            const { permissions, permission_groups, permission_labels, all_roles } = rolePermissionsMeta;
+            const { permissions, permission_groups, permission_labels, permission_descriptions, all_roles } = rolePermissionsMeta;
 
             const roleLabel = (r: string) => r.charAt(0).toUpperCase() + r.slice(1);
             const hasPermission = (role: string, perm: string) => (permissions[role] ?? []).includes(perm);
@@ -772,7 +797,16 @@ export function AdminPage() {
                     {permission_groups.flatMap((group) =>
                       group.permissions.map((perm) => (
                         <tr key={perm} className="perm-perm-row">
-                          <td className="perm-perm-label">
+                          <td
+                            className="perm-perm-label"
+                            onMouseEnter={(e) => {
+                              const desc = permission_descriptions[perm];
+                              if (!desc) return;
+                              const rect = e.currentTarget.getBoundingClientRect();
+                              setPermTooltip({ text: desc, x: rect.left + 16, y: rect.bottom + 6 });
+                            }}
+                            onMouseLeave={() => setPermTooltip(null)}
+                          >
                             {permission_labels[perm] ?? perm}
                             <code className="perm-key">{perm}</code>
                           </td>
@@ -1078,5 +1112,16 @@ export function AdminPage() {
         </div>
       )}
     </section>
+
+    {/* ── Permission description tooltip ─────────────────────────────────── */}
+    {permTooltip && (
+      <div
+        className="perm-tooltip-popup"
+        style={{ top: permTooltip.y, left: permTooltip.x }}
+      >
+        {permTooltip.text}
+      </div>
+    )}
+    </>
   );
 }

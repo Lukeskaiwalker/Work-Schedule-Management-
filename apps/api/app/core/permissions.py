@@ -66,6 +66,32 @@ PERMISSION_LABELS: dict[str, str] = {
     "audit:view": "View audit log",
 }
 
+PERMISSION_DESCRIPTIONS: dict[str, str] = {
+    "users:manage":        "Create, edit, deactivate users and change their roles.",
+    "projects:manage":     "Create, edit, archive and delete projects; manage members and settings.",
+    "projects:view":       "Browse the project list and open project detail pages.",
+    "tasks:manage":        "Create, edit, reassign and delete tasks across all projects.",
+    "tasks:view_all":      "See every task in the system regardless of assignment.",
+    "tasks:view_own":      "See only tasks that are assigned to the current user.",
+    "planning:manage":     "Access and edit the planning board and resource schedule.",
+    "tickets:manage":      "Create, triage, assign and close support tickets.",
+    "time:manage":         "Edit or delete any user's time entries and manage time settings.",
+    "time:view_all":       "View time entries for all users across the organisation.",
+    "time:clock":          "Clock in and out; log personal time entries.",
+    "time:view_own":       "View only the current user's own time entries.",
+    "files:manage":        "Upload, rename, move and delete files across all projects.",
+    "files:view":          "View and download files in all projects.",
+    "files:view_project":  "View and download files only in projects the user is a member of.",
+    "chat:manage":         "Create and delete chat threads; moderate messages from any user.",
+    "chat:project":        "Post and read messages in project-linked chat threads.",
+    "reports:manage":      "Review, approve and delete construction reports from all users.",
+    "reports:view":        "View submitted construction reports from all users.",
+    "reports:create":      "Submit new construction daily reports.",
+    "wiki:manage":         "Create, edit and delete wiki pages.",
+    "wiki:view":           "Read wiki pages.",
+    "audit:view":          "Browse the admin audit log of all system actions.",
+}
+
 # Logical groups of permissions for the admin UI matrix.
 PERMISSION_GROUPS: list[dict] = [
     {"key": "users",    "label": "Users",    "permissions": ["users:manage"]},

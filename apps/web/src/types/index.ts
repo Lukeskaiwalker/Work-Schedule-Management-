@@ -661,6 +661,7 @@ export type RolePermissionsMeta = {
   permissions: RolePermissionsMap;
   all_permissions: string[];
   permission_labels: Record<string, string>;
+  permission_descriptions: Record<string, string>;
   permission_groups: Array<{
     key: string;
     label: string;

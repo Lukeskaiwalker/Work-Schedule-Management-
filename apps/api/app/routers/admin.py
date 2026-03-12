@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.core.deps import get_current_user, require_admin
-from app.core.permissions import ALL_PERMISSIONS, ALL_ROLES, PERMISSION_GROUPS, PERMISSION_LABELS, ROLE_EMPLOYEE, TEMPLATES, get_effective_permissions, get_user_override
+from app.core.permissions import ALL_PERMISSIONS, ALL_ROLES, PERMISSION_DESCRIPTIONS, PERMISSION_GROUPS, PERMISSION_LABELS, ROLE_EMPLOYEE, TEMPLATES, get_effective_permissions, get_user_override
 from app.core.security import get_password_hash
 from app.core.time import utcnow
 from app.models.entities import AuditLog, EmployeeGroup, EmployeeGroupMember, ProjectClassTemplate, User, UserActionToken
@@ -1690,6 +1690,7 @@ def get_role_permissions(
         "permissions": get_effective_permissions(),
         "all_permissions": sorted(ALL_PERMISSIONS),
         "permission_labels": PERMISSION_LABELS,
+        "permission_descriptions": PERMISSION_DESCRIPTIONS,
         "permission_groups": PERMISSION_GROUPS,
         "all_roles": ALL_ROLES,
     }
