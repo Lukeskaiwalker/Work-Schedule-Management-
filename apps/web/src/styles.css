@@ -1466,6 +1466,34 @@ label {
   align-content: start;
 }
 
+/* iOS PWA install hint shown when notifications need Home Screen install */
+.notif-pwa-hint {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 0.75rem 0.9rem;
+}
+
+.notif-pwa-hint-title {
+  font-weight: 600;
+  font-size: 0.9rem;
+  margin: 0;
+}
+
+.notif-pwa-steps {
+  margin: 0;
+  padding-left: 1.3rem;
+  font-size: 0.85rem;
+  line-height: 1.7;
+  color: var(--ink);
+}
+
+.notif-pwa-icon {
+  font-style: normal;
+  font-size: 1rem;
+  vertical-align: middle;
+}
+
 .profile-admin-center-card {
   align-content: start;
 }

@@ -1,0 +1,17 @@
+{
+  "name": "SMPL Workflow",
+  "short_name": "SMPL",
+  "description": "SMPL Workflow — project and task management",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ffffff",
+  "icons": [
+    {
+      "src": "/logo.jpeg",
+      "sizes": "any",
+      "type": "image/jpeg",
+      "purpose": "any maskable"
+    }
+  ]
+}

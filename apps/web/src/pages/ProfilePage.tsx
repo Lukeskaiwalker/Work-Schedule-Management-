@@ -31,6 +31,9 @@ export function ProfilePage() {
     if (browserNotifPermission === "unsupported") {
       return de ? "Nicht unterstützt" : "Not supported";
     }
+    if (browserNotifPermission === "requires-pwa") {
+      return de ? "App-Installation erforderlich" : "App install required";
+    }
     if (browserNotifPermission === "granted") {
       return de ? "Aktiviert" : "Enabled";
     }
@@ -154,34 +157,71 @@ export function ProfilePage() {
           <h3>{de ? "Benachrichtigungen" : "Notifications"}</h3>
           <p className="muted" style={{ marginBottom: "0.75rem" }}>
             {de
-              ? "Erhalte Browser-Benachrichtigungen für neue Aufgaben und Nachrichten, auch wenn der Tab im Hintergrund ist."
-              : "Get browser notifications for new tasks and messages, even when the tab is in the background."}
+              ? "Erhalte Benachrichtigungen für neue Aufgaben und Nachrichten, auch wenn die App im Hintergrund ist."
+              : "Get notifications for new tasks and messages, even when the app is in the background."}
           </p>
-          <div className="row wrap" style={{ gap: "0.75rem", alignItems: "center" }}>
-            <span className="muted">
-              {de ? "Status" : "Status"}:{" "}
-              <strong>{notifPermissionLabel()}</strong>
-            </span>
-            {browserNotifPermission === "default" && (
-              <button type="button" onClick={requestBrowserNotifPermission}>
-                {de ? "Benachrichtigungen aktivieren" : "Enable notifications"}
-              </button>
-            )}
-            {browserNotifPermission === "denied" && (
-              <small className="muted">
+
+          {/* iOS Safari in browser tab — needs PWA install */}
+          {browserNotifPermission === "requires-pwa" && (
+            <div className="notif-pwa-hint">
+              <p className="notif-pwa-hint-title">
+                {de ? "Nur als App verfügbar" : "Only available as an installed app"}
+              </p>
+              <p className="muted" style={{ fontSize: "0.85rem", margin: "0.35rem 0 0.75rem" }}>
                 {de
-                  ? "Benachrichtigungen sind in den Browsereinstellungen blockiert. Bitte dort freigeben."
-                  : "Notifications are blocked in your browser settings. Please allow them there."}
-              </small>
-            )}
-            {browserNotifPermission === "granted" && (
-              <small className="muted">
-                {de
-                  ? "Du erhältst Benachrichtigungen für neue Aufgaben und Nachrichten."
-                  : "You will receive notifications for new tasks and messages."}
-              </small>
-            )}
-          </div>
+                  ? "Safari auf iPhone und iPad unterstützt Benachrichtigungen nur, wenn die App zum Home-Bildschirm hinzugefügt wurde."
+                  : "Safari on iPhone and iPad only supports notifications when the app is added to the Home Screen."}
+              </p>
+              <ol className="notif-pwa-steps">
+                <li>
+                  {de
+                    ? "Tippe auf das Teilen-Symbol"
+                    : "Tap the Share button"}{" "}
+                  <span className="notif-pwa-icon" aria-label="share">⎋</span>{" "}
+                  {de ? "in der Safari-Adressleiste" : "in the Safari toolbar"}
+                </li>
+                <li>
+                  {de
+                    ? <>Wähle &bdquo;Zum Home-Bildschirm&ldquo;</>
+                    : <>Choose &ldquo;Add to Home Screen&rdquo;</>}
+                </li>
+                <li>
+                  {de
+                    ? "Öffne die App vom Home-Bildschirm und aktiviere Benachrichtigungen hier"
+                    : "Open the app from the Home Screen, then enable notifications here"}
+                </li>
+              </ol>
+            </div>
+          )}
+
+          {/* Normal permission flow for all other browsers */}
+          {browserNotifPermission !== "requires-pwa" && (
+            <div className="row wrap" style={{ gap: "0.75rem", alignItems: "center" }}>
+              <span className="muted">
+                {de ? "Status" : "Status"}:{" "}
+                <strong>{notifPermissionLabel()}</strong>
+              </span>
+              {browserNotifPermission === "default" && (
+                <button type="button" onClick={requestBrowserNotifPermission}>
+                  {de ? "Benachrichtigungen aktivieren" : "Enable notifications"}
+                </button>
+              )}
+              {browserNotifPermission === "denied" && (
+                <small className="muted">
+                  {de
+                    ? "Benachrichtigungen sind in den Browsereinstellungen blockiert. Bitte dort freigeben."
+                    : "Notifications are blocked in your browser settings. Please allow them there."}
+                </small>
+              )}
+              {browserNotifPermission === "granted" && (
+                <small className="muted">
+                  {de
+                    ? "Du erhältst Benachrichtigungen für neue Aufgaben und Nachrichten."
+                    : "You will receive notifications for new tasks and messages."}
+                </small>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </section>
