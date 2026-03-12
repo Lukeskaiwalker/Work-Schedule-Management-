@@ -67,11 +67,23 @@ export function useBrowserNotifications() {
       if (Notification.permission !== "granted") return;
       // Skip if the user is actively looking at the tab.
       if (document.visibilityState === "visible") return;
-      try {
-        new Notification(title, options);
-      } catch {
-        // Graceful degradation — some environments block even granted notifications.
-      }
+
+      // Route through the service worker registration.
+      // iOS PWA blocks `new Notification()` but allows
+      // ServiceWorkerRegistration.showNotification().
+      void (async () => {
+        try {
+          if ("serviceWorker" in navigator) {
+            const registration = await navigator.serviceWorker.ready;
+            await registration.showNotification(title, options ?? {});
+          } else {
+            // Fallback for browsers without service worker support.
+            new Notification(title, options);
+          }
+        } catch {
+          // Graceful degradation — notification display is non-critical.
+        }
+      })();
     },
     [],
   );
