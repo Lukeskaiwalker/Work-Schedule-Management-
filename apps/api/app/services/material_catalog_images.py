@@ -32,6 +32,7 @@ INVALID_IMAGE_KEYWORDS = (
     "tracking",
     "pixel",
     "blank",
+    "/brand/",  # Unielektro CDN path for manufacturer brand logos
 )
 PRODUCT_IMAGE_HINTS = ("product", "artikel", "article", "item", "shop")
 MANUFACTURER_DOMAIN_OVERRIDES: dict[str, tuple[str, ...]] = {
