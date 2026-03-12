@@ -476,6 +476,7 @@ export interface AppContextValue {
 
   // ── Browser notifications ─────────────────────────────────────────────────────
   browserNotifPermission: BrowserNotifPermission;
+  browserNotifIsIosPwa: boolean;
   requestBrowserNotifPermission: () => Promise<void>;
 
   // ── Avatar ──────────────────────────────────────────────────────────────────

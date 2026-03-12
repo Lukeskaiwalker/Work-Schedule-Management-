@@ -278,6 +278,7 @@ export function App() {
 
   const {
     permission: browserNotifPermission,
+    isIosPwa: browserNotifIsIosPwa,
     requestPermission: requestBrowserNotifPermission,
     showNotification: showBrowserNotification,
   } = useBrowserNotifications();
@@ -6547,6 +6548,7 @@ export function App() {
 
     // ── Browser notifications ─────────────────────────────────────────────────
     browserNotifPermission,
+    browserNotifIsIosPwa,
     requestBrowserNotifPermission,
 
     // ── Avatar ────────────────────────────────────────────────────────────────

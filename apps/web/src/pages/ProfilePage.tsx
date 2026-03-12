@@ -19,6 +19,7 @@ export function ProfilePage() {
     setNicknameCheckState,
     setNicknameCheckMessage,
     browserNotifPermission,
+    browserNotifIsIosPwa,
     requestBrowserNotifPermission,
   } = useAppContext();
 
@@ -207,11 +208,41 @@ export function ProfilePage() {
                 </button>
               )}
               {browserNotifPermission === "denied" && (
-                <small className="muted">
-                  {de
-                    ? "Benachrichtigungen sind in den Browsereinstellungen blockiert. Bitte dort freigeben."
-                    : "Notifications are blocked in your browser settings. Please allow them there."}
-                </small>
+                <div className="notif-pwa-hint" style={{ marginTop: "0.25rem" }}>
+                  {browserNotifIsIosPwa ? (
+                    <>
+                      <p className="notif-pwa-hint-title" style={{ marginBottom: "0.35rem" }}>
+                        {de ? "Benachrichtigungen blockiert" : "Notifications blocked"}
+                      </p>
+                      <p className="muted" style={{ fontSize: "0.85rem", margin: 0 }}>
+                        {de
+                          ? "Aktiviere sie in den iOS-Einstellungen:"
+                          : "Enable them in iOS Settings:"}
+                      </p>
+                      <ol className="notif-pwa-steps">
+                        <li>
+                          {de ? "Öffne die iPhone-Einstellungen" : "Open the iPhone Settings app"}
+                        </li>
+                        <li>
+                          {de
+                            ? <>Scrolle nach unten und tippe auf <strong>SMPL</strong></>
+                            : <>Scroll down and tap <strong>SMPL</strong></>}
+                        </li>
+                        <li>
+                          {de
+                            ? <>Tippe auf <strong>Mitteilungen</strong> und aktiviere <strong>Mitteilungen erlauben</strong></>
+                            : <>Tap <strong>Notifications</strong> and turn on <strong>Allow Notifications</strong></>}
+                        </li>
+                      </ol>
+                    </>
+                  ) : (
+                    <p className="muted" style={{ fontSize: "0.85rem", margin: 0 }}>
+                      {de
+                        ? "Benachrichtigungen sind in den Browsereinstellungen blockiert. Bitte dort freigeben."
+                        : "Notifications are blocked in your browser settings. Please allow them there."}
+                    </p>
+                  )}
+                </div>
               )}
               {browserNotifPermission === "granted" && (
                 <small className="muted">

@@ -76,5 +76,8 @@ export function useBrowserNotifications() {
     [],
   );
 
-  return { permission, supported, requestPermission, showNotification };
+  /** True when running as an installed iOS PWA (home-screen app). */
+  const isIosPwa = isIosSafari() && isStandalone();
+
+  return { permission, supported, isIosPwa, requestPermission, showNotification };
 }
