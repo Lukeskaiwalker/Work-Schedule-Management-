@@ -278,150 +278,156 @@ export function Sidebar() {
         </div>
       </div>
       <div className="sidebar-footer">
-        {token && (
-          <div className="notif-bell-wrap">
-            <button
-              type="button"
-              className="notif-bell-btn"
-              onClick={() => {
-                setPreUserMenuOpen(false);
-                setNotifPanelOpen((current) => !current);
-              }}
-              aria-label={language === "de" ? "Benachrichtigungen" : "Notifications"}
-              title={language === "de" ? "Benachrichtigungen" : "Notifications"}
-            >
-              <BellIcon />
-              {hasTaskNotifications && <span className="notif-bell-badge" aria-label="Unread notifications" />}
-            </button>
-            {notifPanelOpen && (
-              <NotificationPanel
-                notifications={notifications}
-                language={language}
-                onMarkAllRead={() => {
-                  void markAllNotificationsRead();
-                }}
-                onDismiss={() => setNotifPanelOpen(false)}
-                onNavigate={(notif) => {
-                  setNotifPanelOpen(false);
-                  setProjectBackView(null);
-                  setOverviewShortcutBackVisible(false);
-                  setConstructionBackView(null);
-                  if (notif.entity_type === "task") {
-                    if (notif.project_id) {
-                      setActiveProjectId(notif.project_id);
-                    }
-                    setMyTasksBackProjectId(null);
-                    setMainView("my_tasks");
-                    closeSidebar();
-                    return;
-                  }
-                  if (notif.project_id) {
-                    setActiveProjectId(notif.project_id);
-                    setProjectTab("overview");
-                    setMainView("project");
-                    closeSidebar();
-                  }
-                }}
-              />
-            )}
-          </div>
-        )}
-        <div className="pre-user-menu-wrap" ref={preUserMenuRef as RefObject<HTMLDivElement>}>
-          {preUserMenuOpen && (
-            <div className="pre-user-menu-popup">
-              <div className="row lang-row lang-row-small pre-user-lang">
-                <button
-                  type="button"
-                  onClick={() => setLanguage("de")}
-                  className={language === "de" ? "active" : ""}
-                >
-                  DE
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setLanguage("en")}
-                  className={language === "en" ? "active" : ""}
-                >
-                  EN
-                </button>
-              </div>
-              <button
-                type="button"
-                className="pre-user-action"
-                onClick={() => {
-                  openProfileViewFromMenu();
-                  closeSidebar();
-                }}
-              >
-                {language === "de" ? "Benutzerdaten" : "User data"}
-              </button>
-              {(isAdmin || canManageProjectImport || canManageSchoolAbsences) && (
+        <div className="sidebar-footer-top">
+          <div className="pre-user-menu-wrap" ref={preUserMenuRef as RefObject<HTMLDivElement>}>
+            {preUserMenuOpen && (
+              <div className="pre-user-menu-popup">
+                <div className="row lang-row lang-row-small pre-user-lang">
+                  <button
+                    type="button"
+                    onClick={() => setLanguage("de")}
+                    className={language === "de" ? "active" : ""}
+                  >
+                    DE
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLanguage("en")}
+                    className={language === "en" ? "active" : ""}
+                  >
+                    EN
+                  </button>
+                </div>
                 <button
                   type="button"
                   className="pre-user-action"
                   onClick={() => {
-                    openAdminViewFromMenu();
+                    openProfileViewFromMenu();
                     closeSidebar();
                   }}
                 >
-                  {language === "de" ? "Admin Center" : "Admin Center"}
+                  {language === "de" ? "Benutzerdaten" : "User data"}
                 </button>
-              )}
+                {(isAdmin || canManageProjectImport || canManageSchoolAbsences) && (
+                  <button
+                    type="button"
+                    className="pre-user-action"
+                    onClick={() => {
+                      openAdminViewFromMenu();
+                      closeSidebar();
+                    }}
+                  >
+                    {language === "de" ? "Admin Center" : "Admin Center"}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="pre-user-action"
+                  onClick={() => {
+                    signOut();
+                    closeSidebar();
+                  }}
+                >
+                  {language === "de" ? "Abmelden" : "Sign out"}
+                </button>
+                <div className="pre-user-meta">
+                  <small>
+                    {language === "de" ? "Release-Version" : "Release version"}: <b>{currentReleaseLabel}</b>
+                  </small>
+                  <small>
+                    {language === "de" ? "Mitarbeiter-ID" : "Employee ID"}: <b>{user!.id}</b>
+                  </small>
+                </div>
+              </div>
+            )}
+            <button
+              type="button"
+              className={mainView === "profile" || mainView === "admin" ? "sidebar-user-btn active" : "sidebar-user-btn"}
+              onClick={() => {
+                setNotifPanelOpen(false);
+                setPreUserMenuOpen(!preUserMenuOpen);
+              }}
+              aria-expanded={preUserMenuOpen}
+              aria-label={language === "de" ? "Benutzermenü öffnen" : "Open user menu"}
+            >
+              <div className="sidebar-user">
+                <AvatarBadge
+                  userId={user!.id}
+                  initials={userInitials}
+                  hasAvatar={Boolean(user!.avatar_updated_at)}
+                  versionKey={avatarVersionKey}
+                />
+                <div className="sidebar-user-meta">
+                  <b>{menuUserNameById(user!.id, user!.display_name || user!.full_name)}</b>
+                  <small className="role">Role: {user!.role}</small>
+                </div>
+                {token && (
+                  <span
+                    className={`sse-status-dot sse-status-dot--${sseStatus}`}
+                    title={
+                      sseStatus === "connected"
+                        ? "Live - updates arrive instantly"
+                        : sseStatus === "connecting"
+                          ? "Connecting to live updates..."
+                          : sseStatus === "reconnecting"
+                            ? "Reconnecting..."
+                            : "Live updates offline"
+                    }
+                    aria-label={`Live connection status: ${sseStatus}`}
+                  />
+                )}
+              </div>
+            </button>
+          </div>
+          {token && (
+            <div className="notif-bell-wrap">
               <button
                 type="button"
-                className="pre-user-action"
+                className={notifPanelOpen ? "notif-bell-btn notif-bell-btn--open" : "notif-bell-btn"}
                 onClick={() => {
-                  signOut();
-                  closeSidebar();
+                  setPreUserMenuOpen(false);
+                  setNotifPanelOpen((current) => !current);
                 }}
+                aria-expanded={notifPanelOpen}
+                aria-label={language === "de" ? "Benachrichtigungen" : "Notifications"}
+                title={language === "de" ? "Benachrichtigungen" : "Notifications"}
               >
-                {language === "de" ? "Abmelden" : "Sign out"}
+                <BellIcon />
+                {hasTaskNotifications && <span className="notif-bell-badge" aria-label="Unread notifications" />}
               </button>
-              <div className="pre-user-meta">
-                <small>
-                  {language === "de" ? "Release-Version" : "Release version"}: <b>{currentReleaseLabel}</b>
-                </small>
-                <small>
-                  {language === "de" ? "Mitarbeiter-ID" : "Employee ID"}: <b>{user!.id}</b>
-                </small>
-              </div>
-            </div>
-          )}
-          <button
-            type="button"
-            className={mainView === "profile" || mainView === "admin" ? "sidebar-user-btn active" : "sidebar-user-btn"}
-            onClick={() => setPreUserMenuOpen(!preUserMenuOpen)}
-            aria-expanded={preUserMenuOpen}
-            aria-label={language === "de" ? "Benutzermenü öffnen" : "Open user menu"}
-          >
-            <div className="sidebar-user">
-              <AvatarBadge
-                userId={user!.id}
-                initials={userInitials}
-                hasAvatar={Boolean(user!.avatar_updated_at)}
-                versionKey={avatarVersionKey}
-              />
-              <div className="sidebar-user-meta">
-                <b>{menuUserNameById(user!.id, user!.display_name || user!.full_name)}</b>
-                <small className="role">Role: {user!.role}</small>
-              </div>
-              {token && (
-                <span
-                  className={`sse-status-dot sse-status-dot--${sseStatus}`}
-                  title={
-                    sseStatus === "connected"
-                      ? "Live - updates arrive instantly"
-                      : sseStatus === "connecting"
-                        ? "Connecting to live updates..."
-                        : sseStatus === "reconnecting"
-                          ? "Reconnecting..."
-                          : "Live updates offline"
-                  }
-                  aria-label={`Live connection status: ${sseStatus}`}
+              {notifPanelOpen && (
+                <NotificationPanel
+                  notifications={notifications}
+                  language={language}
+                  onMarkAllRead={() => {
+                    void markAllNotificationsRead();
+                  }}
+                  onDismiss={() => setNotifPanelOpen(false)}
+                  onNavigate={(notif) => {
+                    setNotifPanelOpen(false);
+                    setProjectBackView(null);
+                    setOverviewShortcutBackVisible(false);
+                    setConstructionBackView(null);
+                    if (notif.entity_type === "task") {
+                      if (notif.project_id) {
+                        setActiveProjectId(notif.project_id);
+                      }
+                      setMyTasksBackProjectId(null);
+                      setMainView("my_tasks");
+                      closeSidebar();
+                      return;
+                    }
+                    if (notif.project_id) {
+                      setActiveProjectId(notif.project_id);
+                      setProjectTab("overview");
+                      setMainView("project");
+                      closeSidebar();
+                    }
+                  }}
                 />
               )}
             </div>
-          </button>
+          )}
         </div>
         <div className="sidebar-now">
           <small>{sidebarNowLabel}</small>

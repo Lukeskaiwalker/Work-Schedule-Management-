@@ -183,6 +183,8 @@ import { ThreadModal } from "./components/modals/ThreadModal";
 import { ArchivedThreadsModal } from "./components/modals/ArchivedThreadsModal";
 import { AvatarModal } from "./components/modals/AvatarModal";
 import { useServerEvents, type ServerEvent } from "./hooks/useServerEvents";
+import { useBrowserNotifications } from "./hooks/useBrowserNotifications";
+import type { BrowserNotifPermission } from "./hooks/useBrowserNotifications";
 
 // Pages — loaded on first navigation, never on initial load
 const AdminPage = lazy(() => import("./pages/AdminPage").then((m) => ({ default: m.AdminPage })));
@@ -269,6 +271,15 @@ export function App() {
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [notifPanelOpen, setNotifPanelOpen] = useState(false);
   const hasTaskNotifications = notifications.some((entry) => entry.read_at === null);
+  // Tracks IDs we've already shown a browser notification for — prevents re-alerting
+  // on the initial load and on SSE reconnects that re-deliver old notifications.
+  const prevNotifIdsRef = useRef<Set<number>>(new Set());
+
+  const {
+    permission: browserNotifPermission,
+    requestPermission: requestBrowserNotifPermission,
+    showNotification: showBrowserNotification,
+  } = useBrowserNotifications();
 
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [files, setFiles] = useState<ProjectFile[]>([]);
@@ -2057,6 +2068,22 @@ export function App() {
       void loadThreads();
     }
 
+    if (eventType === "message.created") {
+      // Show a browser notification for incoming messages from others, but
+      // skip it when the user is already in the messages view for that thread.
+      const senderId = event.data?.sender_id;
+      const threadId = event.data?.thread_id;
+      const body = typeof event.data?.body === "string" ? event.data.body : "";
+      const isOwnMessage = senderId === user?.id;
+      const isActiveThread = mainView === "messages" && activeThreadId === threadId;
+      if (!isOwnMessage && !isActiveThread) {
+        const senderName = userNameById(Number(senderId));
+        const title = language === "de" ? "Neue Nachricht" : "New message";
+        const notifBody = senderName ? `${senderName}: ${body}` : body;
+        showBrowserNotification(title, { body: notifBody.slice(0, 120), icon: "/icon-192.png" });
+      }
+    }
+
     if (eventType === "notification.created") {
       void loadNotifications();
       return;
@@ -2066,6 +2093,8 @@ export function App() {
       void refreshActiveViewRealtime();
     }
   }, [
+    activeThreadId,
+    language,
     loadNotifications,
     loadPlanningWeek,
     loadThreads,
@@ -2074,6 +2103,9 @@ export function App() {
     planningWeekStart,
     refreshActiveViewRealtime,
     refreshRealtimeProjectLists,
+    showBrowserNotification,
+    user?.id,
+    userNameById,
   ]);
 
   const { status: sseStatus } = useServerEvents(token, {
@@ -2717,6 +2749,22 @@ export function App() {
     if (!token) return;
     try {
       const data = await apiFetch<AppNotification[]>("/notifications", token);
+      // Diff against already-seen IDs so we only pop a browser notification for
+      // entries that arrived since the last fetch (not the whole history on load).
+      // `hadPrevious` is checked BEFORE updating the ref so the initial load
+      // (empty ref) never triggers browser popups.
+      const hadPrevious = prevNotifIdsRef.current.size > 0;
+      const newItems = data.filter((n) => !prevNotifIdsRef.current.has(n.id));
+      prevNotifIdsRef.current = new Set(data.map((n) => n.id));
+
+      if (hadPrevious && newItems.length > 0) {
+        newItems.forEach((n) => {
+          const title = language === "de" ? "Neue Aufgabe" : "New task";
+          const body = n.actor_name ? `${n.actor_name}: ${n.message}` : n.message;
+          showBrowserNotification(title, { body, icon: "/icon-192.png" });
+        });
+      }
+
       setNotifications(data);
     } catch {
       // Notifications are non-critical.
@@ -6435,6 +6483,10 @@ export function App() {
     loadRolePermissions,
     setRolePermission,
     resetRoleToDefaults,
+
+    // ── Browser notifications ─────────────────────────────────────────────────
+    browserNotifPermission,
+    requestBrowserNotifPermission,
 
     // ── Avatar ────────────────────────────────────────────────────────────────
     avatarModalOpen,

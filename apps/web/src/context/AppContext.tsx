@@ -1,5 +1,6 @@
 import { createContext, FormEvent, ChangeEvent, MouseEvent, PointerEvent, RefObject, useContext } from "react";
 import type { SseStatus } from "../hooks/useServerEvents";
+import type { BrowserNotifPermission } from "../hooks/useBrowserNotifications";
 import type { AppNotification } from "../components/NotificationPanel";
 import type {
   Language,
@@ -464,6 +465,10 @@ export interface AppContextValue {
   loadRolePermissions: () => Promise<void>;
   setRolePermission: (role: string, permission: string, enabled: boolean) => Promise<void>;
   resetRoleToDefaults: (role: string) => Promise<void>;
+
+  // ── Browser notifications ─────────────────────────────────────────────────────
+  browserNotifPermission: BrowserNotifPermission;
+  requestBrowserNotifPermission: () => Promise<void>;
 
   // ── Avatar ──────────────────────────────────────────────────────────────────
   avatarModalOpen: boolean;
