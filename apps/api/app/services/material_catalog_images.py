@@ -12,6 +12,7 @@ from urllib.parse import quote_plus, urljoin, urlparse
 import httpx
 
 EAN_RE = re.compile(r"^\d{8,14}$")
+UNIELEKTRO_ARTICLE_NO_RE = re.compile(r"^\d{8}$")
 EXTERNAL_KEY_RE = re.compile(r"^[a-f0-9]{40}$")
 RSS_LINK_RE = re.compile(r"<link>([^<]+)</link>", re.IGNORECASE)
 META_IMAGE_RE = re.compile(
@@ -114,6 +115,37 @@ def resolve_material_catalog_image_unielektro(
             )
     except httpx.HTTPError:
         return None
+
+
+def is_unielektro_article_no(article_no: str | None) -> bool:
+    """Return True if *article_no* is exactly 8 ASCII digits (Unielektro format)."""
+    return bool(UNIELEKTRO_ARTICLE_NO_RE.fullmatch((article_no or "").strip()))
+
+
+def resolve_material_catalog_image_unielektro_by_article_no(
+    article_no: str | None,
+) -> MaterialImageLookupResult | None:
+    """Look up the first product image on the Unielektro navigator page for *article_no*.
+
+    This is a direct hotlink lookup: we fetch the navigator search result page and
+    return the URL of the first non-logo <img src> we find.  The caller stores the
+    URL as-is so that no download happens here; the existing caching daemon will
+    convert it to a local file on the next sync pass.
+    """
+    if not is_unielektro_article_no(article_no):
+        return None
+    normalized = (article_no or "").strip()
+    url = f"https://www.unielektro.de/navigator?query={quote_plus(normalized)}"
+    timeout = httpx.Timeout(connect=2.0, read=5.0, write=5.0, pool=2.0)
+    headers = {"User-Agent": USER_AGENT, "Accept": "text/html,*/*;q=0.8"}
+    try:
+        with httpx.Client(timeout=timeout, follow_redirects=True, headers=headers) as client:
+            img_url = _first_product_img_src(client, url)
+            if img_url:
+                return MaterialImageLookupResult(image_url=img_url, source="unielektro_article_no")
+    except httpx.HTTPError:
+        pass
+    return None
 
 
 def resolve_material_catalog_image_fallback(
@@ -247,6 +279,39 @@ def normalize_material_catalog_image_external_key(value: str | None) -> str | No
     if not EXTERNAL_KEY_RE.fullmatch(normalized):
         return None
     return normalized
+
+
+def _first_product_img_src(client: httpx.Client, page_url: str) -> str | None:
+    """Return the URL of the first non-logo/non-invalid <img src> found in *page_url*.
+
+    Iterates `<img src="...">` tags in document order and returns the first
+    candidate that passes the INVALID_IMAGE_KEYWORDS filter and is a public
+    HTTP(S) URL.  Returns None if no suitable image is found or the request
+    fails.
+    """
+    if not _is_public_http_url(page_url):
+        return None
+    try:
+        response = client.get(page_url)
+    except httpx.HTTPError:
+        return None
+    if response.status_code != 200:
+        return None
+    content_type = (response.headers.get("content-type") or "").lower()
+    if content_type and "html" not in content_type:
+        return None
+    resolved_url = str(response.url)
+    for match in IMG_SRC_RE.finditer(response.text):
+        token = html.unescape(str(match.group(1)).strip())
+        if not token:
+            continue
+        candidate = urljoin(resolved_url, token)
+        if not _is_public_http_url(candidate):
+            continue
+        if any(kw in candidate.lower() for kw in INVALID_IMAGE_KEYWORDS):
+            continue
+        return candidate
+    return None
 
 
 def _lookup_on_unielektro(

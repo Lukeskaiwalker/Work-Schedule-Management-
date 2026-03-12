@@ -22,8 +22,10 @@ from app.models.entities import MaterialCatalogImportState, MaterialCatalogItem
 from app.services.material_catalog_images import (
     cache_material_catalog_image,
     has_cached_material_catalog_image,
+    is_unielektro_article_no,
     resolve_material_catalog_image_fallback,
     resolve_material_catalog_image_unielektro,
+    resolve_material_catalog_image_unielektro_by_article_no,
 )
 
 HEADER_ARTICLE_HINTS = {
@@ -316,9 +318,15 @@ def sync_pending_material_catalog_images(db: Session, *, limit: int | None = Non
     image_missing = or_(MaterialCatalogItem.image_url.is_(None), MaterialCatalogItem.image_url == "")
     image_hotlink = and_(MaterialCatalogItem.image_url.is_not(None), MaterialCatalogItem.image_url.like("http%"))
     has_ean = and_(MaterialCatalogItem.ean.is_not(None), MaterialCatalogItem.ean != "")
+    has_unielektro_article_no = and_(
+        MaterialCatalogItem.article_no.is_not(None),
+        MaterialCatalogItem.article_no != "",
+        func.length(MaterialCatalogItem.article_no) == 8,
+    )
+    has_searchable_id = or_(has_ean, has_unielektro_article_no)
     source_empty = or_(MaterialCatalogItem.image_source.is_(None), MaterialCatalogItem.image_source == "")
     hotlink_due = and_(
-        has_ean,
+        has_searchable_id,
         image_hotlink,
         or_(MaterialCatalogItem.image_checked_at.is_(None), MaterialCatalogItem.image_checked_at <= retry_cutoff),
     )
@@ -330,7 +338,7 @@ def sync_pending_material_catalog_images(db: Session, *, limit: int | None = Non
         ),
     )
     if lookup_phase == IMAGE_LOOKUP_PHASE_FIRST_PASS:
-        pending = or_(and_(has_ean, image_missing, source_empty), hotlink_due)
+        pending = or_(and_(has_searchable_id, image_missing, source_empty), hotlink_due)
         row_order = [
             case((hotlink_due, 0), else_=1).asc(),
             case((MaterialCatalogItem.image_checked_at.is_(None), 0), else_=1).asc(),
@@ -338,7 +346,7 @@ def sync_pending_material_catalog_images(db: Session, *, limit: int | None = Non
             MaterialCatalogItem.id.asc(),
         ]
     else:
-        pending = or_(and_(has_ean, image_missing, fallback_due), hotlink_due)
+        pending = or_(and_(has_searchable_id, image_missing, fallback_due), hotlink_due)
         row_order = [
             case((hotlink_due, 0), else_=1).asc(),
             case((MaterialCatalogItem.image_source == IMAGE_SOURCE_NOT_FOUND_UNIELEKTRO, 0), else_=1).asc(),
@@ -424,10 +432,16 @@ def get_material_catalog_image_status(db: Session) -> MaterialCatalogImageStatus
     image_hotlink = and_(MaterialCatalogItem.image_url.is_not(None), MaterialCatalogItem.image_url.like("http%"))
     image_missing = or_(MaterialCatalogItem.image_url.is_(None), MaterialCatalogItem.image_url == "")
     has_ean = and_(MaterialCatalogItem.ean.is_not(None), MaterialCatalogItem.ean != "")
+    has_unielektro_article_no = and_(
+        MaterialCatalogItem.article_no.is_not(None),
+        MaterialCatalogItem.article_no != "",
+        func.length(MaterialCatalogItem.article_no) == 8,
+    )
+    has_searchable_id = or_(has_ean, has_unielektro_article_no)
     source_empty = or_(MaterialCatalogItem.image_source.is_(None), MaterialCatalogItem.image_source == "")
     retry_cutoff = utcnow() - _image_lookup_retry_after()
     hotlink_due = and_(
-        has_ean,
+        has_searchable_id,
         image_hotlink,
         or_(MaterialCatalogItem.image_checked_at.is_(None), MaterialCatalogItem.image_checked_at <= retry_cutoff),
     )
@@ -450,7 +464,7 @@ def get_material_catalog_image_status(db: Session) -> MaterialCatalogImageStatus
     items_waiting_fallback = int(
         db.scalar(
             select(func.count(MaterialCatalogItem.id)).where(
-                has_ean,
+                has_searchable_id,
                 image_missing,
                 MaterialCatalogItem.image_source == IMAGE_SOURCE_NOT_FOUND_UNIELEKTRO,
             )
@@ -459,18 +473,18 @@ def get_material_catalog_image_status(db: Session) -> MaterialCatalogImageStatus
     )
     if lookup_phase == IMAGE_LOOKUP_PHASE_FIRST_PASS:
         first_pass_pending = int(
-            db.scalar(select(func.count(MaterialCatalogItem.id)).where(has_ean, image_missing, source_empty)) or 0
+            db.scalar(select(func.count(MaterialCatalogItem.id)).where(has_searchable_id, image_missing, source_empty)) or 0
         )
         hotlink_pending = int(db.scalar(select(func.count(MaterialCatalogItem.id)).where(hotlink_due)) or 0)
         items_pending = first_pass_pending + hotlink_pending
     else:
-        fallback_pending = int(db.scalar(select(func.count(MaterialCatalogItem.id)).where(has_ean, image_missing, fallback_due)) or 0)
+        fallback_pending = int(db.scalar(select(func.count(MaterialCatalogItem.id)).where(has_searchable_id, image_missing, fallback_due)) or 0)
         hotlink_pending = int(db.scalar(select(func.count(MaterialCatalogItem.id)).where(hotlink_due)) or 0)
         items_pending = fallback_pending + hotlink_pending
     items_waiting_retry = int(
         db.scalar(
             select(func.count(MaterialCatalogItem.id)).where(
-                has_ean,
+                has_searchable_id,
                 image_missing,
                 MaterialCatalogItem.image_source == IMAGE_SOURCE_NOT_FOUND,
                 MaterialCatalogItem.image_checked_at.is_not(None),
@@ -589,7 +603,7 @@ def _insert_catalog_batch(db: Session, rows: list[dict[str, object | None]]) -> 
 
 def _should_lookup_image(row: MaterialCatalogItem, *, now, lookup_phase: str) -> bool:
     ean = (row.ean or "").strip()
-    if not ean:
+    if not ean and not is_unielektro_article_no(row.article_no):
         return False
     image_url = (row.image_url or "").strip()
     if image_url:
@@ -623,6 +637,18 @@ def _refresh_catalog_item_image(row: MaterialCatalogItem, *, checked_at, lookup_
             row.image_url = cached.public_url[:1000]
         current = ((row.image_url or "").strip(), (row.image_source or "").strip(), row.image_checked_at)
         return current != previous
+
+    # Pre-step: direct navigator lookup by Unielektro article_no (FIRST_PASS only).
+    # This is cheaper than Bing + page scraping: one HTTP request → first <img src>.
+    # We store the hotlink URL directly; the caching daemon will download it later.
+    if lookup_phase == IMAGE_LOOKUP_PHASE_FIRST_PASS and is_unielektro_article_no(row.article_no):
+        article_lookup = resolve_material_catalog_image_unielektro_by_article_no(row.article_no)
+        if article_lookup is not None:
+            row.image_checked_at = checked_at
+            row.image_url = article_lookup.image_url[:1000]
+            row.image_source = article_lookup.source[:64]
+            current = ((row.image_url or "").strip(), (row.image_source or "").strip(), row.image_checked_at)
+            return current != previous
 
     if lookup_phase == IMAGE_LOOKUP_PHASE_FIRST_PASS:
         lookup = resolve_material_catalog_image_unielektro(
@@ -684,8 +710,16 @@ def _image_retry_due(checked_at: datetime | None, *, now) -> bool:
 def _image_lookup_phase(db: Session) -> str:
     image_missing = or_(MaterialCatalogItem.image_url.is_(None), MaterialCatalogItem.image_url == "")
     has_ean = and_(MaterialCatalogItem.ean.is_not(None), MaterialCatalogItem.ean != "")
+    has_unielektro_article_no = and_(
+        MaterialCatalogItem.article_no.is_not(None),
+        MaterialCatalogItem.article_no != "",
+        func.length(MaterialCatalogItem.article_no) == 8,
+    )
+    has_searchable_id = or_(has_ean, has_unielektro_article_no)
     source_empty = or_(MaterialCatalogItem.image_source.is_(None), MaterialCatalogItem.image_source == "")
-    first_pass_pending = int(db.scalar(select(func.count(MaterialCatalogItem.id)).where(has_ean, image_missing, source_empty)) or 0)
+    first_pass_pending = int(
+        db.scalar(select(func.count(MaterialCatalogItem.id)).where(has_searchable_id, image_missing, source_empty)) or 0
+    )
     if first_pass_pending > 0:
         return IMAGE_LOOKUP_PHASE_FIRST_PASS
     return IMAGE_LOOKUP_PHASE_FALLBACK
