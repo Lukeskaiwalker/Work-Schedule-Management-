@@ -6016,6 +6016,13 @@ export function App() {
     setPreUserMenuOpen(false);
   }
 
+  function openAdminViewFromMenu() {
+    setProjectBackView(null);
+    setOverviewShortcutBackVisible(false);
+    setMainView("admin");
+    setPreUserMenuOpen(false);
+  }
+
   function signOut() {
     localStorage.removeItem("smpl_token");
     setToken(null);
@@ -6695,6 +6702,7 @@ export function App() {
     clearReportImages,
     formatActionLinkNotice,
     toggleSchoolRecurrenceWeekday,
+    openAdminViewFromMenu,
     openProfileViewFromMenu,
     signOut,
     selectMaterialCatalogProject,

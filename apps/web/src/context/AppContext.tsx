@@ -740,6 +740,7 @@ export interface AppContextValue {
   clearReportImages: () => void;
   formatActionLinkNotice: (result: InviteDispatchResponse | PasswordResetDispatchResponse, type: "invite" | "reset") => string;
   toggleSchoolRecurrenceWeekday: (day: number, checked: boolean) => void;
+  openAdminViewFromMenu: () => void;
   openProfileViewFromMenu: () => void;
   signOut: () => void;
   selectMaterialCatalogProject: (project: Project) => void;

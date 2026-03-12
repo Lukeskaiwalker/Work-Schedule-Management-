@@ -43,6 +43,7 @@ export function ProfilePage() {
     submitSchoolAbsence,
     assignableUsers,
     toggleSchoolRecurrenceWeekday,
+    openAdminViewFromMenu,
     activeAdminUsers,
     updateRole,
     requiredHoursDrafts,
@@ -396,7 +397,19 @@ export function ProfilePage() {
       </div>
       {isAdmin && (
         <div className="card profile-admin-center-card">
-          <h3>{language === "de" ? "Admin Center" : "Admin Center"}</h3>
+          <div className="row wrap" style={{ justifyContent: "space-between", alignItems: "center", gap: "0.75rem" }}>
+            <div className="metric-stack">
+              <h3 style={{ margin: 0 }}>{language === "de" ? "Benutzerverwaltung" : "User administration"}</h3>
+              <small className="muted">
+                {language === "de"
+                  ? "Rollenrechte, Gruppen, Protokoll und Systemeinstellungen sind im vollständigen Admin Center."
+                  : "Role permissions, groups, audit log, and system settings are in the full Admin Center."}
+              </small>
+            </div>
+            <button type="button" onClick={openAdminViewFromMenu}>
+              {language === "de" ? "Vollständiges Admin Center" : "Open full Admin Center"}
+            </button>
+          </div>
           <div className="table-responsive">
             <table>
             <thead>

@@ -43,6 +43,8 @@ export function Sidebar() {
     setPreUserMenuOpen,
     preUserMenuRef,
     setLanguage,
+    isAdmin,
+    openAdminViewFromMenu,
     openProfileViewFromMenu,
     signOut,
     currentReleaseLabel,
@@ -351,6 +353,18 @@ export function Sidebar() {
               >
                 {language === "de" ? "Benutzerdaten" : "User data"}
               </button>
+              {isAdmin && (
+                <button
+                  type="button"
+                  className="pre-user-action"
+                  onClick={() => {
+                    openAdminViewFromMenu();
+                    closeSidebar();
+                  }}
+                >
+                  {language === "de" ? "Admin Center" : "Admin Center"}
+                </button>
+              )}
               <button
                 type="button"
                 className="pre-user-action"
@@ -373,7 +387,7 @@ export function Sidebar() {
           )}
           <button
             type="button"
-            className={mainView === "profile" ? "sidebar-user-btn active" : "sidebar-user-btn"}
+            className={mainView === "profile" || mainView === "admin" ? "sidebar-user-btn active" : "sidebar-user-btn"}
             onClick={() => setPreUserMenuOpen(!preUserMenuOpen)}
             aria-expanded={preUserMenuOpen}
             aria-label={language === "de" ? "Benutzermenü öffnen" : "Open user menu"}
