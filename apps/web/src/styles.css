@@ -1679,21 +1679,14 @@ label {
 
 .admin-user-row--archived { opacity: 0.6; }
 
-.admin-user-avatar {
+/* Admin user avatar — reuses AvatarBadge but at 36 px */
+.admin-avatar {
   width: 36px;
   height: 36px;
-  border-radius: 50%;
-  background: var(--accent);
-  color: #fff;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 0.76rem;
-  font-weight: 700;
   flex-shrink: 0;
 }
 
-.admin-user-avatar--muted { background: var(--muted); }
+.admin-avatar--muted { opacity: 0.5; }
 
 .admin-user-info  { min-width: 0; }
 
@@ -1790,6 +1783,7 @@ label {
   font-size: 0.95rem;
 }
 
+/* Generic form row (used outside invite) */
 .admin-form-row {
   display: flex;
   flex-wrap: wrap;
@@ -1804,6 +1798,40 @@ label {
   font-size: 0.84rem;
   font-weight: 500;
   flex: 1 1 200px;
+}
+
+/* Invite form — three equal-height fields + actions button */
+.admin-invite-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: flex-end;
+  margin-bottom: 0.85rem;
+}
+
+.admin-invite-row label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.84rem;
+  font-weight: 500;
+  flex: 1 1 180px;
+}
+
+/* Ensure input AND select have same height inside the invite form */
+.admin-invite-row input,
+.admin-invite-row select {
+  height: 2.4rem;
+  box-sizing: border-box;
+}
+
+.admin-invite-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-shrink: 0;
+  align-items: flex-end;
+  padding-bottom: 0.05rem;
+  flex-wrap: wrap;
 }
 
 /* Group cards */
@@ -1833,11 +1861,26 @@ label {
 
 .admin-member-chip--inactive { opacity: 0.5; }
 
+/* Group form layout — checklist scrolls, buttons always pinned below */
+.admin-group-form {
+  display: flex;
+  flex-direction: column;
+}
+
+.admin-group-form-body {
+  flex: 1 1 auto;
+}
+
+.admin-group-form-footer {
+  padding-top: 0.75rem;
+  margin-top: 0;
+}
+
 .admin-member-checklist {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: 0.15rem;
-  max-height: 230px;
+  max-height: 200px;
   overflow-y: auto;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -1857,6 +1900,117 @@ label {
 }
 
 .admin-member-check-row:hover { background: var(--surface-2); }
+
+/* User row wrapper (holds row + optional per-user perm panel) */
+.admin-user-row-wrap {
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Per-user permission panel ──────────────────────────────────────────────── */
+.admin-user-perm-panel {
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1rem 1.1rem;
+  margin: 0.25rem 0 0.75rem;
+}
+
+.admin-user-perm-header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  margin-bottom: 0.85rem;
+}
+
+.admin-user-perm-title {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.admin-perm-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 0.75rem 1rem;
+}
+
+.admin-perm-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.admin-perm-group-label {
+  font-weight: 600;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin-bottom: 0.15rem;
+}
+
+.admin-perm-items {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.admin-perm-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.25rem 0.4rem;
+  border-radius: 5px;
+  font-size: 0.82rem;
+  transition: background 0.1s;
+}
+
+.admin-perm-item--extra {
+  background: color-mix(in srgb, var(--ok, #22c55e) 12%, transparent);
+}
+
+.admin-perm-item--denied {
+  background: color-mix(in srgb, var(--danger, #ef4444) 12%, transparent);
+}
+
+.admin-perm-item-label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+/* Small dot indicator showing whether the role already has this perm */
+.admin-perm-role-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.admin-perm-role-dot--on  { background: var(--ok, #22c55e); }
+.admin-perm-role-dot--off { background: var(--line); }
+
+.admin-perm-toggles {
+  display: flex;
+  gap: 0.6rem;
+  flex-shrink: 0;
+}
+
+.admin-perm-toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.76rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.admin-perm-toggle-label--extra { color: var(--ok, #22c55e); }
+.admin-perm-toggle-label--deny  { color: var(--danger, #ef4444); }
 
 /* Audit log */
 .admin-audit-search {
@@ -1952,26 +2106,33 @@ label {
   font-weight: 600;
 }
 
+/* Reset button — ghost icon, no visible border box */
 .perm-reset-btn {
-  background: var(--surface);
-  border: 1px solid var(--line);
+  background: transparent;
+  border: none;
   border-radius: var(--radius-sm);
   color: var(--muted);
   cursor: pointer;
-  font-size: 0.78rem;
-  line-height: 1;
-  padding: 0.2rem 0.45rem;
-  transition: color 0.15s, border-color 0.15s, background-color 0.15s;
+  padding: 0.2rem;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: color 0.15s;
+}
+
+.perm-reset-btn svg {
+  width: 15px;
+  height: 15px;
 }
 
 .perm-reset-btn:hover:not(:disabled) {
-  background: var(--surface-2);
   color: var(--accent);
-  border-color: var(--accent);
 }
 
 .perm-reset-btn:disabled {
-  opacity: 0.45;
+  opacity: 0.35;
   cursor: default;
 }
 

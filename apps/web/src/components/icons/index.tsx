@@ -142,3 +142,50 @@ export function CopyIcon() {
     </svg>
   );
 }
+
+export function MailIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="task-edit-pen-icon">
+      <rect x="3" y="5.5" width="18" height="13" rx="2" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <path d="m3 7 9 7 9-7" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+export function KeyIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="task-edit-pen-icon">
+      <circle cx="8.5" cy="12" r="4.5" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <path d="m13 12 7.5 0M17.5 12v2.5M20.5 12v2" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+export function ArchiveUserIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="task-edit-pen-icon">
+      <circle cx="10" cy="7.5" r="3.5" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      <path d="M3 20c0-4 3.1-6.5 7-6.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="m16 16 4 4m-4 0 4-4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+export function ShieldIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="task-edit-pen-icon">
+      <path d="M12 3 4.5 6.5v6c0 4 3.3 7 7.5 8.5 4.2-1.5 7.5-4.5 7.5-8.5v-6L12 3Z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+      <path d="m8.5 12 2.5 2.5 4.5-4.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+export function ResetIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="task-edit-pen-icon">
+      <path d="M4.5 12A7.5 7.5 0 0 1 12 4.5a7.5 7.5 0 0 1 7.3 5.7" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M19.5 12A7.5 7.5 0 0 1 12 19.5a7.5 7.5 0 0 1-7.3-5.7" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M16 4.5l3.5 5.7-3.5.3" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}

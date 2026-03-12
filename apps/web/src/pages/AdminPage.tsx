@@ -1,21 +1,14 @@
 import { useState, useEffect, type FormEvent } from "react";
 import { useAppContext } from "../context/AppContext";
+import { AvatarBadge } from "../components/shared/AvatarBadge";
 import { AdminUpdateMenu } from "../components/shared/AdminUpdateMenu";
+import { MailIcon, KeyIcon, ArchiveUserIcon, ShieldIcon, ResetIcon } from "../components/icons";
 import { schoolWeekdayLabel } from "../utils/dates";
 import type { User, EmployeeGroup } from "../types";
 
 type AdminTab = "users" | "groups" | "roles" | "tools" | "audit" | "settings" | "system";
 
 const ALL_ROLES: User["role"][] = ["admin", "ceo", "accountant", "planning", "employee"];
-
-function initials(name: string): string {
-  return name
-    .split(" ")
-    .map((p) => p[0] ?? "")
-    .slice(0, 2)
-    .join("")
-    .toUpperCase();
-}
 
 function fmtTs(iso: string): string {
   try {
@@ -51,6 +44,9 @@ export function AdminPage() {
     setInviteCreateForm,
     submitCreateInvite,
     applyTemplate,
+    userAvatarVersionById,
+    userHasAvatar,
+    userInitialsById,
     // Groups tab
     employeeGroups,
     employeeGroupsLoading,
@@ -64,6 +60,12 @@ export function AdminPage() {
     loadRolePermissions,
     setRolePermission,
     resetRoleToDefaults,
+    // User permissions tab
+    userPermissionOverrides,
+    userPermissionsLoading,
+    loadUserPermissions,
+    setUserPermissionOverride,
+    resetUserPermissions,
     // Audit tab
     auditLogs,
     auditLogsLoading,
@@ -92,7 +94,6 @@ export function AdminPage() {
 
   const canAccess = isAdmin || canManageProjectImport || canManageSchoolAbsences;
 
-  // Default to "tools" for non-admin users who only have management permissions
   const [tab, setTab] = useState<AdminTab>(isAdmin ? "users" : "tools");
   const [showInvite, setShowInvite] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
@@ -100,18 +101,35 @@ export function AdminPage() {
   const [editingGroupId, setEditingGroupId] = useState<number | null>(null);
   const [auditSearch, setAuditSearch] = useState("");
   const [resettingRole, setResettingRole] = useState<string | null>(null);
+  // Which user's permission panel is open (user id or null)
+  const [expandedPermUserId, setExpandedPermUserId] = useState<number | null>(null);
+  // Local draft for per-user permission overrides while editing
+  const [permDraft, setPermDraft] = useState<{ extra: Set<string>; denied: Set<string> } | null>(null);
+  const [permSaving, setPermSaving] = useState(false);
+
+  // When the server returns fresh data for the open user, sync the draft.
+  useEffect(() => {
+    if (expandedPermUserId == null) return;
+    const fresh = userPermissionOverrides[expandedPermUserId];
+    if (fresh) {
+      setPermDraft({
+        extra: new Set(fresh.extra),
+        denied: new Set(fresh.denied),
+      });
+    }
+  }, [userPermissionOverrides, expandedPermUserId]);
 
   useEffect(() => {
     if (tab === "groups") void loadEmployeeGroups();
     if (tab === "audit") void loadAuditLogs();
     if (tab === "roles") void loadRolePermissions();
+    // user-level permissions are loaded lazily when a row panel is opened
   }, [tab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (mainView !== "admin" || !canAccess) return null;
 
   const de = language === "de";
 
-  // Admin-only tabs are hidden for non-admin managers
   const ALL_TABS: { id: AdminTab; label: string; count?: number; adminOnly: boolean }[] = [
     { id: "users",    label: de ? "Benutzer"      : "Users",     count: activeAdminUsers.length, adminOnly: true },
     { id: "groups",   label: de ? "Gruppen"       : "Groups",    adminOnly: true },
@@ -157,6 +175,74 @@ export function AdminPage() {
     if (next.has(userId)) next.delete(userId);
     else next.add(userId);
     setGroupDraft({ ...groupDraft, memberIds: next });
+  };
+
+  // ── Per-user permission helpers ────────────────────────────────────────────
+
+  const openUserPermPanel = (userId: number) => {
+    if (expandedPermUserId === userId) {
+      setExpandedPermUserId(null);
+      setPermDraft(null);
+      return;
+    }
+    // Start with cached data immediately (may be empty if not loaded yet).
+    const existing = userPermissionOverrides[userId];
+    setPermDraft({
+      extra: new Set(existing?.extra ?? []),
+      denied: new Set(existing?.denied ?? []),
+    });
+    setExpandedPermUserId(userId);
+    // Fetch fresh data from the server; the useEffect above will sync the draft.
+    void loadUserPermissions(userId);
+  };
+
+  const togglePermExtra = (perm: string) => {
+    if (!permDraft) return;
+    const extra = new Set(permDraft.extra);
+    const denied = new Set(permDraft.denied);
+    if (extra.has(perm)) {
+      extra.delete(perm);
+    } else {
+      extra.add(perm);
+      denied.delete(perm); // can't both grant and deny
+    }
+    setPermDraft({ extra, denied });
+  };
+
+  const togglePermDenied = (perm: string) => {
+    if (!permDraft) return;
+    const extra = new Set(permDraft.extra);
+    const denied = new Set(permDraft.denied);
+    if (denied.has(perm)) {
+      denied.delete(perm);
+    } else {
+      denied.add(perm);
+      extra.delete(perm); // can't both grant and deny
+    }
+    setPermDraft({ extra, denied });
+  };
+
+  const saveUserPermDraft = async (userId: number) => {
+    if (!permDraft) return;
+    setPermSaving(true);
+    try {
+      await setUserPermissionOverride(userId, Array.from(permDraft.extra), Array.from(permDraft.denied));
+      setExpandedPermUserId(null);
+      setPermDraft(null);
+    } finally {
+      setPermSaving(false);
+    }
+  };
+
+  const handleResetUserPerms = async (userId: number) => {
+    setPermSaving(true);
+    try {
+      await resetUserPermissions(userId);
+      setExpandedPermUserId(null);
+      setPermDraft(null);
+    } finally {
+      setPermSaving(false);
+    }
   };
 
   // ── Audit filter ───────────────────────────────────────────────────────────
@@ -226,7 +312,7 @@ export function AdminPage() {
             <div className="admin-form-section">
               <h4 className="admin-form-title">{de ? "Neuer Benutzer" : "New user"}</h4>
               <form
-                className="admin-form-row"
+                className="admin-invite-row"
                 onSubmit={(e: FormEvent<HTMLFormElement>) => {
                   void submitCreateInvite(e);
                   setShowInvite(false);
@@ -262,7 +348,7 @@ export function AdminPage() {
                     ))}
                   </select>
                 </label>
-                <div className="row" style={{ gap: "0.5rem", marginTop: "0.25rem" }}>
+                <div className="admin-invite-actions">
                   <button type="submit">
                     ✉ {de ? "Einladen & senden" : "Invite & send"}
                   </button>
@@ -276,83 +362,180 @@ export function AdminPage() {
 
           <div className="admin-user-list">
             {activeAdminUsers.map((u) => (
-              <div key={u.id} className="admin-user-row">
-                <div className="admin-user-avatar" aria-hidden="true">
-                  {initials(u.full_name)}
-                </div>
-                <div className="admin-user-info">
-                  <div className="admin-user-name">{u.full_name}</div>
-                  <div className="admin-user-meta">
-                    <span className="admin-user-email">{u.email}</span>
-                    {u.invite_accepted_at == null && u.invite_sent_at != null && (
-                      <span className="admin-badge admin-badge--warn">
-                        {de ? "Einladung ausstehend" : "Invite pending"}
-                      </span>
-                    )}
+              <div key={u.id} className="admin-user-row-wrap">
+                <div className="admin-user-row">
+                  <AvatarBadge
+                    userId={u.id}
+                    initials={userInitialsById(u.id)}
+                    hasAvatar={userHasAvatar(u.id)}
+                    versionKey={userAvatarVersionById(u.id)}
+                    className="admin-avatar"
+                  />
+                  <div className="admin-user-info">
+                    <div className="admin-user-name">{u.full_name}</div>
+                    <div className="admin-user-meta">
+                      <span className="admin-user-email">{u.email}</span>
+                      {u.invite_accepted_at == null && u.invite_sent_at != null && (
+                        <span className="admin-badge admin-badge--warn">
+                          {de ? "Einladung ausstehend" : "Invite pending"}
+                        </span>
+                      )}
+                      {(userPermissionOverrides[u.id]?.extra?.length > 0 ||
+                        userPermissionOverrides[u.id]?.denied?.length > 0) && (
+                        <span className="admin-badge" title={de ? "Individuelle Berechtigungen aktiv" : "Custom permissions active"}>
+                          {de ? "Individuelle Rechte" : "Custom perms"}
+                        </span>
+                      )}
+                    </div>
                   </div>
-                </div>
-                <div className="admin-user-controls">
-                  <select
-                    value={u.role}
-                    className="admin-role-select"
-                    disabled={u.id === user?.id}
-                    title={u.id === user?.id
-                      ? (de ? "Eigene Rolle kann nicht geändert werden" : "Cannot change your own role")
-                      : undefined}
-                    onChange={(e) => void updateRole(u.id, e.target.value as User["role"])}
-                  >
-                    {ALL_ROLES.map((r) => (
-                      <option key={r} value={r}>{r}</option>
-                    ))}
-                  </select>
-                  <div className="row admin-hours-row">
-                    <input
-                      type="number"
-                      min={1}
-                      max={24}
-                      step={0.25}
-                      value={requiredHoursDrafts[u.id] ?? String(u.required_daily_hours ?? 8)}
-                      onChange={(e) => setRequiredHoursDrafts({ ...requiredHoursDrafts, [u.id]: e.target.value })}
-                      className="admin-hours-input"
-                      aria-label={de ? "Pflichtarbeitszeit h/Tag" : "Required h/day"}
-                    />
-                    <span className="muted" style={{ fontSize: "0.78rem" }}>h/d</span>
+                  <div className="admin-user-controls">
+                    <select
+                      value={u.role}
+                      className="admin-role-select"
+                      disabled={u.id === user?.id}
+                      title={u.id === user?.id
+                        ? (de ? "Eigene Rolle kann nicht geändert werden" : "Cannot change your own role")
+                        : undefined}
+                      onChange={(e) => void updateRole(u.id, e.target.value as User["role"])}
+                    >
+                      {ALL_ROLES.map((r) => (
+                        <option key={r} value={r}>{r}</option>
+                      ))}
+                    </select>
+                    <div className="row admin-hours-row">
+                      <input
+                        type="number"
+                        min={1}
+                        max={24}
+                        step={0.25}
+                        value={requiredHoursDrafts[u.id] ?? String(u.required_daily_hours ?? 8)}
+                        onChange={(e) => setRequiredHoursDrafts({ ...requiredHoursDrafts, [u.id]: e.target.value })}
+                        className="admin-hours-input"
+                        aria-label={de ? "Pflichtarbeitszeit h/Tag" : "Required h/day"}
+                      />
+                      <span className="muted" style={{ fontSize: "0.78rem" }}>h/d</span>
+                      <button
+                        type="button"
+                        className="admin-save-btn"
+                        onClick={() => void updateRequiredDailyHours(u.id)}
+                      >
+                        {de ? "Spch." : "Save"}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="admin-user-actions">
                     <button
                       type="button"
-                      className="admin-save-btn"
-                      onClick={() => void updateRequiredDailyHours(u.id)}
+                      className="icon-btn"
+                      title={de ? "Einladungs-E-Mail senden" : "Send invite email"}
+                      onClick={() => void sendInviteToUser(u.id)}
                     >
-                      {de ? "Spch." : "Save"}
+                      <MailIcon />
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-btn"
+                      title={de ? "Passwort zurücksetzen" : "Send password reset"}
+                      onClick={() => void sendPasswordResetToUser(u.id)}
+                    >
+                      <KeyIcon />
+                    </button>
+                    <button
+                      type="button"
+                      className={`icon-btn${expandedPermUserId === u.id ? " active" : ""}`}
+                      title={de ? "Individuelle Berechtigungen" : "Custom permissions"}
+                      onClick={() => openUserPermPanel(u.id)}
+                    >
+                      <ShieldIcon />
+                    </button>
+                    <button
+                      type="button"
+                      className="icon-btn admin-btn-danger"
+                      title={de ? "Benutzer archivieren" : "Archive user"}
+                      disabled={u.id === user?.id}
+                      onClick={() => void softDeleteUser(u.id)}
+                    >
+                      <ArchiveUserIcon />
                     </button>
                   </div>
                 </div>
-                <div className="admin-user-actions">
-                  <button
-                    type="button"
-                    className="icon-btn"
-                    title={de ? "Einladungs-E-Mail senden" : "Send invite email"}
-                    onClick={() => void sendInviteToUser(u.id)}
-                  >
-                    ✉
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-btn"
-                    title={de ? "Passwort zurücksetzen" : "Send password reset"}
-                    onClick={() => void sendPasswordResetToUser(u.id)}
-                  >
-                    🔑
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-btn admin-btn-danger"
-                    title={de ? "Benutzer archivieren" : "Archive user"}
-                    disabled={u.id === user?.id}
-                    onClick={() => void softDeleteUser(u.id)}
-                  >
-                    ✕
-                  </button>
-                </div>
+
+                {/* ── Per-user permission panel ─────────────────────────── */}
+                {expandedPermUserId === u.id && permDraft && rolePermissionsMeta && (
+                  <div className="admin-user-perm-panel">
+                    <div className="admin-user-perm-header">
+                      <span className="admin-user-perm-title">
+                        {de ? "Individuelle Berechtigungen" : "Custom permissions"}
+                        {" — "}<em>{u.full_name}</em>
+                      </span>
+                      <small className="muted">
+                        {de
+                          ? "Grün = Zusätzlich gewährt · Rot = Verweigert (unabhängig von der Rolle)"
+                          : "Green = Extra grant · Red = Deny (overrides role)"}
+                      </small>
+                    </div>
+                    <div className="admin-perm-groups">
+                      {rolePermissionsMeta.permission_groups.map((group) => (
+                        <div key={group.key} className="admin-perm-group">
+                          <div className="admin-perm-group-label">{group.label}</div>
+                          <div className="admin-perm-items">
+                            {group.permissions.map((perm) => {
+                              const roleHas = (rolePermissionsMeta.permissions[u.role] ?? []).includes(perm);
+                              const isExtra = permDraft.extra.has(perm);
+                              const isDenied = permDraft.denied.has(perm);
+                              const label = rolePermissionsMeta.permission_labels[perm] ?? perm;
+                              return (
+                                <div key={perm} className={`admin-perm-item${isExtra ? " admin-perm-item--extra" : isDenied ? " admin-perm-item--denied" : ""}`}>
+                                  <span className="admin-perm-item-label">
+                                    {label}
+                                    {roleHas
+                                      ? <span className="admin-perm-role-dot admin-perm-role-dot--on" title={de ? "Rolle hat diese Berechtigung" : "Role has this permission"} />
+                                      : <span className="admin-perm-role-dot admin-perm-role-dot--off" title={de ? "Rolle hat diese Berechtigung nicht" : "Role doesn't have this permission"} />
+                                    }
+                                  </span>
+                                  <div className="admin-perm-toggles">
+                                    <label className="admin-perm-toggle-label admin-perm-toggle-label--extra" title={de ? "Zusätzlich gewähren" : "Extra grant"}>
+                                      <input
+                                        type="checkbox"
+                                        checked={isExtra}
+                                        onChange={() => togglePermExtra(perm)}
+                                      />
+                                      <span>{de ? "Gewähren" : "Grant"}</span>
+                                    </label>
+                                    <label className="admin-perm-toggle-label admin-perm-toggle-label--deny" title={de ? "Verweigern" : "Deny"}>
+                                      <input
+                                        type="checkbox"
+                                        checked={isDenied}
+                                        onChange={() => togglePermDenied(perm)}
+                                      />
+                                      <span>{de ? "Sperren" : "Deny"}</span>
+                                    </label>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="row" style={{ gap: "0.5rem", marginTop: "0.85rem", flexWrap: "wrap" }}>
+                      <button type="button" disabled={permSaving} onClick={() => void saveUserPermDraft(u.id)}>
+                        {permSaving ? (de ? "Speichern…" : "Saving…") : (de ? "Speichern" : "Save")}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={permSaving}
+                        onClick={() => void handleResetUserPerms(u.id)}
+                        style={{ color: "var(--danger)" }}
+                      >
+                        {de ? "Überschreibungen entfernen" : "Remove overrides"}
+                      </button>
+                      <button type="button" onClick={() => { setExpandedPermUserId(null); setPermDraft(null); }}>
+                        {de ? "Abbrechen" : "Cancel"}
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
             ))}
             {activeAdminUsers.length === 0 && (
@@ -376,19 +559,25 @@ export function AdminPage() {
               {showArchived && (
                 <div className="admin-user-list admin-archived-list">
                   {archivedAdminUsers.map((u) => (
-                    <div key={u.id} className="admin-user-row admin-user-row--archived">
-                      <div className="admin-user-avatar admin-user-avatar--muted" aria-hidden="true">
-                        {initials(u.full_name)}
-                      </div>
-                      <div className="admin-user-info">
-                        <div className="admin-user-name">{u.full_name}</div>
-                        <div className="admin-user-email">{u.email} · {u.role}</div>
-                      </div>
-                      <div />
-                      <div className="admin-user-actions">
-                        <button type="button" onClick={() => void restoreArchivedUser(u.id)}>
-                          {de ? "Wiederherstellen" : "Restore"}
-                        </button>
+                    <div key={u.id} className="admin-user-row-wrap">
+                      <div className="admin-user-row admin-user-row--archived">
+                        <AvatarBadge
+                          userId={u.id}
+                          initials={userInitialsById(u.id)}
+                          hasAvatar={userHasAvatar(u.id)}
+                          versionKey={userAvatarVersionById(u.id)}
+                          className="admin-avatar admin-avatar--muted"
+                        />
+                        <div className="admin-user-info">
+                          <div className="admin-user-name">{u.full_name}</div>
+                          <div className="admin-user-email">{u.email} · {u.role}</div>
+                        </div>
+                        <div />
+                        <div className="admin-user-actions">
+                          <button type="button" onClick={() => void restoreArchivedUser(u.id)}>
+                            {de ? "Wiederherstellen" : "Restore"}
+                          </button>
+                        </div>
                       </div>
                     </div>
                   ))}
@@ -409,7 +598,7 @@ export function AdminPage() {
           )}
 
           {groupDraft !== null && (
-            <div className="admin-form-section">
+            <div className="admin-form-section admin-group-form">
               <h4 className="admin-form-title">
                 {editingGroupId !== null
                   ? (de ? "Gruppe bearbeiten" : "Edit group")
@@ -424,7 +613,7 @@ export function AdminPage() {
                   onChange={(e) => setGroupDraft({ ...groupDraft, name: e.target.value })}
                 />
               </label>
-              <div style={{ marginBottom: "0.75rem" }}>
+              <div className="admin-group-form-body">
                 <p className="muted" style={{ fontSize: "0.82rem", marginBottom: "0.4rem" }}>
                   {de ? "Mitglieder" : "Members"} ({groupDraft.memberIds.size})
                 </p>
@@ -442,7 +631,7 @@ export function AdminPage() {
                   ))}
                 </div>
               </div>
-              <div className="row" style={{ gap: "0.5rem" }}>
+              <div className="row admin-group-form-footer" style={{ gap: "0.5rem" }}>
                 <button type="button" onClick={() => void submitGroupDraft()}>
                   {de ? "Speichern" : "Save"}
                 </button>
@@ -545,7 +734,7 @@ export function AdminPage() {
                                 disabled={resettingRole === role}
                                 onClick={() => void handleReset(role)}
                               >
-                                {resettingRole === role ? "…" : "↺"}
+                                <ResetIcon />
                               </button>
                             )}
                           </div>
@@ -555,7 +744,6 @@ export function AdminPage() {
                   </thead>
                   <tbody>
                     {permission_groups.map((group) => (
-                      // Using Fragment with key to avoid React warning while keeping group rows adjacent
                       <tr key={`group-${group.key}`} className="perm-group-row">
                         <td className="perm-group-label" colSpan={1}>{group.label}</td>
                         {all_roles.map((role) => {
@@ -581,7 +769,6 @@ export function AdminPage() {
                         })}
                       </tr>
                     ))}
-                    {/* Flatten all permission rows after all group headers — avoids React fragment key issues */}
                     {permission_groups.flatMap((group) =>
                       group.permissions.map((perm) => (
                         <tr key={perm} className="perm-perm-row">

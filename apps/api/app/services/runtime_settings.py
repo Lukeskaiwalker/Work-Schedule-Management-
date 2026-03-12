@@ -9,6 +9,7 @@ from app.models.entities import AppSetting
 INITIAL_ADMIN_BOOTSTRAP_COMPLETED_KEY = "initial_admin_bootstrap_completed"
 OPENWEATHER_API_KEY = "openweather_api_key"
 ROLE_PERMISSIONS_KEY = "role_permissions"
+USER_PERMISSIONS_KEY = "user_permissions"
 
 
 def get_runtime_setting(db: Session, key: str) -> str | None:
@@ -120,3 +121,75 @@ def reset_role_to_defaults(db: Session, role: str) -> dict[str, list[str]]:
 
     from app.core.permissions import get_effective_permissions
     return get_effective_permissions()
+
+
+# ── User-level permission overrides ──────────────────────────────────────────
+
+def load_user_permissions_from_db(db: Session) -> None:
+    """Load per-user permission overrides from the DB into the in-process cache."""
+    from app.core.permissions import set_user_permissions_override
+
+    raw = get_runtime_setting(db, USER_PERMISSIONS_KEY)
+    if not raw:
+        set_user_permissions_override({})
+        return
+    try:
+        data: dict[str, dict] = json.loads(raw)
+    except Exception:
+        set_user_permissions_override({})
+        return
+    set_user_permissions_override({int(k): v for k, v in data.items()})
+
+
+def save_user_permissions_to_db(
+    db: Session,
+    user_id: int,
+    extra: list[str],
+    denied: list[str],
+) -> dict[str, list[str]]:
+    """Persist per-user permission overrides and reload the in-process cache."""
+    from app.core.permissions import get_all_user_overrides, set_user_permissions_override
+
+    current = get_all_user_overrides()
+    clean_extra = sorted(set(extra))
+    clean_denied = sorted(set(denied))
+
+    if clean_extra or clean_denied:
+        current[user_id] = {"extra": clean_extra, "denied": clean_denied}
+    else:
+        current.pop(user_id, None)
+
+    if current:
+        set_runtime_setting(
+            db, USER_PERMISSIONS_KEY,
+            json.dumps({str(k): v for k, v in current.items()}),
+        )
+    else:
+        row = db.get(AppSetting, USER_PERMISSIONS_KEY)
+        if row:
+            db.delete(row)
+
+    db.commit()
+    set_user_permissions_override(current)
+    return {"extra": clean_extra, "denied": clean_denied}
+
+
+def reset_user_permissions_from_db(db: Session, user_id: int) -> None:
+    """Remove all per-user overrides for one user and reload the cache."""
+    from app.core.permissions import get_all_user_overrides, set_user_permissions_override
+
+    current = get_all_user_overrides()
+    current.pop(user_id, None)
+
+    if current:
+        set_runtime_setting(
+            db, USER_PERMISSIONS_KEY,
+            json.dumps({str(k): v for k, v in current.items()}),
+        )
+    else:
+        row = db.get(AppSetting, USER_PERMISSIONS_KEY)
+        if row:
+            db.delete(row)
+
+    db.commit()
+    set_user_permissions_override(current)

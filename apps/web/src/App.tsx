@@ -65,6 +65,7 @@ import type {
   AvatarDeleteResponse,
   AvatarImageSize,
   RolePermissionsMeta,
+  UserPermissionOverride,
 } from "./types";
 import {
   MAIN_LABELS,
@@ -357,6 +358,8 @@ export function App() {
   const [auditLogsLoading, setAuditLogsLoading] = useState(false);
   const [rolePermissionsMeta, setRolePermissionsMeta] = useState<RolePermissionsMeta | null>(null);
   const [rolePermissionsLoading, setRolePermissionsLoading] = useState(false);
+  const [userPermissionOverrides, setUserPermissionOverrides] = useState<Record<number, UserPermissionOverride>>({});
+  const [userPermissionsLoading, setUserPermissionsLoading] = useState(false);
   const [weatherSettings, setWeatherSettings] = useState<WeatherSettings | null>(null);
   const [weatherApiKeyInput, setWeatherApiKeyInput] = useState("");
   const [weatherSettingsSaving, setWeatherSettingsSaving] = useState(false);
@@ -5803,6 +5806,57 @@ export function App() {
     }
   };
 
+  const loadUserPermissions = async (userId: number) => {
+    if (!token) return;
+    setUserPermissionsLoading(true);
+    try {
+      const res = await fetch(`/api/admin/user-permissions/${userId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data: UserPermissionOverride = await res.json();
+        setUserPermissionOverrides((prev) => ({ ...prev, [userId]: data }));
+      }
+    } catch {
+      // silently ignore
+    } finally {
+      setUserPermissionsLoading(false);
+    }
+  };
+
+  const setUserPermissionOverride = async (userId: number, extra: string[], denied: string[]) => {
+    if (!token) return;
+    try {
+      const res = await fetch(`/api/admin/user-permissions/${userId}`, {
+        method: "PUT",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ extra, denied }),
+      });
+      if (res.ok) {
+        const data: UserPermissionOverride = await res.json();
+        setUserPermissionOverrides((prev) => ({ ...prev, [userId]: data }));
+      }
+    } catch {
+      // silently ignore
+    }
+  };
+
+  const resetUserPermissions = async (userId: number) => {
+    if (!token) return;
+    try {
+      const res = await fetch(`/api/admin/user-permissions/${userId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (res.ok) {
+        const data: UserPermissionOverride = await res.json();
+        setUserPermissionOverrides((prev) => ({ ...prev, [userId]: data }));
+      }
+    } catch {
+      // silently ignore
+    }
+  };
+
   async function submitVacationRequest(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const startDate = vacationRequestForm.start_date;
@@ -6483,6 +6537,13 @@ export function App() {
     loadRolePermissions,
     setRolePermission,
     resetRoleToDefaults,
+
+    // ── Per-user permission overrides ─────────────────────────────────────────
+    userPermissionOverrides,
+    userPermissionsLoading,
+    loadUserPermissions,
+    setUserPermissionOverride,
+    resetUserPermissions,
 
     // ── Browser notifications ─────────────────────────────────────────────────
     browserNotifPermission,

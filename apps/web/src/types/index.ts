@@ -727,3 +727,9 @@ export type AuditLogEntry = {
   details: Record<string, unknown> | null;
   created_at: string;
 };
+
+export type UserPermissionOverride = {
+  user_id: number;
+  extra: string[];
+  denied: string[];
+};

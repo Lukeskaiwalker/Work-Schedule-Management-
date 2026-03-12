@@ -73,6 +73,7 @@ import type {
   AvatarImageSize,
   AvatarCropOutput,
   RolePermissionsMeta,
+  UserPermissionOverride,
 } from "../types";
 
 export interface AppContextValue {
@@ -465,6 +466,13 @@ export interface AppContextValue {
   loadRolePermissions: () => Promise<void>;
   setRolePermission: (role: string, permission: string, enabled: boolean) => Promise<void>;
   resetRoleToDefaults: (role: string) => Promise<void>;
+
+  // ── Per-user permission overrides ─────────────────────────────────────────────
+  userPermissionOverrides: Record<number, UserPermissionOverride>;
+  userPermissionsLoading: boolean;
+  loadUserPermissions: (userId: number) => Promise<void>;
+  setUserPermissionOverride: (userId: number, extra: string[], denied: string[]) => Promise<void>;
+  resetUserPermissions: (userId: number) => Promise<void>;
 
   // ── Browser notifications ─────────────────────────────────────────────────────
   browserNotifPermission: BrowserNotifPermission;

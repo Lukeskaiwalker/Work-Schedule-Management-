@@ -18,6 +18,7 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from pydantic import BaseModel
 from fastapi.responses import Response
 from sqlalchemy.engine import make_url
 from sqlalchemy import delete, select, update
@@ -26,7 +27,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.core.deps import get_current_user, require_admin
-from app.core.permissions import ALL_PERMISSIONS, ALL_ROLES, PERMISSION_GROUPS, PERMISSION_LABELS, ROLE_EMPLOYEE, TEMPLATES, get_effective_permissions
+from app.core.permissions import ALL_PERMISSIONS, ALL_ROLES, PERMISSION_GROUPS, PERMISSION_LABELS, ROLE_EMPLOYEE, TEMPLATES, get_effective_permissions, get_user_override
 from app.core.security import get_password_hash
 from app.core.time import utcnow
 from app.models.entities import AuditLog, EmployeeGroup, EmployeeGroupMember, ProjectClassTemplate, User, UserActionToken
@@ -52,7 +53,9 @@ from app.services.project_import import import_projects_from_csv
 from app.services.runtime_settings import (
     get_openweather_api_key,
     reset_role_to_defaults,
+    reset_user_permissions_from_db,
     save_role_permissions_to_db,
+    save_user_permissions_to_db,
     set_openweather_api_key,
 )
 
@@ -1751,3 +1754,74 @@ def reset_role_permissions(
     updated = reset_role_to_defaults(db, role)
     log_admin_action(db, admin, "role_permissions.reset", "role", role, {})
     return {"permissions": updated}
+
+
+# ── Per-user permission overrides ────────────────────────────────────────────
+
+@router.get("/user-permissions/{user_id}")
+def get_user_permissions(
+    user_id: int,
+    _: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Return the current extra/denied permission overrides for one user."""
+    # Verify user exists.
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    overrides = get_user_override(user_id)
+    return {"user_id": user_id, "extra": overrides["extra"], "denied": overrides["denied"]}
+
+
+class UserPermissionsUpdate(BaseModel):
+    extra: list[str] = []
+    denied: list[str] = []
+
+
+@router.put("/user-permissions/{user_id}")
+def set_user_permissions(
+    user_id: int,
+    payload: UserPermissionsUpdate,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Set per-user permission overrides (extra grants and explicit denies)."""
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Validate all permission strings.
+    unknown_extra = [p for p in payload.extra if p not in ALL_PERMISSIONS]
+    unknown_denied = [p for p in payload.denied if p not in ALL_PERMISSIONS]
+    if unknown_extra or unknown_denied:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown permissions: {unknown_extra + unknown_denied}",
+        )
+
+    result = save_user_permissions_to_db(db, user_id, payload.extra, payload.denied)
+    log_admin_action(
+        db,
+        admin,
+        "user_permissions.update",
+        "user",
+        str(user_id),
+        {"extra": result["extra"], "denied": result["denied"]},
+    )
+    return {"user_id": user_id, "extra": result["extra"], "denied": result["denied"]}
+
+
+@router.delete("/user-permissions/{user_id}")
+def reset_user_permissions(
+    user_id: int,
+    admin: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Remove all per-user permission overrides (revert to role defaults)."""
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    reset_user_permissions_from_db(db, user_id)
+    log_admin_action(db, admin, "user_permissions.reset", "user", str(user_id), {})
+    return {"user_id": user_id, "extra": [], "denied": []}

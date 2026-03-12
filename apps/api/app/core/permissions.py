@@ -150,11 +150,18 @@ TEMPLATES: dict[str, dict[str, set[str]]] = {
     "default": PERMISSIONS_BY_ROLE,
 }
 
-# ── Runtime override ──────────────────────────────────────────────────────────
+# ── Role-level runtime override ───────────────────────────────────────────────
 # Replaced atomically by set_permissions_override() whenever the admin saves
 # custom permissions to the database.  None means "use PERMISSIONS_BY_ROLE".
 _override_map: dict[str, set[str]] | None = None
 _override_lock = threading.Lock()
+
+# ── User-level permission overrides ──────────────────────────────────────────
+# Format: {user_id: {"extra": set[str], "denied": set[str]}}
+# "extra"  → granted regardless of role
+# "denied" → blocked regardless of role (takes precedence over extra)
+_user_override_map: dict[int, dict[str, set[str]]] = {}
+_user_override_lock = threading.Lock()
 
 
 def set_permissions_override(override: dict[str, list[str]] | None) -> None:
@@ -183,3 +190,60 @@ def get_effective_permissions() -> dict[str, list[str]]:
     with _override_lock:
         effective = _override_map if _override_map is not None else PERMISSIONS_BY_ROLE
     return {role: sorted(effective.get(role, set())) for role in ALL_ROLES}
+
+
+# ── User-level override helpers ───────────────────────────────────────────────
+
+def set_user_permissions_override(
+    overrides: dict[int, dict[str, list[str]]],
+) -> None:
+    """Replace the full user-level permission override map.  Thread-safe."""
+    global _user_override_map
+    with _user_override_lock:
+        _user_override_map = {
+            int(uid): {
+                "extra": set(data.get("extra", [])),
+                "denied": set(data.get("denied", [])),
+            }
+            for uid, data in overrides.items()
+        }
+
+
+def has_permission_for_user(user_id: int, role: str, permission: str) -> bool:
+    """Check permission for a specific user, applying any user-level overrides.
+
+    Resolution order (most restrictive wins):
+      1. User-level deny  → False
+      2. User-level grant → True
+      3. Role-level check → has_permission(role, permission)
+    """
+    with _user_override_lock:
+        override = _user_override_map.get(user_id)
+    if override:
+        if permission in override.get("denied", set()):
+            return False
+        if permission in override.get("extra", set()):
+            return True
+    return has_permission(role, permission)
+
+
+def get_user_override(user_id: int) -> dict[str, list[str]]:
+    """Return the stored extra/denied lists for one user (empty if none)."""
+    with _user_override_lock:
+        data = _user_override_map.get(user_id, {})
+    return {
+        "extra": sorted(data.get("extra", set())),
+        "denied": sorted(data.get("denied", set())),
+    }
+
+
+def get_all_user_overrides() -> dict[int, dict[str, list[str]]]:
+    """Return all user-level overrides as {user_id: {extra, denied}}."""
+    with _user_override_lock:
+        return {
+            uid: {
+                "extra": sorted(data.get("extra", set())),
+                "denied": sorted(data.get("denied", set())),
+            }
+            for uid, data in _user_override_map.items()
+        }

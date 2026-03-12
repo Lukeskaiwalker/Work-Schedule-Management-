@@ -22,6 +22,7 @@ from app.services.material_catalog import sync_pending_material_catalog_images
 from app.services.runtime_settings import (
     is_initial_admin_bootstrap_completed,
     load_role_permissions_from_db,
+    load_user_permissions_from_db,
     mark_initial_admin_bootstrap_completed,
 )
 
@@ -106,10 +107,20 @@ def _load_role_permissions() -> None:
         pass  # DB not yet migrated — silently fall back to hard-coded defaults
 
 
+def _load_user_permissions() -> None:
+    """Load per-user permission overrides from the DB into the in-process cache."""
+    try:
+        with SessionLocal() as db:
+            load_user_permissions_from_db(db)
+    except (OperationalError, ProgrammingError):
+        pass  # DB not yet migrated — silently start with empty user overrides
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     _initialize_runtime_data()
     _load_role_permissions()
+    _load_user_permissions()
     image_task = asyncio.create_task(_image_loop())
     try:
         yield

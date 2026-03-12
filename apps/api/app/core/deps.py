@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
-from app.core.permissions import ROLE_ADMIN, has_permission
+from app.core.permissions import ROLE_ADMIN, has_permission_for_user
 from app.core.security import decode_token
 from app.models.entities import ProjectMember, User
 
@@ -54,7 +54,7 @@ def get_current_user(
 
 def require_permission(permission: str) -> Callable[[User], User]:
     def _checker(current_user: User = Depends(get_current_user)) -> User:
-        if not has_permission(current_user.role, permission):
+        if not has_permission_for_user(current_user.id, current_user.role, permission):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
         return current_user
 
