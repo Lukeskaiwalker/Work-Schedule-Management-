@@ -1,6 +1,18 @@
+import { Fragment } from "react";
 import { useAppContext } from "../context/AppContext";
-import { addDaysISO, normalizeWeekStartISO, isoWeekInfo, formatDayLabel } from "../utils/dates";
+import { addDaysISO, normalizeWeekStartISO, isoWeekInfo, isoWeekdayMondayFirst } from "../utils/dates";
 import { sortTasksByDueTime, formatTaskStartTime } from "../utils/tasks";
+import type { Language } from "../types";
+
+const EN_DAY_COLS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
+const DE_DAY_COLS = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"] as const;
+
+const EN_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
+const DE_MONTHS = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"] as const;
+
+function monthAbbr(month: number, language: Language): string {
+  return ((language === "de" ? DE_MONTHS : EN_MONTHS)[month - 1]) ?? "";
+}
 
 export function CalendarPage() {
   const {
@@ -21,8 +33,11 @@ export function CalendarPage() {
 
   if (mainView !== "calendar") return null;
 
+  const dayColLabels = language === "de" ? DE_DAY_COLS : EN_DAY_COLS;
+
   return (
     <section className="card calendar-overview">
+      {/* ── Toolbar ── */}
       <div className="row wrap planning-toolbar">
         <h3>{language === "de" ? "4-Wochen-Übersicht" : "4-week overview"}</h3>
         <div
@@ -61,110 +76,148 @@ export function CalendarPage() {
         </label>
       </div>
 
+      {/* ── Body ── */}
       {calendarLoading ? (
-        <small className="muted">{language === "de" ? "Lade Kalender..." : "Loading calendar..."}</small>
+        <small className="muted">{language === "de" ? "Lade Kalender…" : "Loading calendar…"}</small>
+      ) : calendarWeeks.length === 0 ? (
+        <small className="muted">{language === "de" ? "Keine Kalendereinträge." : "No calendar entries."}</small>
       ) : (
-        <div className="calendar-weeks-grid">
-          {calendarWeeks.map((week) => {
-            const weekInfo = isoWeekInfo(week.week_start);
-            return (
-              <section key={`calendar-week-${week.week_start}`} className="calendar-week-card">
-                <div className="calendar-week-head">
-                  <b>
-                    {language === "de" ? "KW" : "CW"} {weekInfo.week}/{weekInfo.year}
-                  </b>
-                  <small>
-                    {formatDayLabel(week.week_start, language)} - {formatDayLabel(week.week_end, language)}
-                  </small>
-                </div>
-                <div className="calendar-week-days">
+        <div className="calendar-grid-scroll">
+          <div className="calendar-grid" role="grid">
+
+            {/* Row 0: corner + day-name column headers */}
+            <div className="calendar-cell calendar-corner" role="columnheader" aria-hidden="true" />
+            {dayColLabels.map((label, i) => (
+              <div
+                key={label}
+                className={`calendar-cell calendar-col-header${i >= 5 ? " calendar-weekend" : ""}`}
+                role="columnheader"
+              >
+                {label}
+              </div>
+            ))}
+
+            {/* Rows 1-4: one row per week */}
+            {calendarWeeks.map((week) => {
+              const weekInfo = isoWeekInfo(week.week_start);
+              return (
+                <Fragment key={week.week_start}>
+                  {/* Week-number cell */}
+                  <div
+                    className="calendar-cell calendar-week-num-cell"
+                    aria-label={`${language === "de" ? "Kalenderwoche" : "Week"} ${weekInfo.week}`}
+                    role="rowheader"
+                  >
+                    <span className="calendar-cw-label">{language === "de" ? "KW" : "W"}</span>
+                    <span className="calendar-cw-number">{weekInfo.week}</span>
+                  </div>
+
+                  {/* 7 day cells */}
                   {week.days.map((day) => {
+                    const dayNum = parseInt(day.date.split("-")[2] ?? "1", 10);
+                    const monthNum = parseInt(day.date.split("-")[1] ?? "1", 10);
+                    const isWeekend = isoWeekdayMondayFirst(day.date) >= 5;
+                    const isToday = day.date === todayIso;
                     const dayTasks = sortTasksByDueTime(day.tasks);
+                    const absences = day.absences ?? [];
+
                     return (
                       <article
-                        key={`calendar-day-${week.week_start}-${day.date}`}
-                        className={day.date === todayIso ? "calendar-day-cell today" : "calendar-day-cell"}
+                        key={day.date}
+                        className={[
+                          "calendar-cell calendar-day-cell",
+                          isWeekend ? "calendar-weekend" : "",
+                          isToday ? "calendar-today" : "",
+                        ]
+                          .filter(Boolean)
+                          .join(" ")}
+                        role="gridcell"
                       >
-                        <div className="calendar-day-head">{formatDayLabel(day.date, language)}</div>
+                        {/* Day number header */}
+                        <div className="calendar-day-head">
+                          <span className={isToday ? "calendar-day-num today-num" : "calendar-day-num"}>
+                            {dayNum}
+                          </span>
+                          {dayNum === 1 && (
+                            <span className="calendar-day-month-label">
+                              {monthAbbr(monthNum, language)}
+                            </span>
+                          )}
+                        </div>
+
+                        {/* Events list */}
                         <ul className="calendar-day-list">
-                        {(day.absences ?? []).map((absence: any, index: number) => (
-                          <li
-                            key={`calendar-absence-${day.date}-${absence.type}-${absence.user_id}-${index}`}
-                            className="calendar-absence"
-                          >
-                            <b>
-                              {menuUserNameById(absence.user_id, absence.user_name)}: {absence.label}
-                            </b>
-                            <small>
-                              {absence.type === "vacation"
-                                ? language === "de"
-                                  ? "Urlaub"
-                                  : "Vacation"
-                                : language === "de"
-                                  ? "Schule"
-                                  : "School"}
-                            </small>
-                          </li>
-                        ))}
-                        {dayTasks.map((task) => {
-                          const isMine = isTaskAssignedToCurrentUser(task);
-                          const taskProjectLabel = taskProjectTitleParts(task);
-                          return (
+                          {absences.map((absence: any, idx: number) => (
                             <li
-                              key={`calendar-task-${day.date}-${task.id}`}
-                              className={[
-                                "calendar-task",
-                                isMine ? "calendar-task-mine calendar-task-clickable" : "",
-                                task.status === "done" ? "calendar-task-done" : "",
-                              ]
-                                .filter(Boolean)
-                                .join(" ")}
-                              onClick={isMine ? () => openTaskFromPlanning(task) : undefined}
-                              onKeyDown={
-                                isMine
-                                  ? (event) => {
-                                      if (event.key === "Enter" || event.key === " ") {
-                                        event.preventDefault();
-                                        openTaskFromPlanning(task);
-                                      }
-                                    }
-                                  : undefined
-                              }
-                              role={isMine ? "button" : undefined}
-                              tabIndex={isMine ? 0 : undefined}
+                              key={`absence-${day.date}-${String(absence.user_id)}-${idx}`}
+                              className="calendar-absence"
                             >
-                              <b>{task.title}</b>
+                              <b>{menuUserNameById(absence.user_id, absence.user_name)}</b>
                               <small>
-                                <button
-                                  type="button"
-                                  className="linklike"
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    openProjectFromTask(task, null);
-                                  }}
-                                >
-                                  {taskProjectLabel.title}
-                                </button>
-                                {task.start_time ? ` | ${formatTaskStartTime(task.start_time)}` : ""}
+                                {absence.type === "vacation"
+                                  ? language === "de" ? "Urlaub" : "Vacation"
+                                  : language === "de" ? "Schule" : "School"}
                               </small>
-                              {taskProjectLabel.subtitle && <small className="project-name-subtle">{taskProjectLabel.subtitle}</small>}
                             </li>
-                          );
-                        })}
-                        {dayTasks.length === 0 && (day.absences ?? []).length === 0 && (
-                          <li className="muted">-</li>
-                        )}
+                          ))}
+                          {dayTasks.map((task) => {
+                            const isMine = isTaskAssignedToCurrentUser(task);
+                            const taskProjectLabel = taskProjectTitleParts(task);
+                            return (
+                              <li
+                                key={`task-${day.date}-${task.id}`}
+                                className={[
+                                  "calendar-task",
+                                  isMine ? "calendar-task-mine calendar-task-clickable" : "",
+                                  task.status === "done" ? "calendar-task-done" : "",
+                                ]
+                                  .filter(Boolean)
+                                  .join(" ")}
+                                onClick={isMine ? () => openTaskFromPlanning(task) : undefined}
+                                onKeyDown={
+                                  isMine
+                                    ? (event) => {
+                                        if (event.key === "Enter" || event.key === " ") {
+                                          event.preventDefault();
+                                          openTaskFromPlanning(task);
+                                        }
+                                      }
+                                    : undefined
+                                }
+                                role={isMine ? "button" : undefined}
+                                tabIndex={isMine ? 0 : undefined}
+                              >
+                                <b>{task.title}</b>
+                                <small>
+                                  <button
+                                    type="button"
+                                    className="linklike"
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      openProjectFromTask(task, null);
+                                    }}
+                                  >
+                                    {taskProjectLabel.title}
+                                  </button>
+                                  {task.start_time ? ` · ${formatTaskStartTime(task.start_time)}` : ""}
+                                </small>
+                                {taskProjectLabel.subtitle && (
+                                  <small className="project-name-subtle">{taskProjectLabel.subtitle}</small>
+                                )}
+                              </li>
+                            );
+                          })}
+                          {dayTasks.length === 0 && absences.length === 0 && (
+                            <li className="calendar-empty-cell" aria-hidden="true">–</li>
+                          )}
                         </ul>
                       </article>
                     );
                   })}
-                </div>
-              </section>
-            );
-          })}
-          {calendarWeeks.length === 0 && (
-            <small className="muted">{language === "de" ? "Keine Kalendereinträge." : "No calendar entries."}</small>
-          )}
+                </Fragment>
+              );
+            })}
+          </div>
         </div>
       )}
     </section>
