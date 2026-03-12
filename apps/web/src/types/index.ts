@@ -617,6 +617,18 @@ export type TaskEditFormState = {
 
 export type WorkspaceMode = "construction" | "office";
 
+/**
+ * Every MainView value MUST have a corresponding navigation entry point in
+ * Sidebar.tsx (sidebar nav items or the user-menu popup). Adding a new view
+ * here without wiring it to a nav entry leaves it unreachable — always update
+ * Sidebar.tsx in the same commit.
+ *
+ * Current nav map:
+ *   sidebar nav items  → overview, materials, projects_all, projects_archive,
+ *                         my_tasks, office_tasks, project, calendar, planning,
+ *                         construction, wiki, messages, time
+ *   sidebar user menu  → profile, admin
+ */
 export type MainView =
   | "overview"
   | "materials"

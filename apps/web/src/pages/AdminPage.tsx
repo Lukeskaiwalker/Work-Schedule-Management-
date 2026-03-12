@@ -1,9 +1,10 @@
 import { useState, useEffect, type FormEvent } from "react";
 import { useAppContext } from "../context/AppContext";
 import { AdminUpdateMenu } from "../components/shared/AdminUpdateMenu";
+import { schoolWeekdayLabel } from "../utils/dates";
 import type { User, EmployeeGroup } from "../types";
 
-type AdminTab = "users" | "groups" | "roles" | "audit" | "settings" | "system";
+type AdminTab = "users" | "groups" | "roles" | "tools" | "audit" | "settings" | "system";
 
 const ALL_ROLES: User["role"][] = ["admin", "ceo", "accountant", "planning", "employee"];
 
@@ -32,6 +33,9 @@ export function AdminPage() {
     isAdmin,
     user,
     language,
+    canManageProjectImport,
+    canManageSchoolAbsences,
+    // Users tab
     activeAdminUsers,
     archivedAdminUsers,
     adminUsersById,
@@ -46,30 +50,50 @@ export function AdminPage() {
     inviteCreateForm,
     setInviteCreateForm,
     submitCreateInvite,
+    applyTemplate,
+    // Groups tab
     employeeGroups,
     employeeGroupsLoading,
     loadEmployeeGroups,
     createEmployeeGroup,
     updateEmployeeGroup,
     deleteEmployeeGroup,
-    auditLogs,
-    auditLogsLoading,
-    loadAuditLogs,
+    // Roles tab
     rolePermissionsMeta,
     rolePermissionsLoading,
     loadRolePermissions,
     setRolePermission,
     resetRoleToDefaults,
+    // Audit tab
+    auditLogs,
+    auditLogsLoading,
+    loadAuditLogs,
+    // Settings tab
     weatherSettings,
     weatherApiKeyInput,
     setWeatherApiKeyInput,
     weatherSettingsSaving,
     saveWeatherSettings,
+    // System tab
     backupExporting,
     exportEncryptedDatabaseBackup,
+    // Tools tab
+    assignableUsers,
+    menuUserNameById,
+    schoolAbsenceForm,
+    setSchoolAbsenceForm,
+    submitSchoolAbsence,
+    toggleSchoolRecurrenceWeekday,
+    downloadProjectCsvTemplate,
+    downloadProjectClassTemplateCsv,
+    importProjectsCsv,
+    importProjectClassTemplateCsv,
   } = useAppContext();
 
-  const [tab, setTab] = useState<AdminTab>("users");
+  const canAccess = isAdmin || canManageProjectImport || canManageSchoolAbsences;
+
+  // Default to "tools" for non-admin users who only have management permissions
+  const [tab, setTab] = useState<AdminTab>(isAdmin ? "users" : "tools");
   const [showInvite, setShowInvite] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [groupDraft, setGroupDraft] = useState<GroupDraft | null>(null);
@@ -83,20 +107,23 @@ export function AdminPage() {
     if (tab === "roles") void loadRolePermissions();
   }, [tab]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (mainView !== "admin" || !isAdmin) return null;
+  if (mainView !== "admin" || !canAccess) return null;
 
   const de = language === "de";
 
-  const TABS: { id: AdminTab; label: string; count?: number }[] = [
-    { id: "users",    label: de ? "Benutzer"       : "Users",     count: activeAdminUsers.length },
-    { id: "groups",   label: de ? "Gruppen"        : "Groups" },
-    { id: "roles",    label: de ? "Rollen"         : "Roles" },
-    { id: "audit",    label: de ? "Protokoll"      : "Audit Log" },
-    { id: "settings", label: de ? "Einstellungen"  : "Settings" },
-    { id: "system",   label: "System" },
+  // Admin-only tabs are hidden for non-admin managers
+  const ALL_TABS: { id: AdminTab; label: string; count?: number; adminOnly: boolean }[] = [
+    { id: "users",    label: de ? "Benutzer"      : "Users",     count: activeAdminUsers.length, adminOnly: true },
+    { id: "groups",   label: de ? "Gruppen"       : "Groups",    adminOnly: true },
+    { id: "roles",    label: de ? "Rollen"        : "Roles",     adminOnly: true },
+    { id: "tools",    label: de ? "Werkzeuge"     : "Tools",     adminOnly: false },
+    { id: "audit",    label: de ? "Protokoll"     : "Audit Log", adminOnly: true },
+    { id: "settings", label: de ? "Einstellungen" : "Settings",  adminOnly: true },
+    { id: "system",   label: "System",                           adminOnly: true },
   ];
+  const TABS = ALL_TABS.filter((t) => isAdmin || !t.adminOnly);
 
-  // ── Group helpers ─────────────────────────────────────────────────────────
+  // ── Group helpers ──────────────────────────────────────────────────────────
 
   const openNewGroup = () => {
     setEditingGroupId(null);
@@ -117,10 +144,7 @@ export function AdminPage() {
     if (!groupDraft || groupDraft.name.trim() === "") return;
     const memberIds = Array.from(groupDraft.memberIds);
     if (editingGroupId !== null) {
-      await updateEmployeeGroup(editingGroupId, {
-        name: groupDraft.name.trim(),
-        member_user_ids: memberIds,
-      });
+      await updateEmployeeGroup(editingGroupId, { name: groupDraft.name.trim(), member_user_ids: memberIds });
     } else {
       await createEmployeeGroup(groupDraft.name.trim(), memberIds);
     }
@@ -135,7 +159,7 @@ export function AdminPage() {
     setGroupDraft({ ...groupDraft, memberIds: next });
   };
 
-  // ── Audit filter ──────────────────────────────────────────────────────────
+  // ── Audit filter ───────────────────────────────────────────────────────────
 
   const filteredLogs = auditSearch.trim()
     ? auditLogs.filter((l) => {
@@ -147,7 +171,7 @@ export function AdminPage() {
       })
     : auditLogs;
 
-  // ─────────────────────────────────────────────────────────────────────────
+  // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
     <section className="card admin-center">
@@ -155,7 +179,7 @@ export function AdminPage() {
         {de ? "Verwaltungszentrum" : "Admin Center"}
       </h3>
 
-      {/* ── Tab bar ──────────────────────────────────────────────────────── */}
+      {/* ── Tab bar ────────────────────────────────────────────────────────── */}
       <nav className="admin-tabs" role="tablist" aria-label={de ? "Verwaltungsbereiche" : "Admin sections"}>
         {TABS.map((t) => (
           <button
@@ -174,10 +198,9 @@ export function AdminPage() {
         ))}
       </nav>
 
-      {/* ── Users ────────────────────────────────────────────────────────── */}
+      {/* ── Users ──────────────────────────────────────────────────────────── */}
       {tab === "users" && (
         <div className="admin-tab-pane">
-          {/* Stats */}
           <div className="admin-stats-row">
             <div className="admin-stat-chip">
               <b>{activeAdminUsers.length + archivedAdminUsers.length}</b>
@@ -195,29 +218,26 @@ export function AdminPage() {
             )}
           </div>
 
-          {/* Invite form */}
           {!showInvite ? (
             <button type="button" onClick={() => setShowInvite(true)}>
               + {de ? "Benutzer einladen" : "Invite user"}
             </button>
           ) : (
-            <form
-              className="admin-form-section"
-              onSubmit={(e: FormEvent<HTMLFormElement>) => {
-                void submitCreateInvite(e);
-                setShowInvite(false);
-              }}
-            >
+            <div className="admin-form-section">
               <h4 className="admin-form-title">{de ? "Neuer Benutzer" : "New user"}</h4>
-              <div className="admin-form-row">
+              <form
+                className="admin-form-row"
+                onSubmit={(e: FormEvent<HTMLFormElement>) => {
+                  void submitCreateInvite(e);
+                  setShowInvite(false);
+                }}
+              >
                 <label>
                   {de ? "Name" : "Full name"}
                   <input
                     required
                     value={inviteCreateForm.full_name}
-                    onChange={(e) =>
-                      setInviteCreateForm({ ...inviteCreateForm, full_name: e.target.value })
-                    }
+                    onChange={(e) => setInviteCreateForm({ ...inviteCreateForm, full_name: e.target.value })}
                   />
                 </label>
                 <label>
@@ -226,9 +246,7 @@ export function AdminPage() {
                     type="email"
                     required
                     value={inviteCreateForm.email}
-                    onChange={(e) =>
-                      setInviteCreateForm({ ...inviteCreateForm, email: e.target.value })
-                    }
+                    onChange={(e) => setInviteCreateForm({ ...inviteCreateForm, email: e.target.value })}
                   />
                 </label>
                 <label>
@@ -236,10 +254,7 @@ export function AdminPage() {
                   <select
                     value={inviteCreateForm.role}
                     onChange={(e) =>
-                      setInviteCreateForm({
-                        ...inviteCreateForm,
-                        role: e.target.value as User["role"],
-                      })
+                      setInviteCreateForm({ ...inviteCreateForm, role: e.target.value as User["role"] })
                     }
                   >
                     {ALL_ROLES.map((r) => (
@@ -247,26 +262,24 @@ export function AdminPage() {
                     ))}
                   </select>
                 </label>
-              </div>
-              <div className="row" style={{ gap: "0.5rem" }}>
-                <button type="submit">
-                  ✉ {de ? "Einladen & E-Mail senden" : "Invite & send email"}
-                </button>
-                <button type="button" onClick={() => setShowInvite(false)}>
-                  {de ? "Abbrechen" : "Cancel"}
-                </button>
-              </div>
-            </form>
+                <div className="row" style={{ gap: "0.5rem", marginTop: "0.25rem" }}>
+                  <button type="submit">
+                    ✉ {de ? "Einladen & senden" : "Invite & send"}
+                  </button>
+                  <button type="button" onClick={() => setShowInvite(false)}>
+                    {de ? "Abbrechen" : "Cancel"}
+                  </button>
+                </div>
+              </form>
+            </div>
           )}
 
-          {/* Active user rows */}
           <div className="admin-user-list">
             {activeAdminUsers.map((u) => (
               <div key={u.id} className="admin-user-row">
                 <div className="admin-user-avatar" aria-hidden="true">
                   {initials(u.full_name)}
                 </div>
-
                 <div className="admin-user-info">
                   <div className="admin-user-name">{u.full_name}</div>
                   <div className="admin-user-meta">
@@ -278,13 +291,14 @@ export function AdminPage() {
                     )}
                   </div>
                 </div>
-
                 <div className="admin-user-controls">
                   <select
                     value={u.role}
                     className="admin-role-select"
                     disabled={u.id === user?.id}
-                    title={u.id === user?.id ? (de ? "Eigene Rolle kann nicht geändert werden" : "Cannot change your own role") : undefined}
+                    title={u.id === user?.id
+                      ? (de ? "Eigene Rolle kann nicht geändert werden" : "Cannot change your own role")
+                      : undefined}
                     onChange={(e) => void updateRole(u.id, e.target.value as User["role"])}
                   >
                     {ALL_ROLES.map((r) => (
@@ -298,9 +312,7 @@ export function AdminPage() {
                       max={24}
                       step={0.25}
                       value={requiredHoursDrafts[u.id] ?? String(u.required_daily_hours ?? 8)}
-                      onChange={(e) =>
-                        setRequiredHoursDrafts({ ...requiredHoursDrafts, [u.id]: e.target.value })
-                      }
+                      onChange={(e) => setRequiredHoursDrafts({ ...requiredHoursDrafts, [u.id]: e.target.value })}
                       className="admin-hours-input"
                       aria-label={de ? "Pflichtarbeitszeit h/Tag" : "Required h/day"}
                     />
@@ -314,7 +326,6 @@ export function AdminPage() {
                     </button>
                   </div>
                 </div>
-
                 <div className="admin-user-actions">
                   <button
                     type="button"
@@ -336,6 +347,7 @@ export function AdminPage() {
                     type="button"
                     className="icon-btn admin-btn-danger"
                     title={de ? "Benutzer archivieren" : "Archive user"}
+                    disabled={u.id === user?.id}
                     onClick={() => void softDeleteUser(u.id)}
                   >
                     ✕
@@ -348,7 +360,6 @@ export function AdminPage() {
             )}
           </div>
 
-          {/* Archived users */}
           {archivedAdminUsers.length > 0 && (
             <div className="admin-archived-section">
               <button
@@ -388,18 +399,15 @@ export function AdminPage() {
         </div>
       )}
 
-      {/* ── Groups ───────────────────────────────────────────────────────── */}
+      {/* ── Groups ─────────────────────────────────────────────────────────── */}
       {tab === "groups" && (
         <div className="admin-tab-pane">
-          <div className="row" style={{ marginBottom: "1rem" }}>
-            {groupDraft === null && (
-              <button type="button" onClick={openNewGroup}>
-                + {de ? "Neue Gruppe" : "New group"}
-              </button>
-            )}
-          </div>
+          {groupDraft === null && (
+            <button type="button" onClick={openNewGroup}>
+              + {de ? "Neue Gruppe" : "New group"}
+            </button>
+          )}
 
-          {/* Group form */}
           {groupDraft !== null && (
             <div className="admin-form-section">
               <h4 className="admin-form-title">
@@ -417,9 +425,9 @@ export function AdminPage() {
                 />
               </label>
               <div style={{ marginBottom: "0.75rem" }}>
-                <div className="muted" style={{ fontSize: "0.82rem", marginBottom: "0.4rem" }}>
+                <p className="muted" style={{ fontSize: "0.82rem", marginBottom: "0.4rem" }}>
                   {de ? "Mitglieder" : "Members"} ({groupDraft.memberIds.size})
-                </div>
+                </p>
                 <div className="admin-member-checklist">
                   {activeAdminUsers.map((u) => (
                     <label key={u.id} className="admin-member-check-row">
@@ -445,10 +453,7 @@ export function AdminPage() {
             </div>
           )}
 
-          {/* Group list */}
-          {employeeGroupsLoading && (
-            <p className="muted">{de ? "Lädt…" : "Loading…"}</p>
-          )}
+          {employeeGroupsLoading && <p className="muted">{de ? "Lädt…" : "Loading…"}</p>}
           {!employeeGroupsLoading && employeeGroups.length === 0 && (
             <p className="muted">{de ? "Noch keine Gruppen vorhanden." : "No groups yet."}</p>
           )}
@@ -458,36 +463,18 @@ export function AdminPage() {
                 <div>
                   <b>{group.name}</b>
                   <span className="muted" style={{ marginLeft: "0.5rem", fontSize: "0.84rem" }}>
-                    {group.members.length}{" "}
-                    {de ? "Mitglied(er)" : "member(s)"}
+                    {group.members.length} {de ? "Mitglied(er)" : "member(s)"}
                   </span>
                 </div>
                 <div className="row" style={{ gap: "0.4rem" }}>
-                  <button
-                    type="button"
-                    className="icon-btn"
-                    title={de ? "Bearbeiten" : "Edit"}
-                    onClick={() => openEditGroup(group)}
-                  >
-                    ✏
-                  </button>
-                  <button
-                    type="button"
-                    className="icon-btn admin-btn-danger"
-                    title={de ? "Löschen" : "Delete"}
-                    onClick={() => void deleteEmployeeGroup(group.id)}
-                  >
-                    ✕
-                  </button>
+                  <button type="button" className="icon-btn" title={de ? "Bearbeiten" : "Edit"} onClick={() => openEditGroup(group)}>✏</button>
+                  <button type="button" className="icon-btn admin-btn-danger" title={de ? "Löschen" : "Delete"} onClick={() => void deleteEmployeeGroup(group.id)}>✕</button>
                 </div>
               </div>
               {group.members.length > 0 && (
                 <div className="admin-group-members">
                   {group.members.map((m) => (
-                    <span
-                      key={m.user_id}
-                      className={`admin-member-chip${m.is_active ? "" : " admin-member-chip--inactive"}`}
-                    >
+                    <span key={m.user_id} className={`admin-member-chip${m.is_active ? "" : " admin-member-chip--inactive"}`}>
                       {m.display_name}
                     </span>
                   ))}
@@ -498,10 +485,292 @@ export function AdminPage() {
         </div>
       )}
 
-      {/* ── Audit log ────────────────────────────────────────────────────── */}
+      {/* ── Roles ──────────────────────────────────────────────────────────── */}
+      {tab === "roles" && (
+        <div className="admin-tab-pane">
+          <div className="perm-header">
+            <div>
+              <h4 className="perm-heading">
+                {de ? "Rollenberechtigungen" : "Role Permissions"}
+              </h4>
+              <p className="perm-subline muted">
+                {de
+                  ? "Legen Sie fest, welche Aktionen jede Rolle ausführen darf. Änderungen gelten sofort."
+                  : "Define what each role is allowed to do. Changes take effect immediately."}
+              </p>
+            </div>
+          </div>
+
+          {rolePermissionsLoading && !rolePermissionsMeta && (
+            <p className="muted" style={{ padding: "1rem 0" }}>{de ? "Lade…" : "Loading…"}</p>
+          )}
+
+          {rolePermissionsMeta && (() => {
+            const { permissions, permission_groups, permission_labels, all_roles } = rolePermissionsMeta;
+
+            const roleLabel = (r: string) => r.charAt(0).toUpperCase() + r.slice(1);
+            const hasPermission = (role: string, perm: string) => (permissions[role] ?? []).includes(perm);
+            const groupAllEnabled = (group: { permissions: string[] }, role: string) =>
+              group.permissions.every((p) => hasPermission(role, p));
+
+            const toggleGroupForRole = (group: { permissions: string[] }, role: string, enable: boolean) => {
+              group.permissions.forEach((perm) => {
+                if (hasPermission(role, perm) !== enable) void setRolePermission(role, perm, enable);
+              });
+            };
+
+            const handleReset = async (role: string) => {
+              setResettingRole(role);
+              try { await resetRoleToDefaults(role); }
+              finally { setResettingRole(null); }
+            };
+
+            return (
+              <div className="perm-matrix-wrapper">
+                <table className="perm-matrix">
+                  <thead>
+                    <tr>
+                      <th className="perm-col-label">{de ? "Berechtigung" : "Permission"}</th>
+                      {all_roles.map((role) => (
+                        <th key={role} className="perm-col-role">
+                          <div className="perm-role-header">
+                            <span className="perm-role-name">{roleLabel(role)}</span>
+                            {role === "admin" ? (
+                              <span className="perm-locked-badge" title={de ? "Admin-Rolle ist schreibgeschützt" : "Admin role is read-only"}>🔒</span>
+                            ) : (
+                              <button
+                                type="button"
+                                className="perm-reset-btn"
+                                title={de ? "Auf Standard zurücksetzen" : "Reset to defaults"}
+                                disabled={resettingRole === role}
+                                onClick={() => void handleReset(role)}
+                              >
+                                {resettingRole === role ? "…" : "↺"}
+                              </button>
+                            )}
+                          </div>
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {permission_groups.map((group) => (
+                      // Using Fragment with key to avoid React warning while keeping group rows adjacent
+                      <tr key={`group-${group.key}`} className="perm-group-row">
+                        <td className="perm-group-label" colSpan={1}>{group.label}</td>
+                        {all_roles.map((role) => {
+                          const allOn = groupAllEnabled(group, role);
+                          const isLocked = role === "admin";
+                          return (
+                            <td key={role} className="perm-cell perm-cell--group">
+                              <label className="perm-toggle-label" title={
+                                isLocked
+                                  ? (de ? "Admin-Rolle ist schreibgeschützt" : "Admin role is read-only")
+                                  : allOn ? (de ? "Alle deaktivieren" : "Disable all") : (de ? "Alle aktivieren" : "Enable all")
+                              }>
+                                <input
+                                  type="checkbox"
+                                  className="perm-checkbox"
+                                  checked={allOn}
+                                  disabled={isLocked}
+                                  onChange={(e) => !isLocked && toggleGroupForRole(group, role, e.target.checked)}
+                                />
+                              </label>
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                    {/* Flatten all permission rows after all group headers — avoids React fragment key issues */}
+                    {permission_groups.flatMap((group) =>
+                      group.permissions.map((perm) => (
+                        <tr key={perm} className="perm-perm-row">
+                          <td className="perm-perm-label">
+                            {permission_labels[perm] ?? perm}
+                            <code className="perm-key">{perm}</code>
+                          </td>
+                          {all_roles.map((role) => {
+                            const isLocked = role === "admin";
+                            return (
+                              <td key={role} className="perm-cell">
+                                <label className="perm-toggle-label"
+                                  title={isLocked ? (de ? "Admin-Rolle ist schreibgeschützt" : "Admin role is read-only") : undefined}>
+                                  <input
+                                    type="checkbox"
+                                    className="perm-checkbox"
+                                    checked={hasPermission(role, perm)}
+                                    disabled={isLocked}
+                                    onChange={(e) => !isLocked && void setRolePermission(role, perm, e.target.checked)}
+                                  />
+                                </label>
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
+      {/* ── Tools ──────────────────────────────────────────────────────────── */}
+      {tab === "tools" && (
+        <div className="admin-tab-pane">
+          {canManageProjectImport && !isAdmin && (
+            <div className="admin-settings-card">
+              <h4>{de ? "Wetter-Integration" : "Weather integration"}</h4>
+              <p className="muted" style={{ fontSize: "0.88rem", marginTop: "0.25rem" }}>
+                {de
+                  ? "OpenWeather API-Schlüssel für die Baustellenwetter-Karte."
+                  : "OpenWeather API key for the construction site weather widget."}
+              </p>
+              {weatherSettings && (
+                <p className="muted" style={{ fontSize: "0.82rem" }}>
+                  {de ? "Aktueller Schlüssel:" : "Current key:"}{" "}
+                  <code>{weatherSettings.masked_api_key || (de ? "nicht gesetzt" : "not set")}</code>
+                </p>
+              )}
+              <form onSubmit={(e: FormEvent<HTMLFormElement>) => void saveWeatherSettings(e)}>
+                <div className="admin-form-row">
+                  <label>
+                    {de ? "Neuer API-Schlüssel" : "New API key"}
+                    <input
+                      type="password"
+                      value={weatherApiKeyInput}
+                      onChange={(e) => setWeatherApiKeyInput(e.target.value)}
+                      placeholder={de ? "OpenWeather-Schlüssel eingeben" : "Enter OpenWeather API key"}
+                      autoComplete="new-password"
+                    />
+                  </label>
+                </div>
+                <button type="submit" disabled={weatherSettingsSaving || weatherApiKeyInput.trim() === ""}>
+                  {weatherSettingsSaving ? (de ? "Speichern…" : "Saving…") : (de ? "Speichern" : "Save key")}
+                </button>
+              </form>
+            </div>
+          )}
+
+          {canManageProjectImport && (
+            <>
+              <div className="admin-settings-card">
+                <h4>{de ? "Projektklassen-Template" : "Project class template"}</h4>
+                <p className="muted" style={{ fontSize: "0.88rem", marginTop: "0.25rem" }}>
+                  {de
+                    ? "CSV mit Projektklassen, Standard-Materialien und Aufgaben."
+                    : "CSV containing project classes, default materials and tasks."}
+                </p>
+                <div className="row wrap" style={{ gap: "0.5rem", marginBottom: "0.5rem" }}>
+                  <button type="button" onClick={downloadProjectClassTemplateCsv}>
+                    {de ? "Template herunterladen" : "Download template"}
+                  </button>
+                </div>
+                <form className="row wrap" style={{ gap: "0.5rem" }} onSubmit={importProjectClassTemplateCsv}>
+                  <input type="file" name="file" accept=".csv,text/csv" required />
+                  <button type="submit">{de ? "Importieren" : "Import"}</button>
+                </form>
+              </div>
+
+              <div className="admin-settings-card">
+                <h4>{de ? "Projekt-CSV Import" : "Project CSV import"}</h4>
+                <div className="row wrap" style={{ gap: "0.5rem", marginBottom: "0.5rem" }}>
+                  <button type="button" onClick={downloadProjectCsvTemplate}>
+                    {de ? "CSV-Template herunterladen" : "Download CSV template"}
+                  </button>
+                </div>
+                <form className="row wrap" style={{ gap: "0.5rem" }} onSubmit={importProjectsCsv}>
+                  <input type="file" name="file" accept=".csv,text/csv" required />
+                  <button type="submit">{de ? "CSV importieren" : "Import CSV"}</button>
+                </form>
+              </div>
+            </>
+          )}
+
+          {canManageSchoolAbsences && (
+            <div className="admin-settings-card">
+              <h4>{de ? "Berufsschule verwalten" : "Manage school dates"}</h4>
+              <p className="muted" style={{ fontSize: "0.88rem", marginTop: "0.25rem" }}>
+                {de
+                  ? "Schulblöcke oder wiederkehrende Schultage für Mitarbeiter eintragen."
+                  : "Add school blocks or recurring school days for employees."}
+              </p>
+              <form className="modal-form" onSubmit={submitSchoolAbsence}>
+                <label>
+                  {de ? "Mitarbeiter" : "Employee"}
+                  <select
+                    value={schoolAbsenceForm.user_id}
+                    onChange={(e) => setSchoolAbsenceForm({ ...schoolAbsenceForm, user_id: e.target.value })}
+                    required
+                  >
+                    <option value="">{de ? "Bitte auswählen" : "Please select"}</option>
+                    {assignableUsers.map((u) => (
+                      <option key={`tools-school-${u.id}`} value={String(u.id)}>
+                        {menuUserNameById(u.id, u.display_name || u.full_name)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="row wrap">
+                  <label>
+                    {de ? "Start" : "Start"}
+                    <input
+                      type="date"
+                      value={schoolAbsenceForm.start_date}
+                      onChange={(e) => setSchoolAbsenceForm({ ...schoolAbsenceForm, start_date: e.target.value })}
+                      required
+                    />
+                  </label>
+                  <label>
+                    {de ? "Ende" : "End"}
+                    <input
+                      type="date"
+                      value={schoolAbsenceForm.end_date}
+                      onChange={(e) => setSchoolAbsenceForm({ ...schoolAbsenceForm, end_date: e.target.value })}
+                      required
+                    />
+                  </label>
+                </div>
+                <div className="weekday-checkbox-group">
+                  <small>{de ? "Wiederholung (Mo–Fr)" : "Recurring days (Mon–Fri)"}</small>
+                  <div className="weekday-checkbox-row">
+                    {[0, 1, 2, 3, 4].map((day) => (
+                      <label key={`tools-school-day-${day}`} className="weekday-checkbox-item">
+                        <input
+                          type="checkbox"
+                          checked={schoolAbsenceForm.recurrence_weekdays.includes(day)}
+                          onChange={(e) => toggleSchoolRecurrenceWeekday(day, e.target.checked)}
+                        />
+                        <span>{schoolWeekdayLabel(day, language)}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                <label>
+                  {de ? "Intervall bis (optional)" : "Recurring until (optional)"}
+                  <input
+                    type="date"
+                    value={schoolAbsenceForm.recurrence_until}
+                    onChange={(e) => setSchoolAbsenceForm({ ...schoolAbsenceForm, recurrence_until: e.target.value })}
+                  />
+                </label>
+                <button type="submit">{de ? "Schulzeit speichern" : "Save school date"}</button>
+              </form>
+            </div>
+          )}
+
+          {!canManageProjectImport && !canManageSchoolAbsences && (
+            <p className="muted">{de ? "Keine Werkzeuge verfügbar." : "No tools available."}</p>
+          )}
+        </div>
+      )}
+
+      {/* ── Audit log ──────────────────────────────────────────────────────── */}
       {tab === "audit" && (
         <div className="admin-tab-pane">
-          <div className="row" style={{ marginBottom: "1rem", gap: "0.75rem", flexWrap: "wrap", alignItems: "center" }}>
+          <div className="row wrap" style={{ marginBottom: "1rem", gap: "0.75rem", alignItems: "center" }}>
             <input
               type="search"
               placeholder={de ? "Suche nach Aktion oder Benutzer…" : "Search by action or user…"}
@@ -514,9 +783,7 @@ export function AdminPage() {
             </button>
             {auditLogs.length > 0 && (
               <span className="muted" style={{ fontSize: "0.82rem" }}>
-                {filteredLogs.length}
-                {auditSearch ? `/${auditLogs.length}` : ""}{" "}
-                {de ? "Einträge" : "entries"}
+                {filteredLogs.length}{auditSearch ? `/${auditLogs.length}` : ""} {de ? "Einträge" : "entries"}
               </span>
             )}
           </div>
@@ -547,13 +814,9 @@ export function AdminPage() {
                       : "—";
                     return (
                       <tr key={log.id}>
-                        <td className="muted" style={{ whiteSpace: "nowrap", fontSize: "0.8rem" }}>
-                          {fmtTs(log.created_at)}
-                        </td>
+                        <td className="muted" style={{ whiteSpace: "nowrap", fontSize: "0.8rem" }}>{fmtTs(log.created_at)}</td>
                         <td>{actor}</td>
-                        <td>
-                          <code className="admin-audit-code">{log.action}</code>
-                        </td>
+                        <td><code className="admin-audit-code">{log.action}</code></td>
                         <td className="muted" style={{ fontSize: "0.84rem" }}>{target}</td>
                       </tr>
                     );
@@ -565,160 +828,7 @@ export function AdminPage() {
         </div>
       )}
 
-      {/* ── Roles ────────────────────────────────────────────────────────── */}
-      {tab === "roles" && (
-        <div className="admin-tab-pane">
-          <div className="perm-header">
-            <div>
-              <h4 className="perm-heading">
-                {de ? "Rollenberechtigungen" : "Role Permissions"}
-              </h4>
-              <p className="perm-subline muted">
-                {de
-                  ? "Legen Sie fest, welche Aktionen jede Rolle ausführen darf. Änderungen gelten sofort."
-                  : "Define what each role is allowed to do. Changes take effect immediately."}
-              </p>
-            </div>
-          </div>
-
-          {rolePermissionsLoading && !rolePermissionsMeta && (
-            <p className="muted" style={{ padding: "1rem 0" }}>
-              {de ? "Lade…" : "Loading…"}
-            </p>
-          )}
-
-          {rolePermissionsMeta && (() => {
-            const { permissions, permission_groups, permission_labels, all_roles } = rolePermissionsMeta;
-
-            // Capitalise role labels for display
-            const roleLabel = (r: string) =>
-              r.charAt(0).toUpperCase() + r.slice(1);
-
-            // Check if a role's permissions differ from their defaults
-            // (we don't track defaults in the meta, so we rely on the admin endpoint
-            //  returning the full effective map — we just show a reset button always)
-            const hasPermission = (role: string, perm: string) =>
-              (permissions[role] ?? []).includes(perm);
-
-            const groupAllEnabled = (group: { permissions: string[] }, role: string) =>
-              group.permissions.every((p) => hasPermission(role, p));
-
-            const toggleGroupForRole = (group: { permissions: string[] }, role: string, enable: boolean) => {
-              group.permissions.forEach((perm) => {
-                const current = hasPermission(role, perm);
-                if (current !== enable) {
-                  void setRolePermission(role, perm, enable);
-                }
-              });
-            };
-
-            const handleReset = async (role: string) => {
-              setResettingRole(role);
-              try {
-                await resetRoleToDefaults(role);
-              } finally {
-                setResettingRole(null);
-              }
-            };
-
-            return (
-              <div className="perm-matrix-wrapper">
-                <table className="perm-matrix">
-                  <thead>
-                    <tr>
-                      <th className="perm-col-label">{de ? "Berechtigung" : "Permission"}</th>
-                      {all_roles.map((role) => (
-                        <th key={role} className="perm-col-role">
-                          <div className="perm-role-header">
-                            <span className="perm-role-name">{roleLabel(role)}</span>
-                            {role === "admin" ? (
-                              <span
-                                className="perm-locked-badge"
-                                title={de ? "Admin-Rolle ist immer vollständig — schreibgeschützt" : "Admin role always has full access — read-only"}
-                              >
-                                🔒
-                              </span>
-                            ) : (
-                              <button
-                                type="button"
-                                className="perm-reset-btn"
-                                title={de ? "Auf Standard zurücksetzen" : "Reset to defaults"}
-                                disabled={resettingRole === role}
-                                onClick={() => void handleReset(role)}
-                              >
-                                {resettingRole === role ? "…" : "↺"}
-                              </button>
-                            )}
-                          </div>
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {permission_groups.map((group) => (
-                      <>
-                        {/* Group header row with toggle-all checkboxes */}
-                        <tr key={`group-${group.key}`} className="perm-group-row">
-                          <td className="perm-group-label">{group.label}</td>
-                          {all_roles.map((role) => {
-                            const allOn = groupAllEnabled(group, role);
-                            const isLocked = role === "admin";
-                            return (
-                              <td key={role} className="perm-cell perm-cell--group">
-                                <label className="perm-toggle-label" title={isLocked
-                                  ? (de ? "Admin-Rolle ist schreibgeschützt" : "Admin role is read-only")
-                                  : allOn
-                                    ? (de ? "Alle deaktivieren" : "Disable all")
-                                    : (de ? "Alle aktivieren" : "Enable all")}>
-                                  <input
-                                    type="checkbox"
-                                    className="perm-checkbox"
-                                    checked={allOn}
-                                    disabled={isLocked}
-                                    onChange={(e) => !isLocked && toggleGroupForRole(group, role, e.target.checked)}
-                                  />
-                                </label>
-                              </td>
-                            );
-                          })}
-                        </tr>
-                        {/* Individual permission rows */}
-                        {group.permissions.map((perm) => (
-                          <tr key={perm} className="perm-perm-row">
-                            <td className="perm-perm-label">
-                              {permission_labels[perm] ?? perm}
-                              <code className="perm-key">{perm}</code>
-                            </td>
-                            {all_roles.map((role) => {
-                              const isLocked = role === "admin";
-                              return (
-                                <td key={role} className="perm-cell">
-                                  <label className="perm-toggle-label"
-                                    title={isLocked ? (de ? "Admin-Rolle ist schreibgeschützt" : "Admin role is read-only") : undefined}>
-                                    <input
-                                      type="checkbox"
-                                      className="perm-checkbox"
-                                      checked={hasPermission(role, perm)}
-                                      disabled={isLocked}
-                                      onChange={(e) => !isLocked && void setRolePermission(role, perm, e.target.checked)}
-                                    />
-                                  </label>
-                                </td>
-                              );
-                            })}
-                          </tr>
-                        ))}
-                      </>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            );
-          })()}
-        </div>
-      )}
-
-      {/* ── Settings ─────────────────────────────────────────────────────── */}
+      {/* ── Settings ───────────────────────────────────────────────────────── */}
       {tab === "settings" && (
         <div className="admin-tab-pane">
           <div className="admin-settings-card">
@@ -726,7 +836,7 @@ export function AdminPage() {
             <p className="muted" style={{ fontSize: "0.88rem", marginTop: "0.25rem" }}>
               {de
                 ? "OpenWeather API-Schlüssel für die Baustellenwetter-Karte."
-                : "OpenWeather API key used for the construction site weather widget."}
+                : "OpenWeather API key for the construction site weather widget."}
             </p>
             {weatherSettings && (
               <p className="muted" style={{ fontSize: "0.82rem" }}>
@@ -747,20 +857,15 @@ export function AdminPage() {
                   />
                 </label>
               </div>
-              <button
-                type="submit"
-                disabled={weatherSettingsSaving || weatherApiKeyInput.trim() === ""}
-              >
-                {weatherSettingsSaving
-                  ? (de ? "Speichern…" : "Saving…")
-                  : (de ? "Speichern" : "Save key")}
+              <button type="submit" disabled={weatherSettingsSaving || weatherApiKeyInput.trim() === ""}>
+                {weatherSettingsSaving ? (de ? "Speichern…" : "Saving…") : (de ? "Speichern" : "Save key")}
               </button>
             </form>
           </div>
         </div>
       )}
 
-      {/* ── System ───────────────────────────────────────────────────────── */}
+      {/* ── System ─────────────────────────────────────────────────────────── */}
       {tab === "system" && (
         <div className="admin-tab-pane">
           <AdminUpdateMenu />
@@ -779,9 +884,7 @@ export function AdminPage() {
                 </label>
               </div>
               <button type="submit" disabled={backupExporting}>
-                {backupExporting
-                  ? (de ? "Backup läuft…" : "Exporting…")
-                  : (de ? "Backup erstellen" : "Create backup")}
+                {backupExporting ? (de ? "Backup läuft…" : "Exporting…") : (de ? "Backup erstellen" : "Create backup")}
               </button>
             </form>
           </div>

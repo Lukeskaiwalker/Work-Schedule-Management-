@@ -44,6 +44,8 @@ export function Sidebar() {
     preUserMenuRef,
     setLanguage,
     isAdmin,
+    canManageProjectImport,
+    canManageSchoolAbsences,
     openAdminViewFromMenu,
     openProfileViewFromMenu,
     signOut,
@@ -353,7 +355,7 @@ export function Sidebar() {
               >
                 {language === "de" ? "Benutzerdaten" : "User data"}
               </button>
-              {isAdmin && (
+              {(isAdmin || canManageProjectImport || canManageSchoolAbsences) && (
                 <button
                   type="button"
                   className="pre-user-action"
