@@ -108,12 +108,13 @@ code {
 
 .sidebar {
   padding: 1rem;
-  border-bottom: 1px solid var(--line);
-  background: linear-gradient(160deg, #dcecff 0%, #e7f2ff 55%, #f1f7ff 100%);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+  background: linear-gradient(165deg, #0e2038 0%, #122c4e 55%, #16305a 100%);
   display: flex;
   flex-direction: column;
   gap: 1rem;
   min-height: 0;
+  color: rgba(255, 255, 255, 0.88);
 }
 
 .sidebar-overlay {
@@ -130,7 +131,7 @@ code {
 
 .sidebar-footer {
   margin-top: auto;
-  border-top: 1px solid var(--line);
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
   padding-top: 0.65rem;
   display: grid;
   gap: 0.55rem;
@@ -167,8 +168,8 @@ code {
   height: 66px;
   object-fit: contain;
   border-radius: 10px;
-  border: 1px solid var(--line);
-  background: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.1);
   padding: 0.3rem;
 }
 
@@ -180,6 +181,7 @@ code {
 
 .sidebar h2 {
   margin: 0;
+  color: #fff;
 }
 
 .workspace-mode-switch {
@@ -187,9 +189,9 @@ code {
   align-items: center;
   gap: 0.18rem;
   padding: 2px;
-  border: 1px solid var(--line);
+  border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.7);
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .workspace-mode-switch button {
@@ -197,7 +199,7 @@ code {
   min-width: 0;
   border-radius: 999px;
   background: transparent;
-  color: var(--muted);
+  color: rgba(255, 255, 255, 0.6);
   font-size: 0.72rem;
   line-height: 1;
   padding: 0.3rem 0.5rem;
@@ -205,8 +207,8 @@ code {
 
 .workspace-mode-switch button:hover,
 .workspace-mode-switch button:focus-visible {
-  background: rgba(47, 112, 183, 0.16);
-  color: #154876;
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
 }
 
 .workspace-mode-switch button.active {
@@ -245,6 +247,46 @@ button[type="submit"] {
   border-color: var(--accent);
 }
 
+/* ── Dark sidebar: base button overrides ─────────────────────────────── */
+.sidebar button {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.07);
+  color: rgba(255, 255, 255, 0.85);
+  transition: background-color 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.sidebar button:hover {
+  background: rgba(255, 255, 255, 0.13);
+  border-color: rgba(255, 255, 255, 0.2);
+  color: #fff;
+}
+
+/* Muted text adapts to dark bg */
+.sidebar .role {
+  color: rgba(255, 255, 255, 0.5);
+}
+
+/* User-menu popup floats on a light surface — revert button colours inside */
+.pre-user-menu-popup button {
+  background: var(--surface);
+  border-color: var(--line);
+  color: var(--ink);
+}
+
+.pre-user-menu-popup button:hover,
+.pre-user-menu-popup button:focus-visible {
+  background: #f6faff;
+  border-color: #9bbbe0;
+  color: var(--ink);
+}
+
+.pre-user-menu-popup button.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+/* ─────────────────────────────────────────────────────────────────────── */
+
 .main-nav {
   display: grid;
   gap: 0.25rem;
@@ -258,19 +300,23 @@ button[type="submit"] {
   text-align: left;
   border: 1px solid transparent;
   background: transparent;
-  padding: 0.48rem 0.58rem;
+  color: rgba(255, 255, 255, 0.72);
+  padding: 0.48rem 0.68rem;
+  border-radius: 10px;
 }
 
 .main-nav button:hover,
 .main-nav button:focus-visible {
-  background: rgba(255, 255, 255, 0.56);
-  border-color: rgba(70, 112, 154, 0.34);
+  background: rgba(255, 255, 255, 0.09);
+  border-color: rgba(255, 255, 255, 0.12);
+  color: #fff;
 }
 
 .main-nav button.active {
-  background: rgba(255, 255, 255, 0.76);
-  border-color: rgba(48, 106, 166, 0.45);
-  color: #154876;
+  background: rgba(47, 112, 183, 0.32);
+  border-color: rgba(47, 112, 183, 0.58);
+  color: #fff;
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 
 .nav-item-content {
@@ -295,8 +341,8 @@ button[type="submit"] {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #1e84dd;
-  box-shadow: 0 0 0 2px #eef6ff;
+  background: #3b9eff;
+  box-shadow: 0 0 0 2px #122c4e;
 }
 
 /* SSE connection status dot */
@@ -345,15 +391,15 @@ button[type="submit"] {
   position: relative;
   width: 100%;
   min-height: 58px;
-  background: var(--surface);
-  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: rgba(255, 255, 255, 0.8);
   cursor: pointer;
   padding: 0;
   border-radius: 14px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 6px 20px rgba(16, 13, 9, 0.04);
   transition: background-color 0.15s, border-color 0.15s, color 0.15s;
 }
 
@@ -365,15 +411,15 @@ button[type="submit"] {
 
 .notif-bell-btn:hover,
 .notif-bell-btn:focus-visible {
-  background-color: rgba(255, 255, 255, 0.84);
-  border-color: rgba(70, 112, 154, 0.34);
-  color: var(--accent);
+  background-color: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.22);
+  color: #fff;
 }
 
 .notif-bell-btn--open {
-  background: var(--surface-2);
-  border-color: rgba(48, 106, 166, 0.42);
-  color: var(--accent);
+  background: rgba(47, 112, 183, 0.32);
+  border-color: rgba(47, 112, 183, 0.58);
+  color: #fff;
 }
 
 .notif-bell-badge {
@@ -384,7 +430,7 @@ button[type="submit"] {
   height: 8px;
   border-radius: 50%;
   background-color: #ef4444;
-  border: 2px solid var(--surface);
+  border: 2px solid #122c4e;
 }
 
 /* Notification panel */
@@ -487,7 +533,7 @@ button[type="submit"] {
 }
 
 .project-list {
-  border-top: 1px solid var(--line);
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
   padding-top: 0.7rem;
   display: flex;
   flex-direction: column;
@@ -498,7 +544,10 @@ button[type="submit"] {
 
 .project-list-title {
   font-weight: 700;
-  font-size: 0.95rem;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: rgba(255, 255, 255, 0.5);
 }
 
 .project-list-title-row {
@@ -544,6 +593,15 @@ button[type="submit"] {
   margin-top: 0.18rem;
   margin-bottom: 0.12rem;
   flex: 0 0 auto;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: #fff;
+  border-radius: 10px;
+  padding: 0.38rem 0.55rem;
+}
+
+.project-sidebar-search-input::placeholder {
+  color: rgba(255, 255, 255, 0.4);
 }
 
 .project-item {
@@ -567,7 +625,7 @@ button[type="submit"] {
 }
 
 .project-list-divider {
-  border-top: 1px solid var(--line);
+  border-top: 1px solid rgba(255, 255, 255, 0.1);
   margin-top: 0.2rem;
   margin-bottom: 0.22rem;
 }
@@ -602,7 +660,7 @@ button[type="submit"] {
 }
 
 .project-item small {
-  color: var(--muted);
+  color: rgba(255, 255, 255, 0.5);
   font-size: 0.78rem;
 }
 
@@ -614,13 +672,13 @@ button[type="submit"] {
 }
 
 .project-item.project-item-archived {
-  background: #edf2f8;
-  border-color: #c3d0de;
-  opacity: 0.82;
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.08);
+  opacity: 0.7;
 }
 
 .project-item-archive-mark {
-  color: #9a5b17;
+  color: rgba(255, 200, 120, 0.85);
   font-weight: 700;
   letter-spacing: 0.02em;
 }
@@ -1413,7 +1471,7 @@ label {
 .sidebar-now {
   display: flex;
   align-items: center;
-  color: var(--muted);
+  color: rgba(255, 255, 255, 0.4);
   white-space: nowrap;
 }
 
@@ -1500,13 +1558,14 @@ label {
   width: 38px;
   height: 38px;
   border-radius: 50%;
-  border: 1px solid var(--line);
+  border: 2px solid rgba(255, 255, 255, 0.22);
   background: linear-gradient(135deg, #eed9bc, #fffdf8);
   display: flex;
   align-items: center;
   justify-content: center;
   font-weight: 700;
   color: #4e3f2e;
+  box-shadow: 0 0 0 3px rgba(47, 112, 183, 0.25);
 }
 
 .sidebar-user-avatar img {
@@ -5137,7 +5196,7 @@ td {
 
   .sidebar {
     border-bottom: 0;
-    border-right: 1px solid var(--line);
+    border-right: 1px solid rgba(255, 255, 255, 0.08);
     min-height: 0;
     height: 100dvh;
     width: var(--sidebar-width);
