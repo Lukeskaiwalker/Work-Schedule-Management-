@@ -638,18 +638,6 @@ def _refresh_catalog_item_image(row: MaterialCatalogItem, *, checked_at, lookup_
         current = ((row.image_url or "").strip(), (row.image_source or "").strip(), row.image_checked_at)
         return current != previous
 
-    # Pre-step: direct navigator lookup by Unielektro article_no (FIRST_PASS only).
-    # This is cheaper than Bing + page scraping: one HTTP request → first <img src>.
-    # We store the hotlink URL directly; the caching daemon will download it later.
-    if lookup_phase == IMAGE_LOOKUP_PHASE_FIRST_PASS and is_unielektro_article_no(row.article_no):
-        article_lookup = resolve_material_catalog_image_unielektro_by_article_no(row.article_no)
-        if article_lookup is not None:
-            row.image_checked_at = checked_at
-            row.image_url = article_lookup.image_url[:1000]
-            row.image_source = article_lookup.source[:64]
-            current = ((row.image_url or "").strip(), (row.image_source or "").strip(), row.image_checked_at)
-            return current != previous
-
     if lookup_phase == IMAGE_LOOKUP_PHASE_FIRST_PASS:
         lookup = resolve_material_catalog_image_unielektro(
             ean=row.ean,
@@ -657,6 +645,8 @@ def _refresh_catalog_item_image(row: MaterialCatalogItem, *, checked_at, lookup_
             item_name=row.item_name,
             article_no=row.article_no,
         )
+        if lookup is None and not (row.ean or "").strip() and is_unielektro_article_no(row.article_no):
+            lookup = resolve_material_catalog_image_unielektro_by_article_no(row.article_no)
     else:
         lookup = resolve_material_catalog_image_fallback(
             ean=row.ean,

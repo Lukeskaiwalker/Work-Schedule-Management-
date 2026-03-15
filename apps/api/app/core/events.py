@@ -34,6 +34,9 @@ def notify(db: Session, event_type: str, payload: dict) -> None:
     """
     message = json.dumps({"type": event_type, "data": payload}, default=str)
     try:
+        bind = db.get_bind()
+        if bind is None or bind.dialect.name != "postgresql":
+            return
         db.execute(
             text("SELECT pg_notify(:channel, :msg)"),
             {"channel": _CHANNEL, "msg": message},

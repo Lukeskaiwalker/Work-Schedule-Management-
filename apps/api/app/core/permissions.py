@@ -158,6 +158,7 @@ PERMISSIONS_BY_ROLE: dict[str, set[str]] = {
         "tasks:manage",
         "tasks:view_all",
         "tickets:manage",
+        "time:manage",
         "time:view_all",
         "time:approve_vacation",
         "time:manage_absences",
@@ -202,6 +203,7 @@ PERMISSIONS_BY_ROLE: dict[str, set[str]] = {
         "chat:project",
         "reports:create",
         "wiki:view",
+        "finance:view",
     },
 }
 
@@ -284,6 +286,20 @@ def has_permission_for_user(user_id: int, role: str, permission: str) -> bool:
         if permission in override.get("extra", set()):
             return True
     return has_permission(role, permission)
+
+
+def has_global_project_access(user_id: int, role: str, *, manage_required: bool = False) -> bool:
+    """Return True when the user may bypass per-project membership checks.
+
+    `projects:manage` always grants global access. Read-only global access via
+    `projects:view` is reserved for non-employee roles; employees remain scoped
+    to their explicit project memberships.
+    """
+    if has_permission_for_user(user_id, role, "projects:manage"):
+        return True
+    if manage_required or role == ROLE_EMPLOYEE:
+        return False
+    return has_permission_for_user(user_id, role, "projects:view")
 
 
 def get_user_override(user_id: int) -> dict[str, list[str]]:

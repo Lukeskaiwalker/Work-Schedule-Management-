@@ -13,9 +13,7 @@ def projects_overview(
     db: Session = Depends(get_db),
 ):
     project_stmt = select(Project)
-    can_view_all = has_permission_for_user(current_user.id, current_user.role, "projects:view") or \
-                   has_permission_for_user(current_user.id, current_user.role, "projects:manage")
-    if not can_view_all:
+    if not has_global_project_access(current_user.id, current_user.role):
         project_ids = db.scalars(select(ProjectMember.project_id).where(ProjectMember.user_id == current_user.id)).all()
         if not project_ids:
             return []

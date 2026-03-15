@@ -744,6 +744,70 @@ def timesheet(
     )
 
 
+@router.get("/timesheet/export.csv")
+def export_timesheet_csv(
+    period: str = "weekly",
+    day: date | None = None,
+    user_id: int | None = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    now = utcnow()
+    target_day = day or _local_date_from_utc(now)
+    target_user_id = _resolve_target_user_id(current_user, user_id)
+
+    if period not in {"daily", "weekly"}:
+        raise HTTPException(status_code=400, detail="Invalid period")
+
+    if period == "daily":
+        start_date = target_day
+        end_date = target_day
+    else:
+        start_date, end_date = _week_bounds(target_day)
+
+    start_dt, end_dt = _local_period_bounds_utc(start_date, end_date)
+    entries = _entries_overlapping_period(db, target_user_id, start_dt, end_dt)
+    entries.sort(key=lambda entry: entry.clock_in, reverse=True)
+
+    buffer = StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(
+        [
+            "clock_entry_id",
+            "user_id",
+            "clock_in",
+            "clock_out",
+            "is_open",
+            "break_hours",
+            "required_break_hours",
+            "deducted_break_hours",
+            "net_hours",
+        ]
+    )
+    for entry in entries:
+        metrics = _entry_metrics(db, entry, now=now)
+        writer.writerow(
+            [
+                entry.id,
+                entry.user_id,
+                entry.clock_in.isoformat(),
+                entry.clock_out.isoformat() if entry.clock_out else "",
+                "true" if entry.clock_out is None else "false",
+                metrics["break_hours"],
+                metrics["required_break_hours"],
+                metrics["deducted_break_hours"],
+                metrics["net_hours"],
+            ]
+        )
+
+    filename = f"timesheet-{target_user_id}-{start_date.isoformat()}-{period}.csv"
+    return Response(
+        content=buffer.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/timesheet/export.xlsx")
 def export_timesheet_xlsx(
     month: str | None = None,   # format: "YYYY-MM", defaults to current month
