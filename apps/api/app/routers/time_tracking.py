@@ -1,7 +1,8 @@
 from __future__ import annotations
+import calendar
 import csv
 from datetime import date, datetime, time, timedelta, timezone
-from io import StringIO
+from io import BytesIO, StringIO
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -12,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.core.deps import get_current_user
+from app.core.permissions import has_permission_for_user
 from app.core.time import utcnow
 from app.models.entities import BreakEntry, ClockEntry, SchoolAbsence, User, VacationRequest
 from app.schemas.api import (
@@ -29,6 +31,25 @@ from app.schemas.api import (
 )
 
 router = APIRouter(prefix="/time", tags=["time-tracking"])
+
+# ── Predefined German absence types ───────────────────────────────────────────
+ABSENCE_TYPES: list[dict] = [
+    {"key": "vacation",       "label_de": "Urlaub",                "label_en": "Vacation",          "counts_as_hours": True},
+    {"key": "sick",           "label_de": "Krankheit",             "label_en": "Sick leave",         "counts_as_hours": True},
+    {"key": "school",         "label_de": "Berufsschule",          "label_en": "Vocational school",  "counts_as_hours": True},
+    {"key": "holiday",        "label_de": "Feiertag",              "label_en": "Public holiday",     "counts_as_hours": True},
+    {"key": "special_leave",  "label_de": "Sonderurlaub",          "label_en": "Special leave",      "counts_as_hours": True},
+    {"key": "training",       "label_de": "Fortbildung",           "label_en": "Training",           "counts_as_hours": True},
+    {"key": "work_accident",  "label_de": "Arbeitsunfall",         "label_en": "Work accident",      "counts_as_hours": True},
+    {"key": "company_event",  "label_de": "Betriebsveranstaltung", "label_en": "Company event",      "counts_as_hours": True},
+    {"key": "unpaid_leave",   "label_de": "Unbezahlter Urlaub",    "label_en": "Unpaid leave",       "counts_as_hours": False},
+    {"key": "parental_leave", "label_de": "Elternzeit",            "label_en": "Parental leave",     "counts_as_hours": False},
+    {"key": "care_leave",     "label_de": "Pflegezeit",            "label_en": "Care leave",         "counts_as_hours": False},
+    {"key": "other",          "label_de": "Sonstige",              "label_en": "Other",              "counts_as_hours": True},
+]
+
+_ABSENCE_TYPE_MAP: dict[str, dict] = {a["key"]: a for a in ABSENCE_TYPES}
+_WEEKDAY_ABBR_DE = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
 
 
 def _week_bounds(day: date) -> tuple[date, date]:
@@ -144,19 +165,20 @@ def _entries_overlapping_period(
 
 
 def _is_time_manager(user: User) -> bool:
-    return user.role in {"admin", "ceo", "accountant", "planning"}
+    return has_permission_for_user(user.id, user.role, "time:view_all") or \
+           has_permission_for_user(user.id, user.role, "time:manage")
 
 
 def _is_required_hours_manager(user: User) -> bool:
-    return user.role in {"admin", "ceo"}
+    return has_permission_for_user(user.id, user.role, "time:manage")
 
 
 def _is_vacation_reviewer(user: User) -> bool:
-    return user.role in {"admin", "ceo"}
+    return has_permission_for_user(user.id, user.role, "time:approve_vacation")
 
 
 def _is_school_manager(user: User) -> bool:
-    return user.role in {"admin", "ceo", "accountant"}
+    return has_permission_for_user(user.id, user.role, "time:manage_absences")
 
 
 def _resolve_target_user_id(current_user: User, user_id: int | None) -> int:
@@ -190,6 +212,8 @@ def _school_absence_out(db: Session, row: SchoolAbsence) -> SchoolAbsenceOut:
         user_id=row.user_id,
         user_name=target_user.display_name if target_user else f"#{row.user_id}",
         title=row.title,
+        absence_type=row.absence_type,
+        counts_as_hours=row.counts_as_hours,
         start_date=row.start_date,
         end_date=row.end_date,
         recurrence_weekday=row.recurrence_weekday,
@@ -519,9 +543,15 @@ def create_school_absence(
             status_code=400,
             detail="For recurring school days use a single-day start/end date and recurrence_until",
         )
+    # Derive counts_as_hours from the canonical absence type if not overridden by client
+    type_meta = _ABSENCE_TYPE_MAP.get(payload.absence_type, {})
+    counts = payload.counts_as_hours if "counts_as_hours" in payload.model_fields_set else type_meta.get("counts_as_hours", True)
+
     row = SchoolAbsence(
         user_id=payload.user_id,
         title=payload.title.strip(),
+        absence_type=payload.absence_type,
+        counts_as_hours=counts,
         start_date=payload.start_date,
         end_date=payload.end_date,
         recurrence_weekday=payload.recurrence_weekday,
@@ -550,6 +580,124 @@ def delete_school_absence(
     return {"ok": True}
 
 
+def _nrw_public_holidays(year: int) -> dict[date, str]:
+    """Return NRW public holidays for the given year as {date: German name}.
+
+    Uses the Anonymous Gregorian Easter algorithm. All 13 NRW statutory
+    holidays are included (9 fixed + 4 moveable/variable).
+    """
+    # Easter Sunday via Anonymous Gregorian algorithm
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    l = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * l) // 451
+    month = (h + l - 7 * m + 114) // 31
+    day = ((h + l - 7 * m + 114) % 31) + 1
+    easter = date(year, month, day)
+
+    return {
+        date(year, 1, 1):  "Neujahrstag",
+        easter - timedelta(days=2): "Karfreitag",
+        easter:                      "Ostersonntag",
+        easter + timedelta(days=1):  "Ostermontag",
+        date(year, 5, 1):  "Tag der Arbeit",
+        easter + timedelta(days=39): "Christi Himmelfahrt",
+        easter + timedelta(days=49): "Pfingstsonntag",
+        easter + timedelta(days=50): "Pfingstmontag",
+        easter + timedelta(days=60): "Fronleichnam",
+        date(year, 10, 3): "Tag der Deutschen Einheit",
+        date(year, 11, 1): "Allerheiligen",
+        date(year, 12, 25): "1. Weihnachtstag",
+        date(year, 12, 26): "2. Weihnachtstag",
+    }
+
+
+def _credited_absence_hours_for_period(
+    db: Session,
+    user_id: int,
+    start_date: date,
+    end_date: date,
+    required_daily_hours: float,
+    clocked_dates: set[date],
+) -> float:
+    """Return hours credited from public holidays, approved vacation, and school absences.
+
+    Only weekdays (Mon–Fri) are considered. Days where the employee already has a
+    clock entry are skipped (no double-counting). NRW public holidays that fall on
+    weekdays are credited automatically without any DB record needed.
+    Days with counts_as_hours=False absences contribute 0.
+    """
+    credited = 0.0
+    # Pre-build holiday sets for all years touched by the period
+    holiday_sets: dict[int, dict[date, str]] = {}
+    for yr in range(start_date.year, end_date.year + 1):
+        holiday_sets[yr] = _nrw_public_holidays(yr)
+
+    cursor = start_date
+    while cursor <= end_date:
+        if cursor.weekday() < 5 and cursor not in clocked_dates:
+            # 1. Public holiday automatically credits hours
+            if cursor in holiday_sets.get(cursor.year, {}):
+                credited += required_daily_hours
+                cursor += timedelta(days=1)
+                continue
+            # 2. Check school/other absences
+            absence = db.scalars(
+                select(SchoolAbsence).where(
+                    SchoolAbsence.user_id == user_id,
+                    SchoolAbsence.start_date <= cursor,
+                    SchoolAbsence.end_date >= cursor,
+                )
+            ).first()
+            if absence:
+                if absence.counts_as_hours:
+                    credited += required_daily_hours
+            else:
+                # 3. Check approved vacation
+                vacation = db.scalars(
+                    select(VacationRequest).where(
+                        VacationRequest.user_id == user_id,
+                        VacationRequest.status == "approved",
+                        VacationRequest.start_date <= cursor,
+                        VacationRequest.end_date >= cursor,
+                    )
+                ).first()
+                if vacation:
+                    credited += required_daily_hours
+        cursor += timedelta(days=1)
+    return round(credited, 2)
+
+
+@router.get("/absence-types")
+def get_absence_types():
+    return ABSENCE_TYPES
+
+
+@router.get("/public-holidays")
+def get_public_holidays(
+    year: int | None = None,
+    current_user: User = Depends(get_current_user),
+):
+    """Return NRW public holidays for a given year (defaults to current year).
+
+    Response: list of {date: "YYYY-MM-DD", name: "..."}
+    """
+    target_year = year or _local_date_from_utc(utcnow()).year
+    holidays = _nrw_public_holidays(target_year)
+    return [
+        {"date": d.isoformat(), "name": name}
+        for d, name in sorted(holidays.items())
+    ]
+
+
 @router.get("/timesheet", response_model=TimesheetOut)
 def timesheet(
     period: str = "weekly",
@@ -572,68 +720,373 @@ def timesheet(
         start_date, end_date = _week_bounds(target_day)
 
     start_dt, end_dt = _local_period_bounds_utc(start_date, end_date)
-
     entries = _entries_overlapping_period(db, target_user_id, start_dt, end_dt)
 
-    total_hours = 0.0
+    clock_hours = 0.0
+    clocked_dates: set[date] = set()
     for entry in entries:
-        total_hours += _entry_metrics_for_period(db, entry, start_dt, end_dt, now=now)["net_hours"]
+        net = _entry_metrics_for_period(db, entry, start_dt, end_dt, now=now)["net_hours"]
+        clock_hours += net
+        entry_local = _local_date_from_utc(entry.clock_in)
+        clocked_dates.add(entry_local)
+
+    target_user = db.get(User, target_user_id)
+    required_daily = _sanitized_required_daily_hours(target_user) if target_user else 8.0
+    absence_hours = _credited_absence_hours_for_period(
+        db, target_user_id, start_date, end_date, required_daily, clocked_dates
+    )
 
     return TimesheetOut(
         user_id=target_user_id,
-        total_hours=round(total_hours, 2),
+        total_hours=round(clock_hours + absence_hours, 2),
         period_start=start_date,
         period_end=end_date,
     )
 
 
-@router.get("/timesheet/export.csv")
-def export_timesheet(
-    day: date | None = None,
+@router.get("/timesheet/export.xlsx")
+def export_timesheet_xlsx(
+    month: str | None = None,   # format: "YYYY-MM", defaults to current month
     user_id: int | None = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    target_day = day or _local_date_from_utc(utcnow())
+    """Export a monthly timesheet as Excel, matching the Stundenliste template."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    now_local = _local_date_from_utc(utcnow())
+    if month:
+        try:
+            year, mon = (int(x) for x in month.split("-"))
+        except (ValueError, AttributeError):
+            raise HTTPException(status_code=400, detail="month must be YYYY-MM")
+    else:
+        year, mon = now_local.year, now_local.month
+
     target_user_id = _resolve_target_user_id(current_user, user_id)
+    target_user = db.get(User, target_user_id)
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
 
-    week_start, week_end = _week_bounds(target_day)
-    start_dt, end_dt = _local_period_bounds_utc(week_start, week_end)
+    required_daily = _sanitized_required_daily_hours(target_user)
+    month_start = date(year, mon, 1)
+    month_end = date(year, mon, calendar.monthrange(year, mon)[1])
 
+    # Fetch all clock entries for the month
+    start_dt, end_dt = _local_period_bounds_utc(month_start, month_end)
     entries = _entries_overlapping_period(db, target_user_id, start_dt, end_dt)
+    now_utc = utcnow()
 
-    buffer = StringIO()
-    writer = csv.writer(buffer)
-    writer.writerow(
-        [
-            "clock_entry_id",
-            "clock_in",
-            "clock_out",
-            "break_hours",
-            "required_break_hours",
-            "deducted_break_hours",
-            "net_hours",
-        ]
-    )
-    now = utcnow()
+    # Build day-indexed lookup: date → list of clock entries
+    day_entries: dict[date, list] = {}
     for entry in entries:
-        metrics = _entry_metrics_for_period(db, entry, start_dt, end_dt, now=now)
-        writer.writerow(
-            [
-                entry.id,
-                entry.clock_in.isoformat(),
-                entry.clock_out.isoformat() if entry.clock_out else "",
-                metrics["break_hours"],
-                metrics["required_break_hours"],
-                metrics["deducted_break_hours"],
-                metrics["net_hours"],
-            ]
-        )
+        entry_date = _local_date_from_utc(entry.clock_in)
+        day_entries.setdefault(entry_date, []).append(entry)
 
-    headers = {
-        "Content-Disposition": f"attachment; filename=timesheet-{target_user_id}-{week_start}.csv",
+    # Fetch absences
+    school_abs = db.scalars(
+        select(SchoolAbsence).where(
+            SchoolAbsence.user_id == target_user_id,
+            SchoolAbsence.start_date <= month_end,
+            SchoolAbsence.end_date >= month_start,
+        )
+    ).all()
+    vacations = db.scalars(
+        select(VacationRequest).where(
+            VacationRequest.user_id == target_user_id,
+            VacationRequest.status == "approved",
+            VacationRequest.start_date <= month_end,
+            VacationRequest.end_date >= month_start,
+        )
+    ).all()
+
+    # Build absence lookup: date → (label, counts_as_hours)
+    day_absence: dict[date, tuple[str, bool]] = {}
+    for va in vacations:
+        cur = max(va.start_date, month_start)
+        while cur <= min(va.end_date, month_end):
+            day_absence[cur] = ("Urlaub", True)
+            cur += timedelta(days=1)
+    for ab in school_abs:
+        cur = max(ab.start_date, month_start)
+        while cur <= min(ab.end_date, month_end):
+            meta = _ABSENCE_TYPE_MAP.get(ab.absence_type, {})
+            day_absence[cur] = (
+                ab.title or meta.get("label_de", ab.absence_type),
+                ab.counts_as_hours,
+            )
+            cur += timedelta(days=1)
+
+    # Calculate totals
+    total_worked = 0.0
+    total_break = 0.0
+    workdays_in_month = sum(1 for d in range(1, calendar.monthrange(year, mon)[1] + 1) if date(year, mon, d).weekday() < 5)
+    total_required = round(workdays_in_month * required_daily, 2)
+
+    # ── Build workbook ──────────────────────────────────────────────────────
+    wb = Workbook()
+
+    # Helper styles
+    def bold_font(size=10):
+        return Font(name="Arial", size=size, bold=True)
+
+    def normal_font(size=10):
+        return Font(name="Arial", size=size)
+
+    thin = Side(style="thin")
+    thin_border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    header_fill = PatternFill("solid", fgColor="D9D9D9")
+    center = Alignment(horizontal="center", vertical="center")
+    right_align = Alignment(horizontal="right", vertical="center")
+
+    month_name_de = [
+        "Januar","Februar","März","April","Mai","Juni",
+        "Juli","August","September","Oktober","November","Dezember"
+    ][mon - 1]
+
+    # ── Sheet 1: Übersichtsblatt ────────────────────────────────────────────
+    ws_sum = wb.active
+    ws_sum.title = "Übersichtsblatt"
+
+    # Header row
+    ws_sum["A1"] = f"Übersichtsblatt {month_name_de} {year}"
+    ws_sum["A1"].font = bold_font(12)
+    ws_sum["I1"] = f"Stand: {now_local.strftime('%d.%m.%Y')}"
+    ws_sum["I1"].font = normal_font(9)
+    ws_sum["I1"].alignment = right_align
+
+    headers_sum = [
+        "Mitarbeiter", "Personalnummer", "Soll-Stunden", "Ist-Stunden",
+        "Differenz", "Urlaubstage:\nGenommen", "Urlaubstage:\nGeplant",
+        "Urlaubstage:\nOffen", "Überstunden",
+    ]
+    for col, h in enumerate(headers_sum, 1):
+        cell = ws_sum.cell(row=2, column=col, value=h)
+        cell.font = bold_font()
+        cell.fill = header_fill
+        cell.border = thin_border
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    # Count vacation days used this month
+    vacation_days_month = sum(
+        1 for d in range(1, calendar.monthrange(year, mon)[1] + 1)
+        if date(year, mon, d) in day_absence and day_absence[date(year, mon, d)][0] == "Urlaub"
+        and date(year, mon, d).weekday() < 5
+    )
+
+    # Calculate actual month hours
+    month_is_hours = 0.0
+    for d in range(1, calendar.monthrange(year, mon)[1] + 1):
+        cur_date = date(year, mon, d)
+        if cur_date in day_entries:
+            day_start_dt, day_end_dt = _local_period_bounds_utc(cur_date, cur_date)
+            for entry in day_entries[cur_date]:
+                month_is_hours += _entry_metrics_for_period(db, entry, day_start_dt, day_end_dt, now=now_utc)["net_hours"]
+        elif cur_date in day_absence and cur_date.weekday() < 5:
+            _, cah = day_absence[cur_date]
+            if cah:
+                month_is_hours += required_daily
+
+    month_is_hours = round(month_is_hours, 2)
+    diff = round(month_is_hours - total_required, 2)
+
+    name_parts = target_user.full_name.rsplit(" ", 1)
+    display_name = f"{name_parts[-1]}, {name_parts[0]}" if len(name_parts) == 2 else target_user.full_name
+    personal_nr = f"{target_user.id:05d}"
+
+    row_data = [display_name, personal_nr, total_required, month_is_hours, diff,
+                vacation_days_month, 0, -vacation_days_month, 0]
+    for col, val in enumerate(row_data, 1):
+        cell = ws_sum.cell(row=3, column=col, value=val)
+        cell.font = normal_font()
+        cell.border = thin_border
+        cell.alignment = Alignment(horizontal="right" if col > 2 else "left", vertical="center")
+
+    # Summe row
+    ws_sum.cell(row=4, column=1, value="Summe:").font = bold_font()
+    for col, val in enumerate(row_data, 1):
+        cell = ws_sum.cell(row=4, column=col + 0 if col == 1 else col, value=(None if col == 1 else val))
+        if col > 1:
+            cell.font = bold_font()
+            cell.border = thin_border
+            cell.alignment = Alignment(horizontal="right", vertical="center")
+
+    col_widths = [22, 14, 12, 12, 12, 14, 14, 14, 14]
+    for i, w in enumerate(col_widths, 1):
+        ws_sum.column_dimensions[get_column_letter(i)].width = w
+    ws_sum.row_dimensions[2].height = 28
+
+    # ── Sheet 2: Employee detail ────────────────────────────────────────────
+    sheet_name = f"{name_parts[-1]}_{name_parts[0]}" if len(name_parts) == 2 else target_user.full_name.replace(" ", "_")
+    sheet_name = sheet_name[:31]  # Excel sheet name limit
+    ws = wb.create_sheet(title=sheet_name)
+
+    # Title
+    ws["A1"] = f"Stundenliste mit Überstunden - {month_name_de} {year}"
+    ws["A1"].font = bold_font(12)
+    ws.merge_cells("A1:E1")
+
+    # Employee info block
+    ws["F1"] = "Name, Vorname"
+    ws["F1"].font = bold_font()
+    ws["H1"] = "Abteilung"
+    ws["H1"].font = bold_font()
+    ws["J1"] = "Position"
+    ws["J1"].font = bold_font()
+
+    ws["F2"] = display_name
+    ws["F2"].font = normal_font()
+
+    ws["F4"] = "Stand: " + now_local.strftime("%d.%m.%Y")
+    ws["F4"].font = normal_font(9)
+    ws["F5"] = "Personal-Nr."
+    ws["F5"].font = bold_font()
+    ws["H5"] = "Kostenstelle"
+    ws["H5"].font = bold_font()
+    ws["J5"] = "Vergütungsart"
+    ws["J5"].font = bold_font()
+    ws["F6"] = personal_nr
+    ws["H6"] = "-"
+    ws["J6"] = "Lohn"
+
+    # Column headers (row 6 → row 7 because info block occupies rows 1-6)
+    DATA_START_ROW = 7
+    col_headers = ["Datum", "", "Startzeit", "Endzeit", "Pausenzeit",
+                   "Soll-Stunden", "Ist-Stunden", "Differenz", "Anmerkungen", "Abwesenheit"]
+    for col, h in enumerate(col_headers, 1):
+        cell = ws.cell(row=DATA_START_ROW, column=col, value=h)
+        cell.font = bold_font()
+        cell.fill = header_fill
+        cell.border = thin_border
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    # Day rows
+    row = DATA_START_ROW + 1
+    total_worked_hours = 0.0
+    total_break_hours = 0.0
+    total_soll = total_required  # constant per month
+
+    for d in range(1, calendar.monthrange(year, mon)[1] + 1):
+        cur_date = date(year, mon, d)
+        wd = cur_date.weekday()
+        wd_abbr = _WEEKDAY_ABBR_DE[wd]
+        date_str = cur_date.strftime("%d.%m.%Y")
+        is_weekend = wd >= 5
+
+        if cur_date in day_entries and not is_weekend:
+            day_start_dt, day_end_dt = _local_period_bounds_utc(cur_date, cur_date)
+            day_net = 0.0
+            day_break = 0.0
+            first_in = None
+            last_out = None
+            for entry in sorted(day_entries[cur_date], key=lambda e: e.clock_in):
+                metrics = _entry_metrics_for_period(db, entry, day_start_dt, day_end_dt, now=now_utc)
+                day_net += metrics["net_hours"]
+                day_break += metrics["break_hours"]
+                if first_in is None:
+                    local_in = entry.clock_in.replace(tzinfo=timezone.utc).astimezone(_app_timezone())
+                    first_in = local_in.strftime("%H:%M")
+                if entry.clock_out:
+                    local_out = entry.clock_out.replace(tzinfo=timezone.utc).astimezone(_app_timezone())
+                    last_out = local_out.strftime("%H:%M")
+            day_net = round(day_net, 2)
+            day_break = round(day_break, 2)
+            total_worked_hours += day_net
+            total_break_hours += day_break
+            row_vals = [wd_abbr, date_str, first_in or "-", last_out or "-",
+                        day_break, "-", day_net, "-", None, 0]
+        elif cur_date in day_absence and not is_weekend:
+            absence_label, cah = day_absence[cur_date]
+            credited = required_daily if cah else 0.0
+            total_worked_hours += credited
+            row_vals = [wd_abbr, date_str, "-", "-", 0, "-", credited if credited else 0, "-", absence_label, 0]
+        else:
+            row_vals = [wd_abbr, date_str, "-", "-", 0, "-", 0, "-", None, 0]
+
+        for col, val in enumerate(row_vals, 1):
+            cell = ws.cell(row=row, column=col, value=val)
+            cell.font = normal_font()
+            cell.border = thin_border
+            cell.alignment = Alignment(horizontal="right" if col > 2 else "left", vertical="center")
+
+        # Grey-out weekends
+        if is_weekend:
+            grey_fill = PatternFill("solid", fgColor="F2F2F2")
+            for col in range(1, 11):
+                ws.cell(row=row, column=col).fill = grey_fill
+
+        row += 1
+
+    # Totals row
+    total_worked_hours = round(total_worked_hours, 2)
+    total_break_hours = round(total_break_hours, 2)
+    month_diff = round(total_worked_hours - total_soll, 2)
+    total_label = f"Summen vom {month_start.strftime('%d.%m.%Y')} bis {month_end.strftime('%d.%m.%Y')}"
+    total_row_vals = [total_label, None, None, None, total_break_hours,
+                      total_soll, total_worked_hours, month_diff, None, 0]
+    for col, val in enumerate(total_row_vals, 1):
+        cell = ws.cell(row=row, column=col, value=val)
+        cell.font = bold_font()
+        cell.border = thin_border
+        cell.alignment = Alignment(horizontal="right" if col > 1 else "left", vertical="center")
+
+    # Footer summary block
+    row += 2
+    ws.cell(row=row, column=1, value="Aufschlüsselung der Abwesenheiten:").font = bold_font()
+    row += 2
+
+    ws.cell(row=row, column=1, value="Urlaubsübertrag aus dem Vorjahr:").font = normal_font()
+    ws.cell(row=row, column=4, value=0).font = normal_font()
+    ws.cell(row=row, column=6, value="Überstunden diesen Monat:").font = normal_font()
+    ws.cell(row=row, column=8, value=month_diff).font = normal_font()
+    row += 1
+
+    ws.cell(row=row, column=1, value="Jahresurlaub (inkl. Übertrag):").font = normal_font()
+    ws.cell(row=row, column=4, value=0).font = normal_font()
+    ws.cell(row=row, column=6, value="Überstundensaldo Monatsbeginn:").font = normal_font()
+    ws.cell(row=row, column=8, value=0).font = normal_font()
+    row += 1
+
+    ws.cell(row=row, column=1, value="Genutzte Urlaubstage diesen Monat:").font = normal_font()
+    ws.cell(row=row, column=4, value=vacation_days_month).font = normal_font()
+    ws.cell(row=row, column=6, value="Korrigierter Überstundensaldo:").font = normal_font()
+    ws.cell(row=row, column=8, value=0).font = normal_font()
+    row += 1
+
+    ws.cell(row=row, column=1, value="Genutzte Urlaubstage dieses Jahr:").font = normal_font()
+    ws.cell(row=row, column=4, value=vacation_days_month).font = normal_font()
+    ws.cell(row=row, column=6, value="Ausbezahlte Stunden:").font = normal_font()
+    ws.cell(row=row, column=8, value=0).font = normal_font()
+    row += 1
+
+    ws.cell(row=row, column=1, value="Verbleibende Urlaubstage dieses Jahr:").font = normal_font()
+    ws.cell(row=row, column=4, value=-vacation_days_month).font = normal_font()
+    ws.cell(row=row, column=6, value="Überstundensaldo Monatsende:").font = normal_font()
+    ws.cell(row=row, column=8, value=month_diff).font = normal_font()
+
+    # Column widths for detail sheet
+    detail_widths = [10, 12, 10, 10, 10, 12, 12, 12, 22, 12]
+    for i, w in enumerate(detail_widths, 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+
+    # Serialize
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    safe_name = display_name.replace(", ", "_").replace(" ", "_")
+    filename = f"Stundenliste_{safe_name}_{year}_{mon:02d}.xlsx"
+    headers_resp = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     }
-    return Response(content=buffer.getvalue(), media_type="text/csv", headers=headers)
+    return Response(
+        content=buf.read(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers_resp,
+    )
 
 
 @router.get("/entries", response_model=list[TimeEntryOut])

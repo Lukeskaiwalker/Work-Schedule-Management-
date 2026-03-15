@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
-from app.core.permissions import ROLE_ADMIN, has_permission_for_user
+from app.core.permissions import ROLE_ADMIN, has_permission_for_user  # noqa: F401 – also used by re-exports
 from app.core.security import decode_token
 from app.models.entities import ProjectMember, User
 
@@ -68,9 +68,17 @@ def require_admin(current_user: User = Depends(get_current_user)) -> User:
 
 
 def assert_project_access(db: Session, user: User, project_id: int, manage_required: bool = False) -> None:
-    if user.role in {"admin", "ceo", "planning"}:
-        return
+    # Use the live permission map so admin-UI role/user-level edits take effect immediately.
+    has_manage = has_permission_for_user(user.id, user.role, "projects:manage")
+    has_view = has_permission_for_user(user.id, user.role, "projects:view")
 
+    if has_manage:
+        return  # full project access
+
+    if has_view and not manage_required:
+        return  # read-only project access
+
+    # No broad project permission — check direct ProjectMember entry.
     stmt = select(ProjectMember).where(ProjectMember.project_id == project_id, ProjectMember.user_id == user.id)
     membership = db.scalars(stmt).first()
     if not membership:

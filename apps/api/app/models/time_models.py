@@ -1,7 +1,7 @@
 from __future__ import annotations
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
@@ -48,6 +48,8 @@ class SchoolAbsence(Base):
     title: Mapped[str] = mapped_column(String(255), default="Berufsschule", nullable=False)
     start_date: Mapped[date] = mapped_column(Date, nullable=False)
     end_date: Mapped[date] = mapped_column(Date, nullable=False)
+    absence_type: Mapped[str] = mapped_column(String(64), nullable=False, default="other")
+    counts_as_hours: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     recurrence_weekday: Mapped[int | None] = mapped_column(Integer)
     recurrence_until: Mapped[date | None] = mapped_column(Date)
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)

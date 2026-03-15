@@ -44,6 +44,7 @@ import type {
   UpdateInstallResponse,
   ReportWorker,
   ReportDraft,
+  StoredReportDraft,
   ReportMaterialRow,
   ConstructionReportCreateResponse,
   ConstructionReportProcessingResponse,
@@ -66,6 +67,8 @@ import type {
   AvatarImageSize,
   RolePermissionsMeta,
   UserPermissionOverride,
+  AbsenceType,
+  PublicHoliday,
 } from "./types";
 import {
   MAIN_LABELS,
@@ -75,6 +78,7 @@ import {
   MATERIAL_UNIT_EXAMPLES,
   MATERIAL_CATALOG_SEARCH_LIMIT,
   WORKSPACE_MODE_STORAGE_KEY,
+  REPORT_DRAFT_LS_KEY,
   EMPTY_PROJECT_FORM,
   EMPTY_PROJECT_FINANCE_FORM,
   EMPTY_REPORT_DRAFT,
@@ -333,6 +337,7 @@ export function App() {
   const [schoolAbsenceForm, setSchoolAbsenceForm] = useState({
     user_id: "",
     title: "Berufsschule",
+    absence_type: "school",
     start_date: formatDateISOLocal(new Date()),
     end_date: formatDateISOLocal(new Date()),
     recurrence_weekdays: [] as number[],
@@ -373,6 +378,10 @@ export function App() {
   });
   const [timeInfoOpen, setTimeInfoOpen] = useState(false);
   const [timeTargetUserId, setTimeTargetUserId] = useState<string>("");
+  const [timeTargetSearch, setTimeTargetSearch] = useState<string>("");
+  const [timeTargetDropdownOpen, setTimeTargetDropdownOpen] = useState(false);
+  const [absenceTypes, setAbsenceTypes] = useState<AbsenceType[]>([]);
+  const [publicHolidays, setPublicHolidays] = useState<PublicHoliday[]>([]);
   const [requiredHoursDrafts, setRequiredHoursDrafts] = useState<Record<number, string>>({});
 
   const [activeProjectId, setActiveProjectId] = useState<number | null>(null);
@@ -419,6 +428,17 @@ export function App() {
   const [reportSubmitting, setReportSubmitting] = useState(false);
   const [reportUploadPercent, setReportUploadPercent] = useState<number | null>(null);
   const [reportUploadPhase, setReportUploadPhase] = useState<"uploading" | "processing" | null>(null);
+  // Controlled state for previously-uncontrolled report form fields (enables autosave + restore)
+  const [reportWorkDone, setReportWorkDone] = useState("");
+  const [reportIncidents, setReportIncidents] = useState("");
+  const [reportExtras, setReportExtras] = useState("");
+  const [reportOfficeRework, setReportOfficeRework] = useState("");
+  const [reportOfficeNextSteps, setReportOfficeNextSteps] = useState("");
+  const [reportDate, setReportDate] = useState(() => formatDateISOLocal(new Date()));
+  // When true, the source task is marked done only after the report is saved successfully.
+  const [reportShouldMarkSourceTaskDone, setReportShouldMarkSourceTaskDone] = useState(false);
+  // When true, a restore banner is shown on the construction page.
+  const [reportHasStoredDraft, setReportHasStoredDraft] = useState(false);
   const [constructionBackView, setConstructionBackView] = useState<MainView | null>(null);
   const [fileUploadModalOpen, setFileUploadModalOpen] = useState(false);
   const [avatarModalOpen, setAvatarModalOpen] = useState(false);
@@ -487,15 +507,16 @@ export function App() {
   }, []);
 
   const isAdmin = user?.role === "admin";
-  const canAdjustRequiredHours = user ? ["admin", "ceo"].includes(user.role) : false;
+  const canAdjustRequiredHours = user?.effective_permissions?.includes("time:manage") ?? false;
   const canCreateProject = user ? ["admin", "ceo"].includes(user.role) : false;
   const canManageTasks = user ? ["admin", "ceo", "planning"].includes(user.role) : false;
-  const isTimeManager = user ? ["admin", "ceo", "accountant", "planning"].includes(user.role) : false;
-  const canApproveVacation = user ? ["admin", "ceo"].includes(user.role) : false;
-  const canManageSchoolAbsences = user ? ["admin", "ceo", "accountant"].includes(user.role) : false;
+  const isTimeManager = user?.effective_permissions?.some(p => p === "time:view_all" || p === "time:manage") ?? false;
+  const canApproveVacation = user?.effective_permissions?.includes("time:approve_vacation") ?? false;
+  const canManageSchoolAbsences = user?.effective_permissions?.includes("time:manage_absences") ?? false;
   const canManageProjectImport = user ? ["admin", "ceo"].includes(user.role) : false;
   const canUseProtectedFolders = user ? ["admin", "ceo", "planning", "accountant"].includes(user.role) : false;
-  const canManageFinance = user ? ["admin", "ceo", "accountant"].includes(user.role) : false;
+  const canViewFinance = user?.effective_permissions?.includes("finance:view") ?? false;
+  const canManageFinance = user?.effective_permissions?.includes("finance:manage") ?? false;
   const mainLabels = MAIN_LABELS[language];
   const tabLabels = TAB_LABELS[language];
   const workspaceModeLabel =
@@ -1146,10 +1167,11 @@ export function App() {
     return views;
   }, [workspaceMode]);
 
-  const projectTabs = useMemo<ProjectTab[]>(
-    () => ["overview", "tasks", "hours", "materials", "tickets", "files", "finances"],
-    [],
-  );
+  const projectTabs = useMemo<ProjectTab[]>(() => {
+    const tabs: ProjectTab[] = ["overview", "tasks", "hours", "materials", "tickets", "files"];
+    if (canViewFinance) tabs.push("finances");
+    return tabs;
+  }, [canViewFinance]);
 
   const fileRows = useMemo(
     () =>
@@ -1313,6 +1335,12 @@ export function App() {
     () => monthWeekRanges(timeMonthCursor),
     [timeMonthCursor.getFullYear(), timeMonthCursor.getMonth()],
   );
+  // Always-current ref so setInterval callbacks never use stale weekDefs
+  const monthWeekDefsRef = useRef(monthWeekDefs);
+  useEffect(() => { monthWeekDefsRef.current = monthWeekDefs; });
+
+  const monthCursorISO = `${timeMonthCursor.getFullYear()}-${String(timeMonthCursor.getMonth() + 1).padStart(2, "0")}`;
+
   const monthCursorLabel = useMemo(
     () =>
       timeMonthCursor.toLocaleDateString(language === "de" ? "de-DE" : "en-US", {
@@ -1590,6 +1618,14 @@ export function App() {
     }
   }, [workspaceMode]);
 
+  // Enforce workspace_lock: if the user has a lock set, always force that mode.
+  useEffect(() => {
+    const lock = user?.workspace_lock;
+    if (lock === "construction" || lock === "office") {
+      setWorkspaceMode(lock);
+    }
+  }, [user?.workspace_lock]);  // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     if (workspaceMode === "office" && mainView === "my_tasks") {
       setMainView("office_tasks");
@@ -1694,6 +1730,12 @@ export function App() {
     if (mainView !== "project") return;
     if (!activeProjectId) return;
 
+    // Guard: redirect away from finances tab if user lost permission
+    if (projectTab === "finances" && !canViewFinance) {
+      setProjectTab("overview");
+      return;
+    }
+
     if (projectTab === "overview") void loadProjectOverview(activeProjectId);
     if (projectTab === "tasks") void loadTasks(taskView, activeProjectId);
     if (projectTab === "tickets") void loadSitesAndTickets(activeProjectId);
@@ -1703,7 +1745,7 @@ export function App() {
     }
     if (projectTab === "finances" || projectTab === "hours") void loadProjectFinance(activeProjectId);
     if (projectTab === "materials") void loadProjectTrackedMaterials(activeProjectId);
-  }, [mainView, projectTab, activeProjectId, token, user, taskView]);
+  }, [mainView, projectTab, activeProjectId, token, user, taskView, canViewFinance]);
 
   useEffect(() => {
     if (!token || !user) return;
@@ -1794,14 +1836,10 @@ export function App() {
 
   useEffect(() => {
     if (mainView !== "construction" || !reportTaskPrefill) return;
-    const form = constructionFormRef.current;
-    if (!form) return;
-    const reportDateInput = form.elements.namedItem("report_date") as HTMLInputElement | null;
-    const workDoneInput = form.elements.namedItem("work_done") as HTMLTextAreaElement | null;
-    const incidentsInput = form.elements.namedItem("incidents") as HTMLTextAreaElement | null;
-    if (reportDateInput) reportDateInput.value = reportTaskPrefill.report_date;
-    if (workDoneInput) workDoneInput.value = reportTaskPrefill.work_done;
-    if (incidentsInput) incidentsInput.value = reportTaskPrefill.incidents;
+    // Use controlled state instead of DOM manipulation so autosave captures the prefill.
+    setReportDate(reportTaskPrefill.report_date);
+    setReportWorkDone(reportTaskPrefill.work_done);
+    setReportIncidents(reportTaskPrefill.incidents);
     setReportMaterialRows(parseReportMaterialRows(reportTaskPrefill.materials, "materials"));
     setReportSourceTaskId(reportTaskPrefill.task_id);
     setReportTaskChecklist(buildReportTaskChecklist(reportTaskPrefill.subtasks));
@@ -1813,6 +1851,60 @@ export function App() {
     setReportSourceTaskId(null);
     setReportTaskChecklist([]);
   }, [mainView]);
+
+  // ── On mount: check if a saved draft exists and has meaningful content ─────
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(REPORT_DRAFT_LS_KEY);
+      if (!raw) return;
+      const stored = JSON.parse(raw) as StoredReportDraft;
+      if (stored?.v !== 2) return;
+      const hasMeaningfulContent =
+        stored.workDone.trim().length > 0 ||
+        stored.incidents.trim().length > 0 ||
+        stored.draft.customer.trim().length > 0 ||
+        stored.workers.some((w) => w.name.trim().length > 0) ||
+        stored.materialRows.some((r) => r.item.trim().length > 0);
+      if (hasMeaningfulContent) setReportHasStoredDraft(true);
+    } catch {
+      // Corrupt localStorage data — silently ignore.
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Debounced autosave: write draft to localStorage 800ms after last change ─
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      const hasContent =
+        reportWorkDone.trim().length > 0 ||
+        reportIncidents.trim().length > 0 ||
+        reportDraft.customer.trim().length > 0 ||
+        reportWorkers.some((w) => w.name.trim().length > 0) ||
+        reportMaterialRows.some((r) => r.item.trim().length > 0);
+      if (!hasContent) return; // Don't overwrite a real draft with empty state.
+      const stored: StoredReportDraft = {
+        v: 2,
+        projectId: reportProjectId,
+        draft: reportDraft,
+        workDone: reportWorkDone,
+        incidents: reportIncidents,
+        extras: reportExtras,
+        officeRework: reportOfficeRework,
+        officeNextSteps: reportOfficeNextSteps,
+        date: reportDate,
+        workers: reportWorkers,
+        materialRows: reportMaterialRows.map(({ item, qty, unit, article_no }) => ({ item, qty, unit, article_no })),
+        officeMaterialRows: reportOfficeMaterialRows.map(({ item, qty, unit, article_no }) => ({ item, qty, unit, article_no })),
+        sourceTaskId: reportSourceTaskId,
+        savedAt: new Date().toISOString(),
+      };
+      try { localStorage.setItem(REPORT_DRAFT_LS_KEY, JSON.stringify(stored)); } catch {}
+    }, 800);
+    return () => clearTimeout(timer);
+  }, [
+    reportProjectId, reportDraft, reportWorkDone, reportIncidents, reportExtras,
+    reportOfficeRework, reportOfficeNextSteps, reportDate, reportWorkers,
+    reportMaterialRows, reportOfficeMaterialRows, reportSourceTaskId,
+  ]);
 
   useEffect(() => {
     setProjectTaskForm(buildEmptyProjectTaskFormState());
@@ -1886,6 +1978,26 @@ export function App() {
     if (mainView !== "overview" && mainView !== "my_tasks") return;
     void loadTasks("my", null);
   }, [mainView, token, user]);
+
+  useEffect(() => {
+    if (!token) return;
+    apiFetch<AbsenceType[]>("/time/absence-types", token)
+      .then(setAbsenceTypes)
+      .catch(() => {});
+  }, [token]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!token) return;
+    const now = new Date();
+    const currentYear = now.getFullYear();
+    // Fetch current + next year so the calendar always has upcoming holidays
+    Promise.all([
+      apiFetch<PublicHoliday[]>(`/time/public-holidays?year=${currentYear}`, token),
+      apiFetch<PublicHoliday[]>(`/time/public-holidays?year=${currentYear + 1}`, token),
+    ])
+      .then(([cur, next]) => setPublicHolidays([...cur, ...next]))
+      .catch(() => {});
+  }, [token]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (mainView === "projects_archive") return;
@@ -2120,6 +2232,22 @@ export function App() {
       void refreshRealtimeProjectLists();
     },
   });
+
+  async function saveUserPreference<K extends keyof import("./types").UserPreferences>(
+    key: K,
+    value: import("./types").UserPreferences[K],
+  ): Promise<void> {
+    if (!token) return;
+    try {
+      const updated = await apiFetch<User>("/auth/me/preferences", token, {
+        method: "PATCH",
+        body: JSON.stringify({ [key]: value }),
+      });
+      setUser(updated);
+    } catch {
+      // Preference save failure is non-critical — silently ignore.
+    }
+  }
 
   async function loadBaseData() {
     try {
@@ -2830,20 +2958,23 @@ export function App() {
 
   async function refreshTimeData() {
     try {
+      const currentDefs = monthWeekDefsRef.current;
       const useManagerFilter = mainView === "time" && isTimeManager && timeTargetUserId;
       const userQuery = useManagerFilter ? `&user_id=${Number(timeTargetUserId)}` : "";
       const currentQuery = useManagerFilter ? `?user_id=${Number(timeTargetUserId)}` : "";
       const vacationQuery = useManagerFilter ? `?user_id=${Number(timeTargetUserId)}` : "";
       const schoolQuery = useManagerFilter ? `?user_id=${Number(timeTargetUserId)}` : "";
+      // Fetch entries for the first week of the displayed month so navigation updates the list
+      const entriesDayParam = currentDefs.length > 0 ? `&day=${currentDefs[0].weekStart}` : "";
       const timesheetRequests =
         mainView === "time"
-          ? monthWeekDefs.map((row) =>
+          ? currentDefs.map((row) =>
               apiFetch<TimesheetSummary>(`/time/timesheet?period=weekly&day=${row.weekStart}${userQuery}`, token),
             )
           : [];
       const [current, entries, vacationRows, schoolRows, ...timesheetRows] = await Promise.all([
         apiFetch<TimeCurrent>(`/time/current${currentQuery}`, token),
-        apiFetch<TimeEntry[]>(`/time/entries?period=weekly${userQuery}`, token),
+        apiFetch<TimeEntry[]>(`/time/entries?period=weekly${entriesDayParam}${userQuery}`, token),
         apiFetch<VacationRequest[]>(`/time/vacation-requests${vacationQuery}`, token),
         apiFetch<SchoolAbsence[]>(`/time/school-absences${schoolQuery}`, token),
         ...timesheetRequests,
@@ -2854,7 +2985,7 @@ export function App() {
       setSchoolAbsences(schoolRows);
       if (mainView === "time") {
         const requiredHours = current.required_daily_hours > 0 ? current.required_daily_hours : 8;
-        const rows = monthWeekDefs.map((row, index) => {
+        const rows = currentDefs.map((row, index) => {
           const timesheet = timesheetRows[index] as TimesheetSummary | undefined;
           const workedHours = Number(timesheet?.total_hours ?? 0);
           return {
@@ -4295,6 +4426,17 @@ export function App() {
     task: Task,
     options?: { openReportFromTask?: Task; reportBackView?: MainView | null },
   ) {
+    // When opening a report from a task, defer the API call until the report is
+    // saved so accidental button presses don't silently mark the task done.
+    if (options?.openReportFromTask) {
+      setReportShouldMarkSourceTaskDone(true);
+      openConstructionReportFromTask(
+        options.openReportFromTask,
+        options.reportBackView ?? "my_tasks",
+      );
+      return;
+    }
+
     const payload: Record<string, unknown> = { status: "done" };
     if (task.updated_at !== null && task.updated_at !== undefined) {
       payload.expected_updated_at = task.updated_at;
@@ -4313,12 +4455,6 @@ export function App() {
       }
       if (mainView === "planning") {
         await loadPlanningWeek(null, planningWeekStart, planningTaskTypeView);
-      }
-      if (options?.openReportFromTask) {
-        openConstructionReportFromTask(
-          { ...options.openReportFromTask, status: "done" },
-          options.reportBackView ?? "my_tasks",
-        );
       }
       setNotice(language === "de" ? "Aufgabe abgeschlossen" : "Task marked complete");
     } catch (err: any) {
@@ -5035,6 +5171,44 @@ export function App() {
     setReportDraft((current) => ({ ...current, [field]: value }));
   }
 
+  function restoreReportDraft() {
+    try {
+      const raw = localStorage.getItem(REPORT_DRAFT_LS_KEY);
+      if (!raw) return;
+      const stored = JSON.parse(raw) as StoredReportDraft;
+      if (stored?.v !== 2) return;
+      setReportProjectId(stored.projectId);
+      const restoredProject = projects.find((p) => String(p.id) === stored.projectId) ?? null;
+      setReportDraft(restoredProject ? reportDraftFromProject(restoredProject) : stored.draft);
+      setReportWorkDone(stored.workDone);
+      setReportIncidents(stored.incidents);
+      setReportExtras(stored.extras);
+      setReportOfficeRework(stored.officeRework);
+      setReportOfficeNextSteps(stored.officeNextSteps);
+      setReportDate(stored.date);
+      setReportWorkers(stored.workers.length > 0 ? stored.workers : [{ name: "", start_time: "", end_time: "" }]);
+      setReportMaterialRows(
+        stored.materialRows.length > 0
+          ? stored.materialRows.map((r) => ({ ...createReportMaterialRow("materials"), ...r }))
+          : [createReportMaterialRow("materials")],
+      );
+      setReportOfficeMaterialRows(
+        stored.officeMaterialRows.length > 0
+          ? stored.officeMaterialRows.map((r) => ({ ...createReportMaterialRow("office_materials"), ...r }))
+          : [createReportMaterialRow("office_materials")],
+      );
+      if (stored.sourceTaskId) setReportSourceTaskId(stored.sourceTaskId);
+    } catch {
+      // Corrupt data — ignore.
+    }
+    setReportHasStoredDraft(false);
+  }
+
+  function discardReportDraft() {
+    try { localStorage.removeItem(REPORT_DRAFT_LS_KEY); } catch {}
+    setReportHasStoredDraft(false);
+  }
+
   function updateReportMaterialRow(
     index: number,
     field: keyof Omit<ReportMaterialRow, "id">,
@@ -5188,7 +5362,8 @@ export function App() {
         unit: row.unit || null,
         article_no: row.article_no || null,
       }));
-    const extras = parseListLines(String(form.get("extras") || "")).map((line) => {
+    // Use controlled state for previously-uncontrolled fields.
+    const extras = parseListLines(reportExtras).map((line) => {
       const [description, reason] = line.split("|").map((x) => x.trim());
       return { description: description || "-", reason: reason || null };
     });
@@ -5206,17 +5381,17 @@ export function App() {
       workers,
       materials,
       extras,
-      work_done: String(form.get("work_done") || ""),
-      incidents: String(form.get("incidents") || ""),
+      work_done: reportWorkDone,
+      incidents: reportIncidents,
       office_material_need: officeMaterialNeed,
-      office_rework: String(form.get("office_rework") || ""),
-      office_next_steps: String(form.get("office_next_steps") || ""),
+      office_rework: reportOfficeRework,
+      office_next_steps: reportOfficeNextSteps,
       source_task_id: targetProjectId && reportSourceTaskId ? reportSourceTaskId : null,
       completed_subtasks: targetProjectId && reportSourceTaskId ? completedSubtasks : [],
     };
 
     const multipart = new FormData();
-    multipart.set("report_date", String(form.get("report_date")));
+    multipart.set("report_date", reportDate);
     multipart.set("send_telegram", form.get("send_telegram") === "on" ? "true" : "false");
     multipart.set("payload", JSON.stringify(payload));
     if (targetProjectId) multipart.set("project_id", String(targetProjectId));
@@ -5249,14 +5424,49 @@ export function App() {
         },
       );
 
+      // If this report was linked to a task via "Create report from task", mark
+      // the task done now that the report saved successfully.
+      const taskToMarkDone = reportShouldMarkSourceTaskDone ? reportSourceTaskId : null;
+
       formElement.reset();
       setReportDraft(reportDraftFromProject(targetProject ?? null));
+      setReportWorkDone("");
+      setReportIncidents("");
+      setReportExtras("");
+      setReportOfficeRework("");
+      setReportOfficeNextSteps("");
+      setReportDate(formatDateISOLocal(new Date()));
       setReportWorkers([{ name: "", start_time: "", end_time: "" }]);
       setReportMaterialRows([createReportMaterialRow("materials")]);
       setReportOfficeMaterialRows([createReportMaterialRow("office_materials")]);
       setReportSourceTaskId(null);
+      setReportShouldMarkSourceTaskDone(false);
       setReportTaskChecklist([]);
       clearReportImages();
+      // Clear the saved draft from localStorage now that the form was submitted.
+      try { localStorage.removeItem(REPORT_DRAFT_LS_KEY); } catch {}
+      setReportHasStoredDraft(false);
+
+      // Mark source task done after clearing form state (deferred from markTaskDone).
+      if (taskToMarkDone) {
+        const task = planningWeek?.days.flatMap((d) => d.tasks).find((t) => t.id === taskToMarkDone)
+          ?? null;
+        try {
+          await apiFetch(`/tasks/${taskToMarkDone}`, token, {
+            method: "PATCH",
+            body: JSON.stringify({ status: "done" }),
+          });
+          await loadTasks("my", null);
+          setNotice(
+            language === "de"
+              ? "Aufgabe als erledigt markiert"
+              : "Task marked as complete",
+          );
+        } catch {
+          // Non-critical — report was saved, silently skip task mark.
+          void task;
+        }
+      }
 
       let finalProcessingStatus: ConstructionReportProcessingResponse | null = null;
       const initialStatus = String(createdReport.processing_status || "").toLowerCase();
@@ -5350,6 +5560,18 @@ export function App() {
       setUsers(await apiFetch<User[]>("/admin/users", token));
     } catch (err: any) {
       setError(err.message ?? "Failed to update role");
+    }
+  }
+
+  async function updateWorkspaceLock(userId: number, lock: "construction" | "office" | null) {
+    try {
+      await apiFetch(`/admin/users/${userId}`, token, {
+        method: "PATCH",
+        body: JSON.stringify({ workspace_lock: lock }),
+      });
+      setUsers(await apiFetch<User[]>("/admin/users", token));
+    } catch (err: any) {
+      setError(err.message ?? "Failed to update workspace lock");
     }
   }
 
@@ -5916,6 +6138,9 @@ export function App() {
       return;
     }
     const title = schoolAbsenceForm.title.trim() || "Berufsschule";
+    const absenceType = schoolAbsenceForm.absence_type || "other";
+    const typeInfo = absenceTypes.find((t) => t.key === absenceType);
+    const countsAsHours = typeInfo ? typeInfo.counts_as_hours : true;
     const selectedWeekdays = [...schoolAbsenceForm.recurrence_weekdays].sort((a, b) => a - b);
     const recurrenceUntil = schoolAbsenceForm.recurrence_until || schoolAbsenceForm.end_date || null;
     try {
@@ -5927,6 +6152,8 @@ export function App() {
               body: JSON.stringify({
                 user_id: targetUserId,
                 title,
+                absence_type: absenceType,
+                counts_as_hours: countsAsHours,
                 start_date: schoolAbsenceForm.start_date,
                 end_date: schoolAbsenceForm.start_date,
                 recurrence_weekday: day,
@@ -5941,6 +6168,8 @@ export function App() {
           body: JSON.stringify({
             user_id: targetUserId,
             title,
+            absence_type: absenceType,
+            counts_as_hours: countsAsHours,
             start_date: schoolAbsenceForm.start_date,
             end_date: schoolAbsenceForm.end_date,
             recurrence_weekday: null,
@@ -5951,6 +6180,7 @@ export function App() {
       setSchoolAbsenceForm({
         user_id: "",
         title: "Berufsschule",
+        absence_type: "school",
         start_date: formatDateISOLocal(new Date()),
         end_date: formatDateISOLocal(new Date()),
         recurrence_weekdays: [],
@@ -6186,6 +6416,7 @@ export function App() {
     // ── Current user ──────────────────────────────────────────────────────────
     user,
     setUser,
+    saveUserPreference,
 
     // ── Navigation ────────────────────────────────────────────────────────────
     mainView,
@@ -6401,6 +6632,21 @@ export function App() {
     setReportProjectId,
     reportDraft,
     setReportDraft,
+    reportWorkDone,
+    setReportWorkDone,
+    reportIncidents,
+    setReportIncidents,
+    reportExtras,
+    setReportExtras,
+    reportOfficeRework,
+    setReportOfficeRework,
+    reportOfficeNextSteps,
+    setReportOfficeNextSteps,
+    reportDate,
+    setReportDate,
+    reportHasStoredDraft,
+    restoreReportDraft,
+    discardReportDraft,
     reportTaskPrefill,
     setReportTaskPrefill,
     reportSourceTaskId,
@@ -6491,6 +6737,12 @@ export function App() {
     setTimeInfoOpen,
     timeTargetUserId,
     setTimeTargetUserId,
+    timeTargetSearch,
+    setTimeTargetSearch,
+    timeTargetDropdownOpen,
+    setTimeTargetDropdownOpen,
+    absenceTypes,
+    publicHolidays,
     requiredHoursDrafts,
     setRequiredHoursDrafts,
 
@@ -6594,6 +6846,7 @@ export function App() {
     canManageSchoolAbsences,
     canManageProjectImport,
     canUseProtectedFolders,
+    canViewFinance,
     canManageFinance,
     hasMessageText,
     canSendMessage,
@@ -6688,6 +6941,7 @@ export function App() {
     timeTargetUser,
     monthWeekDefs,
     monthCursorLabel,
+    monthCursorISO,
     monthlyWorkedHours,
     monthlyRequiredHours,
     pendingVacationRequests,
@@ -6895,6 +7149,7 @@ export function App() {
     deleteAvatar,
     applyTemplate,
     updateRole,
+    updateWorkspaceLock,
     updateRequiredDailyHours,
     saveProfileSettings,
     sendInviteToUser,

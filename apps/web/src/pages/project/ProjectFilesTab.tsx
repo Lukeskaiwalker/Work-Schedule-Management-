@@ -1,5 +1,52 @@
+import { useState, useMemo } from "react";
 import { useAppContext } from "../../context/AppContext";
 import { formatServerDateTime } from "../../utils/dates";
+import type { ProjectFile } from "../../types";
+
+function isReportFolder(folder: string): boolean {
+  const f = folder.toLowerCase();
+  return f.includes("bericht") || f.includes("report");
+}
+
+function fileTypeLabel(contentType: string): string {
+  if (contentType.startsWith("image/")) return contentType.replace("image/", "");
+  if (contentType === "application/pdf") return "PDF";
+  if (contentType.startsWith("text/")) return contentType.replace("text/", "");
+  return contentType;
+}
+
+function FileRow({
+  file,
+  language,
+  isPreviewable,
+  filePreviewUrl,
+  fileDownloadUrl,
+}: {
+  file: ProjectFile;
+  language: string;
+  isPreviewable: (f: ProjectFile) => boolean;
+  filePreviewUrl: (id: number) => string;
+  fileDownloadUrl: (id: number) => string;
+}) {
+  return (
+    <div className="file-row">
+      <span>{file.file_name}</span>
+      <small>{file.folder || "/"}</small>
+      <small>{fileTypeLabel(file.content_type)}</small>
+      <small>{formatServerDateTime(file.created_at, language)}</small>
+      <div className="row wrap">
+        {isPreviewable(file) && (
+          <a href={filePreviewUrl(file.id)} target="_blank" rel="noreferrer">
+            {language === "de" ? "Vorschau" : "Preview"}
+          </a>
+        )}
+        <a href={fileDownloadUrl(file.id)} target="_blank" rel="noreferrer">
+          {language === "de" ? "Download" : "Download"}
+        </a>
+      </div>
+    </div>
+  );
+}
 
 export function ProjectFilesTab() {
   const {
@@ -22,7 +69,53 @@ export function ProjectFilesTab() {
     isPreviewable,
   } = useAppContext();
 
+  // Single set tracks which folders have been manually toggled from their default state.
+  // Report-like folders default to collapsed; others default to expanded.
+  // If a folder is in toggledFolders, its visible state is flipped from the default.
+  const [toggledFolders, setToggledFolders] = useState<Set<string>>(new Set());
+
+  const isSearching = fileQuery.trim().length > 0;
+
+  const groupedFiles = useMemo<Array<[string, ProjectFile[]]> | null>(() => {
+    if (isSearching) return null;
+    const map = new Map<string, ProjectFile[]>();
+    for (const file of fileRows) {
+      const key = (file.folder ?? "").trim() || "/";
+      const existing = map.get(key);
+      if (existing) {
+        existing.push(file);
+      } else {
+        map.set(key, [file]);
+      }
+    }
+    return Array.from(map.entries()).sort(([a], [b]) => {
+      if (a === "/") return -1;
+      if (b === "/") return 1;
+      return a.localeCompare(b);
+    });
+  }, [fileRows, isSearching]);
+
+  function isFolderCollapsed(folder: string): boolean {
+    const defaultCollapsed = isReportFolder(folder);
+    return toggledFolders.has(folder) ? !defaultCollapsed : defaultCollapsed;
+  }
+
+  function toggleFolder(folder: string) {
+    setToggledFolders((prev) => {
+      const next = new Set(prev);
+      if (next.has(folder)) {
+        next.delete(folder);
+      } else {
+        next.add(folder);
+      }
+      return next;
+    });
+  }
+
   if (mainView !== "project" || !activeProject || projectTab !== "files") return null;
+
+  const folderLabel = (folder: string) =>
+    folder === "/" ? (language === "de" ? "Hauptordner" : "Root") : folder;
 
   return (
     <section className="grid files-grid">
@@ -106,7 +199,9 @@ export function ProjectFilesTab() {
             </div>
           </div>
         </div>
+
         <div className="file-explorer">
+          {/* Column headers */}
           <div className="file-row file-row-head">
             <b>{language === "de" ? "Datei" : "File"}</b>
             <b>{language === "de" ? "Ordner" : "Folder"}</b>
@@ -114,25 +209,67 @@ export function ProjectFilesTab() {
             <b>{language === "de" ? "Hochgeladen" : "Uploaded"}</b>
             <b>{language === "de" ? "Aktion" : "Action"}</b>
           </div>
-          {fileRows.map((file) => (
-            <div key={file.id} className="file-row">
-              <span>{file.file_name}</span>
-              <small>{file.folder || "/"}</small>
-              <small>{file.content_type}</small>
-              <small>{formatServerDateTime(file.created_at, language)}</small>
-              <div className="row wrap">
-                {isPreviewable(file) && (
-                  <a href={filePreviewUrl(file.id)} target="_blank" rel="noreferrer">
-                    {language === "de" ? "Vorschau" : "Preview"}
-                  </a>
-                )}
-                <a href={fileDownloadUrl(file.id)} target="_blank" rel="noreferrer">
-                  {language === "de" ? "Download" : "Download"}
-                </a>
-              </div>
-            </div>
-          ))}
-          {fileRows.length === 0 && <small className="muted">{language === "de" ? "Keine Treffer" : "No files found"}</small>}
+
+          {isSearching ? (
+            /* Flat list when searching */
+            <>
+              {fileRows.map((file) => (
+                <FileRow
+                  key={file.id}
+                  file={file}
+                  language={language}
+                  isPreviewable={isPreviewable}
+                  filePreviewUrl={filePreviewUrl}
+                  fileDownloadUrl={fileDownloadUrl}
+                />
+              ))}
+              {fileRows.length === 0 && (
+                <small className="muted">{language === "de" ? "Keine Treffer" : "No files found"}</small>
+              )}
+            </>
+          ) : (
+            /* Grouped by folder when browsing */
+            <>
+              {(groupedFiles ?? []).map(([folder, folderFiles]) => {
+                const collapsed = isFolderCollapsed(folder);
+                const isReport = isReportFolder(folder);
+                return (
+                  <div key={folder} className="file-folder-group">
+                    <button
+                      type="button"
+                      className={`file-folder-header${isReport ? " file-folder-header--report" : ""}`}
+                      onClick={() => toggleFolder(folder)}
+                      aria-expanded={!collapsed}
+                    >
+                      <span className="file-folder-chevron">{collapsed ? "▶" : "▼"}</span>
+                      <span className="file-folder-name">📁 {folderLabel(folder)}</span>
+                      <span className="file-folder-count">
+                        {folderFiles.length} {language === "de" ? "Datei" : "file"}{folderFiles.length !== 1 ? (language === "de" ? "en" : "s") : ""}
+                      </span>
+                      {isReport && collapsed && (
+                        <span className="file-folder-hint">
+                          {language === "de" ? "Automatisch generiert" : "Auto-generated"}
+                        </span>
+                      )}
+                    </button>
+                    {!collapsed && folderFiles.map((file) => (
+                      <FileRow
+                        key={file.id}
+                        file={file}
+                        language={language}
+                        isPreviewable={isPreviewable}
+                        filePreviewUrl={filePreviewUrl}
+                        fileDownloadUrl={fileDownloadUrl}
+                      />
+                    ))}
+                  </div>
+                );
+              })}
+              {fileRows.length === 0 && (
+                <small className="muted">{language === "de" ? "Keine Dateien vorhanden" : "No files yet"}</small>
+              )}
+            </>
+          )}
         </div>
       </div>
     </section>

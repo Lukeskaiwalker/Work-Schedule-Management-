@@ -2,6 +2,22 @@ export type Language = "en" | "de";
 export type TaskView = "my" | "all_open" | "completed" | "projects_overview";
 export type TaskType = "construction" | "office" | "customer_appointment";
 
+export type AbsenceType = {
+  key: string;
+  label_de: string;
+  label_en: string;
+  counts_as_hours: boolean;
+};
+
+export type PublicHoliday = {
+  date: string; // "YYYY-MM-DD"
+  name: string;
+};
+
+export type UserPreferences = {
+  planning_mobile_view?: "single" | "list" | "scroll";
+};
+
 export type User = {
   id: number;
   email: string;
@@ -16,6 +32,11 @@ export type User = {
   invite_sent_at?: string | null;
   invite_accepted_at?: string | null;
   password_reset_sent_at?: string | null;
+  preferences?: UserPreferences;
+  /** Resolved permissions from the server — includes role defaults and per-user overrides. */
+  effective_permissions?: string[];
+  /** When set, locks the user to a single workspace mode and hides the toggle. */
+  workspace_lock?: "construction" | "office" | null;
 };
 
 export type Project = {
@@ -384,6 +405,8 @@ export type SchoolAbsence = {
   user_id: number;
   user_name: string;
   title: string;
+  absence_type: string;
+  counts_as_hours: boolean;
   start_date: string;
   end_date: string;
   recurrence_weekday?: number | null;
@@ -461,6 +484,24 @@ export type ReportDraft = {
   customer_phone: string;
   project_name: string;
   project_number: string;
+};
+
+/** Serialised form state stored in localStorage for draft recovery. */
+export type StoredReportDraft = {
+  v: 2;
+  projectId: string;
+  draft: ReportDraft;
+  workDone: string;
+  incidents: string;
+  extras: string;
+  officeRework: string;
+  officeNextSteps: string;
+  date: string;
+  workers: ReportWorker[];
+  materialRows: Pick<ReportMaterialRow, "item" | "qty" | "unit" | "article_no">[];
+  officeMaterialRows: Pick<ReportMaterialRow, "item" | "qty" | "unit" | "article_no">[];
+  sourceTaskId: number | null;
+  savedAt: string;
 };
 
 export type ReportMaterialRow = {

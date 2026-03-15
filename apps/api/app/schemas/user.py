@@ -16,11 +16,15 @@ class UserCreate(BaseModel):
     role: str = "employee"
 
 
+VALID_WORKSPACE_LOCKS = frozenset({"construction", "office"})
+
+
 class UserUpdate(BaseModel):
     full_name: str | None = None
     role: str | None = None
     is_active: bool | None = None
     required_daily_hours: float | None = Field(default=None, ge=1, le=24)
+    workspace_lock: str | None = None  # "construction" | "office" | null (null clears the lock)
 
 
 class UserOut(BaseModel):
@@ -37,8 +41,16 @@ class UserOut(BaseModel):
     invite_sent_at: datetime | None = None
     invite_accepted_at: datetime | None = None
     password_reset_sent_at: datetime | None = None
+    preferences: dict[str, Any] = {}
+    workspace_lock: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class UserMeOut(UserOut):
+    """Extended user response for the /me endpoint — includes resolved permissions."""
+
+    effective_permissions: list[str] = []
 
 
 class AssignableUserOut(BaseModel):

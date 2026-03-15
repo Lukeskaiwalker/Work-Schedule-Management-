@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.core.deps import assert_project_access, get_current_user, require_permission
-from app.core.permissions import ALL_ROLES, has_permission
+from app.core.permissions import ALL_ROLES, has_permission, has_permission_for_user
 from app.core.time import utcnow
 from app.models.entities import (
     Attachment,
@@ -1131,7 +1131,10 @@ def _latest_project_file_by_path(db: Session, project_id: int, user: User) -> di
 
 
 def _projects_visible_to_user(db: Session, user: User) -> list[Project]:
-    if user.role in {"admin", "ceo", "planning", "accountant"}:
+    # Use the live permission map (respects admin UI role overrides + per-user grants).
+    can_view_all = has_permission_for_user(user.id, user.role, "projects:view") or \
+                   has_permission_for_user(user.id, user.role, "projects:manage")
+    if can_view_all:
         return list(db.scalars(select(Project).order_by(Project.id.asc())).all())
 
     member_project_ids = db.scalars(

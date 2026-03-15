@@ -87,6 +87,8 @@ class VacationRequestOut(BaseModel):
 class SchoolAbsenceCreate(BaseModel):
     user_id: int
     title: str = Field(default="Berufsschule", min_length=1, max_length=255)
+    absence_type: str = Field(default="other", min_length=1, max_length=64)
+    counts_as_hours: bool = True
     start_date: date
     end_date: date
     recurrence_weekday: int | None = Field(default=None, ge=0, le=6)
@@ -98,6 +100,8 @@ class SchoolAbsenceOut(BaseModel):
     user_id: int
     user_name: str
     title: str
+    absence_type: str = "other"
+    counts_as_hours: bool = True
     start_date: date
     end_date: date
     recurrence_weekday: int | None = None

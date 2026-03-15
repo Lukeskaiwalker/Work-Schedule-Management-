@@ -1,4 +1,4 @@
-import { Fragment } from "react";
+import { Fragment, useMemo } from "react";
 import { useAppContext } from "../context/AppContext";
 import { addDaysISO, normalizeWeekStartISO, isoWeekInfo, isoWeekdayMondayFirst } from "../utils/dates";
 import { sortTasksByDueTime, formatTaskStartTime } from "../utils/tasks";
@@ -29,7 +29,17 @@ export function CalendarPage() {
     openTaskFromPlanning,
     openProjectFromTask,
     menuUserNameById,
+    publicHolidays,
   } = useAppContext();
+
+  // Build a lookup map for fast O(1) holiday check per date string
+  const holidayByDate = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const h of publicHolidays) {
+      map.set(h.date, h.name);
+    }
+    return map;
+  }, [publicHolidays]);
 
   if (mainView !== "calendar") return null;
 
@@ -118,6 +128,7 @@ export function CalendarPage() {
                     const monthNum = parseInt(day.date.split("-")[1] ?? "1", 10);
                     const isWeekend = isoWeekdayMondayFirst(day.date) >= 5;
                     const isToday = day.date === todayIso;
+                    const holidayName = holidayByDate.get(day.date);
                     const dayTasks = sortTasksByDueTime(day.tasks);
                     const absences = day.absences ?? [];
 
@@ -128,6 +139,7 @@ export function CalendarPage() {
                           "calendar-cell calendar-day-cell",
                           isWeekend ? "calendar-weekend" : "",
                           isToday ? "calendar-today" : "",
+                          holidayName ? "calendar-holiday" : "",
                         ]
                           .filter(Boolean)
                           .join(" ")}
@@ -147,6 +159,12 @@ export function CalendarPage() {
 
                         {/* Events list */}
                         <ul className="calendar-day-list">
+                          {holidayName && (
+                            <li className="calendar-public-holiday" title={holidayName}>
+                              <span className="calendar-holiday-icon">🎌</span>
+                              <b>{holidayName}</b>
+                            </li>
+                          )}
                           {absences.map((absence: any, idx: number) => (
                             <li
                               key={`absence-${day.date}-${String(absence.user_id)}-${idx}`}
@@ -207,7 +225,7 @@ export function CalendarPage() {
                               </li>
                             );
                           })}
-                          {dayTasks.length === 0 && absences.length === 0 && (
+                          {dayTasks.length === 0 && absences.length === 0 && !holidayName && (
                             <li className="calendar-empty-cell" aria-hidden="true">–</li>
                           )}
                         </ul>

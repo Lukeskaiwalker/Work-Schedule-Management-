@@ -33,6 +33,7 @@ export function AdminPage() {
     archivedAdminUsers,
     adminUsersById,
     updateRole,
+    updateWorkspaceLock,
     requiredHoursDrafts,
     setRequiredHoursDrafts,
     updateRequiredDailyHours,
@@ -421,6 +422,22 @@ export function AdminPage() {
                         {ALL_ROLES.map((r) => (
                           <option key={r} value={r}>{r}</option>
                         ))}
+                      </select>
+                    </div>
+                    <div className="admin-user-control-row">
+                      <span className="admin-user-control-label">{de ? "Ansicht" : "View"}</span>
+                      <select
+                        value={u.workspace_lock ?? ""}
+                        className="admin-role-select"
+                        aria-label={de ? `Ansichtssperre für ${u.full_name}` : `View lock for ${u.full_name}`}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          void updateWorkspaceLock(u.id, val === "" ? null : (val as "construction" | "office"));
+                        }}
+                      >
+                        <option value="">{de ? "Frei wählbar" : "User's choice"}</option>
+                        <option value="construction">{de ? "Nur Baustelle" : "Construction only"}</option>
+                        <option value="office">{de ? "Nur Büro" : "Office only"}</option>
                       </select>
                     </div>
                     <div className="admin-user-control-row admin-hours-row">

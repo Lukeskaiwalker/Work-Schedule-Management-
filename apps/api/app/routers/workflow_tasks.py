@@ -52,19 +52,23 @@ def list_tasks(
         assert_project_access(db, current_user, project_id)
         stmt = stmt.where(Task.project_id == project_id)
 
+    # Respect the live permission map: only restrict to own tasks if the user
+    # lacks tasks:view_all (e.g. default employee, or a role with that perm removed).
+    own_tasks_only = not has_permission_for_user(current_user.id, current_user.role, "tasks:view_all")
+
     if view == "my":
         stmt = stmt.where(_my_task_filter(current_user.id))
         stmt = stmt.where(Task.status != "done")
     elif view == "all_open":
         stmt = stmt.where(Task.status != "done")
-        if current_user.role == "employee":
+        if own_tasks_only:
             stmt = stmt.where(_my_task_filter(current_user.id))
     elif view == "completed":
         stmt = stmt.where(Task.status == "done")
-        if current_user.role == "employee":
+        if own_tasks_only:
             stmt = stmt.where(_my_task_filter(current_user.id))
     elif view == "projects_overview":
-        if current_user.role == "employee":
+        if own_tasks_only:
             stmt = stmt.where(_my_task_filter(current_user.id))
 
     if week_start:
@@ -318,7 +322,7 @@ def planning_week_view(
         assert_project_access(db, current_user, project_id)
         stmt = stmt.where(Task.project_id == project_id)
 
-    if current_user.role == "employee":
+    if not has_permission_for_user(current_user.id, current_user.role, "tasks:view_all"):
         stmt = stmt.where(_my_task_filter(current_user.id))
     if task_type:
         stmt = stmt.where(Task.task_type == _normalize_task_type(task_type))

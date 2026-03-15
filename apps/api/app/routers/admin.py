@@ -1272,6 +1272,8 @@ def soft_delete_user(
 
 @router.patch("/users/{user_id}", response_model=UserOut)
 def update_user(user_id: int, payload: UserUpdate, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+    from app.schemas.user import VALID_WORKSPACE_LOCKS
+
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -1283,10 +1285,17 @@ def update_user(user_id: int, payload: UserUpdate, admin: User = Depends(require
     if payload.role and user_id == admin.id:
         raise HTTPException(status_code=403, detail="You cannot change your own role")
 
+    if payload.workspace_lock is not None and payload.workspace_lock not in VALID_WORKSPACE_LOCKS:
+        raise HTTPException(status_code=400, detail="workspace_lock must be 'construction', 'office', or null")
+
     for field in ["full_name", "role", "is_active", "required_daily_hours"]:
         value = getattr(payload, field)
         if value is not None:
             setattr(user, field, value)
+
+    # workspace_lock uses explicit set membership so null (clear) also takes effect
+    if "workspace_lock" in payload.model_fields_set:
+        user.workspace_lock = payload.workspace_lock
 
     db.add(user)
     db.commit()

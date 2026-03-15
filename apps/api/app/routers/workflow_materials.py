@@ -30,7 +30,10 @@ def list_projects(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    if current_user.role in {"admin", "ceo", "planning", "accountant"}:
+    # Respect the live permission map so admin-UI role edits take effect immediately.
+    can_view_all = has_permission_for_user(current_user.id, current_user.role, "projects:view") or \
+                   has_permission_for_user(current_user.id, current_user.role, "projects:manage")
+    if can_view_all:
         return list(db.scalars(select(Project).order_by(Project.id.desc())).all())
 
     member_project_ids = db.scalars(

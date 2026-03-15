@@ -74,6 +74,8 @@ import type {
   AvatarCropOutput,
   RolePermissionsMeta,
   UserPermissionOverride,
+  AbsenceType,
+  PublicHoliday,
 } from "../types";
 
 export interface AppContextValue {
@@ -89,6 +91,10 @@ export interface AppContextValue {
   // ── Current user ───────────────────────────────────────────────────────────
   user: User | null;
   setUser: (user: User | null) => void;
+  saveUserPreference: <K extends keyof import("../types").UserPreferences>(
+    key: K,
+    value: import("../types").UserPreferences[K],
+  ) => Promise<void>;
 
   // ── Navigation ─────────────────────────────────────────────────────────────
   mainView: MainView;
@@ -310,6 +316,21 @@ export interface AppContextValue {
   setReportProjectId: (id: string | ((current: string) => string)) => void;
   reportDraft: ReportDraft;
   setReportDraft: (draft: ReportDraft | ((current: ReportDraft) => ReportDraft)) => void;
+  reportWorkDone: string;
+  setReportWorkDone: (value: string) => void;
+  reportIncidents: string;
+  setReportIncidents: (value: string) => void;
+  reportExtras: string;
+  setReportExtras: (value: string) => void;
+  reportOfficeRework: string;
+  setReportOfficeRework: (value: string) => void;
+  reportOfficeNextSteps: string;
+  setReportOfficeNextSteps: (value: string) => void;
+  reportDate: string;
+  setReportDate: (value: string) => void;
+  reportHasStoredDraft: boolean;
+  restoreReportDraft: () => void;
+  discardReportDraft: () => void;
   reportTaskPrefill: TaskReportPrefill | null;
   setReportTaskPrefill: (prefill: TaskReportPrefill | null) => void;
   reportSourceTaskId: number | null;
@@ -395,6 +416,7 @@ export interface AppContextValue {
   schoolAbsenceForm: {
     user_id: string;
     title: string;
+    absence_type: string;
     start_date: string;
     end_date: string;
     recurrence_weekdays: number[];
@@ -402,8 +424,8 @@ export interface AppContextValue {
   };
   setSchoolAbsenceForm: (
     form:
-      | { user_id: string; title: string; start_date: string; end_date: string; recurrence_weekdays: number[]; recurrence_until: string }
-      | ((current: { user_id: string; title: string; start_date: string; end_date: string; recurrence_weekdays: number[]; recurrence_until: string }) => { user_id: string; title: string; start_date: string; end_date: string; recurrence_weekdays: number[]; recurrence_until: string }),
+      | { user_id: string; title: string; absence_type: string; start_date: string; end_date: string; recurrence_weekdays: number[]; recurrence_until: string }
+      | ((current: { user_id: string; title: string; absence_type: string; start_date: string; end_date: string; recurrence_weekdays: number[]; recurrence_until: string }) => { user_id: string; title: string; absence_type: string; start_date: string; end_date: string; recurrence_weekdays: number[]; recurrence_until: string }),
   ) => void;
   timeMonthCursor: Date;
   setTimeMonthCursor: (cursor: Date) => void;
@@ -411,6 +433,12 @@ export interface AppContextValue {
   setTimeInfoOpen: (open: boolean) => void;
   timeTargetUserId: string;
   setTimeTargetUserId: (id: string) => void;
+  timeTargetSearch: string;
+  setTimeTargetSearch: (s: string) => void;
+  timeTargetDropdownOpen: boolean;
+  setTimeTargetDropdownOpen: (open: boolean) => void;
+  absenceTypes: AbsenceType[];
+  publicHolidays: PublicHoliday[];
   requiredHoursDrafts: Record<number, string>;
   setRequiredHoursDrafts: (drafts: Record<number, string> | ((current: Record<number, string>) => Record<number, string>)) => void;
 
@@ -528,6 +556,7 @@ export interface AppContextValue {
   canManageSchoolAbsences: boolean;
   canManageProjectImport: boolean;
   canUseProtectedFolders: boolean;
+  canViewFinance: boolean;
   canManageFinance: boolean;
   hasMessageText: boolean;
   canSendMessage: boolean;
@@ -625,6 +654,7 @@ export interface AppContextValue {
   timeTargetUser: AssignableUser | null;
   monthWeekDefs: MonthWeekRange[];
   monthCursorLabel: string;
+  monthCursorISO: string;
   monthlyWorkedHours: number;
   monthlyRequiredHours: number;
   pendingVacationRequests: VacationRequest[];
@@ -832,6 +862,7 @@ export interface AppContextValue {
   deleteAvatar: () => Promise<void>;
   applyTemplate: (userId: number) => Promise<void>;
   updateRole: (userId: number, role: User["role"]) => Promise<void>;
+  updateWorkspaceLock: (userId: number, lock: "construction" | "office" | null) => Promise<void>;
   updateRequiredDailyHours: (targetUserId: number) => Promise<void>;
   saveProfileSettings: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   sendInviteToUser: (targetUserId: number) => Promise<void>;

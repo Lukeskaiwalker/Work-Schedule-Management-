@@ -25,6 +25,8 @@ ALL_PERMISSIONS: frozenset[str] = frozenset(
         "time:view_all",
         "time:clock",
         "time:view_own",
+        "time:approve_vacation",
+        "time:manage_absences",
         "files:manage",
         "files:view",
         "files:view_project",
@@ -36,6 +38,8 @@ ALL_PERMISSIONS: frozenset[str] = frozenset(
         "wiki:manage",
         "wiki:view",
         "audit:view",
+        "finance:view",
+        "finance:manage",
     ]
 )
 
@@ -53,6 +57,8 @@ PERMISSION_LABELS: dict[str, str] = {
     "time:view_all": "View all time entries",
     "time:clock": "Clock in / out",
     "time:view_own": "View own time entries",
+    "time:approve_vacation": "Approve vacation requests",
+    "time:manage_absences": "Manage absences / school dates",
     "files:manage": "Manage files",
     "files:view": "View all files",
     "files:view_project": "View project files",
@@ -64,6 +70,8 @@ PERMISSION_LABELS: dict[str, str] = {
     "wiki:manage": "Manage wiki",
     "wiki:view": "View wiki",
     "audit:view": "View audit log",
+    "finance:view": "View project finances",
+    "finance:manage": "Edit project finances",
 }
 
 PERMISSION_DESCRIPTIONS: dict[str, str] = {
@@ -79,6 +87,8 @@ PERMISSION_DESCRIPTIONS: dict[str, str] = {
     "time:view_all":       "View time entries for all users across the organisation.",
     "time:clock":          "Clock in and out; log personal time entries.",
     "time:view_own":       "View only the current user's own time entries.",
+    "time:approve_vacation": "Review, approve or reject employee vacation requests.",
+    "time:manage_absences":  "Create, edit and delete absence records (sick leave, school, etc.).",
     "files:manage":        "Upload, rename, move and delete files across all projects.",
     "files:view":          "View and download files in all projects.",
     "files:view_project":  "View and download files only in projects the user is a member of.",
@@ -90,6 +100,8 @@ PERMISSION_DESCRIPTIONS: dict[str, str] = {
     "wiki:manage":         "Create, edit and delete wiki pages.",
     "wiki:view":           "Read wiki pages.",
     "audit:view":          "Browse the admin audit log of all system actions.",
+    "finance:view":        "View the finances tab on projects (order values, budgets, margins).",
+    "finance:manage":      "Edit financial data on projects (order values, down payments, costs).",
 }
 
 # Logical groups of permissions for the admin UI matrix.
@@ -99,32 +111,46 @@ PERMISSION_GROUPS: list[dict] = [
     {"key": "tasks",    "label": "Tasks",    "permissions": ["tasks:manage", "tasks:view_all", "tasks:view_own"]},
     {"key": "planning", "label": "Planning", "permissions": ["planning:manage"]},
     {"key": "tickets",  "label": "Tickets",  "permissions": ["tickets:manage"]},
-    {"key": "time",     "label": "Time",     "permissions": ["time:manage", "time:view_all", "time:clock", "time:view_own"]},
+    {"key": "time",     "label": "Time",     "permissions": ["time:manage", "time:view_all", "time:clock", "time:view_own", "time:approve_vacation", "time:manage_absences"]},
     {"key": "files",    "label": "Files",    "permissions": ["files:manage", "files:view", "files:view_project"]},
     {"key": "chat",     "label": "Chat",     "permissions": ["chat:manage", "chat:project"]},
     {"key": "reports",  "label": "Reports",  "permissions": ["reports:manage", "reports:view", "reports:create"]},
     {"key": "wiki",     "label": "Wiki",     "permissions": ["wiki:manage", "wiki:view"]},
     {"key": "audit",    "label": "Audit",    "permissions": ["audit:view"]},
+    {"key": "finance",  "label": "Finance",  "permissions": ["finance:view", "finance:manage"]},
 ]
 
 # Default permission map — the hard-coded baseline.  Never mutated at runtime.
 PERMISSIONS_BY_ROLE: dict[str, set[str]] = {
     ROLE_ADMIN: {
+        # Admin has every permission in the system
         "users:manage",
         "projects:manage",
         "projects:view",
         "tasks:manage",
         "tasks:view_all",
+        "tasks:view_own",
         "planning:manage",
         "tickets:manage",
         "time:manage",
         "time:view_all",
+        "time:clock",
+        "time:view_own",
+        "time:approve_vacation",
+        "time:manage_absences",
         "files:manage",
+        "files:view",
+        "files:view_project",
         "chat:manage",
+        "chat:project",
         "reports:manage",
+        "reports:view",
+        "reports:create",
         "wiki:manage",
         "wiki:view",
         "audit:view",
+        "finance:view",
+        "finance:manage",
     },
     ROLE_CEO: {
         "projects:manage",
@@ -133,20 +159,27 @@ PERMISSIONS_BY_ROLE: dict[str, set[str]] = {
         "tasks:view_all",
         "tickets:manage",
         "time:view_all",
+        "time:approve_vacation",
+        "time:manage_absences",
         "files:manage",
         "chat:manage",
         "reports:manage",
         "wiki:manage",
         "wiki:view",
+        "finance:view",
+        "finance:manage",
     },
     ROLE_ACCOUNTANT: {
         "projects:view",
         "tasks:view_all",
         "time:view_all",
+        "time:manage_absences",
         "files:view",
         "chat:project",
         "reports:view",
         "wiki:view",
+        "finance:view",
+        "finance:manage",
     },
     ROLE_PLANNING: {
         "projects:view",
@@ -261,6 +294,23 @@ def get_user_override(user_id: int) -> dict[str, list[str]]:
         "extra": sorted(data.get("extra", set())),
         "denied": sorted(data.get("denied", set())),
     }
+
+
+def get_user_effective_permissions(user_id: int, role: str) -> list[str]:
+    """Return the sorted list of all effective permissions for a user.
+
+    Applies role-level permissions first, then user-level extra/denied overrides.
+    """
+    with _override_lock:
+        effective = _override_map if _override_map is not None else PERMISSIONS_BY_ROLE
+    role_perms = set(effective.get(role, set()))
+
+    with _user_override_lock:
+        override = _user_override_map.get(user_id, {})
+
+    extra = override.get("extra", set())
+    denied = override.get("denied", set())
+    return sorted((role_perms | extra) - denied)
 
 
 def get_all_user_overrides() -> dict[int, dict[str, list[str]]]:

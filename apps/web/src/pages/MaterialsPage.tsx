@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useAppContext } from "../context/AppContext";
 import { formatDayLabel, formatServerDateTime } from "../utils/dates";
 import { normalizeMaterialNeedStatus, materialNeedStatusLabel, materialNeedStatusClass, nextMaterialNeedStatus } from "../utils/materials";
@@ -38,6 +38,54 @@ export function MaterialsPage() {
 
   // Per-item quantity inputs keyed by catalog item ID
   const [itemQuantities, setItemQuantities] = useState<Record<number, string>>({});
+  // Set of project IDs whose group is collapsed
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<number>>(new Set());
+
+  // Group material needs by project, preserving insertion order (sorted by project number)
+  const needGroups = useMemo(() => {
+    const map = new Map<number, { projectId: number; projectNumber: string; projectTitle: string; projectSubtitle: string | null; items: typeof materialNeedRows }>();
+    for (const entry of materialNeedRows) {
+      if (!map.has(entry.project_id)) {
+        const parts = formatProjectTitleParts(
+          entry.project_number,
+          entry.customer_name ?? null,
+          entry.project_name,
+          entry.project_id,
+        );
+        map.set(entry.project_id, {
+          projectId: entry.project_id,
+          projectNumber: entry.project_number,
+          projectTitle: parts.title,
+          projectSubtitle: parts.subtitle ?? null,
+          items: [],
+        });
+      }
+      map.get(entry.project_id)!.items.push(entry);
+    }
+    return Array.from(map.values()).sort((a, b) =>
+      a.projectNumber.localeCompare(b.projectNumber, undefined, { numeric: true }),
+    );
+  }, [materialNeedRows]);
+
+  function toggleGroup(projectId: number) {
+    setCollapsedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(projectId)) {
+        next.delete(projectId);
+      } else {
+        next.add(projectId);
+      }
+      return next;
+    });
+  }
+
+  function collapseAll() {
+    setCollapsedGroups(new Set(needGroups.map((g) => g.projectId)));
+  }
+
+  function expandAll() {
+    setCollapsedGroups(new Set());
+  }
 
   if (mainView !== "materials") return null;
 
@@ -84,54 +132,60 @@ export function MaterialsPage() {
       </div>
 
       <div className="materials-view-layout">
-        {/* ── Left: needs list ──────────────────────────────────────── */}
+        {/* ── Left: needs list (grouped by project) ─────────────────── */}
         <div className="materials-panel">
-          <h4>{language === "de" ? "Bedarfsliste" : "Needs list"}</h4>
-          <ul className="materials-list">
-            {materialNeedRows.map((entry) => {
-              const normalizedStatus = normalizeMaterialNeedStatus(entry.status);
-              const statusClass = materialNeedStatusClass(normalizedStatus);
-              const project = projectsById.get(entry.project_id) ?? null;
-              const projectLabel = formatProjectTitleParts(
-                entry.project_number,
-                entry.customer_name ?? project?.customer_name ?? null,
-                entry.project_name,
-                entry.project_id,
-              );
-              const isUpdating = Boolean(materialNeedUpdating[entry.id]);
+          <div className="materials-list-head">
+            <h4>{language === "de" ? "Bedarfsliste" : "Needs list"}</h4>
+            {needGroups.length > 1 && (
+              <div className="materials-collapse-controls">
+                <button type="button" className="linklike" onClick={collapseAll}>
+                  {language === "de" ? "Alle einklappen" : "Collapse all"}
+                </button>
+                <span className="muted">·</span>
+                <button type="button" className="linklike" onClick={expandAll}>
+                  {language === "de" ? "Alle ausklappen" : "Expand all"}
+                </button>
+              </div>
+            )}
+          </div>
+
+          {needGroups.length === 0 && (
+            <p className="muted">
+              {language === "de" ? "Kein offener Materialbedarf gefunden." : "No open material needs found."}
+            </p>
+          )}
+
+          <div className="materials-groups">
+            {needGroups.map((group) => {
+              const isCollapsed = collapsedGroups.has(group.projectId);
+              const project = projectsById.get(group.projectId) ?? null;
+              // "Open" = anything not yet completed (order, on_the_way, available)
+              const openCount = group.items.filter(
+                (e) => normalizeMaterialNeedStatus(e.status) !== "completed",
+              ).length;
+              const waitingCount = group.items.filter((e) => {
+                const s = normalizeMaterialNeedStatus(e.status);
+                return s === "order" || s === "on_the_way";
+              }).length;
+
               return (
-                <li key={`material-need-${entry.id}`} className="materials-item">
-                  {entry.image_url ? (
-                    <div className="materials-item-image-wrap">
-                      <img
-                        src={entry.image_url}
-                        alt={entry.item}
-                        className="materials-item-image"
-                        loading="lazy"
-                        referrerPolicy="no-referrer"
-                        onError={(event) => {
-                          event.currentTarget.style.display = "none";
-                        }}
-                      />
-                    </div>
-                  ) : (
-                    <div className="materials-item-image-wrap materials-item-image-empty" aria-hidden />
-                  )}
-                  <div className="materials-item-main">
-                    <b>{entry.item}</b>
-                    {(entry.article_no || entry.quantity || entry.unit) && (
-                      <small>
-                        {entry.article_no ? `${language === "de" ? "Art.-Nr." : "Article"}: ${entry.article_no}` : ""}
-                        {entry.quantity ? ` | ${language === "de" ? "Menge" : "Qty"}: ${entry.quantity}` : ""}
-                        {entry.unit ? ` ${entry.unit}` : ""}
-                      </small>
-                    )}
-                    <small>
-                      {language === "de" ? "Projekt" : "Project"}:{" "}
+                <div key={`group-${group.projectId}`} className="materials-group">
+                  {/* Group header */}
+                  <button
+                    type="button"
+                    className="materials-group-header"
+                    onClick={() => toggleGroup(group.projectId)}
+                    aria-expanded={!isCollapsed}
+                  >
+                    <span className="materials-group-chevron" aria-hidden>
+                      {isCollapsed ? "▸" : "▾"}
+                    </span>
+                    <span className="materials-group-title">
                       <button
                         type="button"
-                        className="linklike"
-                        onClick={() => {
+                        className="linklike materials-group-project-link"
+                        onClick={(event) => {
+                          event.stopPropagation();
                           if (!project) return;
                           setActiveProjectId(project.id);
                           setProjectTab("overview");
@@ -139,49 +193,110 @@ export function MaterialsPage() {
                           setMainView("project");
                         }}
                       >
-                        {projectLabel.title}
+                        {group.projectTitle}
                       </button>
-                    </small>
-                    {projectLabel.subtitle && <small className="project-name-subtle">{projectLabel.subtitle}</small>}
-                    <small>
-                      {language === "de" ? "Berichtdatum" : "Report date"}:{" "}
-                      {entry.report_date ? formatDayLabel(entry.report_date, language) : "-"}
-                    </small>
-                  </div>
-                  <div className="materials-item-actions">
-                    <button
-                      type="button"
-                      className={`materials-status-badge materials-status-toggle ${statusClass}`}
-                      disabled={isUpdating}
-                      onClick={() => void updateMaterialNeedState(entry.id, nextMaterialNeedStatus(normalizedStatus))}
-                      title={
-                        language === "de"
-                          ? `Status wechseln zu: ${materialNeedStatusLabel(nextMaterialNeedStatus(normalizedStatus), language)}`
-                          : `Change status to: ${materialNeedStatusLabel(nextMaterialNeedStatus(normalizedStatus), language)}`
-                      }
-                    >
-                      {materialNeedStatusLabel(normalizedStatus, language)}
-                    </button>
-                    {normalizedStatus === "available" && (
-                      <button
-                        type="button"
-                        className="materials-complete-btn"
-                        disabled={isUpdating}
-                        onClick={() => void updateMaterialNeedState(entry.id, "completed")}
-                      >
-                        {language === "de" ? "Erledigt" : "Complete"}
-                      </button>
-                    )}
-                  </div>
-                </li>
+                      {group.projectSubtitle && (
+                        <span className="materials-group-subtitle">{group.projectSubtitle}</span>
+                      )}
+                    </span>
+                    <span className="materials-group-meta">
+                      <span className="materials-group-count">
+                        {group.items.length} {language === "de" ? "Pos." : "pos."}
+                      </span>
+                      {waitingCount > 0 && (
+                        <span className="materials-group-open-badge" title={
+                          language === "de"
+                            ? `${waitingCount} Position(en) noch nicht bestellt oder unterwegs`
+                            : `${waitingCount} position(s) not yet ordered or in transit`
+                        }>
+                          {waitingCount} {language === "de" ? "offen" : "open"}
+                        </span>
+                      )}
+                      {waitingCount === 0 && openCount > 0 && (
+                        <span className="materials-group-ready-badge" title={
+                          language === "de"
+                            ? `${openCount} Position(en) verfügbar, bereit zum Abschließen`
+                            : `${openCount} position(s) available, ready to complete`
+                        }>
+                          {openCount} {language === "de" ? "verfügbar" : "ready"}
+                        </span>
+                      )}
+                    </span>
+                  </button>
+
+                  {/* Items (shown when expanded) */}
+                  {!isCollapsed && (
+                    <ul className="materials-list materials-group-items">
+                      {group.items.map((entry) => {
+                        const normalizedStatus = normalizeMaterialNeedStatus(entry.status);
+                        const statusClass = materialNeedStatusClass(normalizedStatus);
+                        const isUpdating = Boolean(materialNeedUpdating[entry.id]);
+                        return (
+                          <li key={`material-need-${entry.id}`} className="materials-item">
+                            {entry.image_url ? (
+                              <div className="materials-item-image-wrap">
+                                <img
+                                  src={entry.image_url}
+                                  alt={entry.item}
+                                  className="materials-item-image"
+                                  loading="lazy"
+                                  referrerPolicy="no-referrer"
+                                  onError={(event) => {
+                                    event.currentTarget.style.display = "none";
+                                  }}
+                                />
+                              </div>
+                            ) : (
+                              <div className="materials-item-image-wrap materials-item-image-empty" aria-hidden />
+                            )}
+                            <div className="materials-item-main">
+                              <b>{entry.item}</b>
+                              {(entry.article_no || entry.quantity || entry.unit) && (
+                                <small>
+                                  {entry.article_no ? `${language === "de" ? "Art.-Nr." : "Article"}: ${entry.article_no}` : ""}
+                                  {entry.quantity ? ` | ${language === "de" ? "Menge" : "Qty"}: ${entry.quantity}` : ""}
+                                  {entry.unit ? ` ${entry.unit}` : ""}
+                                </small>
+                              )}
+                              <small className="muted">
+                                {language === "de" ? "Datum" : "Date"}:{" "}
+                                {entry.report_date ? formatDayLabel(entry.report_date, language) : "-"}
+                              </small>
+                            </div>
+                            <div className="materials-item-actions">
+                              <button
+                                type="button"
+                                className={`materials-status-badge materials-status-toggle ${statusClass}`}
+                                disabled={isUpdating}
+                                onClick={() => void updateMaterialNeedState(entry.id, nextMaterialNeedStatus(normalizedStatus))}
+                                title={
+                                  language === "de"
+                                    ? `Status wechseln zu: ${materialNeedStatusLabel(nextMaterialNeedStatus(normalizedStatus), language)}`
+                                    : `Change status to: ${materialNeedStatusLabel(nextMaterialNeedStatus(normalizedStatus), language)}`
+                                }
+                              >
+                                {materialNeedStatusLabel(normalizedStatus, language)}
+                              </button>
+                              {normalizedStatus === "available" && (
+                                <button
+                                  type="button"
+                                  className="materials-complete-btn"
+                                  disabled={isUpdating}
+                                  onClick={() => void updateMaterialNeedState(entry.id, "completed")}
+                                >
+                                  {language === "de" ? "Erledigt" : "Complete"}
+                                </button>
+                              )}
+                            </div>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </div>
               );
             })}
-            {materialNeedRows.length === 0 && (
-              <li className="muted">
-                {language === "de" ? "Kein offener Materialbedarf gefunden." : "No open material needs found."}
-              </li>
-            )}
-          </ul>
+          </div>
         </div>
 
         {/* ── Right: catalog / shopping panel ─────────────────────── */}

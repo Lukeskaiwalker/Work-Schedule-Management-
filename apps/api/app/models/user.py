@@ -1,7 +1,7 @@
 from __future__ import annotations
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
@@ -29,6 +29,8 @@ class User(Base):
     invite_accepted_at: Mapped[datetime | None] = mapped_column(DateTime)
     password_reset_sent_at: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    preferences: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict, server_default="{}")
+    workspace_lock: Mapped[str | None] = mapped_column(String(32), nullable=True, default=None)
 
     @property
     def display_name(self) -> str:

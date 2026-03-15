@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.core.deps import get_current_user
-from app.core.permissions import ALL_ROLES, ROLE_ADMIN
+from app.core.permissions import ALL_ROLES, ROLE_ADMIN, get_user_effective_permissions
 from app.core.security import create_access_token, get_password_hash, verify_password
 from app.core.time import utcnow
 from app.models.entities import User, UserActionToken
@@ -22,6 +22,7 @@ from app.schemas.api import (
     ProfileUpdate,
     UserOut,
 )
+from app.schemas.user import UserMeOut
 from app.services.runtime_settings import mark_initial_admin_bootstrap_completed
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -86,9 +87,11 @@ def logout(response: Response):
     return {"ok": True}
 
 
-@router.get("/me", response_model=UserOut)
+@router.get("/me", response_model=UserMeOut)
 def me(current_user: User = Depends(get_current_user)):
-    return current_user
+    out = UserMeOut.model_validate(current_user)
+    out.effective_permissions = get_user_effective_permissions(current_user.id, current_user.role)
+    return out
 
 
 @router.get("/nickname-availability", response_model=NicknameAvailabilityOut)
@@ -207,6 +210,42 @@ def update_profile(
     if changed_initial_admin_credentials:
         mark_initial_admin_bootstrap_completed(db)
 
+    db.add(current_user)
+    db.commit()
+    db.refresh(current_user)
+    return current_user
+
+
+# Allowed preference keys and their valid values (None means any string is accepted)
+_ALLOWED_PREFERENCES: dict[str, set[str] | None] = {
+    "planning_mobile_view": {"single", "list", "scroll"},
+}
+
+
+@router.patch("/me/preferences", response_model=UserOut)
+def update_preferences(
+    payload: dict,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Merge-patch the current user's UI preferences.
+
+    Only known keys are accepted; unknown keys are silently ignored.
+    Each key may also have a restricted set of valid values.
+    """
+    current: dict = dict(current_user.preferences or {})
+    for key, value in payload.items():
+        if key not in _ALLOWED_PREFERENCES:
+            continue
+        allowed_values = _ALLOWED_PREFERENCES[key]
+        if allowed_values is not None and value not in allowed_values:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid value {value!r} for preference '{key}'",
+            )
+        current[key] = value
+
+    current_user.preferences = current
     db.add(current_user)
     db.commit()
     db.refresh(current_user)

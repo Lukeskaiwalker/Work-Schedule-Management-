@@ -200,7 +200,7 @@ def update_project(
 @router.get("/projects/{project_id}/finance", response_model=ProjectFinanceOut)
 def get_project_finance(
     project_id: int,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("finance:view")),
     db: Session = Depends(get_db),
 ):
     assert_project_access(db, current_user, project_id)
@@ -307,11 +307,9 @@ def list_project_report_materials(
 def update_project_finance(
     project_id: int,
     payload: ProjectFinanceUpdate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_permission("finance:manage")),
     db: Session = Depends(get_db),
 ):
-    if current_user.role not in {"admin", "ceo", "accountant"}:
-        raise HTTPException(status_code=403, detail="Finance access denied")
     assert_project_access(db, current_user, project_id)
     project = db.get(Project, project_id)
     if not project:

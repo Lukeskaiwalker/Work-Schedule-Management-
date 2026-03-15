@@ -108,28 +108,30 @@ export function Sidebar() {
           <div className="brand-meta">
             <div className="brand-title-row">
               <h2>SMPL</h2>
-              <div className="workspace-mode-switch" role="group" aria-label={language === "de" ? "Ansicht wählen" : "Select view"}>
-                <button
-                  type="button"
-                  className={workspaceMode === "construction" ? "active" : ""}
-                  onClick={() => {
-                    setWorkspaceMode("construction");
-                    closeSidebar();
-                  }}
-                >
-                  {language === "de" ? "Baustelle" : "Construction"}
-                </button>
-                <button
-                  type="button"
-                  className={workspaceMode === "office" ? "active" : ""}
-                  onClick={() => {
-                    setWorkspaceMode("office");
-                    closeSidebar();
-                  }}
-                >
-                  {language === "de" ? "Büro" : "Office"}
-                </button>
-              </div>
+              {!user?.workspace_lock && (
+                <div className="workspace-mode-switch" role="group" aria-label={language === "de" ? "Ansicht wählen" : "Select view"}>
+                  <button
+                    type="button"
+                    className={workspaceMode === "construction" ? "active" : ""}
+                    onClick={() => {
+                      setWorkspaceMode("construction");
+                      closeSidebar();
+                    }}
+                  >
+                    {language === "de" ? "Baustelle" : "Construction"}
+                  </button>
+                  <button
+                    type="button"
+                    className={workspaceMode === "office" ? "active" : ""}
+                    onClick={() => {
+                      setWorkspaceMode("office");
+                      closeSidebar();
+                    }}
+                  >
+                    {language === "de" ? "Büro" : "Office"}
+                  </button>
+                </div>
+              )}
             </div>
             <small className="role">
               {language === "de" ? "Workflow-App" : "Workflow app"} | {workspaceModeLabel}

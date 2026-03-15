@@ -19,8 +19,22 @@ export function ConstructionPage() {
     projects,
     reportDraft,
     updateReportDraftField,
+    reportWorkDone,
+    setReportWorkDone,
+    reportIncidents,
+    setReportIncidents,
+    reportExtras,
+    setReportExtras,
+    reportOfficeRework,
+    setReportOfficeRework,
+    reportOfficeNextSteps,
+    setReportOfficeNextSteps,
+    reportDate,
+    setReportDate,
+    reportHasStoredDraft,
+    restoreReportDraft,
+    discardReportDraft,
     selectedReportProject,
-    todayIso,
     reportWorkers,
     updateReportWorker,
     addReportWorkerRow,
@@ -51,6 +65,22 @@ export function ConstructionPage() {
 
   return (
     <section className="grid">
+      {/* ── Draft restore banner ── */}
+      {reportHasStoredDraft && (
+        <div className="report-draft-banner">
+          <span>
+            {language === "de"
+              ? "Es gibt einen gespeicherten Entwurf von Ihrer letzten Sitzung."
+              : "There is a saved draft from your last session."}
+          </span>
+          <button type="button" onClick={restoreReportDraft}>
+            {language === "de" ? "Entwurf wiederherstellen" : "Restore draft"}
+          </button>
+          <button type="button" className="linklike" onClick={discardReportDraft}>
+            {language === "de" ? "Verwerfen" : "Discard"}
+          </button>
+        </div>
+      )}
       <form ref={constructionFormRef as React.RefObject<HTMLFormElement>} className="card report-form" onSubmit={submitConstructionReport}>
         <h3>{language === "de" ? "Baustellenbericht" : "Construction report"}</h3>
         {reportTaskPrefill && (
@@ -107,7 +137,13 @@ export function ConstructionPage() {
         </label>
         <label>
           {language === "de" ? "Datum" : "Date"}
-          <input type="date" name="report_date" defaultValue={todayIso} required />
+          <input
+            type="date"
+            name="report_date"
+            value={reportDate}
+            onChange={(e) => setReportDate(e.target.value)}
+            required
+          />
         </label>
         <label>
           {language === "de" ? "Kunde" : "Customer"}
@@ -174,12 +210,21 @@ export function ConstructionPage() {
 
         <label>
           {language === "de" ? "Arbeiten" : "Work done"}
-          <textarea name="work_done" placeholder={language === "de" ? "Was wurde gemacht?" : "What was completed?"} />
+          <textarea
+            name="work_done"
+            value={reportWorkDone}
+            onChange={(e) => setReportWorkDone(e.target.value)}
+            placeholder={language === "de" ? "Was wurde gemacht?" : "What was completed?"}
+          />
         </label>
 
         <label>
           {language === "de" ? "Vorkommnisse / Absprachen" : "Incidents / agreements"}
-          <textarea name="incidents" />
+          <textarea
+            name="incidents"
+            value={reportIncidents}
+            onChange={(e) => setReportIncidents(e.target.value)}
+          />
         </label>
 
         <div className="worker-grid">
@@ -289,7 +334,11 @@ export function ConstructionPage() {
         </div>
         <label>
           {language === "de" ? "Zusatzarbeiten (eine Zeile: Beschreibung|Grund)" : "Extras (one line: Description|Reason)"}
-          <textarea name="extras" />
+          <textarea
+            name="extras"
+            value={reportExtras}
+            onChange={(e) => setReportExtras(e.target.value)}
+          />
         </label>
         <div className="report-material-block">
           <b>{language === "de" ? "Büro Materialbedarf" : "Office material need"}</b>
@@ -347,11 +396,19 @@ export function ConstructionPage() {
         </div>
         <label>
           {language === "de" ? "Büro Nacharbeiten" : "Office rework"}
-          <textarea name="office_rework" />
+          <textarea
+            name="office_rework"
+            value={reportOfficeRework}
+            onChange={(e) => setReportOfficeRework(e.target.value)}
+          />
         </label>
         <label>
           {language === "de" ? "Büro nächste Schritte" : "Office next steps"}
-          <textarea name="office_next_steps" />
+          <textarea
+            name="office_next_steps"
+            value={reportOfficeNextSteps}
+            onChange={(e) => setReportOfficeNextSteps(e.target.value)}
+          />
         </label>
         <label>
           {language === "de" ? "Fotos" : "Photos"}

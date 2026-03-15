@@ -11,6 +11,24 @@ const DE_DAY_COLS = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"] as const;
 const EN_MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"] as const;
 const DE_MONTHS = ["Jan", "Feb", "Mär", "Apr", "Mai", "Jun", "Jul", "Aug", "Sep", "Okt", "Nov", "Dez"] as const;
 
+type MobileViewMode = "single" | "list" | "scroll";
+const MOBILE_VIEW_LS_KEY = "planning-mobile-view";
+
+/** Read from localStorage as a local fallback (used before server data loads). */
+function getLocalMobileViewPref(): MobileViewMode {
+  try {
+    const v = localStorage.getItem(MOBILE_VIEW_LS_KEY);
+    if (v === "single" || v === "list" || v === "scroll") return v;
+  } catch {}
+  return "single";
+}
+
+/** Keep localStorage in sync so the value is available instantly on next load
+ *  before the user object arrives from the server. */
+function cacheLocalMobileViewPref(mode: MobileViewMode) {
+  try { localStorage.setItem(MOBILE_VIEW_LS_KEY, mode); } catch {}
+}
+
 function monthAbbr(month: number, language: Language): string {
   return ((language === "de" ? DE_MONTHS : EN_MONTHS)[month - 1]) ?? "";
 }
@@ -19,6 +37,8 @@ export function PlanningPage() {
   const {
     mainView,
     language,
+    user,
+    saveUserPreference,
     planningWeekStart,
     setPlanningWeekStart,
     planningWeek,
@@ -43,7 +63,11 @@ export function PlanningPage() {
     return window.matchMedia("(max-width: 480px)").matches;
   });
   const [mobileDayIndex, setMobileDayIndex] = useState(0);
+  // Initialise from localStorage for instant paint; server value synced below.
+  const [mobileViewMode, setMobileViewMode] = useState<MobileViewMode>(getLocalMobileViewPref);
   const planningDays = planningWeek?.days ?? [];
+
+  const de = language === "de";
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -62,40 +86,62 @@ export function PlanningPage() {
     setMobileDayIndex((current) => (current < planningDays.length ? current : 0));
   }, [planningDays.length]);
 
+  // Sync the authoritative server value whenever the user object arrives/updates.
+  useEffect(() => {
+    const serverPref = user?.preferences?.planning_mobile_view;
+    if (serverPref) {
+      setMobileViewMode(serverPref);
+      cacheLocalMobileViewPref(serverPref); // keep LS in sync
+    }
+  }, [user?.preferences?.planning_mobile_view]);
+
+  function switchMobileView(mode: MobileViewMode) {
+    setMobileViewMode(mode);
+    cacheLocalMobileViewPref(mode);          // instant local cache
+    void saveUserPreference("planning_mobile_view", mode); // persist to server
+  }
+
   if (mainView !== "planning") return null;
 
-  const dayColLabels = language === "de" ? DE_DAY_COLS : EN_DAY_COLS;
+  const dayColLabels = de ? DE_DAY_COLS : EN_DAY_COLS;
+
+  // Grid modifier class depends on mobile view mode
+  const gridClass = [
+    "planning-grid-unified",
+    isPhoneViewport && mobileViewMode === "list" ? "planning-grid-mobile-list" : "",
+    isPhoneViewport && mobileViewMode === "scroll" ? "planning-grid-mobile-scroll" : "",
+  ].filter(Boolean).join(" ");
 
   return (
     <section className="card planning-only">
       {/* ── Toolbar ── */}
       <div className="row wrap planning-toolbar">
-        <h3>{language === "de" ? "Kalenderansicht" : "Calendar view"}</h3>
-        <div className="row planning-week-nav" role="group" aria-label={language === "de" ? "Wochenwechsel" : "Week switch"}>
+        <h3>{de ? "Kalenderansicht" : "Calendar view"}</h3>
+        <div className="row planning-week-nav" role="group" aria-label={de ? "Wochenwechsel" : "Week switch"}>
           <button
             type="button"
             className="icon-btn"
-            aria-label={language === "de" ? "Vorherige Woche" : "Previous week"}
-            title={language === "de" ? "Vorherige Woche" : "Previous week"}
+            aria-label={de ? "Vorherige Woche" : "Previous week"}
+            title={de ? "Vorherige Woche" : "Previous week"}
             onClick={() => setPlanningWeekStart(normalizeWeekStartISO(addDaysISO(planningWeekStart, -7)))}
           >
             ←
           </button>
           <div className="planning-week-number">
-            {language === "de" ? "KW" : "CW"} {planningWeekInfo.week}/{planningWeekInfo.year}
+            {de ? "KW" : "CW"} {planningWeekInfo.week}/{planningWeekInfo.year}
           </div>
           <button
             type="button"
             className="icon-btn"
-            aria-label={language === "de" ? "Nächste Woche" : "Next week"}
-            title={language === "de" ? "Nächste Woche" : "Next week"}
+            aria-label={de ? "Nächste Woche" : "Next week"}
+            title={de ? "Nächste Woche" : "Next week"}
             onClick={() => setPlanningWeekStart(normalizeWeekStartISO(addDaysISO(planningWeekStart, 7)))}
           >
             →
           </button>
         </div>
         <label className="planning-week-picker">
-          {language === "de" ? "Wochenstart (Montag)" : "Week start (Monday)"}
+          {de ? "Wochenstart (Montag)" : "Week start (Monday)"}
           <input
             type="date"
             value={planningWeekStart}
@@ -105,15 +151,45 @@ export function PlanningPage() {
         </label>
       </div>
 
-      {/* ── Mobile day navigation ── */}
-      {isPhoneViewport && planningDays.length > 0 && (
-        <div className="row planning-mobile-day-nav" role="group" aria-label={language === "de" ? "Tag wechseln" : "Change day"}>
+      {/* ── Mobile view mode toggle (phone only) ── */}
+      {isPhoneViewport && (
+        <div className="planning-mobile-view-toggle" role="group" aria-label={de ? "Anzeigemodus" : "Display mode"}>
+          <button
+            type="button"
+            className={mobileViewMode === "single" ? "active" : ""}
+            onClick={() => switchMobileView("single")}
+            title={de ? "Ein Tag" : "Single day"}
+          >
+            ◱ {de ? "Tag" : "Day"}
+          </button>
+          <button
+            type="button"
+            className={mobileViewMode === "list" ? "active" : ""}
+            onClick={() => switchMobileView("list")}
+            title={de ? "Alle Tage als Liste" : "All days as list"}
+          >
+            ☰ {de ? "Liste" : "List"}
+          </button>
+          <button
+            type="button"
+            className={mobileViewMode === "scroll" ? "active" : ""}
+            onClick={() => switchMobileView("scroll")}
+            title={de ? "Woche horizontal scrollen" : "Horizontal week scroll"}
+          >
+            ⟷ {de ? "Woche" : "Week"}
+          </button>
+        </div>
+      )}
+
+      {/* ── Single-day nav (only in "single" mode on phone) ── */}
+      {isPhoneViewport && mobileViewMode === "single" && planningDays.length > 0 && (
+        <div className="row planning-mobile-day-nav" role="group" aria-label={de ? "Tag wechseln" : "Change day"}>
           <button
             type="button"
             className="icon-btn"
-            aria-label={language === "de" ? "Vorheriger Tag" : "Previous day"}
-            title={language === "de" ? "Vorheriger Tag" : "Previous day"}
-            onClick={() => setMobileDayIndex((current) => Math.max(0, current - 1))}
+            aria-label={de ? "Vorheriger Tag" : "Previous day"}
+            title={de ? "Vorheriger Tag" : "Previous day"}
+            onClick={() => setMobileDayIndex((c) => Math.max(0, c - 1))}
             disabled={mobileDayIndex <= 0}
           >
             ←
@@ -124,9 +200,9 @@ export function PlanningPage() {
           <button
             type="button"
             className="icon-btn"
-            aria-label={language === "de" ? "Nächster Tag" : "Next day"}
-            title={language === "de" ? "Nächster Tag" : "Next day"}
-            onClick={() => setMobileDayIndex((current) => Math.min(planningDays.length - 1, current + 1))}
+            aria-label={de ? "Nächster Tag" : "Next day"}
+            title={de ? "Nächster Tag" : "Next day"}
+            onClick={() => setMobileDayIndex((c) => Math.min(planningDays.length - 1, c + 1))}
             disabled={mobileDayIndex >= planningDays.length - 1}
           >
             →
@@ -141,27 +217,27 @@ export function PlanningPage() {
           className={planningTaskTypeView === "construction" ? "active" : ""}
           onClick={() => setPlanningTaskTypeView("construction")}
         >
-          {language === "de" ? "Baustellenaufgaben" : "Construction tasks"}
+          {de ? "Baustellenaufgaben" : "Construction tasks"}
         </button>
         <button
           type="button"
           className={planningTaskTypeView === "office" ? "active" : ""}
           onClick={() => setPlanningTaskTypeView("office")}
         >
-          {language === "de" ? "Büroaufgaben" : "Office tasks"}
+          {de ? "Büroaufgaben" : "Office tasks"}
         </button>
         <button
           type="button"
           className={planningTaskTypeView === "customer_appointment" ? "active" : ""}
           onClick={() => setPlanningTaskTypeView("customer_appointment")}
         >
-          {language === "de" ? "Kundentermine" : "Customer appointments"}
+          {de ? "Kundentermine" : "Customer appointments"}
         </button>
       </div>
 
       {/* ── Calendar grid ── */}
       <div className="planning-calendar-scroll">
-        <div className="planning-grid-unified">
+        <div className={gridClass}>
           {planningDays.map((day, dayIndex) => {
             const isWeekend = isoWeekdayMondayFirst(day.date) >= 5;
             const isToday = day.date === todayIso;
@@ -170,22 +246,26 @@ export function PlanningPage() {
             const dayTasks = sortTasksByDueTime(day.tasks);
             const absences = day.absences ?? [];
 
+            // Hide/show logic: only in "single" mobile mode
+            const mobileVisClass =
+              isPhoneViewport && mobileViewMode === "single"
+                ? dayIndex === mobileDayIndex
+                  ? "planning-day-mobile-active"
+                  : "planning-day-mobile-hidden"
+                : "";
+
             const colClass = [
               "planning-col",
               isWeekend ? "planning-weekend-col" : "",
               isToday ? "planning-today-col" : "",
-              isPhoneViewport
-                ? dayIndex === mobileDayIndex
-                  ? "planning-day-mobile-active"
-                  : "planning-day-mobile-hidden"
-                : "",
+              mobileVisClass,
             ]
               .filter(Boolean)
               .join(" ");
 
             return (
               <div key={day.date} className={colClass}>
-                {/* Column header: day name + date number badge */}
+                {/* Column header */}
                 <div className="planning-col-head">
                   <span className="planning-col-day-name">{dayColLabels[dayIndex]}</span>
                   <span className={isToday ? "planning-col-day-num today-num" : "planning-col-day-num"}>
@@ -208,8 +288,8 @@ export function PlanningPage() {
                       </b>
                       <small>
                         {absence.type === "vacation"
-                          ? language === "de" ? "Urlaub" : "Vacation"
-                          : language === "de" ? "Schule" : "School"}
+                          ? de ? "Urlaub" : "Vacation"
+                          : de ? "Schule" : "School"}
                       </small>
                     </li>
                   ))}
@@ -266,8 +346,8 @@ export function PlanningPage() {
                                 event.stopPropagation();
                                 openTaskEditModal(task);
                               }}
-                              aria-label={language === "de" ? "Aufgabe bearbeiten" : "Edit task"}
-                              title={language === "de" ? "Aufgabe bearbeiten" : "Edit task"}
+                              aria-label={de ? "Aufgabe bearbeiten" : "Edit task"}
+                              title={de ? "Aufgabe bearbeiten" : "Edit task"}
                             >
                               <PenIcon />
                             </button>
@@ -280,7 +360,7 @@ export function PlanningPage() {
                                 void exportTaskCalendar(task);
                               }}
                             >
-                              {language === "de" ? "Kalender" : "Calendar"}
+                              {de ? "Kalender" : "Calendar"}
                             </button>
                           )}
                           {isMine && task.status !== "done" && (
@@ -291,7 +371,7 @@ export function PlanningPage() {
                                 void markTaskDone(task);
                               }}
                             >
-                              {language === "de" ? "Erledigt" : "Complete"}
+                              {de ? "Erledigt" : "Complete"}
                             </button>
                           )}
                         </div>

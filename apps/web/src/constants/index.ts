@@ -93,6 +93,7 @@ export const MATERIAL_UNIT_EXAMPLES = ["pcs", "m", "cm", "mm", "m2", "m3", "kg",
 export const MATERIAL_CATALOG_SEARCH_LIMIT = 10;
 
 export const WORKSPACE_MODE_STORAGE_KEY = "smpl_workspace_mode";
+export const REPORT_DRAFT_LS_KEY = "report_draft_v2";
 
 export const HHMM_PATTERN = "^([01]\\d|2[0-3]):[0-5]\\d$";
 export const HHMM_REGEX = /^([01]\d|2[0-3]):[0-5]\d$/;
