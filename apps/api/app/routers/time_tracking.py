@@ -876,15 +876,20 @@ def export_timesheet_xlsx(
         and date(year, mon, d).weekday() < 5
     )
 
-    # Calculate actual month hours
+    # Calculate actual month hours (mirrors the detail-sheet row logic)
+    overview_holidays = _nrw_public_holidays(year)
     month_is_hours = 0.0
     for d in range(1, calendar.monthrange(year, mon)[1] + 1):
         cur_date = date(year, mon, d)
-        if cur_date in day_entries:
+        if cur_date.weekday() >= 5:
+            continue
+        if cur_date in overview_holidays:
+            month_is_hours += required_daily
+        elif cur_date in day_entries:
             day_start_dt, day_end_dt = _local_period_bounds_utc(cur_date, cur_date)
             for entry in day_entries[cur_date]:
                 month_is_hours += _entry_metrics_for_period(db, entry, day_start_dt, day_end_dt, now=now_utc)["net_hours"]
-        elif cur_date in day_absence and cur_date.weekday() < 5:
+        elif cur_date in day_absence:
             _, cah = day_absence[cur_date]
             if cah:
                 month_is_hours += required_daily
@@ -966,7 +971,9 @@ def export_timesheet_xlsx(
     row = DATA_START_ROW + 1
     total_worked_hours = 0.0
     total_break_hours = 0.0
-    total_soll = total_required  # constant per month
+    total_soll = 0.0  # accumulated from actual weekday Soll values
+
+    month_holidays = _nrw_public_holidays(year)
 
     for d in range(1, calendar.monthrange(year, mon)[1] + 1):
         cur_date = date(year, mon, d)
@@ -974,8 +981,18 @@ def export_timesheet_xlsx(
         wd_abbr = _WEEKDAY_ABBR_DE[wd]
         date_str = cur_date.strftime("%d.%m.%Y")
         is_weekend = wd >= 5
+        holiday_name = month_holidays.get(cur_date)
 
-        if cur_date in day_entries and not is_weekend:
+        if is_weekend:
+            # Weekends: all zeros, no Soll
+            row_vals = [wd_abbr, date_str, "-", "-", 0.0, 0.0, 0.0, 0.0, None, None]
+        elif holiday_name:
+            # Public holiday on a weekday — full hours credited automatically
+            total_soll += required_daily
+            total_worked_hours += required_daily
+            row_vals = [wd_abbr, date_str, "-", "-", 0.0,
+                        required_daily, required_daily, 0.0, holiday_name, "Feiertag"]
+        elif cur_date in day_entries:
             day_start_dt, day_end_dt = _local_period_bounds_utc(cur_date, cur_date)
             day_net = 0.0
             day_break = 0.0
@@ -993,17 +1010,26 @@ def export_timesheet_xlsx(
                     last_out = local_out.strftime("%H:%M")
             day_net = round(day_net, 2)
             day_break = round(day_break, 2)
+            day_diff = round(day_net - required_daily, 2)
+            total_soll += required_daily
             total_worked_hours += day_net
             total_break_hours += day_break
             row_vals = [wd_abbr, date_str, first_in or "-", last_out or "-",
-                        day_break, "-", day_net, "-", None, 0]
-        elif cur_date in day_absence and not is_weekend:
+                        day_break, required_daily, day_net, day_diff, None, None]
+        elif cur_date in day_absence:
             absence_label, cah = day_absence[cur_date]
-            credited = required_daily if cah else 0.0
+            credited = round(required_daily if cah else 0.0, 2)
+            day_diff = round(credited - required_daily, 2)
+            total_soll += required_daily
             total_worked_hours += credited
-            row_vals = [wd_abbr, date_str, "-", "-", 0, "-", credited if credited else 0, "-", absence_label, 0]
+            row_vals = [wd_abbr, date_str, "-", "-", 0.0,
+                        required_daily, credited, day_diff, absence_label, absence_label]
         else:
-            row_vals = [wd_abbr, date_str, "-", "-", 0, "-", 0, "-", None, 0]
+            # Empty weekday — no clock entry, no absence, no holiday
+            day_diff = round(0.0 - required_daily, 2)
+            total_soll += required_daily
+            row_vals = [wd_abbr, date_str, "-", "-", 0.0,
+                        required_daily, 0.0, day_diff, None, None]
 
         for col, val in enumerate(row_vals, 1):
             cell = ws.cell(row=row, column=col, value=val)
@@ -1016,12 +1042,18 @@ def export_timesheet_xlsx(
             grey_fill = PatternFill("solid", fgColor="F2F2F2")
             for col in range(1, 11):
                 ws.cell(row=row, column=col).fill = grey_fill
+        # Tint public holiday rows
+        elif holiday_name:
+            holiday_fill = PatternFill("solid", fgColor="FEF3C7")
+            for col in range(1, 11):
+                ws.cell(row=row, column=col).fill = holiday_fill
 
         row += 1
 
     # Totals row
     total_worked_hours = round(total_worked_hours, 2)
     total_break_hours = round(total_break_hours, 2)
+    total_soll = round(total_soll, 2)
     month_diff = round(total_worked_hours - total_soll, 2)
     total_label = f"Summen vom {month_start.strftime('%d.%m.%Y')} bis {month_end.strftime('%d.%m.%Y')}"
     total_row_vals = [total_label, None, None, None, total_break_hours,
