@@ -843,10 +843,24 @@ def export_timesheet_xlsx(
     entries = _entries_overlapping_period(db, target_user_id, start_dt, end_dt)
     now_utc = utcnow()
 
-    # Build day-indexed lookup: date → list of clock entries
+    # Pre-compute per-entry metrics using MONTH bounds (consistent with timesheet endpoint).
+    # Using month bounds ensures break deductions are applied per-entry, not per-day-slice,
+    # so the totals match the overview numbers shown in the UI.
+    entry_metrics_cache: dict[int, dict] = {
+        entry.id: _entry_metrics_for_period(db, entry, start_dt, end_dt, now=now_utc)
+        for entry in entries
+    }
+
+    # Build day-indexed lookup: date → list of clock entries.
+    # Entries whose clock_in falls before the month start (cross-month overnight entries)
+    # are attributed to the first day of the month so they're not silently dropped.
     day_entries: dict[date, list] = {}
     for entry in entries:
         entry_date = _local_date_from_utc(entry.clock_in)
+        if entry_date < month_start:
+            entry_date = month_start
+        elif entry_date > month_end:
+            continue
         day_entries.setdefault(entry_date, []).append(entry)
 
     # Fetch absences
@@ -950,9 +964,8 @@ def export_timesheet_xlsx(
         if cur_date in overview_holidays:
             month_is_hours += required_daily
         elif cur_date in day_entries:
-            day_start_dt, day_end_dt = _local_period_bounds_utc(cur_date, cur_date)
             for entry in day_entries[cur_date]:
-                month_is_hours += _entry_metrics_for_period(db, entry, day_start_dt, day_end_dt, now=now_utc)["net_hours"]
+                month_is_hours += entry_metrics_cache[entry.id]["net_hours"]
         elif cur_date in day_absence:
             _, cah = day_absence[cur_date]
             if cah:
@@ -1057,15 +1070,16 @@ def export_timesheet_xlsx(
             row_vals = [wd_abbr, date_str, "-", "-", 0.0,
                         required_daily, required_daily, 0.0, holiday_name, "Feiertag"]
         elif cur_date in day_entries:
-            day_start_dt, day_end_dt = _local_period_bounds_utc(cur_date, cur_date)
             day_net = 0.0
             day_break = 0.0
             first_in = None
             last_out = None
             for entry in sorted(day_entries[cur_date], key=lambda e: e.clock_in):
-                metrics = _entry_metrics_for_period(db, entry, day_start_dt, day_end_dt, now=now_utc)
+                metrics = entry_metrics_cache[entry.id]
                 day_net += metrics["net_hours"]
-                day_break += metrics["break_hours"]
+                # deducted_break_hours = max(recorded, legally-required) — this is
+                # the amount actually subtracted from gross time to produce net_hours.
+                day_break += metrics["deducted_break_hours"]
                 if first_in is None:
                     local_in = entry.clock_in.replace(tzinfo=timezone.utc).astimezone(_app_timezone())
                     first_in = local_in.strftime("%H:%M")
