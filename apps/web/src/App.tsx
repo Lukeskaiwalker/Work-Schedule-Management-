@@ -1335,11 +1335,13 @@ export function App() {
     () => monthWeekRanges(timeMonthCursor),
     [timeMonthCursor.getFullYear(), timeMonthCursor.getMonth()],
   );
-  // Always-current ref so setInterval callbacks never use stale weekDefs
+  // Always-current refs so setInterval callbacks never use stale values
   const monthWeekDefsRef = useRef(monthWeekDefs);
   useEffect(() => { monthWeekDefsRef.current = monthWeekDefs; });
 
   const monthCursorISO = `${timeMonthCursor.getFullYear()}-${String(timeMonthCursor.getMonth() + 1).padStart(2, "0")}`;
+  const monthCursorISORef = useRef(monthCursorISO);
+  useEffect(() => { monthCursorISORef.current = monthCursorISO; });
 
   const monthCursorLabel = useMemo(
     () =>
@@ -1349,10 +1351,9 @@ export function App() {
       }),
     [timeMonthCursor, language],
   );
-  const monthlyWorkedHours = useMemo(
-    () => Number(timeMonthRows.reduce((sum, row) => sum + row.workedHours, 0).toFixed(2)),
-    [timeMonthRows],
-  );
+  // Fetched directly from the monthly timesheet endpoint so the total reflects
+  // only the calendar month (Feb 1-28), not full weeks that bleed into adjacent months.
+  const [monthlyWorkedHours, setMonthlyWorkedHours] = useState<number>(0);
   const monthlyRequiredHours = useMemo(() => {
     const required = requiredDailyHours > 0 ? requiredDailyHours : 8;
     const monthStart = new Date(timeMonthCursor.getFullYear(), timeMonthCursor.getMonth(), 1, 12, 0, 0, 0);
@@ -2966,17 +2967,25 @@ export function App() {
       const schoolQuery = useManagerFilter ? `?user_id=${Number(timeTargetUserId)}` : "";
       // Fetch entries for the first week of the displayed month so navigation updates the list
       const entriesDayParam = currentDefs.length > 0 ? `&day=${currentDefs[0].weekStart}` : "";
+      const monthISO = monthCursorISORef.current;
       const timesheetRequests =
         mainView === "time"
           ? currentDefs.map((row) =>
               apiFetch<TimesheetSummary>(`/time/timesheet?period=weekly&day=${row.weekStart}${userQuery}`, token),
             )
           : [];
-      const [current, entries, vacationRows, schoolRows, ...timesheetRows] = await Promise.all([
+      // One extra request for the strict calendar-month total (avoids double-counting
+      // days from adjacent months that bleed into the first/last ISO week of the month).
+      const monthlyTimesheetRequest =
+        mainView === "time"
+          ? apiFetch<TimesheetSummary>(`/time/timesheet?period=monthly&day=${monthISO}-01${userQuery}`, token)
+          : Promise.resolve(null);
+      const [current, entries, vacationRows, schoolRows, monthlySheet, ...timesheetRows] = await Promise.all([
         apiFetch<TimeCurrent>(`/time/current${currentQuery}`, token),
         apiFetch<TimeEntry[]>(`/time/entries?period=weekly${entriesDayParam}${userQuery}`, token),
         apiFetch<VacationRequest[]>(`/time/vacation-requests${vacationQuery}`, token),
         apiFetch<SchoolAbsence[]>(`/time/school-absences${schoolQuery}`, token),
+        monthlyTimesheetRequest,
         ...timesheetRequests,
       ]);
       setTimeCurrent(current);
@@ -2984,6 +2993,8 @@ export function App() {
       setVacationRequests(vacationRows);
       setSchoolAbsences(schoolRows);
       if (mainView === "time") {
+        const monthly = monthlySheet as TimesheetSummary | null;
+        setMonthlyWorkedHours(Number((monthly?.total_hours ?? 0).toFixed(2)));
         const requiredHours = current.required_daily_hours > 0 ? current.required_daily_hours : 8;
         const rows = currentDefs.map((row, index) => {
           const timesheet = timesheetRows[index] as TimesheetSummary | undefined;
@@ -2997,6 +3008,7 @@ export function App() {
         setTimeMonthRows(rows);
       } else {
         setTimeMonthRows([]);
+        setMonthlyWorkedHours(0);
       }
     } catch (err: any) {
       setError(err.message ?? "Failed to load time data");

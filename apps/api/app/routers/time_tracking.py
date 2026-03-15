@@ -710,12 +710,15 @@ def timesheet(
     target_day = day or _local_date_from_utc(now)
     target_user_id = _resolve_target_user_id(current_user, user_id)
 
-    if period not in {"daily", "weekly"}:
+    if period not in {"daily", "weekly", "monthly"}:
         raise HTTPException(status_code=400, detail="Invalid period")
 
     if period == "daily":
         start_date = target_day
         end_date = target_day
+    elif period == "monthly":
+        start_date = date(target_day.year, target_day.month, 1)
+        end_date = date(target_day.year, target_day.month, calendar.monthrange(target_day.year, target_day.month)[1])
     else:
         start_date, end_date = _week_bounds(target_day)
 
