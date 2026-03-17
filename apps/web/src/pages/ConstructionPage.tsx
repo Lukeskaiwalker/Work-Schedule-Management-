@@ -115,7 +115,22 @@ export function ConstructionPage() {
           </button>
         </div>
       )}
-      <form ref={constructionFormRef as React.RefObject<HTMLFormElement>} className="card report-form" onSubmit={submitConstructionReport}>
+      <form
+        ref={constructionFormRef as React.RefObject<HTMLFormElement>}
+        className="card report-form"
+        onSubmit={submitConstructionReport}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            const target = e.target as HTMLElement;
+            // Only allow Enter to submit when focus is on the submit button itself.
+            // For every other element (inputs, textareas, selects) block the default
+            // form-submission so the user can fill in fields without accidental sends.
+            const isSubmitButton =
+              target.tagName === "BUTTON" && (target as HTMLButtonElement).type === "submit";
+            if (!isSubmitButton) e.preventDefault();
+          }
+        }}
+      >
         <h3>{language === "de" ? "Baustellenbericht" : "Construction report"}</h3>
         {reportTaskPrefill && (
           <small className="muted">
