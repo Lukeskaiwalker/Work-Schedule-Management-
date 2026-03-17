@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
 import { useAppContext } from "../context/AppContext";
 import { IMAGE_INPUT_ACCEPT } from "../constants";
 import { formatTimeInputForTyping, formatTimeInputForBlur } from "../utils/tasks";
@@ -61,6 +61,40 @@ export function ConstructionPage() {
     filePreviewUrl,
   } = useAppContext();
 
+  // Project search combobox state (local — ephemeral UI only)
+  const [projectSearch, setProjectSearch] = useState("");
+  const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
+
+  const selectedProject = projects.find((p) => String(p.id) === reportProjectId) ?? null;
+
+  // Sync the text input when a project is selected externally (e.g. draft restore or task prefill)
+  useEffect(() => {
+    if (selectedProject) {
+      setProjectSearch(formatProjectTitle(selectedProject.project_number, selectedProject.customer_name, selectedProject.name, selectedProject.id));
+    } else if (!reportProjectId) {
+      setProjectSearch("");
+    }
+  }, [reportProjectId, selectedProject]);
+
+  const filteredProjects = projects.filter((p) => {
+    if (!projectSearch.trim()) return true;
+    const label = formatProjectTitle(p.project_number, p.customer_name, p.name, p.id).toLowerCase();
+    return label.includes(projectSearch.toLowerCase());
+  });
+
+  function selectProject(idStr: string) {
+    applyReportProjectSelection(idStr);
+    const p = projects.find((proj) => String(proj.id) === idStr);
+    setProjectSearch(p ? formatProjectTitle(p.project_number, p.customer_name, p.name, p.id) : "");
+    setProjectDropdownOpen(false);
+  }
+
+  function clearProject() {
+    applyReportProjectSelection("");
+    setProjectSearch("");
+    setProjectDropdownOpen(false);
+  }
+
   if (mainView !== "construction") return null;
 
   return (
@@ -118,22 +152,60 @@ export function ConstructionPage() {
         )}
         <label>
           {language === "de" ? "Projekt" : "Project"}
-          <select
-            name="project_id"
-            value={reportProjectId}
-            onChange={(event) => applyReportProjectSelection(event.target.value)}
-          >
-            <option value="">
-              {language === "de"
-                ? "Allgemeiner Bericht (ohne Projekt)"
-                : "General report (without project)"}
-            </option>
-            {projects.map((project) => (
-              <option key={project.id} value={String(project.id)}>
-                {formatProjectTitle(project.project_number, project.customer_name, project.name, project.id)}
-              </option>
-            ))}
-          </select>
+          <div className="employee-search-wrap">
+            <div className="employee-search-input-row">
+              <input
+                className="employee-search-input"
+                type="text"
+                autoComplete="off"
+                placeholder={language === "de" ? "Projekt suchen…" : "Search project…"}
+                value={projectSearch}
+                onFocus={() => setProjectDropdownOpen(true)}
+                onBlur={() => setTimeout(() => setProjectDropdownOpen(false), 150)}
+                onChange={(e) => {
+                  setProjectSearch(e.target.value);
+                  setProjectDropdownOpen(true);
+                  // If the user clears the text, also deselect the project
+                  if (!e.target.value) applyReportProjectSelection("");
+                }}
+              />
+              {(projectSearch || selectedProject) && (
+                <button
+                  type="button"
+                  className="employee-search-clear"
+                  onMouseDown={(e) => { e.preventDefault(); clearProject(); }}
+                  aria-label="Clear"
+                >
+                  ×
+                </button>
+              )}
+            </div>
+            {projectDropdownOpen && (
+              <div className="employee-search-dropdown">
+                {/* "No project" option */}
+                <div
+                  className="employee-search-option"
+                  onMouseDown={(e) => { e.preventDefault(); selectProject(""); }}
+                >
+                  <em>{language === "de" ? "Allgemeiner Bericht (ohne Projekt)" : "General report (no project)"}</em>
+                </div>
+                {filteredProjects.map((p) => (
+                  <div
+                    key={p.id}
+                    className="employee-search-option"
+                    onMouseDown={(e) => { e.preventDefault(); selectProject(String(p.id)); }}
+                  >
+                    {formatProjectTitle(p.project_number, p.customer_name, p.name, p.id)}
+                  </div>
+                ))}
+                {filteredProjects.length === 0 && (
+                  <div className="employee-search-option" style={{ color: "var(--muted)", pointerEvents: "none" }}>
+                    {language === "de" ? "Keine Projekte gefunden" : "No projects found"}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </label>
         <label>
           {language === "de" ? "Datum" : "Date"}
