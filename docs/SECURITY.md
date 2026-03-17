@@ -50,6 +50,7 @@
 - At rest:
   - Project/chat/report file uploads are encrypted via Fernet before write.
   - Newer large attachments use chunked `SMPLENC2` encrypted storage, while older Fernet payloads remain supported for backward-compatible reads.
+  - Historical encryption keys can be configured as read-only fallbacks via `FILE_ENCRYPTION_LEGACY_KEYS`; new uploads always use the primary `FILE_ENCRYPTION_KEY`.
   - Chat thread icons are stored through the same encrypted file service and never as plain files.
   - User profile avatars are encrypted at rest through the same file-encryption service.
   - File preview endpoint (`/api/files/{id}/preview`) uses the same authZ checks as download and serves decrypted content only after access validation.
@@ -117,6 +118,10 @@
 ## Iteration Security Notes (2026-03-17, v1.7.2 legacy attachment decrypt regression fix)
 - File preview/download validation now preserves backward-compatible reads for legacy Fernet payloads as well as newer chunked `SMPLENC2` attachments.
 - This fixes false `409` decrypt failures for older encrypted attachments without weakening encryption or access control checks.
+
+## Iteration Security Notes (2026-03-17, v1.7.3 mixed-key attachment recovery)
+- The API now supports a read-only list of historical file keys (`FILE_ENCRYPTION_LEGACY_KEYS`) for decrypting older uploads after an operator key mismatch/recovery scenario.
+- Only the primary `FILE_ENCRYPTION_KEY` is used for new writes, so fallback keys do not become the active write key accidentally.
 
 ## Iteration Security Notes (2026-03-09, schema bootstrap hardening + frontend fail-safe)
 - API startup no longer attempts implicit schema creation via `create_all`; deploys must apply Alembic migrations explicitly.

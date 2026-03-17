@@ -25,6 +25,15 @@
 3. Projects/tasks/planning/tickets/time/files/chat/report: completed (MVP scope).
 4. Backup/restore + docs + test hardening: completed.
 
+## Compacted Update (2026-03-17, v1.7.3 mixed-key attachment recovery)
+- Changed:
+  - added read-only fallback support for historical file-encryption keys via `FILE_ENCRYPTION_LEGACY_KEYS`.
+  - current key remains the write key for new uploads; old keys are only used during decrypt/read paths.
+  - verified the server had a prior `apps/api/.env` key that decrypts older uploads from 2026-02-22 through 2026-03-09, while the current key decrypts uploads from 2026-03-10 onward.
+- Verified:
+  - `./scripts/test.sh`: pass (`83 passed`, web build pass).
+- Blockers: none.
+
 ## Compacted Update (2026-03-17, v1.7.2 legacy attachment decrypt regression fix)
 - Changed:
   - fixed the legacy Fernet attachment validation fallback so file-handle state is reset before decrypting non-`SMPLENC2` payloads.

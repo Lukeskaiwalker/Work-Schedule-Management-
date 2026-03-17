@@ -15,6 +15,14 @@
 - Local browser smoke (manual automation):
   - Start local API + web dev servers, then run Playwright CLI flow for login/project/report submit.
 
+## Latest Result (2026-03-17, v1.7.3 mixed-key attachment recovery)
+- One-command checks:
+  - `./scripts/test.sh`: pass (`83 passed`, web build pass).
+- Added regression coverage:
+  - legacy Fernet payloads encrypted with an older key still validate/read when that key is configured as a fallback,
+  - chunked `SMPLENC2` payloads encrypted with an older key still validate/read when that key is configured as a fallback,
+  - new uploads continue to use the active current key.
+
 ## Latest Result (2026-03-17, v1.7.2 legacy attachment decrypt regression fix)
 - One-command checks:
   - `./scripts/test.sh`: pass (`81 passed`, web build pass).

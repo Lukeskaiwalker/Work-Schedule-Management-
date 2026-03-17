@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     initial_admin_bootstrap: bool = True
 
     file_encryption_key: str = Field(default="", description="Fernet key")
+    file_encryption_legacy_keys: str = Field(default="", description="Comma-separated read-only legacy file keys")
     uploads_dir: str = "/data/uploads"
     wiki_root_dir: str = "/data/wiki"
     material_catalog_dir: str = "/data/Datanorm_Neuanlage"

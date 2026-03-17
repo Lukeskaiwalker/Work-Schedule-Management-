@@ -1,5 +1,12 @@
 # Architecture Decision Records
 
+## 2026-03-17 - Historical file keys remain available as read-only decrypt fallbacks
+- Status: accepted
+- Decision: support a comma-separated `FILE_ENCRYPTION_LEGACY_KEYS` setting for decrypt/read paths while keeping `FILE_ENCRYPTION_KEY` as the only write key for new uploads.
+- Tradeoffs:
+  - Pros: operators can recover access to older uploads after server-side key drift without re-encrypting everything immediately.
+  - Cons: key management becomes slightly more complex until historical files are re-encrypted or retired.
+
 ## 2026-03-17 - Attachment validation must preserve backward compatibility across encrypted storage generations
 - Status: accepted
 - Decision: keep pre-stream encrypted attachment validation, but require validation helpers to support both legacy Fernet payloads and newer chunked `SMPLENC2` files without mutating the fallback read position.

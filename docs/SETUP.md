@@ -102,6 +102,12 @@
   - `Stored file payload cannot be decrypted with current key`
 - Affected files are legacy Fernet-stored attachments created before the chunked `SMPLENC2` storage change on 2026-02-25.
 
+## Iteration Setup Notes (2026-03-17, v1.7.3 mixed-key attachment recovery)
+- No migration required.
+- If a server previously used a different file key, keep the current write key in `FILE_ENCRYPTION_KEY` and add the recovered older key(s) to:
+  - `FILE_ENCRYPTION_LEGACY_KEYS=<old-key-1>,<old-key-2>`
+- This enables read access for older uploads without changing the active key used for new uploads.
+
 Compose uses `apps/api/.env.example` by default. If you need custom values (new secret key, Telegram credentials), update that file or inject env vars through your deployment method.
 Wiki source root can be changed with `WIKI_ROOT_DIR` in API env (default `/data/wiki`).
 The provided legacy logo is bundled into both web and API assets (`apps/web/public/logo.jpeg`, `apps/api/app/assets/logo.jpeg`).

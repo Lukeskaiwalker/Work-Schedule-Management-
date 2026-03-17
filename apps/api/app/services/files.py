@@ -20,15 +20,30 @@ CHUNKED_NONCE_SIZE = 12
 CHUNKED_DATA_BYTES = 1024 * 1024
 
 
-def _get_fernet() -> Fernet:
-    key = settings.file_encryption_key
+def _key_candidates() -> list[str]:
+    current = settings.file_encryption_key.strip()
+    if not current:
+        raise RuntimeError("FILE_ENCRYPTION_KEY is required")
+    keys = [current]
+    seen = {current}
+    for candidate in settings.file_encryption_legacy_keys.split(","):
+        key = candidate.strip()
+        if not key or key in seen:
+            continue
+        keys.append(key)
+        seen.add(key)
+    return keys
+
+
+def _get_fernet(key: str | None = None) -> Fernet:
+    key = (key or settings.file_encryption_key).strip()
     if not key:
         raise RuntimeError("FILE_ENCRYPTION_KEY is required")
     return Fernet(key)
 
 
-def _get_aesgcm() -> AESGCM:
-    key = settings.file_encryption_key
+def _get_aesgcm(key: str | None = None) -> AESGCM:
+    key = (key or settings.file_encryption_key).strip()
     if not key:
         raise RuntimeError("FILE_ENCRYPTION_KEY is required")
     try:
@@ -52,8 +67,7 @@ def _read_chunked_header(handle) -> int | None:
     return int(CHUNKED_SIZE_STRUCT.unpack(size_raw)[0])
 
 
-def _iter_chunked_decrypted(handle, plain_size: int) -> Iterator[bytes]:
-    cipher = _get_aesgcm()
+def _iter_chunked_decrypted(handle, plain_size: int, cipher: AESGCM) -> Iterator[bytes]:
     emitted = 0
     chunk_index = 0
     while True:
@@ -85,6 +99,21 @@ def _iter_chunked_decrypted(handle, plain_size: int) -> Iterator[bytes]:
         raise RuntimeError("Stored file payload is corrupted")
 
 
+def _select_chunked_cipher(handle, plain_size: int) -> tuple[AESGCM, int]:
+    payload_offset = handle.tell()
+    for key in _key_candidates():
+        cipher = _get_aesgcm(key)
+        try:
+            handle.seek(payload_offset)
+            for _chunk in _iter_chunked_decrypted(handle, plain_size, cipher):
+                pass
+            return cipher, payload_offset
+        except RuntimeError as exc:
+            if str(exc) != "Unable to decrypt file":
+                raise
+    raise RuntimeError("Unable to decrypt file")
+
+
 def encrypted_file_plain_size(stored_path: str) -> int | None:
     with open(stored_path, "rb") as handle:
         return _read_chunked_header(handle)
@@ -94,16 +123,17 @@ def validate_encrypted_file(stored_path: str) -> int | None:
     with open(stored_path, "rb") as handle:
         plain_size = _read_chunked_header(handle)
         if plain_size is not None:
-            for _chunk in _iter_chunked_decrypted(handle, plain_size):
-                pass
+            _select_chunked_cipher(handle, plain_size)
             return plain_size
         handle.seek(0)
         encrypted = handle.read()
-    try:
-        _get_fernet().decrypt(encrypted)
-    except InvalidToken as exc:
-        raise RuntimeError("Unable to decrypt file") from exc
-    return None
+    for key in _key_candidates():
+        try:
+            _get_fernet(key).decrypt(encrypted)
+            return None
+        except InvalidToken:
+            continue
+    raise RuntimeError("Unable to decrypt file")
 
 
 def store_encrypted_file(raw_bytes: bytes, file_extension: str = "bin") -> str:
@@ -115,7 +145,7 @@ def store_encrypted_file(raw_bytes: bytes, file_extension: str = "bin") -> str:
     with open(file_path, "wb") as handle:
         handle.write(CHUNKED_MAGIC)
         handle.write(CHUNKED_SIZE_STRUCT.pack(len(raw_bytes)))
-        cipher = _get_aesgcm()
+        cipher = _get_aesgcm(settings.file_encryption_key)
         payload = memoryview(raw_bytes)
         chunk_index = 0
         for offset in range(0, len(payload), CHUNKED_DATA_BYTES):
@@ -133,14 +163,19 @@ def iter_encrypted_file_bytes(stored_path: str) -> Iterator[bytes]:
     with open(stored_path, "rb") as handle:
         plain_size = _read_chunked_header(handle)
         if plain_size is not None:
-            yield from _iter_chunked_decrypted(handle, plain_size)
+            cipher, payload_offset = _select_chunked_cipher(handle, plain_size)
+            handle.seek(payload_offset)
+            yield from _iter_chunked_decrypted(handle, plain_size, cipher)
             return
         handle.seek(0)
         encrypted = handle.read()
-    try:
-        yield _get_fernet().decrypt(encrypted)
-    except InvalidToken as exc:
-        raise RuntimeError("Unable to decrypt file") from exc
+    for key in _key_candidates():
+        try:
+            yield _get_fernet(key).decrypt(encrypted)
+            return
+        except InvalidToken:
+            continue
+    raise RuntimeError("Unable to decrypt file")
 
 
 def read_encrypted_file(stored_path: str) -> bytes:
