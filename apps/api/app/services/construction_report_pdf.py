@@ -244,18 +244,29 @@ def _normalize_completed_subtasks(raw_subtasks: Any) -> list[str]:
     return result
 
 
+_CELL_STYLE = ParagraphStyle(name="TableCell", fontName="Helvetica", fontSize=9, leading=11)
+_CELL_BOLD_STYLE = ParagraphStyle(name="TableCellBold", fontName="Helvetica-Bold", fontSize=9, leading=11)
+
+
+def _cell(text: str, *, bold: bool = False) -> Paragraph:
+    """Wrap a table cell value in a Paragraph so long text wraps within the column width."""
+    value = (text or "").strip() or "-"
+    style = _CELL_BOLD_STYLE if bold else _CELL_STYLE
+    return Paragraph(escape(value).replace("\n", "<br/>"), style)
+
+
 def _key_value_table(rows: list[tuple[str, str]], width: float) -> Table:
-    data = [[k, v or "-"] for k, v in rows]
+    data = [[_cell(k, bold=True), _cell(v or "-")] for k, v in rows]
     table = Table(data, colWidths=[width * 0.30, width * 0.70])
     table.setStyle(
         TableStyle(
             [
                 ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#F2F2F2")),
                 ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor("#222222")),
-                ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
-                ("FONTSIZE", (0, 0), (-1, -1), 9),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
                 ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#DDDDDD")),
+                ("TOPPADDING", (0, 0), (-1, -1), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
             ]
         )
     )
@@ -263,46 +274,46 @@ def _key_value_table(rows: list[tuple[str, str]], width: float) -> Table:
 
 
 def _workers_table(workers: list[dict[str, Any]], width: float) -> Table:
-    data = [["Name", "Start", "Ende"]]
+    data = [[_cell(h, bold=True) for h in ["Name", "Start", "Ende"]]]
     for worker in workers:
         data.append(
             [
-                str(worker.get("name") or "-"),
-                str(worker.get("start_time") or ""),
-                str(worker.get("end_time") or ""),
+                _cell(str(worker.get("name") or "-")),
+                _cell(str(worker.get("start_time") or "-")),
+                _cell(str(worker.get("end_time") or "-")),
             ]
         )
     if len(data) == 1:
-        data.append(["-", "", ""])
+        data.append([_cell("-"), _cell(""), _cell("")])
     table = Table(data, colWidths=[width * 0.5, width * 0.25, width * 0.25])
     table.setStyle(_table_style())
     return table
 
 
 def _materials_table(materials: list[dict[str, Any]], width: float) -> Table:
-    data = [["Position", "Menge", "Einheit", "Artikel"]]
+    data = [[_cell(h, bold=True) for h in ["Position", "Menge", "Einheit", "Artikel"]]]
     for material in materials:
         data.append(
             [
-                str(material.get("item") or "-"),
-                str(material.get("qty") or ""),
-                str(material.get("unit") or ""),
-                str(material.get("article_no") or ""),
+                _cell(str(material.get("item") or "-")),
+                _cell(str(material.get("qty") or "-")),
+                _cell(str(material.get("unit") or "-")),
+                _cell(str(material.get("article_no") or "-")),
             ]
         )
     if len(data) == 1:
-        data.append(["-", "", "", ""])
+        data.append([_cell("-"), _cell(""), _cell(""), _cell("")])
     table = Table(data, colWidths=[width * 0.45, width * 0.15, width * 0.15, width * 0.25])
     table.setStyle(_table_style())
     return table
 
 
 def _extras_table(extras: list[dict[str, Any]], width: float) -> Table:
-    data = [["Beschreibung", "Grund"]]
+    data = [[_cell(h, bold=True) for h in ["Beschreibung", "Grund"]]]
     for extra in extras:
-        data.append([str(extra.get("description") or "-"), str(extra.get("reason") or "")])
+        data.append([_cell(str(extra.get("description") or "-")), _cell(str(extra.get("reason") or "-"))])
     if len(data) == 1:
-        data.append(["-", ""])
+        data.append([_cell("-"), _cell("")])
     table = Table(data, colWidths=[width * 0.6, width * 0.4])
     table.setStyle(_table_style())
     return table
@@ -312,11 +323,10 @@ def _table_style() -> TableStyle:
     return TableStyle(
         [
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#E6E6E6")),
-            ("TEXTCOLOR", (0, 0), (-1, -1), colors.HexColor("#222222")),
-            ("FONTNAME", (0, 0), (-1, -1), "Helvetica"),
-            ("FONTSIZE", (0, 0), (-1, -1), 9),
             ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#DDDDDD")),
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
         ]
     )
 

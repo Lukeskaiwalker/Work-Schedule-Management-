@@ -288,12 +288,29 @@ export function ConstructionPage() {
               <b>{language === "de" ? "ArtNr" : "Article"}</b>
               <span />
             </div>
-            {reportMaterialRows.map((row, index) => (
+            {reportMaterialRows.map((row, index) => {
+              const isLastRow = index === reportMaterialRows.length - 1;
+              // Pressing Enter in any material-row input: prevent form submission.
+              // When in the last row, also add a new empty row and move focus to it.
+              const handleMaterialRowKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+                if (event.key !== "Enter") return;
+                event.preventDefault();
+                if (isLastRow) {
+                  addReportMaterialRow();
+                  setTimeout(() => {
+                    const rows = document.querySelectorAll<HTMLElement>(".report-material-grid-row");
+                    const newRow = rows[rows.length - 1];
+                    newRow?.querySelector<HTMLInputElement>("input")?.focus();
+                  }, 0);
+                }
+              };
+              return (
               <div key={row.id} className="report-material-grid-row">
                 <input
                   value={row.item}
                   placeholder={language === "de" ? "Artikel" : "Item"}
                   onChange={(event) => updateReportMaterialRow(index, "item", event.target.value)}
+                  onKeyDown={handleMaterialRowKeyDown}
                   onBlur={() => {
                     void enrichReportMaterialRowFromCatalog(index, "item");
                   }}
@@ -302,17 +319,20 @@ export function ConstructionPage() {
                   value={row.qty}
                   placeholder={language === "de" ? "Menge" : "Qty"}
                   onChange={(event) => updateReportMaterialRow(index, "qty", event.target.value)}
+                  onKeyDown={handleMaterialRowKeyDown}
                 />
                 <input
                   value={row.unit}
                   list="material-unit-options"
                   placeholder={language === "de" ? "Einheit" : "Unit"}
                   onChange={(event) => updateReportMaterialRow(index, "unit", event.target.value)}
+                  onKeyDown={handleMaterialRowKeyDown}
                 />
                 <input
                   value={row.article_no}
                   placeholder={language === "de" ? "ArtNr" : "Article"}
                   onChange={(event) => updateReportMaterialRow(index, "article_no", event.target.value)}
+                  onKeyDown={handleMaterialRowKeyDown}
                   onBlur={() => {
                     void enrichReportMaterialRowFromCatalog(index, "article_no");
                   }}
@@ -321,7 +341,8 @@ export function ConstructionPage() {
                   {language === "de" ? "Entfernen" : "Remove"}
                 </button>
               </div>
-            ))}
+              );
+            })}
             <button type="button" onClick={addReportMaterialRow} disabled={reportSubmitting}>
               {language === "de" ? "Materialzeile hinzufügen" : "Add material row"}
             </button>
