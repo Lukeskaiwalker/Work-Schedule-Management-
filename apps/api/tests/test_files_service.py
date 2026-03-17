@@ -10,6 +10,7 @@ from app.services.files import (
     iter_encrypted_file_bytes,
     read_encrypted_file,
     store_encrypted_file,
+    validate_encrypted_file,
 )
 
 
@@ -34,3 +35,15 @@ def test_legacy_fernet_payload_still_reads() -> None:
     assert encrypted_file_plain_size(str(legacy_path)) is None
     assert b"".join(iter_encrypted_file_bytes(str(legacy_path))) == payload
     assert read_encrypted_file(str(legacy_path)) == payload
+
+
+def test_validate_encrypted_file_accepts_legacy_fernet_payload() -> None:
+    payload = b"legacy-payload"
+    settings = get_settings()
+    uploads_path = Path(settings.uploads_dir)
+    uploads_path.mkdir(parents=True, exist_ok=True)
+    legacy_path = uploads_path / "legacy-validate-fixture.bin"
+    legacy_path.write_bytes(Fernet(settings.file_encryption_key).encrypt(payload))
+
+    assert encrypted_file_plain_size(str(legacy_path)) is None
+    assert validate_encrypted_file(str(legacy_path)) is None

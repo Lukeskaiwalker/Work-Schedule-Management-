@@ -25,6 +25,15 @@
 3. Projects/tasks/planning/tickets/time/files/chat/report: completed (MVP scope).
 4. Backup/restore + docs + test hardening: completed.
 
+## Compacted Update (2026-03-17, v1.7.2 legacy attachment decrypt regression fix)
+- Changed:
+  - fixed the legacy Fernet attachment validation fallback so file-handle state is reset before decrypting non-`SMPLENC2` payloads.
+  - older encrypted attachments now preview/download correctly again after the `v1.7.1` pre-stream validation change.
+  - added regression coverage for validating legacy Fernet payloads.
+- Verified:
+  - `./scripts/test.sh`: pass (`81 passed`, web build pass).
+- Blockers: none.
+
 ## Compacted Update (2026-03-09, material image pipeline hardening)
 - Changed:
   - material catalog image lookup now runs in two phases:

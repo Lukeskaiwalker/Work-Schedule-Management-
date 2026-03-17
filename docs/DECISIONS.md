@@ -1,5 +1,12 @@
 # Architecture Decision Records
 
+## 2026-03-17 - Attachment validation must preserve backward compatibility across encrypted storage generations
+- Status: accepted
+- Decision: keep pre-stream encrypted attachment validation, but require validation helpers to support both legacy Fernet payloads and newer chunked `SMPLENC2` files without mutating the fallback read position.
+- Tradeoffs:
+  - Pros: older files remain readable after validation hardening and operators can deploy mixed-generation storage safely.
+  - Cons: attachment helpers must explicitly manage file-handle position when probing storage format.
+
 ## 2026-03-09 - API startup no longer runs `create_all`; schema changes flow through Alembic
 - Status: accepted
 - Decision: remove runtime `Base.metadata.create_all()` from API startup bootstrap and require schema readiness via Alembic (`alembic upgrade head`) before service runtime.

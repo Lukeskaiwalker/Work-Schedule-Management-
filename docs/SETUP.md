@@ -96,6 +96,12 @@
 - `Verwaltung` is protected and visible/usable only for elevated roles (`admin`, `ceo`, `accountant`, `planning`).
 - Users can create additional folders in the Files UI or through WebDAV folder creation (`MKCOL`).
 
+## Iteration Setup Notes (2026-03-17, v1.7.2 legacy attachment decrypt regression fix)
+- No migration required.
+- Roll out `v1.7.2` anywhere `v1.7.1` was installed if older attachments/files fail with:
+  - `Stored file payload cannot be decrypted with current key`
+- Affected files are legacy Fernet-stored attachments created before the chunked `SMPLENC2` storage change on 2026-02-25.
+
 Compose uses `apps/api/.env.example` by default. If you need custom values (new secret key, Telegram credentials), update that file or inject env vars through your deployment method.
 Wiki source root can be changed with `WIKI_ROOT_DIR` in API env (default `/data/wiki`).
 The provided legacy logo is bundled into both web and API assets (`apps/web/public/logo.jpeg`, `apps/api/app/assets/logo.jpeg`).

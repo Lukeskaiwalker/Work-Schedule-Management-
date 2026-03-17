@@ -49,6 +49,7 @@
   - WebDAV over LAN HTTP is for short-lived trusted demos only; for regular use prefer `https://localhost` on the host machine.
 - At rest:
   - Project/chat/report file uploads are encrypted via Fernet before write.
+  - Newer large attachments use chunked `SMPLENC2` encrypted storage, while older Fernet payloads remain supported for backward-compatible reads.
   - Chat thread icons are stored through the same encrypted file service and never as plain files.
   - User profile avatars are encrypted at rest through the same file-encryption service.
   - File preview endpoint (`/api/files/{id}/preview`) uses the same authZ checks as download and serves decrypted content only after access validation.
@@ -112,6 +113,10 @@
 - Material catalog import now uses deterministic DATANORM field parsing instead of heuristic token extraction, reducing risk of incorrect catalog metadata being shown to users.
 - Parser-signature versioning forces a controlled one-time reimport when parser logic changes, preventing stale/misparsed cached catalog data from persisting indefinitely.
 - DATANORM source folder handling remains read-only mount-based (`/data/Datanorm_Neuanlage:ro`) and does not introduce new write surfaces.
+
+## Iteration Security Notes (2026-03-17, v1.7.2 legacy attachment decrypt regression fix)
+- File preview/download validation now preserves backward-compatible reads for legacy Fernet payloads as well as newer chunked `SMPLENC2` attachments.
+- This fixes false `409` decrypt failures for older encrypted attachments without weakening encryption or access control checks.
 
 ## Iteration Security Notes (2026-03-09, schema bootstrap hardening + frontend fail-safe)
 - API startup no longer attempts implicit schema creation via `create_all`; deploys must apply Alembic migrations explicitly.

@@ -15,6 +15,13 @@
 - Local browser smoke (manual automation):
   - Start local API + web dev servers, then run Playwright CLI flow for login/project/report submit.
 
+## Latest Result (2026-03-17, v1.7.2 legacy attachment decrypt regression fix)
+- One-command checks:
+  - `./scripts/test.sh`: pass (`81 passed`, web build pass).
+- Added regression coverage:
+  - legacy Fernet-stored attachments continue to pass `validate_encrypted_file()`,
+  - mixed storage generations (pre-2026-02-25 Fernet and newer `SMPLENC2`) remain readable after pre-stream validation.
+
 ## Latest Result (2026-03-09, phased material image lookup + local cache endpoint)
 - Targeted API coverage:
   - `docker compose run --rm api sh -lc 'cd /app && PYTHONPATH=. pytest -q tests/test_material_catalog.py'`: pass (`7 passed`).
