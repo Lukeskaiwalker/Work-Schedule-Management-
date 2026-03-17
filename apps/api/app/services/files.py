@@ -97,6 +97,7 @@ def validate_encrypted_file(stored_path: str) -> int | None:
             for _chunk in _iter_chunked_decrypted(handle, plain_size):
                 pass
             return plain_size
+        handle.seek(0)
         encrypted = handle.read()
     try:
         _get_fernet().decrypt(encrypted)
