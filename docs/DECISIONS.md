@@ -1868,3 +1868,12 @@
 - Tradeoffs:
   - Pros: clearer data semantics and correct location behavior for field operations (weather/map), while preserving backward compatibility with existing customer-address-only data.
   - Cons: one additional field across model/schema/UI/import paths and an extra migration to maintain.
+
+## 2026-03-17 - Validate encrypted attachment payloads before chunked HTTP streaming
+- Status: accepted
+- Decision:
+  - Add an explicit encrypted-payload validation pass before serving chunked preview/download responses for stored attachments.
+  - Map truncated/corrupted payload failures to a stable HTTP `409` API error instead of allowing the response stream to abort mid-transfer.
+- Tradeoffs:
+  - Pros: clearer operator/user recovery path for damaged uploads and more deterministic client behavior when stored payloads are corrupted.
+  - Cons: one extra file read/decrypt validation pass before large chunked responses.

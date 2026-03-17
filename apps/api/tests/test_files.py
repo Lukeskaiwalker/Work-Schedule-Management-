@@ -1,7 +1,12 @@
 from __future__ import annotations
 import json
 import os
+from pathlib import Path
+
 from fastapi.testclient import TestClient
+
+from app.core.db import SessionLocal
+from app.models.entities import Attachment
 def auth_headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
@@ -145,6 +150,38 @@ def test_preview_falls_back_to_octet_stream_for_invalid_stored_content_type(clie
     assert preview.status_code == 200
     assert preview.content == b"binary payload"
     assert preview.headers.get("content-type", "").startswith("application/octet-stream")
+
+
+def test_corrupted_chunked_attachment_returns_http_error_instead_of_stream_abort(
+    client: TestClient,
+    admin_token: str,
+) -> None:
+    project = client.post(
+        "/api/projects",
+        headers=auth_headers(admin_token),
+        json={"project_number": "2026-2004", "name": "Corrupt Attachment", "description": "files", "status": "active"},
+    )
+    assert project.status_code == 200
+    project_id = project.json()["id"]
+
+    upload = client.post(
+        f"/api/projects/{project_id}/files",
+        headers=auth_headers(admin_token),
+        files={"file": ("corrupt-me.txt", b"original payload", "text/plain")},
+    )
+    assert upload.status_code == 200
+    attachment_id = int(upload.json()["id"])
+
+    with SessionLocal() as db:
+        attachment = db.get(Attachment, attachment_id)
+        assert attachment is not None
+        stored_path = Path(attachment.stored_path)
+
+    stored_path.write_bytes(stored_path.read_bytes()[:-8])
+
+    preview = client.get(f"/api/files/{attachment_id}/preview", headers=auth_headers(admin_token))
+    assert preview.status_code == 409
+    assert preview.json()["detail"] == "Stored file payload is corrupted; please re-upload the file"
 
 def test_project_file_upload_rejects_empty_payload(client: TestClient, admin_token: str):
     project = client.post(

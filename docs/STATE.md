@@ -2554,3 +2554,17 @@
   - `./scripts/test.sh` pass (`78 passed`, web build pass).
   - `docker compose run --rm api sh -lc 'cd /app && alembic upgrade head'` pass (applies `20260309_0035`).
 - Blockers: none.
+
+## Compacted Update (2026-03-17, v1.7.1 hotfix release prep + attachment corruption handling)
+- Changed:
+  - Bundled the unreleased post-`v1.7.0` fixes into hotfix release `v1.7.1`.
+  - Kept the time-export corrections and construction-report UX fixes from the latest five commits after `v1.7.0`.
+  - Added encrypted attachment payload validation before chunked preview/download streaming so truncated/corrupted stored files fail with a clean API `409` instead of a broken upstream stream.
+  - Added release notes document `docs/releases/v1.7.1.md`.
+- Verified:
+  - `./scripts/test.sh` pass (`80 passed`, web build pass).
+- Next:
+  - Deploy `v1.7.1` locally and to the SMPL server.
+  - Verify Jellyfin/Traefik routing on the separate host `192.168.1.150` once access is available.
+- Blockers:
+  - Jellyfin host credentials/config were not yet available in-repo or on the SMPL server (`192.168.1.127`).

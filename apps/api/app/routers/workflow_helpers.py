@@ -103,6 +103,7 @@ from app.services.files import (
     iter_encrypted_file_bytes,
     read_encrypted_file,
     store_encrypted_file,
+    validate_encrypted_file,
 )
 from app.services.audit import log_admin_action
 from app.services.report_jobs import (
@@ -391,8 +392,15 @@ def _attachment_bytes_or_http_error(attachment: Attachment) -> bytes:
         raise HTTPException(status_code=404, detail="Stored file payload not found")
     except OSError:
         raise HTTPException(status_code=404, detail="Stored file payload not accessible")
-    except RuntimeError:
-        raise HTTPException(status_code=409, detail="Stored file payload cannot be decrypted with current key")
+    except RuntimeError as exc:
+        raise _attachment_runtime_error_http_error(exc)
+
+
+def _attachment_runtime_error_http_error(exc: RuntimeError) -> HTTPException:
+    message = str(exc)
+    if message in {"Stored file payload is incomplete", "Stored file payload is corrupted"}:
+        return HTTPException(status_code=409, detail="Stored file payload is corrupted; please re-upload the file")
+    return HTTPException(status_code=409, detail="Stored file payload cannot be decrypted with current key")
 
 
 def _attachment_content_length_for_listing(attachment: Attachment) -> str:
@@ -430,12 +438,22 @@ def _attachment_http_response(
         raise HTTPException(status_code=404, detail="Stored file payload not found")
     except OSError:
         raise HTTPException(status_code=404, detail="Stored file payload not accessible")
-    except RuntimeError:
-        raise HTTPException(status_code=409, detail="Stored file payload cannot be decrypted with current key")
+    except RuntimeError as exc:
+        raise _attachment_runtime_error_http_error(exc)
 
     if chunked_plain_size is not None:
         if int(chunked_plain_size) <= 0:
             raise HTTPException(status_code=409, detail="Stored file payload is empty; please re-upload the file")
+        # Validate before streaming so corrupted payloads fail as HTTP errors
+        # instead of aborting the upstream connection mid-response.
+        try:
+            validate_encrypted_file(attachment.stored_path)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="Stored file payload not found")
+        except OSError:
+            raise HTTPException(status_code=404, detail="Stored file payload not accessible")
+        except RuntimeError as exc:
+            raise _attachment_runtime_error_http_error(exc)
         headers["Content-Length"] = str(chunked_plain_size)
         if head_only:
             return Response(status_code=200, media_type=media_type, headers=headers)

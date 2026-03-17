@@ -1708,3 +1708,12 @@
 - Coverage notes:
   - Added weather behavior checks to ensure construction-site address is preferred and customer-address fallback works.
   - Added import mapping check for dedicated construction-site address column.
+
+## Iteration Result (2026-03-17, v1.7.1 hotfix release bundle + corrupted attachment handling)
+- Commands run:
+  - `./scripts/test.sh`
+- Results:
+  - Full validation script: pass (`80 passed`, web build pass).
+- Coverage notes:
+  - Added `test_corrupted_chunked_attachment_returns_http_error_instead_of_stream_abort` to verify truncated encrypted file payloads now return HTTP `409` with a stable API error instead of failing during response streaming.
+  - Regression coverage implicitly includes the post-`v1.7.0` construction-report and XLSX export fixes bundled into `v1.7.1`.

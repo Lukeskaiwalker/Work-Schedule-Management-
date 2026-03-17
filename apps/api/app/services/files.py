@@ -90,6 +90,21 @@ def encrypted_file_plain_size(stored_path: str) -> int | None:
         return _read_chunked_header(handle)
 
 
+def validate_encrypted_file(stored_path: str) -> int | None:
+    with open(stored_path, "rb") as handle:
+        plain_size = _read_chunked_header(handle)
+        if plain_size is not None:
+            for _chunk in _iter_chunked_decrypted(handle, plain_size):
+                pass
+            return plain_size
+        encrypted = handle.read()
+    try:
+        _get_fernet().decrypt(encrypted)
+    except InvalidToken as exc:
+        raise RuntimeError("Unable to decrypt file") from exc
+    return None
+
+
 def store_encrypted_file(raw_bytes: bytes, file_extension: str = "bin") -> str:
     uploads_path = Path(settings.uploads_dir)
     uploads_path.mkdir(parents=True, exist_ok=True)

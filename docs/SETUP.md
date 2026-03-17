@@ -78,6 +78,16 @@
   - Windows Explorer: `Map network drive` with WebDAV client -> paste URL
 - Folder labels in all-projects mount include customer/project identity and internal project ID (`... | ID <id>`) for easier lookup.
 - WebDAV root now separates lifecycle buckets:
+
+## Iteration Setup Notes (2026-03-17, v1.7.1 hotfix release)
+- No migration required after `v1.7.0`.
+- Standard hotfix rollout:
+  - `./scripts/update_release_metadata.sh`
+  - `docker compose up -d --build api api_worker web caddy`
+- Remote/server rollout:
+  - `BACKUP_PASSPHRASE='<passphrase>' ./scripts/safe_update.sh --pull --branch main`
+- Operational behavior update:
+  - corrupted encrypted attachment payloads now return a stable API `409` and should be re-uploaded instead of retried as transient transport failures.
   - active projects appear directly under `/api/dav/projects/`,
   - archived projects are grouped under `/api/dav/projects/archive/`,
   - no-project report files are grouped under `/api/dav/projects/general-projects/`.

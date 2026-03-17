@@ -665,3 +665,8 @@
 - New `construction_site_address` field is project metadata under existing project access controls.
 - Weather endpoint still requires normal project visibility/access; only source-address selection logic changed (construction-site first, customer fallback).
 - No new external providers, credentials, or network destinations introduced.
+
+## Iteration Security Notes (2026-03-17, attachment corruption validation + v1.7.1 hotfix bundle)
+- No authentication or authorization model changes.
+- Encrypted file preview/download now validates chunked stored payload integrity before streaming; this reduces risk of partial-response failures leaking ambiguous transport errors to clients/operators.
+- Corrupted encrypted payloads now fail closed with a deterministic API `409` response, while existing project/file authorization checks remain unchanged.
