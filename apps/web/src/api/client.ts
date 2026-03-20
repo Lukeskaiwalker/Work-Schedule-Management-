@@ -2,10 +2,14 @@ export const API_BASE = "/api";
 
 export class ApiError extends Error {
   status: number;
+  detail: unknown;
+  body: unknown;
 
-  constructor(message: string, status: number) {
+  constructor(message: string, status: number, detail: unknown = null, body: unknown = null) {
     super(message);
     this.status = status;
+    this.detail = detail;
+    this.body = body;
   }
 }
 
@@ -35,14 +39,22 @@ export async function apiFetch<T>(
   });
 
   if (!response.ok) {
-    let detail = response.statusText;
+    let detail: unknown = response.statusText;
+    let body: unknown = null;
     try {
       const data = await response.json();
+      body = data;
       detail = data.detail ?? detail;
     } catch {
       // no-op
     }
-    throw new ApiError(detail, response.status);
+    const message =
+      typeof detail === "string"
+        ? detail
+        : typeof (detail as { message?: unknown } | null)?.message === "string"
+          ? String((detail as { message: string }).message)
+          : response.statusText || `HTTP ${response.status}`;
+    throw new ApiError(message, response.status, detail, body);
   }
 
   const contentType = response.headers.get("content-type") ?? "";
@@ -84,16 +96,24 @@ export async function apiUploadWithProgress<T>(
       const responseText = request.responseText ?? "";
 
       if (status < 200 || status >= 300) {
-        let detail = request.statusText || `HTTP ${status}`;
+        let detail: unknown = request.statusText || `HTTP ${status}`;
+        let body: unknown = null;
         if (contentType.includes("application/json")) {
           try {
             const data = JSON.parse(responseText);
+            body = data;
             detail = data.detail ?? detail;
           } catch {
             // no-op
           }
         }
-        reject(new ApiError(detail, status));
+        const message =
+          typeof detail === "string"
+            ? detail
+            : typeof (detail as { message?: unknown } | null)?.message === "string"
+              ? String((detail as { message: string }).message)
+              : request.statusText || `HTTP ${status}`;
+        reject(new ApiError(message, status, detail, body));
         return;
       }
 

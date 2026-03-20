@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import json
+from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.models.entities import AppSetting
 
 INITIAL_ADMIN_BOOTSTRAP_COMPLETED_KEY = "initial_admin_bootstrap_completed"
 OPENWEATHER_API_KEY = "openweather_api_key"
+SMTP_SETTINGS_KEY = "smtp_settings"
 ROLE_PERMISSIONS_KEY = "role_permissions"
 USER_PERMISSIONS_KEY = "user_permissions"
 
@@ -43,6 +46,82 @@ def get_openweather_api_key(db: Session) -> str:
 
 def set_openweather_api_key(db: Session, value: str) -> None:
     set_runtime_setting(db, OPENWEATHER_API_KEY, (value or "").strip())
+
+
+def get_smtp_settings(db: Session) -> dict[str, Any]:
+    settings = get_settings()
+    defaults: dict[str, Any] = {
+        "host": (settings.smtp_host or "").strip(),
+        "port": int(settings.smtp_port or 0) or 587,
+        "username": (settings.smtp_username or "").strip(),
+        "password": settings.smtp_password or "",
+        "starttls": bool(settings.smtp_starttls),
+        "ssl": bool(settings.smtp_ssl),
+        "from_email": (settings.mail_from or "").strip(),
+        "from_name": "",
+    }
+    raw = get_runtime_setting(db, SMTP_SETTINGS_KEY)
+    if not raw:
+        return defaults
+    try:
+        stored = json.loads(raw)
+    except Exception:
+        return defaults
+    if not isinstance(stored, dict):
+        return defaults
+
+    merged = {**defaults}
+    if "host" in stored:
+        merged["host"] = str(stored.get("host") or "").strip()
+    if "port" in stored:
+        try:
+            port = int(stored.get("port") or 0)
+        except (TypeError, ValueError):
+            port = defaults["port"]
+        merged["port"] = port if 1 <= port <= 65535 else defaults["port"]
+    if "username" in stored:
+        merged["username"] = str(stored.get("username") or "").strip()
+    if "password" in stored:
+        merged["password"] = str(stored.get("password") or "")
+    if "starttls" in stored:
+        merged["starttls"] = bool(stored.get("starttls"))
+    if "ssl" in stored:
+        merged["ssl"] = bool(stored.get("ssl"))
+    if "from_email" in stored:
+        merged["from_email"] = str(stored.get("from_email") or "").strip()
+    if "from_name" in stored:
+        merged["from_name"] = str(stored.get("from_name") or "").strip()
+    return merged
+
+
+def set_smtp_settings(
+    db: Session,
+    *,
+    host: str,
+    port: int,
+    username: str,
+    password: str,
+    starttls: bool,
+    ssl: bool,
+    from_email: str,
+    from_name: str,
+) -> None:
+    set_runtime_setting(
+        db,
+        SMTP_SETTINGS_KEY,
+        json.dumps(
+            {
+                "host": (host or "").strip(),
+                "port": int(port or 0) or 587,
+                "username": (username or "").strip(),
+                "password": password or "",
+                "starttls": bool(starttls),
+                "ssl": bool(ssl),
+                "from_email": (from_email or "").strip(),
+                "from_name": (from_name or "").strip(),
+            }
+        ),
+    )
 
 
 # ── Role permissions ──────────────────────────────────────────────────────────

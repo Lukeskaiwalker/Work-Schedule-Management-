@@ -47,6 +47,27 @@ export function taskStartTimeMinutes(task: Task): number | null {
   return hours * 60 + minutes;
 }
 
+export function taskEstimatedMinutes(task: Task): number | null {
+  if (task.estimated_hours == null) return null;
+  const minutes = Math.round(Number(task.estimated_hours) * 60);
+  if (!Number.isFinite(minutes) || minutes <= 0) return null;
+  return minutes;
+}
+
+export function taskEndTimeMinutes(task: Task): number | null {
+  const explicitEnd = formatTaskStartTime(task.end_time);
+  if (/^\d{2}:\d{2}$/.test(explicitEnd)) {
+    const [hoursText, minutesText] = explicitEnd.split(":");
+    const hours = Number(hoursText);
+    const minutes = Number(minutesText);
+    if (Number.isFinite(hours) && Number.isFinite(minutes)) return hours * 60 + minutes;
+  }
+  const startMinutes = taskStartTimeMinutes(task);
+  const durationMinutes = taskEstimatedMinutes(task);
+  if (startMinutes == null || durationMinutes == null) return null;
+  return startMinutes + durationMinutes;
+}
+
 export function sortTasksByDueTime(tasks: Task[]): Task[] {
   return [...tasks].sort((left, right) => {
     const leftDate = String(left.due_date ?? "");
@@ -206,6 +227,8 @@ export function taskNotificationDigest(rows: Task[]) {
         task.status || "",
         task.due_date || "",
         task.start_time || "",
+        task.end_time || "",
+        task.estimated_hours ?? "",
         task.week_start || "",
         assigneeIds,
       ].join(":");
@@ -219,4 +242,25 @@ export function formatTaskStartTime(value?: string | null) {
   const text = String(value);
   if (text.length >= 5) return text.slice(0, 5);
   return text;
+}
+
+export function formatTaskTimeRange(task: Task) {
+  const start = formatTaskStartTime(task.start_time);
+  const end = formatTaskStartTime(task.end_time);
+  if (start && end) return `${start}-${end}`;
+  return start;
+}
+
+export function addMinutesToHHMM(value?: string | null, minutesToAdd = 0) {
+  const hhmm = formatTaskStartTime(value);
+  if (!/^\d{2}:\d{2}$/.test(hhmm)) return "";
+  const [hoursText, minutesText] = hhmm.split(":");
+  const hours = Number(hoursText);
+  const minutes = Number(minutesText);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return "";
+  const totalMinutes = (hours * 60) + minutes + minutesToAdd;
+  if (totalMinutes < 0 || totalMinutes >= 24 * 60) return "";
+  const nextHours = String(Math.floor(totalMinutes / 60)).padStart(2, "0");
+  const nextMinutes = String(totalMinutes % 60).padStart(2, "0");
+  return `${nextHours}:${nextMinutes}`;
 }

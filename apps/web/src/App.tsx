@@ -2,7 +2,7 @@ import { ChangeEvent, FormEvent, lazy, MouseEvent, PointerEvent, Suspense, useCa
 import { AppContext } from "./context/AppContext";
 import type { AppContextValue } from "./context/AppContext";
 
-import { apiFetch, apiUploadWithProgress } from "./api/client";
+import { ApiError, apiFetch, apiUploadWithProgress } from "./api/client";
 import type {
   Language,
   TaskView,
@@ -19,6 +19,7 @@ import type {
   MaterialCatalogImportState,
   ProjectTrackedMaterial,
   Task,
+  TaskOverlapConflictDetail,
   AssignableUser,
   WikiLibraryFile,
   Ticket,
@@ -38,6 +39,7 @@ import type {
   PasswordResetDispatchResponse,
   NicknameAvailability,
   WeatherSettings,
+  SmtpSettings,
   EmployeeGroup,
   AuditLogEntry,
   UpdateStatus,
@@ -122,6 +124,7 @@ import {
   taskDisplayStatus,
   isTaskOverdue,
   formatTaskStartTime,
+  formatTaskTimeRange,
 } from "./utils/tasks";
 import {
   normalizeMaterialNeedStatus,
@@ -212,6 +215,11 @@ const TimePage = lazy(() => import("./pages/TimePage").then((m) => ({ default: m
 const WikiPage = lazy(() => import("./pages/WikiPage").then((m) => ({ default: m.WikiPage })));
 
 export function App() {
+  type ActionLinkDialogState = {
+    type: "invite" | "reset";
+    link: string;
+  } | null;
+
   const [token, setToken] = useState<string | null>(() => readStoredToken());
   const [language, setLanguage] = useState<Language>("de");
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>(() => readStoredWorkspaceMode());
@@ -224,6 +232,7 @@ export function App() {
   const [projectTab, setProjectTab] = useState<ProjectTab>("overview");
   const [error, setError] = useState<string>("");
   const [notice, setNotice] = useState<string>("");
+  const [actionLinkDialog, setActionLinkDialog] = useState<ActionLinkDialogState>(null);
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -343,6 +352,7 @@ export function App() {
     recurrence_weekdays: [] as number[],
     recurrence_until: "",
   });
+  const [editingSchoolAbsenceId, setEditingSchoolAbsenceId] = useState<number | null>(null);
   const [profileSettingsForm, setProfileSettingsForm] = useState({
     full_name: "",
     email: "",
@@ -369,12 +379,33 @@ export function App() {
   const [weatherSettings, setWeatherSettings] = useState<WeatherSettings | null>(null);
   const [weatherApiKeyInput, setWeatherApiKeyInput] = useState("");
   const [weatherSettingsSaving, setWeatherSettingsSaving] = useState(false);
+  const [smtpSettings, setSmtpSettings] = useState<SmtpSettings | null>(null);
+  const [smtpSettingsForm, setSmtpSettingsForm] = useState({
+    host: "",
+    port: "587",
+    username: "",
+    password: "",
+    clear_password: false,
+    starttls: true,
+    ssl: false,
+    from_email: "",
+    from_name: "",
+  });
+  const [smtpSettingsSaving, setSmtpSettingsSaving] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
   const [updateStatusLoading, setUpdateStatusLoading] = useState(false);
   const [updateInstallRunning, setUpdateInstallRunning] = useState(false);
   const [timeMonthCursor, setTimeMonthCursor] = useState<Date>(() => {
     const current = new Date();
     return new Date(current.getFullYear(), current.getMonth(), 1);
+  });
+  const [timeEntriesStartDate, setTimeEntriesStartDate] = useState<string>(() => {
+    const current = new Date();
+    return formatDateISOLocal(new Date(current.getFullYear(), current.getMonth(), 1));
+  });
+  const [timeEntriesEndDate, setTimeEntriesEndDate] = useState<string>(() => {
+    const current = new Date();
+    return formatDateISOLocal(new Date(current.getFullYear(), current.getMonth() + 1, 0));
   });
   const [timeInfoOpen, setTimeInfoOpen] = useState(false);
   const [timeTargetUserId, setTimeTargetUserId] = useState<string>("");
@@ -383,6 +414,9 @@ export function App() {
   const [absenceTypes, setAbsenceTypes] = useState<AbsenceType[]>([]);
   const [publicHolidays, setPublicHolidays] = useState<PublicHoliday[]>([]);
   const [requiredHoursDrafts, setRequiredHoursDrafts] = useState<Record<number, string>>({});
+  const [vacationBalanceDrafts, setVacationBalanceDrafts] = useState<
+    Record<number, { perYear: string; available: string; carryover: string }>
+  >({});
 
   const [activeProjectId, setActiveProjectId] = useState<number | null>(null);
   const [highlightedArchivedProjectId, setHighlightedArchivedProjectId] = useState<number | null>(null);
@@ -402,11 +436,13 @@ export function App() {
   const [taskModalForm, setTaskModalForm] = useState<TaskModalState>(() =>
     buildTaskModalFormState({ dueDate: planningWeekStart }),
   );
+  const [taskModalOverlapWarning, setTaskModalOverlapWarning] = useState<TaskOverlapConflictDetail | null>(null);
   const [taskModalMaterialRows, setTaskModalMaterialRows] = useState<ReportMaterialRow[]>(() => [
     createReportMaterialRow("materials"),
   ]);
   const [taskEditModalOpen, setTaskEditModalOpen] = useState(false);
   const [taskEditForm, setTaskEditForm] = useState<TaskEditFormState>(() => buildTaskEditFormState());
+  const [taskEditOverlapWarning, setTaskEditOverlapWarning] = useState<TaskOverlapConflictDetail | null>(null);
   const [taskEditMaterialRows, setTaskEditMaterialRows] = useState<ReportMaterialRow[]>(() => [
     createReportMaterialRow("materials"),
   ]);
@@ -506,15 +542,26 @@ export function App() {
     };
   }, []);
 
+  const effectivePermissions = useMemo(
+    () => new Set(user?.effective_permissions ?? []),
+    [user?.effective_permissions],
+  );
   const isAdmin = user?.role === "admin";
-  const canAdjustRequiredHours = user?.effective_permissions?.includes("time:manage") ?? false;
-  const canCreateProject = user ? ["admin", "ceo"].includes(user.role) : false;
-  const canManageTasks = user ? ["admin", "ceo", "planning"].includes(user.role) : false;
+  const canManageUsers = effectivePermissions.has("users:manage");
+  const canManagePermissions = effectivePermissions.has("permissions:manage");
+  const canManageTimeEntries = effectivePermissions.has("time:manage");
+  const canAdjustRequiredHours = canManageTimeEntries;
+  const canCreateProject = effectivePermissions.has("projects:manage");
+  const canManageTasks = effectivePermissions.has("tasks:manage");
   const isTimeManager = user?.effective_permissions?.some(p => p === "time:view_all" || p === "time:manage") ?? false;
   const canApproveVacation = user?.effective_permissions?.includes("time:approve_vacation") ?? false;
   const canManageSchoolAbsences = user?.effective_permissions?.includes("time:manage_absences") ?? false;
-  const canManageProjectImport = user ? ["admin", "ceo"].includes(user.role) : false;
-  const canUseProtectedFolders = user ? ["admin", "ceo", "planning", "accountant"].includes(user.role) : false;
+  const canViewAudit = effectivePermissions.has("audit:view");
+  const canManageSettings = effectivePermissions.has("settings:manage");
+  const canManageSystem = effectivePermissions.has("system:manage");
+  const canExportBackups = effectivePermissions.has("backups:export");
+  const canManageProjectImport = effectivePermissions.has("projects:import");
+  const canUseProtectedFolders = effectivePermissions.has("files:view_protected");
   const canViewFinance = user?.effective_permissions?.includes("finance:view") ?? false;
   const canManageFinance = user?.effective_permissions?.includes("finance:manage") ?? false;
   const mainLabels = MAIN_LABELS[language];
@@ -1389,11 +1436,13 @@ export function App() {
   }, [approvedVacationRequests]);
   const schoolAbsencesByUserId = useMemo(() => {
     const map = new Map<number, SchoolAbsence[]>();
-    schoolAbsences.forEach((row) => {
+    schoolAbsences
+      .filter((row) => row.status === "approved")
+      .forEach((row) => {
       const current = map.get(row.user_id) ?? [];
       current.push(row);
       map.set(row.user_id, current);
-    });
+      });
     return map;
   }, [schoolAbsences]);
   function assigneeAvailabilityHint(userId: number, referenceIsoDate?: string | null) {
@@ -1423,9 +1472,11 @@ export function App() {
       }
       const startLabel = formatShortIsoDate(startIso, language);
       const endLabel = formatShortIsoDate(endIso, language);
+      const typeInfo = absenceTypes.find((entry) => entry.key === row.absence_type);
+      const typeLabel = typeInfo ? (language === "de" ? typeInfo.label_de : typeInfo.label_en) : row.absence_type;
       return language === "de"
-        ? `Abwesend von ${startLabel} bis ${endLabel} (Schule)`
-        : `Absent from ${startLabel} until ${endLabel} (School)`;
+        ? `Abwesend von ${startLabel} bis ${endLabel} (${typeLabel})`
+        : `Absent from ${startLabel} until ${endLabel} (${typeLabel})`;
     }
     return "";
   }
@@ -1477,6 +1528,23 @@ export function App() {
       return next;
     });
   }, [assignableUsers]);
+
+  useEffect(() => {
+    if (users.length === 0) return;
+    setVacationBalanceDrafts((current) => {
+      const next = { ...current };
+      users.forEach((entry) => {
+        if (next[entry.id] === undefined) {
+          next[entry.id] = {
+            perYear: String(entry.vacation_days_per_year ?? 0),
+            available: String(entry.vacation_days_available ?? 0),
+            carryover: String(entry.vacation_days_carryover ?? 0),
+          };
+        }
+      });
+      return next;
+    });
+  }, [users]);
 
   useEffect(() => {
     if (!notice) return;
@@ -1754,6 +1822,13 @@ export function App() {
     if (!activeProjectId) return;
     void loadProjectWeather(activeProjectId, true);
   }, [token, user, mainView, activeProjectId, language]);
+
+  async function refreshCurrentUser() {
+    if (!token) return null;
+    const currentUser = await apiFetch<User>("/auth/me", token);
+    setUser(currentUser);
+    return currentUser;
+  }
 
   useEffect(() => {
     if (!token || !user) return;
@@ -2066,7 +2141,7 @@ export function App() {
       void refreshTimeData();
     }, 5000);
     return () => window.clearInterval(poll);
-  }, [token, mainView, timeTargetUserId, isTimeManager, monthWeekDefs]);
+  }, [token, mainView, timeTargetUserId, isTimeManager, monthWeekDefs, timeEntriesStartDate, timeEntriesEndDate]);
 
   useEffect(() => {
     if (!token || mainView !== "overview") return;
@@ -2306,20 +2381,63 @@ export function App() {
       } catch {
         setThreadParticipantRoles([...DEFAULT_THREAD_PARTICIPANT_ROLES]);
       }
-      if (canManageProjectImport) {
+      if (canManageSettings) {
         try {
-          const settingsRow = await apiFetch<WeatherSettings>("/admin/settings/weather", token);
-          setWeatherSettings(settingsRow);
+          const [weatherRow, smtpRow] = await Promise.all([
+            apiFetch<WeatherSettings>("/admin/settings/weather", token),
+            apiFetch<SmtpSettings>("/admin/settings/smtp", token),
+          ]);
+          setWeatherSettings(weatherRow);
           setWeatherApiKeyInput("");
+          setSmtpSettings(smtpRow);
+          setSmtpSettingsForm({
+            host: smtpRow.host || "",
+            port: String(smtpRow.port || 587),
+            username: smtpRow.username || "",
+            password: "",
+            clear_password: false,
+            starttls: smtpRow.starttls,
+            ssl: smtpRow.ssl,
+            from_email: smtpRow.from_email || "",
+            from_name: smtpRow.from_name || "",
+          });
         } catch {
           setWeatherSettings(null);
+          setSmtpSettings(null);
+          setSmtpSettingsForm({
+            host: "",
+            port: "587",
+            username: "",
+            password: "",
+            clear_password: false,
+            starttls: true,
+            ssl: false,
+            from_email: "",
+            from_name: "",
+          });
         }
       } else {
         setWeatherSettings(null);
+        setSmtpSettings(null);
+        setSmtpSettingsForm({
+          host: "",
+          port: "587",
+          username: "",
+          password: "",
+          clear_password: false,
+          starttls: true,
+          ssl: false,
+          from_email: "",
+          from_name: "",
+        });
       }
-      if (isAdmin) {
+      if (canManageUsers) {
         const userData = await apiFetch<User[]>("/admin/users", token);
         setUsers(userData);
+      } else {
+        setUsers([]);
+      }
+      if (canManageSystem) {
         try {
           const statusRow = await apiFetch<UpdateStatus>("/admin/updates/status", token);
           setUpdateStatus(statusRow);
@@ -2722,7 +2840,7 @@ export function App() {
 
   async function saveWeatherSettings(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!canManageProjectImport) return;
+    if (!canManageSettings) return;
     setWeatherSettingsSaving(true);
     try {
       const payload = await apiFetch<WeatherSettings>("/admin/settings/weather", token, {
@@ -2743,8 +2861,52 @@ export function App() {
     }
   }
 
+  async function saveSmtpSettings(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!canManageSettings) return;
+    setSmtpSettingsSaving(true);
+    try {
+      const payload = await apiFetch<SmtpSettings>("/admin/settings/smtp", token, {
+        method: "PATCH",
+        body: JSON.stringify({
+          host: smtpSettingsForm.host.trim(),
+          port: Number(smtpSettingsForm.port) || 587,
+          username: smtpSettingsForm.username.trim(),
+          password: smtpSettingsForm.password,
+          clear_password: smtpSettingsForm.clear_password,
+          starttls: smtpSettingsForm.starttls,
+          ssl: smtpSettingsForm.ssl,
+          from_email: smtpSettingsForm.from_email.trim(),
+          from_name: smtpSettingsForm.from_name.trim(),
+        }),
+      });
+      setSmtpSettings(payload);
+      setSmtpSettingsForm((current) => ({
+        ...current,
+        host: payload.host || "",
+        port: String(payload.port || 587),
+        username: payload.username || "",
+        password: "",
+        clear_password: false,
+        starttls: payload.starttls,
+        ssl: payload.ssl,
+        from_email: payload.from_email || "",
+        from_name: payload.from_name || "",
+      }));
+      setNotice(
+        language === "de"
+          ? "SMTP-Einstellungen gespeichert"
+          : "SMTP settings saved",
+      );
+    } catch (err: any) {
+      setError(err.message ?? "Failed to save SMTP settings");
+    } finally {
+      setSmtpSettingsSaving(false);
+    }
+  }
+
   async function loadUpdateStatus(showNotice = false) {
-    if (!isAdmin) return;
+    if (!canManageSystem) return;
     setUpdateStatusLoading(true);
     try {
       const statusRow = await apiFetch<UpdateStatus>("/admin/updates/status", token);
@@ -2762,7 +2924,7 @@ export function App() {
   }
 
   async function installSystemUpdate(dryRun: boolean) {
-    if (!isAdmin) return;
+    if (!canManageSystem) return;
     setUpdateInstallRunning(true);
     try {
       const result = await apiFetch<UpdateInstallResponse>("/admin/updates/install", token, {
@@ -2965,8 +3127,10 @@ export function App() {
       const currentQuery = useManagerFilter ? `?user_id=${Number(timeTargetUserId)}` : "";
       const vacationQuery = useManagerFilter ? `?user_id=${Number(timeTargetUserId)}` : "";
       const schoolQuery = useManagerFilter ? `?user_id=${Number(timeTargetUserId)}` : "";
-      // Fetch entries for the first week of the displayed month so navigation updates the list
-      const entriesDayParam = currentDefs.length > 0 ? `&day=${currentDefs[0].weekStart}` : "";
+      const entriesRangeQuery =
+        timeEntriesStartDate && timeEntriesEndDate
+          ? `&start_date=${timeEntriesStartDate}&end_date=${timeEntriesEndDate}`
+          : "";
       const monthISO = monthCursorISORef.current;
       const timesheetRequests =
         mainView === "time"
@@ -2982,7 +3146,7 @@ export function App() {
           : Promise.resolve(null);
       const [current, entries, vacationRows, schoolRows, monthlySheet, ...timesheetRows] = await Promise.all([
         apiFetch<TimeCurrent>(`/time/current${currentQuery}`, token),
-        apiFetch<TimeEntry[]>(`/time/entries?period=weekly${entriesDayParam}${userQuery}`, token),
+        apiFetch<TimeEntry[]>(`/time/entries?period=weekly${entriesRangeQuery}${userQuery}`, token),
         apiFetch<VacationRequest[]>(`/time/vacation-requests${vacationQuery}`, token),
         apiFetch<SchoolAbsence[]>(`/time/school-absences${schoolQuery}`, token),
         monthlyTimesheetRequest,
@@ -3342,13 +3506,16 @@ export function App() {
     const project = projectsById.get(task.project_id);
     const dueDateIso = task.due_date || formatDateISOLocal(new Date());
     const startTime = formatTaskStartTime(task.start_time || "") || "";
+    const endTime = formatTaskStartTime(task.end_time || "") || "";
     const dtStamp = toIcsUtcDateTime(new Date());
     const uid = `task-${task.id}-${Date.now()}@smpl.local`;
 
     let eventDateLines = "";
     if (startTime) {
       const startAt = new Date(`${dueDateIso}T${startTime}:00`);
-      const endAt = new Date(startAt.getTime() + 60 * 60 * 1000);
+      const endAt = endTime
+        ? new Date(`${dueDateIso}T${endTime}:00`)
+        : new Date(startAt.getTime() + 60 * 60 * 1000);
       eventDateLines = `DTSTART:${toIcsUtcDateTime(startAt)}\r\nDTEND:${toIcsUtcDateTime(endAt)}`;
     } else {
       const startDay = new Date(`${dueDateIso}T00:00:00`);
@@ -3368,7 +3535,7 @@ export function App() {
       project ? `Project: ${projectLabel}` : `Project ID: ${task.project_id}`,
       project?.customer_name ? `Customer: ${project.customer_name}` : "",
       `Due: ${task.due_date ?? "-"}`,
-      startTime ? `Start: ${startTime}` : "",
+      startTime ? `Time: ${formatTaskTimeRange(task)}` : "",
       task.description ? `Info: ${task.description}` : "",
       materialsSummary ? `Materials: ${materialsSummary}` : "",
       task.storage_box_number ? `Storage box: ${task.storage_box_number}` : "",
@@ -3457,12 +3624,14 @@ export function App() {
       taskType: defaults?.taskType,
     });
     setTaskModalForm(nextForm);
+    setTaskModalOverlapWarning(null);
     setTaskModalMaterialRows(parseReportMaterialRows(nextForm.materials_required, "materials"));
     setTaskModalOpen(true);
   }
 
   function closeTaskModal() {
     setTaskModalOpen(false);
+    setTaskModalOverlapWarning(null);
   }
 
   function onTaskModalBackdropPointerDown(event: PointerEvent<HTMLDivElement>) {
@@ -3482,6 +3651,7 @@ export function App() {
   }
 
   function updateTaskModalField<K extends keyof TaskModalState>(field: K, value: TaskModalState[K]) {
+    setTaskModalOverlapWarning(null);
     setTaskModalForm((current) => ({ ...current, [field]: value }));
   }
 
@@ -3520,6 +3690,7 @@ export function App() {
     const selected = taskModalProjectClassTemplates.find((entry) => String(entry.id) === normalized) ?? null;
     const importedMaterials = selected ? classTemplateMaterialsText(selected, language) : "";
     const importedRows = parseReportMaterialRows(importedMaterials, "materials");
+    setTaskModalOverlapWarning(null);
     setTaskModalForm((current) => ({
       ...current,
       class_template_id: normalized,
@@ -3529,6 +3700,7 @@ export function App() {
   }
 
   function addTaskModalAssignee(assigneeId: number) {
+    setTaskModalOverlapWarning(null);
     setTaskModalForm((current) => {
       if (current.assignee_ids.includes(assigneeId)) {
         return { ...current, assignee_query: "" };
@@ -3542,6 +3714,7 @@ export function App() {
   }
 
   function removeTaskModalAssignee(assigneeId: number) {
+    setTaskModalOverlapWarning(null);
     setTaskModalForm((current) => ({
       ...current,
       assignee_ids: current.assignee_ids.filter((id) => id !== assigneeId),
@@ -3558,6 +3731,7 @@ export function App() {
     const nextForm = buildTaskEditFormState(task);
     setTaskEditForm(nextForm);
     setTaskEditFormBase(nextForm);
+    setTaskEditOverlapWarning(null);
     setTaskEditMaterialRows(parseReportMaterialRows(nextForm.materials_required, "materials"));
     setTaskEditExpectedUpdatedAt(task.updated_at ?? null);
     setTaskEditModalOpen(true);
@@ -3567,6 +3741,7 @@ export function App() {
     setTaskEditModalOpen(false);
     setTaskEditFormBase(null);
     setTaskEditExpectedUpdatedAt(null);
+    setTaskEditOverlapWarning(null);
     setTaskEditForm(buildTaskEditFormState());
     setTaskEditMaterialRows([createReportMaterialRow("materials")]);
   }
@@ -3588,6 +3763,7 @@ export function App() {
   }
 
   function updateTaskEditField<K extends keyof TaskEditFormState>(field: K, value: TaskEditFormState[K]) {
+    setTaskEditOverlapWarning(null);
     setTaskEditForm((current) => ({ ...current, [field]: value }));
   }
 
@@ -3626,6 +3802,7 @@ export function App() {
     const selected = taskEditProjectClassTemplates.find((entry) => String(entry.id) === normalized) ?? null;
     const importedMaterials = selected ? classTemplateMaterialsText(selected, language) : "";
     const importedRows = parseReportMaterialRows(importedMaterials, "materials");
+    setTaskEditOverlapWarning(null);
     setTaskEditForm((current) => ({
       ...current,
       class_template_id: normalized,
@@ -3635,6 +3812,7 @@ export function App() {
   }
 
   function addTaskEditAssignee(assigneeId: number) {
+    setTaskEditOverlapWarning(null);
     setTaskEditForm((current) => {
       if (current.assignee_ids.includes(assigneeId)) {
         return { ...current, assignee_query: "" };
@@ -3648,6 +3826,7 @@ export function App() {
   }
 
   function removeTaskEditAssignee(assigneeId: number) {
+    setTaskEditOverlapWarning(null);
     setTaskEditForm((current) => ({
       ...current,
       assignee_ids: current.assignee_ids.filter((id) => id !== assigneeId),
@@ -3767,6 +3946,39 @@ export function App() {
       return null;
     }
     return normalized;
+  }
+
+  function validateEstimatedHoursOrSetError(value: string): number | null {
+    const normalized = value.trim().replace(",", ".");
+    if (!normalized) return null;
+    const parsed = Number(normalized);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      setError(language === "de" ? "Bitte eine gültige Dauer eingeben" : "Please enter a valid duration");
+      return null;
+    }
+    const halfHourSteps = Math.round(parsed * 2);
+    if (Math.abs((halfHourSteps / 2) - parsed) > 1e-9) {
+      setError(language === "de" ? "Die Dauer muss in 0,5-Stunden-Schritten angegeben werden" : "Duration must use 0.5-hour increments");
+      return null;
+    }
+    if (parsed >= 24) {
+      setError(language === "de" ? "Die Dauer muss unter 24 Stunden liegen" : "Duration must be under 24 hours");
+      return null;
+    }
+    return halfHourSteps / 2;
+  }
+
+  function getTaskOverlapConflictDetail(error: unknown): TaskOverlapConflictDetail | null {
+    if (!(error instanceof ApiError)) return null;
+    const detail = error.detail;
+    if (!detail || typeof detail !== "object") return null;
+    const candidate = detail as Partial<TaskOverlapConflictDetail>;
+    if (candidate.code !== "task_overlap" || !Array.isArray(candidate.overlaps)) return null;
+    return {
+      code: "task_overlap",
+      message: String(candidate.message || ""),
+      overlaps: candidate.overlaps,
+    };
   }
 
   function updateProjectTaskFormField<K extends keyof ProjectTaskFormState>(
@@ -4157,6 +4369,12 @@ export function App() {
         ? validateTimeInputOrSetError(projectTaskForm.start_time, false)
         : null;
     if (projectTaskForm.start_time.trim().length > 0 && !startTime) return;
+    const estimatedHours = validateEstimatedHoursOrSetError(projectTaskForm.estimated_hours);
+    if (projectTaskForm.estimated_hours.trim().length > 0 && estimatedHours == null) return;
+    if (estimatedHours != null && !startTime) {
+      setError(language === "de" ? "Für eine Dauer muss auch eine Startzeit gesetzt sein" : "Duration requires a start time");
+      return;
+    }
     const classTemplateId =
       projectTaskForm.class_template_id.trim().length > 0 ? Number(projectTaskForm.class_template_id) : null;
     const materialsRequired = serializeTaskMaterialRows(projectTaskMaterialRows).trim() || null;
@@ -4176,6 +4394,7 @@ export function App() {
           status: "open",
           due_date: dueDate,
           start_time: startTime,
+          estimated_hours: estimatedHours,
           assignee_ids: projectTaskForm.assignee_ids,
           week_start: dueDate ? normalizeWeekStartISO(dueDate) : null,
         }),
@@ -4194,7 +4413,7 @@ export function App() {
     }
   }
 
-  async function createWeeklyPlanTask() {
+  async function createWeeklyPlanTask(confirmOverlap = false) {
     if (!taskModalForm.title.trim()) {
       setError(language === "de" ? "Aufgabentitel ist erforderlich" : "Task title is required");
       return;
@@ -4216,6 +4435,12 @@ export function App() {
         ? validateTimeInputOrSetError(taskModalForm.start_time, false)
         : null;
     if (taskModalForm.start_time.trim().length > 0 && !startTime) return;
+    const estimatedHours = validateEstimatedHoursOrSetError(taskModalForm.estimated_hours);
+    if (taskModalForm.estimated_hours.trim().length > 0 && estimatedHours == null) return;
+    if (estimatedHours != null && !startTime) {
+      setError(language === "de" ? "Für eine Dauer muss auch eine Startzeit gesetzt sein" : "Duration requires a start time");
+      return;
+    }
     const targetWeekStart = dueDate ? normalizeWeekStartISO(dueDate) : null;
     const classTemplateId =
       taskModalForm.class_template_id.trim().length > 0 ? Number(taskModalForm.class_template_id) : null;
@@ -4276,7 +4501,9 @@ export function App() {
           assignee_ids: taskModalForm.assignee_ids,
           due_date: dueDate,
           start_time: startTime,
+          estimated_hours: estimatedHours,
           week_start: targetWeekStart,
+          confirm_overlap: confirmOverlap,
         }),
       });
       closeTaskModal();
@@ -4287,11 +4514,16 @@ export function App() {
       }
       setNotice(language === "de" ? "Aufgabe gespeichert" : "Task saved");
     } catch (err: any) {
+      const overlapDetail = getTaskOverlapConflictDetail(err);
+      if (overlapDetail) {
+        setTaskModalOverlapWarning(overlapDetail);
+        return;
+      }
       setError(err.message ?? "Failed to create task");
     }
   }
 
-  async function saveTaskEdit() {
+  async function saveTaskEdit(confirmOverlap = false) {
     if (!taskEditForm.id) return;
     if (!taskEditForm.title.trim()) {
       setError(language === "de" ? "Aufgabentitel ist erforderlich" : "Task title is required");
@@ -4314,13 +4546,19 @@ export function App() {
         ? validateTimeInputOrSetError(taskEditForm.start_time, false)
         : null;
     if (taskEditForm.start_time.trim().length > 0 && !startTime) return;
+    const estimatedHours = validateEstimatedHoursOrSetError(taskEditForm.estimated_hours);
+    if (taskEditForm.estimated_hours.trim().length > 0 && estimatedHours == null) return;
+    if (estimatedHours != null && !startTime) {
+      setError(language === "de" ? "Für eine Dauer muss auch eine Startzeit gesetzt sein" : "Duration requires a start time");
+      return;
+    }
     const baseStartTime =
       taskEditFormBase && taskEditFormBase.start_time.trim().length > 0
         ? normalizeTimeHHMM(taskEditFormBase.start_time)
         : null;
     const nextMaterialsRequired = serializeTaskMaterialRows(taskEditMaterialRows);
     const nextPayload = taskEditPayloadFromForm(
-      { ...taskEditForm, materials_required: nextMaterialsRequired },
+      { ...taskEditForm, materials_required: nextMaterialsRequired, estimated_hours: estimatedHours != null ? String(estimatedHours) : "" },
       startTime,
     );
     const basePayload = taskEditPayloadFromForm(taskEditFormBase ?? taskEditForm, baseStartTime);
@@ -4337,6 +4575,7 @@ export function App() {
         "status",
         "due_date",
         "start_time",
+        "estimated_hours",
         "assignee_ids",
         "week_start",
       ] as (keyof typeof nextPayload)[]
@@ -4360,7 +4599,8 @@ export function App() {
     if (taskEditExpectedUpdatedAt !== null) {
       patchPayload.expected_updated_at = taskEditExpectedUpdatedAt;
     }
-    const hasChanges = Object.keys(patchPayload).some((key) => key !== "expected_updated_at");
+    patchPayload.confirm_overlap = confirmOverlap;
+    const hasChanges = Object.keys(patchPayload).some((key) => key !== "expected_updated_at" && key !== "confirm_overlap");
     if (!hasChanges) {
       closeTaskEditModal();
       return;
@@ -4384,6 +4624,11 @@ export function App() {
       setOverview(await apiFetch<any[]>("/projects-overview", token));
       setNotice(language === "de" ? "Aufgabe aktualisiert" : "Task updated");
     } catch (err: any) {
+      const overlapDetail = getTaskOverlapConflictDetail(err);
+      if (overlapDetail) {
+        setTaskEditOverlapWarning(overlapDetail);
+        return;
+      }
       if (err?.status === 409) {
         setError(
           language === "de"
@@ -5619,6 +5864,72 @@ export function App() {
     }
   }
 
+  async function updateVacationBalance(targetUserId: number) {
+    const draft = vacationBalanceDrafts[targetUserId];
+    const perYear = Number(draft?.perYear ?? "");
+    const available = Number(draft?.available ?? "");
+    const carryover = Number(draft?.carryover ?? "");
+    if (
+      !targetUserId ||
+      !Number.isFinite(perYear) ||
+      !Number.isFinite(available) ||
+      !Number.isFinite(carryover) ||
+      perYear < 0 ||
+      available < 0 ||
+      carryover < 0
+    ) {
+      setError(language === "de" ? "Bitte gültige Urlaubstage angeben" : "Please enter valid vacation day values");
+      return;
+    }
+    try {
+      const updatedBalance = await apiFetch<TimeCurrent | {
+        user_id: number;
+        vacation_days_per_year: number;
+        vacation_days_available: number;
+        vacation_days_carryover: number;
+        vacation_days_total_remaining: number;
+      }>(`/time/vacation-balance/${targetUserId}`, token, {
+        method: "PATCH",
+        body: JSON.stringify({
+          vacation_days_per_year: perYear,
+          vacation_days_available: available,
+          vacation_days_carryover: carryover,
+        }),
+      });
+      setVacationBalanceDrafts((current) => {
+        const next = { ...current };
+        delete next[targetUserId];
+        return next;
+      });
+      setAssignableUsers((current) =>
+        current.map((entry) =>
+          entry.id === targetUserId
+            ? {
+                ...entry,
+                vacation_days_per_year: updatedBalance.vacation_days_per_year,
+                vacation_days_available: updatedBalance.vacation_days_available,
+                vacation_days_carryover: updatedBalance.vacation_days_carryover,
+              }
+            : entry,
+        ),
+      );
+      setUsers(await apiFetch<User[]>("/admin/users", token));
+      if (user && user.id === targetUserId) {
+        setUser({
+          ...user,
+          vacation_days_per_year: updatedBalance.vacation_days_per_year,
+          vacation_days_available: updatedBalance.vacation_days_available,
+          vacation_days_carryover: updatedBalance.vacation_days_carryover,
+          vacation_days_total_remaining: updatedBalance.vacation_days_total_remaining,
+        });
+      }
+      await refreshTimeData();
+      setNotice(language === "de" ? "Urlaubstage aktualisiert" : "Vacation days updated");
+    } catch (err: any) {
+      setError(err.message ?? "Failed to update vacation balance");
+    }
+  }
+
   async function saveProfileSettings(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const fullName = profileSettingsForm.full_name.trim();
@@ -5628,7 +5939,7 @@ export function App() {
     const payload: Record<string, string> = {};
     if (fullName) payload.full_name = fullName;
     if (emailValue) payload.email = emailValue;
-    if (isAdmin) {
+    if (canManageUsers) {
       if (!nicknameValue) {
         payload.nickname = "";
         setNicknameCheckState("idle");
@@ -5690,7 +6001,7 @@ export function App() {
         current_password: "",
         new_password: "",
       });
-      if (isAdmin) {
+      if (canManageUsers) {
         setUsers(await apiFetch<User[]>("/admin/users", token));
       }
       setNotice(language === "de" ? "Profil gespeichert" : "Profile updated");
@@ -5702,20 +6013,74 @@ export function App() {
   function formatActionLinkNotice(
     result: InviteDispatchResponse | PasswordResetDispatchResponse,
     type: "invite" | "reset",
+    copied: boolean,
   ) {
     if (result.sent) {
-      return type === "invite"
-        ? language === "de"
-          ? "Einladung per E-Mail versendet"
-          : "Invitation email sent"
-        : language === "de"
-          ? "Passwort-Reset per E-Mail versendet"
-          : "Password reset email sent";
+      if (type === "invite") {
+        return language === "de"
+          ? copied
+            ? "Einladung per E-Mail versendet und Link kopiert"
+            : "Einladung per E-Mail versendet. Link zum Kopieren geoeffnet"
+          : copied
+            ? "Invitation email sent and link copied"
+            : "Invitation email sent. Opened link dialog for copying";
+      }
+      return language === "de"
+        ? copied
+          ? "Passwort-Reset per E-Mail versendet und Link kopiert"
+          : "Passwort-Reset per E-Mail versendet. Link zum Kopieren geoeffnet"
+        : copied
+          ? "Password reset email sent and link copied"
+          : "Password reset email sent. Opened link dialog for copying";
     }
-    const linkValue = "invite_link" in result ? result.invite_link : result.reset_link;
     return language === "de"
-      ? `Kein SMTP aktiv. Link lokal erzeugt: ${linkValue}`
-      : `SMTP not configured. Generated local link: ${linkValue}`;
+      ? copied
+        ? "Kein SMTP aktiv. Link wurde kopiert"
+        : "Kein SMTP aktiv. Link zum Kopieren geoeffnet"
+      : copied
+        ? "SMTP not configured. Link copied"
+        : "SMTP not configured. Opened link dialog for copying";
+  }
+
+  async function copyActionLink(value: string) {
+    if (navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(value);
+        return;
+      } catch {
+        // Fallback below.
+      }
+    }
+    const fallback = document.createElement("textarea");
+    fallback.value = value;
+    fallback.setAttribute("readonly", "true");
+    fallback.style.position = "absolute";
+    fallback.style.left = "-9999px";
+    document.body.appendChild(fallback);
+    fallback.focus();
+    fallback.select();
+    const copied = document.execCommand("copy");
+    document.body.removeChild(fallback);
+    if (!copied) {
+      throw new Error("Clipboard copy failed");
+    }
+  }
+
+  async function handleActionLinkResult(
+    result: InviteDispatchResponse | PasswordResetDispatchResponse,
+    type: "invite" | "reset",
+  ) {
+    const linkValue = "invite_link" in result ? result.invite_link : result.reset_link;
+    let copied = false;
+    try {
+      await copyActionLink(linkValue);
+      copied = true;
+      setActionLinkDialog(null);
+    } catch {
+      copied = false;
+      setActionLinkDialog({ type, link: linkValue });
+    }
+    setNotice(formatActionLinkNotice(result, type, copied));
   }
 
   async function sendInviteToUser(targetUserId: number) {
@@ -5725,7 +6090,7 @@ export function App() {
         method: "POST",
       });
       setUsers(await apiFetch<User[]>("/admin/users", token));
-      setNotice(formatActionLinkNotice(result, "invite"));
+      await handleActionLinkResult(result, "invite");
     } catch (err: any) {
       setError(err.message ?? "Failed to send invite");
     }
@@ -5742,7 +6107,7 @@ export function App() {
         },
       );
       setUsers(await apiFetch<User[]>("/admin/users", token));
-      setNotice(formatActionLinkNotice(result, "reset"));
+      await handleActionLinkResult(result, "reset");
     } catch (err: any) {
       setError(err.message ?? "Failed to send password reset");
     }
@@ -5819,7 +6184,7 @@ export function App() {
       });
       setInviteCreateForm({ email: "", full_name: "", role: "employee" });
       setUsers(await apiFetch<User[]>("/admin/users", token));
-      setNotice(formatActionLinkNotice(result, "invite"));
+      await handleActionLinkResult(result, "invite");
     } catch (err: any) {
       setError(err.message ?? "Failed to create invite");
     }
@@ -5827,6 +6192,7 @@ export function App() {
 
   async function exportEncryptedDatabaseBackup(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!canExportBackups) return;
     const form = event.currentTarget;
     const formData = new FormData(form);
     const keyFile = formData.get("key_file");
@@ -5908,12 +6274,20 @@ export function App() {
     }
   };
 
-  const createEmployeeGroup = async (name: string, memberIds: number[]) => {
+  const createEmployeeGroup = async (
+    name: string,
+    memberIds: number[],
+    canUpdateRecentOwnTimeEntries: boolean,
+  ) => {
     if (!token) return;
     const res = await fetch("/api/admin/employee-groups", {
       method: "POST",
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ name, member_user_ids: memberIds }),
+      body: JSON.stringify({
+        name,
+        member_user_ids: memberIds,
+        can_update_recent_own_time_entries: canUpdateRecentOwnTimeEntries,
+      }),
     });
     if (res.ok) {
       const created = await res.json();
@@ -5925,7 +6299,11 @@ export function App() {
 
   const updateEmployeeGroup = async (
     id: number,
-    patch: { name?: string; member_user_ids?: number[] },
+    patch: {
+      name?: string;
+      member_user_ids?: number[];
+      can_update_recent_own_time_entries?: boolean;
+    },
   ) => {
     if (!token) return;
     const res = await fetch(`/api/admin/employee-groups/${id}`, {
@@ -5957,7 +6335,7 @@ export function App() {
   };
 
   const loadAuditLogs = async () => {
-    if (!token) return;
+    if (!token || !canViewAudit) return;
     setAuditLogsLoading(true);
     try {
       const res = await fetch("/api/admin/audit-logs", {
@@ -5975,7 +6353,7 @@ export function App() {
   };
 
   const loadRolePermissions = async () => {
-    if (!token) return;
+    if (!token || !canManagePermissions) return;
     setRolePermissionsLoading(true);
     try {
       const res = await fetch("/api/admin/role-permissions", {
@@ -5993,7 +6371,7 @@ export function App() {
   };
 
   const setRolePermission = async (role: string, permission: string, enabled: boolean) => {
-    if (!token || !rolePermissionsMeta) return;
+    if (!token || !rolePermissionsMeta || !canManagePermissions) return;
     // Optimistic update — UI reflects change immediately
     const current = rolePermissionsMeta.permissions[role] ?? [];
     const next = enabled
@@ -6014,6 +6392,7 @@ export function App() {
         setRolePermissionsMeta((prev) =>
           prev ? { ...prev, permissions: data.permissions } : prev,
         );
+        await refreshCurrentUser();
       } else {
         // Revert on server error
         await loadRolePermissions();
@@ -6024,7 +6403,7 @@ export function App() {
   };
 
   const resetRoleToDefaults = async (role: string) => {
-    if (!token) return;
+    if (!token || !canManagePermissions) return;
     try {
       const res = await fetch(`/api/admin/role-permissions/${role}`, {
         method: "DELETE",
@@ -6035,6 +6414,7 @@ export function App() {
         setRolePermissionsMeta((prev) =>
           prev ? { ...prev, permissions: data.permissions } : prev,
         );
+        await refreshCurrentUser();
       }
     } catch {
       // silently ignore
@@ -6042,7 +6422,7 @@ export function App() {
   };
 
   const loadUserPermissions = async (userId: number) => {
-    if (!token) return;
+    if (!token || !canManagePermissions) return;
     setUserPermissionsLoading(true);
     try {
       const res = await fetch(`/api/admin/user-permissions/${userId}`, {
@@ -6060,7 +6440,7 @@ export function App() {
   };
 
   const setUserPermissionOverride = async (userId: number, extra: string[], denied: string[]) => {
-    if (!token) return;
+    if (!token || !canManagePermissions) return;
     try {
       const res = await fetch(`/api/admin/user-permissions/${userId}`, {
         method: "PUT",
@@ -6070,6 +6450,7 @@ export function App() {
       if (res.ok) {
         const data: UserPermissionOverride = await res.json();
         setUserPermissionOverrides((prev) => ({ ...prev, [userId]: data }));
+        await refreshCurrentUser();
       }
     } catch {
       // silently ignore
@@ -6077,7 +6458,7 @@ export function App() {
   };
 
   const resetUserPermissions = async (userId: number) => {
-    if (!token) return;
+    if (!token || !canManagePermissions) return;
     try {
       const res = await fetch(`/api/admin/user-permissions/${userId}`, {
         method: "DELETE",
@@ -6127,6 +6508,12 @@ export function App() {
         method: "PATCH",
         body: JSON.stringify({ status }),
       });
+      if (canManageUsers) {
+        setUsers(await apiFetch<User[]>("/admin/users", token));
+      }
+      if (user) {
+        setUser(await apiFetch<User>("/auth/me", token));
+      }
       await refreshTimeData();
       setNotice(
         status === "approved"
@@ -6144,7 +6531,7 @@ export function App() {
 
   async function submitSchoolAbsence(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const targetUserId = Number(schoolAbsenceForm.user_id);
+    const targetUserId = canManageSchoolAbsences ? Number(schoolAbsenceForm.user_id) : Number(user?.id ?? 0);
     if (!targetUserId || !Number.isFinite(targetUserId)) {
       setError(language === "de" ? "Bitte Mitarbeiter auswählen." : "Please choose an employee.");
       return;
@@ -6155,8 +6542,29 @@ export function App() {
     const countsAsHours = typeInfo ? typeInfo.counts_as_hours : true;
     const selectedWeekdays = [...schoolAbsenceForm.recurrence_weekdays].sort((a, b) => a - b);
     const recurrenceUntil = schoolAbsenceForm.recurrence_until || schoolAbsenceForm.end_date || null;
+    if (editingSchoolAbsenceId !== null && selectedWeekdays.length > 1) {
+      setError(
+        language === "de"
+          ? "Wiederkehrende Abwesenheiten bitte einzeln bearbeiten."
+          : "Please edit recurring absences one day at a time.",
+      );
+      return;
+    }
     try {
-      if (selectedWeekdays.length > 0) {
+      if (editingSchoolAbsenceId !== null) {
+        await apiFetch<SchoolAbsence>(`/time/school-absences/${editingSchoolAbsenceId}`, token, {
+          method: "PATCH",
+          body: JSON.stringify({
+            title,
+            absence_type: absenceType,
+            counts_as_hours: countsAsHours,
+            start_date: schoolAbsenceForm.start_date,
+            end_date: selectedWeekdays.length > 0 ? schoolAbsenceForm.start_date : schoolAbsenceForm.end_date,
+            recurrence_weekday: selectedWeekdays.length > 0 ? selectedWeekdays[0] : null,
+            recurrence_until: selectedWeekdays.length > 0 ? recurrenceUntil : null,
+          }),
+        });
+      } else if (selectedWeekdays.length > 0) {
         await Promise.all(
           selectedWeekdays.map((day) =>
             apiFetch<SchoolAbsence>("/time/school-absences", token, {
@@ -6189,19 +6597,73 @@ export function App() {
           }),
         });
       }
-      setSchoolAbsenceForm({
-        user_id: "",
-        title: "Berufsschule",
-        absence_type: "school",
-        start_date: formatDateISOLocal(new Date()),
-        end_date: formatDateISOLocal(new Date()),
-        recurrence_weekdays: [],
-        recurrence_until: "",
+      cancelSchoolAbsenceEdit();
+      await refreshTimeData();
+      setNotice(
+        editingSchoolAbsenceId !== null
+          ? language === "de"
+            ? "Abwesenheit aktualisiert"
+            : "Absence updated"
+          : canManageSchoolAbsences
+            ? language === "de"
+              ? "Abwesenheit gespeichert"
+              : "Absence saved"
+            : language === "de"
+              ? "Abwesenheitsantrag gesendet"
+              : "Absence request submitted",
+      );
+    } catch (err: any) {
+      setError(err.message ?? "Failed to save absence");
+    }
+  }
+
+  function startSchoolAbsenceEdit(absence: SchoolAbsence) {
+    setEditingSchoolAbsenceId(absence.id);
+    setSchoolAbsenceForm({
+      user_id: String(absence.user_id),
+      title: absence.title,
+      absence_type: absence.absence_type,
+      start_date: absence.start_date,
+      end_date: absence.end_date,
+      recurrence_weekdays:
+        absence.recurrence_weekday !== null && absence.recurrence_weekday !== undefined
+          ? [absence.recurrence_weekday]
+          : [],
+      recurrence_until: absence.recurrence_until ?? "",
+    });
+  }
+
+  function cancelSchoolAbsenceEdit() {
+    setEditingSchoolAbsenceId(null);
+    setSchoolAbsenceForm({
+      user_id: "",
+      title: "Berufsschule",
+      absence_type: "school",
+      start_date: formatDateISOLocal(new Date()),
+      end_date: formatDateISOLocal(new Date()),
+      recurrence_weekdays: [],
+      recurrence_until: "",
+    });
+  }
+
+  async function reviewSchoolAbsence(absenceId: number, status: "approved" | "rejected") {
+    try {
+      await apiFetch<SchoolAbsence>(`/time/school-absences/${absenceId}/review`, token, {
+        method: "PATCH",
+        body: JSON.stringify({ status }),
       });
       await refreshTimeData();
-      setNotice(language === "de" ? "Schulzeit gespeichert" : "School date saved");
+      setNotice(
+        status === "approved"
+          ? language === "de"
+            ? "Abwesenheitsantrag genehmigt"
+            : "Absence request approved"
+          : language === "de"
+            ? "Abwesenheitsantrag abgelehnt"
+            : "Absence request rejected",
+      );
     } catch (err: any) {
-      setError(err.message ?? "Failed to save school absence");
+      setError(err.message ?? "Failed to review absence request");
     }
   }
 
@@ -6221,16 +6683,26 @@ export function App() {
   }
 
   async function removeSchoolAbsence(absenceId: number) {
+    const confirmed = window.confirm(
+      language === "de"
+        ? "Abwesenheit wirklich löschen?"
+        : "Do you really want to delete this absence?",
+    );
+    if (!confirmed) return;
     try {
       await apiFetch(`/time/school-absences/${absenceId}`, token, { method: "DELETE" });
+      if (editingSchoolAbsenceId === absenceId) {
+        cancelSchoolAbsenceEdit();
+      }
       await refreshTimeData();
-      setNotice(language === "de" ? "Schulzeit gelöscht" : "School date deleted");
+      setNotice(language === "de" ? "Abwesenheit gelöscht" : "Absence deleted");
     } catch (err: any) {
-      setError(err.message ?? "Failed to delete school absence");
+      setError(err.message ?? "Failed to delete absence");
     }
   }
 
   async function downloadProjectCsvTemplate() {
+    if (!canManageProjectImport) return;
     try {
       const response = await fetch("/api/admin/projects/import-template.csv", {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -6257,6 +6729,7 @@ export function App() {
   }
 
   async function downloadProjectClassTemplateCsv() {
+    if (!canManageProjectImport) return;
     try {
       const response = await fetch("/api/admin/project-classes/template.csv", {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
@@ -6284,6 +6757,7 @@ export function App() {
 
   async function importProjectsCsv(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!canManageProjectImport) return;
     const form = new FormData(event.currentTarget);
     const file = form.get("file");
     if (!(file instanceof File) || file.size <= 0) {
@@ -6324,6 +6798,7 @@ export function App() {
 
   async function importProjectClassTemplateCsv(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!canManageProjectImport) return;
     const form = new FormData(event.currentTarget);
     const file = form.get("file");
     if (!(file instanceof File) || file.size <= 0) {
@@ -6603,6 +7078,8 @@ export function App() {
     taskModalOpen,
     setTaskModalOpen,
     taskModalForm,
+    taskModalOverlapWarning,
+    setTaskModalOverlapWarning,
     setTaskModalForm,
     taskModalMaterialRows,
     setTaskModalMaterialRows,
@@ -6611,6 +7088,8 @@ export function App() {
     taskEditModalOpen,
     setTaskEditModalOpen,
     taskEditForm,
+    taskEditOverlapWarning,
+    setTaskEditOverlapWarning,
     setTaskEditForm,
     taskEditMaterialRows,
     setTaskEditMaterialRows,
@@ -6743,8 +7222,14 @@ export function App() {
     setVacationRequestForm,
     schoolAbsenceForm,
     setSchoolAbsenceForm,
+    editingSchoolAbsenceId,
+    setEditingSchoolAbsenceId,
     timeMonthCursor,
     setTimeMonthCursor,
+    timeEntriesStartDate,
+    setTimeEntriesStartDate,
+    timeEntriesEndDate,
+    setTimeEntriesEndDate,
     timeInfoOpen,
     setTimeInfoOpen,
     timeTargetUserId,
@@ -6757,6 +7242,8 @@ export function App() {
     publicHolidays,
     requiredHoursDrafts,
     setRequiredHoursDrafts,
+    vacationBalanceDrafts,
+    setVacationBalanceDrafts,
 
     // ── Profile settings ──────────────────────────────────────────────────────
     profileSettingsForm,
@@ -6777,6 +7264,12 @@ export function App() {
     setWeatherApiKeyInput,
     weatherSettingsSaving,
     setWeatherSettingsSaving,
+    smtpSettings,
+    setSmtpSettings,
+    smtpSettingsForm,
+    setSmtpSettingsForm,
+    smtpSettingsSaving,
+    setSmtpSettingsSaving,
     updateStatus,
     setUpdateStatus,
     updateStatusLoading,
@@ -6850,12 +7343,18 @@ export function App() {
 
     // ── Derived booleans ──────────────────────────────────────────────────────
     isAdmin,
+    canManageUsers,
+    canManagePermissions,
     canAdjustRequiredHours,
     canCreateProject,
     canManageTasks,
     isTimeManager,
     canApproveVacation,
     canManageSchoolAbsences,
+    canViewAudit,
+    canManageSettings,
+    canManageSystem,
+    canExportBackups,
     canManageProjectImport,
     canUseProtectedFolders,
     canViewFinance,
@@ -7111,6 +7610,7 @@ export function App() {
     loadProjectFinance,
     loadProjectTrackedMaterials,
     saveWeatherSettings,
+    saveSmtpSettings,
     loadUpdateStatus,
     installSystemUpdate,
     loadPlanningWeek,
@@ -7163,6 +7663,7 @@ export function App() {
     updateRole,
     updateWorkspaceLock,
     updateRequiredDailyHours,
+    updateVacationBalance,
     saveProfileSettings,
     sendInviteToUser,
     sendPasswordResetToUser,
@@ -7173,6 +7674,9 @@ export function App() {
     submitVacationRequest,
     reviewVacationRequest,
     submitSchoolAbsence,
+    startSchoolAbsenceEdit,
+    cancelSchoolAbsenceEdit,
+    reviewSchoolAbsence,
     removeSchoolAbsence,
     downloadProjectCsvTemplate,
     downloadProjectClassTemplateCsv,
@@ -7211,6 +7715,59 @@ export function App() {
         {notice && (
           <div className="notice" onClick={() => setNotice("")}>
             {notice}
+          </div>
+        )}
+        {actionLinkDialog && (
+          <div className="modal-backdrop" role="presentation" onClick={() => setActionLinkDialog(null)}>
+            <section
+              className="card modal-card modal-card-sm action-link-dialog"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="action-link-dialog-title"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <h3 id="action-link-dialog-title">
+                {language === "de"
+                  ? actionLinkDialog.type === "invite"
+                    ? "Einladungslink"
+                    : "Passwort-Reset-Link"
+                  : actionLinkDialog.type === "invite"
+                    ? "Invite link"
+                    : "Password reset link"}
+              </h3>
+              <p className="muted" style={{ marginTop: "0.4rem" }}>
+                {language === "de"
+                  ? "Der Browser hat das automatische Kopieren blockiert. Du kannst den Link hier direkt kopieren."
+                  : "The browser blocked automatic copying. You can copy the link directly here."}
+              </p>
+              <input
+                className="action-link-input"
+                type="text"
+                readOnly
+                value={actionLinkDialog.link}
+                onFocus={(event) => event.currentTarget.select()}
+                onClick={(event) => event.currentTarget.select()}
+              />
+              <div className="action-link-actions">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    try {
+                      await copyActionLink(actionLinkDialog.link);
+                      setActionLinkDialog(null);
+                      setNotice(language === "de" ? "Link kopiert" : "Link copied");
+                    } catch {
+                      setError(language === "de" ? "Link konnte nicht kopiert werden" : "Failed to copy link");
+                    }
+                  }}
+                >
+                  {language === "de" ? "Link kopieren" : "Copy link"}
+                </button>
+                <button type="button" className="ghost" onClick={() => setActionLinkDialog(null)}>
+                  {language === "de" ? "Schliessen" : "Close"}
+                </button>
+              </div>
+            </section>
           </div>
         )}
         <datalist id="material-unit-options">

@@ -14,6 +14,31 @@ class WeatherSettingsUpdate(BaseModel):
     api_key: str = ""
 
 
+class SmtpSettingsOut(BaseModel):
+    host: str = ""
+    port: int = 587
+    username: str = ""
+    has_password: bool = False
+    masked_password: str = ""
+    starttls: bool = True
+    ssl: bool = False
+    from_email: str = ""
+    from_name: str = ""
+    configured: bool = False
+
+
+class SmtpSettingsUpdate(BaseModel):
+    host: str = ""
+    port: int = Field(default=587, ge=1, le=65535)
+    username: str = ""
+    password: str = ""
+    clear_password: bool = False
+    starttls: bool = True
+    ssl: bool = False
+    from_email: EmailStr | str = ""
+    from_name: str = ""
+
+
 class UpdateStatusOut(BaseModel):
     repository: str
     branch: str

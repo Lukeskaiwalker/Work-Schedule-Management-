@@ -44,6 +44,12 @@ export function Sidebar() {
     preUserMenuRef,
     setLanguage,
     isAdmin,
+    canManageUsers,
+    canManagePermissions,
+    canViewAudit,
+    canManageSettings,
+    canManageSystem,
+    canExportBackups,
     canManageProjectImport,
     canManageSchoolAbsences,
     openAdminViewFromMenu,
@@ -95,6 +101,16 @@ export function Sidebar() {
 
   const sidebarVisible = !isMobileSidebarViewport || sidebarOpen;
   const closeSidebar = () => setSidebarOpen(false);
+  const canAccessAdminCenter =
+    isAdmin ||
+    canManageUsers ||
+    canManagePermissions ||
+    canViewAudit ||
+    canManageSettings ||
+    canManageSystem ||
+    canExportBackups ||
+    canManageProjectImport ||
+    canManageSchoolAbsences;
 
   return (
     <>
@@ -310,7 +326,7 @@ export function Sidebar() {
                 >
                   {language === "de" ? "Benutzerdaten" : "User data"}
                 </button>
-                {(isAdmin || canManageProjectImport || canManageSchoolAbsences) && (
+                {canAccessAdminCenter && (
                   <button
                     type="button"
                     className="pre-user-action"

@@ -2441,6 +2441,139 @@ label {
 .admin-perm-toggle-label--deny  { color: var(--danger, #ef4444); }
 
 /* Audit log */
+.admin-audit-filters {
+  position: relative;
+  flex: 1 1 360px;
+  min-width: min(100%, 320px);
+}
+
+.admin-audit-filters[open] {
+  z-index: 6;
+}
+
+.admin-audit-filters-summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-height: 42px;
+  padding: 0.55rem 0.8rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 0.88rem;
+  color: var(--ink);
+}
+
+.admin-audit-filters-summary::-webkit-details-marker {
+  display: none;
+}
+
+.admin-audit-filter-count {
+  min-width: 1.35rem;
+  height: 1.35rem;
+  padding: 0 0.35rem;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.admin-audit-filter-summary-text {
+  color: var(--muted);
+  font-size: 0.8rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.admin-audit-filters-panel {
+  margin-top: 0.45rem;
+  padding: 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.08);
+  display: grid;
+  gap: 0.9rem;
+}
+
+.admin-audit-filter-group {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.admin-audit-filter-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.admin-audit-filter-label {
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.admin-audit-filter-options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.admin-audit-filter-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.38rem;
+  padding: 0.38rem 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface-2);
+  font-size: 0.82rem;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.admin-audit-filter-pill input,
+.admin-audit-filter-check input {
+  width: auto;
+  min-width: 1rem;
+  margin: 0;
+}
+
+.admin-audit-filter-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 42px;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-2);
+  font-size: 0.84rem;
+  color: var(--ink);
+}
+
+.admin-audit-filter-field {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.admin-audit-filter-field select,
+.admin-audit-filter-field input {
+  width: 100%;
+}
+
+.admin-audit-filter-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .admin-audit-search {
   flex: 1 1 200px;
   max-width: 340px;
@@ -2453,6 +2586,22 @@ label {
   border-radius: 4px;
   padding: 0.1rem 0.35rem;
   color: var(--accent-2);
+}
+
+@media (max-width: 768px) {
+  .admin-audit-filter-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .admin-audit-filters-summary {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
+  .admin-audit-filter-summary-text {
+    width: 100%;
+    white-space: normal;
+  }
 }
 
 /* Settings / system cards */
@@ -3596,6 +3745,24 @@ li {
   width: min(440px, 100%);
 }
 
+.action-link-dialog {
+  display: grid;
+  gap: 0.9rem;
+}
+
+.action-link-input {
+  width: 100%;
+  font-size: 0.9rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+.action-link-actions {
+  display: flex;
+  gap: 0.75rem;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
 .modal-form {
   display: grid;
   gap: 0.65rem;
@@ -4297,6 +4464,29 @@ li {
 .assignee-search-block {
   display: grid;
   gap: 0.45rem;
+}
+
+.task-overlap-warning {
+  display: grid;
+  gap: 0.45rem;
+  border: 1px solid #e9b76f;
+  background: #fff8ec;
+}
+
+.task-overlap-warning-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.task-overlap-warning-list li {
+  display: grid;
+  gap: 0.08rem;
+  padding: 0.45rem 0.55rem;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.7);
 }
 
 .assignee-suggestions {

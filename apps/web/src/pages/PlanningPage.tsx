@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useAppContext } from "../context/AppContext";
 import { addDaysISO, normalizeWeekStartISO, formatDayLabel, isoWeekdayMondayFirst } from "../utils/dates";
-import { sortTasksByDueTime, formatTaskStartTime } from "../utils/tasks";
+import { sortTasksByDueTime, formatTaskTimeRange } from "../utils/tasks";
 import { PenIcon } from "../components/icons";
 import type { Language } from "../types";
 
@@ -56,6 +56,7 @@ export function PlanningPage() {
     exportTaskCalendar,
     markTaskDone,
     menuUserNameById,
+    absenceTypes,
   } = useAppContext();
 
   const [isPhoneViewport, setIsPhoneViewport] = useState(() => {
@@ -104,6 +105,11 @@ export function PlanningPage() {
   if (mainView !== "planning") return null;
 
   const dayColLabels = de ? DE_DAY_COLS : EN_DAY_COLS;
+  const absenceTypeLabel = (type: string) => {
+    if (type === "vacation") return de ? "Urlaub" : "Vacation";
+    const match = absenceTypes.find((entry) => entry.key === type);
+    return match ? (de ? match.label_de : match.label_en) : type;
+  };
 
   // Grid modifier class depends on mobile view mode
   const gridClass = [
@@ -287,9 +293,7 @@ export function PlanningPage() {
                         {menuUserNameById(absence.user_id, absence.user_name)}: {absence.label}
                       </b>
                       <small>
-                        {absence.type === "vacation"
-                          ? de ? "Urlaub" : "Vacation"
-                          : de ? "Schule" : "School"}
+                        {absenceTypeLabel(absence.type)}
                       </small>
                     </li>
                   ))}
@@ -330,7 +334,7 @@ export function PlanningPage() {
                           >
                             {taskProjectLabel.title}
                           </button>
-                          {task.start_time ? ` · ${formatTaskStartTime(task.start_time)}` : ""}
+                          {task.start_time ? ` · ${formatTaskTimeRange(task)}` : ""}
                           {" · "}
                           {getTaskAssigneeLabel(task)}
                         </small>

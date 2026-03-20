@@ -1,8 +1,7 @@
 from __future__ import annotations
 from datetime import date, datetime, time
-from typing import Any
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 class TaskCreate(BaseModel):
     project_id: int
@@ -16,9 +15,25 @@ class TaskCreate(BaseModel):
     status: str = "open"
     due_date: date | None = None
     start_time: time | None = None
+    estimated_hours: float | None = None
     assignee_id: int | None = None
     assignee_ids: list[int] = Field(default_factory=list)
     week_start: date | None = None
+    confirm_overlap: bool = False
+
+    @field_validator("estimated_hours")
+    @classmethod
+    def validate_estimated_hours(cls, value: float | None) -> float | None:
+        if value is None:
+            return None
+        if value <= 0:
+            raise ValueError("estimated_hours must be greater than 0")
+        half_hour_steps = round(value * 2)
+        if abs((half_hour_steps / 2) - value) > 1e-9:
+            raise ValueError("estimated_hours must use 0.5-hour increments")
+        if value >= 24:
+            raise ValueError("estimated_hours must be less than 24 hours")
+        return half_hour_steps / 2
 
 
 class TaskUpdate(BaseModel):
@@ -33,9 +48,25 @@ class TaskUpdate(BaseModel):
     status: str | None = None
     due_date: date | None = None
     start_time: time | None = None
+    estimated_hours: float | None = None
     assignee_id: int | None = None
     assignee_ids: list[int] | None = None
     week_start: date | None = None
+    confirm_overlap: bool = False
+
+    @field_validator("estimated_hours")
+    @classmethod
+    def validate_estimated_hours(cls, value: float | None) -> float | None:
+        if value is None:
+            return None
+        if value <= 0:
+            raise ValueError("estimated_hours must be greater than 0")
+        half_hour_steps = round(value * 2)
+        if abs((half_hour_steps / 2) - value) > 1e-9:
+            raise ValueError("estimated_hours must use 0.5-hour increments")
+        if value >= 24:
+            raise ValueError("estimated_hours must be less than 24 hours")
+        return half_hour_steps / 2
 
 
 class TaskOut(BaseModel):
@@ -52,6 +83,8 @@ class TaskOut(BaseModel):
     is_overdue: bool = False
     due_date: date | None = None
     start_time: time | None = None
+    estimated_hours: float | None = None
+    end_time: time | None = None
     assignee_id: int | None = None
     assignee_ids: list[int] = Field(default_factory=list)
     week_start: date | None = None

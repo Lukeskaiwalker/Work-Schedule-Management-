@@ -24,6 +24,9 @@ class UserUpdate(BaseModel):
     role: str | None = None
     is_active: bool | None = None
     required_daily_hours: float | None = Field(default=None, ge=1, le=24)
+    vacation_days_per_year: float | None = Field(default=None, ge=0, le=366)
+    vacation_days_available: float | None = Field(default=None, ge=0, le=366)
+    vacation_days_carryover: float | None = Field(default=None, ge=0, le=366)
     workspace_lock: str | None = None  # "construction" | "office" | null (null clears the lock)
 
 
@@ -37,6 +40,10 @@ class UserOut(BaseModel):
     role: str
     is_active: bool
     required_daily_hours: float = 8
+    vacation_days_per_year: float = 0
+    vacation_days_available: float = 0
+    vacation_days_carryover: float = 0
+    vacation_days_total_remaining: float = 0
     avatar_updated_at: datetime | None = None
     invite_sent_at: datetime | None = None
     invite_accepted_at: datetime | None = None
@@ -51,6 +58,7 @@ class UserMeOut(UserOut):
     """Extended user response for the /me endpoint — includes resolved permissions."""
 
     effective_permissions: list[str] = []
+    can_update_recent_own_time_entries: bool = False
 
 
 class AssignableUserOut(BaseModel):
@@ -60,6 +68,9 @@ class AssignableUserOut(BaseModel):
     display_name: str
     role: str
     required_daily_hours: float = 8
+    vacation_days_per_year: float = 0
+    vacation_days_available: float = 0
+    vacation_days_carryover: float = 0
     avatar_updated_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)

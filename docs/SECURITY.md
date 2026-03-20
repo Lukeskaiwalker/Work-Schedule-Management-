@@ -680,3 +680,20 @@
 - No authentication or authorization model changes.
 - Encrypted file preview/download now validates chunked stored payload integrity before streaming; this reduces risk of partial-response failures leaking ambiguous transport errors to clients/operators.
 - Corrupted encrypted payloads now fail closed with a deterministic API `409` response, while existing project/file authorization checks remain unchanged.
+
+## Iteration Security Notes (2026-03-19, automated GitHub releases from main)
+- No application authentication or authorization model changes.
+- Release publishing now builds from `git archive` at the tagged commit instead of packaging the live workspace, reducing risk that ignored or untracked local files are attached to GitHub releases.
+- `.gitattributes export-ignore` excludes agent/internal repo files (`AGENT_TASKS.md`, `CODEMAP.md`, `PATTERNS.md`, task folders, local tooling directories, `plan.txt`) from archive-based release outputs.
+- The workflow requires a repository secret `RELEASE_TOKEN`; this credential remains in GitHub Actions secrets and is used only for tag/release publishing under the intended GitHub username.
+
+## Iteration Security Notes (2026-03-19, task durations + overlap confirmation)
+- No authentication or authorization model changes.
+- Task overlap protection is enforced server-side on create/update for scheduled tasks, so clients cannot bypass double-booking warnings by manipulating the UI alone.
+- Travel-buffer overlap checks use the existing project address metadata and optional OpenWeather geocoding; no new secret type or user-controlled external destination was introduced.
+- The new task duration field is operational metadata under existing task/project permissions; no new external systems, credentials, or network destinations were introduced.
+
+## Iteration Security Notes (2026-03-19, admin audit log combined filters + date range)
+- No authentication or authorization model changes.
+- Change scope is frontend-only audit-log filtering in the existing admin center; it does not expose new data, endpoints, or permissions.
+- Date-period filtering is applied client-side to already-authorized audit rows returned by the existing `audit:view`-protected endpoint.

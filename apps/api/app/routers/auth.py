@@ -10,10 +10,10 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.core.deps import get_current_user
-from app.core.permissions import ALL_ROLES, ROLE_ADMIN, get_user_effective_permissions
+from app.core.permissions import ALL_ROLES, get_user_effective_permissions, has_permission_for_user
 from app.core.security import create_access_token, get_password_hash, verify_password
 from app.core.time import utcnow
-from app.models.entities import User, UserActionToken
+from app.models.entities import EmployeeGroup, EmployeeGroupMember, User, UserActionToken
 from app.schemas.api import (
     InviteAccept,
     LoginRequest,
@@ -28,6 +28,18 @@ from app.services.runtime_settings import mark_initial_admin_bootstrap_completed
 router = APIRouter(prefix="/auth", tags=["auth"])
 settings = get_settings()
 NICKNAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{2,31}$")
+
+
+def _can_update_recent_own_time_entries(db: Session, user_id: int) -> bool:
+    return db.scalars(
+        select(EmployeeGroup.id)
+        .join(EmployeeGroupMember, EmployeeGroupMember.group_id == EmployeeGroup.id)
+        .where(
+            EmployeeGroupMember.user_id == user_id,
+            EmployeeGroup.can_update_recent_own_time_entries.is_(True),
+        )
+        .limit(1)
+    ).first() is not None
 
 
 def _normalize_nickname(value: str | None) -> str:
@@ -88,9 +100,16 @@ def logout(response: Response):
 
 
 @router.get("/me", response_model=UserMeOut)
-def me(current_user: User = Depends(get_current_user)):
+def me(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    from app.routers.time_tracking import _vacation_balance_out
+
     out = UserMeOut.model_validate(current_user)
+    vacation_balance = _vacation_balance_out(db, current_user)
+    out.vacation_days_available = vacation_balance.vacation_days_available
+    out.vacation_days_carryover = vacation_balance.vacation_days_carryover
+    out.vacation_days_total_remaining = vacation_balance.vacation_days_total_remaining
     out.effective_permissions = get_user_effective_permissions(current_user.id, current_user.role)
+    out.can_update_recent_own_time_entries = _can_update_recent_own_time_entries(db, current_user.id)
     return out
 
 
@@ -100,8 +119,8 @@ def nickname_availability(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    if current_user.role != ROLE_ADMIN:
-        raise HTTPException(status_code=403, detail="Only admins can set nicknames")
+    if not has_permission_for_user(current_user.id, current_user.role, "users:manage"):
+        raise HTTPException(status_code=403, detail="Nickname management denied")
 
     nickname_value = _validate_nickname(nickname)
     nickname_normalized = _nickname_normalized(nickname_value)
@@ -176,8 +195,8 @@ def update_profile(
         current_user.email = incoming_email
 
     if incoming_nickname is not None:
-        if current_user.role != ROLE_ADMIN:
-            raise HTTPException(status_code=403, detail="Only admins can set nicknames")
+        if not has_permission_for_user(current_user.id, current_user.role, "users:manage"):
+            raise HTTPException(status_code=403, detail="Nickname management denied")
         if not incoming_nickname:
             current_user.nickname = None
             current_user.nickname_normalized = None
@@ -283,6 +302,8 @@ def accept_invite(payload: InviteAccept, db: Session = Depends(get_db)):
 def confirm_password_reset(payload: PasswordResetConfirm, db: Session = Depends(get_db)):
     user, _ = _consume_action_token(db, raw_token=payload.token, purpose="password_reset")
     user.password_hash = get_password_hash(payload.new_password)
+    if user.invite_sent_at is not None and user.invite_accepted_at is None:
+        user.invite_accepted_at = utcnow()
     user.is_active = True
     db.add(user)
     db.commit()

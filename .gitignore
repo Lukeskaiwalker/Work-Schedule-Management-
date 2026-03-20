@@ -9,11 +9,13 @@ apps/api/smoke.db
 # Node
 node_modules/
 apps/web/dist/
+dist/
 
 # Env / secrets
 .env
 apps/api/.env
 apps/api/.release.env
+infra/.maintenance.env
 config/telegram.env
 config/*.key
 

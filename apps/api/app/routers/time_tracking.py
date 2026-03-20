@@ -15,20 +15,25 @@ from app.core.db import get_db
 from app.core.deps import get_current_user
 from app.core.permissions import has_permission_for_user
 from app.core.time import utcnow
-from app.models.entities import BreakEntry, ClockEntry, SchoolAbsence, User, VacationRequest
+from app.models.entities import BreakEntry, ClockEntry, EmployeeGroup, EmployeeGroupMember, SchoolAbsence, User, VacationRequest
 from app.schemas.api import (
     RequiredDailyHoursOut,
     RequiredDailyHoursUpdate,
     SchoolAbsenceCreate,
     SchoolAbsenceOut,
+    SchoolAbsenceReview,
+    SchoolAbsenceUpdate,
     TimeCurrentOut,
     TimeEntryOut,
     TimeEntryUpdate,
     TimesheetOut,
+    VacationBalanceOut,
+    VacationBalanceUpdate,
     VacationRequestCreate,
     VacationRequestOut,
     VacationRequestReview,
 )
+from app.services.audit import log_admin_action
 
 router = APIRouter(prefix="/time", tags=["time-tracking"])
 
@@ -164,13 +169,17 @@ def _entries_overlapping_period(
     )
 
 
-def _is_time_manager(user: User) -> bool:
+def _can_view_all_time_entries(user: User) -> bool:
     return has_permission_for_user(user.id, user.role, "time:view_all") or \
            has_permission_for_user(user.id, user.role, "time:manage")
 
 
-def _is_required_hours_manager(user: User) -> bool:
+def _can_manage_time_entries(user: User) -> bool:
     return has_permission_for_user(user.id, user.role, "time:manage")
+
+
+def _is_required_hours_manager(user: User) -> bool:
+    return _can_manage_time_entries(user)
 
 
 def _is_vacation_reviewer(user: User) -> bool:
@@ -181,12 +190,73 @@ def _is_school_manager(user: User) -> bool:
     return has_permission_for_user(user.id, user.role, "time:manage_absences")
 
 
+def _absence_type_meta(absence_type: str) -> dict:
+    return _ABSENCE_TYPE_MAP.get((absence_type or "").strip(), {})
+
+
+def _absence_default_title(absence_type: str) -> str:
+    return str(_absence_type_meta(absence_type).get("label_de") or absence_type or "Sonstige")
+
+
+def _normalized_absence_title(title: str | None, absence_type: str) -> str:
+    value = (title or "").strip()
+    return value or _absence_default_title(absence_type)
+
+
 def _resolve_target_user_id(current_user: User, user_id: int | None) -> int:
     if user_id is None or user_id == current_user.id:
         return current_user.id
-    if not _is_time_manager(current_user):
+    if not _can_view_all_time_entries(current_user):
         raise HTTPException(status_code=403, detail="Not allowed")
     return user_id
+
+
+def _can_update_recent_own_time_entries(db: Session, user_id: int) -> bool:
+    return db.scalars(
+        select(EmployeeGroup.id)
+        .join(EmployeeGroupMember, EmployeeGroupMember.group_id == EmployeeGroup.id)
+        .where(
+            EmployeeGroupMember.user_id == user_id,
+            EmployeeGroup.can_update_recent_own_time_entries.is_(True),
+        )
+        .limit(1)
+    ).first() is not None
+
+
+def _recent_entry_ids_for_user(db: Session, user_id: int, *, limit: int = 3) -> set[int]:
+    rows = db.scalars(
+        select(ClockEntry.id)
+        .where(ClockEntry.user_id == user_id)
+        .order_by(ClockEntry.id.desc())
+        .limit(limit)
+    ).all()
+    return {int(entry_id) for entry_id in rows}
+
+
+def _latest_entry_id_for_user(db: Session, user_id: int) -> int | None:
+    return db.scalars(
+        select(ClockEntry.id)
+        .where(ClockEntry.user_id == user_id)
+        .order_by(ClockEntry.id.desc())
+        .limit(1)
+    ).first()
+
+
+def _entry_count_for_user(db: Session, user_id: int) -> int:
+    return db.query(ClockEntry).filter(ClockEntry.user_id == user_id).count()
+
+
+def _entry_update_scope(db: Session, current_user: User, entry: ClockEntry) -> str | None:
+    if _can_manage_time_entries(current_user):
+        return "manage"
+    if entry.user_id != current_user.id:
+        return None
+    latest_entry_id = _latest_entry_id_for_user(db, current_user.id)
+    if latest_entry_id == entry.id and _entry_count_for_user(db, current_user.id) == 1:
+        return "own_latest"
+    if _can_update_recent_own_time_entries(db, current_user.id) and entry.id in _recent_entry_ids_for_user(db, current_user.id):
+        return "recent_self"
+    return None
 
 
 def _vacation_request_out(db: Session, request_row: VacationRequest) -> VacationRequestOut:
@@ -197,6 +267,7 @@ def _vacation_request_out(db: Session, request_row: VacationRequest) -> Vacation
         user_name=request_user.display_name if request_user else f"#{request_row.user_id}",
         start_date=request_row.start_date,
         end_date=request_row.end_date,
+        vacation_days_used=_vacation_days_requested(request_row.start_date, request_row.end_date),
         note=request_row.note,
         status=request_row.status,
         reviewed_by=request_row.reviewed_by,
@@ -214,11 +285,14 @@ def _school_absence_out(db: Session, row: SchoolAbsence) -> SchoolAbsenceOut:
         title=row.title,
         absence_type=row.absence_type,
         counts_as_hours=row.counts_as_hours,
+        status=row.status,
         start_date=row.start_date,
         end_date=row.end_date,
         recurrence_weekday=row.recurrence_weekday,
         recurrence_until=row.recurrence_until,
         created_by=row.created_by,
+        reviewed_by=row.reviewed_by,
+        reviewed_at=row.reviewed_at,
         created_at=row.created_at,
     )
 
@@ -244,7 +318,13 @@ def _entry_metrics(db: Session, entry: ClockEntry, now: datetime | None = None) 
     }
 
 
-def _entry_out(db: Session, entry: ClockEntry, now: datetime | None = None) -> TimeEntryOut:
+def _entry_out(
+    db: Session,
+    entry: ClockEntry,
+    now: datetime | None = None,
+    *,
+    can_edit: bool = False,
+) -> TimeEntryOut:
     metrics = _entry_metrics(db, entry, now=now)
     return TimeEntryOut(
         id=entry.id,
@@ -256,11 +336,111 @@ def _entry_out(db: Session, entry: ClockEntry, now: datetime | None = None) -> T
         required_break_hours=metrics["required_break_hours"],
         deducted_break_hours=metrics["deducted_break_hours"],
         net_hours=metrics["net_hours"],
+        can_edit=can_edit,
     )
 
 
 def _sanitized_required_daily_hours(user: User) -> float:
     return round(max(float(user.required_daily_hours or 8.0), 1.0), 2)
+
+
+def _sanitized_vacation_balance(value: float | None) -> float:
+    return round(max(float(value or 0.0), 0.0), 2)
+
+
+def _vacation_days_requested(start_date: date, end_date: date) -> int:
+    if end_date < start_date:
+        return 0
+    holiday_sets: dict[int, dict[date, str]] = {}
+    used_days = 0
+    cursor = start_date
+    while cursor <= end_date:
+        if cursor.year not in holiday_sets:
+            holiday_sets[cursor.year] = _nrw_public_holidays(cursor.year)
+        if cursor.weekday() < 5 and cursor not in holiday_sets[cursor.year]:
+            used_days += 1
+        cursor += timedelta(days=1)
+    return used_days
+
+
+def _split_vacation_deduction(carryover_days: float, available_days: float, used_days: int) -> tuple[int, int]:
+    carryover_used = min(int(round(carryover_days)), used_days)
+    available_used = max(used_days - carryover_used, 0)
+    return available_used, carryover_used
+
+
+def _current_vacation_balance_year() -> int:
+    return _local_date_from_utc(utcnow()).year
+
+
+def _ensure_vacation_balance_year(db: Session, user: User) -> None:
+    current_year = _current_vacation_balance_year()
+    balance_year = user.vacation_balance_year
+    available = _sanitized_vacation_balance(user.vacation_days_available)
+    carryover = _sanitized_vacation_balance(user.vacation_days_carryover)
+    per_year = _sanitized_vacation_balance(user.vacation_days_per_year)
+    changed = False
+
+    if balance_year is None:
+        balance_year = current_year
+        changed = True
+        if per_year > 0 and available <= 0 and carryover <= 0:
+            available = per_year
+            changed = True
+
+    if current_year > balance_year:
+        for _ in range(balance_year + 1, current_year + 1):
+            carryover = available
+            available = per_year
+        balance_year = current_year
+        changed = True
+
+    if not changed:
+        return
+
+    user.vacation_days_available = available
+    user.vacation_days_carryover = carryover
+    user.vacation_balance_year = balance_year
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+
+def _vacation_balance_out(db: Session, user: User) -> VacationBalanceOut:
+    _ensure_vacation_balance_year(db, user)
+    vacation_days_per_year = _sanitized_vacation_balance(user.vacation_days_per_year)
+    vacation_days_available = _sanitized_vacation_balance(user.vacation_days_available)
+    vacation_days_carryover = _sanitized_vacation_balance(user.vacation_days_carryover)
+    legacy_approved_requests = db.scalars(
+        select(VacationRequest).where(
+            VacationRequest.user_id == user.id,
+            VacationRequest.status == "approved",
+            VacationRequest.deducted_available_days == 0,
+            VacationRequest.deducted_carryover_days == 0,
+        )
+    ).all()
+    for request_row in legacy_approved_requests:
+        days_used = _vacation_days_requested(request_row.start_date, request_row.end_date)
+        available_used, carryover_used = _split_vacation_deduction(vacation_days_carryover, vacation_days_available, days_used)
+        vacation_days_carryover = max(vacation_days_carryover - carryover_used, 0)
+        vacation_days_available = max(vacation_days_available - available_used, 0)
+    return VacationBalanceOut(
+        user_id=user.id,
+        vacation_days_per_year=vacation_days_per_year,
+        vacation_days_available=vacation_days_available,
+        vacation_days_carryover=vacation_days_carryover,
+        vacation_days_total_remaining=round(vacation_days_available + vacation_days_carryover, 2),
+    )
+
+
+def _vacation_balance_details(db: Session, user: User) -> dict[str, float]:
+    balance = _vacation_balance_out(db, user)
+    return {
+        "vacation_days_per_year": balance.vacation_days_per_year,
+        "vacation_days_available": balance.vacation_days_available,
+        "vacation_days_carryover": balance.vacation_days_carryover,
+        "vacation_days_total_remaining": balance.vacation_days_total_remaining,
+    }
 
 
 @router.post("/clock-in")
@@ -380,6 +560,7 @@ def current_status(
 
     now = utcnow()
     required_daily_hours = _sanitized_required_daily_hours(target_user)
+    vacation_balance = _vacation_balance_out(db, target_user)
 
     local_today = _local_date_from_utc(now)
     start_dt, end_dt = _local_period_bounds_utc(local_today, local_today)
@@ -397,6 +578,10 @@ def current_status(
             required_daily_hours=required_daily_hours,
             daily_net_hours=daily_net_hours,
             progress_percent_live=progress_percent,
+            vacation_days_per_year=vacation_balance.vacation_days_per_year,
+            vacation_days_available=vacation_balance.vacation_days_available,
+            vacation_days_carryover=vacation_balance.vacation_days_carryover,
+            vacation_days_total_remaining=vacation_balance.vacation_days_total_remaining,
         )
 
     metrics = _entry_metrics(db, entry, now=now)
@@ -416,6 +601,10 @@ def current_status(
         required_daily_hours=required_daily_hours,
         daily_net_hours=daily_net_hours,
         progress_percent_live=progress_percent,
+        vacation_days_per_year=vacation_balance.vacation_days_per_year,
+        vacation_days_available=vacation_balance.vacation_days_available,
+        vacation_days_carryover=vacation_balance.vacation_days_carryover,
+        vacation_days_total_remaining=vacation_balance.vacation_days_total_remaining,
     )
 
 
@@ -443,6 +632,59 @@ def set_required_daily_hours(
     )
 
 
+@router.patch("/vacation-balance/{user_id}", response_model=VacationBalanceOut)
+def set_vacation_balance(
+    user_id: int,
+    payload: VacationBalanceUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not _is_required_hours_manager(current_user):
+        raise HTTPException(status_code=403, detail="Not allowed")
+
+    target_user = db.get(User, user_id)
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    before_balance = _vacation_balance_details(db, target_user)
+    next_per_year = _sanitized_vacation_balance(payload.vacation_days_per_year)
+    next_available = _sanitized_vacation_balance(payload.vacation_days_available)
+    next_carryover = _sanitized_vacation_balance(payload.vacation_days_carryover)
+    first_time_year_setup = (
+        next_per_year > 0
+        and _sanitized_vacation_balance(target_user.vacation_days_per_year) <= 0
+        and _sanitized_vacation_balance(target_user.vacation_days_available) <= 0
+        and _sanitized_vacation_balance(target_user.vacation_days_carryover) <= 0
+        and next_available <= 0
+    )
+    if first_time_year_setup:
+        next_available = next_per_year
+
+    target_user.vacation_days_per_year = next_per_year
+    target_user.vacation_days_available = next_available
+    target_user.vacation_days_carryover = next_carryover
+    target_user.vacation_balance_year = _current_vacation_balance_year()
+    db.add(target_user)
+    db.commit()
+    db.refresh(target_user)
+    after_balance = _vacation_balance_details(db, target_user)
+    if before_balance != after_balance:
+        log_admin_action(
+            db,
+            current_user,
+            "time.vacation_balance_manual_update",
+            "user",
+            str(target_user.id),
+            {
+                "user_id": target_user.id,
+                "before": before_balance,
+                "after": after_balance,
+            },
+            category="time",
+        )
+    return _vacation_balance_out(db, target_user)
+
+
 @router.post("/vacation-requests", response_model=VacationRequestOut)
 def create_vacation_request(
     payload: VacationRequestCreate,
@@ -451,6 +693,9 @@ def create_vacation_request(
 ):
     if payload.end_date < payload.start_date:
         raise HTTPException(status_code=400, detail="end_date must be on or after start_date")
+    vacation_days_used = _vacation_days_requested(payload.start_date, payload.end_date)
+    if vacation_days_used <= 0:
+        raise HTTPException(status_code=400, detail="Vacation request must include at least one working day")
     row = VacationRequest(
         user_id=current_user.id,
         start_date=payload.start_date,
@@ -472,7 +717,7 @@ def list_vacation_requests(
     db: Session = Depends(get_db),
 ):
     target_user_id = user_id
-    if not _is_time_manager(current_user):
+    if not _can_view_all_time_entries(current_user):
         target_user_id = current_user.id
     stmt = select(VacationRequest)
     if status:
@@ -498,6 +743,41 @@ def review_vacation_request(
     next_status = payload.status.strip().lower()
     if next_status not in {"approved", "rejected"}:
         raise HTTPException(status_code=400, detail="Invalid status")
+    if row.status != "approved" and next_status == "approved":
+        target_user = db.get(User, row.user_id)
+        if not target_user:
+            raise HTTPException(status_code=404, detail="User not found")
+        days_used = _vacation_days_requested(row.start_date, row.end_date)
+        current_balance = _vacation_balance_out(db, target_user)
+        if current_balance.vacation_days_total_remaining < days_used:
+            raise HTTPException(status_code=400, detail="Not enough vacation days remaining")
+        available_used, carryover_used = _split_vacation_deduction(
+            target_user.vacation_days_carryover,
+            target_user.vacation_days_available,
+            days_used,
+        )
+        target_user.vacation_days_carryover = _sanitized_vacation_balance(
+            target_user.vacation_days_carryover - carryover_used
+        )
+        target_user.vacation_days_available = _sanitized_vacation_balance(
+            target_user.vacation_days_available - available_used
+        )
+        row.deducted_available_days = available_used
+        row.deducted_carryover_days = carryover_used
+        db.add(target_user)
+    elif row.status == "approved" and next_status == "rejected":
+        target_user = db.get(User, row.user_id)
+        if not target_user:
+            raise HTTPException(status_code=404, detail="User not found")
+        target_user.vacation_days_available = _sanitized_vacation_balance(
+            target_user.vacation_days_available + row.deducted_available_days
+        )
+        target_user.vacation_days_carryover = _sanitized_vacation_balance(
+            target_user.vacation_days_carryover + row.deducted_carryover_days
+        )
+        row.deducted_available_days = 0
+        row.deducted_carryover_days = 0
+        db.add(target_user)
     row.status = next_status
     row.reviewed_by = current_user.id
     row.reviewed_at = utcnow()
@@ -510,15 +790,21 @@ def review_vacation_request(
 @router.get("/school-absences", response_model=list[SchoolAbsenceOut])
 def list_school_absences(
     user_id: int | None = None,
+    status: str | None = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     target_user_id = user_id
-    if not _is_time_manager(current_user):
+    if not _can_view_all_time_entries(current_user):
         target_user_id = current_user.id
     stmt = select(SchoolAbsence)
     if target_user_id:
         stmt = stmt.where(SchoolAbsence.user_id == target_user_id)
+    if status:
+        normalized_status = status.strip().lower()
+        if normalized_status not in {"pending", "approved", "rejected"}:
+            raise HTTPException(status_code=400, detail="Invalid status")
+        stmt = stmt.where(SchoolAbsence.status == normalized_status)
     rows = db.scalars(stmt.order_by(SchoolAbsence.start_date.desc(), SchoolAbsence.id.desc())).all()
     return [_school_absence_out(db, row) for row in rows]
 
@@ -529,7 +815,8 @@ def create_school_absence(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    if not _is_school_manager(current_user):
+    direct_manage = _is_school_manager(current_user)
+    if not direct_manage and payload.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Not allowed")
     target_user = db.get(User, payload.user_id)
     if not target_user:
@@ -543,24 +830,156 @@ def create_school_absence(
             status_code=400,
             detail="For recurring school days use a single-day start/end date and recurrence_until",
         )
-    # Derive counts_as_hours from the canonical absence type if not overridden by client
-    type_meta = _ABSENCE_TYPE_MAP.get(payload.absence_type, {})
+    type_meta = _absence_type_meta(payload.absence_type)
     counts = payload.counts_as_hours if "counts_as_hours" in payload.model_fields_set else type_meta.get("counts_as_hours", True)
+    initial_status = "approved" if direct_manage else "pending"
 
     row = SchoolAbsence(
         user_id=payload.user_id,
-        title=payload.title.strip(),
+        title=_normalized_absence_title(payload.title, payload.absence_type),
         absence_type=payload.absence_type,
         counts_as_hours=counts,
+        status=initial_status,
         start_date=payload.start_date,
         end_date=payload.end_date,
         recurrence_weekday=payload.recurrence_weekday,
         recurrence_until=payload.recurrence_until,
         created_by=current_user.id,
+        reviewed_by=current_user.id if direct_manage else None,
+        reviewed_at=utcnow() if direct_manage else None,
     )
     db.add(row)
     db.commit()
     db.refresh(row)
+    log_admin_action(
+        db,
+        current_user,
+        "school_absence.created" if direct_manage else "school_absence.requested",
+        "school_absence",
+        str(row.id),
+        {
+            "user_id": row.user_id,
+            "status": row.status,
+            "absence_type": row.absence_type,
+            "title": row.title,
+            "start_date": row.start_date.isoformat(),
+            "end_date": row.end_date.isoformat(),
+            "recurrence_weekday": row.recurrence_weekday,
+            "recurrence_until": row.recurrence_until.isoformat() if row.recurrence_until else None,
+        },
+        category="time",
+    )
+    return _school_absence_out(db, row)
+
+
+@router.patch("/school-absences/{absence_id}", response_model=SchoolAbsenceOut)
+def update_school_absence(
+    absence_id: int,
+    payload: SchoolAbsenceUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not _is_school_manager(current_user):
+        raise HTTPException(status_code=403, detail="Not allowed")
+    row = db.get(SchoolAbsence, absence_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="School absence not found")
+    if payload.end_date < payload.start_date:
+        raise HTTPException(status_code=400, detail="end_date must be on or after start_date")
+    if payload.recurrence_weekday is not None and payload.recurrence_until and payload.recurrence_until < payload.start_date:
+        raise HTTPException(status_code=400, detail="recurrence_until must be on or after start_date")
+    if payload.recurrence_weekday is not None and payload.end_date != payload.start_date:
+        raise HTTPException(
+            status_code=400,
+            detail="For recurring school days use a single-day start/end date and recurrence_until",
+        )
+    previous_state = {
+        "title": row.title,
+        "absence_type": row.absence_type,
+        "counts_as_hours": row.counts_as_hours,
+        "status": row.status,
+        "start_date": row.start_date.isoformat(),
+        "end_date": row.end_date.isoformat(),
+        "recurrence_weekday": row.recurrence_weekday,
+        "recurrence_until": row.recurrence_until.isoformat() if row.recurrence_until else None,
+    }
+    type_meta = _absence_type_meta(payload.absence_type)
+    counts = payload.counts_as_hours if "counts_as_hours" in payload.model_fields_set else type_meta.get("counts_as_hours", True)
+    row.title = _normalized_absence_title(payload.title, payload.absence_type)
+    row.absence_type = payload.absence_type
+    row.counts_as_hours = counts
+    row.start_date = payload.start_date
+    row.end_date = payload.end_date
+    row.recurrence_weekday = payload.recurrence_weekday
+    row.recurrence_until = payload.recurrence_until
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    log_admin_action(
+        db,
+        current_user,
+        "school_absence.updated",
+        "school_absence",
+        str(row.id),
+        {
+            "user_id": row.user_id,
+            "before": previous_state,
+            "after": {
+                "title": row.title,
+                "absence_type": row.absence_type,
+                "counts_as_hours": row.counts_as_hours,
+                "status": row.status,
+                "start_date": row.start_date.isoformat(),
+                "end_date": row.end_date.isoformat(),
+                "recurrence_weekday": row.recurrence_weekday,
+                "recurrence_until": row.recurrence_until.isoformat() if row.recurrence_until else None,
+            },
+        },
+        category="time",
+    )
+    return _school_absence_out(db, row)
+
+
+@router.patch("/school-absences/{absence_id}/review", response_model=SchoolAbsenceOut)
+def review_school_absence(
+    absence_id: int,
+    payload: SchoolAbsenceReview,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not _is_school_manager(current_user):
+        raise HTTPException(status_code=403, detail="Not allowed")
+    row = db.get(SchoolAbsence, absence_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="School absence not found")
+    next_status = payload.status.strip().lower()
+    if next_status not in {"approved", "rejected"}:
+        raise HTTPException(status_code=400, detail="Invalid status")
+    previous_status = row.status
+    if previous_status == next_status:
+        return _school_absence_out(db, row)
+    row.status = next_status
+    row.reviewed_by = current_user.id
+    row.reviewed_at = utcnow()
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    log_admin_action(
+        db,
+        current_user,
+        "school_absence.reviewed",
+        "school_absence",
+        str(row.id),
+        {
+            "user_id": row.user_id,
+            "previous_status": previous_status,
+            "status": row.status,
+            "absence_type": row.absence_type,
+            "start_date": row.start_date.isoformat(),
+            "end_date": row.end_date.isoformat(),
+        },
+        category="time",
+    )
     return _school_absence_out(db, row)
 
 
@@ -570,13 +989,35 @@ def delete_school_absence(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    if not _is_school_manager(current_user):
-        raise HTTPException(status_code=403, detail="Not allowed")
     row = db.get(SchoolAbsence, absence_id)
     if not row:
         raise HTTPException(status_code=404, detail="School absence not found")
+    can_delete = _is_school_manager(current_user) or (
+        row.user_id == current_user.id and row.status == "pending"
+    )
+    if not can_delete:
+        raise HTTPException(status_code=403, detail="Not allowed")
+    deleted_state = {
+        "user_id": row.user_id,
+        "status": row.status,
+        "absence_type": row.absence_type,
+        "title": row.title,
+        "start_date": row.start_date.isoformat(),
+        "end_date": row.end_date.isoformat(),
+        "recurrence_weekday": row.recurrence_weekday,
+        "recurrence_until": row.recurrence_until.isoformat() if row.recurrence_until else None,
+    }
     db.delete(row)
     db.commit()
+    log_admin_action(
+        db,
+        current_user,
+        "school_absence.deleted",
+        "school_absence",
+        str(absence_id),
+        deleted_state,
+        category="time",
+    )
     return {"ok": True}
 
 
@@ -653,6 +1094,7 @@ def _credited_absence_hours_for_period(
             absence = db.scalars(
                 select(SchoolAbsence).where(
                     SchoolAbsence.user_id == user_id,
+                    SchoolAbsence.status == "approved",
                     SchoolAbsence.start_date <= cursor,
                     SchoolAbsence.end_date >= cursor,
                 )
@@ -870,6 +1312,7 @@ def export_timesheet_xlsx(
     school_abs = db.scalars(
         select(SchoolAbsence).where(
             SchoolAbsence.user_id == target_user_id,
+            SchoolAbsence.status == "approved",
             SchoolAbsence.start_date <= month_end,
             SchoolAbsence.end_date >= month_start,
         )
@@ -952,9 +1395,9 @@ def export_timesheet_xlsx(
 
     # Count vacation days used this month
     vacation_days_month = sum(
-        1 for d in range(1, calendar.monthrange(year, mon)[1] + 1)
-        if date(year, mon, d) in day_absence and day_absence[date(year, mon, d)][0] == "Urlaub"
-        and date(year, mon, d).weekday() < 5
+        _vacation_days_requested(max(va.start_date, month_start), min(va.end_date, month_end))
+        for va in vacations
+        if min(va.end_date, month_end) >= max(va.start_date, month_start)
     )
 
     # Calculate actual month hours (mirrors the detail-sheet row logic)
@@ -1206,27 +1649,59 @@ def export_timesheet_xlsx(
 def list_entries(
     period: str = "weekly",
     day: date | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
     user_id: int | None = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     target_day = day or _local_date_from_utc(utcnow())
-    target_user_id = _resolve_target_user_id(current_user, user_id)
 
-    if period not in {"daily", "weekly"}:
-        raise HTTPException(status_code=400, detail="Invalid period")
-
-    if period == "daily":
-        start_date = target_day
-        end_date = target_day
+    if start_date is not None or end_date is not None:
+        if start_date is None or end_date is None:
+            raise HTTPException(status_code=400, detail="start_date and end_date must be provided together")
+        if end_date < start_date:
+            raise HTTPException(status_code=400, detail="end_date must be on or after start_date")
+        start_dt, end_dt = _local_period_bounds_utc(start_date, end_date)
     else:
-        start_date, end_date = _week_bounds(target_day)
+        if period not in {"daily", "weekly"}:
+            raise HTTPException(status_code=400, detail="Invalid period")
 
-    start_dt, end_dt = _local_period_bounds_utc(start_date, end_date)
-    entries = _entries_overlapping_period(db, target_user_id, start_dt, end_dt)
+        if period == "daily":
+            start_date = target_day
+            end_date = target_day
+        else:
+            start_date, end_date = _week_bounds(target_day)
+
+        start_dt, end_dt = _local_period_bounds_utc(start_date, end_date)
+
+    editable_entry_ids: set[int] = set()
+    if user_id is None and _can_view_all_time_entries(current_user):
+        entries = list(
+            db.scalars(
+                select(ClockEntry).where(
+                    ClockEntry.clock_in <= end_dt,
+                    or_(ClockEntry.clock_out.is_(None), ClockEntry.clock_out >= start_dt),
+                )
+            ).all()
+        )
+        if _can_manage_time_entries(current_user):
+            editable_entry_ids = {entry.id for entry in entries}
+    else:
+        target_user_id = _resolve_target_user_id(current_user, user_id)
+        entries = _entries_overlapping_period(db, target_user_id, start_dt, end_dt)
+        if _can_manage_time_entries(current_user):
+            editable_entry_ids = {entry.id for entry in entries}
+        elif target_user_id == current_user.id:
+            latest_entry_id = _latest_entry_id_for_user(db, current_user.id)
+            if latest_entry_id is not None and _entry_count_for_user(db, current_user.id) == 1:
+                editable_entry_ids.add(latest_entry_id)
+            if _can_update_recent_own_time_entries(db, current_user.id):
+                visible_recent_entries = sorted(entries, key=lambda entry: entry.id, reverse=True)[:3]
+                editable_entry_ids.update(entry.id for entry in visible_recent_entries)
     entries.sort(key=lambda entry: entry.clock_in, reverse=True)
     now = utcnow()
-    return [_entry_out(db, entry, now=now) for entry in entries]
+    return [_entry_out(db, entry, now=now, can_edit=entry.id in editable_entry_ids) for entry in entries]
 
 
 @router.patch("/entries/{clock_entry_id}", response_model=TimeEntryOut)
@@ -1239,7 +1714,8 @@ def update_entry(
     entry = db.get(ClockEntry, clock_entry_id)
     if not entry:
         raise HTTPException(status_code=404, detail="Clock entry not found")
-    if entry.user_id != current_user.id and not _is_time_manager(current_user):
+    update_scope = _entry_update_scope(db, current_user, entry)
+    if update_scope is None:
         raise HTTPException(status_code=403, detail="Not allowed")
 
     if payload.clock_out and payload.clock_out < payload.clock_in:
@@ -1248,6 +1724,13 @@ def update_entry(
     worked_minutes = _hours_between(payload.clock_in, payload.clock_out) * 60 if payload.clock_out else None
     if worked_minutes is not None and payload.break_minutes > worked_minutes:
         raise HTTPException(status_code=400, detail="break_minutes exceeds worked duration")
+
+    previous_break_hours = _break_hours(db, entry.id)
+    previous_state = {
+        "clock_in": entry.clock_in.isoformat(),
+        "clock_out": entry.clock_out.isoformat() if entry.clock_out else None,
+        "break_minutes": round(previous_break_hours * 60),
+    }
 
     entry.clock_in = payload.clock_in
     entry.clock_out = payload.clock_out
@@ -1267,4 +1750,22 @@ def update_entry(
 
     db.commit()
     db.refresh(entry)
-    return _entry_out(db, entry)
+    if update_scope == "recent_self":
+        log_admin_action(
+            db,
+            current_user,
+            "time_entry.recent_self_update",
+            "clock_entry",
+            str(entry.id),
+            {
+                "user_id": entry.user_id,
+                "before": previous_state,
+                "after": {
+                    "clock_in": entry.clock_in.isoformat(),
+                    "clock_out": entry.clock_out.isoformat() if entry.clock_out else None,
+                    "break_minutes": payload.break_minutes,
+                },
+            },
+            category="time",
+        )
+    return _entry_out(db, entry, can_edit=update_scope is not None)

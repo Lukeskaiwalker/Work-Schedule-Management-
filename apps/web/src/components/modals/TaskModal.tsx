@@ -1,12 +1,14 @@
 import { useAppContext } from "../../context/AppContext";
 import { HHMM_PATTERN } from "../../constants";
-import { taskTypeLabel, normalizeTaskTypeValue, formatTimeInputForTyping, formatTimeInputForBlur } from "../../utils/tasks";
+import { taskTypeLabel, normalizeTaskTypeValue, formatTimeInputForTyping, formatTimeInputForBlur, addMinutesToHHMM } from "../../utils/tasks";
 
 export function TaskModal() {
   const {
     language,
     taskModalOpen,
     taskModalForm,
+    taskModalOverlapWarning,
+    setTaskModalOverlapWarning,
     setTaskModalForm,
     taskModalMaterialRows,
     taskModalProjectSuggestions,
@@ -316,7 +318,75 @@ export function TaskModal() {
                 onBlur={(event) => updateTaskModalField("start_time", formatTimeInputForBlur(event.target.value))}
               />
             </label>
+            <label>
+              {language === "de" ? "Dauer (Stunden)" : "Duration (hours)"}
+              <input
+                type="number"
+                min={0.5}
+                step={0.5}
+                value={taskModalForm.estimated_hours}
+                onChange={(event) => updateTaskModalField("estimated_hours", event.target.value)}
+                placeholder="1.5"
+              />
+            </label>
           </div>
+          {taskModalOverlapWarning && (
+            <div className="card task-overlap-warning">
+              <b>
+                {language === "de"
+                  ? "Zeitüberschneidung mit bestehenden Aufgaben"
+                  : "Time overlap with existing tasks"}
+              </b>
+              <small>
+                {language === "de"
+                  ? "Die ausgewählten Personen haben in diesem Zeitraum bereits Aufgaben. Aufgabe trotzdem erstellen?"
+                  : "The selected people already have tasks in this time window. Create this task anyway?"}
+              </small>
+              <ul className="task-overlap-warning-list">
+                {taskModalOverlapWarning.overlaps.map((overlap) => {
+                  const project = projects.find((entry) => entry.id === overlap.project_id);
+                  const sharedNames = overlap.shared_assignee_ids
+                    .map((assigneeId) => {
+                      const assignee = assignableUsers.find((entry) => entry.id === assigneeId);
+                      return menuUserNameById(assigneeId, assignee?.display_name || assignee?.full_name || `#${assigneeId}`);
+                    })
+                    .join(", ");
+                  return (
+                    <li key={`task-overlap-${overlap.task_id}`}>
+                      <b>{overlap.title}</b>
+                      <small>
+                        {[project ? projectSearchLabel(project) : `#${overlap.project_id}`, overlap.start_time && overlap.end_time ? `${formatTimeInputForBlur(overlap.start_time)}-${formatTimeInputForBlur(overlap.end_time)}` : "", sharedNames]
+                          .filter((value) => value && value.length > 0)
+                          .join(" · ")}
+                      </small>
+                      {overlap.overlap_type === "travel_overlap" && overlap.travel_minutes ? (
+                        <small className="assignee-availability-note">
+                          {language === "de"
+                            ? `Zusätzliche Fahrzeit: ca. ${overlap.travel_minutes} Min.`
+                            : `Additional travel time: about ${overlap.travel_minutes} min.`}
+                        </small>
+                      ) : null}
+                      {overlap.overlap_type === "travel_overlap" && overlap.travel_minutes && overlap.end_time ? (
+                        <small className="assignee-availability-note">
+                          {language === "de"
+                            ? `Frühester sinnvoller Start nach dieser Aufgabe: ${addMinutesToHHMM(overlap.end_time, overlap.travel_minutes)}`
+                            : `Earliest sensible start after this task: ${addMinutesToHHMM(overlap.end_time, overlap.travel_minutes)}`}
+                        </small>
+                      ) : null}
+                    </li>
+                  );
+                })}
+              </ul>
+              <div className="row wrap">
+                <button type="button" onClick={() => void createWeeklyPlanTask(true)}>
+                  {language === "de" ? "Trotzdem erstellen" : "Create anyway"}
+                </button>
+                <button type="button" onClick={() => setTaskModalOverlapWarning(null)}>
+                  {language === "de" ? "Zurück" : "Back"}
+                </button>
+              </div>
+            </div>
+          )}
           <div className="assignee-search-block">
             <b>{language === "de" ? "Personen zuweisen" : "Assign people"}</b>
             <input

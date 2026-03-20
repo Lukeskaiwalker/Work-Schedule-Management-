@@ -13,7 +13,7 @@ export function ProfilePage() {
     profileSettingsForm,
     setProfileSettingsForm,
     saveProfileSettings,
-    isAdmin,
+    canManageUsers,
     nicknameCheckState,
     nicknameCheckMessage,
     setNicknameCheckState,
@@ -96,7 +96,7 @@ export function ProfilePage() {
                 required
               />
             </label>
-            {isAdmin && (
+            {canManageUsers && (
               <label>
                 {de ? "Nickname (optional)" : "Nickname (optional)"}
                 <input

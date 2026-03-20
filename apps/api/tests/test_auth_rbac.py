@@ -4,11 +4,18 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 from app.main import _initialize_runtime_data
+from app.core.permissions import set_permissions_override
 from app.routers import admin as admin_router
 
 
 def auth_headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+def _login(client: TestClient, email: str, password: str = "Password123!") -> str:
+    response = client.post("/api/auth/login", json={"email": email, "password": password})
+    assert response.status_code == 200
+    return response.headers["X-Access-Token"]
 
 
 def test_admin_can_manage_users_and_employee_cannot(client: TestClient, admin_token: str):
@@ -182,6 +189,131 @@ def test_admin_can_manage_weather_settings(client: TestClient, admin_token: str)
 
     forbidden = client.get("/api/admin/settings/weather", headers=auth_headers(employee_token))
     assert forbidden.status_code == 403
+
+
+def test_user_override_can_grant_weather_settings_access(client: TestClient, admin_token: str):
+    create_employee = client.post(
+        "/api/admin/users",
+        headers=auth_headers(admin_token),
+        json={
+            "email": "weather-manager@example.com",
+            "password": "Password123!",
+            "full_name": "Weather Manager",
+            "role": "employee",
+        },
+    )
+    assert create_employee.status_code == 200
+    employee_id = create_employee.json()["id"]
+
+    grant = client.put(
+        f"/api/admin/user-permissions/{employee_id}",
+        headers=auth_headers(admin_token),
+        json={"extra": ["settings:manage"], "denied": []},
+    )
+    assert grant.status_code == 200
+    assert grant.json()["extra"] == ["settings:manage"]
+
+    employee_token = _login(client, "weather-manager@example.com")
+
+    before = client.get("/api/admin/settings/weather", headers=auth_headers(employee_token))
+    assert before.status_code == 200
+
+    update = client.patch(
+        "/api/admin/settings/weather",
+        headers=auth_headers(employee_token),
+        json={"api_key": "delegated_weather_key_9876"},
+    )
+    assert update.status_code == 200
+    assert update.json()["configured"] is True
+    assert update.json()["masked_api_key"].endswith("9876")
+
+
+def test_admin_role_keeps_full_builtin_permissions_even_with_stale_override_map(client: TestClient, admin_token: str):
+    set_permissions_override(
+        {
+            "admin": ["users:manage"],
+            "employee": ["projects:view"],
+        }
+    )
+    try:
+        role_permissions = client.get("/api/admin/role-permissions", headers=auth_headers(admin_token))
+        assert role_permissions.status_code == 200
+        admin_permissions = set(role_permissions.json()["permissions"]["admin"])
+        assert "permissions:manage" in admin_permissions
+        assert "settings:manage" in admin_permissions
+        assert "system:manage" in admin_permissions
+        assert "backups:export" in admin_permissions
+
+        weather_settings = client.get("/api/admin/settings/weather", headers=auth_headers(admin_token))
+        assert weather_settings.status_code == 200
+
+        auth_me = client.get("/api/auth/me", headers=auth_headers(admin_token))
+        assert auth_me.status_code == 200
+        effective_permissions = set(auth_me.json()["effective_permissions"])
+        assert "permissions:manage" in effective_permissions
+        assert "settings:manage" in effective_permissions
+        assert "system:manage" in effective_permissions
+        assert "backups:export" in effective_permissions
+    finally:
+        set_permissions_override(None)
+
+
+def test_users_manage_without_permissions_manage_cannot_assign_roles(client: TestClient, admin_token: str):
+    create_manager = client.post(
+        "/api/admin/users",
+        headers=auth_headers(admin_token),
+        json={
+            "email": "delegated-users-manager@example.com",
+            "password": "Password123!",
+            "full_name": "Delegated Users Manager",
+            "role": "employee",
+        },
+    )
+    assert create_manager.status_code == 200
+    manager_id = create_manager.json()["id"]
+
+    grant = client.put(
+        f"/api/admin/user-permissions/{manager_id}",
+        headers=auth_headers(admin_token),
+        json={"extra": ["users:manage"], "denied": []},
+    )
+    assert grant.status_code == 200
+
+    manager_token = _login(client, "delegated-users-manager@example.com")
+
+    list_users = client.get("/api/admin/users", headers=auth_headers(manager_token))
+    assert list_users.status_code == 200
+
+    create_employee = client.post(
+        "/api/admin/users",
+        headers=auth_headers(manager_token),
+        json={
+            "email": "delegated-created-employee@example.com",
+            "password": "Password123!",
+            "full_name": "Delegated Employee",
+            "role": "employee",
+        },
+    )
+    assert create_employee.status_code == 200
+
+    create_ceo = client.post(
+        "/api/admin/users",
+        headers=auth_headers(manager_token),
+        json={
+            "email": "delegated-created-ceo@example.com",
+            "password": "Password123!",
+            "full_name": "Delegated CEO",
+            "role": "ceo",
+        },
+    )
+    assert create_ceo.status_code == 403
+
+    promote_employee = client.patch(
+        f"/api/admin/users/{create_employee.json()['id']}",
+        headers=auth_headers(manager_token),
+        json={"role": "planning"},
+    )
+    assert promote_employee.status_code == 403
 
 
 def test_admin_can_read_update_status(client: TestClient, admin_token: str, monkeypatch):

@@ -2,7 +2,7 @@ import { useAppContext } from "../../context/AppContext";
 
 export function AdminUpdateMenu() {
   const {
-    isAdmin,
+    canManageSystem,
     language,
     currentReleaseLabel,
     updateStatus,
@@ -12,7 +12,7 @@ export function AdminUpdateMenu() {
     installSystemUpdate,
   } = useAppContext();
 
-  if (!isAdmin) return null;
+  if (!canManageSystem) return null;
 
   const latestLabel =
     updateStatus?.latest_version || updateStatus?.latest_commit || (language === "de" ? "unbekannt" : "unknown");

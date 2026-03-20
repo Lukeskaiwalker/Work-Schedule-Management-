@@ -1891,3 +1891,47 @@
 - Tradeoffs:
   - Pros: clearer operator/user recovery path for damaged uploads and more deterministic client behavior when stored payloads are corrupted.
   - Cons: one extra file read/decrypt validation pass before large chunked responses.
+
+## 2026-03-19 - Auto-publish GitHub releases from main with sanitized archives
+- Status: accepted
+- Decision:
+  - Add a GitHub Actions workflow that runs on each push to `main`, skips when `HEAD` already matches the latest published release commit, and otherwise creates the next patch tag and GitHub release automatically.
+  - Build the uploaded release asset from `git archive` instead of the live workspace so ignored/untracked local files cannot leak into published artifacts.
+  - Mark agent/internal files with `.gitattributes export-ignore` and configure CI tagging to use the GitHub username plus noreply email instead of a local real-name identity.
+- Tradeoffs:
+  - Pros: release publishing becomes consistent and low-touch, with a tighter boundary around local/agent-only files and no real-name tag identity leakage.
+  - Cons: username-attributed publishing now depends on a repository secret (`RELEASE_TOKEN`) backed by the desired GitHub account.
+
+## 2026-03-19 - Task scheduling duration is modeled as half-hour estimated hours
+- Status: accepted
+- Decision:
+  - Store scheduled task duration as nullable `estimated_hours` on the task record and keep it optional unless a concrete scheduled window is needed.
+  - Require `start_time` whenever `estimated_hours` is set and reject schedules that would roll past midnight, so `end_time` can be derived deterministically from task data.
+  - Detect overlapping scheduled windows server-side for shared assignees and return a structured `409` warning that the client can confirm explicitly instead of silently creating a double-booked task.
+  - Treat project-to-project travel as part of the occupied time window by estimating travel minutes from the same project address used in the project overview map preview (`construction_site_address`, falling back to `customer_address`).
+- Tradeoffs:
+  - Pros: one canonical backend schedule model, predictable end-time rendering in every task view, and overlap protection that cannot be bypassed by stale UI logic.
+  - Cons: task creation/editing now has one extra validation path and intentionally blocks some formerly-accepted ambiguous schedules (duration without start time, cross-midnight windows) unless the model is expanded later.
+  - Cons: travel buffering is still an estimate, not turn-by-turn routing; when no coordinates can be derived from cached weather data or OpenWeather geocoding, the system falls back to pure time-window overlap checks.
+
+## 2026-03-19 - Audit log filtering is grouped into one multi-filter panel
+- Status: accepted
+- Decision:
+  - Replace the two separate audit-log filter dropdowns in the admin center with one combined filter panel.
+  - Model audit category filtering as multi-select checkboxes so operators can combine related categories instead of choosing only one.
+  - Keep the specialized "time entry changes only" filter, but expose it as a toggle within the same panel.
+  - Add audit-log time-period filtering with preset ranges and an optional custom from/to date range, applied client-side over the loaded audit rows.
+- Tradeoffs:
+  - Pros: the audit UI is simpler to scan, supports realistic cross-category investigations, and makes recency-based review easier without another dedicated control.
+  - Cons: date filtering is limited to the currently loaded audit-log page (`/api/admin/audit-logs` still returns the latest 300 rows), so very old matching entries outside that window still require a backend pagination/filtering expansion later.
+
+## 2026-03-20 - Safe updates should expose a maintenance landing page instead of transient proxy errors
+- Status: accepted
+- Decision:
+  - Add a dedicated static `maintenance` service that serves an update-in-progress landing page and is only started under the compose `maintenance` profile.
+  - Let Caddy read optional upstream overrides from `infra/.maintenance.env`, so the update flow can switch both UI and API traffic to the maintenance page without editing the main proxy config on each run.
+  - Enable maintenance mode inside `scripts/safe_update.sh` before real migrations/rebuilds and disable it only after `api` and `web` report healthy again.
+  - Keep maintenance mode enabled when the script fails, so operators recover explicitly instead of exposing a half-updated runtime.
+- Tradeoffs:
+  - Pros: users see a controlled status page during updates, update downtime becomes intentional and understandable, and the switching logic stays inside the existing safe-update path.
+  - Cons: `safe_update.sh` now owns a little more orchestration logic and depends on one temporary env file plus an extra lightweight container during maintenance windows.

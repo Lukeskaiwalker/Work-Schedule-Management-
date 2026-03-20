@@ -15,6 +15,7 @@ from sse_starlette.sse import EventSourceResponse
 from app.core.config import get_settings
 from app.core.db import SessionLocal
 from app.core.deps import get_current_user_from_token
+from app.core.permissions import has_global_project_access
 from app.core.events import listen_for_events
 from app.models.entities import ChatThread, Project, ProjectMember
 from app.routers.workflow_helpers import _thread_visible_to_user
@@ -45,7 +46,7 @@ async def sse_events(
         thread_ids: set[int] = set()
         if use_postgres_stream and not is_admin:
             # Project visibility scope.
-            if user.role in {"planning"}:
+            if has_global_project_access(user.id, user.role):
                 project_ids = set(db.execute(select(Project.id)).scalars().all())
             else:
                 project_ids = set(

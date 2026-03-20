@@ -1,0 +1,255 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta http-equiv="refresh" content="30" />
+    <title>SMPL wird aktualisiert</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f6efe3;
+        --ink: #0d1b1e;
+        --muted: #526166;
+        --accent: #c45a2d;
+        --accent-soft: rgba(196, 90, 45, 0.14);
+        --panel: rgba(255, 251, 245, 0.88);
+        --line: rgba(13, 27, 30, 0.12);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100dvh;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        font-family: "Avenir Next", "Segoe UI", sans-serif;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at top left, rgba(196, 90, 45, 0.18), transparent 36%),
+          radial-gradient(circle at right, rgba(13, 27, 30, 0.14), transparent 30%),
+          linear-gradient(135deg, #f8f2e8 0%, #efe2cf 100%);
+      }
+
+      .shell {
+        width: min(920px, 100%);
+        border: 1px solid var(--line);
+        border-radius: 28px;
+        overflow: hidden;
+        background: var(--panel);
+        box-shadow: 0 30px 80px rgba(61, 39, 24, 0.16);
+        backdrop-filter: blur(14px);
+      }
+
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 18px 24px;
+        border-bottom: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.52);
+      }
+
+      .brand {
+        font-size: 0.88rem;
+        font-weight: 700;
+        letter-spacing: 0.24em;
+        text-transform: uppercase;
+      }
+
+      .pill {
+        padding: 8px 12px;
+        border-radius: 999px;
+        background: var(--accent-soft);
+        color: var(--accent);
+        font-size: 0.82rem;
+        font-weight: 700;
+        letter-spacing: 0.04em;
+      }
+
+      .content {
+        display: grid;
+        grid-template-columns: 1.2fr 0.8fr;
+        gap: 0;
+      }
+
+      .copy {
+        padding: 42px 24px 40px;
+      }
+
+      h1 {
+        margin: 0 0 16px;
+        font-family: "Iowan Old Style", "Palatino Linotype", serif;
+        font-size: clamp(2.4rem, 6vw, 4.9rem);
+        line-height: 0.94;
+        letter-spacing: -0.05em;
+      }
+
+      p {
+        margin: 0 0 14px;
+        max-width: 38rem;
+        color: var(--muted);
+        font-size: 1.02rem;
+        line-height: 1.6;
+      }
+
+      .status {
+        margin-top: 28px;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+
+      .status-card {
+        flex: 1 1 220px;
+        min-width: 0;
+        padding: 16px 18px;
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        background: rgba(255, 255, 255, 0.5);
+      }
+
+      .status-label {
+        margin-bottom: 7px;
+        color: var(--muted);
+        font-size: 0.8rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .status-value {
+        font-size: 1rem;
+        font-weight: 700;
+      }
+
+      .visual {
+        position: relative;
+        min-height: 360px;
+        border-left: 1px solid var(--line);
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.36), rgba(255, 255, 255, 0.08)),
+          repeating-linear-gradient(
+            -45deg,
+            rgba(13, 27, 30, 0.05) 0,
+            rgba(13, 27, 30, 0.05) 22px,
+            transparent 22px,
+            transparent 44px
+          );
+      }
+
+      .scanner {
+        position: absolute;
+        inset: 12% 12% auto;
+        height: 2px;
+        background: linear-gradient(90deg, transparent, var(--accent), transparent);
+        box-shadow: 0 0 16px rgba(196, 90, 45, 0.45);
+        animation: scan 2.8s ease-in-out infinite;
+      }
+
+      .grid {
+        position: absolute;
+        inset: 16%;
+        border: 1px solid rgba(13, 27, 30, 0.08);
+        border-radius: 26px;
+      }
+
+      .grid::before,
+      .grid::after {
+        content: "";
+        position: absolute;
+        inset: 18px;
+        border-radius: 20px;
+        border: 1px solid rgba(13, 27, 30, 0.08);
+      }
+
+      .grid::after {
+        inset: 38px;
+      }
+
+      .dot {
+        position: absolute;
+        width: 14px;
+        height: 14px;
+        border-radius: 50%;
+        background: var(--accent);
+        box-shadow: 0 0 0 10px rgba(196, 90, 45, 0.1);
+      }
+
+      .dot.one { top: 18%; left: 20%; }
+      .dot.two { top: 52%; right: 24%; }
+      .dot.three { bottom: 18%; left: 36%; }
+
+      @keyframes scan {
+        0%, 100% { transform: translateY(0); opacity: 0.45; }
+        50% { transform: translateY(240px); opacity: 1; }
+      }
+
+      @media (max-width: 760px) {
+        .content {
+          grid-template-columns: 1fr;
+        }
+
+        .visual {
+          min-height: 240px;
+          border-left: 0;
+          border-top: 1px solid var(--line);
+        }
+
+        .copy {
+          padding: 34px 20px 28px;
+        }
+
+        .topbar {
+          padding: 16px 20px;
+          flex-direction: column;
+          align-items: flex-start;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <div class="topbar">
+        <div class="brand">SMPL Workflow</div>
+        <div class="pill">Update in Arbeit</div>
+      </div>
+      <section class="content">
+        <div class="copy">
+          <h1>Wir bringen das System sicher auf den neuesten Stand.</h1>
+          <p>
+            Der Server befindet sich gerade in einer kurzen Update-Phase. Damit Daten,
+            Dateien und laufende Arbeitsablaeufe sauber erhalten bleiben, ist der Zugang
+            fuer einen Moment pausiert.
+          </p>
+          <p>
+            Diese Seite aktualisiert sich automatisch. Bitte versuchen Sie es in wenigen
+            Minuten erneut.
+          </p>
+          <div class="status">
+            <div class="status-card">
+              <div class="status-label">Status</div>
+              <div class="status-value">Wartungsmodus aktiv</div>
+            </div>
+            <div class="status-card">
+              <div class="status-label">Naechster Schritt</div>
+              <div class="status-value">Automatische Rueckkehr nach Abschluss</div>
+            </div>
+          </div>
+        </div>
+        <div class="visual" aria-hidden="true">
+          <div class="scanner"></div>
+          <div class="grid"></div>
+          <div class="dot one"></div>
+          <div class="dot two"></div>
+          <div class="dot three"></div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

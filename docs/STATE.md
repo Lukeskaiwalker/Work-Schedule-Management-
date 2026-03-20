@@ -2586,3 +2586,52 @@
   - Verify Jellyfin/Traefik routing on the separate host `192.168.1.150` once access is available.
 - Blockers:
   - Jellyfin host credentials/config were not yet available in-repo or on the SMPL server (`192.168.1.127`).
+
+## Compacted Update (2026-03-19, automated GitHub releases from main with sanitized archives)
+- Changed:
+  - Added `.github/workflows/release-on-main.yml` to watch pushes to `main`, create the next patch tag when `HEAD` is ahead of the latest release, and publish a GitHub release automatically.
+  - Added `scripts/build_release_bundle.sh` to build release assets from `git archive` and emit a matching SHA-256 checksum.
+  - Added `.gitattributes` `export-ignore` rules so agent/internal files are excluded from archive-based release outputs.
+  - Configured release tagging in CI to use the GitHub username/noreply identity instead of a local real-name git identity.
+- Verified:
+  - `bash -n scripts/build_release_bundle.sh`
+  - `./scripts/build_release_bundle.sh v1.7.3 dist/SMPL-v1.7.3-worktree.tar.gz`
+  - `tar -tzf dist/SMPL-v1.7.3-worktree.tar.gz | rg 'AGENTS|AGENT_TASKS|CODEMAP|PATTERNS|TASKS/|\\.claude|\\.mcp|\\.playwright|plan\\.txt'`
+  - `git diff --check`
+- Blockers:
+  - Repository secret `RELEASE_TOKEN` must be added in GitHub before the workflow can publish releases under the desired username.
+
+## Compacted Update (2026-03-19, task durations + overlap confirmation)
+- Changed:
+  - Added nullable task `estimated_hours` persistence plus API validation for 0.5-hour increments.
+  - Task payloads now return computed `end_time` when a scheduled start time and duration are present.
+  - Task create/update endpoints now return a structured `409` overlap warning when the same assignees already have a scheduled task in the same time window, with an explicit confirm flag to override.
+  - Overlap detection now also treats back-to-back tasks on different projects as conflicting when the estimated travel time between the projects' map-preview addresses does not fit in the gap.
+  - Added task duration inputs to the create/edit task modals and surfaced overlap warnings/confirmation inline in those dialogs.
+  - Updated task list/calendar/planning displays and ICS export to use the scheduled end time where available.
+- Verified:
+  - `cd apps/web && npm run build` pass.
+  - `python3 -m compileall apps/api/app apps/api/tests/test_planning.py` pass.
+- Blockers:
+  - Docker Desktop is paused locally, so containerized pytest/alembic verification could not be run in this iteration.
+
+## Compacted Update (2026-03-19, admin audit log combined filters + date range)
+- Changed:
+  - Replaced the two audit-log filter dropdowns in the admin center with one combined filter panel.
+  - Audit categories can now be selected as a multi-select checkbox set instead of a single category dropdown.
+  - Folded the former "time changes only" event-type filter into the same panel as a toggle.
+  - Added period filtering for audit logs with presets for today, last 7/30/90 days, plus a custom from/to date range.
+- Verified:
+  - `cd apps/web && npm run build` pass.
+
+## Compacted Update (2026-03-20, maintenance landing page during safe updates)
+- Changed:
+  - Added a standalone `maintenance` service in `docker-compose.yml` that serves a static update-in-progress page from `infra/maintenance/`.
+  - Updated `infra/Caddyfile` so proxy upstreams can be overridden via optional `infra/.maintenance.env`.
+  - Extended `scripts/safe_update.sh` to enable maintenance mode before real migrations/rebuilds, wait for `api` and `web` health, then switch traffic back automatically.
+  - Left maintenance mode sticky on script failure so users do not land on a partially updated app.
+- Verified:
+  - `bash -n scripts/safe_update.sh` pass.
+  - `docker compose config` pass.
+  - `docker compose --profile maintenance config` pass.
+- Blockers: none.

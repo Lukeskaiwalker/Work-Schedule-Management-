@@ -152,3 +152,93 @@ def test_self_assignment_does_not_create_notification(client: TestClient, admin_
 
     notifications = client.get("/api/notifications", headers=auth_headers(admin_token)).json()
     assert all(row["event_type"] != "task.assigned" for row in notifications)
+
+
+def test_completed_task_notifications_are_hidden(client: TestClient, admin_token: str) -> None:
+    project_response = client.post(
+        "/api/projects",
+        json={
+            "project_number": "2026-NOTIF-004",
+            "name": "Completed Task Project",
+            "status": "active",
+            "customer_name": "Completed Customer",
+            "customer_address": "Done Street 4",
+        },
+        headers=auth_headers(admin_token),
+    )
+    assert project_response.status_code == 200, project_response.text
+    project_id = project_response.json()["id"]
+
+    email = "done_notif@example.com"
+    employee = _create_employee(client, admin_token, email)
+    employee_token = _login(client, email)
+
+    task_response = client.post(
+        "/api/tasks",
+        json={
+            "title": "Will be completed",
+            "project_id": project_id,
+            "assignee_ids": [employee["id"]],
+        },
+        headers=auth_headers(admin_token),
+    )
+    assert task_response.status_code in (200, 201), task_response.text
+    task_id = task_response.json()["id"]
+
+    notifications_response = client.get("/api/notifications", headers=auth_headers(employee_token))
+    assert notifications_response.status_code == 200
+    assert len(notifications_response.json()) == 1
+
+    complete_response = client.patch(
+        f"/api/tasks/{task_id}",
+        json={"status": "done"},
+        headers=auth_headers(admin_token),
+    )
+    assert complete_response.status_code == 200, complete_response.text
+
+    notifications_after_done = client.get("/api/notifications", headers=auth_headers(employee_token))
+    assert notifications_after_done.status_code == 200
+    assert notifications_after_done.json() == []
+
+
+def test_deleted_task_notifications_are_hidden(client: TestClient, admin_token: str) -> None:
+    project_response = client.post(
+        "/api/projects",
+        json={
+            "project_number": "2026-NOTIF-005",
+            "name": "Deleted Task Project",
+            "status": "active",
+            "customer_name": "Deleted Customer",
+            "customer_address": "Gone Street 5",
+        },
+        headers=auth_headers(admin_token),
+    )
+    assert project_response.status_code == 200, project_response.text
+    project_id = project_response.json()["id"]
+
+    email = "deleted_notif@example.com"
+    employee = _create_employee(client, admin_token, email)
+    employee_token = _login(client, email)
+
+    task_response = client.post(
+        "/api/tasks",
+        json={
+            "title": "Will be deleted",
+            "project_id": project_id,
+            "assignee_ids": [employee["id"]],
+        },
+        headers=auth_headers(admin_token),
+    )
+    assert task_response.status_code in (200, 201), task_response.text
+    task_id = task_response.json()["id"]
+
+    notifications_response = client.get("/api/notifications", headers=auth_headers(employee_token))
+    assert notifications_response.status_code == 200
+    assert len(notifications_response.json()) == 1
+
+    delete_response = client.delete(f"/api/tasks/{task_id}", headers=auth_headers(admin_token))
+    assert delete_response.status_code == 200, delete_response.text
+
+    notifications_after_delete = client.get("/api/notifications", headers=auth_headers(employee_token))
+    assert notifications_after_delete.status_code == 200
+    assert notifications_after_delete.json() == []

@@ -11,6 +11,7 @@ export function TimePage() {
     mainView,
     language,
     now,
+    user,
     timeCurrent,
     timeInfoOpen,
     setTimeInfoOpen,
@@ -49,13 +50,21 @@ export function TimePage() {
     canManageSchoolAbsences,
     schoolAbsenceForm,
     setSchoolAbsenceForm,
+    editingSchoolAbsenceId,
     submitSchoolAbsence,
+    startSchoolAbsenceEdit,
+    cancelSchoolAbsenceEdit,
     assignableUsers,
     toggleSchoolRecurrenceWeekday,
     schoolAbsences,
+    reviewSchoolAbsence,
     removeSchoolAbsence,
     absenceTypes,
     publicHolidays,
+    timeEntriesStartDate,
+    setTimeEntriesStartDate,
+    timeEntriesEndDate,
+    setTimeEntriesEndDate,
   } = useAppContext();
 
   // Holidays that fall within the currently displayed month
@@ -87,6 +96,13 @@ export function TimePage() {
     setTimeTargetDropdownOpen(false);
   }
 
+  function resetEntriesRangeToMonth() {
+    setTimeEntriesStartDate(`${monthCursorISO}-01`);
+    const monthEnd = new Date(timeMonthCursor.getFullYear(), timeMonthCursor.getMonth() + 1, 0);
+    const endIso = `${monthCursorISO}-${String(monthEnd.getDate()).padStart(2, "0")}`;
+    setTimeEntriesEndDate(endIso);
+  }
+
   // Build export URL
   const exportUrl = `/api/time/timesheet/export.xlsx?month=${monthCursorISO}${isTimeManager && timeTargetUserId ? `&user_id=${Number(timeTargetUserId)}` : ""}`;
 
@@ -96,6 +112,26 @@ export function TimePage() {
     if (!t) return key;
     return de ? t.label_de : t.label_en;
   }
+
+  function absenceStatusLabel(status: string) {
+    if (status === "pending") return de ? "Offen" : "Pending";
+    if (status === "rejected") return de ? "Abgelehnt" : "Rejected";
+    return de ? "Genehmigt" : "Approved";
+  }
+
+  const todayIso = now.toISOString().slice(0, 10);
+  const pendingAbsenceRequests = schoolAbsences.filter((row) => row.status === "pending");
+  const activeApprovedAbsences = schoolAbsences.filter((row) => {
+    if (row.status !== "approved") return false;
+    const effectiveEnd = row.recurrence_until ?? row.end_date;
+    return effectiveEnd >= todayIso;
+  });
+  const pastAbsenceRows = schoolAbsences
+    .filter((row) => {
+      const effectiveEnd = row.recurrence_until ?? row.end_date;
+      return row.status !== "pending" && effectiveEnd < todayIso;
+    })
+    .slice(0, 10);
 
   return (
     <section className="grid time-grid">
@@ -228,7 +264,7 @@ export function TimePage() {
 
       <div className="card time-entries-card">
         <div className="row wrap">
-          <h3>{de ? "Wochenbuchungen" : "Weekly entries"}</h3>
+          <h3>{de ? "Zeiteinträge" : "Time entries"}</h3>
           {isTimeManager && (
             <div ref={searchRef} className="employee-search-wrap">
               <div className="employee-search-input-row">
@@ -276,33 +312,88 @@ export function TimePage() {
             </div>
           )}
         </div>
+        <div className="row wrap" style={{ gap: "0.75rem", marginBottom: "0.75rem", alignItems: "end" }}>
+          <label>
+            {de ? "Von" : "From"}
+            <input
+              type="date"
+              value={timeEntriesStartDate}
+              onChange={(e) => setTimeEntriesStartDate(e.target.value)}
+            />
+          </label>
+          <label>
+            {de ? "Bis" : "Until"}
+            <input
+              type="date"
+              value={timeEntriesEndDate}
+              onChange={(e) => setTimeEntriesEndDate(e.target.value)}
+            />
+          </label>
+          <button type="button" className="btn-secondary" onClick={resetEntriesRangeToMonth}>
+            {de ? "Auf Monatsansicht setzen" : "Use current month"}
+          </button>
+        </div>
+        {isTimeManager && !timeTargetUserId && (
+          <small className="muted">
+            {de ? "Es werden Einträge aller Mitarbeiter angezeigt." : "Showing entries for all employees."}
+          </small>
+        )}
+        {timeEntries.length === 0 && (
+          <p className="muted" style={{ marginTop: "0.75rem" }}>
+            {de
+              ? "Keine Zeiteinträge im gewählten Zeitraum gefunden."
+              : "No time entries found in the selected date range."}
+          </p>
+        )}
         <div className="time-entry-list">
           {timeEntries.map((entry) => (
             <form key={entry.id} className="time-entry" onSubmit={(event) => updateTimeEntry(event, entry.id)}>
               <div className="row wrap">
                 <b>#{entry.id}</b>
-                <span>user {entry.user_id}</span>
+                <span>{menuUserNameById(entry.user_id, `#${entry.user_id}`)}</span>
                 <span>{entry.net_hours}h</span>
               </div>
               <div className="grid compact">
                 <label>
                   Clock in
-                  <input type="datetime-local" name="clock_in" required defaultValue={isoToLocalDateTimeInput(entry.clock_in)} />
+                  <input
+                    type="datetime-local"
+                    name="clock_in"
+                    required
+                    defaultValue={isoToLocalDateTimeInput(entry.clock_in)}
+                    disabled={!entry.can_edit}
+                  />
                 </label>
                 <label>
                   Clock out
-                  <input type="datetime-local" name="clock_out" defaultValue={isoToLocalDateTimeInput(entry.clock_out)} />
+                  <input
+                    type="datetime-local"
+                    name="clock_out"
+                    defaultValue={isoToLocalDateTimeInput(entry.clock_out)}
+                    disabled={!entry.can_edit}
+                  />
                 </label>
                 <label>
                   Break min
-                  <input type="number" name="break_minutes" min={0} defaultValue={Math.round(entry.break_hours * 60)} />
+                  <input
+                    type="number"
+                    name="break_minutes"
+                    min={0}
+                    defaultValue={Math.round(entry.break_hours * 60)}
+                    disabled={!entry.can_edit}
+                  />
                 </label>
               </div>
               <div className="row wrap">
                 <small>
                   break: {entry.break_hours}h | legal: {entry.required_break_hours}h | deducted: {entry.deducted_break_hours}h
                 </small>
-                <button type="submit">{de ? "Ändern" : "Update"}</button>
+                {!entry.can_edit && (
+                  <small className="muted">
+                    {de ? "Nicht bearbeitbar" : "Not editable"}
+                  </small>
+                )}
+                <button type="submit" disabled={!entry.can_edit}>{de ? "Ändern" : "Update"}</button>
               </div>
             </form>
           ))}
@@ -311,6 +402,24 @@ export function TimePage() {
 
       <div className="card time-requests-card">
         <h3>{de ? "Urlaubsanträge" : "Vacation requests"}</h3>
+        <div className="metric-grid" style={{ marginBottom: "1rem" }}>
+          <div>
+            <small className="muted">{de ? "Urlaub/Jahr" : "Vacation/year"}</small>
+            <div><b>{timeCurrent?.vacation_days_per_year ?? 0}</b></div>
+          </div>
+          <div>
+            <small className="muted">{de ? "Aktuell offen" : "Currently left"}</small>
+            <div><b>{timeCurrent?.vacation_days_available ?? 0}</b></div>
+          </div>
+          <div>
+            <small className="muted">{de ? "Übertrag Vorjahr" : "Carryover last year"}</small>
+            <div><b>{timeCurrent?.vacation_days_carryover ?? 0}</b></div>
+          </div>
+          <div>
+            <small className="muted">{de ? "Gesamt offen" : "Total left"}</small>
+            <div><b>{timeCurrent?.vacation_days_total_remaining ?? 0}</b></div>
+          </div>
+        </div>
         <form className="modal-form" onSubmit={submitVacationRequest}>
           <div className="row wrap">
             <label>
@@ -357,7 +466,7 @@ export function TimePage() {
                   <div className="task-list-main">
                     <b>{menuUserNameById(row.user_id, row.user_name)}</b>
                     <small>
-                      {row.start_date} - {row.end_date}
+                      {row.start_date} - {row.end_date} · {row.vacation_days_used} {de ? "Tage" : "days"}
                     </small>
                     {row.note && <small>{row.note}</small>}
                   </div>
@@ -384,7 +493,7 @@ export function TimePage() {
             {approvedVacationRequests.map((row) => (
               <li key={`vacation-approved-${row.id}`}>
                 <small>
-                  {menuUserNameById(row.user_id, row.user_name)}: {row.start_date} - {row.end_date}
+                  {menuUserNameById(row.user_id, row.user_name)}: {row.start_date} - {row.end_date} · {row.vacation_days_used} {de ? "Tage" : "days"}
                 </small>
               </li>
             ))}
@@ -397,8 +506,8 @@ export function TimePage() {
 
       <div className="card time-school-card">
         <h3>{de ? "Abwesenheiten" : "Absences"}</h3>
-        {canManageSchoolAbsences && (
-          <form className="modal-form" onSubmit={submitSchoolAbsence}>
+        <form className="modal-form" onSubmit={submitSchoolAbsence}>
+          {canManageSchoolAbsences && (
             <label>
               {de ? "Mitarbeiter" : "Employee"}
               <select
@@ -416,132 +525,237 @@ export function TimePage() {
                 ))}
               </select>
             </label>
-            <div className="row wrap">
-              <label>
-                {de ? "Abwesenheitsart" : "Absence type"}
-                <select
-                  value={schoolAbsenceForm.absence_type}
-                  onChange={(event) => {
-                    const selectedType = absenceTypes.find((t) => t.key === event.target.value);
-                    const defaultTitle = selectedType
-                      ? (de ? selectedType.label_de : selectedType.label_en)
-                      : schoolAbsenceForm.title;
-                    setSchoolAbsenceForm({
-                      ...schoolAbsenceForm,
-                      absence_type: event.target.value,
-                      title: defaultTitle,
-                    });
-                  }}
-                  required
-                >
-                  {absenceTypes.map((t) => (
-                    <option key={t.key} value={t.key}>
-                      {de ? t.label_de : t.label_en}
-                      {t.counts_as_hours ? "" : (de ? " (keine Stundenanrechnung)" : " (no hours credit)")}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                {de ? "Bezeichnung" : "Title"}
-                <input
-                  value={schoolAbsenceForm.title}
-                  onChange={(event) =>
-                    setSchoolAbsenceForm({ ...schoolAbsenceForm, title: event.target.value })
-                  }
-                  required
-                />
-              </label>
-            </div>
-            <div className="row wrap">
-              <label>
-                {de ? "Start" : "Start"}
-                <input
-                  type="date"
-                  value={schoolAbsenceForm.start_date}
-                  onChange={(event) =>
-                    setSchoolAbsenceForm({ ...schoolAbsenceForm, start_date: event.target.value })
-                  }
-                  required
-                />
-              </label>
-              <label>
-                {de ? "Ende" : "End"}
-                <input
-                  type="date"
-                  value={schoolAbsenceForm.end_date}
-                  onChange={(event) =>
-                    setSchoolAbsenceForm({ ...schoolAbsenceForm, end_date: event.target.value })
-                  }
-                  required
-                />
-              </label>
-            </div>
-            <div className="row wrap">
-              <div className="weekday-checkbox-group">
-                <small>{de ? "Wiederholung (Mo-Fr)" : "Recurring days (Mon-Fri)"}</small>
-                <div className="weekday-checkbox-row">
-                  {[0, 1, 2, 3, 4].map((day) => (
-                    <label key={`school-day-${day}`} className="weekday-checkbox-item">
-                      <input
-                        type="checkbox"
-                        checked={schoolAbsenceForm.recurrence_weekdays.includes(day)}
-                        onChange={(event) => toggleSchoolRecurrenceWeekday(day, event.target.checked)}
-                      />
-                      <span>{schoolWeekdayLabel(day, language)}</span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-              <label>
-                {de ? "Intervall bis (optional)" : "Recurring until (optional)"}
-                <input
-                  type="date"
-                  value={schoolAbsenceForm.recurrence_until}
-                  onChange={(event) =>
-                    setSchoolAbsenceForm({ ...schoolAbsenceForm, recurrence_until: event.target.value })
-                  }
-                />
-              </label>
-            </div>
-            <button type="submit">{de ? "Abwesenheit speichern" : "Save absence"}</button>
-          </form>
-        )}
-        <ul className="overview-list">
-          {schoolAbsences.map((row) => (
-            <li key={`school-${row.id}`} className="task-list-item">
-              <div className="task-list-main">
-                <b>{menuUserNameById(row.user_id, row.user_name)}</b>
-                <small>
-                  <span className={`absence-type-badge ${row.counts_as_hours ? "counts" : "no-counts"}`}>
-                    {absenceTypeLabel(row.absence_type)}
-                  </span>
-                  {" "}{row.title}: {row.start_date} – {row.end_date}
-                </small>
-                {row.recurrence_weekday !== null && row.recurrence_weekday !== undefined && (
-                  <small>
-                    {de ? "Wöchentlich" : "Weekly"}:{" "}
-                    {schoolWeekdayLabel(row.recurrence_weekday, language)}
-                    {row.recurrence_until ? ` | ${de ? "bis" : "until"} ${row.recurrence_until}` : ""}
-                  </small>
-                )}
-                {!row.counts_as_hours && (
-                  <small className="muted">{de ? "Keine Stundenanrechnung" : "No hours credited"}</small>
-                )}
-              </div>
-              {canManageSchoolAbsences && (
-                <div className="row wrap task-actions">
-                  <button type="button" className="danger-btn" onClick={() => void removeSchoolAbsence(row.id)}>
-                    {de ? "Löschen" : "Delete"}
-                  </button>
-                </div>
-              )}
-            </li>
-          ))}
-          {schoolAbsences.length === 0 && (
-            <li className="muted">{de ? "Keine Abwesenheiten vorhanden." : "No absences found."}</li>
           )}
-        </ul>
+          {!canManageSchoolAbsences && (
+            <small className="muted">
+              {de ? "Neue Abwesenheiten werden als Antrag zur Freigabe gesendet." : "New absences are sent as requests for approval."}
+            </small>
+          )}
+          <div className="row wrap">
+            <label>
+              {de ? "Abwesenheitsart" : "Absence type"}
+              <select
+                value={schoolAbsenceForm.absence_type}
+                onChange={(event) => {
+                  const selectedType = absenceTypes.find((t) => t.key === event.target.value);
+                  const defaultTitle = selectedType
+                    ? (de ? selectedType.label_de : selectedType.label_en)
+                    : schoolAbsenceForm.title;
+                  setSchoolAbsenceForm({
+                    ...schoolAbsenceForm,
+                    absence_type: event.target.value,
+                    title: defaultTitle,
+                  });
+                }}
+                required
+              >
+                {absenceTypes.map((t) => (
+                  <option key={t.key} value={t.key}>
+                    {de ? t.label_de : t.label_en}
+                    {t.counts_as_hours ? "" : (de ? " (keine Stundenanrechnung)" : " (no hours credit)")}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              {de ? "Bezeichnung" : "Title"}
+              <input
+                value={schoolAbsenceForm.title}
+                onChange={(event) =>
+                  setSchoolAbsenceForm({ ...schoolAbsenceForm, title: event.target.value })
+                }
+                required
+              />
+            </label>
+          </div>
+          <div className="row wrap">
+            <label>
+              {de ? "Start" : "Start"}
+              <input
+                type="date"
+                value={schoolAbsenceForm.start_date}
+                onChange={(event) =>
+                  setSchoolAbsenceForm({ ...schoolAbsenceForm, start_date: event.target.value })
+                }
+                required
+              />
+            </label>
+            <label>
+              {de ? "Ende" : "End"}
+              <input
+                type="date"
+                value={schoolAbsenceForm.end_date}
+                onChange={(event) =>
+                  setSchoolAbsenceForm({ ...schoolAbsenceForm, end_date: event.target.value })
+                }
+                required
+              />
+            </label>
+          </div>
+          <div className="row wrap">
+            <div className="weekday-checkbox-group">
+              <small>{de ? "Wiederholung (Mo-Fr)" : "Recurring days (Mon-Fri)"}</small>
+              <div className="weekday-checkbox-row">
+                {[0, 1, 2, 3, 4].map((day) => (
+                  <label key={`school-day-${day}`} className="weekday-checkbox-item">
+                    <input
+                      type="checkbox"
+                      checked={schoolAbsenceForm.recurrence_weekdays.includes(day)}
+                      onChange={(event) => toggleSchoolRecurrenceWeekday(day, event.target.checked)}
+                    />
+                    <span>{schoolWeekdayLabel(day, language)}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
+            <label>
+              {de ? "Intervall bis (optional)" : "Recurring until (optional)"}
+              <input
+                type="date"
+                value={schoolAbsenceForm.recurrence_until}
+                onChange={(event) =>
+                  setSchoolAbsenceForm({ ...schoolAbsenceForm, recurrence_until: event.target.value })
+                }
+              />
+            </label>
+          </div>
+          <div className="row wrap task-actions">
+            <button type="submit">
+              {editingSchoolAbsenceId !== null
+                ? de ? "Abwesenheit aktualisieren" : "Update absence"
+                : canManageSchoolAbsences
+                  ? de ? "Abwesenheit speichern" : "Save absence"
+                  : de ? "Antrag senden" : "Submit request"}
+            </button>
+            {editingSchoolAbsenceId !== null && (
+              <button type="button" onClick={cancelSchoolAbsenceEdit}>
+                {de ? "Bearbeitung abbrechen" : "Cancel edit"}
+              </button>
+            )}
+          </div>
+        </form>
+
+        <div className="metric-stack">
+          <b>{de ? "Offene Abwesenheitsanträge" : "Pending absence requests"}</b>
+          <ul className="overview-list">
+            {pendingAbsenceRequests.map((row) => (
+              <li key={`absence-pending-${row.id}`} className="task-list-item">
+                <div className="task-list-main">
+                  <b>{menuUserNameById(row.user_id, row.user_name)}</b>
+                  <small>
+                    <span className={`absence-type-badge ${row.counts_as_hours ? "counts" : "no-counts"}`}>
+                      {absenceTypeLabel(row.absence_type)}
+                    </span>
+                    {" "}{row.title}: {row.start_date} – {row.end_date}
+                  </small>
+                  <small>{absenceStatusLabel(row.status)}</small>
+                </div>
+                <div className="row wrap task-actions">
+                  {canManageSchoolAbsences && (
+                    <>
+                      <button type="button" onClick={() => void reviewSchoolAbsence(row.id, "approved")}>
+                        {de ? "Genehmigen" : "Approve"}
+                      </button>
+                      <button type="button" onClick={() => void reviewSchoolAbsence(row.id, "rejected")}>
+                        {de ? "Ablehnen" : "Reject"}
+                      </button>
+                      <button type="button" onClick={() => startSchoolAbsenceEdit(row)}>
+                        {de ? "Bearbeiten" : "Edit"}
+                      </button>
+                    </>
+                  )}
+                  {(canManageSchoolAbsences || row.user_id === user?.id) && (
+                    <button type="button" className="danger-btn" onClick={() => void removeSchoolAbsence(row.id)}>
+                      {de ? "Löschen" : "Delete"}
+                    </button>
+                  )}
+                </div>
+              </li>
+            ))}
+            {pendingAbsenceRequests.length === 0 && (
+              <li className="muted">{de ? "Keine offenen Abwesenheitsanträge." : "No pending absence requests."}</li>
+            )}
+          </ul>
+        </div>
+
+        <div className="metric-stack">
+          <b>{de ? "Aktuelle und kommende Abwesenheiten" : "Current and upcoming absences"}</b>
+          <ul className="overview-list">
+            {activeApprovedAbsences.map((row) => (
+              <li key={`absence-active-${row.id}`} className="task-list-item">
+                <div className="task-list-main">
+                  <b>{menuUserNameById(row.user_id, row.user_name)}</b>
+                  <small>
+                    <span className={`absence-type-badge ${row.counts_as_hours ? "counts" : "no-counts"}`}>
+                      {absenceTypeLabel(row.absence_type)}
+                    </span>
+                    {" "}{row.title}: {row.start_date} – {row.end_date}
+                  </small>
+                  {row.recurrence_weekday !== null && row.recurrence_weekday !== undefined && (
+                    <small>
+                      {de ? "Wöchentlich" : "Weekly"}: {schoolWeekdayLabel(row.recurrence_weekday, language)}
+                      {row.recurrence_until ? ` | ${de ? "bis" : "until"} ${row.recurrence_until}` : ""}
+                    </small>
+                  )}
+                  {!row.counts_as_hours && (
+                    <small className="muted">{de ? "Keine Stundenanrechnung" : "No hours credited"}</small>
+                  )}
+                </div>
+                {canManageSchoolAbsences && (
+                  <div className="row wrap task-actions">
+                    <button type="button" onClick={() => startSchoolAbsenceEdit(row)}>
+                      {de ? "Bearbeiten" : "Edit"}
+                    </button>
+                    <button type="button" className="danger-btn" onClick={() => void removeSchoolAbsence(row.id)}>
+                      {de ? "Löschen" : "Delete"}
+                    </button>
+                  </div>
+                )}
+              </li>
+            ))}
+            {activeApprovedAbsences.length === 0 && (
+              <li className="muted">{de ? "Keine aktuellen oder kommenden Abwesenheiten." : "No current or upcoming absences."}</li>
+            )}
+          </ul>
+        </div>
+
+        <div className="metric-stack">
+          <b>{de ? "Letzte Einträge" : "Recent history"}</b>
+          <ul className="overview-list">
+            {pastAbsenceRows.map((row) => (
+              <li key={`absence-history-${row.id}`} className="task-list-item">
+                <div className="task-list-main">
+                  <b>{menuUserNameById(row.user_id, row.user_name)}</b>
+                  <small>
+                    <span className={`absence-type-badge ${row.counts_as_hours ? "counts" : "no-counts"}`}>
+                      {absenceTypeLabel(row.absence_type)}
+                    </span>
+                    {" "}{row.title}: {row.start_date} – {row.end_date}
+                  </small>
+                  <small>{absenceStatusLabel(row.status)}</small>
+                </div>
+                {canManageSchoolAbsences && (
+                  <div className="row wrap task-actions">
+                    <button type="button" onClick={() => startSchoolAbsenceEdit(row)}>
+                      {de ? "Bearbeiten" : "Edit"}
+                    </button>
+                    <button type="button" className="danger-btn" onClick={() => void removeSchoolAbsence(row.id)}>
+                      {de ? "Löschen" : "Delete"}
+                    </button>
+                  </div>
+                )}
+              </li>
+            ))}
+            {pastAbsenceRows.length === 0 && (
+              <li className="muted">{de ? "Keine älteren Abwesenheiten." : "No older absences."}</li>
+            )}
+          </ul>
+          {schoolAbsences.length > activeApprovedAbsences.length + pendingAbsenceRequests.length + pastAbsenceRows.length && (
+            <small className="muted">
+              {de ? "Es werden die letzten 10 älteren Einträge angezeigt." : "Showing the latest 10 older entries."}
+            </small>
+          )}
+        </div>
       </div>
     </section>
   );

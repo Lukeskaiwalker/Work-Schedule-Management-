@@ -15,6 +15,7 @@ from app.core.db import get_db
 from app.core.deps import get_current_user
 from app.core.time import utcnow
 from app.models.notification import Notification
+from app.models.task import Task
 from app.models.user import User
 from app.schemas.notification import NotificationOut
 
@@ -41,6 +42,16 @@ def _enrich(notif: Notification, db: Session) -> NotificationOut:
     )
 
 
+def _is_notification_visible(notif: Notification, db: Session) -> bool:
+    if notif.entity_type == "task" and notif.entity_id is not None:
+        task = db.get(Task, notif.entity_id)
+        if task is None:
+            return False
+        if (task.status or "").strip().lower() == "done":
+            return False
+    return True
+
+
 @router.get("/notifications", response_model=list[NotificationOut])
 def list_notifications(
     current_user: User = Depends(get_current_user),
@@ -57,7 +68,7 @@ def list_notifications(
         .scalars()
         .all()
     )
-    return [_enrich(n, db) for n in rows]
+    return [_enrich(n, db) for n in rows if _is_notification_visible(n, db)]
 
 
 @router.patch("/notifications/read-all", response_model=dict)

@@ -1,7 +1,7 @@
 from __future__ import annotations
 from datetime import date, datetime, time
 
-from sqlalchemy import Date, DateTime, ForeignKey, Integer, JSON, String, Text, Time, UniqueConstraint
+from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, JSON, String, Text, Time, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
@@ -25,6 +25,7 @@ class Task(Base):
     status: Mapped[str] = mapped_column(String(64), default="open", nullable=False)
     due_date: Mapped[date | None] = mapped_column(Date)
     start_time: Mapped[time | None] = mapped_column(Time)
+    estimated_hours: Mapped[float | None] = mapped_column(Float)
     assignee_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
     week_start: Mapped[date | None] = mapped_column(Date, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)

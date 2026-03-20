@@ -110,3 +110,151 @@ def test_admin_invite_and_password_reset_links(client: TestClient, admin_token: 
         json={"email": "reset-user-updated@example.com", "password": "ResetDone123!"},
     )
     assert login_after_reset.status_code == 200
+
+
+def test_action_links_use_forwarded_public_host_when_config_is_localhost(
+    client: TestClient,
+    admin_token: str,
+    monkeypatch,
+):
+    from app.routers import admin as admin_router
+
+    monkeypatch.setattr(admin_router.settings, "app_public_url", "https://localhost")
+
+    created = _create_user(client, admin_token, "invite-host@example.com", "employee")
+    invite = client.post(
+        f"/api/admin/users/{created['id']}/send-invite",
+        headers={
+            **auth_headers(admin_token),
+            "x-forwarded-proto": "https",
+            "x-forwarded-host": "app.example.com",
+        },
+    )
+    assert invite.status_code == 200
+    assert invite.json()["invite_link"].startswith("https://app.example.com/invite?token=")
+
+    reset = client.post(
+        f"/api/admin/users/{created['id']}/send-password-reset",
+        headers={
+            **auth_headers(admin_token),
+            "x-forwarded-proto": "https",
+            "x-forwarded-host": "app.example.com",
+        },
+    )
+    assert reset.status_code == 200
+    assert reset.json()["reset_link"].startswith("https://app.example.com/reset-password?token=")
+
+
+def test_smtp_settings_round_trip_and_invite_uses_runtime_config(
+    client: TestClient,
+    admin_token: str,
+    monkeypatch,
+):
+    from app.services import emailer
+
+    captured: dict[str, object] = {}
+
+    class FakeSMTP:
+        def __init__(self, host: str, port: int, timeout: int):
+            captured["host"] = host
+            captured["port"] = port
+            captured["timeout"] = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def ehlo(self):
+            captured["ehlo"] = True
+
+        def starttls(self):
+            captured["starttls"] = True
+
+        def login(self, username: str, password: str):
+            captured["login"] = (username, password)
+
+        def send_message(self, message):
+            captured["from"] = message["From"]
+            captured["to"] = message["To"]
+            captured["subject"] = message["Subject"]
+
+    monkeypatch.setattr(emailer.smtplib, "SMTP", FakeSMTP)
+
+    update = client.patch(
+        "/api/admin/settings/smtp",
+        headers=auth_headers(admin_token),
+        json={
+            "host": "smtp.runtime.example",
+            "port": 2525,
+            "username": "mailer-user",
+            "password": "runtime-secret",
+            "starttls": True,
+            "ssl": False,
+            "from_email": "noreply@example.com",
+            "from_name": "SMPL Admin",
+        },
+    )
+    assert update.status_code == 200
+    assert update.json()["host"] == "smtp.runtime.example"
+    assert update.json()["port"] == 2525
+    assert update.json()["username"] == "mailer-user"
+    assert update.json()["has_password"] is True
+    assert update.json()["configured"] is True
+    assert update.json()["masked_password"].endswith("cret")
+
+    settings_row = client.get("/api/admin/settings/smtp", headers=auth_headers(admin_token))
+    assert settings_row.status_code == 200
+    assert settings_row.json()["host"] == "smtp.runtime.example"
+    assert settings_row.json()["from_email"] == "noreply@example.com"
+    assert settings_row.json()["has_password"] is True
+
+    created = _create_user(client, admin_token, "smtp-invite@example.com", "employee")
+    invite = client.post(
+        f"/api/admin/users/{created['id']}/send-invite",
+        headers=auth_headers(admin_token),
+    )
+    assert invite.status_code == 200
+    assert invite.json()["sent"] is True
+    assert captured["host"] == "smtp.runtime.example"
+    assert captured["port"] == 2525
+    assert captured["login"] == ("mailer-user", "runtime-secret")
+    assert captured["starttls"] is True
+    assert captured["from"] == "SMPL Admin <noreply@example.com>"
+    assert captured["to"] == "smtp-invite@example.com"
+
+
+def test_password_reset_completion_marks_pending_invite_as_accepted(client: TestClient, admin_token: str):
+    created = _create_user(client, admin_token, "invite-reset-state@example.com", "employee")
+
+    invite = client.post(
+        f"/api/admin/users/{created['id']}/send-invite",
+        headers=auth_headers(admin_token),
+    )
+    assert invite.status_code == 200
+
+    reset = client.post(
+        f"/api/admin/users/{created['id']}/send-password-reset",
+        headers=auth_headers(admin_token),
+    )
+    assert reset.status_code == 200
+    reset_token = reset.json()["reset_link"].split("token=", 1)[1]
+
+    confirm_reset = client.post(
+        "/api/auth/password-reset/confirm",
+        json={"token": reset_token, "new_password": "StateReset123!"},
+    )
+    assert confirm_reset.status_code == 200
+
+    users = client.get("/api/admin/users", headers=auth_headers(admin_token))
+    assert users.status_code == 200
+    updated = next(row for row in users.json() if row["id"] == created["id"])
+    assert updated["invite_sent_at"] is not None
+    assert updated["invite_accepted_at"] is not None
+
+    login_after_reset = client.post(
+        "/api/auth/login",
+        json={"email": "invite-reset-state@example.com", "password": "StateReset123!"},
+    )
+    assert login_after_reset.status_code == 200

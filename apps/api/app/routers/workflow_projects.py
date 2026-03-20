@@ -9,10 +9,7 @@ router = APIRouter(prefix="", tags=["projects"])
 
 
 def _project_weather_query_address(project: Project) -> str:
-    site_address = _normalize_weather_address(project.construction_site_address)
-    if site_address:
-        return site_address
-    return _normalize_weather_address(project.customer_address)
+    return _project_location_address(project)
 
 
 @router.post("/projects", response_model=ProjectOut)

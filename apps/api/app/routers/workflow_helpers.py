@@ -1,11 +1,13 @@
 from __future__ import annotations
+from functools import lru_cache
 import json
+import math
 import mimetypes
 import os
 import re
 import unicodedata
 from decimal import Decimal, InvalidOperation
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from email.utils import format_datetime
 from html import escape
 from io import BytesIO
@@ -22,7 +24,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.core.deps import assert_project_access, get_current_user, require_permission
-from app.core.permissions import ALL_ROLES, has_global_project_access, has_permission, has_permission_for_user
+from app.core.permissions import ALL_ROLES, has_global_project_access, has_permission_for_user
 from app.core.time import utcnow
 from app.models.entities import (
     Attachment,
@@ -222,6 +224,15 @@ def _normalize_weather_address(raw: str | None) -> str:
     return address.strip(" ,")
 
 
+def _project_location_address(project: Project | None) -> str:
+    if project is None:
+        return ""
+    site_address = _normalize_weather_address(project.construction_site_address)
+    if site_address:
+        return site_address
+    return _normalize_weather_address(project.customer_address)
+
+
 def _weather_address_candidates(query_address: str) -> list[str]:
     base = _normalize_weather_address(query_address)
     if not base:
@@ -263,6 +274,44 @@ def _weather_zip_candidates(query_address: str) -> list[str]:
         seen.add(key)
         candidates.append(key)
     return candidates
+
+
+def _address_city_fragment(address: str) -> str:
+    match = re.search(r"\b\d{5}\s+([^,]+)", address)
+    if not match:
+        return ""
+    city = re.sub(r"\s{2,}", " ", match.group(1)).strip(" ,").lower()
+    return city
+
+
+def _estimate_travel_minutes_from_addresses(from_address: str, to_address: str) -> int | None:
+    left = _normalize_weather_address(from_address)
+    right = _normalize_weather_address(to_address)
+    if not left or not right:
+        return None
+    if left.lower() == right.lower():
+        return 0
+
+    left_zip = ZIP_RE.findall(left)
+    right_zip = ZIP_RE.findall(right)
+    left_city = _address_city_fragment(left)
+    right_city = _address_city_fragment(right)
+
+    if left_zip and right_zip:
+        if left_zip[0] == right_zip[0]:
+            return 12
+        if left_city and right_city and left_city == right_city:
+            return 18
+        if left_zip[0][:2] == right_zip[0][:2]:
+            return 30
+        return 45
+
+    if left_city and right_city:
+        if left_city == right_city:
+            return 18
+        return 35
+
+    return 15
 
 
 def _normalize_project_site_access(access_type: str | None, access_note: str | None) -> tuple[str | None, str | None]:
@@ -376,11 +425,7 @@ def _resolve_attachment_for_access(db: Session, current_user: User, attachment_i
         folder = _normalize_project_folder_path(attachment.folder_path, allow_empty=True)
         if _folder_path_is_protected(folder) and not _can_access_project_protected_folder(current_user):
             raise HTTPException(status_code=403, detail="File access denied")
-    elif attachment.construction_report_id is not None and not (
-        has_permission(current_user.role, "reports:manage")
-        or has_permission(current_user.role, "reports:view")
-        or has_permission(current_user.role, "reports:create")
-    ):
+    elif attachment.construction_report_id is not None and not _can_access_reports(current_user, write=False):
         raise HTTPException(status_code=403, detail="Report access denied")
     return attachment
 
@@ -632,7 +677,9 @@ def _message_out(db: Session, message: Message) -> MessageOut:
 
 
 def _can_edit_thread(user: User, thread: ChatThread) -> bool:
-    return has_permission(user.role, "chat:manage") or (thread.created_by is not None and thread.created_by == user.id)
+    return has_permission_for_user(user.id, user.role, "chat:manage") or (
+        thread.created_by is not None and thread.created_by == user.id
+    )
 
 
 def _thread_unread_count(db: Session, thread_id: int, user_id: int) -> int:
@@ -906,7 +953,11 @@ def _thread_out(db: Session, thread: ChatThread, current_user: User) -> ThreadOu
 
 
 def _chat_permission_allowed(user: User) -> bool:
-    return has_permission(user.role, "chat:manage") or has_permission(user.role, "chat:project")
+    return has_permission_for_user(user.id, user.role, "chat:manage") or has_permission_for_user(
+        user.id,
+        user.role,
+        "chat:project",
+    )
 
 
 def _assert_thread_access(db: Session, user: User, thread: ChatThread) -> None:
@@ -1006,7 +1057,6 @@ DEFAULT_PROJECT_FOLDERS: list[tuple[str, bool]] = [
     ("Verwaltung", True),
 ]
 DEFAULT_GENERAL_REPORT_FOLDERS: list[str] = ["Bilder", "Berichte"]
-PROJECT_FOLDER_PRIVILEGED_ROLES = {"admin", "ceo", "planning", "accountant"}
 WEBDAV_ARCHIVE_SEGMENT = "archive"
 WEBDAV_ARCHIVE_DISPLAY = "Archive"
 WEBDAV_GENERAL_SEGMENT = "general-projects"
@@ -1014,7 +1064,7 @@ WEBDAV_GENERAL_DISPLAY = "General Projects"
 
 
 def _can_access_project_protected_folder(user: User) -> bool:
-    return user.role in PROJECT_FOLDER_PRIVILEGED_ROLES
+    return has_permission_for_user(user.id, user.role, "files:view_protected")
 
 
 def _normalize_project_folder_path(raw_value: str | None, *, allow_empty: bool = False) -> str:
@@ -1703,62 +1753,87 @@ def _sanitize_weather_language(value: str | None) -> str:
     return "en"
 
 
-def _fetch_openweather_forecast(*, api_key: str, query_address: str, language: str = "en") -> tuple[float, float, list[dict]]:
-    weather_language = _sanitize_weather_language(language)
-    timeout = httpx.Timeout(12.0, connect=5.0)
-    with httpx.Client(timeout=timeout) as client:
-        lat: float | None = None
-        lon: float | None = None
-        geocode_error: str | None = None
-        for candidate in _weather_address_candidates(query_address):
-            geocode = client.get(
-                "https://api.openweathermap.org/geo/1.0/direct",
-                params={
-                    "q": candidate,
-                    "limit": 1,
-                    "appid": api_key,
-                },
+def _fetch_openweather_coordinates_with_client(
+    *,
+    client: httpx.Client,
+    api_key: str,
+    query_address: str,
+) -> tuple[float, float]:
+    lat: float | None = None
+    lon: float | None = None
+    geocode_error: str | None = None
+    for candidate in _weather_address_candidates(query_address):
+        geocode = client.get(
+            "https://api.openweathermap.org/geo/1.0/direct",
+            params={"q": candidate, "limit": 1, "appid": api_key},
+        )
+        if geocode.status_code >= 400:
+            geocode_error = _openweather_error_message(geocode, context="Geocoding failed")
+            continue
+        geo_rows = geocode.json()
+        if not isinstance(geo_rows, list) or not geo_rows:
+            continue
+        first_row = geo_rows[0] if isinstance(geo_rows[0], dict) else {}
+        try:
+            lat = float(first_row["lat"])
+            lon = float(first_row["lon"])
+            break
+        except Exception:
+            continue
+
+    if lat is None or lon is None:
+        for zip_candidate in _weather_zip_candidates(query_address):
+            geocode_zip = client.get(
+                "https://api.openweathermap.org/geo/1.0/zip",
+                params={"zip": zip_candidate, "appid": api_key},
             )
-            if geocode.status_code >= 400:
-                geocode_error = _openweather_error_message(geocode, context="Geocoding failed")
+            if geocode_zip.status_code >= 400:
+                geocode_error = _openweather_error_message(geocode_zip, context="Geocoding failed")
                 continue
-            geo_rows = geocode.json()
-            if not isinstance(geo_rows, list) or not geo_rows:
+            geocode_zip_payload = geocode_zip.json()
+            if not isinstance(geocode_zip_payload, dict):
                 continue
-            first_row = geo_rows[0] if isinstance(geo_rows[0], dict) else {}
             try:
-                lat = float(first_row["lat"])
-                lon = float(first_row["lon"])
+                lat = float(geocode_zip_payload["lat"])
+                lon = float(geocode_zip_payload["lon"])
                 break
             except Exception:
                 continue
 
-        if lat is None or lon is None:
-            for zip_candidate in _weather_zip_candidates(query_address):
-                geocode_zip = client.get(
-                    "https://api.openweathermap.org/geo/1.0/zip",
-                    params={
-                        "zip": zip_candidate,
-                        "appid": api_key,
-                    },
-                )
-                if geocode_zip.status_code >= 400:
-                    geocode_error = _openweather_error_message(geocode_zip, context="Geocoding failed")
-                    continue
-                geocode_zip_payload = geocode_zip.json()
-                if not isinstance(geocode_zip_payload, dict):
-                    continue
-                try:
-                    lat = float(geocode_zip_payload["lat"])
-                    lon = float(geocode_zip_payload["lon"])
-                    break
-                except Exception:
-                    continue
+    if lat is None or lon is None:
+        if geocode_error:
+            raise ValueError(geocode_error)
+        raise ValueError("Address could not be geocoded")
 
-        if lat is None or lon is None:
-            if geocode_error:
-                raise ValueError(geocode_error)
-            raise ValueError("Address could not be geocoded")
+    return lat, lon
+
+
+@lru_cache(maxsize=512)
+def _fetch_openweather_coordinates_cached(api_key: str, query_address: str) -> tuple[float, float] | None:
+    normalized_address = _normalize_weather_address(query_address)
+    if not api_key.strip() or not normalized_address:
+        return None
+    timeout = httpx.Timeout(12.0, connect=5.0)
+    with httpx.Client(timeout=timeout) as client:
+        try:
+            return _fetch_openweather_coordinates_with_client(
+                client=client,
+                api_key=api_key,
+                query_address=normalized_address,
+            )
+        except Exception:
+            return None
+
+
+def _fetch_openweather_forecast(*, api_key: str, query_address: str, language: str = "en") -> tuple[float, float, list[dict]]:
+    weather_language = _sanitize_weather_language(language)
+    timeout = httpx.Timeout(12.0, connect=5.0)
+    with httpx.Client(timeout=timeout) as client:
+        lat, lon = _fetch_openweather_coordinates_with_client(
+            client=client,
+            api_key=api_key,
+            query_address=query_address,
+        )
 
         forecast = client.get(
             "https://api.openweathermap.org/data/2.5/forecast",
@@ -2126,6 +2201,165 @@ def _task_assignee_map(db: Session, tasks: list[Task]) -> dict[int, list[int]]:
     return out
 
 
+def _task_duration_minutes(estimated_hours: float | None) -> int | None:
+    if estimated_hours is None:
+        return None
+    return int(round(float(estimated_hours) * 60))
+
+
+def _project_location_coordinates(db: Session, project_id: int) -> tuple[float, float] | None:
+    project = db.get(Project, project_id)
+    if project is None:
+        return None
+    query_address = _project_location_address(project)
+    if not query_address:
+        return None
+
+    cache_row = db.get(ProjectWeatherCache, project_id)
+    if (
+        cache_row is not None
+        and _normalize_weather_address(cache_row.query_address) == query_address
+        and cache_row.latitude is not None
+        and cache_row.longitude is not None
+    ):
+        try:
+            return float(cache_row.latitude), float(cache_row.longitude)
+        except Exception:
+            pass
+
+    api_key = _effective_openweather_api_key(db)
+    if not api_key:
+        return None
+    return _fetch_openweather_coordinates_cached(api_key, query_address)
+
+
+def _estimate_travel_minutes_between_projects(db: Session, from_project_id: int, to_project_id: int) -> int | None:
+    if from_project_id == to_project_id:
+        return 0
+    from_project = db.get(Project, from_project_id)
+    to_project = db.get(Project, to_project_id)
+    from_address = _project_location_address(from_project)
+    to_address = _project_location_address(to_project)
+    if not from_address or not to_address:
+        return None
+    if from_address.lower() == to_address.lower():
+        return 0
+
+    from_coords = _project_location_coordinates(db, from_project_id)
+    to_coords = _project_location_coordinates(db, to_project_id)
+    if from_coords is None or to_coords is None:
+        return _estimate_travel_minutes_from_addresses(from_address, to_address)
+
+    lat1, lon1 = from_coords
+    lat2, lon2 = to_coords
+    earth_radius_km = 6371.0
+    lat_delta = math.radians(lat2 - lat1)
+    lon_delta = math.radians(lon2 - lon1)
+    haversine = (
+        math.sin(lat_delta / 2) ** 2
+        + math.cos(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.sin(lon_delta / 2) ** 2
+    )
+    crow_distance_km = 2 * earth_radius_km * math.asin(min(1.0, math.sqrt(haversine)))
+    road_distance_km = max(crow_distance_km * 1.3, crow_distance_km + 1.5)
+    if road_distance_km <= 6:
+        speed_kmh = 25.0
+    elif road_distance_km <= 20:
+        speed_kmh = 35.0
+    elif road_distance_km <= 60:
+        speed_kmh = 55.0
+    else:
+        speed_kmh = 75.0
+    minutes = math.ceil((road_distance_km / speed_kmh) * 60) + 5
+    return max(5, min(240, minutes))
+
+
+def _task_end_time(start_time: time | None, estimated_hours: float | None) -> time | None:
+    duration_minutes = _task_duration_minutes(estimated_hours)
+    if start_time is None or duration_minutes is None:
+        return None
+    end_minutes = (start_time.hour * 60) + start_time.minute + duration_minutes
+    if end_minutes >= 24 * 60:
+        raise HTTPException(status_code=400, detail="Task duration must end on the same day")
+    return time(hour=end_minutes // 60, minute=end_minutes % 60)
+
+
+def _validate_task_schedule(*, start_time: time | None, estimated_hours: float | None) -> None:
+    if estimated_hours is None:
+        return
+    if start_time is None:
+        raise HTTPException(status_code=400, detail="Start time is required when task duration is set")
+    _task_end_time(start_time, estimated_hours)
+
+
+def _find_task_overlaps(
+    db: Session,
+    *,
+    project_id: int,
+    due_date: date | None,
+    start_time: time | None,
+    estimated_hours: float | None,
+    assignee_ids: list[int],
+    exclude_task_id: int | None = None,
+) -> list[dict[str, object]]:
+    if due_date is None or start_time is None or estimated_hours is None or not assignee_ids:
+        return []
+
+    _validate_task_schedule(start_time=start_time, estimated_hours=estimated_hours)
+    start_minutes = (start_time.hour * 60) + start_time.minute
+    end_minutes = start_minutes + (_task_duration_minutes(estimated_hours) or 0)
+    assignee_set = set(assignee_ids)
+
+    stmt = (
+        select(Task)
+        .where(Task.due_date == due_date, Task.start_time.is_not(None), Task.estimated_hours.is_not(None), Task.status != "done")
+        .order_by(Task.start_time.asc(), Task.id.asc())
+    )
+    if exclude_task_id is not None:
+        stmt = stmt.where(Task.id != exclude_task_id)
+
+    candidates = list(db.scalars(stmt).all())
+    assignees_by_task = _task_assignee_map(db, candidates)
+    overlaps: list[dict[str, object]] = []
+    for candidate in candidates:
+        candidate_assignee_ids = assignees_by_task.get(candidate.id, [])
+        shared_assignee_ids = [user_id for user_id in candidate_assignee_ids if user_id in assignee_set]
+        if not shared_assignee_ids:
+            continue
+        candidate_duration_minutes = _task_duration_minutes(candidate.estimated_hours)
+        if candidate.start_time is None or candidate_duration_minutes is None:
+            continue
+        candidate_start = (candidate.start_time.hour * 60) + candidate.start_time.minute
+        candidate_end = candidate_start + candidate_duration_minutes
+        direct_overlap = not (start_minutes >= candidate_end or candidate_start >= end_minutes)
+        travel_minutes = _estimate_travel_minutes_between_projects(db, candidate.project_id, project_id)
+        travel_overlap = False
+        if not direct_overlap and travel_minutes and travel_minutes > 0:
+            if candidate_end <= start_minutes:
+                travel_overlap = candidate_end + travel_minutes > start_minutes
+            elif end_minutes <= candidate_start:
+                travel_overlap = end_minutes + travel_minutes > candidate_start
+        if not direct_overlap and not travel_overlap:
+            continue
+        overlaps.append(
+            {
+                "task_id": candidate.id,
+                "project_id": candidate.project_id,
+                "title": candidate.title,
+                "due_date": candidate.due_date.isoformat() if candidate.due_date else None,
+                "start_time": candidate.start_time.isoformat() if candidate.start_time else None,
+                "end_time": _task_end_time(candidate.start_time, candidate.estimated_hours).isoformat()
+                if candidate.start_time and candidate.estimated_hours is not None
+                else None,
+                "estimated_hours": candidate.estimated_hours,
+                "assignee_ids": candidate_assignee_ids,
+                "shared_assignee_ids": shared_assignee_ids,
+                "travel_minutes": travel_minutes,
+                "overlap_type": "travel_overlap" if travel_overlap and not direct_overlap else "time_overlap",
+            }
+        )
+    return overlaps
+
+
 def _task_out(task: Task, assignee_ids: list[int]) -> TaskOut:
     return TaskOut(
         id=task.id,
@@ -2141,6 +2375,10 @@ def _task_out(task: Task, assignee_ids: list[int]) -> TaskOut:
         is_overdue=_task_is_overdue(task),
         due_date=task.due_date,
         start_time=task.start_time,
+        estimated_hours=task.estimated_hours,
+        end_time=_task_end_time(task.start_time, task.estimated_hours)
+        if task.start_time and task.estimated_hours is not None
+        else None,
         assignee_id=assignee_ids[0] if assignee_ids else None,
         assignee_ids=assignee_ids,
         week_start=task.week_start,
@@ -2166,7 +2404,11 @@ def _my_task_filter(user_id: int):
 
 
 def _planning_visibility_user_ids(db: Session, current_user: User) -> set[int]:
-    if current_user.role in {"admin", "ceo", "planning", "accountant"}:
+    if (
+        has_permission_for_user(current_user.id, current_user.role, "planning:manage")
+        or has_permission_for_user(current_user.id, current_user.role, "time:view_all")
+        or has_permission_for_user(current_user.id, current_user.role, "time:manage")
+    ):
         return set(db.scalars(select(User.id).where(User.is_active.is_(True))).all())
     return {current_user.id}
 
@@ -2245,6 +2487,7 @@ def _planning_absences_by_day(
     school_rows = db.scalars(
         select(SchoolAbsence).where(
             SchoolAbsence.user_id.in_(allowed_user_ids),
+            SchoolAbsence.status == "approved",
             SchoolAbsence.start_date <= week_end,
             or_(SchoolAbsence.recurrence_until.is_(None), SchoolAbsence.recurrence_until >= week_start),
         )
@@ -2253,11 +2496,11 @@ def _planning_absences_by_day(
         for day_value in _expand_school_absence_days(row, period_start=week_start, period_end=week_end):
             by_day.setdefault(day_value, []).append(
                 {
-                    "type": "school",
+                    "type": row.absence_type,
                     "user_id": row.user_id,
                     "user_name": names_by_user_id.get(row.user_id, f"#{row.user_id}"),
                     "label": row.title,
-                    "status": None,
+                    "status": row.status,
                 }
             )
 
@@ -2267,11 +2510,15 @@ def _planning_absences_by_day(
 
 
 def _can_access_reports(user: User, *, write: bool) -> bool:
-    if has_permission(user.role, "reports:manage"):
+    if has_permission_for_user(user.id, user.role, "reports:manage"):
         return True
     if write:
-        return has_permission(user.role, "reports:create")
-    return has_permission(user.role, "reports:create") or has_permission(user.role, "reports:view")
+        return has_permission_for_user(user.id, user.role, "reports:create")
+    return has_permission_for_user(user.id, user.role, "reports:create") or has_permission_for_user(
+        user.id,
+        user.role,
+        "reports:view",
+    )
 
 
 def _assert_report_access(user: User, *, write: bool) -> None:

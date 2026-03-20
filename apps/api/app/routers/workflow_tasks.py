@@ -93,7 +93,31 @@ def create_task(
         )
     assignee_ids = _normalize_assignee_ids([*(payload.assignee_ids or []), payload.assignee_id])
     _validate_assignee_ids(db, assignee_ids)
-    task_data = payload.model_dump(exclude={"assignee_id", "assignee_ids", "class_template_id", "subtasks"})
+    _validate_task_schedule(start_time=payload.start_time, estimated_hours=payload.estimated_hours)
+    overlaps = (
+        _find_task_overlaps(
+            db,
+            project_id=payload.project_id,
+            due_date=payload.due_date,
+            start_time=payload.start_time,
+            estimated_hours=payload.estimated_hours,
+            assignee_ids=assignee_ids,
+        )
+        if not payload.confirm_overlap
+        else []
+    )
+    if overlaps:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "task_overlap",
+                "message": "Task overlaps with an existing assignment",
+                "overlaps": overlaps,
+            },
+        )
+    task_data = payload.model_dump(
+        exclude={"assignee_id", "assignee_ids", "class_template_id", "subtasks", "confirm_overlap"}
+    )
     task = Task(**task_data)
     task.subtasks = _normalize_task_subtasks(payload.subtasks)
     task.task_type = _normalize_task_type(payload.task_type, default="construction")
@@ -139,7 +163,8 @@ def update_task(
     previous_status = task.status
     previous_due_date = task.due_date.isoformat() if task.due_date else None
     previous_start_time = task.start_time.isoformat() if task.start_time else None
-    can_manage = current_user.role in {"admin", "ceo", "planning"}
+    previous_estimated_hours = task.estimated_hours
+    can_manage = has_permission_for_user(current_user.id, current_user.role, "tasks:manage")
     if not can_manage and current_user.id not in existing_assignee_ids:
         raise HTTPException(status_code=403, detail="Task access denied")
     if "expected_updated_at" in payload.model_fields_set:
@@ -186,6 +211,8 @@ def update_task(
             task.due_date = payload.due_date
         if "start_time" in payload.model_fields_set:
             task.start_time = payload.start_time
+        if "estimated_hours" in payload.model_fields_set:
+            task.estimated_hours = payload.estimated_hours
         if "week_start" in payload.model_fields_set:
             task.week_start = payload.week_start
 
@@ -203,10 +230,34 @@ def update_task(
             added_assignee_ids = list(set(next_assignee_ids) - prev_assignee_ids)
             _create_assignment_notifications(db, task, added_assignee_ids, current_user)
 
+        _validate_task_schedule(start_time=task.start_time, estimated_hours=task.estimated_hours)
+        overlaps = (
+            _find_task_overlaps(
+                db,
+                project_id=task.project_id,
+                due_date=task.due_date,
+                start_time=task.start_time,
+                estimated_hours=task.estimated_hours,
+                assignee_ids=existing_assignee_ids,
+                exclude_task_id=task.id,
+            )
+            if task.status != "done" and not payload.confirm_overlap
+            else []
+        )
+        if overlaps:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "task_overlap",
+                    "message": "Task overlaps with an existing assignment",
+                    "overlaps": overlaps,
+                },
+            )
+
     db.add(task)
     if task.status != previous_status or (task.due_date.isoformat() if task.due_date else None) != previous_due_date or (
         task.start_time.isoformat() if task.start_time else None
-    ) != previous_start_time:
+    ) != previous_start_time or task.estimated_hours != previous_estimated_hours:
         _record_project_activity(
             db,
             project_id=task.project_id,
@@ -218,6 +269,7 @@ def update_task(
                 "status": task.status,
                 "due_date": task.due_date.isoformat() if task.due_date else None,
                 "start_time": task.start_time.isoformat() if task.start_time else None,
+                "estimated_hours": task.estimated_hours,
             },
         )
     db.commit()
@@ -261,7 +313,7 @@ def planning_assign_week(
     db: Session = Depends(get_db),
 ):
     created_ids: list[int] = []
-    for assignment in assignments:
+    for index, assignment in enumerate(assignments):
         assert_project_access(db, current_user, assignment.project_id)
         class_template: ProjectClassTemplate | None = None
         if assignment.class_template_id is not None:
@@ -270,6 +322,30 @@ def planning_assign_week(
             )
         assignee_ids = _normalize_assignee_ids([*(assignment.assignee_ids or []), assignment.assignee_id])
         _validate_assignee_ids(db, assignee_ids)
+        _validate_task_schedule(start_time=assignment.start_time, estimated_hours=assignment.estimated_hours)
+        due_date = assignment.due_date or week_start
+        overlaps = (
+            _find_task_overlaps(
+                db,
+                project_id=assignment.project_id,
+                due_date=due_date,
+                start_time=assignment.start_time,
+                estimated_hours=assignment.estimated_hours,
+                assignee_ids=assignee_ids,
+            )
+            if not assignment.confirm_overlap
+            else []
+        )
+        if overlaps:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "task_overlap",
+                    "message": "Task overlaps with an existing assignment",
+                    "assignment_index": index,
+                    "overlaps": overlaps,
+                },
+            )
         assignment_data = assignment.model_dump(
             exclude={
                 "week_start",
@@ -280,9 +356,9 @@ def planning_assign_week(
                 "task_type",
                 "class_template_id",
                 "subtasks",
+                "confirm_overlap",
             }
         )
-        due_date = assignment.due_date or week_start
         task = Task(
             **assignment_data,
             subtasks=_normalize_task_subtasks(assignment.subtasks),

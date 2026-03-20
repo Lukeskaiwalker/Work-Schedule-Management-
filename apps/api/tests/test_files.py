@@ -295,6 +295,28 @@ def test_project_files_folder_visibility_and_webdav_structure(client: TestClient
     assert all(not str(row["folder"]).startswith("Verwaltung") for row in employee_files.json())
     assert any(str(row["folder"]).startswith("Bilder") for row in employee_files.json())
 
+    grant_protected_access = client.put(
+        f"/api/admin/user-permissions/{employee['id']}",
+        headers=auth_headers(admin_token),
+        json={"extra": ["files:view_protected"], "denied": []},
+    )
+    assert grant_protected_access.status_code == 200
+
+    protected_upload_allowed = client.post(
+        f"/api/projects/{project_id}/files",
+        headers=auth_headers(employee_token),
+        data={"folder": "Verwaltung"},
+        files={"file": ("allowed.txt", b"allowed", "text/plain")},
+    )
+    assert protected_upload_allowed.status_code == 200
+
+    employee_files_with_permission = client.get(
+        f"/api/projects/{project_id}/files",
+        headers=auth_headers(employee_token),
+    )
+    assert employee_files_with_permission.status_code == 200
+    assert any(str(row["folder"]).startswith("Verwaltung") for row in employee_files_with_permission.json())
+
     admin_files = client.get(f"/api/projects/{project_id}/files", headers=auth_headers(admin_token))
     assert admin_files.status_code == 200
     assert any(str(row["folder"]).startswith("Verwaltung") for row in admin_files.json())
@@ -307,4 +329,4 @@ def test_project_files_folder_visibility_and_webdav_structure(client: TestClient
     )
     assert dav_root.status_code == 207
     assert "Bilder" in dav_root.text
-    assert "Verwaltung" not in dav_root.text
+    assert "Verwaltung" in dav_root.text

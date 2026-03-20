@@ -7,6 +7,9 @@
 ## Project layout
 
 ```
+.github/
+  workflows/
+    release-on-main.yml         GitHub Actions workflow: tags and publishes sanitized GitHub releases on pushes to main
 apps/
   api/                        FastAPI backend (Python)
     app/
@@ -28,8 +31,10 @@ apps/
       types/                  Shared TypeScript types
       styles.css              Global stylesheet (~4 100 lines); breakpoints: ≥900px desktop, ≤899px mobile, ≤768px tablet, ≤480px phone; uses 100dvh throughout
 docs/                         Living project docs (STATE, DECISIONS, TESTING, SECURITY, SETUP)
-scripts/                      Ops helpers (test.sh, backup.sh, safe_update.sh)
+scripts/                      Ops helpers (test.sh, backup.sh, safe_update.sh, build_release_bundle.sh)
+infra/maintenance/            Static maintenance-mode page served during safe updates
 docker-compose.yml            Services: db, api, web, caddy
+.gitattributes                Release archive exclusions for agent/internal files
 ```
 
 ---
@@ -85,10 +90,10 @@ docker-compose.yml            Services: db, api, web, caddy
 | `notification.py` | `NotificationOut` |
 | `report.py` | `ConstructionReportWorker`, `ConstructionReportMaterial`, `ConstructionReportExtra`, `ConstructionReportPayload`, `ConstructionReportCreate`, `RecentConstructionReportOut` |
 | `site.py` | `SiteCreate`, `SiteOut`, `JobTicketCreate`, `JobTicketOut` |
-| `time.py` | `ClockOut`, `BreakAction`, `TimesheetOut`, `TimeCurrentOut`, `TimeEntryOut`, `TimeEntryUpdate`, `RequiredDailyHoursUpdate`, `RequiredDailyHoursOut`, `VacationRequestCreate`, `VacationRequestReview`, `VacationRequestOut`, `SchoolAbsenceCreate`, `SchoolAbsenceOut` |
+| `time.py` | `ClockOut`, `BreakAction`, `TimesheetOut`, `TimeCurrentOut`, `TimeEntryOut`, `TimeEntryUpdate`, `RequiredDailyHoursUpdate`, `RequiredDailyHoursOut`, `VacationBalanceUpdate`, `VacationBalanceOut`, `VacationRequestCreate`, `VacationRequestReview`, `VacationRequestOut`, `SchoolAbsenceCreate`, `SchoolAbsenceUpdate`, `SchoolAbsenceReview`, `SchoolAbsenceOut` |
 | `wiki.py` | `WikiPageCreate`, `WikiPageUpdate`, `WikiPageOut`, `WikiLibraryFileOut` |
 | `auth.py` | `InviteCreate`, `InviteDispatchOut`, `PasswordResetDispatchOut`, `InviteAccept`, `PasswordResetConfirm` |
-| `settings.py` | `WeatherSettingsOut`, `WeatherSettingsUpdate`, `UpdateStatusOut`, `UpdateInstallRequest`, `UpdateInstallOut` |
+| `settings.py` | `WeatherSettingsOut`, `WeatherSettingsUpdate`, `SmtpSettingsOut`, `SmtpSettingsUpdate`, `UpdateStatusOut`, `UpdateInstallRequest`, `UpdateInstallOut` |
 
 ### Routers (`app/routers/`)
 
@@ -97,7 +102,7 @@ All registered in `main.py` under the `/api` prefix.
 | File | Handles |
 |------|---------|
 | `auth.py` | Login, logout, `/auth/me`, invite accept, password reset |
-| `admin.py` | User management, system update center |
+| `admin.py` | User management, runtime settings, system update center |
 | `time_tracking.py` | Clock in/out, break tracking, timesheets, vacations, school absences |
 | `events.py` | `GET /events?token=` — SSE live-update stream |
 | `workflow_projects.py` | Project CRUD, finance, members, weather, class templates |
@@ -256,4 +261,4 @@ Files in `apps/api/alembic/versions/`. Naming: `YYYYMMDD_NNNN_description.py`.
 Run migrations: `docker compose exec api alembic upgrade head`
 Create new migration: `docker compose exec api alembic revision --autogenerate -m "description"`
 
-Latest migration: `20260309_0034_task_assignment_notifications.py`
+Latest migration: `20260320_0044_user_vacation_balance_year.py`

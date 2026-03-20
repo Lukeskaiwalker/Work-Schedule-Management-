@@ -1732,3 +1732,51 @@
 - Coverage notes:
   - Added `test_corrupted_chunked_attachment_returns_http_error_instead_of_stream_abort` to verify truncated encrypted file payloads now return HTTP `409` with a stable API error instead of failing during response streaming.
   - Regression coverage implicitly includes the post-`v1.7.0` construction-report and XLSX export fixes bundled into `v1.7.1`.
+
+## Iteration Result (2026-03-19, automated GitHub releases from main)
+- Commands run:
+  - `bash -n scripts/build_release_bundle.sh`
+  - `./scripts/build_release_bundle.sh v1.7.3 dist/SMPL-v1.7.3-worktree.tar.gz`
+  - `tar -tzf dist/SMPL-v1.7.3-worktree.tar.gz | rg 'AGENTS|AGENT_TASKS|CODEMAP|PATTERNS|TASKS/|\\.claude|\\.mcp|\\.playwright|plan\\.txt'`
+  - `git diff --check`
+- Results:
+  - Shell syntax check for new release helper: pass.
+  - Release bundle generation from existing tag: pass.
+  - Archive exclusion probe: pass (no agent/internal files matched inside the tarball).
+  - Whitespace/syntax diff check: pass.
+- Coverage notes:
+  - Validated the archive path the GitHub release workflow will use and confirmed `.gitattributes` exclusions are applied to the generated bundle.
+
+## Iteration Result (2026-03-19, task durations + overlap confirmation)
+- Commands run:
+  - `cd apps/web && npm run build`
+  - `python3 -m compileall apps/api/app apps/api/tests/test_planning.py`
+  - `docker compose run --rm api sh -lc 'PYTHONPATH=/app pytest -q tests/test_planning.py'` (blocked)
+- Results:
+  - Web production build: pass.
+  - Python compile pass for API app + updated planning test: pass.
+  - Containerized pytest: blocked because Docker Desktop was paused locally before the command could start.
+- Coverage notes:
+  - Added planning/task API tests for duration end-time serialization and overlap-confirmation behavior.
+  - Added travel-buffer overlap coverage for back-to-back tasks on different projects with the same assignee.
+  - Frontend verification covered the new modal state, typed API error handling, and task time-range rendering through the production build.
+
+## Iteration Result (2026-03-19, admin audit log combined filters + date range)
+- Commands run:
+  - `cd apps/web && npm run build`
+- Results:
+  - Web production build: pass.
+- Coverage notes:
+  - Verified the admin audit log page compiles with the new combined filter panel, multi-select category filtering, and preset/custom date-range controls.
+
+## Iteration Result (2026-03-20, maintenance landing page during safe updates)
+- Commands run:
+  - `bash -n scripts/safe_update.sh`
+  - `docker compose config`
+  - `docker compose --profile maintenance config`
+- Results:
+  - Shell syntax check for updated safe-update flow: pass.
+  - Default compose rendering: pass.
+  - Maintenance-profile compose rendering: pass.
+- Coverage notes:
+  - Validated the new maintenance service wiring, optional env override path (`infra/.maintenance.env`), and profile-gated compose shape used by `scripts/safe_update.sh`.

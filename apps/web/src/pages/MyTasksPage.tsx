@@ -1,5 +1,5 @@
 import { useAppContext } from "../context/AppContext";
-import { taskDisplayStatus, isTaskOverdue, taskStatusLabel, formatTaskStartTime } from "../utils/tasks";
+import { taskDisplayStatus, isTaskOverdue, taskStatusLabel, formatTaskTimeRange } from "../utils/tasks";
 import { taskMaterialsDisplay } from "../utils/reports";
 import { BackIcon, PenIcon } from "../components/icons";
 
@@ -92,7 +92,7 @@ export function MyTasksPage() {
                   </button>{" "}
                   |{" "}
                   {language === "de" ? "Fällig" : "Due"}: {task.due_date ?? "-"}
-                  {task.start_time ? ` ${language === "de" ? "um" : "at"} ${formatTaskStartTime(task.start_time)}` : ""} |{" "}
+                  {task.start_time ? ` ${language === "de" ? "um" : "at"} ${formatTaskTimeRange(task)}` : ""} |{" "}
                   {language === "de" ? "Status" : "Status"}: {taskStatusLabel(displayStatus, language)}
                 </small>
                 {taskProjectLabel.subtitle && <small className="project-name-subtle">{taskProjectLabel.subtitle}</small>}

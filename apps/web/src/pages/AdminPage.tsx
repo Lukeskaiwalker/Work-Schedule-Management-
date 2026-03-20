@@ -7,6 +7,7 @@ import { schoolWeekdayLabel } from "../utils/dates";
 import type { User, EmployeeGroup } from "../types";
 
 type AdminTab = "users" | "groups" | "roles" | "tools" | "audit" | "settings" | "system";
+type AuditPeriodFilter = "all" | "today" | "7d" | "30d" | "90d" | "custom";
 
 const ALL_ROLES: User["role"][] = ["admin", "ceo", "accountant", "planning", "employee"];
 
@@ -18,16 +19,84 @@ function fmtTs(iso: string): string {
   }
 }
 
-type GroupDraft = { name: string; memberIds: Set<number> };
+function formatAuditCategory(category: string, de: boolean): string {
+  const labels: Record<string, string> = de
+    ? {
+        auth: "Anmeldung",
+        chat: "Chat",
+        files: "Dateien",
+        finance: "Finanzen",
+        groups: "Gruppen",
+        permissions: "Berechtigungen",
+        planning: "Planung",
+        projects: "Projekte",
+        reports: "Berichte",
+        settings: "Einstellungen",
+        system: "System",
+        tasks: "Aufgaben",
+        tickets: "Tickets",
+        time: "Zeiterfassung",
+        users: "Benutzer",
+        wiki: "Wiki",
+      }
+    : {
+        auth: "Auth",
+        chat: "Chat",
+        files: "Files",
+        finance: "Finance",
+        groups: "Groups",
+        permissions: "Permissions",
+        planning: "Planning",
+        projects: "Projects",
+        reports: "Reports",
+        settings: "Settings",
+        system: "System",
+        tasks: "Tasks",
+        tickets: "Tickets",
+        time: "Time",
+        users: "Users",
+        wiki: "Wiki",
+      };
+  return labels[category] ?? category;
+}
+
+function formatAuditPeriodLabel(period: AuditPeriodFilter, de: boolean): string {
+  switch (period) {
+    case "today":
+      return de ? "Heute" : "Today";
+    case "7d":
+      return de ? "Letzte 7 Tage" : "Last 7 days";
+    case "30d":
+      return de ? "Letzte 30 Tage" : "Last 30 days";
+    case "90d":
+      return de ? "Letzte 90 Tage" : "Last 90 days";
+    case "custom":
+      return de ? "Benutzerdefiniert" : "Custom";
+    default:
+      return de ? "Gesamter Zeitraum" : "All time";
+  }
+}
+
+type GroupDraft = {
+  name: string;
+  memberIds: Set<number>;
+  canUpdateRecentOwnTimeEntries: boolean;
+};
 
 export function AdminPage() {
   const {
     mainView,
-    isAdmin,
     user,
     language,
+    canManageUsers,
+    canManagePermissions,
     canManageProjectImport,
     canManageSchoolAbsences,
+    canViewAudit,
+    canManageSettings,
+    canManageSystem,
+    canExportBackups,
+    canAdjustRequiredHours,
     // Users tab
     activeAdminUsers,
     archivedAdminUsers,
@@ -37,6 +106,9 @@ export function AdminPage() {
     requiredHoursDrafts,
     setRequiredHoursDrafts,
     updateRequiredDailyHours,
+    vacationBalanceDrafts,
+    setVacationBalanceDrafts,
+    updateVacationBalance,
     sendInviteToUser,
     sendPasswordResetToUser,
     softDeleteUser,
@@ -44,7 +116,6 @@ export function AdminPage() {
     inviteCreateForm,
     setInviteCreateForm,
     submitCreateInvite,
-    applyTemplate,
     userAvatarVersionById,
     userHasAvatar,
     userInitialsById,
@@ -63,7 +134,6 @@ export function AdminPage() {
     resetRoleToDefaults,
     // User permissions tab
     userPermissionOverrides,
-    userPermissionsLoading,
     loadUserPermissions,
     setUserPermissionOverride,
     resetUserPermissions,
@@ -77,6 +147,11 @@ export function AdminPage() {
     setWeatherApiKeyInput,
     weatherSettingsSaving,
     saveWeatherSettings,
+    smtpSettings,
+    smtpSettingsForm,
+    setSmtpSettingsForm,
+    smtpSettingsSaving,
+    saveSmtpSettings,
     // System tab
     backupExporting,
     exportEncryptedDatabaseBackup,
@@ -93,14 +168,37 @@ export function AdminPage() {
     importProjectClassTemplateCsv,
   } = useAppContext();
 
-  const canAccess = isAdmin || canManageProjectImport || canManageSchoolAbsences;
+  const canAccess =
+    canManageUsers ||
+    canManagePermissions ||
+    canManageProjectImport ||
+    canManageSchoolAbsences ||
+    canViewAudit ||
+    canManageSettings ||
+    canManageSystem ||
+    canExportBackups;
 
-  const [tab, setTab] = useState<AdminTab>(isAdmin ? "users" : "tools");
+  const toolsVisible = canManageProjectImport || canManageSchoolAbsences;
+  const systemVisible = canManageSystem || canExportBackups;
+  const availableTabs: AdminTab[] = [
+    ...(canManageUsers ? (["users", "groups"] as AdminTab[]) : []),
+    ...(canManagePermissions ? (["roles"] as AdminTab[]) : []),
+    ...(toolsVisible ? (["tools"] as AdminTab[]) : []),
+    ...(canViewAudit ? (["audit"] as AdminTab[]) : []),
+    ...(canManageSettings ? (["settings"] as AdminTab[]) : []),
+    ...(systemVisible ? (["system"] as AdminTab[]) : []),
+  ];
+
+  const [tab, setTab] = useState<AdminTab>(availableTabs[0] ?? "tools");
   const [showInvite, setShowInvite] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
   const [groupDraft, setGroupDraft] = useState<GroupDraft | null>(null);
   const [editingGroupId, setEditingGroupId] = useState<number | null>(null);
   const [auditSearch, setAuditSearch] = useState("");
+  const [auditCategoryFilters, setAuditCategoryFilters] = useState<string[]>([]);
+  const [auditPeriodFilter, setAuditPeriodFilter] = useState<AuditPeriodFilter>("all");
+  const [auditDateFrom, setAuditDateFrom] = useState("");
+  const [auditDateTo, setAuditDateTo] = useState("");
   const [resettingRole, setResettingRole] = useState<string | null>(null);
   // Which user's permission panel is open (user id or null)
   const [expandedPermUserId, setExpandedPermUserId] = useState<number | null>(null);
@@ -124,11 +222,22 @@ export function AdminPage() {
   }, [userPermissionOverrides, expandedPermUserId]);
 
   useEffect(() => {
-    if (tab === "groups") void loadEmployeeGroups();
-    if (tab === "audit") void loadAuditLogs();
-    if (tab === "roles") void loadRolePermissions();
+    if (tab === "groups" && canManageUsers) void loadEmployeeGroups();
+    if (tab === "audit" && canViewAudit) void loadAuditLogs();
+    if (tab === "roles" && canManagePermissions) void loadRolePermissions();
     // user-level permissions are loaded lazily when a row panel is opened
-  }, [tab]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [tab, canManageUsers, canViewAudit, canManagePermissions]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!availableTabs.includes(tab)) {
+      setTab(availableTabs[0] ?? "tools");
+    }
+  }, [availableTabs, tab]);
+
+  useEffect(() => {
+    if (canManagePermissions || inviteCreateForm.role === "employee") return;
+    setInviteCreateForm({ ...inviteCreateForm, role: "employee" });
+  }, [canManagePermissions, inviteCreateForm.role, setInviteCreateForm]);
 
   useEffect(() => {
     if (expandedPermUserId == null) return;
@@ -144,27 +253,31 @@ export function AdminPage() {
 
   const de = language === "de";
 
-  const ALL_TABS: { id: AdminTab; label: string; count?: number; adminOnly: boolean }[] = [
-    { id: "users",    label: de ? "Benutzer"      : "Users",     count: activeAdminUsers.length, adminOnly: true },
-    { id: "groups",   label: de ? "Gruppen"       : "Groups",    adminOnly: true },
-    { id: "roles",    label: de ? "Rollen"        : "Roles",     adminOnly: true },
-    { id: "tools",    label: de ? "Werkzeuge"     : "Tools",     adminOnly: false },
-    { id: "audit",    label: de ? "Protokoll"     : "Audit Log", adminOnly: true },
-    { id: "settings", label: de ? "Einstellungen" : "Settings",  adminOnly: true },
-    { id: "system",   label: "System",                           adminOnly: true },
+  const ALL_TABS: { id: AdminTab; label: string; count?: number; visible: boolean }[] = [
+    { id: "users",    label: de ? "Benutzer"      : "Users",     count: activeAdminUsers.length, visible: canManageUsers },
+    { id: "groups",   label: de ? "Gruppen"       : "Groups",    visible: canManageUsers },
+    { id: "roles",    label: de ? "Rollen"        : "Roles",     visible: canManagePermissions },
+    { id: "tools",    label: de ? "Werkzeuge"     : "Tools",     visible: toolsVisible },
+    { id: "audit",    label: de ? "Protokoll"     : "Audit Log", visible: canViewAudit },
+    { id: "settings", label: de ? "Einstellungen" : "Settings",  visible: canManageSettings },
+    { id: "system",   label: "System",                           visible: systemVisible },
   ];
-  const TABS = ALL_TABS.filter((t) => isAdmin || !t.adminOnly);
+  const TABS = ALL_TABS.filter((t) => t.visible);
 
   // ── Group helpers ──────────────────────────────────────────────────────────
 
   const openNewGroup = () => {
     setEditingGroupId(null);
-    setGroupDraft({ name: "", memberIds: new Set() });
+    setGroupDraft({ name: "", memberIds: new Set(), canUpdateRecentOwnTimeEntries: false });
   };
 
   const openEditGroup = (group: EmployeeGroup) => {
     setEditingGroupId(group.id);
-    setGroupDraft({ name: group.name, memberIds: new Set(group.member_user_ids) });
+    setGroupDraft({
+      name: group.name,
+      memberIds: new Set(group.member_user_ids),
+      canUpdateRecentOwnTimeEntries: group.can_update_recent_own_time_entries,
+    });
   };
 
   const cancelGroupDraft = () => {
@@ -176,9 +289,13 @@ export function AdminPage() {
     if (!groupDraft || groupDraft.name.trim() === "") return;
     const memberIds = Array.from(groupDraft.memberIds);
     if (editingGroupId !== null) {
-      await updateEmployeeGroup(editingGroupId, { name: groupDraft.name.trim(), member_user_ids: memberIds });
+      await updateEmployeeGroup(editingGroupId, {
+        name: groupDraft.name.trim(),
+        member_user_ids: memberIds,
+        can_update_recent_own_time_entries: groupDraft.canUpdateRecentOwnTimeEntries,
+      });
     } else {
-      await createEmployeeGroup(groupDraft.name.trim(), memberIds);
+      await createEmployeeGroup(groupDraft.name.trim(), memberIds, groupDraft.canUpdateRecentOwnTimeEntries);
     }
     cancelGroupDraft();
   };
@@ -264,15 +381,84 @@ export function AdminPage() {
 
   // ── Audit filter ───────────────────────────────────────────────────────────
 
-  const filteredLogs = auditSearch.trim()
-    ? auditLogs.filter((l) => {
-        const q = auditSearch.toLowerCase();
-        const actor = l.actor_user_id
-          ? (adminUsersById.get(l.actor_user_id)?.display_name ?? String(l.actor_user_id))
-          : "system";
-        return l.action.toLowerCase().includes(q) || actor.toLowerCase().includes(q);
-      })
-    : auditLogs;
+  const usersWithRecentTimeEditGroupAccess = new Set(
+    employeeGroups
+      .filter((group) => group.can_update_recent_own_time_entries)
+      .flatMap((group) => group.member_user_ids),
+  );
+  const auditCategories = Array.from(new Set(auditLogs.map((log) => log.category).filter(Boolean))).sort();
+  const hasCustomAuditDateRange = auditDateFrom.trim() !== "" || auditDateTo.trim() !== "";
+  const hasAuditDateFilter = auditPeriodFilter !== "all" && (auditPeriodFilter !== "custom" || hasCustomAuditDateRange);
+  const hasAuditFilters = auditCategoryFilters.length > 0 || hasAuditDateFilter;
+  const activeAuditFilterCount =
+    (auditCategoryFilters.length > 0 ? 1 : 0) +
+    (hasAuditDateFilter ? 1 : 0);
+
+  const toggleAuditCategoryFilter = (category: string) => {
+    setAuditCategoryFilters((current) =>
+      current.includes(category) ? current.filter((value) => value !== category) : [...current, category],
+    );
+  };
+
+  const clearAuditFilters = () => {
+    setAuditCategoryFilters([]);
+    setAuditPeriodFilter("all");
+    setAuditDateFrom("");
+    setAuditDateTo("");
+  };
+
+  const isLogWithinAuditDateRange = (createdAt: string) => {
+    if (!hasAuditDateFilter) return true;
+    const created = new Date(createdAt);
+    if (Number.isNaN(created.getTime())) return true;
+
+    let start: Date | null = null;
+    let end: Date | null = null;
+
+    if (auditPeriodFilter === "custom") {
+      if (auditDateFrom) {
+        start = new Date(`${auditDateFrom}T00:00:00`);
+      }
+      if (auditDateTo) {
+        end = new Date(`${auditDateTo}T23:59:59.999`);
+      }
+    } else {
+      end = new Date();
+      end.setHours(23, 59, 59, 999);
+
+      start = new Date(end);
+      start.setHours(0, 0, 0, 0);
+
+      if (auditPeriodFilter === "7d") {
+        start.setDate(start.getDate() - 6);
+      } else if (auditPeriodFilter === "30d") {
+        start.setDate(start.getDate() - 29);
+      } else if (auditPeriodFilter === "90d") {
+        start.setDate(start.getDate() - 89);
+      }
+    }
+
+    if (start && !Number.isNaN(start.getTime()) && created < start) return false;
+    if (end && !Number.isNaN(end.getTime()) && created > end) return false;
+    return true;
+  };
+
+  const filteredLogs = auditLogs.filter((l) => {
+    if (auditCategoryFilters.length > 0 && !auditCategoryFilters.includes(l.category)) {
+      return false;
+    }
+    if (!isLogWithinAuditDateRange(l.created_at)) {
+      return false;
+    }
+    if (!auditSearch.trim()) {
+      return true;
+    }
+    const q = auditSearch.toLowerCase();
+    const actor = l.actor_user_id
+      ? (adminUsersById.get(l.actor_user_id)?.display_name ?? String(l.actor_user_id))
+      : "system";
+    return l.action.toLowerCase().includes(q) || actor.toLowerCase().includes(q);
+  });
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -357,11 +543,12 @@ export function AdminPage() {
                   {de ? "Rolle" : "Role"}
                   <select
                     value={inviteCreateForm.role}
+                    disabled={!canManagePermissions}
                     onChange={(e) =>
                       setInviteCreateForm({ ...inviteCreateForm, role: e.target.value as User["role"] })
                     }
                   >
-                    {ALL_ROLES.map((r) => (
+                    {(canManagePermissions ? ALL_ROLES : ["employee"]).map((r) => (
                       <option key={r} value={r}>{r}</option>
                     ))}
                   </select>
@@ -413,10 +600,14 @@ export function AdminPage() {
                         value={u.role}
                         className="admin-role-select"
                         aria-label={de ? `Rolle fuer ${u.full_name}` : `Role for ${u.full_name}`}
-                        disabled={u.id === user?.id}
-                        title={u.id === user?.id
-                          ? (de ? "Eigene Rolle kann nicht geändert werden" : "Cannot change your own role")
-                          : undefined}
+                        disabled={u.id === user?.id || !canManagePermissions}
+                        title={
+                          u.id === user?.id
+                            ? (de ? "Eigene Rolle kann nicht geändert werden" : "Cannot change your own role")
+                            : !canManagePermissions
+                              ? (de ? "Rollenänderung erfordert Berechtigung zur Rechteverwaltung" : "Role changes require permission management access")
+                              : undefined
+                        }
                         onChange={(e) => void updateRole(u.id, e.target.value as User["role"])}
                       >
                         {ALL_ROLES.map((r) => (
@@ -451,15 +642,102 @@ export function AdminPage() {
                         onChange={(e) => setRequiredHoursDrafts({ ...requiredHoursDrafts, [u.id]: e.target.value })}
                         className="admin-hours-input"
                         aria-label={de ? "Pflichtarbeitszeit h/Tag" : "Required h/day"}
+                        disabled={!canAdjustRequiredHours}
                       />
                       <span className="admin-hours-unit muted">h/d</span>
                       <button
                         type="button"
                         className="admin-save-btn"
+                        disabled={!canAdjustRequiredHours}
                         onClick={() => void updateRequiredDailyHours(u.id)}
                       >
                         {de ? "Spch." : "Save"}
                       </button>
+                    </div>
+                    <div className="admin-user-control-row admin-hours-row">
+                      <span className="admin-user-control-label">{de ? "Urlaub" : "Vacation"}</span>
+                      <input
+                        type="number"
+                        min={0}
+                        step={0.5}
+                        value={vacationBalanceDrafts[u.id]?.perYear ?? String(u.vacation_days_per_year ?? 0)}
+                        onChange={(e) =>
+                          setVacationBalanceDrafts((current) => {
+                            const previousPerYear = current[u.id]?.perYear ?? String(u.vacation_days_per_year ?? 0);
+                            const previousAvailable = current[u.id]?.available ?? String(u.vacation_days_available ?? 0);
+                            const previousCarryover = current[u.id]?.carryover ?? String(u.vacation_days_carryover ?? 0);
+                            const initialAvailable = Number(u.vacation_days_available ?? 0);
+                            const initialCarryover = Number(u.vacation_days_carryover ?? 0);
+                            const isInitialSetup = initialAvailable <= 0 && initialCarryover <= 0;
+                            const shouldAutofillAvailable =
+                              isInitialSetup &&
+                              (current[u.id] === undefined || previousAvailable === previousPerYear);
+                            return {
+                              ...current,
+                              [u.id]: {
+                                perYear: e.target.value,
+                                available: shouldAutofillAvailable
+                                  ? e.target.value
+                                  : previousAvailable,
+                                carryover: previousCarryover,
+                              },
+                            };
+                          })
+                        }
+                        className="admin-hours-input"
+                        aria-label={de ? "Urlaubstage pro Jahr" : "Vacation days per year"}
+                      />
+                      <span className="admin-hours-unit muted">{de ? "Jahr" : "year"}</span>
+                      <input
+                        type="number"
+                        min={0}
+                        step={0.5}
+                        value={vacationBalanceDrafts[u.id]?.available ?? String(u.vacation_days_available ?? 0)}
+                        onChange={(e) =>
+                          setVacationBalanceDrafts((current) => ({
+                            ...current,
+                            [u.id]: {
+                              perYear: current[u.id]?.perYear ?? String(u.vacation_days_per_year ?? 0),
+                              available: e.target.value,
+                              carryover: current[u.id]?.carryover ?? String(u.vacation_days_carryover ?? 0),
+                            },
+                          }))
+                        }
+                        className="admin-hours-input"
+                        aria-label={de ? "Verfügbare Urlaubstage" : "Available vacation days"}
+                      />
+                      <span className="admin-hours-unit muted">{de ? "offen" : "left"}</span>
+                      <input
+                        type="number"
+                        min={0}
+                        step={0.5}
+                        value={vacationBalanceDrafts[u.id]?.carryover ?? String(u.vacation_days_carryover ?? 0)}
+                        onChange={(e) =>
+                          setVacationBalanceDrafts((current) => ({
+                            ...current,
+                            [u.id]: {
+                              perYear: current[u.id]?.perYear ?? String(u.vacation_days_per_year ?? 0),
+                              available: current[u.id]?.available ?? String(u.vacation_days_available ?? 0),
+                              carryover: e.target.value,
+                            },
+                          }))
+                        }
+                        className="admin-hours-input"
+                        aria-label={de ? "Übertrag Urlaubstage" : "Vacation carryover days"}
+                      />
+                      <span className="admin-hours-unit muted">{de ? "Vorjahr" : "carry"}</span>
+                      <button type="button" className="admin-save-btn" onClick={() => void updateVacationBalance(u.id)}>
+                        {de ? "Spch." : "Save"}
+                      </button>
+                      <span className="admin-hours-unit muted" style={{ minWidth: "auto" }}>
+                        {de ? "Gesamt offen" : "Total left"}:{" "}
+                        {(
+                          vacationBalanceDrafts[u.id]
+                            ? Number(vacationBalanceDrafts[u.id]?.available ?? 0) +
+                              Number(vacationBalanceDrafts[u.id]?.carryover ?? 0)
+                            : Number(u.vacation_days_total_remaining ?? 0)
+                        ).toFixed(1).replace(/\\.0$/, "")}
+                      </span>
                     </div>
                   </div>
                   <div className="admin-user-actions">
@@ -483,6 +761,7 @@ export function AdminPage() {
                       type="button"
                       className={`icon-btn${expandedPermUserId === u.id ? " active" : ""}`}
                       title={de ? "Individuelle Berechtigungen" : "Custom permissions"}
+                      disabled={!canManagePermissions}
                       onClick={() => openUserPermPanel(u.id)}
                     >
                       <ShieldIcon />
@@ -612,7 +891,14 @@ export function AdminPage() {
                         />
                         <div className="admin-user-info">
                           <div className="admin-user-name">{u.full_name}</div>
-                          <div className="admin-user-email">{u.email} · {u.role}</div>
+                          <div className="admin-user-email">
+                            {u.email} · {u.role}
+                            {usersWithRecentTimeEditGroupAccess.has(u.id) && (
+                              <span className="muted" style={{ marginLeft: "0.5rem" }}>
+                                · {de ? "Gruppe: letzte 3 Zeiteinträge" : "Group: last 3 time entries"}
+                              </span>
+                            )}
+                          </div>
                         </div>
                         <div />
                         <div className="admin-user-actions">
@@ -655,6 +941,23 @@ export function AdminPage() {
                   onChange={(e) => setGroupDraft({ ...groupDraft, name: e.target.value })}
                 />
               </label>
+              <div style={{ marginBottom: "0.85rem" }}>
+                <p className="muted" style={{ fontSize: "0.82rem", marginBottom: "0.35rem" }}>
+                  {de ? "Gruppenrechte" : "Group permissions"}
+                </p>
+              <label className="admin-member-check-row" style={{ marginBottom: "0.85rem" }}>
+                <input
+                  type="checkbox"
+                  checked={groupDraft.canUpdateRecentOwnTimeEntries}
+                  onChange={(e) =>
+                    setGroupDraft({ ...groupDraft, canUpdateRecentOwnTimeEntries: e.target.checked })
+                  }
+                />
+                {de
+                  ? "Darf die letzten 3 eigenen Zeiteinträge sehen und ändern"
+                  : "Can view and update the last 3 own time entries"}
+              </label>
+              </div>
               <div className="admin-group-form-body">
                 <p className="muted" style={{ fontSize: "0.82rem", marginBottom: "0.4rem" }}>
                   {de ? "Mitglieder" : "Members"} ({groupDraft.memberIds.size})
@@ -696,6 +999,11 @@ export function AdminPage() {
                   <span className="muted" style={{ marginLeft: "0.5rem", fontSize: "0.84rem" }}>
                     {group.members.length} {de ? "Mitglied(er)" : "member(s)"}
                   </span>
+                  {group.can_update_recent_own_time_entries && (
+                    <span className="muted" style={{ marginLeft: "0.5rem", fontSize: "0.84rem" }}>
+                      · {de ? "letzte 3 Eigeneinträge sichtbar und editierbar" : "last 3 own entries visible and editable"}
+                    </span>
+                  )}
                 </div>
                 <div className="row" style={{ gap: "0.4rem" }}>
                   <button type="button" className="icon-btn" title={de ? "Bearbeiten" : "Edit"} onClick={() => openEditGroup(group)}>✏</button>
@@ -711,6 +1019,13 @@ export function AdminPage() {
                   ))}
                 </div>
               )}
+              <div className="admin-group-members" style={{ marginTop: "0.5rem" }}>
+                <span className="admin-member-chip">
+                  {group.can_update_recent_own_time_entries
+                    ? (de ? "Recht: letzte 3 eigene Zeiteinträge sehen und bearbeiten" : "Permission: view and edit last 3 own time entries")
+                    : (de ? "Kein zusätzliches Gruppenrecht" : "No extra group permission")}
+                </span>
+              </div>
             </div>
           ))}
         </div>
@@ -858,40 +1173,6 @@ export function AdminPage() {
       {/* ── Tools ──────────────────────────────────────────────────────────── */}
       {tab === "tools" && (
         <div className="admin-tab-pane">
-          {canManageProjectImport && !isAdmin && (
-            <div className="admin-settings-card">
-              <h4>{de ? "Wetter-Integration" : "Weather integration"}</h4>
-              <p className="muted" style={{ fontSize: "0.88rem", marginTop: "0.25rem" }}>
-                {de
-                  ? "OpenWeather API-Schlüssel für die Baustellenwetter-Karte."
-                  : "OpenWeather API key for the construction site weather widget."}
-              </p>
-              {weatherSettings && (
-                <p className="muted" style={{ fontSize: "0.82rem" }}>
-                  {de ? "Aktueller Schlüssel:" : "Current key:"}{" "}
-                  <code>{weatherSettings.masked_api_key || (de ? "nicht gesetzt" : "not set")}</code>
-                </p>
-              )}
-              <form onSubmit={(e: FormEvent<HTMLFormElement>) => void saveWeatherSettings(e)}>
-                <div className="admin-form-row">
-                  <label>
-                    {de ? "Neuer API-Schlüssel" : "New API key"}
-                    <input
-                      type="password"
-                      value={weatherApiKeyInput}
-                      onChange={(e) => setWeatherApiKeyInput(e.target.value)}
-                      placeholder={de ? "OpenWeather-Schlüssel eingeben" : "Enter OpenWeather API key"}
-                      autoComplete="new-password"
-                    />
-                  </label>
-                </div>
-                <button type="submit" disabled={weatherSettingsSaving || weatherApiKeyInput.trim() === ""}>
-                  {weatherSettingsSaving ? (de ? "Speichern…" : "Saving…") : (de ? "Speichern" : "Save key")}
-                </button>
-              </form>
-            </div>
-          )}
-
           {canManageProjectImport && (
             <>
               <div className="admin-settings-card">
@@ -1009,6 +1290,88 @@ export function AdminPage() {
       {tab === "audit" && (
         <div className="admin-tab-pane">
           <div className="row wrap" style={{ marginBottom: "1rem", gap: "0.75rem", alignItems: "center" }}>
+            <details className="admin-audit-filters">
+              <summary className="admin-audit-filters-summary">
+                <span>{de ? "Filter" : "Filters"}</span>
+                {activeAuditFilterCount > 0 && <span className="admin-audit-filter-count">{activeAuditFilterCount}</span>}
+                <span className="admin-audit-filter-summary-text">
+                  {auditCategoryFilters.length > 0
+                    ? `${auditCategoryFilters.length} ${de ? "Kategorie(n)" : "categories"}`
+                    : (de ? "Alle Kategorien" : "All categories")}
+                  {" · "}
+                  {formatAuditPeriodLabel(
+                    hasAuditDateFilter ? auditPeriodFilter : "all",
+                    de,
+                  )}
+                </span>
+              </summary>
+              <div className="admin-audit-filters-panel">
+                <div className="admin-audit-filter-group">
+                  <span className="admin-audit-filter-label">{de ? "Kategorien" : "Categories"}</span>
+                  <div className="admin-audit-filter-options">
+                    {auditCategories.map((category) => (
+                      <label key={category} className="admin-audit-filter-pill">
+                        <input
+                          type="checkbox"
+                          checked={auditCategoryFilters.includes(category)}
+                          onChange={() => toggleAuditCategoryFilter(category)}
+                        />
+                        <span>{formatAuditCategory(category, de)}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="admin-audit-filter-grid">
+                  <div className="admin-audit-filter-group">
+                    <label className="admin-audit-filter-field">
+                      <span className="admin-audit-filter-label">{de ? "Zeitraum" : "Period"}</span>
+                      <select
+                        value={auditPeriodFilter}
+                        onChange={(e) => setAuditPeriodFilter(e.target.value as AuditPeriodFilter)}
+                        aria-label={de ? "Zeitraum filtern" : "Filter by period"}
+                      >
+                        <option value="all">{de ? "Gesamter Zeitraum" : "All time"}</option>
+                        <option value="today">{de ? "Heute" : "Today"}</option>
+                        <option value="7d">{de ? "Letzte 7 Tage" : "Last 7 days"}</option>
+                        <option value="30d">{de ? "Letzte 30 Tage" : "Last 30 days"}</option>
+                        <option value="90d">{de ? "Letzte 90 Tage" : "Last 90 days"}</option>
+                        <option value="custom">{de ? "Benutzerdefiniert" : "Custom"}</option>
+                      </select>
+                    </label>
+                  </div>
+                </div>
+
+                {auditPeriodFilter === "custom" && (
+                  <div className="admin-audit-filter-grid">
+                    <label className="admin-audit-filter-field">
+                      <span className="admin-audit-filter-label">{de ? "Von" : "From"}</span>
+                      <input
+                        type="date"
+                        value={auditDateFrom}
+                        onChange={(e) => setAuditDateFrom(e.target.value)}
+                        aria-label={de ? "Startdatum" : "Start date"}
+                      />
+                    </label>
+                    <label className="admin-audit-filter-field">
+                      <span className="admin-audit-filter-label">{de ? "Bis" : "To"}</span>
+                      <input
+                        type="date"
+                        value={auditDateTo}
+                        onChange={(e) => setAuditDateTo(e.target.value)}
+                        aria-label={de ? "Enddatum" : "End date"}
+                      />
+                    </label>
+                  </div>
+                )}
+
+                <div className="admin-audit-filter-actions">
+                  <button type="button" onClick={clearAuditFilters} disabled={!hasAuditFilters}>
+                    {de ? "Filter zurücksetzen" : "Reset filters"}
+                  </button>
+                </div>
+              </div>
+            </details>
             <input
               type="search"
               placeholder={de ? "Suche nach Aktion oder Benutzer…" : "Search by action or user…"}
@@ -1021,7 +1384,10 @@ export function AdminPage() {
             </button>
             {auditLogs.length > 0 && (
               <span className="muted" style={{ fontSize: "0.82rem" }}>
-                {filteredLogs.length}{auditSearch ? `/${auditLogs.length}` : ""} {de ? "Einträge" : "entries"}
+                {filteredLogs.length}
+                {(auditSearch || hasAuditFilters) ? `/${auditLogs.length}` : ""}
+                {" "}
+                {de ? "Einträge" : "entries"}
               </span>
             )}
           </div>
@@ -1037,6 +1403,7 @@ export function AdminPage() {
                 <thead>
                   <tr>
                     <th>{de ? "Zeitpunkt" : "Time"}</th>
+                    <th>{de ? "Kategorie" : "Category"}</th>
                     <th>{de ? "Benutzer" : "Actor"}</th>
                     <th>{de ? "Aktion" : "Action"}</th>
                     <th>{de ? "Ziel" : "Target"}</th>
@@ -1048,11 +1415,12 @@ export function AdminPage() {
                       ? (adminUsersById.get(log.actor_user_id)?.display_name ?? `#${log.actor_user_id}`)
                       : (de ? "System" : "System");
                     const target = log.target_type
-                      ? `${log.target_type}${log.target_id != null ? ` #${log.target_id}` : ""}`
+                      ? `${log.target_type}${log.target_id != null ? ` · ${log.target_id}` : ""}`
                       : "—";
                     return (
                       <tr key={log.id}>
                         <td className="muted" style={{ whiteSpace: "nowrap", fontSize: "0.8rem" }}>{fmtTs(log.created_at)}</td>
+                        <td className="muted" style={{ fontSize: "0.84rem" }}>{formatAuditCategory(log.category, de)}</td>
                         <td>{actor}</td>
                         <td><code className="admin-audit-code">{log.action}</code></td>
                         <td className="muted" style={{ fontSize: "0.84rem" }}>{target}</td>
@@ -1069,6 +1437,143 @@ export function AdminPage() {
       {/* ── Settings ───────────────────────────────────────────────────────── */}
       {tab === "settings" && (
         <div className="admin-tab-pane">
+          <div className="admin-settings-card">
+            <h4>{de ? "SMTP-Mailserver" : "SMTP mail server"}</h4>
+            <p className="muted" style={{ fontSize: "0.88rem", marginTop: "0.25rem" }}>
+              {de
+                ? "Wird für Einladungen und Passwort-Reset-E-Mails verwendet."
+                : "Used for invite and password reset emails."}
+            </p>
+            {smtpSettings && (
+              <div className="muted" style={{ fontSize: "0.82rem", display: "grid", gap: "0.2rem", marginBottom: "0.75rem" }}>
+                <div>
+                  {de ? "Status:" : "Status:"}{" "}
+                  <code>{smtpSettings.configured ? (de ? "konfiguriert" : "configured") : (de ? "nicht konfiguriert" : "not configured")}</code>
+                </div>
+                <div>
+                  {de ? "Gespeicherter Host:" : "Saved host:"}{" "}
+                  <code>{smtpSettings.host || (de ? "nicht gesetzt" : "not set")}</code>
+                </div>
+                <div>
+                  {de ? "Gespeichertes Passwort:" : "Saved password:"}{" "}
+                  <code>{smtpSettings.masked_password || (de ? "nicht gesetzt" : "not set")}</code>
+                </div>
+              </div>
+            )}
+            <form onSubmit={(e: FormEvent<HTMLFormElement>) => void saveSmtpSettings(e)}>
+              <div className="admin-form-row">
+                <label>
+                  SMTP Host
+                  <input
+                    type="text"
+                    value={smtpSettingsForm.host}
+                    onChange={(e) => setSmtpSettingsForm({ ...smtpSettingsForm, host: e.target.value })}
+                    placeholder={de ? "z. B. smtp.example.com" : "e.g. smtp.example.com"}
+                    autoComplete="off"
+                  />
+                </label>
+                <label>
+                  Port
+                  <input
+                    type="number"
+                    min={1}
+                    max={65535}
+                    value={smtpSettingsForm.port}
+                    onChange={(e) => setSmtpSettingsForm({ ...smtpSettingsForm, port: e.target.value })}
+                    placeholder="587"
+                  />
+                </label>
+              </div>
+              <div className="admin-form-row">
+                <label>
+                  {de ? "Benutzername" : "Username"}
+                  <input
+                    type="text"
+                    value={smtpSettingsForm.username}
+                    onChange={(e) => setSmtpSettingsForm({ ...smtpSettingsForm, username: e.target.value })}
+                    placeholder={de ? "Optional" : "Optional"}
+                    autoComplete="username"
+                  />
+                </label>
+                <label>
+                  {de ? "Neues Passwort" : "New password"}
+                  <input
+                    type="password"
+                    value={smtpSettingsForm.password}
+                    onChange={(e) => setSmtpSettingsForm({ ...smtpSettingsForm, password: e.target.value, clear_password: false })}
+                    placeholder={de ? "Leer lassen zum Beibehalten" : "Leave blank to keep current"}
+                    autoComplete="new-password"
+                  />
+                </label>
+              </div>
+              <div className="admin-form-row">
+                <label>
+                  {de ? "Absender-E-Mail" : "Sender email"}
+                  <input
+                    type="email"
+                    value={smtpSettingsForm.from_email}
+                    onChange={(e) => setSmtpSettingsForm({ ...smtpSettingsForm, from_email: e.target.value })}
+                    placeholder="noreply@example.com"
+                    autoComplete="email"
+                  />
+                </label>
+                <label>
+                  {de ? "Absender-Name" : "Sender name"}
+                  <input
+                    type="text"
+                    value={smtpSettingsForm.from_name}
+                    onChange={(e) => setSmtpSettingsForm({ ...smtpSettingsForm, from_name: e.target.value })}
+                    placeholder={de ? "Optional" : "Optional"}
+                    autoComplete="off"
+                  />
+                </label>
+              </div>
+              <div className="admin-form-row">
+                <label className="admin-audit-filter-check">
+                  <input
+                    type="checkbox"
+                    checked={smtpSettingsForm.starttls}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setSmtpSettingsForm({
+                        ...smtpSettingsForm,
+                        starttls: checked,
+                        ssl: checked ? false : smtpSettingsForm.ssl,
+                      });
+                    }}
+                  />
+                  <span>STARTTLS</span>
+                </label>
+                <label className="admin-audit-filter-check">
+                  <input
+                    type="checkbox"
+                    checked={smtpSettingsForm.ssl}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setSmtpSettingsForm({
+                        ...smtpSettingsForm,
+                        ssl: checked,
+                        starttls: checked ? false : smtpSettingsForm.starttls,
+                      });
+                    }}
+                  />
+                  <span>SSL/TLS</span>
+                </label>
+                <label className="admin-audit-filter-check">
+                  <input
+                    type="checkbox"
+                    checked={smtpSettingsForm.clear_password}
+                    onChange={(e) => setSmtpSettingsForm({ ...smtpSettingsForm, clear_password: e.target.checked, password: e.target.checked ? "" : smtpSettingsForm.password })}
+                  />
+                  <span>{de ? "Gespeichertes Passwort löschen" : "Clear saved password"}</span>
+                </label>
+              </div>
+              <button type="submit" disabled={smtpSettingsSaving}>
+                {smtpSettingsSaving ? (de ? "Speichern…" : "Saving…") : (de ? "SMTP speichern" : "Save SMTP")}
+              </button>
+            </form>
+          </div>
+
           <div className="admin-settings-card">
             <h4>{de ? "Wetter-Integration" : "Weather integration"}</h4>
             <p className="muted" style={{ fontSize: "0.88rem", marginTop: "0.25rem" }}>
@@ -1107,25 +1612,27 @@ export function AdminPage() {
       {tab === "system" && (
         <div className="admin-tab-pane">
           <AdminUpdateMenu />
-          <div className="admin-settings-card">
-            <h4>{de ? "Datenbank-Backup" : "Database backup"}</h4>
-            <p className="muted" style={{ fontSize: "0.88rem", marginTop: "0.25rem" }}>
-              {de
-                ? "AES-256-GCM verschlüsseltes Backup erstellen. Eine Schlüsseldatei wird zur Verschlüsselung benötigt."
-                : "Generate an AES-256-GCM encrypted backup. A key file is required for encryption."}
-            </p>
-            <form onSubmit={(e: FormEvent<HTMLFormElement>) => void exportEncryptedDatabaseBackup(e)}>
-              <div className="admin-form-row">
-                <label>
-                  {de ? "Schlüsseldatei" : "Key file"}
-                  <input type="file" name="key_file" accept="*/*" required />
-                </label>
-              </div>
-              <button type="submit" disabled={backupExporting}>
-                {backupExporting ? (de ? "Backup läuft…" : "Exporting…") : (de ? "Backup erstellen" : "Create backup")}
-              </button>
-            </form>
-          </div>
+          {canExportBackups && (
+            <div className="admin-settings-card">
+              <h4>{de ? "Datenbank-Backup" : "Database backup"}</h4>
+              <p className="muted" style={{ fontSize: "0.88rem", marginTop: "0.25rem" }}>
+                {de
+                  ? "AES-256-GCM verschlüsseltes Backup erstellen. Eine Schlüsseldatei wird zur Verschlüsselung benötigt."
+                  : "Generate an AES-256-GCM encrypted backup. A key file is required for encryption."}
+              </p>
+              <form onSubmit={(e: FormEvent<HTMLFormElement>) => void exportEncryptedDatabaseBackup(e)}>
+                <div className="admin-form-row">
+                  <label>
+                    {de ? "Schlüsseldatei" : "Key file"}
+                    <input type="file" name="key_file" accept="*/*" required />
+                  </label>
+                </div>
+                <button type="submit" disabled={backupExporting}>
+                  {backupExporting ? (de ? "Backup läuft…" : "Exporting…") : (de ? "Backup erstellen" : "Create backup")}
+                </button>
+              </form>
+            </div>
+          )}
         </div>
       )}
     </section>

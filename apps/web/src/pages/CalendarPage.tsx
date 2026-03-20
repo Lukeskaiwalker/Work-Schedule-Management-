@@ -1,7 +1,7 @@
 import { Fragment, useMemo } from "react";
 import { useAppContext } from "../context/AppContext";
 import { addDaysISO, normalizeWeekStartISO, isoWeekInfo, isoWeekdayMondayFirst } from "../utils/dates";
-import { sortTasksByDueTime, formatTaskStartTime } from "../utils/tasks";
+import { sortTasksByDueTime, formatTaskTimeRange } from "../utils/tasks";
 import type { Language } from "../types";
 
 const EN_DAY_COLS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
@@ -29,6 +29,7 @@ export function CalendarPage() {
     openTaskFromPlanning,
     openProjectFromTask,
     menuUserNameById,
+    absenceTypes,
     publicHolidays,
   } = useAppContext();
 
@@ -44,6 +45,11 @@ export function CalendarPage() {
   if (mainView !== "calendar") return null;
 
   const dayColLabels = language === "de" ? DE_DAY_COLS : EN_DAY_COLS;
+  const absenceTypeLabel = (type: string) => {
+    if (type === "vacation") return language === "de" ? "Urlaub" : "Vacation";
+    const match = absenceTypes.find((entry) => entry.key === type);
+    return match ? (language === "de" ? match.label_de : match.label_en) : type;
+  };
 
   return (
     <section className="card calendar-overview">
@@ -172,9 +178,7 @@ export function CalendarPage() {
                             >
                               <b>{menuUserNameById(absence.user_id, absence.user_name)}</b>
                               <small>
-                                {absence.type === "vacation"
-                                  ? language === "de" ? "Urlaub" : "Vacation"
-                                  : language === "de" ? "Schule" : "School"}
+                                {absenceTypeLabel(absence.type)}
                               </small>
                             </li>
                           ))}
@@ -217,7 +221,7 @@ export function CalendarPage() {
                                   >
                                     {taskProjectLabel.title}
                                   </button>
-                                  {task.start_time ? ` · ${formatTaskStartTime(task.start_time)}` : ""}
+                                  {task.start_time ? ` · ${formatTaskTimeRange(task)}` : ""}
                                 </small>
                                 {taskProjectLabel.subtitle && (
                                   <small className="project-name-subtle">{taskProjectLabel.subtitle}</small>

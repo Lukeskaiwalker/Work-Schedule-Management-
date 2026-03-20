@@ -17,7 +17,7 @@ from urllib.request import Request, urlopen
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 from fastapi.responses import Response
 from sqlalchemy.engine import make_url
@@ -26,8 +26,8 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.db import get_db
-from app.core.deps import get_current_user, require_admin
-from app.core.permissions import ALL_PERMISSIONS, ALL_ROLES, PERMISSION_DESCRIPTIONS, PERMISSION_GROUPS, PERMISSION_LABELS, ROLE_EMPLOYEE, TEMPLATES, get_effective_permissions, get_user_override
+from app.core.deps import require_permission
+from app.core.permissions import ALL_PERMISSIONS, ALL_ROLES, PERMISSION_DESCRIPTIONS, PERMISSION_GROUPS, PERMISSION_LABELS, ROLE_EMPLOYEE, TEMPLATES, get_effective_permissions, get_user_override, has_permission_for_user
 from app.core.security import get_password_hash
 from app.core.time import utcnow
 from app.models.entities import AuditLog, EmployeeGroup, EmployeeGroupMember, ProjectClassTemplate, User, UserActionToken
@@ -38,6 +38,8 @@ from app.schemas.api import (
     InviteCreate,
     InviteDispatchOut,
     PasswordResetDispatchOut,
+    SmtpSettingsOut,
+    SmtpSettingsUpdate,
     UserCreate,
     UserOut,
     UserUpdate,
@@ -51,11 +53,13 @@ from app.services.audit import log_admin_action
 from app.services.emailer import send_email_message
 from app.services.project_import import import_projects_from_csv
 from app.services.runtime_settings import (
+    get_smtp_settings,
     get_openweather_api_key,
     reset_role_to_defaults,
     reset_user_permissions_from_db,
     save_role_permissions_to_db,
     save_user_permissions_to_db,
+    set_smtp_settings,
     set_openweather_api_key,
 )
 
@@ -114,10 +118,13 @@ TASK_TYPE_ALIASES = {
 SEMVER_REGEX = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$")
 
 
-def _require_admin_or_ceo(current_user: User = Depends(get_current_user)) -> User:
-    if current_user.role not in {"admin", "ceo"}:
-        raise HTTPException(status_code=403, detail="Admin or CEO role required")
-    return current_user
+def _can_manage_permissions(user: User) -> bool:
+    return has_permission_for_user(user.id, user.role, "permissions:manage")
+
+
+def _assert_can_assign_role(actor: User, role: str) -> None:
+    if role != ROLE_EMPLOYEE and not _can_manage_permissions(actor):
+        raise HTTPException(status_code=403, detail="Role assignment denied")
 
 
 def _mask_secret(value: str) -> str:
@@ -157,6 +164,7 @@ def _employee_group_out(db: Session, group: EmployeeGroup) -> EmployeeGroupOut:
     return EmployeeGroupOut(
         id=group.id,
         name=group.name,
+        can_update_recent_own_time_entries=bool(group.can_update_recent_own_time_entries),
         member_user_ids=sorted(set(member_user_ids)),
         members=members,
     )
@@ -801,9 +809,34 @@ def _token_hash(raw_token: str) -> str:
     return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
 
 
-def _build_action_link(path: str, token: str) -> str:
-    base = (settings.app_public_url or "").strip().rstrip("/")
-    if not base:
+def _request_public_base_url(request: Request | None) -> str | None:
+    if request is None:
+        return None
+    forwarded_host = (request.headers.get("x-forwarded-host") or "").split(",", 1)[0].strip()
+    forwarded_proto = (request.headers.get("x-forwarded-proto") or "").split(",", 1)[0].strip()
+    host = forwarded_host or request.headers.get("host") or request.url.hostname or ""
+    if not host:
+        return None
+    scheme = forwarded_proto or request.url.scheme or "https"
+    root_path = str(request.scope.get("root_path") or "").rstrip("/")
+    return f"{scheme}://{host}{root_path}"
+
+
+def _build_action_link(path: str, token: str, request: Request | None = None) -> str:
+    configured_base = (settings.app_public_url or "").strip().rstrip("/")
+    request_base = _request_public_base_url(request)
+    configured_is_local = (
+        not configured_base
+        or "localhost" in configured_base.lower()
+        or "127.0.0.1" in configured_base.lower()
+    )
+    if configured_base and not configured_is_local:
+        base = configured_base
+    elif request_base:
+        base = request_base.rstrip("/")
+    elif configured_base:
+        base = configured_base
+    else:
         base = "https://localhost"
     return f"{base}{path}?token={token}"
 
@@ -902,18 +935,33 @@ def _create_encrypted_database_backup(database_url: str, key_material: bytes) ->
 
 
 @router.get("/users", response_model=list[UserOut])
-def list_users(_: User = Depends(require_admin), db: Session = Depends(get_db)):
-    return list(db.scalars(select(User).order_by(User.is_active.desc(), User.id)).all())
+def list_users(_: User = Depends(require_permission("users:manage")), db: Session = Depends(get_db)):
+    from app.routers.time_tracking import _vacation_balance_out
+
+    users = list(db.scalars(select(User).order_by(User.is_active.desc(), User.id)).all())
+    rows: list[UserOut] = []
+    for user in users:
+        out = UserOut.model_validate(user)
+        balance = _vacation_balance_out(db, user)
+        out.vacation_days_available = balance.vacation_days_available
+        out.vacation_days_carryover = balance.vacation_days_carryover
+        out.vacation_days_total_remaining = balance.vacation_days_total_remaining
+        rows.append(out)
+    return rows
 
 
 @router.get("/employee-groups", response_model=list[EmployeeGroupOut])
-def list_employee_groups(_: User = Depends(require_admin), db: Session = Depends(get_db)):
+def list_employee_groups(_: User = Depends(require_permission("users:manage")), db: Session = Depends(get_db)):
     groups = db.scalars(select(EmployeeGroup).order_by(EmployeeGroup.name.asc(), EmployeeGroup.id.asc())).all()
     return [_employee_group_out(db, group) for group in groups]
 
 
 @router.post("/employee-groups", response_model=EmployeeGroupOut)
-def create_employee_group(payload: EmployeeGroupCreate, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def create_employee_group(
+    payload: EmployeeGroupCreate,
+    admin: User = Depends(require_permission("users:manage")),
+    db: Session = Depends(get_db),
+):
     name = payload.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="Group name cannot be empty")
@@ -921,7 +969,11 @@ def create_employee_group(payload: EmployeeGroupCreate, admin: User = Depends(re
     if exists:
         raise HTTPException(status_code=409, detail="Employee group already exists")
 
-    group = EmployeeGroup(name=name, created_by=admin.id)
+    group = EmployeeGroup(
+        name=name,
+        can_update_recent_own_time_entries=bool(payload.can_update_recent_own_time_entries),
+        created_by=admin.id,
+    )
     db.add(group)
     db.flush()
     _sync_employee_group_members(db, group.id, payload.member_user_ids)
@@ -933,7 +985,11 @@ def create_employee_group(payload: EmployeeGroupCreate, admin: User = Depends(re
         "employee_group.create",
         "employee_group",
         str(group.id),
-        {"name": group.name, "member_user_ids": payload.member_user_ids},
+        {
+            "name": group.name,
+            "member_user_ids": payload.member_user_ids,
+            "can_update_recent_own_time_entries": bool(payload.can_update_recent_own_time_entries),
+        },
     )
     return _employee_group_out(db, group)
 
@@ -942,7 +998,7 @@ def create_employee_group(payload: EmployeeGroupCreate, admin: User = Depends(re
 def update_employee_group(
     group_id: int,
     payload: EmployeeGroupUpdate,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_permission("users:manage")),
     db: Session = Depends(get_db),
 ):
     group = db.get(EmployeeGroup, group_id)
@@ -965,6 +1021,9 @@ def update_employee_group(
     if "member_user_ids" in fields_set and payload.member_user_ids is not None:
         _sync_employee_group_members(db, group.id, payload.member_user_ids)
 
+    if "can_update_recent_own_time_entries" in fields_set and payload.can_update_recent_own_time_entries is not None:
+        group.can_update_recent_own_time_entries = bool(payload.can_update_recent_own_time_entries)
+
     db.commit()
     db.refresh(group)
     log_admin_action(
@@ -979,7 +1038,11 @@ def update_employee_group(
 
 
 @router.delete("/employee-groups/{group_id}")
-def delete_employee_group(group_id: int, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def delete_employee_group(
+    group_id: int,
+    admin: User = Depends(require_permission("users:manage")),
+    db: Session = Depends(get_db),
+):
     group = db.get(EmployeeGroup, group_id)
     if not group:
         raise HTTPException(status_code=404, detail="Employee group not found")
@@ -998,10 +1061,15 @@ def delete_employee_group(group_id: int, admin: User = Depends(require_admin), d
 
 
 @router.post("/users", response_model=UserOut)
-def create_user(payload: UserCreate, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def create_user(
+    payload: UserCreate,
+    admin: User = Depends(require_permission("users:manage")),
+    db: Session = Depends(get_db),
+):
     role = (payload.role or ROLE_EMPLOYEE).strip().lower() or ROLE_EMPLOYEE
     if role not in ALL_ROLES:
         raise HTTPException(status_code=400, detail="Invalid role")
+    _assert_can_assign_role(admin, role)
     email = _normalize_email(payload.email)
     if db.scalars(select(User).where(User.email == email)).first():
         raise HTTPException(status_code=409, detail="Email exists")
@@ -1023,12 +1091,14 @@ def create_user(payload: UserCreate, admin: User = Depends(require_admin), db: S
 @router.post("/invites", response_model=InviteDispatchOut)
 def create_and_send_invite(
     payload: InviteCreate,
-    admin: User = Depends(require_admin),
+    request: Request,
+    admin: User = Depends(require_permission("users:manage")),
     db: Session = Depends(get_db),
 ):
     role = (payload.role or ROLE_EMPLOYEE).strip().lower() or ROLE_EMPLOYEE
     if role not in ALL_ROLES:
         raise HTTPException(status_code=400, detail="Invalid role")
+    _assert_can_assign_role(admin, role)
 
     email = _normalize_email(payload.email)
     user = db.scalars(select(User).where(User.email == email)).first()
@@ -1054,7 +1124,7 @@ def create_and_send_invite(
         created_by=admin.id,
         ttl_hours=72,
     )
-    invite_link = _build_action_link("/invite", raw_token)
+    invite_link = _build_action_link("/invite", raw_token, request)
     sent = send_email_message(
         to_email=user.email,
         subject="Einladung zur SMPL Workflow Software",
@@ -1064,6 +1134,7 @@ def create_and_send_invite(
             f"Gueltig bis (UTC): {expires_at.isoformat()}Z\n\n"
             "Falls der Link nicht klickbar ist, kopieren Sie ihn in den Browser."
         ),
+        db=db,
     )
 
     user.invite_sent_at = utcnow()
@@ -1090,7 +1161,7 @@ def create_and_send_invite(
 @router.post("/backups/database")
 async def create_database_backup(
     key_file: UploadFile = File(...),
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_permission("backups:export")),
     db: Session = Depends(get_db),
 ):
     if not key_file.filename:
@@ -1125,7 +1196,8 @@ async def create_database_backup(
 @router.post("/users/{user_id}/send-invite", response_model=InviteDispatchOut)
 def send_user_invite(
     user_id: int,
-    admin: User = Depends(require_admin),
+    request: Request,
+    admin: User = Depends(require_permission("users:manage")),
     db: Session = Depends(get_db),
 ):
     user = db.get(User, user_id)
@@ -1141,7 +1213,7 @@ def send_user_invite(
         created_by=admin.id,
         ttl_hours=72,
     )
-    invite_link = _build_action_link("/invite", raw_token)
+    invite_link = _build_action_link("/invite", raw_token, request)
     sent = send_email_message(
         to_email=user.email,
         subject="Einladung zur SMPL Workflow Software",
@@ -1150,6 +1222,7 @@ def send_user_invite(
             f"Einladungslink: {invite_link}\n"
             f"Gueltig bis (UTC): {expires_at.isoformat()}Z\n"
         ),
+        db=db,
     )
     user.invite_sent_at = utcnow()
     db.add(user)
@@ -1175,7 +1248,8 @@ def send_user_invite(
 @router.post("/users/{user_id}/send-password-reset", response_model=PasswordResetDispatchOut)
 def send_password_reset(
     user_id: int,
-    admin: User = Depends(require_admin),
+    request: Request,
+    admin: User = Depends(require_permission("users:manage")),
     db: Session = Depends(get_db),
 ):
     user = db.get(User, user_id)
@@ -1191,7 +1265,7 @@ def send_password_reset(
         created_by=admin.id,
         ttl_hours=24,
     )
-    reset_link = _build_action_link("/reset-password", raw_token)
+    reset_link = _build_action_link("/reset-password", raw_token, request)
     sent = send_email_message(
         to_email=user.email,
         subject="Passwort zuruecksetzen - SMPL Workflow",
@@ -1200,6 +1274,7 @@ def send_password_reset(
             f"Reset-Link: {reset_link}\n"
             f"Gueltig bis (UTC): {expires_at.isoformat()}Z\n"
         ),
+        db=db,
     )
 
     user.password_reset_sent_at = utcnow()
@@ -1226,7 +1301,7 @@ def send_password_reset(
 @router.delete("/users/{user_id}")
 def soft_delete_user(
     user_id: int,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_permission("users:manage")),
     db: Session = Depends(get_db),
 ):
     user = db.get(User, user_id)
@@ -1271,7 +1346,12 @@ def soft_delete_user(
 
 
 @router.patch("/users/{user_id}", response_model=UserOut)
-def update_user(user_id: int, payload: UserUpdate, admin: User = Depends(require_admin), db: Session = Depends(get_db)):
+def update_user(
+    user_id: int,
+    payload: UserUpdate,
+    admin: User = Depends(require_permission("users:manage")),
+    db: Session = Depends(get_db),
+):
     from app.schemas.user import VALID_WORKSPACE_LOCKS
 
     user = db.get(User, user_id)
@@ -1281,14 +1361,25 @@ def update_user(user_id: int, payload: UserUpdate, admin: User = Depends(require
     if payload.role and payload.role not in ALL_ROLES:
         raise HTTPException(status_code=400, detail="Invalid role")
 
-    # Prevent an admin from changing their own role (self-lockout protection)
+    # Prevent a user from changing their own role (self-lockout protection)
     if payload.role and user_id == admin.id:
         raise HTTPException(status_code=403, detail="You cannot change your own role")
+
+    if payload.role and payload.role != user.role:
+        _assert_can_assign_role(admin, payload.role)
 
     if payload.workspace_lock is not None and payload.workspace_lock not in VALID_WORKSPACE_LOCKS:
         raise HTTPException(status_code=400, detail="workspace_lock must be 'construction', 'office', or null")
 
-    for field in ["full_name", "role", "is_active", "required_daily_hours"]:
+    for field in [
+        "full_name",
+        "role",
+        "is_active",
+        "required_daily_hours",
+        "vacation_days_per_year",
+        "vacation_days_available",
+        "vacation_days_carryover",
+    ]:
         value = getattr(payload, field)
         if value is not None:
             setattr(user, field, value)
@@ -1308,7 +1399,7 @@ def update_user(user_id: int, payload: UserUpdate, admin: User = Depends(require
 def apply_template(
     user_id: int,
     template: str = "default",
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_permission("permissions:manage")),
     db: Session = Depends(get_db),
 ):
     if template not in TEMPLATES:
@@ -1334,12 +1425,13 @@ def apply_template(
 
 
 @router.get("/audit-logs")
-def audit_logs(_: User = Depends(require_admin), db: Session = Depends(get_db)):
+def audit_logs(_: User = Depends(require_permission("audit:view")), db: Session = Depends(get_db)):
     logs = list(db.scalars(select(AuditLog).order_by(AuditLog.created_at.desc()).limit(300)).all())
     return [
         {
             "id": log.id,
             "actor_user_id": log.actor_user_id,
+            "category": log.category,
             "action": log.action,
             "target_type": log.target_type,
             "target_id": log.target_id,
@@ -1352,7 +1444,7 @@ def audit_logs(_: User = Depends(require_admin), db: Session = Depends(get_db)):
 
 @router.get("/projects/import-template.csv")
 def download_project_import_template(
-    _: User = Depends(_require_admin_or_ceo),
+    _: User = Depends(require_permission("projects:import")),
 ):
     buffer = StringIO()
     writer = csv.writer(buffer)
@@ -1390,7 +1482,7 @@ def download_project_import_template(
 @router.post("/projects/import-csv")
 async def import_projects_csv(
     file: UploadFile = File(...),
-    admin: User = Depends(_require_admin_or_ceo),
+    admin: User = Depends(require_permission("projects:import")),
     db: Session = Depends(get_db),
 ):
     if not file.filename:
@@ -1447,7 +1539,7 @@ async def import_projects_csv(
 
 @router.get("/project-classes/template.csv")
 def download_project_class_template(
-    _: User = Depends(_require_admin_or_ceo),
+    _: User = Depends(require_permission("projects:import")),
 ):
     buffer = StringIO()
     writer = csv.writer(buffer)
@@ -1502,7 +1594,7 @@ def download_project_class_template(
 @router.post("/project-classes/import-csv")
 async def import_project_class_template_csv(
     file: UploadFile = File(...),
-    admin: User = Depends(_require_admin_or_ceo),
+    admin: User = Depends(require_permission("projects:import")),
     db: Session = Depends(get_db),
 ):
     if not file.filename:
@@ -1526,7 +1618,7 @@ async def import_project_class_template_csv(
 
 @router.get("/settings/weather", response_model=WeatherSettingsOut)
 def get_weather_settings(
-    _: User = Depends(_require_admin_or_ceo),
+    _: User = Depends(require_permission("settings:manage")),
     db: Session = Depends(get_db),
 ):
     runtime_key = get_openweather_api_key(db)
@@ -1541,7 +1633,7 @@ def get_weather_settings(
 @router.patch("/settings/weather", response_model=WeatherSettingsOut)
 def update_weather_settings(
     payload: WeatherSettingsUpdate,
-    admin: User = Depends(_require_admin_or_ceo),
+    admin: User = Depends(require_permission("settings:manage")),
     db: Session = Depends(get_db),
 ):
     api_key = (payload.api_key or "").strip()
@@ -1562,9 +1654,101 @@ def update_weather_settings(
     )
 
 
+@router.get("/settings/smtp", response_model=SmtpSettingsOut)
+def get_smtp_runtime_settings(
+    _: User = Depends(require_permission("settings:manage")),
+    db: Session = Depends(get_db),
+):
+    effective = get_smtp_settings(db)
+    password = str(effective.get("password") or "")
+    host = str(effective.get("host") or "").strip()
+    from_email = str(effective.get("from_email") or "").strip()
+    return SmtpSettingsOut(
+        host=host,
+        port=int(effective.get("port") or 587),
+        username=str(effective.get("username") or "").strip(),
+        has_password=bool(password),
+        masked_password=_mask_secret(password),
+        starttls=bool(effective.get("starttls")),
+        ssl=bool(effective.get("ssl")),
+        from_email=from_email,
+        from_name=str(effective.get("from_name") or "").strip(),
+        configured=bool(host and from_email),
+    )
+
+
+@router.patch("/settings/smtp", response_model=SmtpSettingsOut)
+def update_smtp_runtime_settings(
+    payload: SmtpSettingsUpdate,
+    admin: User = Depends(require_permission("settings:manage")),
+    db: Session = Depends(get_db),
+):
+    current = get_smtp_settings(db)
+    host = (payload.host or "").strip()
+    port = int(payload.port or 0) or 587
+    username = (payload.username or "").strip()
+    from_email = (payload.from_email or "").strip()
+    from_name = (payload.from_name or "").strip()
+
+    if host and not from_email:
+        raise HTTPException(status_code=400, detail="Sender email is required when SMTP is configured")
+    if payload.ssl and payload.starttls:
+        raise HTTPException(status_code=400, detail="Choose either SSL or STARTTLS, not both")
+
+    if payload.clear_password:
+        password = ""
+    elif payload.password:
+        password = payload.password
+    else:
+        password = str(current.get("password") or "")
+
+    set_smtp_settings(
+        db,
+        host=host,
+        port=port,
+        username=username,
+        password=password,
+        starttls=bool(payload.starttls),
+        ssl=bool(payload.ssl),
+        from_email=from_email,
+        from_name=from_name,
+    )
+    db.commit()
+    log_admin_action(
+        db,
+        admin,
+        "settings.smtp.update",
+        "settings",
+        "smtp",
+        {
+            "configured": bool(host and from_email),
+            "host": host,
+            "port": port,
+            "username": username,
+            "has_password": bool(password),
+            "starttls": bool(payload.starttls),
+            "ssl": bool(payload.ssl),
+            "from_email": from_email,
+            "from_name": from_name,
+        },
+    )
+    return SmtpSettingsOut(
+        host=host,
+        port=port,
+        username=username,
+        has_password=bool(password),
+        masked_password=_mask_secret(password),
+        starttls=bool(payload.starttls),
+        ssl=bool(payload.ssl),
+        from_email=from_email,
+        from_name=from_name,
+        configured=bool(host and from_email),
+    )
+
+
 @router.get("/updates/status", response_model=UpdateStatusOut)
 def get_updates_status(
-    _: User = Depends(_require_admin_or_ceo),
+    _: User = Depends(require_permission("system:manage")),
 ):
     return _fetch_update_status()
 
@@ -1572,7 +1756,7 @@ def get_updates_status(
 @router.post("/updates/install", response_model=UpdateInstallOut)
 def install_updates(
     payload: UpdateInstallRequest,
-    admin: User = Depends(_require_admin_or_ceo),
+    admin: User = Depends(require_permission("system:manage")),
     db: Session = Depends(get_db),
 ):
     status = _fetch_update_status()
@@ -1692,7 +1876,7 @@ def install_updates(
 
 @router.get("/role-permissions")
 def get_role_permissions(
-    _: User = Depends(require_admin),
+    _: User = Depends(require_permission("permissions:manage")),
 ) -> dict:
     """Return the currently effective permission map plus metadata for the UI."""
     return {
@@ -1713,7 +1897,7 @@ class RolePermissionsUpdate(dict):
 def update_role_permissions(
     role: str,
     payload: dict,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_permission("permissions:manage")),
     db: Session = Depends(get_db),
 ) -> dict:
     """Set the permission list for a single role.  Returns the full effective map."""
@@ -1751,7 +1935,7 @@ def update_role_permissions(
 @router.delete("/role-permissions/{role}")
 def reset_role_permissions(
     role: str,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_permission("permissions:manage")),
     db: Session = Depends(get_db),
 ) -> dict:
     """Reset a single role's permissions back to hard-coded defaults."""
@@ -1771,7 +1955,7 @@ def reset_role_permissions(
 @router.get("/user-permissions/{user_id}")
 def get_user_permissions(
     user_id: int,
-    _: User = Depends(require_admin),
+    _: User = Depends(require_permission("permissions:manage")),
     db: Session = Depends(get_db),
 ) -> dict:
     """Return the current extra/denied permission overrides for one user."""
@@ -1792,7 +1976,7 @@ class UserPermissionsUpdate(BaseModel):
 def set_user_permissions(
     user_id: int,
     payload: UserPermissionsUpdate,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_permission("permissions:manage")),
     db: Session = Depends(get_db),
 ) -> dict:
     """Set per-user permission overrides (extra grants and explicit denies)."""
@@ -1824,7 +2008,7 @@ def set_user_permissions(
 @router.delete("/user-permissions/{user_id}")
 def reset_user_permissions(
     user_id: int,
-    admin: User = Depends(require_admin),
+    admin: User = Depends(require_permission("permissions:manage")),
     db: Session = Depends(get_db),
 ) -> dict:
     """Remove all per-user permission overrides (revert to role defaults)."""

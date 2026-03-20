@@ -1,6 +1,6 @@
 import { useAppContext } from "../../context/AppContext";
 import { HHMM_PATTERN } from "../../constants";
-import { taskTypeLabel, normalizeTaskTypeValue, formatTimeInputForTyping, formatTimeInputForBlur } from "../../utils/tasks";
+import { taskTypeLabel, normalizeTaskTypeValue, formatTimeInputForTyping, formatTimeInputForBlur, addMinutesToHHMM } from "../../utils/tasks";
 import { formatServerDateTime } from "../../utils/dates";
 
 export function TaskEditModal() {
@@ -8,12 +8,15 @@ export function TaskEditModal() {
     language,
     taskEditModalOpen,
     taskEditForm,
+    taskEditOverlapWarning,
+    setTaskEditOverlapWarning,
     setTaskEditForm,
     taskEditMaterialRows,
     taskEditProjectClassTemplates,
     taskEditAssigneeSuggestions,
     taskEditExpectedUpdatedAt,
     assignableUsers,
+    projects,
     taskStatusOptions,
     canManageTasks,
     closeTaskEditModal,
@@ -237,7 +240,75 @@ export function TaskEditModal() {
                 onBlur={(event) => updateTaskEditField("start_time", formatTimeInputForBlur(event.target.value))}
               />
             </label>
+            <label>
+              {language === "de" ? "Dauer (Stunden)" : "Duration (hours)"}
+              <input
+                type="number"
+                min={0.5}
+                step={0.5}
+                value={taskEditForm.estimated_hours}
+                onChange={(event) => updateTaskEditField("estimated_hours", event.target.value)}
+                placeholder="1.5"
+              />
+            </label>
           </div>
+          {taskEditOverlapWarning && (
+            <div className="card task-overlap-warning">
+              <b>
+                {language === "de"
+                  ? "Zeitüberschneidung mit bestehenden Aufgaben"
+                  : "Time overlap with existing tasks"}
+              </b>
+              <small>
+                {language === "de"
+                  ? "Die ausgewählten Personen haben in diesem Zeitraum bereits Aufgaben. Änderung trotzdem speichern?"
+                  : "The selected people already have tasks in this time window. Save the change anyway?"}
+              </small>
+              <ul className="task-overlap-warning-list">
+                {taskEditOverlapWarning.overlaps.map((overlap) => {
+                  const project = projects.find((entry) => entry.id === overlap.project_id);
+                  const sharedNames = overlap.shared_assignee_ids
+                    .map((assigneeId) => {
+                      const assignee = assignableUsers.find((entry) => entry.id === assigneeId);
+                      return menuUserNameById(assigneeId, assignee?.display_name || assignee?.full_name || `#${assigneeId}`);
+                    })
+                    .join(", ");
+                  return (
+                    <li key={`task-edit-overlap-${overlap.task_id}`}>
+                      <b>{overlap.title}</b>
+                      <small>
+                        {[project ? `${project.project_number} - ${project.name}` : `#${overlap.project_id}`, overlap.start_time && overlap.end_time ? `${formatTimeInputForBlur(overlap.start_time)}-${formatTimeInputForBlur(overlap.end_time)}` : "", sharedNames]
+                          .filter((value) => value && value.length > 0)
+                          .join(" · ")}
+                      </small>
+                      {overlap.overlap_type === "travel_overlap" && overlap.travel_minutes ? (
+                        <small className="assignee-availability-note">
+                          {language === "de"
+                            ? `Zusätzliche Fahrzeit: ca. ${overlap.travel_minutes} Min.`
+                            : `Additional travel time: about ${overlap.travel_minutes} min.`}
+                        </small>
+                      ) : null}
+                      {overlap.overlap_type === "travel_overlap" && overlap.travel_minutes && overlap.end_time ? (
+                        <small className="assignee-availability-note">
+                          {language === "de"
+                            ? `Frühester sinnvoller Start nach dieser Aufgabe: ${addMinutesToHHMM(overlap.end_time, overlap.travel_minutes)}`
+                            : `Earliest sensible start after this task: ${addMinutesToHHMM(overlap.end_time, overlap.travel_minutes)}`}
+                        </small>
+                      ) : null}
+                    </li>
+                  );
+                })}
+              </ul>
+              <div className="row wrap">
+                <button type="button" onClick={() => void saveTaskEdit(true)}>
+                  {language === "de" ? "Trotzdem speichern" : "Save anyway"}
+                </button>
+                <button type="button" onClick={() => setTaskEditOverlapWarning(null)}>
+                  {language === "de" ? "Zurück" : "Back"}
+                </button>
+              </div>
+            </div>
+          )}
           <div className="assignee-search-block">
             <b>{language === "de" ? "Personen zuweisen" : "Assign people"}</b>
             <input

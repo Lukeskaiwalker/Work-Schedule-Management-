@@ -22,6 +22,7 @@ import type {
   MaterialCatalogImportState,
   ProjectTrackedMaterial,
   Task,
+  TaskOverlapConflictDetail,
   AssignableUser,
   WikiLibraryFile,
   Ticket,
@@ -45,6 +46,7 @@ import type {
   PasswordResetDispatchResponse,
   NicknameAvailability,
   WeatherSettings,
+  SmtpSettings,
   EmployeeGroup,
   AuditLogEntry,
   UpdateStatus,
@@ -275,6 +277,8 @@ export interface AppContextValue {
   taskModalOpen: boolean;
   setTaskModalOpen: (open: boolean) => void;
   taskModalForm: TaskModalState;
+  taskModalOverlapWarning: TaskOverlapConflictDetail | null;
+  setTaskModalOverlapWarning: (warning: TaskOverlapConflictDetail | null) => void;
   setTaskModalForm: (form: TaskModalState | ((current: TaskModalState) => TaskModalState)) => void;
   taskModalMaterialRows: ReportMaterialRow[];
   setTaskModalMaterialRows: (rows: ReportMaterialRow[] | ((current: ReportMaterialRow[]) => ReportMaterialRow[])) => void;
@@ -283,6 +287,8 @@ export interface AppContextValue {
   taskEditModalOpen: boolean;
   setTaskEditModalOpen: (open: boolean) => void;
   taskEditForm: TaskEditFormState;
+  taskEditOverlapWarning: TaskOverlapConflictDetail | null;
+  setTaskEditOverlapWarning: (warning: TaskOverlapConflictDetail | null) => void;
   setTaskEditForm: (form: TaskEditFormState | ((current: TaskEditFormState) => TaskEditFormState)) => void;
   taskEditMaterialRows: ReportMaterialRow[];
   setTaskEditMaterialRows: (rows: ReportMaterialRow[] | ((current: ReportMaterialRow[]) => ReportMaterialRow[])) => void;
@@ -427,8 +433,14 @@ export interface AppContextValue {
       | { user_id: string; title: string; absence_type: string; start_date: string; end_date: string; recurrence_weekdays: number[]; recurrence_until: string }
       | ((current: { user_id: string; title: string; absence_type: string; start_date: string; end_date: string; recurrence_weekdays: number[]; recurrence_until: string }) => { user_id: string; title: string; absence_type: string; start_date: string; end_date: string; recurrence_weekdays: number[]; recurrence_until: string }),
   ) => void;
+  editingSchoolAbsenceId: number | null;
+  setEditingSchoolAbsenceId: (id: number | null) => void;
   timeMonthCursor: Date;
   setTimeMonthCursor: (cursor: Date) => void;
+  timeEntriesStartDate: string;
+  setTimeEntriesStartDate: (value: string) => void;
+  timeEntriesEndDate: string;
+  setTimeEntriesEndDate: (value: string) => void;
   timeInfoOpen: boolean;
   setTimeInfoOpen: (open: boolean) => void;
   timeTargetUserId: string;
@@ -441,6 +453,14 @@ export interface AppContextValue {
   publicHolidays: PublicHoliday[];
   requiredHoursDrafts: Record<number, string>;
   setRequiredHoursDrafts: (drafts: Record<number, string> | ((current: Record<number, string>) => Record<number, string>)) => void;
+  vacationBalanceDrafts: Record<number, { perYear: string; available: string; carryover: string }>;
+  setVacationBalanceDrafts: (
+    drafts:
+      | Record<number, { perYear: string; available: string; carryover: string }>
+      | ((
+          current: Record<number, { perYear: string; available: string; carryover: string }>,
+        ) => Record<number, { perYear: string; available: string; carryover: string }>),
+  ) => void;
 
   // ── Profile settings ────────────────────────────────────────────────────────
   profileSettingsForm: { full_name: string; email: string; nickname: string; current_password: string; new_password: string };
@@ -461,6 +481,32 @@ export interface AppContextValue {
   setWeatherApiKeyInput: (key: string) => void;
   weatherSettingsSaving: boolean;
   setWeatherSettingsSaving: (saving: boolean) => void;
+  smtpSettings: SmtpSettings | null;
+  setSmtpSettings: (settings: SmtpSettings | null) => void;
+  smtpSettingsForm: {
+    host: string;
+    port: string;
+    username: string;
+    password: string;
+    clear_password: boolean;
+    starttls: boolean;
+    ssl: boolean;
+    from_email: string;
+    from_name: string;
+  };
+  setSmtpSettingsForm: (form: {
+    host: string;
+    port: string;
+    username: string;
+    password: string;
+    clear_password: boolean;
+    starttls: boolean;
+    ssl: boolean;
+    from_email: string;
+    from_name: string;
+  }) => void;
+  smtpSettingsSaving: boolean;
+  setSmtpSettingsSaving: (saving: boolean) => void;
   updateStatus: UpdateStatus | null;
   setUpdateStatus: (status: UpdateStatus | null) => void;
   updateStatusLoading: boolean;
@@ -483,10 +529,22 @@ export interface AppContextValue {
 
   // ── Admin async functions ─────────────────────────────────────────────────────
   loadEmployeeGroups: () => Promise<void>;
-  createEmployeeGroup: (name: string, memberIds: number[]) => Promise<void>;
-  updateEmployeeGroup: (id: number, patch: { name?: string; member_user_ids?: number[] }) => Promise<void>;
+  createEmployeeGroup: (
+    name: string,
+    memberIds: number[],
+    canUpdateRecentOwnTimeEntries: boolean,
+  ) => Promise<void>;
+  updateEmployeeGroup: (
+    id: number,
+    patch: {
+      name?: string;
+      member_user_ids?: number[];
+      can_update_recent_own_time_entries?: boolean;
+    },
+  ) => Promise<void>;
   deleteEmployeeGroup: (id: number) => Promise<void>;
   loadAuditLogs: () => Promise<void>;
+  updateVacationBalance: (targetUserId: number) => Promise<void>;
 
   // ── Role permissions ──────────────────────────────────────────────────────────
   rolePermissionsMeta: RolePermissionsMeta | null;
@@ -548,12 +606,18 @@ export interface AppContextValue {
 
   // ── Derived booleans ─────────────────────────────────────────────────────────
   isAdmin: boolean;
+  canManageUsers: boolean;
+  canManagePermissions: boolean;
   canAdjustRequiredHours: boolean;
   canCreateProject: boolean;
   canManageTasks: boolean;
   isTimeManager: boolean;
   canApproveVacation: boolean;
   canManageSchoolAbsences: boolean;
+  canViewAudit: boolean;
+  canManageSettings: boolean;
+  canManageSystem: boolean;
+  canExportBackups: boolean;
   canManageProjectImport: boolean;
   canUseProtectedFolders: boolean;
   canViewFinance: boolean;
@@ -812,6 +876,7 @@ export interface AppContextValue {
   loadProjectFinance: (projectId: number) => Promise<void>;
   loadProjectTrackedMaterials: (projectId: number) => Promise<void>;
   saveWeatherSettings: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+  saveSmtpSettings: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   loadUpdateStatus: (showNotice?: boolean) => Promise<void>;
   installSystemUpdate: (dryRun: boolean) => Promise<void>;
   loadPlanningWeek: (projectId: number | null, weekStart: string, taskType?: TaskType | null) => Promise<void>;
@@ -838,8 +903,8 @@ export interface AppContextValue {
   unarchiveProject: (projectId: number, expectedLastUpdatedAt?: string | null) => Promise<void>;
   deleteProjectById: (projectId: number) => Promise<void>;
   createTask: (event: FormEvent<HTMLFormElement>) => Promise<void>;
-  createWeeklyPlanTask: () => Promise<void>;
-  saveTaskEdit: () => Promise<void>;
+  createWeeklyPlanTask: (confirmOverlap?: boolean) => Promise<void>;
+  saveTaskEdit: (confirmOverlap?: boolean) => Promise<void>;
   markTaskDone: (task: Task, options?: { openReportFromTask?: Task; reportBackView?: MainView | null }) => Promise<void>;
   deleteTaskFromEdit: () => Promise<void>;
   exportTaskCalendar: (task: Task) => Promise<void>;
@@ -874,6 +939,9 @@ export interface AppContextValue {
   submitVacationRequest: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   reviewVacationRequest: (requestId: number, status: "approved" | "rejected") => Promise<void>;
   submitSchoolAbsence: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+  startSchoolAbsenceEdit: (absence: SchoolAbsence) => void;
+  cancelSchoolAbsenceEdit: () => void;
+  reviewSchoolAbsence: (absenceId: number, status: "approved" | "rejected") => Promise<void>;
   removeSchoolAbsence: (absenceId: number) => Promise<void>;
   downloadProjectCsvTemplate: () => Promise<void>;
   downloadProjectClassTemplateCsv: () => Promise<void>;

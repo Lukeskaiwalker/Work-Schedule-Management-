@@ -28,6 +28,10 @@ export type User = {
   role: "admin" | "ceo" | "accountant" | "planning" | "employee";
   is_active: boolean;
   required_daily_hours: number;
+  vacation_days_per_year: number;
+  vacation_days_available: number;
+  vacation_days_carryover: number;
+  vacation_days_total_remaining: number;
   avatar_updated_at?: string | null;
   invite_sent_at?: string | null;
   invite_accepted_at?: string | null;
@@ -35,6 +39,7 @@ export type User = {
   preferences?: UserPreferences;
   /** Resolved permissions from the server — includes role defaults and per-user overrides. */
   effective_permissions?: string[];
+  can_update_recent_own_time_entries?: boolean;
   /** When set, locks the user to a single workspace mode and hides the toggle. */
   workspace_lock?: "construction" | "office" | null;
 };
@@ -222,10 +227,32 @@ export type Task = {
   is_overdue?: boolean | null;
   due_date?: string | null;
   start_time?: string | null;
+  estimated_hours?: number | null;
+  end_time?: string | null;
   assignee_id?: number | null;
   assignee_ids?: number[];
   week_start?: string | null;
   updated_at?: string | null;
+};
+
+export type TaskOverlap = {
+  task_id: number;
+  project_id: number;
+  title: string;
+  due_date?: string | null;
+  start_time?: string | null;
+  end_time?: string | null;
+  estimated_hours?: number | null;
+  assignee_ids: number[];
+  shared_assignee_ids: number[];
+  travel_minutes?: number | null;
+  overlap_type?: "time_overlap" | "travel_overlap";
+};
+
+export type TaskOverlapConflictDetail = {
+  code: "task_overlap";
+  message: string;
+  overlaps: TaskOverlap[];
 };
 
 export type AssignableUser = {
@@ -235,6 +262,9 @@ export type AssignableUser = {
   display_name: string;
   role: string;
   required_daily_hours: number;
+  vacation_days_per_year: number;
+  vacation_days_available: number;
+  vacation_days_carryover: number;
   avatar_updated_at?: string | null;
 };
 
@@ -318,6 +348,10 @@ export type TimeCurrent = {
   required_daily_hours: number;
   daily_net_hours: number;
   progress_percent_live: number;
+  vacation_days_per_year: number;
+  vacation_days_available: number;
+  vacation_days_carryover: number;
+  vacation_days_total_remaining: number;
 };
 
 export type TimeEntry = {
@@ -330,6 +364,7 @@ export type TimeEntry = {
   required_break_hours: number;
   deducted_break_hours: number;
   net_hours: number;
+  can_edit: boolean;
 };
 
 export type TimesheetSummary = {
@@ -365,7 +400,7 @@ export type PlanningWeek = {
 };
 
 export type PlanningAbsence = {
-  type: "vacation" | "school";
+  type: string;
   user_id: number;
   user_name: string;
   label: string;
@@ -393,6 +428,7 @@ export type VacationRequest = {
   user_name: string;
   start_date: string;
   end_date: string;
+  vacation_days_used: number;
   note?: string | null;
   status: string;
   reviewed_by?: number | null;
@@ -407,11 +443,14 @@ export type SchoolAbsence = {
   title: string;
   absence_type: string;
   counts_as_hours: boolean;
+  status: "pending" | "approved" | "rejected";
   start_date: string;
   end_date: string;
   recurrence_weekday?: number | null;
   recurrence_until?: string | null;
   created_by?: number | null;
+  reviewed_by?: number | null;
+  reviewed_at?: string | null;
   created_at: string;
 };
 
@@ -444,6 +483,19 @@ export type WeatherSettings = {
   provider: string;
   configured: boolean;
   masked_api_key: string;
+};
+
+export type SmtpSettings = {
+  host: string;
+  port: number;
+  username: string;
+  has_password: boolean;
+  masked_password: string;
+  starttls: boolean;
+  ssl: boolean;
+  from_email: string;
+  from_name: string;
+  configured: boolean;
 };
 
 export type UpdateStatus = {
@@ -603,6 +655,7 @@ export type ProjectTaskFormState = {
   class_template_id: string;
   due_date: string;
   start_time: string;
+  estimated_hours: string;
   assignee_query: string;
   assignee_ids: number[];
 };
@@ -630,6 +683,7 @@ export type TaskModalState = {
   project_query: string;
   due_date: string;
   start_time: string;
+  estimated_hours: string;
   assignee_query: string;
   assignee_ids: number[];
   create_project_from_task: boolean;
@@ -651,6 +705,7 @@ export type TaskEditFormState = {
   status: string;
   due_date: string;
   start_time: string;
+  estimated_hours: string;
   assignee_query: string;
   assignee_ids: number[];
   week_start: string;
@@ -756,6 +811,7 @@ export type EmployeeGroupMember = {
 export type EmployeeGroup = {
   id: number;
   name: string;
+  can_update_recent_own_time_entries: boolean;
   member_user_ids: number[];
   members: EmployeeGroupMember[];
 };
@@ -763,9 +819,10 @@ export type EmployeeGroup = {
 export type AuditLogEntry = {
   id: number;
   actor_user_id: number | null;
+  category: string;
   action: string;
   target_type: string | null;
-  target_id: number | null;
+  target_id: string | null;
   details: Record<string, unknown> | null;
   created_at: string;
 };

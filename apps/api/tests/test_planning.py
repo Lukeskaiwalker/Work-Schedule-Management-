@@ -3,6 +3,7 @@ from datetime import datetime, time, timedelta, timezone
 import json
 import os
 from fastapi.testclient import TestClient
+from app.routers import workflow_helpers
 def auth_headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
@@ -212,3 +213,367 @@ def test_task_overdue_flag_and_optional_due_date(client: TestClient, admin_token
     assert completed_tasks.status_code == 200
     completed_by_title = {row["title"]: row for row in completed_tasks.json()}
     assert completed_by_title["Done past task"]["is_overdue"] is False
+
+
+def test_task_duration_returns_end_time(client: TestClient, admin_token: str):
+    worker = _create_user(client, admin_token, "worker-duration@example.com", "employee")
+    project = client.post(
+        "/api/projects",
+        headers=auth_headers(admin_token),
+        json={"project_number": "2026-3003", "name": "Project Duration", "description": "duration", "status": "active"},
+    )
+    assert project.status_code == 200
+    project_id = project.json()["id"]
+
+    created = client.post(
+        "/api/tasks",
+        headers=auth_headers(admin_token),
+        json={
+            "project_id": project_id,
+            "title": "Duration task",
+            "status": "open",
+            "due_date": "2026-03-19",
+            "start_time": "08:30",
+            "estimated_hours": 1.5,
+            "assignee_ids": [worker["id"]],
+        },
+    )
+    assert created.status_code == 200
+    payload = created.json()
+    assert payload["estimated_hours"] == 1.5
+    assert payload["end_time"] == "10:00:00"
+
+    listed = client.get("/api/tasks?view=all_open", headers=auth_headers(admin_token))
+    assert listed.status_code == 200
+    by_title = {row["title"]: row for row in listed.json()}
+    assert by_title["Duration task"]["end_time"] == "10:00:00"
+
+
+def test_overlapping_task_requires_confirmation(client: TestClient, admin_token: str):
+    worker = _create_user(client, admin_token, "worker-overlap@example.com", "employee")
+    project = client.post(
+        "/api/projects",
+        headers=auth_headers(admin_token),
+        json={"project_number": "2026-3004", "name": "Project Overlap", "description": "overlap", "status": "active"},
+    )
+    assert project.status_code == 200
+    project_id = project.json()["id"]
+
+    first = client.post(
+        "/api/tasks",
+        headers=auth_headers(admin_token),
+        json={
+            "project_id": project_id,
+            "title": "First task",
+            "status": "open",
+            "due_date": "2026-03-19",
+            "start_time": "08:00",
+            "estimated_hours": 2.0,
+            "assignee_ids": [worker["id"]],
+        },
+    )
+    assert first.status_code == 200
+
+    overlapping = client.post(
+        "/api/tasks",
+        headers=auth_headers(admin_token),
+        json={
+            "project_id": project_id,
+            "title": "Second task",
+            "status": "open",
+            "due_date": "2026-03-19",
+            "start_time": "09:00",
+            "estimated_hours": 1.0,
+            "assignee_ids": [worker["id"]],
+        },
+    )
+    assert overlapping.status_code == 409
+    detail = overlapping.json()["detail"]
+    assert detail["code"] == "task_overlap"
+    assert detail["overlaps"][0]["title"] == "First task"
+    assert detail["overlaps"][0]["shared_assignee_ids"] == [worker["id"]]
+
+    confirmed = client.post(
+        "/api/tasks",
+        headers=auth_headers(admin_token),
+        json={
+            "project_id": project_id,
+            "title": "Second task",
+            "status": "open",
+            "due_date": "2026-03-19",
+            "start_time": "09:00",
+            "estimated_hours": 1.0,
+            "assignee_ids": [worker["id"]],
+            "confirm_overlap": True,
+        },
+    )
+    assert confirmed.status_code == 200
+    assert confirmed.json()["title"] == "Second task"
+
+
+def test_overlap_check_skips_other_assignees(client: TestClient, admin_token: str):
+    first_worker = _create_user(client, admin_token, "worker-a@example.com", "employee")
+    second_worker = _create_user(client, admin_token, "worker-b@example.com", "employee")
+    project = client.post(
+        "/api/projects",
+        headers=auth_headers(admin_token),
+        json={"project_number": "2026-3005", "name": "Project Parallel", "description": "parallel", "status": "active"},
+    )
+    assert project.status_code == 200
+    project_id = project.json()["id"]
+
+    first = client.post(
+        "/api/tasks",
+        headers=auth_headers(admin_token),
+        json={
+            "project_id": project_id,
+            "title": "Task A",
+            "status": "open",
+            "due_date": "2026-03-19",
+            "start_time": "08:00",
+            "estimated_hours": 2.0,
+            "assignee_ids": [first_worker["id"]],
+        },
+    )
+    assert first.status_code == 200
+
+    second = client.post(
+        "/api/tasks",
+        headers=auth_headers(admin_token),
+        json={
+            "project_id": project_id,
+            "title": "Task B",
+            "status": "open",
+            "due_date": "2026-03-19",
+            "start_time": "09:00",
+            "estimated_hours": 1.0,
+            "assignee_ids": [second_worker["id"]],
+        },
+    )
+    assert second.status_code == 200
+
+
+def test_back_to_back_tasks_require_travel_buffer_confirmation(client: TestClient, admin_token: str, monkeypatch):
+    worker = _create_user(client, admin_token, "worker-travel@example.com", "employee")
+    project_a = client.post(
+        "/api/projects",
+        headers=auth_headers(admin_token),
+        json={
+            "project_number": "2026-3006",
+            "name": "Project A",
+            "description": "travel-a",
+            "status": "active",
+            "construction_site_address": "Baustelle A 1, 10115 Berlin",
+        },
+    )
+    assert project_a.status_code == 200
+    project_a_id = project_a.json()["id"]
+
+    project_b = client.post(
+        "/api/projects",
+        headers=auth_headers(admin_token),
+        json={
+            "project_number": "2026-3007",
+            "name": "Project B",
+            "description": "travel-b",
+            "status": "active",
+            "construction_site_address": "Baustelle B 1, 10969 Berlin",
+        },
+    )
+    assert project_b.status_code == 200
+    project_b_id = project_b.json()["id"]
+
+    monkeypatch.setattr(
+        workflow_helpers,
+        "_estimate_travel_minutes_between_projects",
+        lambda db, from_project_id, to_project_id: 25 if from_project_id != to_project_id else 0,
+    )
+
+    first = client.post(
+        "/api/tasks",
+        headers=auth_headers(admin_token),
+        json={
+            "project_id": project_a_id,
+            "title": "Early task",
+            "status": "open",
+            "due_date": "2026-03-19",
+            "start_time": "08:00",
+            "estimated_hours": 1.0,
+            "assignee_ids": [worker["id"]],
+        },
+    )
+    assert first.status_code == 200
+
+    second = client.post(
+        "/api/tasks",
+        headers=auth_headers(admin_token),
+        json={
+            "project_id": project_b_id,
+            "title": "Follow-up task",
+            "status": "open",
+            "due_date": "2026-03-19",
+            "start_time": "09:00",
+            "estimated_hours": 1.0,
+            "assignee_ids": [worker["id"]],
+        },
+    )
+    assert second.status_code == 409
+    detail = second.json()["detail"]
+    assert detail["code"] == "task_overlap"
+    assert detail["overlaps"][0]["title"] == "Early task"
+    assert detail["overlaps"][0]["overlap_type"] == "travel_overlap"
+    assert detail["overlaps"][0]["travel_minutes"] == 25
+
+    confirmed = client.post(
+        "/api/tasks",
+        headers=auth_headers(admin_token),
+        json={
+            "project_id": project_b_id,
+            "title": "Follow-up task",
+            "status": "open",
+            "due_date": "2026-03-19",
+            "start_time": "09:00",
+            "estimated_hours": 1.0,
+            "assignee_ids": [worker["id"]],
+            "confirm_overlap": True,
+        },
+    )
+    assert confirmed.status_code == 200
+
+
+def test_back_to_back_tasks_use_address_fallback_travel_estimate(client: TestClient, admin_token: str):
+    worker = _create_user(client, admin_token, "worker-travel-fallback@example.com", "employee")
+    project_a = client.post(
+        "/api/projects",
+        headers=auth_headers(admin_token),
+        json={
+            "project_number": "2026-3010",
+            "name": "Fallback Project A",
+            "description": "travel-fallback-a",
+            "status": "active",
+            "construction_site_address": "Alphaweg 1, 10115 Berlin",
+        },
+    )
+    assert project_a.status_code == 200
+    project_a_id = project_a.json()["id"]
+
+    project_b = client.post(
+        "/api/projects",
+        headers=auth_headers(admin_token),
+        json={
+            "project_number": "2026-3011",
+            "name": "Fallback Project B",
+            "description": "travel-fallback-b",
+            "status": "active",
+            "construction_site_address": "Betaweg 5, 10115 Berlin",
+        },
+    )
+    assert project_b.status_code == 200
+    project_b_id = project_b.json()["id"]
+
+    first = client.post(
+        "/api/tasks",
+        headers=auth_headers(admin_token),
+        json={
+            "project_id": project_a_id,
+            "title": "Fallback early task",
+            "status": "open",
+            "due_date": "2026-03-19",
+            "start_time": "08:00",
+            "estimated_hours": 1.0,
+            "assignee_ids": [worker["id"]],
+        },
+    )
+    assert first.status_code == 200
+
+    second = client.post(
+        "/api/tasks",
+        headers=auth_headers(admin_token),
+        json={
+            "project_id": project_b_id,
+            "title": "Fallback follow-up task",
+            "status": "open",
+            "due_date": "2026-03-19",
+            "start_time": "09:00",
+            "estimated_hours": 1.0,
+            "assignee_ids": [worker["id"]],
+        },
+    )
+    assert second.status_code == 409
+    detail = second.json()["detail"]
+    assert detail["code"] == "task_overlap"
+    assert detail["overlaps"][0]["title"] == "Fallback early task"
+    assert detail["overlaps"][0]["overlap_type"] == "travel_overlap"
+    assert detail["overlaps"][0]["travel_minutes"] == 12
+
+
+def test_planning_assign_week_checks_travel_overlap(client: TestClient, admin_token: str):
+    planner = _create_user(client, admin_token, "planner-travel-week@example.com", "planning")
+    worker = _create_user(client, admin_token, "worker-travel-week@example.com", "employee")
+    planner_token = _login(client, "planner-travel-week@example.com")
+    _ = planner
+
+    project_a = client.post(
+        "/api/projects",
+        headers=auth_headers(admin_token),
+        json={
+            "project_number": "2026-3012",
+            "name": "Planning Travel A",
+            "description": "planning-travel-a",
+            "status": "active",
+            "construction_site_address": "Alphaweg 1, 10115 Berlin",
+        },
+    )
+    assert project_a.status_code == 200
+    project_a_id = project_a.json()["id"]
+
+    project_b = client.post(
+        "/api/projects",
+        headers=auth_headers(admin_token),
+        json={
+            "project_number": "2026-3013",
+            "name": "Planning Travel B",
+            "description": "planning-travel-b",
+            "status": "active",
+            "customer_address": "Betaweg 5, 10115 Berlin",
+        },
+    )
+    assert project_b.status_code == 200
+    project_b_id = project_b.json()["id"]
+
+    first = client.post(
+        "/api/tasks",
+        headers=auth_headers(admin_token),
+        json={
+            "project_id": project_a_id,
+            "title": "Planning base task",
+            "status": "open",
+            "due_date": "2026-03-19",
+            "start_time": "08:00",
+            "estimated_hours": 1.0,
+            "assignee_ids": [worker["id"]],
+        },
+    )
+    assert first.status_code == 200
+
+    assigned = client.post(
+        "/api/planning/week/2026-03-16",
+        headers=auth_headers(planner_token),
+        json=[
+            {
+                "project_id": project_b_id,
+                "title": "Planning follow-up task",
+                "status": "open",
+                "due_date": "2026-03-19",
+                "start_time": "09:00",
+                "estimated_hours": 1.0,
+                "assignee_ids": [worker["id"]],
+            }
+        ],
+    )
+    assert assigned.status_code == 409
+    detail = assigned.json()["detail"]
+    assert detail["code"] == "task_overlap"
+    assert detail["assignment_index"] == 0
+    assert detail["overlaps"][0]["overlap_type"] == "travel_overlap"
+    assert detail["overlaps"][0]["travel_minutes"] == 12

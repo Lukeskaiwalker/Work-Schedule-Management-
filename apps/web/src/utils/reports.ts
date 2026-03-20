@@ -122,6 +122,7 @@ export function buildEmptyProjectTaskFormState(): ProjectTaskFormState {
     class_template_id: "",
     due_date: "",
     start_time: "",
+    estimated_hours: "",
     assignee_query: "",
     assignee_ids: [],
   };
@@ -146,6 +147,7 @@ export function buildTaskModalFormState(defaults?: {
     project_query: defaults?.projectQuery ?? "",
     due_date: defaults?.dueDate ?? "",
     start_time: "",
+    estimated_hours: "",
     assignee_query: "",
     assignee_ids: [],
     create_project_from_task: false,
@@ -175,6 +177,7 @@ export function buildTaskEditFormState(task?: Task | null): TaskEditFormState {
     status: task?.status ?? "open",
     due_date: task?.due_date ?? "",
     start_time: task?.start_time ? formatTaskStartTime(task.start_time) : "",
+    estimated_hours: task?.estimated_hours != null ? String(task.estimated_hours) : "",
     assignee_query: "",
     assignee_ids: assigneeIds,
     week_start: task?.week_start ?? "",
@@ -183,6 +186,8 @@ export function buildTaskEditFormState(task?: Task | null): TaskEditFormState {
 
 export function taskEditPayloadFromForm(form: TaskEditFormState, normalizedStartTime: string | null) {
   const dueDate = form.due_date.trim() || null;
+  const estimatedHours =
+    form.estimated_hours.trim().length > 0 ? Number(form.estimated_hours.trim()) : null;
   const storageBoxNumber =
     form.has_storage_box && form.storage_box_number.trim()
       ? Number(form.storage_box_number)
@@ -201,6 +206,7 @@ export function taskEditPayloadFromForm(form: TaskEditFormState, normalizedStart
     status: form.status.trim() || "open",
     due_date: dueDate,
     start_time: normalizedStartTime,
+    estimated_hours: estimatedHours,
     assignee_ids: form.assignee_ids,
     week_start: weekStartValue,
   };

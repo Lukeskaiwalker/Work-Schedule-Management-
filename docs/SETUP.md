@@ -949,3 +949,51 @@ Expected:
   - Project form now captures both customer and construction-site addresses.
   - Project map/weather use construction-site address; if empty, they fall back to customer address.
   - Project overview contact box now displays both addresses.
+
+## Iteration Setup Notes (2026-03-19, automated GitHub releases from main)
+- No migration required.
+- New GitHub automation:
+  - `.github/workflows/release-on-main.yml`
+  - triggers on pushes to `main`, creates the next patch tag when `HEAD` is newer than the latest release, builds a sanitized release tarball, and publishes a GitHub release.
+- Required repository secret:
+  - `RELEASE_TOKEN`
+  - use a personal access token for the GitHub account whose username should appear as the release publisher.
+- Optional repository variable:
+  - `RELEASE_USERNAME`
+  - defaults to the repository owner; override only if the publishing username differs from the owner name.
+- Local helper:
+  - `./scripts/build_release_bundle.sh <tag>`
+  - produces `dist/SMPL-<tag>.tar.gz` plus `dist/SMPL-<tag>.tar.gz.sha256` from the tagged commit.
+
+## Iteration Setup Notes (2026-03-19, task durations + overlap confirmation)
+- New migration required:
+  - `apps/api/alembic/versions/20260319_0039_task_estimated_hours.py`
+- Apply with:
+  - `docker compose run --rm api sh -lc 'cd /app && alembic upgrade head'`
+- Operational behavior update:
+  - Task create/edit flows now accept optional `estimated_hours` in 0.5-hour increments.
+  - When both `start_time` and `estimated_hours` are set, task APIs now expose a computed `end_time`.
+  - Overlapping scheduled tasks for shared assignees now require explicit confirmation from the client.
+  - Back-to-back tasks on different projects also require confirmation when the estimated travel time between the projects' map-preview addresses does not fit in the available gap.
+
+## Iteration Setup Notes (2026-03-19, admin audit log combined filters + date range)
+- No migration required.
+- Deploy/restart:
+  - `docker compose up -d --build web caddy`
+- Operational behavior update:
+  - The admin audit log now uses one combined filter panel instead of separate category/event dropdowns.
+  - Category filtering supports multi-select combinations.
+  - Audit log review now supports period presets and a custom from/to date range on the loaded results.
+
+## Iteration Setup Notes (2026-03-20, maintenance landing page during safe updates)
+- No migration required.
+- New maintenance assets/services:
+  - `infra/maintenance/index.html`
+  - `infra/maintenance/nginx.conf`
+  - `docker-compose.yml` `maintenance` service (profile: `maintenance`)
+- Update behavior change:
+  - `./scripts/safe_update.sh` now enables a maintenance landing page before real migrations/rebuilds.
+  - Caddy reads optional `infra/.maintenance.env` and temporarily routes both `/` and `/api` traffic to the maintenance service while the update is in progress.
+  - After `api` and `web` report healthy again, the script removes the override, reloads Caddy onto the normal upstreams, and stops the maintenance service.
+- Operational note:
+  - If an update aborts mid-run, the maintenance page is intentionally left enabled so users do not hit a half-updated app. Recover by fixing the issue and rerunning `./scripts/safe_update.sh`, or manually remove `infra/.maintenance.env` and run `docker compose up -d caddy`.

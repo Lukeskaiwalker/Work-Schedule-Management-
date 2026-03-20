@@ -50,6 +50,7 @@ export function NotificationPanel({
   onDismiss,
   onNavigate,
 }: Props) {
+  const visibleNotifications = notifications.slice(0, 20);
   const unreadCount = notifications.filter((n) => n.read_at === null).length;
 
   // Auto-mark-all-read when panel opens.
@@ -81,8 +82,9 @@ export function NotificationPanel({
       {notifications.length === 0 ? (
         <p className="notification-panel-empty">{emptyText}</p>
       ) : (
-        <ul className="notification-list">
-          {notifications.map((n) => (
+        <>
+          <ul className="notification-list">
+            {visibleNotifications.map((n) => (
             <li
               key={n.id}
               className={`notification-item${n.read_at === null ? " notification-item--unread" : ""}`}
@@ -100,8 +102,16 @@ export function NotificationPanel({
                 {formatAge(n.created_at, language)}
               </time>
             </li>
-          ))}
-        </ul>
+            ))}
+          </ul>
+          {notifications.length > visibleNotifications.length && (
+            <p className="notification-panel-empty" style={{ paddingTop: 0 }}>
+              {language === "de"
+                ? `Es werden die letzten ${visibleNotifications.length} Benachrichtigungen angezeigt.`
+                : `Showing the latest ${visibleNotifications.length} notifications.`}
+            </p>
+          )}
+        </>
       )}
     </div>
   );

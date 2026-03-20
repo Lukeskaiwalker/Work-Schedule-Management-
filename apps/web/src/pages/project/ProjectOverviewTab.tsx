@@ -2,6 +2,7 @@ import { useAppContext } from "../../context/AppContext";
 import { formatDayLabel, formatServerDateTime } from "../../utils/dates";
 import { statusLabel, projectSiteAccessDisplay, activityEventLabel } from "../../utils/projects";
 import { formatHours } from "../../utils/misc";
+import { formatTaskTimeRange } from "../../utils/tasks";
 import { weatherDescriptionLabel } from "../../utils/weather";
 import { PenIcon, CopyIcon } from "../../components/icons";
 
@@ -55,6 +56,7 @@ export function ProjectOverviewTab() {
                       : language === "de"
                         ? "Ohne Fälligkeitsdatum"
                         : "No due date"}
+                    {task.start_time ? ` · ${formatTaskTimeRange(task)}` : ""}
                   </small>
                   <small>
                     {language === "de" ? "Zugewiesen" : "Assigned"}: {getTaskAssigneeLabel(task)}
