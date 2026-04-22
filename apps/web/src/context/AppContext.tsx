@@ -2,6 +2,8 @@ import { createContext, FormEvent, ChangeEvent, MouseEvent, PointerEvent, RefObj
 import type { SseStatus } from "../hooks/useServerEvents";
 import type { BrowserNotifPermission } from "../hooks/useBrowserNotifications";
 import type { AppNotification } from "../components/NotificationPanel";
+import type { CustomerWriteInput } from "../utils/customersApi";
+import type { PartnerWriteInput } from "../utils/partnersApi";
 import type {
   Language,
   TaskView,
@@ -21,6 +23,9 @@ import type {
   MaterialCatalogItem,
   MaterialCatalogImportState,
   ProjectTrackedMaterial,
+  CustomerListItem,
+  Partner,
+  PartnerListItem,
   Task,
   TaskOverlapConflictDetail,
   AssignableUser,
@@ -47,6 +52,7 @@ import type {
   NicknameAvailability,
   WeatherSettings,
   SmtpSettings,
+  CompanySettings,
   EmployeeGroup,
   AuditLogEntry,
   UpdateStatus,
@@ -68,6 +74,7 @@ import type {
   WorkspaceMode,
   MainView,
   ProjectTab,
+  WerkstattTab,
   ProjectTitleParts,
   ThreadModalState,
   AvatarUploadResponse,
@@ -79,6 +86,34 @@ import type {
   AbsenceType,
   PublicHoliday,
 } from "../types";
+
+/**
+ * Options passed to `openCustomerModal`. Used by both the standalone
+ * Customers page (no `onSaved`) and the nested create-inline flow inside
+ * ProjectModal (which supplies `onSaved` so it can auto-select the fresh
+ * customer in the combobox without waiting for a full list reload).
+ */
+export type CustomerModalOpenOptions = {
+  initial?: CustomerListItem | null;
+  prefillName?: string;
+  onSaved?: (customer: CustomerListItem) => void;
+};
+
+export type CustomerModalDraft = CustomerModalOpenOptions;
+
+/**
+ * Options passed to `openPartnerModal`. Mirrors `CustomerModalOpenOptions`
+ * — Werkstatt → Partner uses `initial`, while the TaskModal's
+ * `PartnerMultiSelect` inline-create uses `prefillName` + `onSaved` so the
+ * freshly-minted partner is immediately selected on the task.
+ */
+export type PartnerModalOpenOptions = {
+  initial?: PartnerListItem | null;
+  prefillName?: string;
+  onSaved?: (partner: PartnerListItem) => void;
+};
+
+export type PartnerModalDraft = PartnerModalOpenOptions;
 
 export interface AppContextValue {
   // ── Core auth / session ────────────────────────────────────────────────────
@@ -107,6 +142,10 @@ export interface AppContextValue {
   setOverviewShortcutBackVisible: (visible: boolean) => void;
   projectTab: ProjectTab;
   setProjectTab: (tab: ProjectTab) => void;
+  werkstattTab: WerkstattTab;
+  setWerkstattTab: (tab: WerkstattTab) => void;
+  activeWerkstattArticleId: number | null;
+  setActiveWerkstattArticleId: (id: number | null) => void;
   projectBackView: MainView | null;
   setProjectBackView: (view: MainView | null) => void;
   constructionBackView: MainView | null;
@@ -165,6 +204,44 @@ export interface AppContextValue {
   setProjectSidebarSearchOpen: (open: boolean | ((current: boolean) => boolean)) => void;
   projectSidebarSearchQuery: string;
   setProjectSidebarSearchQuery: (query: string) => void;
+
+  // ── Customers ───────────────────────────────────────────────────────────────
+  customers: CustomerListItem[];
+  setCustomers: (
+    customers: CustomerListItem[] | ((current: CustomerListItem[]) => CustomerListItem[]),
+  ) => void;
+  activeCustomerId: number | null;
+  setActiveCustomerId: (id: number | null) => void;
+  customerModalOpen: boolean;
+  customerModalDraft: CustomerModalDraft | null;
+  loadCustomers: (query?: string, archived?: boolean) => Promise<void>;
+  saveCustomer: (
+    data: CustomerWriteInput,
+    id?: number,
+  ) => Promise<CustomerListItem>;
+  archiveCustomer: (id: number) => Promise<void>;
+  unarchiveCustomer: (id: number) => Promise<void>;
+  openCustomer: (id: number) => void;
+  openCustomerModal: (options: CustomerModalOpenOptions) => void;
+  closeCustomerModal: () => void;
+
+  // ── Partners (external contractors) ─────────────────────────────────────────
+  partners: PartnerListItem[];
+  setPartners: (
+    partners: PartnerListItem[] | ((current: PartnerListItem[]) => PartnerListItem[]),
+  ) => void;
+  partnerModalOpen: boolean;
+  partnerModalDraft: PartnerModalDraft | null;
+  loadPartners: (query?: string, archived?: boolean, trade?: string | null) => Promise<void>;
+  savePartner: (data: PartnerWriteInput, id?: number) => Promise<PartnerListItem>;
+  archivePartner: (id: number) => Promise<void>;
+  unarchivePartner: (id: number) => Promise<void>;
+  openPartnerModal: (options: PartnerModalOpenOptions) => void;
+  closePartnerModal: () => void;
+  /** Resolve a partner by id from the loaded `partners` list. Returns null
+   *  when the id isn't cached locally (e.g. archived partners not currently
+   *  fetched). Callers can fall back to `Task.partners` denormalised data. */
+  partnerById: (id: number) => Partner | null;
 
   // ── Project class templates ────────────────────────────────────────────────
   projectClassTemplates: ProjectClassTemplate[];
@@ -334,9 +411,11 @@ export interface AppContextValue {
   setReportOfficeNextSteps: (value: string) => void;
   reportDate: string;
   setReportDate: (value: string) => void;
-  reportHasStoredDraft: boolean;
-  restoreReportDraft: () => void;
-  discardReportDraft: () => void;
+  reportDrafts: import("../types").StoredReportDraft[];
+  activeDraftId: string | null;
+  openReportDraft: (id: string) => void;
+  deleteReportDraft: (id: string) => void;
+  startNewReportDraft: () => void;
   reportTaskPrefill: TaskReportPrefill | null;
   setReportTaskPrefill: (prefill: TaskReportPrefill | null) => void;
   reportSourceTaskId: number | null;
@@ -369,8 +448,8 @@ export interface AppContextValue {
   // ── Planning ───────────────────────────────────────────────────────────────
   planningWeekStart: string;
   setPlanningWeekStart: (start: string) => void;
-  planningTaskTypeView: TaskType;
-  setPlanningTaskTypeView: (type: TaskType) => void;
+  planningTaskTypeView: TaskType | "all";
+  setPlanningTaskTypeView: (type: TaskType | "all") => void;
   planningWeek: PlanningWeek | null;
   setPlanningWeek: (week: PlanningWeek | null) => void;
   calendarWeekStart: string;
@@ -481,6 +560,22 @@ export interface AppContextValue {
   setWeatherApiKeyInput: (key: string) => void;
   weatherSettingsSaving: boolean;
   setWeatherSettingsSaving: (saving: boolean) => void;
+  companySettings: CompanySettings | null;
+  setCompanySettings: (settings: CompanySettings | null) => void;
+  companySettingsForm: {
+    logo_url: string;
+    navigation_title: string;
+    company_name: string;
+    company_address: string;
+  };
+  setCompanySettingsForm: (form: {
+    logo_url: string;
+    navigation_title: string;
+    company_name: string;
+    company_address: string;
+  }) => void;
+  companySettingsSaving: boolean;
+  setCompanySettingsSaving: (saving: boolean) => void;
   smtpSettings: SmtpSettings | null;
   setSmtpSettings: (settings: SmtpSettings | null) => void;
   smtpSettingsForm: {
@@ -619,7 +714,10 @@ export interface AppContextValue {
   canManageSystem: boolean;
   canExportBackups: boolean;
   canManageProjectImport: boolean;
+  canMarkCritical: boolean;
+  setProjectCritical: (projectId: number, isCritical: boolean) => Promise<void>;
   canUseProtectedFolders: boolean;
+  canManageFiles: boolean;
   canViewFinance: boolean;
   canManageFinance: boolean;
   hasMessageText: boolean;
@@ -797,6 +895,7 @@ export interface AppContextValue {
   addFirstMatchingOfficeTaskProjectFilter: () => void;
   openConstructionReportFromTask: (task: Task, sourceView?: MainView | null) => void;
   openProjectFromTask: (task: Task, backView?: MainView | null) => void;
+  openProjectGanttById: (projectId: number, backView?: MainView | null) => void;
   openTaskFromProject: (task: Task) => void;
   openTaskFromPlanning: (task: Task) => void;
   userNameById: (userId: number) => string;
@@ -828,6 +927,7 @@ export interface AppContextValue {
   fileDownloadUrl: (fileId: number) => string;
   filePreviewUrl: (fileId: number) => string;
   isPreviewable: (file: any) => boolean;
+  deleteFile: (fileId: number) => Promise<void>;
   wikiFileUrl: (path: string, download?: boolean) => string;
   formatFileSize: (sizeBytes: number) => string;
   updateReportWorker: (index: number, field: keyof ReportWorker, value: string) => void;
@@ -846,7 +946,11 @@ export interface AppContextValue {
   removeReportImage: (fileKey: string) => void;
   onReportImageRemoveClick: (event: MouseEvent<HTMLButtonElement>, fileKey: string) => void;
   clearReportImages: () => void;
-  formatActionLinkNotice: (result: InviteDispatchResponse | PasswordResetDispatchResponse, type: "invite" | "reset") => string;
+  formatActionLinkNotice: (
+    result: InviteDispatchResponse | PasswordResetDispatchResponse,
+    type: "invite" | "reset",
+    copied: boolean,
+  ) => string;
   toggleSchoolRecurrenceWeekday: (day: number, checked: boolean) => void;
   openAdminViewFromMenu: () => void;
   openProfileViewFromMenu: () => void;
@@ -871,11 +975,13 @@ export interface AppContextValue {
   enrichReportOfficeMaterialRowFromCatalog: (index: number, lookupField: "item" | "article_no") => Promise<void>;
   addCatalogMaterialNeed: (materialCatalogItem: MaterialCatalogItem, quantity?: string) => Promise<void>;
   updateMaterialNeedState: (materialNeedId: number, nextStatus: MaterialNeedStatus) => Promise<void>;
+  updateMaterialNeedNote: (materialNeedId: number, notes: string) => Promise<void>;
   loadProjectOverview: (projectId: number) => Promise<void>;
   loadProjectWeather: (projectId: number, refresh: boolean) => Promise<void>;
   loadProjectFinance: (projectId: number) => Promise<void>;
   loadProjectTrackedMaterials: (projectId: number) => Promise<void>;
   saveWeatherSettings: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+  saveCompanySettings: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   saveSmtpSettings: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   loadUpdateStatus: (showNotice?: boolean) => Promise<void>;
   installSystemUpdate: (dryRun: boolean) => Promise<void>;

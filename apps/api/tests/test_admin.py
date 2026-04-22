@@ -225,6 +225,43 @@ def test_smtp_settings_round_trip_and_invite_uses_runtime_config(
     assert captured["to"] == "smtp-invite@example.com"
 
 
+def test_company_settings_round_trip_and_public_endpoint(
+    client: TestClient,
+    admin_token: str,
+):
+    public_before = client.get("/api/admin/settings/company/public")
+    assert public_before.status_code == 200
+    assert public_before.json()["navigation_title"] == "SMPL"
+    assert public_before.json()["company_name"] == "SMPL"
+
+    update = client.patch(
+        "/api/admin/settings/company",
+        headers=auth_headers(admin_token),
+        json={
+            "logo_url": "data:image/png;base64,AAAA",
+            "navigation_title": "SMPL Projects",
+            "company_name": "SMPL GmbH",
+            "company_address": "Musterstrasse 10\n12345 Musterstadt",
+        },
+    )
+    assert update.status_code == 200
+    assert update.json()["logo_url"] == "data:image/png;base64,AAAA"
+    assert update.json()["navigation_title"] == "SMPL Projects"
+    assert update.json()["company_name"] == "SMPL GmbH"
+    assert "Musterstrasse 10" in update.json()["company_address"]
+
+    admin_read = client.get("/api/admin/settings/company", headers=auth_headers(admin_token))
+    assert admin_read.status_code == 200
+    assert admin_read.json()["navigation_title"] == "SMPL Projects"
+    assert admin_read.json()["company_name"] == "SMPL GmbH"
+
+    public_after = client.get("/api/admin/settings/company/public")
+    assert public_after.status_code == 200
+    assert public_after.json()["logo_url"] == "data:image/png;base64,AAAA"
+    assert public_after.json()["navigation_title"] == "SMPL Projects"
+    assert public_after.json()["company_name"] == "SMPL GmbH"
+
+
 def test_password_reset_completion_marks_pending_invite_as_accepted(client: TestClient, admin_token: str):
     created = _create_user(client, admin_token, "invite-reset-state@example.com", "employee")
 

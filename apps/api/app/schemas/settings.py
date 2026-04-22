@@ -39,6 +39,20 @@ class SmtpSettingsUpdate(BaseModel):
     from_name: str = ""
 
 
+class CompanySettingsOut(BaseModel):
+    logo_url: str = ""
+    navigation_title: str = "SMPL"
+    company_name: str = "SMPL"
+    company_address: str = ""
+
+
+class CompanySettingsUpdate(BaseModel):
+    logo_url: str = ""
+    navigation_title: str = "SMPL"
+    company_name: str = "SMPL"
+    company_address: str = ""
+
+
 class UpdateStatusOut(BaseModel):
     repository: str
     branch: str

@@ -25,8 +25,9 @@ def test_construction_report_uses_nickname_for_submitted_by(client: TestClient, 
         project_name=None,
         logo_path=None,
         photos=None,
+        company_name=None,
     ):
-        _ = payload, report_date, project_name, logo_path, photos
+        _ = payload, report_date, project_name, logo_path, photos, company_name
         captured["pdf_submitted_by"] = submitted_by
         return b"%PDF-1.4 fake"
 

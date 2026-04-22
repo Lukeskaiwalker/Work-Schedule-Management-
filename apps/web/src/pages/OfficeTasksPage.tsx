@@ -1,7 +1,9 @@
+import { useMemo, useState } from "react";
 import { useAppContext } from "../context/AppContext";
 import { taskDisplayStatus, isTaskOverdue, taskStatusLabel, taskTypeLabel, normalizeTaskTypeValue, formatTaskTimeRange } from "../utils/tasks";
 import { taskMaterialsDisplay } from "../utils/reports";
 import { PenIcon } from "../components/icons";
+import { PartnerTaskChip } from "../components/partners/PartnerTaskChip";
 
 export function OfficeTasksPage() {
   const {
@@ -38,25 +40,32 @@ export function OfficeTasksPage() {
     setOfficeTaskProjectFilterIds,
   } = useAppContext();
 
+  const [partnerOnly, setPartnerOnly] = useState(false);
+  const visibleTasks = useMemo(() => {
+    if (!partnerOnly) return officeFilteredTasks;
+    return officeFilteredTasks.filter((task) => (task.partners ?? []).length > 0);
+  }, [officeFilteredTasks, partnerOnly]);
+
   if (mainView !== "office_tasks") return null;
 
   return (
-    <section className="card my-tasks-section">
-      <div className="tasks-list-head tasks-header-row">
-        <h3>{language === "de" ? "Aufgaben" : "Tasks"}</h3>
-        {canManageTasks && (
-          <button
-            type="button"
-            className="icon-btn task-add-icon-btn"
-            onClick={() => openTaskModal({ taskType: "office" })}
-            aria-label={language === "de" ? "Aufgabe hinzufügen" : "Add task"}
-            title={language === "de" ? "Aufgabe hinzufügen" : "Add task"}
-          >
-            +
-          </button>
-        )}
-      </div>
-      <small className="muted office-task-filter-hint">
+    <section className="tasks-page">
+      <div className="tasks-page-card">
+        <header className="tasks-page-head tasks-page-head--office">
+          <h2 className="tasks-page-title">{language === "de" ? "Aufgaben" : "Office Tasks"}</h2>
+          {canManageTasks && (
+            <button
+              type="button"
+              className="tasks-page-add-btn"
+              onClick={() => openTaskModal({ taskType: "office" })}
+              aria-label={language === "de" ? "Aufgabe hinzufügen" : "Add task"}
+              title={language === "de" ? "Aufgabe hinzufügen" : "Add task"}
+            >
+              + {language === "de" ? "Aufgabe" : "Add task"}
+            </button>
+          )}
+        </header>
+        <small className="muted office-task-filter-hint">
         {language === "de"
           ? "Zeigt alle verfügbaren Aufgaben, auch ohne Zuweisung."
           : "Shows all available tasks, including unassigned tasks."}
@@ -158,6 +167,18 @@ export function OfficeTasksPage() {
         </div>
         <button
           type="button"
+          className={
+            partnerOnly
+              ? "tasks-page-filter-chip tasks-page-filter-chip--active"
+              : "tasks-page-filter-chip"
+          }
+          onClick={() => setPartnerOnly((current) => !current)}
+          aria-pressed={partnerOnly}
+        >
+          {language === "de" ? "Nur Partner-Aufgaben" : "Partner tasks only"}
+        </button>
+        <button
+          type="button"
           className="office-task-filter-reset"
           onClick={() => {
             setOfficeTaskStatusFilter("all");
@@ -166,87 +187,157 @@ export function OfficeTasksPage() {
             setOfficeTaskNoDueDateFilter(false);
             setOfficeTaskProjectFilterQuery("");
             setOfficeTaskProjectFilterIds([]);
+            setPartnerOnly(false);
           }}
         >
           {language === "de" ? "Filter zurücksetzen" : "Reset filters"}
         </button>
       </div>
-      <ul className="task-list">
-        {officeFilteredTasks.map((task) => {
+      <ul className="tasks-page-list">
+        {visibleTasks.length === 0 && (
+          <li className="tasks-page-empty muted">
+            {language === "de" ? "Keine Aufgaben für den Filter." : "No tasks match the filters."}
+          </li>
+        )}
+        {visibleTasks.map((task) => {
+          const de = language === "de";
           const isMine = isTaskAssignedToCurrentUser(task);
           const isOverdue = isTaskOverdue(task, todayIso);
+          const rawStatus = String(task.status || "open").toLowerCase().trim();
           const displayStatus = taskDisplayStatus(task, todayIso);
+          const isDone = rawStatus === "done" || rawStatus === "completed";
+          const isInProgress = rawStatus === "in_progress";
+          // Unassigned: no assignees at all (neither array nor single field)
+          const assigneeIds = task.assignee_ids ?? [];
+          const hasAssignees = assigneeIds.length > 0 || task.assignee_id != null;
+          const isUnassigned = !hasAssignees && !isDone;
+
+          // Status pill meta — priority order: overdue > unassigned > in progress > done > open
+          let pillState: "overdue" | "unassigned" | "in_progress" | "done" | "open" = "open";
+          let pillLabel = de ? "OFFEN" : "OPEN";
+          if (isOverdue) {
+            pillState = "overdue";
+            pillLabel = de ? "ÜBERFÄLLIG" : "OVERDUE";
+          } else if (isUnassigned) {
+            pillState = "unassigned";
+            pillLabel = de ? "NICHT ZUGEWIESEN" : "UNASSIGNED";
+          } else if (isInProgress) {
+            pillState = "in_progress";
+            pillLabel = de ? "IN ARBEIT" : "IN PROGRESS";
+          } else if (isDone) {
+            pillState = "done";
+            pillLabel = de ? "ERLEDIGT" : "DONE";
+          }
+
           const taskMaterials = taskMaterialsDisplay(task.materials_required, language);
           const taskProjectLabel = taskProjectTitleParts(task);
+          const rowClass = [
+            "tasks-page-row",
+            "tasks-page-row--office",
+            `tasks-page-row--${pillState}`,
+          ]
+            .filter(Boolean)
+            .join(" ");
           return (
-            <li
-              key={`office-task-${task.id}`}
-              className={[
-                "task-list-item",
-                isMine ? "task-list-item-mine" : "",
-                isOverdue ? "task-list-item-overdue" : "",
-              ]
-                .filter((value) => value.length > 0)
-                .join(" ")}
-            >
-              <div className="task-list-main">
-                <b>
-                  {task.title} [{taskStatusLabel(displayStatus, language)}]
-                </b>
-                <small>
-                  {language === "de" ? "Projekt" : "Project"}:{" "}
-                  <button type="button" className="linklike" onClick={() => openProjectFromTask(task, "office_tasks")}>
+            <li key={`office-task-${task.id}`} className={rowClass}>
+              <div className="tasks-page-office-row-body">
+                <div className="tasks-page-row-title-line">
+                  <span className="tasks-page-row-title">{task.title}</span>
+                  <span className={`tasks-page-status-pill tasks-page-status-pill--${pillState}`}>
+                    {pillLabel}
+                  </span>
+                </div>
+                <span className="tasks-page-row-meta">
+                  {de ? "Projekt" : "Project"}:{" "}
+                  <button
+                    type="button"
+                    className="linklike tasks-page-row-project-link"
+                    onClick={() => openProjectFromTask(task, "office_tasks")}
+                  >
                     {taskProjectLabel.title}
-                  </button>{" "}
-                  | {language === "de" ? "Fällig" : "Due"}: {task.due_date ?? "-"}
-                  {task.start_time ? ` ${language === "de" ? "um" : "at"} ${formatTaskTimeRange(task)}` : ""} |{" "}
-                  {language === "de" ? "Mitarbeiter" : "Assignees"}: {getTaskAssigneeLabel(task)}
-                </small>
-                {taskProjectLabel.subtitle && <small className="project-name-subtle">{taskProjectLabel.subtitle}</small>}
-                <small>
-                  {language === "de" ? "Typ" : "Type"}: {taskTypeLabel(normalizeTaskTypeValue(task.task_type), language)}
-                  {task.storage_box_number
-                    ? ` | ${language === "de" ? "Lagerbox" : "Storage box"}: ${task.storage_box_number}`
-                    : ""}
-                </small>
-                {(task.description || taskMaterials) && (
-                  <small>
-                    {task.description ? `${language === "de" ? "Info" : "Info"}: ${task.description}` : ""}
-                    {task.description && taskMaterials ? " | " : ""}
-                    {taskMaterials ? `${language === "de" ? "Material" : "Materials"}: ${taskMaterials}` : ""}
-                  </small>
+                  </button>
+                  {"  ·  "}
+                  {de ? "Fällig" : "Due"}: {task.due_date ?? "-"}
+                  {task.start_time ? ` ${de ? "um" : "at"} ${formatTaskTimeRange(task)}` : ""}
+                  {"  ·  "}
+                  {de ? "Mitarbeiter" : "Assignees"}: {hasAssignees ? getTaskAssigneeLabel(task) : "—"}
+                  {"  ·  "}
+                  {de ? "Status" : "Status"}: {taskStatusLabel(displayStatus, language)}
+                </span>
+                {task.partners && task.partners.length > 0 && (
+                  <span className="tasks-page-row-partner-line">
+                    <PartnerTaskChip partners={task.partners} language={de ? "de" : "en"} />
+                  </span>
+                )}
+                {taskProjectLabel.subtitle && (
+                  <span className="tasks-page-row-subtitle">{taskProjectLabel.subtitle}</span>
+                )}
+                {(task.description || taskMaterials || task.storage_box_number) && (
+                  <span className="tasks-page-row-meta">
+                    {de ? "Typ" : "Type"}:{" "}
+                    {taskTypeLabel(normalizeTaskTypeValue(task.task_type), language)}
+                    {task.storage_box_number
+                      ? `  ·  ${de ? "Lagerbox" : "Storage box"}: ${task.storage_box_number}`
+                      : ""}
+                    {task.description ? `  ·  ${de ? "Info" : "Info"}: ${task.description}` : ""}
+                    {taskMaterials ? `  ·  ${de ? "Material" : "Materials"}: ${taskMaterials}` : ""}
+                  </span>
                 )}
               </div>
-              <div className="row wrap task-actions">
+              <div className="tasks-page-row-actions tasks-page-row-actions--inline">
                 {canManageTasks && (
                   <button
                     type="button"
-                    className="icon-btn task-edit-icon-btn"
+                    className="tasks-page-row-action tasks-page-row-action--icon"
                     onClick={() => openTaskEditModal(task)}
-                    aria-label={language === "de" ? "Aufgabe bearbeiten" : "Edit task"}
-                    title={language === "de" ? "Aufgabe bearbeiten" : "Edit task"}
+                    aria-label={de ? "Aufgabe bearbeiten" : "Edit task"}
+                    title={de ? "Aufgabe bearbeiten" : "Edit task"}
                   >
                     <PenIcon />
                   </button>
                 )}
-                {isMine && (
-                  <button type="button" onClick={() => void exportTaskCalendar(task)}>
-                    {language === "de" ? "Kalender" : "Calendar"}
+                {!isDone && !isUnassigned && isMine && (
+                  <button
+                    type="button"
+                    className="tasks-page-row-action"
+                    onClick={() => void exportTaskCalendar(task)}
+                  >
+                    {de ? "Kalender" : "Calendar"}
                   </button>
                 )}
-                {isMine && task.status !== "done" && (
-                  <button type="button" onClick={() => void markTaskDone(task)}>
-                    {language === "de" ? "Als erledigt markieren" : "Mark complete"}
+                {isUnassigned && canManageTasks && (
+                  <button
+                    type="button"
+                    className="tasks-page-row-action tasks-page-row-action--primary"
+                    onClick={() => openTaskEditModal(task)}
+                  >
+                    {de ? "Zuweisen" : "Assign"}
+                  </button>
+                )}
+                {!isDone && !isUnassigned && (
+                  <button
+                    type="button"
+                    className="tasks-page-row-action tasks-page-row-action--primary"
+                    onClick={() => void markTaskDone(task)}
+                  >
+                    {de ? "Erledigt" : "Mark complete"}
+                  </button>
+                )}
+                {isDone && canManageTasks && (
+                  <button
+                    type="button"
+                    className="tasks-page-row-action"
+                    onClick={() => openTaskEditModal(task)}
+                  >
+                    {de ? "Wiedereröffnen" : "Reopen"}
                   </button>
                 )}
               </div>
             </li>
           );
         })}
-        {officeFilteredTasks.length === 0 && (
-          <li className="muted">{language === "de" ? "Keine Aufgaben für den Filter." : "No tasks match the filters."}</li>
-        )}
       </ul>
+      </div>
     </section>
   );
 }

@@ -244,8 +244,13 @@ def update_project_material_need(
         raise HTTPException(status_code=404, detail="Project not found")
 
     previous_status = _normalize_material_need_status(row.status)
-    next_status = _normalize_material_need_status(payload.status, strict=True)
-    row.status = next_status
+    if payload.status is not None:
+        next_status = _normalize_material_need_status(payload.status, strict=True)
+        row.status = next_status
+    else:
+        next_status = previous_status
+    if payload.notes is not None:
+        row.notes = payload.notes.strip() or None
     row.updated_by = current_user.id
     row.updated_at = utcnow()
     db.add(row)

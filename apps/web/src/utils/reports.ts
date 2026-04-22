@@ -148,8 +148,10 @@ export function buildTaskModalFormState(defaults?: {
     due_date: defaults?.dueDate ?? "",
     start_time: "",
     estimated_hours: "",
+    priority: "normal",
     assignee_query: "",
     assignee_ids: [],
+    partner_ids: [],
     create_project_from_task: false,
     new_project_name: "",
     new_project_number: "",
@@ -163,6 +165,7 @@ export function buildTaskEditFormState(task?: Task | null): TaskEditFormState {
       : task?.assignee_id
         ? [task.assignee_id]
         : [];
+  const partnerIds = task?.partner_ids ? [...task.partner_ids] : [];
   return {
     id: task?.id ?? null,
     project_id: task?.project_id ?? null,
@@ -178,8 +181,10 @@ export function buildTaskEditFormState(task?: Task | null): TaskEditFormState {
     due_date: task?.due_date ?? "",
     start_time: task?.start_time ? formatTaskStartTime(task.start_time) : "",
     estimated_hours: task?.estimated_hours != null ? String(task.estimated_hours) : "",
+    priority: "normal",
     assignee_query: "",
     assignee_ids: assigneeIds,
+    partner_ids: partnerIds,
     week_start: task?.week_start ?? "",
   };
 }
@@ -208,6 +213,7 @@ export function taskEditPayloadFromForm(form: TaskEditFormState, normalizedStart
     start_time: normalizedStartTime,
     estimated_hours: estimatedHours,
     assignee_ids: form.assignee_ids,
+    partner_ids: form.partner_ids,
     week_start: weekStartValue,
   };
 }

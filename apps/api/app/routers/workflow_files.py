@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 from fastapi import APIRouter
 
 from app.routers.workflow_helpers import *  # noqa: F401,F403
@@ -132,3 +135,41 @@ def preview_file(
 ):
     attachment = _resolve_attachment_for_access(db, current_user, attachment_id)
     return _attachment_http_response(attachment, inline=True)
+
+
+@router.delete("/files/{attachment_id}", status_code=204)
+def delete_file(
+    attachment_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    attachment = db.get(Attachment, attachment_id)
+    if not attachment:
+        raise HTTPException(status_code=404, detail="File not found")
+    # Only project files can be deleted via this endpoint (not chat attachments)
+    if attachment.project_id is None:
+        raise HTTPException(status_code=403, detail="Cannot delete this file type")
+    assert_project_access(db, current_user, attachment.project_id)
+    folder = _normalize_project_folder_path(attachment.folder_path, allow_empty=True)
+    if _folder_path_is_protected(folder) and not _can_access_project_protected_folder(current_user):
+        raise HTTPException(status_code=403, detail="File access denied")
+    if not has_permission_for_user(current_user.id, current_user.role, "files:manage"):
+        raise HTTPException(status_code=403, detail="File management permission required")
+
+    stored_path = attachment.stored_path
+    _record_project_activity(
+        db,
+        project_id=attachment.project_id,
+        actor_user_id=current_user.id,
+        event_type="file.deleted",
+        message=f"File deleted: {attachment.file_name}",
+        details={"file_name": attachment.file_name, "folder": folder},
+    )
+    db.delete(attachment)
+    db.commit()
+
+    # Best-effort: remove the stored file from disk after the DB commit
+    try:
+        Path(stored_path).unlink(missing_ok=True)
+    except OSError:
+        pass

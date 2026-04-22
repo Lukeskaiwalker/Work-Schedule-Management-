@@ -25,6 +25,13 @@ class MaterialCatalogItem(Base):
     image_source: Mapped[str | None] = mapped_column(String(64))
     image_checked_at: Mapped[datetime | None] = mapped_column(DateTime)
     search_text: Mapped[str] = mapped_column(Text, nullable=False)
+    # Which Werkstatt-supplier's Datanorm this row came from. Nullable for
+    # legacy rows that predate the per-supplier Datanorm model (backfilled
+    # as NULL in migration 20260425_0047). Future Datanorm imports always
+    # set this column.
+    supplier_id: Mapped[int | None] = mapped_column(
+        ForeignKey("werkstatt_suppliers.id", ondelete="SET NULL"), index=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
 
@@ -58,6 +65,7 @@ class ProjectMaterialNeed(Base):
     unit: Mapped[str | None] = mapped_column(String(64))
     quantity: Mapped[str | None] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(32), default="order", nullable=False, index=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
     updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)

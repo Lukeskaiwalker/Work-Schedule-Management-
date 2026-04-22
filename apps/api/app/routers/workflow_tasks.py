@@ -44,6 +44,8 @@ def list_tasks(
     project_id: int | None = None,
     week_start: date | None = None,
     task_type: str | None = None,
+    has_partners: bool | None = None,
+    partner_id: int | None = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -76,6 +78,15 @@ def list_tasks(
     if task_type:
         stmt = stmt.where(Task.task_type == _normalize_task_type(task_type))
 
+    if partner_id is not None:
+        stmt = stmt.where(
+            Task.id.in_(select(TaskPartner.task_id).where(TaskPartner.partner_id == partner_id))
+        )
+    elif has_partners is True:
+        stmt = stmt.where(Task.id.in_(select(TaskPartner.task_id)))
+    elif has_partners is False:
+        stmt = stmt.where(Task.id.notin_(select(TaskPartner.task_id)))
+
     tasks = list(db.scalars(stmt.order_by(Task.due_date.asc().nulls_last(), Task.id.desc())).all())
     return _tasks_out(db, tasks)
 
@@ -93,6 +104,8 @@ def create_task(
         )
     assignee_ids = _normalize_assignee_ids([*(payload.assignee_ids or []), payload.assignee_id])
     _validate_assignee_ids(db, assignee_ids)
+    partner_ids = _normalize_partner_ids(list(payload.partner_ids or []))
+    _validate_partner_ids(db, partner_ids)
     _validate_task_schedule(start_time=payload.start_time, estimated_hours=payload.estimated_hours)
     overlaps = (
         _find_task_overlaps(
@@ -116,7 +129,14 @@ def create_task(
             },
         )
     task_data = payload.model_dump(
-        exclude={"assignee_id", "assignee_ids", "class_template_id", "subtasks", "confirm_overlap"}
+        exclude={
+            "assignee_id",
+            "assignee_ids",
+            "partner_ids",
+            "class_template_id",
+            "subtasks",
+            "confirm_overlap",
+        }
     )
     task = Task(**task_data)
     task.subtasks = _normalize_task_subtasks(payload.subtasks)
@@ -129,6 +149,7 @@ def create_task(
     db.add(task)
     db.flush()
     _sync_task_assignments(db, task, assignee_ids)
+    _sync_task_partners(db, task, partner_ids)
     _create_assignment_notifications(db, task, assignee_ids, current_user)
     _record_project_activity(
         db,
@@ -140,7 +161,13 @@ def create_task(
     )
     db.commit()
     db.refresh(task)
-    created = _task_out(task, assignee_ids)
+    partner_rows = _load_partners_by_id(db, partner_ids)
+    created = _task_out(
+        task,
+        assignee_ids,
+        partner_ids=partner_ids,
+        partners=[partner_rows[pid] for pid in partner_ids if pid in partner_rows],
+    )
     notify(db, "task.created", created.model_dump(mode="json"))
     for uid in assignee_ids:
         if uid != current_user.id:
@@ -159,6 +186,7 @@ def update_task(
         raise HTTPException(status_code=404, detail="Task not found")
 
     existing_assignee_ids = _task_assignee_map(db, [task]).get(task.id, [])
+    existing_partner_ids = _task_partner_map(db, [task]).get(task.id, [])
     added_assignee_ids: list[int] = []
     previous_status = task.status
     previous_due_date = task.due_date.isoformat() if task.due_date else None
@@ -230,6 +258,12 @@ def update_task(
             added_assignee_ids = list(set(next_assignee_ids) - prev_assignee_ids)
             _create_assignment_notifications(db, task, added_assignee_ids, current_user)
 
+        if "partner_ids" in payload.model_fields_set:
+            next_partner_ids = _normalize_partner_ids(list(payload.partner_ids or []))
+            _validate_partner_ids(db, next_partner_ids)
+            _sync_task_partners(db, task, next_partner_ids)
+            existing_partner_ids = next_partner_ids
+
         _validate_task_schedule(start_time=task.start_time, estimated_hours=task.estimated_hours)
         overlaps = (
             _find_task_overlaps(
@@ -274,7 +308,13 @@ def update_task(
         )
     db.commit()
     db.refresh(task)
-    updated = _task_out(task, existing_assignee_ids)
+    partner_rows = _load_partners_by_id(db, existing_partner_ids)
+    updated = _task_out(
+        task,
+        existing_assignee_ids,
+        partner_ids=existing_partner_ids,
+        partners=[partner_rows[pid] for pid in existing_partner_ids if pid in partner_rows],
+    )
     notify(db, "task.updated", updated.model_dump(mode="json"))
     for uid in added_assignee_ids:
         if uid != current_user.id:
@@ -322,6 +362,8 @@ def planning_assign_week(
             )
         assignee_ids = _normalize_assignee_ids([*(assignment.assignee_ids or []), assignment.assignee_id])
         _validate_assignee_ids(db, assignee_ids)
+        partner_ids = _normalize_partner_ids(list(assignment.partner_ids or []))
+        _validate_partner_ids(db, partner_ids)
         _validate_task_schedule(start_time=assignment.start_time, estimated_hours=assignment.estimated_hours)
         due_date = assignment.due_date or week_start
         overlaps = (
@@ -352,6 +394,7 @@ def planning_assign_week(
                 "due_date",
                 "assignee_id",
                 "assignee_ids",
+                "partner_ids",
                 "status",
                 "task_type",
                 "class_template_id",
@@ -373,6 +416,7 @@ def planning_assign_week(
         db.add(task)
         db.flush()
         _sync_task_assignments(db, task, assignee_ids)
+        _sync_task_partners(db, task, partner_ids)
         _record_project_activity(
             db,
             project_id=task.project_id,

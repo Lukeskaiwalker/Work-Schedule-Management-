@@ -3,6 +3,8 @@ import type { Language, Project, ProjectClassTemplate, ProjectTitleParts, Projec
 import { parseServerDateTime, localDateTimeInputToIso } from "./dates";
 import { normalizeAddressInput } from "./misc";
 
+const ZIP_RE = /\b\d{5}\b/g;
+
 export function statusLabel(value: string, language: Language) {
   const raw = String(value || "").trim();
   const normalized = raw
@@ -62,14 +64,20 @@ export function classTemplateMaterialsText(template: ProjectClassTemplate | null
   if (!template) return "";
   const materials = (template.materials_required ?? "").trim();
   const tools = (template.tools_required ?? "").trim();
-  const sections: string[] = [];
+  const rows: string[] = [];
   if (materials) {
-    sections.push(`${language === "de" ? "Materialien" : "Materials"}:\n${materials}`);
+    rows.push(...materials.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0));
   }
   if (tools) {
-    sections.push(`${language === "de" ? "Werkzeuge" : "Tools"}:\n${tools}`);
+    rows.push(
+      ...tools
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0)
+        .map((line) => `${language === "de" ? "Werkzeug" : "Tool"}: ${line}`),
+    );
   }
-  return sections.join("\n\n").trim();
+  return rows.join("\n").trim();
 }
 
 export function activityEventLabel(eventType: string, language: Language) {
@@ -78,6 +86,8 @@ export function activityEventLabel(eventType: string, language: Language) {
     "project.classes_updated": { de: "Projektklassen aktualisiert", en: "Project classes updated" },
     "project.state_changed": { de: "Status geändert", en: "State changed" },
     "project.note_updated": { de: "Notiz aktualisiert", en: "Note updated" },
+    "project.critical_set": { de: "Als kritisch markiert", en: "Marked as critical" },
+    "project.critical_cleared": { de: "Kritisch-Markierung entfernt", en: "Critical flag cleared" },
     "task.created": { de: "Aufgabe erstellt", en: "Task created" },
     "task.updated": { de: "Aufgabe aktualisiert", en: "Task updated" },
     "task.deleted": { de: "Aufgabe gelöscht", en: "Task deleted" },
@@ -127,6 +137,53 @@ export function projectLocationAddress(project: Pick<Project, "construction_site
   return String(project.customer_address ?? "").trim();
 }
 
+function normalizedTravelAddress(address: string) {
+  return normalizeAddressInput(address).replace(/\s+/g, " ").trim();
+}
+
+function addressCityFragment(address: string) {
+  const match = normalizedTravelAddress(address).match(/\b\d{5}\s+([^,]+)/);
+  if (!match) return "";
+  return match[1].replace(/\s{2,}/g, " ").trim().toLowerCase();
+}
+
+export function estimateTravelMinutesFromAddresses(fromAddress: string, toAddress: string): number | null {
+  const left = normalizedTravelAddress(fromAddress);
+  const right = normalizedTravelAddress(toAddress);
+  if (!left || !right) return null;
+  if (left.toLowerCase() === right.toLowerCase()) return 0;
+
+  const leftZip = left.match(ZIP_RE) ?? [];
+  const rightZip = right.match(ZIP_RE) ?? [];
+  const leftCity = addressCityFragment(left);
+  const rightCity = addressCityFragment(right);
+
+  if (leftZip.length > 0 && rightZip.length > 0) {
+    const leftZipValue = leftZip[0] ?? "";
+    const rightZipValue = rightZip[0] ?? "";
+    if (leftZipValue === rightZipValue) return 12;
+    if (leftCity && rightCity && leftCity === rightCity) return 18;
+    if (leftZipValue.slice(0, 2) === rightZipValue.slice(0, 2)) return 30;
+    return 45;
+  }
+
+  if (leftCity && rightCity) {
+    if (leftCity === rightCity) return 18;
+    return 35;
+  }
+
+  return 15;
+}
+
+export function estimateTravelMinutesBetweenProjects(
+  fromProject: Pick<Project, "construction_site_address" | "customer_address"> | null | undefined,
+  toProject: Pick<Project, "construction_site_address" | "customer_address"> | null | undefined,
+) {
+  const fromAddress = projectLocationAddress(fromProject);
+  const toAddress = projectLocationAddress(toProject);
+  return estimateTravelMinutesFromAddresses(fromAddress, toAddress);
+}
+
 export function formatProjectTitle(
   projectNumber?: string | null,
   customerName?: string | null,
@@ -164,6 +221,14 @@ export function formatProjectTitleParts(
 
 export function projectPayloadFromForm(form: ProjectFormState) {
   const normalizedSiteAccessType = normalizeProjectSiteAccessType(form.site_access_type);
+  // When the user keeps "use_separate_site_address" off, we don't send a
+  // site address — backend will treat the customer address as authoritative.
+  // When a customer_id is set, the legacy `customer_*` snapshot fields are
+  // still sent so older consumers (reports, CSV exports) keep working until
+  // they migrate to joining through `customer_id`.
+  const constructionSite = form.use_separate_site_address
+    ? normalizeAddressInput(form.construction_site_address)
+    : "";
   return {
     project_number: form.project_number.trim(),
     name: form.name.trim(),
@@ -171,9 +236,10 @@ export function projectPayloadFromForm(form: ProjectFormState) {
     status: form.status.trim() || "active",
     last_state: form.last_state.trim() || null,
     last_status_at: localDateTimeInputToIso(form.last_status_at),
+    customer_id: form.customer_id,
     customer_name: form.customer_name.trim(),
     customer_address: normalizeAddressInput(form.customer_address),
-    construction_site_address: normalizeAddressInput(form.construction_site_address),
+    construction_site_address: constructionSite,
     customer_contact: form.customer_contact.trim(),
     customer_email: form.customer_email.trim(),
     customer_phone: form.customer_phone.trim(),

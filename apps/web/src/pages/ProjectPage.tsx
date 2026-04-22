@@ -1,5 +1,6 @@
 import { useAppContext } from "../context/AppContext";
 import { ProjectOverviewTab } from "./project/ProjectOverviewTab";
+import { ProjectGanttTab } from "./project/ProjectGanttTab";
 import { ProjectTasksTab } from "./project/ProjectTasksTab";
 import { ProjectHoursTab } from "./project/ProjectHoursTab";
 import { ProjectMaterialsTab } from "./project/ProjectMaterialsTab";
@@ -15,6 +16,7 @@ export function ProjectPage() {
   return (
     <>
       <ProjectOverviewTab />
+      <ProjectGanttTab />
       <ProjectTasksTab />
       <ProjectHoursTab />
       <ProjectMaterialsTab />

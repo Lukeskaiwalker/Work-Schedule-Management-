@@ -52,6 +52,7 @@ class ProjectMaterialNeedOut(BaseModel):
     quantity: str | None = None
     image_url: str | None = None
     image_source: str | None = None
+    notes: str | None = None
     status: str
     created_by: int | None = None
     updated_by: int | None = None
@@ -60,7 +61,8 @@ class ProjectMaterialNeedOut(BaseModel):
 
 
 class ProjectMaterialNeedUpdate(BaseModel):
-    status: str = Field(min_length=1, max_length=32)
+    status: str | None = Field(default=None, min_length=1, max_length=32)
+    notes: str | None = None
 
 
 class ProjectMaterialNeedCreate(BaseModel):

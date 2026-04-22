@@ -3,6 +3,9 @@ from datetime import date, datetime, time
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.schemas.partner import PartnerOut
+
+
 class TaskCreate(BaseModel):
     project_id: int
     title: str
@@ -18,6 +21,7 @@ class TaskCreate(BaseModel):
     estimated_hours: float | None = None
     assignee_id: int | None = None
     assignee_ids: list[int] = Field(default_factory=list)
+    partner_ids: list[int] = Field(default_factory=list)
     week_start: date | None = None
     confirm_overlap: bool = False
 
@@ -51,6 +55,7 @@ class TaskUpdate(BaseModel):
     estimated_hours: float | None = None
     assignee_id: int | None = None
     assignee_ids: list[int] | None = None
+    partner_ids: list[int] | None = None
     week_start: date | None = None
     confirm_overlap: bool = False
 
@@ -87,6 +92,8 @@ class TaskOut(BaseModel):
     end_time: time | None = None
     assignee_id: int | None = None
     assignee_ids: list[int] = Field(default_factory=list)
+    partner_ids: list[int] = Field(default_factory=list)
+    partners: list[PartnerOut] = Field(default_factory=list)
     week_start: date | None = None
     updated_at: datetime | None = None
 

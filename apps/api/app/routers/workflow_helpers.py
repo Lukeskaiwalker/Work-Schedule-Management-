@@ -40,6 +40,7 @@ from app.models.entities import (
     JobTicket,
     MaterialCatalogItem,
     Message,
+    Partner,
     Project,
     ProjectActivity,
     ProjectClassAssignment,
@@ -53,6 +54,7 @@ from app.models.entities import (
     Site,
     Task,
     TaskAssignment,
+    TaskPartner,
     User,
     VacationRequest,
     WikiPage,
@@ -67,6 +69,7 @@ from app.schemas.api import (
     JobTicketOut,
     MessageOut,
     ProjectCreate,
+    ProjectCriticalUpdate,
     ProjectFinanceOut,
     ProjectFinanceUpdate,
     ProjectWeatherDayOut,
@@ -77,6 +80,7 @@ from app.schemas.api import (
     ProjectMaterialNeedCreate,
     ProjectMaterialNeedOut,
     ProjectMaterialNeedUpdate,
+    PartnerOut,
     ProjectTrackedMaterialOut,
     ProjectOut,
     ProjectOverviewOut,
@@ -1544,6 +1548,7 @@ def _project_material_need_out(
         quantity=row.quantity,
         image_url=(catalog_item.image_url if catalog_item else None),
         image_source=(catalog_item.image_source if catalog_item else None),
+        notes=row.notes,
         status=_normalize_material_need_status(row.status),
         created_by=row.created_by,
         updated_by=row.updated_by,
@@ -2016,10 +2021,10 @@ def _normalize_class_template_ids(class_template_ids: list[int] | None) -> list[
     return normalized
 
 
-def _class_template_task_rows(raw_templates: object) -> list[dict[str, str | None]]:
+def _class_template_task_rows(raw_templates: object) -> list[dict[str, object]]:
     if not isinstance(raw_templates, list):
         return []
-    rows: list[dict[str, str | None]] = []
+    rows: list[dict[str, object]] = []
     for raw_item in raw_templates:
         if not isinstance(raw_item, dict):
             continue
@@ -2032,7 +2037,8 @@ def _class_template_task_rows(raw_templates: object) -> list[dict[str, str | Non
             task_type = _normalize_task_type(task_type_raw, default="construction")
         except HTTPException:
             task_type = "construction"
-        rows.append({"title": title, "description": description, "task_type": task_type})
+        subtasks = _normalize_task_subtasks(raw_item.get("subtasks"))
+        rows.append({"title": title, "description": description, "task_type": task_type, "subtasks": subtasks})
     return rows
 
 
@@ -2077,12 +2083,12 @@ def _resolve_project_class_template(
 def _class_template_materials_text(template: ProjectClassTemplate) -> str:
     materials = (template.materials_required or "").strip()
     tools = (template.tools_required or "").strip()
-    sections: list[str] = []
+    lines: list[str] = []
     if materials:
-        sections.append(f"Materials:\n{materials}")
+        lines.extend([line.strip() for line in materials.replace("\r", "\n").split("\n") if line.strip()])
     if tools:
-        sections.append(f"Tools:\n{tools}")
-    return "\n\n".join(sections).strip()
+        lines.extend([f"Tool: {line.strip()}" for line in tools.replace("\r", "\n").split("\n") if line.strip()])
+    return "\n".join(lines).strip()
 
 
 def _sync_project_class_templates(
@@ -2132,7 +2138,8 @@ def _sync_project_class_templates(
                 project_id=project_id,
                 title=task_template["title"] or "",
                 description=task_template["description"],
-                materials_required=None,
+                subtasks=_normalize_task_subtasks(task_template.get("subtasks")),
+                materials_required=_class_template_materials_text(template) or None,
                 task_type=_normalize_task_type(task_template["task_type"], default="construction"),
                 class_template_id=template.id,
                 status="open",
@@ -2199,6 +2206,81 @@ def _task_assignee_map(db: Session, tasks: list[Task]) -> dict[int, list[int]]:
         if not out[task.id] and task.assignee_id is not None:
             out[task.id] = [task.assignee_id]
     return out
+
+
+def _normalize_partner_ids(candidate_ids: list[int | None]) -> list[int]:
+    normalized: list[int] = []
+    seen: set[int] = set()
+    for candidate in candidate_ids:
+        if candidate is None:
+            continue
+        if candidate <= 0 or candidate in seen:
+            continue
+        seen.add(candidate)
+        normalized.append(candidate)
+    return normalized
+
+
+def _validate_partner_ids(db: Session, partner_ids: list[int]) -> None:
+    if not partner_ids:
+        return
+    existing_ids = set(
+        db.scalars(
+            select(Partner.id).where(
+                Partner.id.in_(partner_ids), Partner.archived_at.is_(None)
+            )
+        ).all()
+    )
+    missing = [partner_id for partner_id in partner_ids if partner_id not in existing_ids]
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown or archived partner id(s): {', '.join(str(x) for x in missing)}",
+        )
+
+
+def _task_partner_map(db: Session, tasks: list[Task]) -> dict[int, list[int]]:
+    if not tasks:
+        return {}
+    task_ids = [task.id for task in tasks]
+    out: dict[int, list[int]] = {task_id: [] for task_id in task_ids}
+    rows = db.execute(
+        select(TaskPartner.task_id, TaskPartner.partner_id)
+        .where(TaskPartner.task_id.in_(task_ids))
+        .order_by(TaskPartner.task_id.asc(), TaskPartner.id.asc())
+    ).all()
+    for task_id, partner_id in rows:
+        out[task_id].append(partner_id)
+    return out
+
+
+def _load_partners_by_id(db: Session, partner_ids: list[int]) -> dict[int, Partner]:
+    if not partner_ids:
+        return {}
+    rows = db.scalars(select(Partner).where(Partner.id.in_(set(partner_ids)))).all()
+    return {row.id: row for row in rows}
+
+
+def _sync_task_partners(db: Session, task: Task, partner_ids: list[int]) -> None:
+    """Sync `task_partners` rows for a single task.
+
+    Deletes links not present in `partner_ids`, then inserts rows for any
+    missing ids. The unique constraint (task_id, partner_id) prevents
+    duplicates even on concurrent writes.
+    """
+    existing_rows = db.scalars(
+        select(TaskPartner).where(TaskPartner.task_id == task.id)
+    ).all()
+    existing_ids = {row.partner_id for row in existing_rows}
+    target_ids = set(partner_ids)
+
+    for row in existing_rows:
+        if row.partner_id not in target_ids:
+            db.delete(row)
+
+    for partner_id in partner_ids:
+        if partner_id not in existing_ids:
+            db.add(TaskPartner(task_id=task.id, partner_id=partner_id))
 
 
 def _task_duration_minutes(estimated_hours: float | None) -> int | None:
@@ -2360,7 +2442,14 @@ def _find_task_overlaps(
     return overlaps
 
 
-def _task_out(task: Task, assignee_ids: list[int]) -> TaskOut:
+def _task_out(
+    task: Task,
+    assignee_ids: list[int],
+    partner_ids: list[int] | None = None,
+    partners: list[Partner] | None = None,
+) -> TaskOut:
+    partner_ids = partner_ids or []
+    partner_rows = partners or []
     return TaskOut(
         id=task.id,
         project_id=task.project_id,
@@ -2381,6 +2470,8 @@ def _task_out(task: Task, assignee_ids: list[int]) -> TaskOut:
         else None,
         assignee_id=assignee_ids[0] if assignee_ids else None,
         assignee_ids=assignee_ids,
+        partner_ids=partner_ids,
+        partners=[PartnerOut.model_validate(p) for p in partner_rows],
         week_start=task.week_start,
         updated_at=task.updated_at,
     )
@@ -2388,7 +2479,22 @@ def _task_out(task: Task, assignee_ids: list[int]) -> TaskOut:
 
 def _tasks_out(db: Session, tasks: list[Task]) -> list[TaskOut]:
     assignees_by_task = _task_assignee_map(db, tasks)
-    return [_task_out(task, assignees_by_task.get(task.id, [])) for task in tasks]
+    partners_by_task = _task_partner_map(db, tasks)
+    all_partner_ids = {pid for ids in partners_by_task.values() for pid in ids}
+    partner_rows = _load_partners_by_id(db, list(all_partner_ids))
+    return [
+        _task_out(
+            task,
+            assignees_by_task.get(task.id, []),
+            partner_ids=partners_by_task.get(task.id, []),
+            partners=[
+                partner_rows[pid]
+                for pid in partners_by_task.get(task.id, [])
+                if pid in partner_rows
+            ],
+        )
+        for task in tasks
+    ]
 
 
 def _sync_task_assignments(db: Session, task: Task, assignee_ids: list[int]) -> None:

@@ -4,12 +4,67 @@ from fastapi import APIRouter
 
 from app.core.events import notify
 from app.routers.workflow_helpers import *  # noqa: F401,F403
+from app.models.entities import Customer
+from app.services.customers import (
+    match_or_create_customer,
+    sync_project_from_customer,
+)
 
 router = APIRouter(prefix="", tags=["projects"])
 
 
 def _project_weather_query_address(project: Project) -> str:
     return _project_location_address(project)
+
+
+def _resolve_project_customer(
+    db: Session,
+    *,
+    project: Project,
+    customer_id: int | None,
+    fallback_name: str | None,
+    fallback_address: str | None,
+    fallback_contact: str | None,
+    fallback_email: str | None,
+    fallback_phone: str | None,
+    actor_user_id: int | None,
+    explicit_customer_id_in_payload: bool = True,
+) -> None:
+    """Link a Project to a Customer using a three-step rule:
+
+    1. If `customer_id` is provided, mirror that Customer's fields onto
+       the Project (Customer is source of truth).
+    2. Else, if `customer_name` is set on the Project, match-or-create
+       a Customer using the import normalisation rule.
+    3. Else, clear `customer_id` and leave the legacy fields null.
+    """
+    if customer_id is not None:
+        customer = db.get(Customer, customer_id)
+        if customer is None:
+            raise HTTPException(status_code=400, detail="Customer not found")
+        sync_project_from_customer(project, customer)
+        return
+
+    # No explicit customer_id — fall through to legacy-fields path.
+    # (`explicit_customer_id_in_payload=False` + no legacy fields would
+    # be caller-filtered upstream; we only arrive here when at least
+    # one customer_* field was on the payload.)
+    name = (fallback_name or "").strip()
+    if name:
+        customer = match_or_create_customer(
+            db,
+            name=name,
+            address=fallback_address,
+            contact_person=fallback_contact,
+            email=fallback_email,
+            phone=fallback_phone,
+            created_by=actor_user_id,
+        )
+        sync_project_from_customer(project, customer)
+        return
+
+    # No identity at all — wipe the link.
+    project.customer_id = None
 
 
 @router.post("/projects", response_model=ProjectOut)
@@ -47,6 +102,17 @@ def create_project(
         site_access_note=site_access_note,
         extra_attributes=payload.extra_attributes or {},
         created_by=current_user.id,
+    )
+    _resolve_project_customer(
+        db,
+        project=project,
+        customer_id=payload.customer_id,
+        fallback_name=payload.customer_name,
+        fallback_address=payload.customer_address,
+        fallback_contact=payload.customer_contact,
+        fallback_email=payload.customer_email,
+        fallback_phone=payload.customer_phone,
+        actor_user_id=current_user.id,
     )
     db.add(project)
     db.flush()
@@ -138,6 +204,41 @@ def update_project(
         if value is not None:
             setattr(project, field, value)
 
+    # Customer resolution. Three cases:
+    #   (a) payload set customer_id  → look it up, mirror its fields.
+    #   (b) payload set customer_name (legacy path) → match-or-create by
+    #       normalised name+address, re-link the project.
+    #   (c) payload only set other customer_* fields (email/contact/etc.) →
+    #       treat as a patch against the project's *current* customer_name
+    #       if it still has one.
+    #   (d) otherwise leave the existing link alone.
+    if "customer_id" in payload.model_fields_set:
+        _resolve_project_customer(
+            db,
+            project=project,
+            customer_id=payload.customer_id,
+            fallback_name=project.customer_name,
+            fallback_address=project.customer_address,
+            fallback_contact=project.customer_contact,
+            fallback_email=project.customer_email,
+            fallback_phone=project.customer_phone,
+            actor_user_id=current_user.id,
+            explicit_customer_id_in_payload=True,
+        )
+    elif {"customer_name", "customer_address", "customer_contact", "customer_email", "customer_phone"} & payload.model_fields_set:
+        _resolve_project_customer(
+            db,
+            project=project,
+            customer_id=None,
+            fallback_name=project.customer_name,
+            fallback_address=project.customer_address,
+            fallback_contact=project.customer_contact,
+            fallback_email=project.customer_email,
+            fallback_phone=project.customer_phone,
+            actor_user_id=current_user.id,
+            explicit_customer_id_in_payload=False,
+        )
+
     if "site_access_type" in payload.model_fields_set or "site_access_note" in payload.model_fields_set:
         next_site_access_type, next_site_access_note = _normalize_project_site_access(
             payload.site_access_type if "site_access_type" in payload.model_fields_set else project.site_access_type,
@@ -193,6 +294,60 @@ def update_project(
     updated_out = ProjectOut.model_validate(project)
     notify(db, "project.updated", updated_out.model_dump(mode="json"))
     return project
+
+
+@router.put("/projects/{project_id}/critical", response_model=ProjectOut)
+def set_project_critical(
+    project_id: int,
+    payload: ProjectCriticalUpdate,
+    current_user: User = Depends(require_permission("projects:mark_critical")),
+    db: Session = Depends(get_db),
+):
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    # Anyone with the permission + any project access can toggle the flag —
+    # lighter than `manage_required=True` because marking critical is a social
+    # signal, not a destructive edit.
+    assert_project_access(db, current_user, project_id, manage_required=False)
+
+    changed = False
+    if payload.is_critical and not project.is_critical:
+        project.is_critical = True
+        project.critical_since = utcnow()
+        project.critical_set_by_user_id = current_user.id
+        _record_project_activity(
+            db,
+            project_id=project.id,
+            actor_user_id=current_user.id,
+            event_type="project.critical_set",
+            message="Project marked critical",
+            details={},
+        )
+        changed = True
+    elif not payload.is_critical and project.is_critical:
+        project.is_critical = False
+        project.critical_since = None
+        project.critical_set_by_user_id = None
+        _record_project_activity(
+            db,
+            project_id=project.id,
+            actor_user_id=current_user.id,
+            event_type="project.critical_cleared",
+            message="Critical flag cleared",
+            details={},
+        )
+        changed = True
+
+    if changed:
+        project.last_updated_at = utcnow()
+        db.add(project)
+        db.commit()
+        db.refresh(project)
+        updated_out = ProjectOut.model_validate(project)
+        notify(db, "project.updated", updated_out.model_dump(mode="json"))
+    return project
+
 
 @router.get("/projects/{project_id}/finance", response_model=ProjectFinanceOut)
 def get_project_finance(

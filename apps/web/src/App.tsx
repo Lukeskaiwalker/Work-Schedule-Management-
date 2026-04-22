@@ -18,6 +18,9 @@ import type {
   MaterialCatalogItem,
   MaterialCatalogImportState,
   ProjectTrackedMaterial,
+  CustomerListItem,
+  Partner,
+  PartnerListItem,
   Task,
   TaskOverlapConflictDetail,
   AssignableUser,
@@ -40,6 +43,7 @@ import type {
   NicknameAvailability,
   WeatherSettings,
   SmtpSettings,
+  CompanySettings,
   EmployeeGroup,
   AuditLogEntry,
   UpdateStatus,
@@ -62,6 +66,7 @@ import type {
   WorkspaceMode,
   MainView,
   ProjectTab,
+  WerkstattTab,
   ProjectTitleParts,
   ThreadModalState,
   AvatarUploadResponse,
@@ -81,6 +86,7 @@ import {
   MATERIAL_CATALOG_SEARCH_LIMIT,
   WORKSPACE_MODE_STORAGE_KEY,
   REPORT_DRAFT_LS_KEY,
+  REPORT_DRAFTS_LS_KEY,
   EMPTY_PROJECT_FORM,
   EMPTY_PROJECT_FINANCE_FORM,
   EMPTY_REPORT_DRAFT,
@@ -177,12 +183,34 @@ import {
   resolveCurrentReleaseVersion,
   roleOptionLabel,
 } from "./utils/misc";
+import {
+  listCustomers as apiListCustomers,
+  saveCustomer as apiSaveCustomer,
+  archiveCustomer as apiArchiveCustomer,
+  unarchiveCustomer as apiUnarchiveCustomer,
+  type CustomerWriteInput,
+} from "./utils/customersApi";
+import {
+  listPartners as apiListPartners,
+  savePartner as apiSavePartner,
+  archivePartner as apiArchivePartner,
+  unarchivePartner as apiUnarchivePartner,
+  type PartnerWriteInput,
+} from "./utils/partnersApi";
+import type {
+  CustomerModalDraft,
+  CustomerModalOpenOptions,
+  PartnerModalDraft,
+  PartnerModalOpenOptions,
+} from "./context/AppContext";
 import { SidebarNavIcon, PenIcon, BackIcon, SearchIcon, CopyIcon } from "./components/icons";
 import { WorkHoursGauge, ProjectHoursGauge, WeeklyHoursGauge, MonthlyHoursGauge } from "./components/gauges";
 import { ThreadIconBadge, threadInitials } from "./components/shared/ThreadIconBadge";
 import type { AppNotification } from "./components/NotificationPanel";
 import { Sidebar } from "./components/layout/Sidebar";
 import { Header } from "./components/layout/Header";
+import { MobileBottomNav } from "./components/layout/MobileBottomNav";
+import { ProjectBanner } from "./components/project/ProjectBanner";
 import { ProjectModal } from "./components/modals/ProjectModal";
 import { TaskModal } from "./components/modals/TaskModal";
 import { TaskEditModal } from "./components/modals/TaskEditModal";
@@ -190,6 +218,8 @@ import { FileUploadModal } from "./components/modals/FileUploadModal";
 import { ThreadModal } from "./components/modals/ThreadModal";
 import { ArchivedThreadsModal } from "./components/modals/ArchivedThreadsModal";
 import { AvatarModal } from "./components/modals/AvatarModal";
+import { CustomerModal } from "./components/modals/CustomerModal";
+import { PartnerModal } from "./components/modals/PartnerModal";
 import { useServerEvents, type ServerEvent } from "./hooks/useServerEvents";
 import { useBrowserNotifications } from "./hooks/useBrowserNotifications";
 import type { BrowserNotifPermission } from "./hooks/useBrowserNotifications";
@@ -206,13 +236,29 @@ const OfficeTasksPage = lazy(() => import("./pages/OfficeTasksPage").then((m) =>
 const OverviewPage = lazy(() => import("./pages/OverviewPage").then((m) => ({ default: m.OverviewPage })));
 const PlanningPage = lazy(() => import("./pages/PlanningPage").then((m) => ({ default: m.PlanningPage })));
 const ProfilePage = lazy(() => import("./pages/ProfilePage").then((m) => ({ default: m.ProfilePage })));
+const MapPage = lazy(() => import("./pages/MapPage").then((m) => ({ default: m.MapPage })));
 const ProjectPage = lazy(() => import("./pages/ProjectPage").then((m) => ({ default: m.ProjectPage })));
 const ProjectsAllPage = lazy(() => import("./pages/ProjectsAllPage").then((m) => ({ default: m.ProjectsAllPage })));
 const ProjectsArchivePage = lazy(() =>
   import("./pages/ProjectsArchivePage").then((m) => ({ default: m.ProjectsArchivePage }))
 );
 const TimePage = lazy(() => import("./pages/TimePage").then((m) => ({ default: m.TimePage })));
+const WerkstattPage = lazy(() => import("./pages/WerkstattPage").then((m) => ({ default: m.WerkstattPage })));
 const WikiPage = lazy(() => import("./pages/WikiPage").then((m) => ({ default: m.WikiPage })));
+const CustomersPage = lazy(() => import("./pages/CustomersPage").then((m) => ({ default: m.CustomersPage })));
+const CustomerDetailPage = lazy(() =>
+  import("./pages/CustomerDetailPage").then((m) => ({ default: m.CustomerDetailPage })),
+);
+
+/** Generate a stable id for a report draft. Uses `crypto.randomUUID` when
+ *  available, falling back to a timestamp+random composite for older
+ *  browsers (still unique enough for localStorage-scoped drafts). */
+function generateDraftId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `d-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
 
 export function App() {
   type ActionLinkDialogState = {
@@ -230,6 +276,8 @@ export function App() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [overviewShortcutBackVisible, setOverviewShortcutBackVisible] = useState(false);
   const [projectTab, setProjectTab] = useState<ProjectTab>("overview");
+  const [werkstattTab, setWerkstattTab] = useState<WerkstattTab>("dashboard");
+  const [activeWerkstattArticleId, setActiveWerkstattArticleId] = useState<number | null>(null);
   const [error, setError] = useState<string>("");
   const [notice, setNotice] = useState<string>("");
   const [actionLinkDialog, setActionLinkDialog] = useState<ActionLinkDialogState>(null);
@@ -249,6 +297,16 @@ export function App() {
     ...DEFAULT_THREAD_PARTICIPANT_ROLES,
   ]);
   const [projects, setProjects] = useState<Project[]>([]);
+  // ── Customers (Kunden) — mock-backed today, backend swap is a one-file ─
+  // change to `utils/customersApi.ts`. See the TODO(customers) banner there.
+  const [customers, setCustomers] = useState<CustomerListItem[]>([]);
+  const [activeCustomerId, setActiveCustomerId] = useState<number | null>(null);
+  const [customerModalOpen, setCustomerModalOpen] = useState(false);
+  const [customerModalDraft, setCustomerModalDraft] = useState<CustomerModalDraft | null>(null);
+  // ── Partners (external contractors) — REAL API backed from day one. ──────
+  const [partners, setPartners] = useState<PartnerListItem[]>([]);
+  const [partnerModalOpen, setPartnerModalOpen] = useState(false);
+  const [partnerModalDraft, setPartnerModalDraft] = useState<PartnerModalDraft | null>(null);
   const [materialNeeds, setMaterialNeeds] = useState<ProjectMaterialNeed[]>([]);
   const [materialNeedUpdating, setMaterialNeedUpdating] = useState<Record<number, boolean>>({});
   const [materialCatalogRows, setMaterialCatalogRows] = useState<MaterialCatalogItem[]>([]);
@@ -319,7 +377,7 @@ export function App() {
   const [activeWikiPath, setActiveWikiPath] = useState<string | null>(null);
 
   const [planningWeekStart, setPlanningWeekStart] = useState<string>(() => startOfWeekISO(new Date()));
-  const [planningTaskTypeView, setPlanningTaskTypeView] = useState<TaskType>("construction");
+  const [planningTaskTypeView, setPlanningTaskTypeView] = useState<TaskType | "all">("all");
   const [planningWeek, setPlanningWeek] = useState<PlanningWeek | null>(null);
   const [calendarWeekStart, setCalendarWeekStart] = useState<string>(() => startOfWeekISO(new Date()));
   const [calendarWeeks, setCalendarWeeks] = useState<PlanningWeek[]>([]);
@@ -374,11 +432,21 @@ export function App() {
   const [auditLogsLoading, setAuditLogsLoading] = useState(false);
   const [rolePermissionsMeta, setRolePermissionsMeta] = useState<RolePermissionsMeta | null>(null);
   const [rolePermissionsLoading, setRolePermissionsLoading] = useState(false);
+  const rolePermissionsMetaRef = useRef<RolePermissionsMeta | null>(null);
+  const rolePermissionSaveQueuesRef = useRef<Record<string, Promise<void>>>({});
   const [userPermissionOverrides, setUserPermissionOverrides] = useState<Record<number, UserPermissionOverride>>({});
   const [userPermissionsLoading, setUserPermissionsLoading] = useState(false);
   const [weatherSettings, setWeatherSettings] = useState<WeatherSettings | null>(null);
   const [weatherApiKeyInput, setWeatherApiKeyInput] = useState("");
   const [weatherSettingsSaving, setWeatherSettingsSaving] = useState(false);
+  const [companySettings, setCompanySettings] = useState<CompanySettings | null>(null);
+  const [companySettingsForm, setCompanySettingsForm] = useState({
+    logo_url: "",
+    navigation_title: "SMPL",
+    company_name: "SMPL",
+    company_address: "",
+  });
+  const [companySettingsSaving, setCompanySettingsSaving] = useState(false);
   const [smtpSettings, setSmtpSettings] = useState<SmtpSettings | null>(null);
   const [smtpSettingsForm, setSmtpSettingsForm] = useState({
     host: "",
@@ -474,7 +542,8 @@ export function App() {
   // When true, the source task is marked done only after the report is saved successfully.
   const [reportShouldMarkSourceTaskDone, setReportShouldMarkSourceTaskDone] = useState(false);
   // When true, a restore banner is shown on the construction page.
-  const [reportHasStoredDraft, setReportHasStoredDraft] = useState(false);
+  const [reportDrafts, setReportDrafts] = useState<StoredReportDraft[]>([]);
+  const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
   const [constructionBackView, setConstructionBackView] = useState<MainView | null>(null);
   const [fileUploadModalOpen, setFileUploadModalOpen] = useState(false);
   const [avatarModalOpen, setAvatarModalOpen] = useState(false);
@@ -561,7 +630,9 @@ export function App() {
   const canManageSystem = effectivePermissions.has("system:manage");
   const canExportBackups = effectivePermissions.has("backups:export");
   const canManageProjectImport = effectivePermissions.has("projects:import");
+  const canMarkCritical = effectivePermissions.has("projects:mark_critical");
   const canUseProtectedFolders = effectivePermissions.has("files:view_protected");
+  const canManageFiles = effectivePermissions.has("files:manage");
   const canViewFinance = user?.effective_permissions?.includes("finance:view") ?? false;
   const canManageFinance = user?.effective_permissions?.includes("finance:manage") ?? false;
   const mainLabels = MAIN_LABELS[language];
@@ -783,6 +854,10 @@ export function App() {
               "",
           ).trim() || null;
         const lastStatusTimestamp = parseTimestampValue(lastStatusRaw);
+        // Derive a single address string (site address if set, else customer
+        // address) so search / display helpers can look it up without
+        // reaching back into the Project record each time.
+        const address = project ? projectLocationAddress(project) : "";
         return {
           ...row,
           project_id: projectId,
@@ -794,6 +869,7 @@ export function App() {
           last_updated_timestamp: lastUpdatedTimestamp,
           last_status_at: lastStatusRaw,
           last_status_timestamp: lastStatusTimestamp,
+          address,
         };
       })
       .sort((a, b) => {
@@ -831,6 +907,7 @@ export function App() {
         String(row.customer_name ?? ""),
         String(row.project_name ?? ""),
         String(row.last_state ?? ""),
+        String(row.address ?? ""),
       ]
         .join(" ")
         .toLowerCase();
@@ -929,7 +1006,12 @@ export function App() {
   const taskModalProjectSuggestions = useMemo(() => {
     const query = taskModalForm.project_query.trim().toLowerCase();
     const selectedId = Number(taskModalForm.project_id);
-    const rows = projects
+    // Use activeProjects (archived excluded) so users can't create new tasks
+    // on a closed project. `selectedTaskModalProject` still reads from the
+    // full `projects` list, so editing a task whose project was archived
+    // after the fact keeps showing the existing value — only *new* picks
+    // are restricted.
+    const rows = activeProjects
       .filter((project) => project.id !== selectedId)
       .filter((project) => {
         if (!query) return true;
@@ -945,7 +1027,7 @@ export function App() {
         return searchable.includes(query);
       });
     return rows.slice(0, 8);
-  }, [projects, taskModalForm.project_id, taskModalForm.project_query]);
+  }, [activeProjects, taskModalForm.project_id, taskModalForm.project_query]);
   const selectedTaskModalProject = useMemo(
     () => projects.find((project) => String(project.id) === taskModalForm.project_id) ?? null,
     [projects, taskModalForm.project_id],
@@ -1209,16 +1291,49 @@ export function App() {
   ]);
 
   const navViews = useMemo<MainView[]>(() => {
-    const taskView = workspaceMode === "office" ? "office_tasks" : "my_tasks";
-    const views: MainView[] = ["overview", "materials", taskView, "planning", "calendar", "messages"];
-    return views;
+    // Base nav list; items are filtered below based on the active workspace
+    // mode. Construction mode is the site-worker view (personal tasks, field
+    // tools) and Office mode is the manager/planner view (portfolio-wide).
+    const allViews: MainView[] = [
+      "overview",
+      "projects_all",
+      "projects_map",
+      "customers",
+      "my_tasks",
+      "office_tasks",
+      "calendar",
+      "planning",
+      "construction",
+      "materials",
+      "werkstatt",
+      "wiki",
+      "messages",
+      "time",
+      "profile",
+    ];
+    return allViews.filter((view) => {
+      // Office-only items: manager task triage view and project map.
+      if (view === "office_tasks" || view === "projects_map") {
+        return workspaceMode === "office";
+      }
+      // Construction-only item: the personal assigned task list.
+      if (view === "my_tasks") {
+        return workspaceMode === "construction";
+      }
+      return true;
+    });
   }, [workspaceMode]);
 
   const projectTabs = useMemo<ProjectTab[]>(() => {
-    const tabs: ProjectTab[] = ["overview", "tasks", "hours", "materials", "tickets", "files"];
-    if (canViewFinance) tabs.push("finances");
+    const tabs: ProjectTab[] = ["overview"];
+    if (workspaceMode === "office") tabs.push("gantt");
+    tabs.push("tasks", "hours", "materials", "tickets", "files");
+    // Finances only visible in office mode — field workers in construction
+    // view don't need access to financial data.
+    if (canViewFinance && workspaceMode === "office") tabs.push("finances");
     return tabs;
-  }, [canViewFinance]);
+  }, [canViewFinance, workspaceMode]);
+  const activeProjectTaskView: TaskView = projectTab === "gantt" ? "projects_overview" : taskView;
 
   const fileRows = useMemo(
     () =>
@@ -1508,13 +1623,18 @@ export function App() {
   const currentReleaseLabel = useMemo(() => {
     const currentCommit = String(updateStatus?.current_commit || "").trim();
     const normalizedBuild = firmwareBuild.toLowerCase().startsWith("local-") ? "" : firmwareBuild;
+    const statusMessage = String(updateStatus?.message || "").toLowerCase();
+    const missingMetadata =
+      statusMessage.includes("current release version is unresolved")
+      || statusMessage.includes("release metadata");
     return (
       resolvedCurrentReleaseVersion ||
       currentCommit ||
       normalizedBuild ||
+      (missingMetadata ? (language === "de" ? "Metadaten fehlen" : "Metadata missing") : "") ||
       (language === "de" ? "nicht gesetzt" : "not set")
     );
-  }, [firmwareBuild, language, resolvedCurrentReleaseVersion, updateStatus?.current_commit]);
+  }, [firmwareBuild, language, resolvedCurrentReleaseVersion, updateStatus?.current_commit, updateStatus?.message]);
 
   useEffect(() => {
     if (assignableUsers.length === 0) return;
@@ -1630,6 +1750,8 @@ export function App() {
     const onPointerOutside = (event: MouseEvent | TouchEvent) => {
       const target = event.target;
       if (!(target instanceof Element)) return;
+      // Allow clicks inside the menu wrapper (new class) OR the legacy wrapper.
+      if (target.closest(".messages-page-chat-menu")) return;
       if (target.closest(".thread-actions-menu-wrap")) return;
       setThreadActionMenuOpen(false);
     };
@@ -1675,6 +1797,10 @@ export function App() {
   }, [user?.id, user?.full_name, user?.email, user?.nickname]);
 
   useEffect(() => {
+    rolePermissionsMetaRef.current = rolePermissionsMeta;
+  }, [rolePermissionsMeta]);
+
+  useEffect(() => {
     const timer = window.setInterval(() => setNow(new Date()), 1000);
     return () => window.clearInterval(timer);
   }, []);
@@ -1704,6 +1830,30 @@ export function App() {
       setMainView("my_tasks");
     }
   }, [workspaceMode, mainView]);
+
+  useEffect(() => {
+    if (workspaceMode !== "office" && (projectTab === "gantt" || projectTab === "finances")) {
+      setProjectTab("overview");
+    }
+  }, [workspaceMode, projectTab]);
+
+  /**
+   * Legacy-alias redirect: the top-level "Materials" view was absorbed into
+   * Werkstatt as sub-tabs (Projekt-Bedarfe + Katalog). Deep links and old
+   * localStorage state can still set mainView="materials"; route them to
+   * the Werkstatt bedarfe tab instead of showing the retired page.
+   * See WERKSTATT_CONTRACT.md §1 for the absorption plan.
+   */
+  useEffect(() => {
+    if (mainView === "materials") {
+      setWerkstattTab("bedarfe");
+      setMainView("werkstatt");
+    }
+  }, [mainView]);
+
+  useEffect(() => {
+    void loadPublicCompanySettings();
+  }, []);
 
   useEffect(() => {
     return () => {
@@ -1806,7 +1956,7 @@ export function App() {
     }
 
     if (projectTab === "overview") void loadProjectOverview(activeProjectId);
-    if (projectTab === "tasks") void loadTasks(taskView, activeProjectId);
+    if (projectTab === "tasks" || projectTab === "gantt") void loadTasks(activeProjectTaskView, activeProjectId);
     if (projectTab === "tickets") void loadSitesAndTickets(activeProjectId);
     if (projectTab === "files") {
       void loadFiles(activeProjectId);
@@ -1814,7 +1964,7 @@ export function App() {
     }
     if (projectTab === "finances" || projectTab === "hours") void loadProjectFinance(activeProjectId);
     if (projectTab === "materials") void loadProjectTrackedMaterials(activeProjectId);
-  }, [mainView, projectTab, activeProjectId, token, user, taskView, canViewFinance]);
+  }, [mainView, projectTab, activeProjectId, token, user, activeProjectTaskView, canViewFinance]);
 
   useEffect(() => {
     if (!token || !user) return;
@@ -1833,7 +1983,7 @@ export function App() {
   useEffect(() => {
     if (!token || !user) return;
     if (mainView !== "planning") return;
-    void loadPlanningWeek(null, planningWeekStart, planningTaskTypeView);
+    void loadPlanningWeek(null, planningWeekStart, planningTaskTypeView === "all" ? null : planningTaskTypeView);
   }, [mainView, token, user, planningWeekStart, planningTaskTypeView]);
 
   useEffect(() => {
@@ -1928,26 +2078,47 @@ export function App() {
     setReportTaskChecklist([]);
   }, [mainView]);
 
-  // ── On mount: check if a saved draft exists and has meaningful content ─────
+  // ── On mount: load all drafts, migrating the legacy single-slot v2 key ────
+  // Runs exactly once. The v2 slot (if present) is folded into the v3 array
+  // as a single migrated entry, then removed. Corrupt / unparseable data is
+  // silently ignored so the user isn't locked out of the feature.
   useEffect(() => {
     try {
-      const raw = localStorage.getItem(REPORT_DRAFT_LS_KEY);
-      if (!raw) return;
-      const stored = JSON.parse(raw) as StoredReportDraft;
-      if (stored?.v !== 2) return;
-      const hasMeaningfulContent =
-        stored.workDone.trim().length > 0 ||
-        stored.incidents.trim().length > 0 ||
-        stored.draft.customer.trim().length > 0 ||
-        stored.workers.some((w) => w.name.trim().length > 0) ||
-        stored.materialRows.some((r) => r.item.trim().length > 0);
-      if (hasMeaningfulContent) setReportHasStoredDraft(true);
+      const v3raw = localStorage.getItem(REPORT_DRAFTS_LS_KEY);
+      const parsed: unknown = v3raw ? JSON.parse(v3raw) : null;
+      const existing: StoredReportDraft[] = Array.isArray(parsed)
+        ? parsed.filter((d): d is StoredReportDraft => !!d && typeof d === "object" && (d as StoredReportDraft).v === 3 && typeof (d as StoredReportDraft).id === "string")
+        : [];
+
+      const v2raw = localStorage.getItem(REPORT_DRAFT_LS_KEY);
+      if (v2raw && existing.length === 0) {
+        // One-time migration from single-slot v2 → array v3.
+        try {
+          const legacy = JSON.parse(v2raw) as { v?: number } & Omit<StoredReportDraft, "v" | "id">;
+          if (legacy?.v === 2) {
+            const migrated: StoredReportDraft = {
+              ...legacy,
+              v: 3,
+              id: generateDraftId(),
+            } as StoredReportDraft;
+            existing.push(migrated);
+          }
+        } catch {
+          // Corrupt v2 payload — drop it.
+        }
+        try { localStorage.removeItem(REPORT_DRAFT_LS_KEY); } catch {}
+      }
+      setReportDrafts(existing);
     } catch {
-      // Corrupt localStorage data — silently ignore.
+      // Any unexpected failure → start with an empty list; drafts array is
+      // rebuilt on the next autosave tick.
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ── Debounced autosave: write draft to localStorage 800ms after last change ─
+  // ── Debounced autosave: upsert the current form state into reportDrafts ───
+  // If an active draft id is set, that entry is updated in place. Otherwise
+  // a fresh draft is created and its id is stashed as the active one so
+  // subsequent edits target the same entry.
   useEffect(() => {
     const timer = setTimeout(() => {
       const hasContent =
@@ -1956,9 +2127,10 @@ export function App() {
         reportDraft.customer.trim().length > 0 ||
         reportWorkers.some((w) => w.name.trim().length > 0) ||
         reportMaterialRows.some((r) => r.item.trim().length > 0);
-      if (!hasContent) return; // Don't overwrite a real draft with empty state.
-      const stored: StoredReportDraft = {
-        v: 2,
+      if (!hasContent) return; // Don't create or overwrite a draft with empty state.
+
+      const snapshot: Omit<StoredReportDraft, "id"> = {
+        v: 3,
         projectId: reportProjectId,
         draft: reportDraft,
         workDone: reportWorkDone,
@@ -1973,12 +2145,27 @@ export function App() {
         sourceTaskId: reportSourceTaskId,
         savedAt: new Date().toISOString(),
       };
-      try { localStorage.setItem(REPORT_DRAFT_LS_KEY, JSON.stringify(stored)); } catch {}
+
+      setReportDrafts((prev) => {
+        const targetId = activeDraftId;
+        let next: StoredReportDraft[];
+        if (targetId && prev.some((d) => d.id === targetId)) {
+          next = prev.map((d) => (d.id === targetId ? { ...snapshot, id: targetId } : d));
+        } else {
+          const newId = generateDraftId();
+          // Defer the activeDraftId update to the next tick so we don't
+          // trigger a setState-during-render warning.
+          setTimeout(() => setActiveDraftId(newId), 0);
+          next = [{ ...snapshot, id: newId }, ...prev];
+        }
+        try { localStorage.setItem(REPORT_DRAFTS_LS_KEY, JSON.stringify(next)); } catch {}
+        return next;
+      });
     }, 800);
     return () => clearTimeout(timer);
   }, [
-    reportProjectId, reportDraft, reportWorkDone, reportIncidents, reportExtras,
-    reportOfficeRework, reportOfficeNextSteps, reportDate, reportWorkers,
+    activeDraftId, reportProjectId, reportDraft, reportWorkDone, reportIncidents,
+    reportExtras, reportOfficeRework, reportOfficeNextSteps, reportDate, reportWorkers,
     reportMaterialRows, reportOfficeMaterialRows, reportSourceTaskId,
   ]);
 
@@ -2171,7 +2358,7 @@ export function App() {
     try {
       if (mainView === "project" && activeProjectId) {
         if (projectTab === "overview") await loadProjectOverview(activeProjectId);
-        if (projectTab === "tasks") await loadTasks(taskView, activeProjectId);
+        if (projectTab === "tasks" || projectTab === "gantt") await loadTasks(activeProjectTaskView, activeProjectId);
         if (projectTab === "tickets") await loadSitesAndTickets(activeProjectId);
         if (projectTab === "files") {
           await Promise.all([loadFiles(activeProjectId), loadProjectFolders(activeProjectId)]);
@@ -2195,7 +2382,7 @@ export function App() {
       }
 
       if (mainView === "planning") {
-        await loadPlanningWeek(null, planningWeekStart, planningTaskTypeView);
+        await loadPlanningWeek(null, planningWeekStart, planningTaskTypeView === "all" ? null : planningTaskTypeView);
         return;
       }
 
@@ -2250,7 +2437,14 @@ export function App() {
     if (eventType === "task.created" || eventType === "task.updated" || eventType === "task.deleted") {
       // Re-fetch planning week if the planning view is currently open.
       if (mainView === "planning") {
-        void loadPlanningWeek(null, planningWeekStart, planningTaskTypeView ?? null);
+        void loadPlanningWeek(null, planningWeekStart, planningTaskTypeView === "all" ? null : planningTaskTypeView);
+        planningRefreshed = true;
+      }
+      // Re-fetch calendar weeks if the calendar view is open. Only task
+      // mutations matter here — chat messages, file uploads, etc. should NOT
+      // cause the calendar to flash its loading state.
+      if (mainView === "calendar") {
+        void loadPlanningWindow(null, calendarWeekStart, 4);
         planningRefreshed = true;
       }
     }
@@ -2281,14 +2475,19 @@ export function App() {
       return;
     }
 
-    if (!planningRefreshed) {
+    // Fallback: refresh the active view for any event not already handled.
+    // Skip calendar and planning — they manage their own refresh above and
+    // shouldn't flash their loading state for unrelated events (e.g. chat).
+    if (!planningRefreshed && mainView !== "calendar" && mainView !== "planning") {
       void refreshActiveViewRealtime();
     }
   }, [
     activeThreadId,
+    calendarWeekStart,
     language,
     loadNotifications,
     loadPlanningWeek,
+    loadPlanningWindow,
     loadThreads,
     mainView,
     planningTaskTypeView,
@@ -2383,12 +2582,20 @@ export function App() {
       }
       if (canManageSettings) {
         try {
-          const [weatherRow, smtpRow] = await Promise.all([
+          const [weatherRow, companyRow, smtpRow] = await Promise.all([
             apiFetch<WeatherSettings>("/admin/settings/weather", token),
+            apiFetch<CompanySettings>("/admin/settings/company", token),
             apiFetch<SmtpSettings>("/admin/settings/smtp", token),
           ]);
           setWeatherSettings(weatherRow);
           setWeatherApiKeyInput("");
+          setCompanySettings(companyRow);
+          setCompanySettingsForm({
+            logo_url: companyRow.logo_url || "",
+            navigation_title: companyRow.navigation_title || "SMPL",
+            company_name: companyRow.company_name || "SMPL",
+            company_address: companyRow.company_address || "",
+          });
           setSmtpSettings(smtpRow);
           setSmtpSettingsForm({
             host: smtpRow.host || "",
@@ -2403,6 +2610,12 @@ export function App() {
           });
         } catch {
           setWeatherSettings(null);
+          setCompanySettingsForm({
+            logo_url: "",
+            navigation_title: "SMPL",
+            company_name: "SMPL",
+            company_address: "",
+          });
           setSmtpSettings(null);
           setSmtpSettingsForm({
             host: "",
@@ -2449,7 +2662,7 @@ export function App() {
       }
       if (mainView === "project" && activeProjectId) {
         if (projectTab === "overview") await loadProjectOverview(activeProjectId);
-        if (projectTab === "tasks") await loadTasks(taskView, activeProjectId);
+        if (projectTab === "tasks" || projectTab === "gantt") await loadTasks(activeProjectTaskView, activeProjectId);
         if (projectTab === "finances" || projectTab === "hours") await loadProjectFinance(activeProjectId);
         if (projectTab === "materials") await loadProjectTrackedMaterials(activeProjectId);
       }
@@ -2775,6 +2988,20 @@ export function App() {
     }
   }
 
+  async function updateMaterialNeedNote(materialNeedId: number, notes: string) {
+    try {
+      const updated = await apiFetch<ProjectMaterialNeed>(`/materials/${materialNeedId}`, token, {
+        method: "PATCH",
+        body: JSON.stringify({ notes }),
+      });
+      setMaterialNeeds((current) =>
+        current.map((entry) => (entry.id === materialNeedId ? updated : entry)),
+      );
+    } catch (err: any) {
+      setError(err.message ?? "Failed to update material note");
+    }
+  }
+
   async function loadProjectOverview(projectId: number) {
     try {
       const [details, openTasks] = await Promise.all([
@@ -2858,6 +3085,61 @@ export function App() {
       setError(err.message ?? "Failed to save weather settings");
     } finally {
       setWeatherSettingsSaving(false);
+    }
+  }
+
+  async function loadPublicCompanySettings() {
+    try {
+      const payload = await apiFetch<CompanySettings>("/admin/settings/company/public", null);
+      setCompanySettings(payload);
+      setCompanySettingsForm((current) =>
+        current.logo_url ||
+        current.navigation_title !== "SMPL" ||
+        current.company_name !== "SMPL" ||
+        current.company_address
+          ? current
+          : {
+              logo_url: payload.logo_url || "",
+              navigation_title: payload.navigation_title || "SMPL",
+              company_name: payload.company_name || "SMPL",
+              company_address: payload.company_address || "",
+            },
+      );
+    } catch {
+      setCompanySettings((current) => current);
+    }
+  }
+
+  async function saveCompanySettings(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!canManageSettings) return;
+    setCompanySettingsSaving(true);
+    try {
+      const payload = await apiFetch<CompanySettings>("/admin/settings/company", token, {
+        method: "PATCH",
+        body: JSON.stringify({
+          logo_url: companySettingsForm.logo_url.trim(),
+          navigation_title: companySettingsForm.navigation_title.trim(),
+          company_name: companySettingsForm.company_name.trim(),
+          company_address: companySettingsForm.company_address.trim(),
+        }),
+      });
+      setCompanySettings(payload);
+      setCompanySettingsForm({
+        logo_url: payload.logo_url || "",
+        navigation_title: payload.navigation_title || "SMPL",
+        company_name: payload.company_name || "SMPL",
+        company_address: payload.company_address || "",
+      });
+      setNotice(
+        language === "de"
+          ? "Firmeninformationen gespeichert"
+          : "Company settings saved",
+      );
+    } catch (err: any) {
+      setError(err.message ?? "Failed to save company settings");
+    } finally {
+      setCompanySettingsSaving(false);
     }
   }
 
@@ -3333,12 +3615,19 @@ export function App() {
         project.last_state ??
         (typeof project.extra_attributes?.Notiz === "string" ? project.extra_attributes.Notiz : ""),
       last_status_at: isoToLocalDateTimeInput(project.last_status_at),
+      customer_id: project.customer_id ?? null,
       customer_name: project.customer_name ?? "",
       customer_address: project.customer_address ?? "",
       construction_site_address: project.construction_site_address ?? "",
       customer_contact: project.customer_contact ?? "",
       customer_email: project.customer_email ?? "",
       customer_phone: project.customer_phone ?? "",
+      // When the saved record already has a site address distinct from the
+      // customer address, keep the advanced field visible on reopen.
+      use_separate_site_address: Boolean(
+        project.construction_site_address &&
+          project.construction_site_address !== project.customer_address,
+      ),
       site_access_type: normalizeProjectSiteAccessType(project.site_access_type),
       site_access_note: project.site_access_note ?? "",
       class_template_ids: assignedClassTemplateIds,
@@ -3483,13 +3772,21 @@ export function App() {
     });
   }
 
-  function openProjectById(projectId: number, backView: MainView | null = "my_tasks") {
+  function openProjectById(
+    projectId: number,
+    backView: MainView | null = "my_tasks",
+    tab: ProjectTab = "overview",
+  ) {
     ensureProjectVisibleById(projectId);
     setMyTasksBackProjectId(null);
     setProjectBackView(backView);
     setActiveProjectId(projectId);
-    setProjectTab("overview");
+    setProjectTab(tab);
     setMainView("project");
+  }
+
+  function openProjectGanttById(projectId: number, backView: MainView | null = "planning") {
+    openProjectById(projectId, backView, "gantt");
   }
 
   function projectSearchLabel(project: Project): string {
@@ -3614,7 +3911,7 @@ export function App() {
   }
 
   function openTaskModal(defaults?: { projectId?: number | null; dueDate?: string; taskType?: TaskType }) {
-    const fallbackProjectId = defaults?.projectId ?? activeProjectId ?? projects[0]?.id ?? null;
+    const fallbackProjectId = defaults?.projectId ?? null;
     const fallbackDueDate = defaults?.dueDate ?? "";
     const fallbackProject = projects.find((project) => project.id === fallbackProjectId) ?? null;
     const nextForm = buildTaskModalFormState({
@@ -4087,6 +4384,7 @@ export function App() {
             "status",
             "last_state",
             "last_status_at",
+            "customer_id",
             "customer_name",
             "customer_address",
             "construction_site_address",
@@ -4135,6 +4433,23 @@ export function App() {
         return;
       }
       setError(err.message ?? "Failed to save project");
+    }
+  }
+
+  async function setProjectCritical(projectId: number, isCritical: boolean): Promise<void> {
+    if (!token) return;
+    try {
+      const updated = await apiFetch<Project>(`/projects/${projectId}/critical`, token, {
+        method: "PUT",
+        body: JSON.stringify({ is_critical: isCritical }),
+      });
+      setProjects((prev) => prev.map((p) => (p.id === projectId ? { ...p, ...updated } : p)));
+      if (activeProjectId === projectId) {
+        // Activity feed surfaces the critical set/cleared event
+        await loadProjectOverview(projectId);
+      }
+    } catch (err: any) {
+      setError(err?.message ?? (language === "de" ? "Markierung fehlgeschlagen" : "Failed to update critical flag"));
     }
   }
 
@@ -4401,10 +4716,10 @@ export function App() {
       });
       setProjectTaskForm(buildEmptyProjectTaskFormState());
       setProjectTaskMaterialRows([createReportMaterialRow("materials")]);
-      await loadTasks(taskView, activeProjectId);
+      await loadTasks(activeProjectTaskView, activeProjectId);
       await loadProjectOverview(activeProjectId);
       if (mainView === "planning") {
-        await loadPlanningWeek(null, planningWeekStart, planningTaskTypeView);
+        await loadPlanningWeek(null, planningWeekStart, planningTaskTypeView === "all" ? null : planningTaskTypeView);
       }
       setOverview(await apiFetch<any[]>("/projects-overview", token));
       setNotice(language === "de" ? "Aufgabe gespeichert" : "Task saved");
@@ -4499,6 +4814,7 @@ export function App() {
           class_template_id: classTemplateId,
           status: "open",
           assignee_ids: taskModalForm.assignee_ids,
+          partner_ids: taskModalForm.partner_ids,
           due_date: dueDate,
           start_time: startTime,
           estimated_hours: estimatedHours,
@@ -4510,7 +4826,7 @@ export function App() {
       await loadBaseData();
       if (targetWeekStart) {
         setPlanningWeekStart(targetWeekStart);
-        await loadPlanningWeek(null, targetWeekStart, planningTaskTypeView);
+        await loadPlanningWeek(null, targetWeekStart, planningTaskTypeView === "all" ? null : planningTaskTypeView);
       }
       setNotice(language === "de" ? "Aufgabe gespeichert" : "Task saved");
     } catch (err: any) {
@@ -4577,11 +4893,18 @@ export function App() {
         "start_time",
         "estimated_hours",
         "assignee_ids",
+        "partner_ids",
         "week_start",
       ] as (keyof typeof nextPayload)[]
     ).forEach((key) => {
       if (key === "assignee_ids") {
         if (!sameNumberSet(nextPayload.assignee_ids, basePayload.assignee_ids)) {
+          patchPayload[key] = nextPayload[key];
+        }
+        return;
+      }
+      if (key === "partner_ids") {
+        if (!sameNumberSet(nextPayload.partner_ids, basePayload.partner_ids)) {
           patchPayload[key] = nextPayload[key];
         }
         return;
@@ -4612,14 +4935,14 @@ export function App() {
       });
       closeTaskEditModal();
       if (mainView === "project" && activeProjectId) {
-        await loadTasks(taskView, activeProjectId);
+        await loadTasks(activeProjectTaskView, activeProjectId);
         await loadProjectOverview(activeProjectId);
       }
       if (mainView === "my_tasks" || mainView === "overview") {
         await loadTasks("my", null);
       }
       if (mainView === "planning") {
-        await loadPlanningWeek(null, planningWeekStart, planningTaskTypeView);
+        await loadPlanningWeek(null, planningWeekStart, planningTaskTypeView === "all" ? null : planningTaskTypeView);
       }
       setOverview(await apiFetch<any[]>("/projects-overview", token));
       setNotice(language === "de" ? "Aufgabe aktualisiert" : "Task updated");
@@ -4704,14 +5027,14 @@ export function App() {
         body: JSON.stringify(payload),
       });
       if (mainView === "project" && activeProjectId) {
-        await loadTasks(taskView, activeProjectId);
+        await loadTasks(activeProjectTaskView, activeProjectId);
         await loadProjectOverview(activeProjectId);
       }
       if (mainView === "my_tasks" || mainView === "overview") {
         await loadTasks("my", null);
       }
       if (mainView === "planning") {
-        await loadPlanningWeek(null, planningWeekStart, planningTaskTypeView);
+        await loadPlanningWeek(null, planningWeekStart, planningTaskTypeView === "all" ? null : planningTaskTypeView);
       }
       setNotice(language === "de" ? "Aufgabe abgeschlossen" : "Task marked complete");
     } catch (err: any) {
@@ -4739,14 +5062,14 @@ export function App() {
       await apiFetch(`/tasks/${taskEditForm.id}`, token, { method: "DELETE" });
       closeTaskEditModal();
       if (mainView === "project" && activeProjectId) {
-        await loadTasks(taskView, activeProjectId);
+        await loadTasks(activeProjectTaskView, activeProjectId);
         await loadProjectOverview(activeProjectId);
       }
       if (mainView === "my_tasks" || mainView === "overview") {
         await loadTasks("my", null);
       }
       if (mainView === "planning") {
-        await loadPlanningWeek(null, planningWeekStart, planningTaskTypeView);
+        await loadPlanningWeek(null, planningWeekStart, planningTaskTypeView === "all" ? null : planningTaskTypeView);
       }
       setOverview(await apiFetch<any[]>("/projects-overview", token));
       setNotice(language === "de" ? "Aufgabe gelöscht" : "Task deleted");
@@ -5379,6 +5702,15 @@ export function App() {
     );
   }
 
+  async function deleteFile(fileId: number) {
+    try {
+      await apiFetch<void>(`/files/${fileId}`, token, { method: "DELETE" });
+      setFiles((current) => current.filter((f) => f.id !== fileId));
+    } catch (err: any) {
+      setError(err.message ?? "Failed to delete file");
+    }
+  }
+
   function wikiFileUrl(path: string, download = false) {
     const normalized = path
       .split("/")
@@ -5428,42 +5760,71 @@ export function App() {
     setReportDraft((current) => ({ ...current, [field]: value }));
   }
 
-  function restoreReportDraft() {
-    try {
-      const raw = localStorage.getItem(REPORT_DRAFT_LS_KEY);
-      if (!raw) return;
-      const stored = JSON.parse(raw) as StoredReportDraft;
-      if (stored?.v !== 2) return;
-      setReportProjectId(stored.projectId);
-      const restoredProject = projects.find((p) => String(p.id) === stored.projectId) ?? null;
-      setReportDraft(restoredProject ? reportDraftFromProject(restoredProject) : stored.draft);
-      setReportWorkDone(stored.workDone);
-      setReportIncidents(stored.incidents);
-      setReportExtras(stored.extras);
-      setReportOfficeRework(stored.officeRework);
-      setReportOfficeNextSteps(stored.officeNextSteps);
-      setReportDate(stored.date);
-      setReportWorkers(stored.workers.length > 0 ? stored.workers : [{ name: "", start_time: "", end_time: "" }]);
-      setReportMaterialRows(
-        stored.materialRows.length > 0
-          ? stored.materialRows.map((r) => ({ ...createReportMaterialRow("materials"), ...r }))
-          : [createReportMaterialRow("materials")],
-      );
-      setReportOfficeMaterialRows(
-        stored.officeMaterialRows.length > 0
-          ? stored.officeMaterialRows.map((r) => ({ ...createReportMaterialRow("office_materials"), ...r }))
-          : [createReportMaterialRow("office_materials")],
-      );
-      if (stored.sourceTaskId) setReportSourceTaskId(stored.sourceTaskId);
-    } catch {
-      // Corrupt data — ignore.
-    }
-    setReportHasStoredDraft(false);
+  /** Load a specific draft into the active construction report form. */
+  function openReportDraft(id: string) {
+    const stored = reportDrafts.find((d) => d.id === id);
+    if (!stored) return;
+    setActiveDraftId(stored.id);
+    setReportProjectId(stored.projectId);
+    const restoredProject = projects.find((p) => String(p.id) === stored.projectId) ?? null;
+    setReportDraft(restoredProject ? reportDraftFromProject(restoredProject) : stored.draft);
+    setReportWorkDone(stored.workDone);
+    setReportIncidents(stored.incidents);
+    setReportExtras(stored.extras);
+    setReportOfficeRework(stored.officeRework);
+    setReportOfficeNextSteps(stored.officeNextSteps);
+    setReportDate(stored.date);
+    setReportWorkers(
+      stored.workers.length > 0 ? stored.workers : [{ name: "", start_time: "", end_time: "" }],
+    );
+    setReportMaterialRows(
+      stored.materialRows.length > 0
+        ? stored.materialRows.map((r) => ({ ...createReportMaterialRow("materials"), ...r }))
+        : [createReportMaterialRow("materials")],
+    );
+    setReportOfficeMaterialRows(
+      stored.officeMaterialRows.length > 0
+        ? stored.officeMaterialRows.map((r) => ({ ...createReportMaterialRow("office_materials"), ...r }))
+        : [createReportMaterialRow("office_materials")],
+    );
+    setReportSourceTaskId(stored.sourceTaskId);
   }
 
-  function discardReportDraft() {
-    try { localStorage.removeItem(REPORT_DRAFT_LS_KEY); } catch {}
-    setReportHasStoredDraft(false);
+  /** Remove a draft permanently. If it was the active one, also reset the
+   *  form so the user isn't editing a ghost. */
+  function deleteReportDraft(id: string) {
+    setReportDrafts((prev) => {
+      const next = prev.filter((d) => d.id !== id);
+      try { localStorage.setItem(REPORT_DRAFTS_LS_KEY, JSON.stringify(next)); } catch {}
+      return next;
+    });
+    if (activeDraftId === id) {
+      setActiveDraftId(null);
+      resetReportFormFields();
+    }
+  }
+
+  /** Reset the form + clear the active draft id. The next autosave tick will
+   *  create a fresh draft entry once the user types something. */
+  function startNewReportDraft() {
+    setActiveDraftId(null);
+    resetReportFormFields();
+  }
+
+  /** Shared form-reset helper used by startNewReportDraft and deleteReportDraft.
+   *  Mirrors the cleanup done after a successful submit. */
+  function resetReportFormFields() {
+    setReportDraft({ ...EMPTY_REPORT_DRAFT });
+    setReportWorkDone("");
+    setReportIncidents("");
+    setReportExtras("");
+    setReportOfficeRework("");
+    setReportOfficeNextSteps("");
+    setReportWorkers([{ name: "", start_time: "", end_time: "" }]);
+    setReportMaterialRows([createReportMaterialRow("materials")]);
+    setReportOfficeMaterialRows([createReportMaterialRow("office_materials")]);
+    setReportSourceTaskId(null);
+    setReportTaskChecklist([]);
   }
 
   function updateReportMaterialRow(
@@ -5649,7 +6010,7 @@ export function App() {
 
     const multipart = new FormData();
     multipart.set("report_date", reportDate);
-    multipart.set("send_telegram", form.get("send_telegram") === "on" ? "true" : "false");
+    multipart.set("send_telegram", "false");
     multipart.set("payload", JSON.stringify(payload));
     if (targetProjectId) multipart.set("project_id", String(targetProjectId));
 
@@ -5700,9 +6061,17 @@ export function App() {
       setReportShouldMarkSourceTaskDone(false);
       setReportTaskChecklist([]);
       clearReportImages();
-      // Clear the saved draft from localStorage now that the form was submitted.
-      try { localStorage.removeItem(REPORT_DRAFT_LS_KEY); } catch {}
-      setReportHasStoredDraft(false);
+      // Remove the submitted draft from the array so it doesn't linger in
+      // the drafts list. Other drafts (for the same or different projects)
+      // are preserved.
+      if (activeDraftId) {
+        setReportDrafts((prev) => {
+          const next = prev.filter((d) => d.id !== activeDraftId);
+          try { localStorage.setItem(REPORT_DRAFTS_LS_KEY, JSON.stringify(next)); } catch {}
+          return next;
+        });
+      }
+      setActiveDraftId(null);
 
       // Mark source task done after clearing form state (deferred from markTaskDone).
       if (taskToMarkDone) {
@@ -5827,6 +6196,13 @@ export function App() {
         body: JSON.stringify({ workspace_lock: lock }),
       });
       setUsers(await apiFetch<User[]>("/admin/users", token));
+      // If the admin is updating their own workspace lock, update the local
+      // user state immediately so the sidebar toggle hides and the lock takes
+      // effect without a page refresh. Other users will pick up the change on
+      // their next /me refresh.
+      if (user && user.id === userId) {
+        setUser({ ...user, workspace_lock: lock });
+      }
     } catch (err: any) {
       setError(err.message ?? "Failed to update workspace lock");
     }
@@ -6371,35 +6747,54 @@ export function App() {
   };
 
   const setRolePermission = async (role: string, permission: string, enabled: boolean) => {
-    if (!token || !rolePermissionsMeta || !canManagePermissions) return;
-    // Optimistic update — UI reflects change immediately
-    const current = rolePermissionsMeta.permissions[role] ?? [];
+    if (!token || !canManagePermissions) return;
+    const meta = rolePermissionsMetaRef.current;
+    if (!meta) return;
+
+    const current = meta.permissions[role] ?? [];
     const next = enabled
       ? [...new Set([...current, permission])]
       : current.filter((p) => p !== permission);
-    setRolePermissionsMeta({
-      ...rolePermissionsMeta,
-      permissions: { ...rolePermissionsMeta.permissions, [role]: next },
-    });
-    try {
-      const res = await fetch(`/api/admin/role-permissions/${role}`, {
-        method: "PUT",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ permissions: next }),
-      });
-      if (res.ok) {
+    const unchanged =
+      current.length === next.length && current.every((value, index) => value === next[index]);
+    if (unchanged) return;
+
+    const optimisticMeta = {
+      ...meta,
+      permissions: { ...meta.permissions, [role]: next },
+    };
+    rolePermissionsMetaRef.current = optimisticMeta;
+    setRolePermissionsMeta(optimisticMeta);
+
+    const previousQueue = rolePermissionSaveQueuesRef.current[role] ?? Promise.resolve();
+    const currentRequest = previousQueue
+      .catch(() => undefined)
+      .then(async () => {
+        const latestMeta = rolePermissionsMetaRef.current;
+        const latestPermissions = latestMeta?.permissions[role] ?? [];
+        const res = await fetch(`/api/admin/role-permissions/${role}`, {
+          method: "PUT",
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ permissions: latestPermissions }),
+        });
+        if (!res.ok) {
+          await loadRolePermissions();
+          return;
+        }
         const data = await res.json();
-        setRolePermissionsMeta((prev) =>
-          prev ? { ...prev, permissions: data.permissions } : prev,
-        );
+        setRolePermissionsMeta((prev) => {
+          const merged = prev ? { ...prev, permissions: data.permissions } : prev;
+          rolePermissionsMetaRef.current = merged;
+          return merged;
+        });
         await refreshCurrentUser();
-      } else {
-        // Revert on server error
+      })
+      .catch(async () => {
         await loadRolePermissions();
-      }
-    } catch {
-      await loadRolePermissions();
-    }
+      });
+
+    rolePermissionSaveQueuesRef.current[role] = currentRequest;
+    await currentRequest;
   };
 
   const resetRoleToDefaults = async (role: string) => {
@@ -6829,6 +7224,219 @@ export function App() {
     }
   }
 
+  // ── Customers (Kunden) helpers ────────────────────────────────────────────
+  // Thin wrappers around the real `/api/customers` endpoints that keep
+  // `customers` in state and surface user-facing errors through `setError`.
+  // Token passed explicitly, matching `loadPartners` / `savePartner` shape.
+  const loadCustomers = useCallback(
+    async (query: string = "", archived: boolean = false): Promise<void> => {
+      try {
+        const rows = await apiListCustomers(token, query, archived);
+        setCustomers(rows);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setError(
+          message ||
+            (language === "de"
+              ? "Kunden konnten nicht geladen werden"
+              : "Failed to load customers"),
+        );
+      }
+    },
+    [language, token],
+  );
+
+  const saveCustomer = useCallback(
+    async (data: CustomerWriteInput, id?: number): Promise<CustomerListItem> => {
+      const saved = await apiSaveCustomer(token, data, id);
+      setCustomers((current) => {
+        const existingIndex = current.findIndex((row) => row.id === saved.id);
+        if (existingIndex >= 0) {
+          return current.map((row) => (row.id === saved.id ? saved : row));
+        }
+        return [...current, saved];
+      });
+      setNotice(
+        language === "de"
+          ? id
+            ? "Kunde aktualisiert"
+            : "Kunde angelegt"
+          : id
+            ? "Customer updated"
+            : "Customer created",
+      );
+      return saved;
+    },
+    [language, token],
+  );
+
+  const archiveCustomer = useCallback(
+    async (id: number): Promise<void> => {
+      try {
+        const updated = await apiArchiveCustomer(token, id);
+        setCustomers((current) =>
+          current.map((row) => (row.id === id ? updated : row)),
+        );
+        setNotice(language === "de" ? "Kunde archiviert" : "Customer archived");
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setError(message);
+      }
+    },
+    [language, token],
+  );
+
+  const unarchiveCustomer = useCallback(
+    async (id: number): Promise<void> => {
+      try {
+        const updated = await apiUnarchiveCustomer(token, id);
+        setCustomers((current) =>
+          current.map((row) => (row.id === id ? updated : row)),
+        );
+        setNotice(
+          language === "de" ? "Kunde wiederhergestellt" : "Customer restored",
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setError(message);
+      }
+    },
+    [language, token],
+  );
+
+  const openCustomer = useCallback((id: number) => {
+    setActiveCustomerId(id);
+    setProjectBackView(null);
+    setOverviewShortcutBackVisible(false);
+    setMainView("customer_detail");
+  }, []);
+
+  const openCustomerModal = useCallback((options: CustomerModalOpenOptions) => {
+    setCustomerModalDraft(options);
+    setCustomerModalOpen(true);
+  }, []);
+
+  const closeCustomerModal = useCallback(() => {
+    setCustomerModalOpen(false);
+    setCustomerModalDraft(null);
+  }, []);
+
+  // ── Partners (external contractors) helpers ──────────────────────────────
+  // Thin wrappers around `utils/partnersApi` keeping `partners` in state and
+  // surfacing errors through `setError`. Calls real backend endpoints.
+  const loadPartners = useCallback(
+    async (
+      query: string = "",
+      archived: boolean = false,
+      trade: string | null = null,
+    ): Promise<void> => {
+      try {
+        const rows = await apiListPartners(token, query, archived, trade);
+        setPartners(rows);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setError(
+          message ||
+            (language === "de"
+              ? "Partner konnten nicht geladen werden"
+              : "Failed to load partners"),
+        );
+      }
+    },
+    [token, language],
+  );
+
+  const savePartner = useCallback(
+    async (data: PartnerWriteInput, id?: number): Promise<PartnerListItem> => {
+      const saved = await apiSavePartner(token, data, id);
+      setPartners((current) => {
+        const existingIndex = current.findIndex((row) => row.id === saved.id);
+        if (existingIndex >= 0) {
+          return current.map((row) => (row.id === saved.id ? saved : row));
+        }
+        return [...current, saved];
+      });
+      setNotice(
+        language === "de"
+          ? id
+            ? "Partner aktualisiert"
+            : "Partner angelegt"
+          : id
+            ? "Partner updated"
+            : "Partner created",
+      );
+      return saved;
+    },
+    [token, language],
+  );
+
+  const archivePartner = useCallback(
+    async (id: number): Promise<void> => {
+      try {
+        const updated = await apiArchivePartner(token, id);
+        setPartners((current) =>
+          current.map((row) => (row.id === id ? updated : row)),
+        );
+        setNotice(language === "de" ? "Partner archiviert" : "Partner archived");
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setError(message);
+      }
+    },
+    [token, language],
+  );
+
+  const unarchivePartner = useCallback(
+    async (id: number): Promise<void> => {
+      try {
+        const updated = await apiUnarchivePartner(token, id);
+        setPartners((current) =>
+          current.map((row) => (row.id === id ? updated : row)),
+        );
+        setNotice(
+          language === "de" ? "Partner wiederhergestellt" : "Partner restored",
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        setError(message);
+      }
+    },
+    [token, language],
+  );
+
+  const openPartnerModal = useCallback((options: PartnerModalOpenOptions) => {
+    setPartnerModalDraft(options);
+    setPartnerModalOpen(true);
+  }, []);
+
+  const closePartnerModal = useCallback(() => {
+    setPartnerModalOpen(false);
+    setPartnerModalDraft(null);
+  }, []);
+
+  const partnerById = useCallback(
+    (id: number): Partner | null => {
+      const row = partners.find((p) => p.id === id);
+      return row ?? null;
+    },
+    [partners],
+  );
+
+  // Initial mock-data hydration — the backend swap removes the need for this
+  // because the real API will stream via SSE like the rest of the app.
+  useEffect(() => {
+    if (!token) return;
+    void loadCustomers("", false);
+  }, [token, loadCustomers]);
+
+  // Partners load on login. The Werkstatt → Partner tab re-triggers with
+  // specific filters; this initial pull keeps the TaskModal multi-select
+  // suggestions warm regardless of whether the user ever visits the tab.
+  useEffect(() => {
+    if (!token) return;
+    void loadPartners("", false, null);
+  }, [token, loadPartners]);
+
   function openProfileViewFromMenu() {
     setProjectBackView(null);
     setOverviewShortcutBackVisible(false);
@@ -6914,6 +7522,10 @@ export function App() {
     setOverviewShortcutBackVisible,
     projectTab,
     setProjectTab,
+    werkstattTab,
+    setWerkstattTab,
+    activeWerkstattArticleId,
+    setActiveWerkstattArticleId,
     projectBackView,
     setProjectBackView,
     constructionBackView,
@@ -6972,6 +7584,34 @@ export function App() {
     setProjectSidebarSearchOpen,
     projectSidebarSearchQuery,
     setProjectSidebarSearchQuery,
+
+    // ── Customers ─────────────────────────────────────────────────────────────
+    customers,
+    setCustomers,
+    activeCustomerId,
+    setActiveCustomerId,
+    customerModalOpen,
+    customerModalDraft,
+    loadCustomers,
+    saveCustomer,
+    archiveCustomer,
+    unarchiveCustomer,
+    openCustomer,
+    openCustomerModal,
+    closeCustomerModal,
+
+    // ── Partners (external contractors) ────────────────────────────────────────
+    partners,
+    setPartners,
+    partnerModalOpen,
+    partnerModalDraft,
+    loadPartners,
+    savePartner,
+    archivePartner,
+    unarchivePartner,
+    openPartnerModal,
+    closePartnerModal,
+    partnerById,
 
     // ── Project class templates ───────────────────────────────────────────────
     projectClassTemplates,
@@ -7135,9 +7775,11 @@ export function App() {
     setReportOfficeNextSteps,
     reportDate,
     setReportDate,
-    reportHasStoredDraft,
-    restoreReportDraft,
-    discardReportDraft,
+    reportDrafts,
+    activeDraftId,
+    openReportDraft,
+    deleteReportDraft,
+    startNewReportDraft,
     reportTaskPrefill,
     setReportTaskPrefill,
     reportSourceTaskId,
@@ -7264,6 +7906,12 @@ export function App() {
     setWeatherApiKeyInput,
     weatherSettingsSaving,
     setWeatherSettingsSaving,
+    companySettings,
+    setCompanySettings,
+    companySettingsForm,
+    setCompanySettingsForm,
+    companySettingsSaving,
+    setCompanySettingsSaving,
     smtpSettings,
     setSmtpSettings,
     smtpSettingsForm,
@@ -7356,7 +8004,10 @@ export function App() {
     canManageSystem,
     canExportBackups,
     canManageProjectImport,
+    canMarkCritical,
+    setProjectCritical,
     canUseProtectedFolders,
+    canManageFiles,
     canViewFinance,
     canManageFinance,
     hasMessageText,
@@ -7531,6 +8182,7 @@ export function App() {
     addFirstMatchingOfficeTaskProjectFilter,
     openConstructionReportFromTask,
     openProjectFromTask,
+    openProjectGanttById,
     openTaskFromProject,
     openTaskFromPlanning,
     userNameById,
@@ -7562,6 +8214,7 @@ export function App() {
     fileDownloadUrl,
     filePreviewUrl,
     isPreviewable,
+    deleteFile,
     wikiFileUrl,
     formatFileSize,
     updateReportWorker,
@@ -7605,11 +8258,13 @@ export function App() {
     enrichReportOfficeMaterialRowFromCatalog,
     addCatalogMaterialNeed,
     updateMaterialNeedState,
+    updateMaterialNeedNote,
     loadProjectOverview,
     loadProjectWeather,
     loadProjectFinance,
     loadProjectTrackedMaterials,
     saveWeatherSettings,
+    saveCompanySettings,
     saveSmtpSettings,
     loadUpdateStatus,
     installSystemUpdate,
@@ -7698,15 +8353,7 @@ export function App() {
       <main className="content">
         <Header />
 
-        {mainView === "project" && activeProject && (
-          <div className="top-tabs">
-            {projectTabs.map((tab) => (
-              <button key={tab} className={tab === projectTab ? "active" : ""} onClick={() => setProjectTab(tab)}>
-                {tabLabels[tab]}
-              </button>
-            ))}
-          </div>
-        )}
+        <ProjectBanner />
         {error && (
           <div className="error" onClick={() => setError("")}>
             {error}
@@ -7790,9 +8437,14 @@ export function App() {
 
         <ArchivedThreadsModal />
 
+        <CustomerModal />
+
+        <PartnerModal />
+
         <Suspense fallback={<div className="page-loading-spinner" aria-hidden="true" />}>
           {mainView === "overview" && <OverviewPage />}
           {mainView === "materials" && <MaterialsPage />}
+          {(mainView === "werkstatt" || mainView === "werkstatt_scan") && <WerkstattPage />}
           {mainView === "projects_all" && <ProjectsAllPage />}
           {mainView === "projects_archive" && <ProjectsArchivePage />}
           {mainView === "my_tasks" && <MyTasksPage />}
@@ -7816,8 +8468,13 @@ export function App() {
           {mainView === "time" && <TimePage />}
           {mainView === "profile" && <ProfilePage />}
           {mainView === "admin" && <AdminPage />}
+          {mainView === "projects_map" && <MapPage />}
+          {mainView === "customers" && <CustomersPage />}
+          {mainView === "customer_detail" && <CustomerDetailPage />}
         </Suspense>
       </main>
+
+      <MobileBottomNav />
     </div>}
     </AppContext.Provider>
   );

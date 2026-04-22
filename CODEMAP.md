@@ -93,7 +93,7 @@ docker-compose.yml            Services: db, api, web, caddy
 | `time.py` | `ClockOut`, `BreakAction`, `TimesheetOut`, `TimeCurrentOut`, `TimeEntryOut`, `TimeEntryUpdate`, `RequiredDailyHoursUpdate`, `RequiredDailyHoursOut`, `VacationBalanceUpdate`, `VacationBalanceOut`, `VacationRequestCreate`, `VacationRequestReview`, `VacationRequestOut`, `SchoolAbsenceCreate`, `SchoolAbsenceUpdate`, `SchoolAbsenceReview`, `SchoolAbsenceOut` |
 | `wiki.py` | `WikiPageCreate`, `WikiPageUpdate`, `WikiPageOut`, `WikiLibraryFileOut` |
 | `auth.py` | `InviteCreate`, `InviteDispatchOut`, `PasswordResetDispatchOut`, `InviteAccept`, `PasswordResetConfirm` |
-| `settings.py` | `WeatherSettingsOut`, `WeatherSettingsUpdate`, `SmtpSettingsOut`, `SmtpSettingsUpdate`, `UpdateStatusOut`, `UpdateInstallRequest`, `UpdateInstallOut` |
+| `settings.py` | `WeatherSettingsOut`, `WeatherSettingsUpdate`, `CompanySettingsOut`, `CompanySettingsUpdate`, `SmtpSettingsOut`, `SmtpSettingsUpdate`, `UpdateStatusOut`, `UpdateInstallRequest`, `UpdateInstallOut` |
 
 ### Routers (`app/routers/`)
 
@@ -102,7 +102,7 @@ All registered in `main.py` under the `/api` prefix.
 | File | Handles |
 |------|---------|
 | `auth.py` | Login, logout, `/auth/me`, invite accept, password reset |
-| `admin.py` | User management, runtime settings, system update center |
+| `admin.py` | User management, runtime settings (weather, SMTP, company branding), system update center |
 | `time_tracking.py` | Clock in/out, break tracking, timesheets, vacations, school absences |
 | `events.py` | `GET /events?token=` — SSE live-update stream |
 | `workflow_projects.py` | Project CRUD, finance, members, weather, class templates |
@@ -175,11 +175,12 @@ Key state variables in `App.tsx`:
 | `LoginPage.tsx` | *(no user)* | Login form |
 | `OverviewPage.tsx` | `"overview"` | Dashboard / project overview |
 | `MaterialsPage.tsx` | `"materials"` | Office material demand tracking |
+| `WerkstattPage.tsx` | `"werkstatt"` | Workshop / inventory dashboard (Paper 7DK-0); placeholder data until backend lands |
 | `ProjectsAllPage.tsx` | `"projects_all"` | All active projects list |
 | `ProjectsArchivePage.tsx` | `"projects_archive"` | Archived projects |
 | `MyTasksPage.tsx` | `"my_tasks"` | Tasks assigned to current user |
 | `OfficeTasksPage.tsx` | `"office_tasks"` | Office-mode task list |
-| `ProjectPage.tsx` | `"project"` | Single project detail (tabs: overview, tasks, finance, …) |
+| `ProjectPage.tsx` | `"project"` | Single project detail (tabs: overview, gantt, tasks, finance, …) |
 | `CalendarPage.tsx` | `"calendar"` | Calendar-style task view |
 | `PlanningPage.tsx` | `"planning"` | Weekly planning board |
 | `ConstructionPage.tsx` | `"construction"` | Construction report entry |
@@ -204,6 +205,7 @@ Key state variables in `App.tsx`:
 | `modals/AvatarModal.tsx` | Profile picture upload / crop |
 | `NotificationPanel.tsx` | Notification dropdown panel |
 | `AppErrorBoundary.tsx` | Top-level React error boundary |
+| `pages/project/ProjectGanttTab.tsx` | Project-level Gantt timeline built from project tasks |
 | `gauges/` | `WorkHoursGauge`, `ProjectHoursGauge`, `WeeklyHoursGauge`, `MonthlyHoursGauge` |
 | `icons/` | `SidebarNavIcon`, `BellIcon`, `PenIcon`, `BackIcon`, `SearchIcon`, `CopyIcon` |
 | `shared/ThreadIconBadge.tsx` | Thread avatar badge |

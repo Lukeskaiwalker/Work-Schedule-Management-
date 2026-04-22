@@ -240,6 +240,16 @@ _ALLOWED_PREFERENCES: dict[str, set[str] | None] = {
     "planning_mobile_view": {"single", "list", "scroll"},
 }
 
+# Preferences that accept a list of strings, each one from a closed set.
+# Unknown entries in the list are dropped silently so older clients don't
+# break when we add new filter types.
+_ALLOWED_LIST_PREFERENCES: dict[str, set[str]] = {
+    # Blacklist of map pin types the user has hidden. Empty list == all
+    # visible (the default), so an empty/omitted value needs no migration
+    # when new pin types are added later.
+    "map_pin_filter_hidden": {"critical", "active", "planning", "on_hold", "completed", "archived"},
+}
+
 
 @router.patch("/me/preferences", response_model=UserOut)
 def update_preferences(
@@ -254,6 +264,29 @@ def update_preferences(
     """
     current: dict = dict(current_user.preferences or {})
     for key, value in payload.items():
+        if key in _ALLOWED_LIST_PREFERENCES:
+            if value is None:
+                # Null clears the preference back to default ("all visible")
+                current.pop(key, None)
+                continue
+            if not isinstance(value, list):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Preference '{key}' must be a list",
+                )
+            allowed = _ALLOWED_LIST_PREFERENCES[key]
+            # Drop unknown entries (forwards compatibility) and dedupe
+            # while preserving order.
+            seen: set[str] = set()
+            cleaned: list[str] = []
+            for item in value:
+                if not isinstance(item, str):
+                    continue
+                if item in allowed and item not in seen:
+                    cleaned.append(item)
+                    seen.add(item)
+            current[key] = cleaned
+            continue
         if key not in _ALLOWED_PREFERENCES:
             continue
         allowed_values = _ALLOWED_PREFERENCES[key]
