@@ -16,6 +16,48 @@ export function SidebarNavIcon({ view }: { view: MainView }) {
       </svg>
     );
   }
+  if (view === "werkstatt") {
+    // Workshop / inventory — matches the 4-quadrant grid icon in Paper design 7DK-0.
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true" className="nav-icon">
+        <rect x="3.5" y="3.5" width="17" height="17" rx="2" fill="none" stroke="currentColor" strokeWidth="1.8" />
+        <path d="M8 3.5v17M16 3.5v17M3.5 8h17M3.5 16h17" fill="none" stroke="currentColor" strokeWidth="1.8" />
+      </svg>
+    );
+  }
+  if (view === "customers" || view === "customer_detail") {
+    // Two-silhouette contact icon — reads as "people/address book" and
+    // distinguishes from the single-person profile icon below.
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true" className="nav-icon">
+        <circle cx="9.2" cy="8.6" r="3.3" fill="none" stroke="currentColor" strokeWidth="1.8" />
+        <path
+          d="M3 19.5c.6-3.2 3.1-5 6.2-5s5.6 1.8 6.2 5"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+        <path
+          d="M15.8 11.2a3 3 0 0 0 0-5.8M17.5 19.5c-.2-2.3-1.5-3.8-3.3-4.6"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    );
+  }
+  if (view === "projects_all" || view === "projects_archive") {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true" className="nav-icon">
+        <path d="M3.5 7.5a1.8 1.8 0 0 1 1.8-1.8h3.9l1.8 2.1h7.7a1.8 1.8 0 0 1 1.8 1.8v8.6a1.8 1.8 0 0 1-1.8 1.8H5.3a1.8 1.8 0 0 1-1.8-1.8V7.5Z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+        <path d="M3.5 11.2h17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      </svg>
+    );
+  }
   if (view === "my_tasks" || view === "office_tasks") {
     return (
       <svg viewBox="0 0 24 24" aria-hidden="true" className="nav-icon">
@@ -61,6 +103,57 @@ export function SidebarNavIcon({ view }: { view: MainView }) {
     return (
       <svg viewBox="0 0 24 24" aria-hidden="true" className="nav-icon">
         <path d="M4.5 6.5h15a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-8l-4 3v-3h-3a2 2 0 0 1-2-2V8.5a2 2 0 0 1 2-2Z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+      </svg>
+    );
+  }
+  if (view === "time") {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true" className="nav-icon">
+        <circle cx="12" cy="12.6" r="7.6" fill="none" stroke="currentColor" strokeWidth="1.8" />
+        <path d="M12 8.4v4.2l2.8 1.7" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="M9 3.2h6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      </svg>
+    );
+  }
+  if (view === "profile") {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true" className="nav-icon">
+        <circle cx="12" cy="8.4" r="3.6" fill="none" stroke="currentColor" strokeWidth="1.8" />
+        <path d="M4.8 20c.6-4 3.6-6.1 7.2-6.1s6.6 2.1 7.2 6.1" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    );
+  }
+  if (view === "admin") {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true" className="nav-icon">
+        <path
+          d="M12 3 4.5 6.2v5.1c0 4.4 3.2 8.4 7.5 9.7 4.3-1.3 7.5-5.3 7.5-9.7V6.2L12 3Z"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinejoin="round"
+        />
+        <path
+          d="m8.5 12 2.5 2.5 4.5-4.5"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    );
+  }
+  if (view === "projects_map") {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true" className="nav-icon">
+        <path
+          d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7Z"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+        />
+        <circle cx="12" cy="9" r="2.5" fill="none" stroke="currentColor" strokeWidth="1.8" />
       </svg>
     );
   }
@@ -176,6 +269,49 @@ export function ShieldIcon() {
     <svg viewBox="0 0 24 24" aria-hidden="true" className="task-edit-pen-icon">
       <path d="M12 3 4.5 6.5v6c0 4 3.3 7 7.5 8.5 4.2-1.5 7.5-4.5 7.5-8.5v-6L12 3Z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
       <path d="m8.5 12 2.5 2.5 4.5-4.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+export function EyeIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="login-password-eye-icon">
+      <path
+        d="M2.5 12s3.5-7 9.5-7 9.5 7 9.5 7-3.5 7-9.5 7-9.5-7-9.5-7Z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinejoin="round"
+      />
+      <circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" strokeWidth="1.8" />
+    </svg>
+  );
+}
+
+export function EyeOffIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true" className="login-password-eye-icon">
+      <path
+        d="M3 3l18 18"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+      <path
+        d="M10.6 6.2A11 11 0 0 1 12 6c6 0 9.5 6 9.5 6a19 19 0 0 1-3.2 3.8M6.3 7.9A18 18 0 0 0 2.5 12s3.5 6 9.5 6c1.4 0 2.7-.3 3.9-.8"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M9.8 9.8a3.2 3.2 0 0 0 4.4 4.4"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
     </svg>
   );
 }

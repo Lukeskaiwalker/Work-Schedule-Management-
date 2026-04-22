@@ -24,6 +24,7 @@ from app.services.construction_report_pdf import (
 )
 from app.services.files import read_encrypted_file, store_encrypted_file
 from app.services.report_feed import post_report_to_feed_thread
+from app.services.runtime_settings import get_company_settings
 from app.services.telegram import send_telegram_report, telegram_enabled
 
 logger = logging.getLogger(__name__)
@@ -202,6 +203,7 @@ async def process_construction_report_job(db: Session, job_id: int) -> Construct
         project = db.get(Project, report.project_id) if report.project_id is not None else None
         submitted_by_user = db.get(User, report.user_id)
         submitted_by = submitted_by_user.display_name if submitted_by_user else "Unknown user"
+        company_settings = get_company_settings(db)
         uploaded_by_user_id = submitted_by_user.id if submitted_by_user and submitted_by_user.id else report.user_id
         if not uploaded_by_user_id:
             raise RuntimeError("Report submitter missing")
@@ -228,6 +230,7 @@ async def process_construction_report_job(db: Session, job_id: int) -> Construct
                 submitted_by=submitted_by,
                 project_name=project.name if project else None,
                 logo_path=settings.report_logo_path,
+                company_name=str(company_settings.get("company_name") or "").strip() or "SMPL",
                 photos=report_photos,
             )
             stored_path = store_encrypted_file(report_pdf, "pdf")

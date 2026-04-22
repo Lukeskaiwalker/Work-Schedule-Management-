@@ -77,6 +77,17 @@ function formatAuditPeriodLabel(period: AuditPeriodFilter, de: boolean): string 
   }
 }
 
+function roleLabel(role: string, de: boolean): string {
+  const labels: Record<string, { de: string; en: string }> = {
+    admin: { de: "Admin", en: "Admin" },
+    ceo: { de: "CEO", en: "CEO" },
+    accountant: { de: "Buchhaltung", en: "Accountant" },
+    planning: { de: "Planung", en: "Planning" },
+    employee: { de: "Mitarbeiter", en: "Employee" },
+  };
+  return labels[role]?.[de ? "de" : "en"] ?? role;
+}
+
 type GroupDraft = {
   name: string;
   memberIds: Set<number>;
@@ -147,6 +158,10 @@ export function AdminPage() {
     setWeatherApiKeyInput,
     weatherSettingsSaving,
     saveWeatherSettings,
+    companySettingsForm,
+    setCompanySettingsForm,
+    companySettingsSaving,
+    saveCompanySettings,
     smtpSettings,
     smtpSettingsForm,
     setSmtpSettingsForm,
@@ -190,8 +205,8 @@ export function AdminPage() {
   ];
 
   const [tab, setTab] = useState<AdminTab>(availableTabs[0] ?? "tools");
-  const [showInvite, setShowInvite] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
+  const [expandedUserId, setExpandedUserId] = useState<number | null>(null);
   const [groupDraft, setGroupDraft] = useState<GroupDraft | null>(null);
   const [editingGroupId, setEditingGroupId] = useState<number | null>(null);
   const [auditSearch, setAuditSearch] = useState("");
@@ -200,13 +215,10 @@ export function AdminPage() {
   const [auditDateFrom, setAuditDateFrom] = useState("");
   const [auditDateTo, setAuditDateTo] = useState("");
   const [resettingRole, setResettingRole] = useState<string | null>(null);
-  // Which user's permission panel is open (user id or null)
   const [expandedPermUserId, setExpandedPermUserId] = useState<number | null>(null);
-  // Local draft for per-user permission overrides while editing
   const [permDraft, setPermDraft] = useState<{ extra: Set<string>; denied: Set<string> } | null>(null);
   const [permSaving, setPermSaving] = useState(false);
   const userPermPanelRefs = useRef<Record<number, HTMLDivElement | null>>({});
-  // Floating tooltip for permission descriptions in the roles matrix
   const [permTooltip, setPermTooltip] = useState<{ text: string; x: number; y: number } | null>(null);
 
   // When the server returns fresh data for the open user, sync the draft.
@@ -225,7 +237,6 @@ export function AdminPage() {
     if (tab === "groups" && canManageUsers) void loadEmployeeGroups();
     if (tab === "audit" && canViewAudit) void loadAuditLogs();
     if (tab === "roles" && canManagePermissions) void loadRolePermissions();
-    // user-level permissions are loaded lazily when a row panel is opened
   }, [tab, canManageUsers, canViewAudit, canManagePermissions]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -253,23 +264,18 @@ export function AdminPage() {
 
   const de = language === "de";
 
-  const ALL_TABS: { id: AdminTab; label: string; count?: number; visible: boolean }[] = [
-    { id: "users",    label: de ? "Benutzer"      : "Users",     count: activeAdminUsers.length, visible: canManageUsers },
-    { id: "groups",   label: de ? "Gruppen"       : "Groups",    visible: canManageUsers },
-    { id: "roles",    label: de ? "Rollen"        : "Roles",     visible: canManagePermissions },
-    { id: "tools",    label: de ? "Werkzeuge"     : "Tools",     visible: toolsVisible },
-    { id: "audit",    label: de ? "Protokoll"     : "Audit Log", visible: canViewAudit },
-    { id: "settings", label: de ? "Einstellungen" : "Settings",  visible: canManageSettings },
-    { id: "system",   label: "System",                           visible: systemVisible },
+  const ALL_TABS: { id: AdminTab; label: string; visible: boolean }[] = [
+    { id: "users", label: de ? "Benutzer" : "Users", visible: canManageUsers },
+    { id: "groups", label: de ? "Gruppen" : "Groups", visible: canManageUsers },
+    { id: "roles", label: de ? "Rollen" : "Roles", visible: canManagePermissions },
+    { id: "tools", label: de ? "Werkzeuge" : "Tools", visible: toolsVisible },
+    { id: "audit", label: de ? "Protokoll" : "Audit", visible: canViewAudit },
+    { id: "settings", label: de ? "Einstellungen" : "Settings", visible: canManageSettings },
+    { id: "system", label: "System", visible: systemVisible },
   ];
   const TABS = ALL_TABS.filter((t) => t.visible);
 
   // ── Group helpers ──────────────────────────────────────────────────────────
-
-  const openNewGroup = () => {
-    setEditingGroupId(null);
-    setGroupDraft({ name: "", memberIds: new Set(), canUpdateRecentOwnTimeEntries: false });
-  };
 
   const openEditGroup = (group: EmployeeGroup) => {
     setEditingGroupId(group.id);
@@ -316,7 +322,6 @@ export function AdminPage() {
       setPermDraft(null);
       return;
     }
-    // Start with cached data immediately (may be empty if not loaded yet).
     const existing = userPermissionOverrides[userId];
     setPermDraft({
       extra: new Set(existing?.extra ?? []),
@@ -326,7 +331,6 @@ export function AdminPage() {
     if (!rolePermissionsMeta) {
       void loadRolePermissions();
     }
-    // Fetch fresh data from the server; the useEffect above will sync the draft.
     void loadUserPermissions(userId);
   };
 
@@ -338,7 +342,7 @@ export function AdminPage() {
       extra.delete(perm);
     } else {
       extra.add(perm);
-      denied.delete(perm); // can't both grant and deny
+      denied.delete(perm);
     }
     setPermDraft({ extra, denied });
   };
@@ -351,7 +355,7 @@ export function AdminPage() {
       denied.delete(perm);
     } else {
       denied.add(perm);
-      extra.delete(perm); // can't both grant and deny
+      extra.delete(perm);
     }
     setPermDraft({ extra, denied });
   };
@@ -381,24 +385,10 @@ export function AdminPage() {
 
   // ── Audit filter ───────────────────────────────────────────────────────────
 
-  const usersWithRecentTimeEditGroupAccess = new Set(
-    employeeGroups
-      .filter((group) => group.can_update_recent_own_time_entries)
-      .flatMap((group) => group.member_user_ids),
-  );
   const auditCategories = Array.from(new Set(auditLogs.map((log) => log.category).filter(Boolean))).sort();
   const hasCustomAuditDateRange = auditDateFrom.trim() !== "" || auditDateTo.trim() !== "";
   const hasAuditDateFilter = auditPeriodFilter !== "all" && (auditPeriodFilter !== "custom" || hasCustomAuditDateRange);
   const hasAuditFilters = auditCategoryFilters.length > 0 || hasAuditDateFilter;
-  const activeAuditFilterCount =
-    (auditCategoryFilters.length > 0 ? 1 : 0) +
-    (hasAuditDateFilter ? 1 : 0);
-
-  const toggleAuditCategoryFilter = (category: string) => {
-    setAuditCategoryFilters((current) =>
-      current.includes(category) ? current.filter((value) => value !== category) : [...current, category],
-    );
-  };
 
   const clearAuditFilters = () => {
     setAuditCategoryFilters([]);
@@ -416,26 +406,16 @@ export function AdminPage() {
     let end: Date | null = null;
 
     if (auditPeriodFilter === "custom") {
-      if (auditDateFrom) {
-        start = new Date(`${auditDateFrom}T00:00:00`);
-      }
-      if (auditDateTo) {
-        end = new Date(`${auditDateTo}T23:59:59.999`);
-      }
+      if (auditDateFrom) start = new Date(`${auditDateFrom}T00:00:00`);
+      if (auditDateTo) end = new Date(`${auditDateTo}T23:59:59.999`);
     } else {
       end = new Date();
       end.setHours(23, 59, 59, 999);
-
       start = new Date(end);
       start.setHours(0, 0, 0, 0);
-
-      if (auditPeriodFilter === "7d") {
-        start.setDate(start.getDate() - 6);
-      } else if (auditPeriodFilter === "30d") {
-        start.setDate(start.getDate() - 29);
-      } else if (auditPeriodFilter === "90d") {
-        start.setDate(start.getDate() - 89);
-      }
+      if (auditPeriodFilter === "7d") start.setDate(start.getDate() - 6);
+      else if (auditPeriodFilter === "30d") start.setDate(start.getDate() - 29);
+      else if (auditPeriodFilter === "90d") start.setDate(start.getDate() - 89);
     }
 
     if (start && !Number.isNaN(start.getTime()) && created < start) return false;
@@ -444,15 +424,9 @@ export function AdminPage() {
   };
 
   const filteredLogs = auditLogs.filter((l) => {
-    if (auditCategoryFilters.length > 0 && !auditCategoryFilters.includes(l.category)) {
-      return false;
-    }
-    if (!isLogWithinAuditDateRange(l.created_at)) {
-      return false;
-    }
-    if (!auditSearch.trim()) {
-      return true;
-    }
+    if (auditCategoryFilters.length > 0 && !auditCategoryFilters.includes(l.category)) return false;
+    if (!isLogWithinAuditDateRange(l.created_at)) return false;
+    if (!auditSearch.trim()) return true;
     const q = auditSearch.toLowerCase();
     const actor = l.actor_user_id
       ? (adminUsersById.get(l.actor_user_id)?.display_name ?? String(l.actor_user_id))
@@ -464,1188 +438,1632 @@ export function AdminPage() {
 
   return (
     <>
-    <section className="card admin-center">
-      <h3 className="admin-center-title">
-        {de ? "Verwaltungszentrum" : "Admin Center"}
-      </h3>
+      <section className="admin-page">
+        <h1 className="admin-page-title">{de ? "Verwaltungszentrum" : "Admin Center"}</h1>
 
-      {/* ── Tab bar ────────────────────────────────────────────────────────── */}
-      <nav className="admin-tabs" role="tablist" aria-label={de ? "Verwaltungsbereiche" : "Admin sections"}>
-        {TABS.map((t) => (
-          <button
-            key={t.id}
-            type="button"
-            role="tab"
-            aria-selected={tab === t.id}
-            className={tab === t.id ? "admin-tab-btn active" : "admin-tab-btn"}
-            onClick={() => setTab(t.id)}
-          >
-            {t.label}
-            {t.count !== undefined && (
-              <span className="admin-tab-count">{t.count}</span>
-            )}
-          </button>
-        ))}
-      </nav>
-
-      {/* ── Users ──────────────────────────────────────────────────────────── */}
-      {tab === "users" && (
-        <div className="admin-tab-pane">
-          <div className="admin-stats-row">
-            <div className="admin-stat-chip">
-              <b>{activeAdminUsers.length + archivedAdminUsers.length}</b>
-              {de ? "Gesamt" : "Total"}
-            </div>
-            <div className="admin-stat-chip admin-stat-chip--ok">
-              <b>{activeAdminUsers.length}</b>
-              {de ? "Aktiv" : "Active"}
-            </div>
-            {archivedAdminUsers.length > 0 && (
-              <div className="admin-stat-chip admin-stat-chip--muted">
-                <b>{archivedAdminUsers.length}</b>
-                {de ? "Archiviert" : "Archived"}
-              </div>
-            )}
-          </div>
-
-          {!showInvite ? (
-            <button type="button" onClick={() => setShowInvite(true)}>
-              + {de ? "Benutzer einladen" : "Invite user"}
+        {/* ── Tab bar ────────────────────────────────────────────────────── */}
+        <nav
+          className="admin-page-tabs"
+          role="tablist"
+          aria-label={de ? "Verwaltungsbereiche" : "Admin sections"}
+        >
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              role="tab"
+              aria-selected={tab === t.id}
+              className={tab === t.id ? "admin-page-tab active" : "admin-page-tab"}
+              onClick={() => setTab(t.id)}
+            >
+              {t.label}
             </button>
-          ) : (
-            <div className="admin-form-section">
-              <h4 className="admin-form-title">{de ? "Neuer Benutzer" : "New user"}</h4>
-              <form
-                className="admin-invite-row"
-                onSubmit={(e: FormEvent<HTMLFormElement>) => {
-                  void submitCreateInvite(e);
-                  setShowInvite(false);
-                }}
-              >
-                <label>
-                  {de ? "Name" : "Full name"}
-                  <input
-                    required
-                    value={inviteCreateForm.full_name}
-                    onChange={(e) => setInviteCreateForm({ ...inviteCreateForm, full_name: e.target.value })}
-                  />
-                </label>
-                <label>
-                  Email
-                  <input
-                    type="email"
-                    required
-                    value={inviteCreateForm.email}
-                    onChange={(e) => setInviteCreateForm({ ...inviteCreateForm, email: e.target.value })}
-                  />
-                </label>
-                <label>
-                  {de ? "Rolle" : "Role"}
-                  <select
-                    value={inviteCreateForm.role}
-                    disabled={!canManagePermissions}
-                    onChange={(e) =>
-                      setInviteCreateForm({ ...inviteCreateForm, role: e.target.value as User["role"] })
-                    }
-                  >
-                    {(canManagePermissions ? ALL_ROLES : ["employee"]).map((r) => (
-                      <option key={r} value={r}>{r}</option>
-                    ))}
-                  </select>
-                </label>
-                <div className="admin-invite-actions">
-                  <button type="submit">
-                    ✉ {de ? "Einladen & senden" : "Invite & send"}
-                  </button>
-                  <button type="button" onClick={() => setShowInvite(false)}>
-                    {de ? "Abbrechen" : "Cancel"}
-                  </button>
-                </div>
-              </form>
-            </div>
-          )}
+          ))}
+        </nav>
 
-          <div className="admin-user-list">
-            {activeAdminUsers.map((u) => (
-              <div key={u.id} className="admin-user-row-wrap">
-                <div className="admin-user-row">
-                  <AvatarBadge
-                    userId={u.id}
-                    initials={userInitialsById(u.id)}
-                    hasAvatar={userHasAvatar(u.id)}
-                    versionKey={userAvatarVersionById(u.id)}
-                    className="admin-avatar"
-                  />
-                  <div className="admin-user-info">
-                    <div className="admin-user-name">{u.full_name}</div>
-                    <div className="admin-user-meta">
-                      <span className="admin-user-email">{u.email}</span>
-                      {u.invite_accepted_at == null && u.invite_sent_at != null && (
-                        <span className="admin-badge admin-badge--warn">
-                          {de ? "Einladung ausstehend" : "Invite pending"}
-                        </span>
-                      )}
-                      {(userPermissionOverrides[u.id]?.extra?.length > 0 ||
-                        userPermissionOverrides[u.id]?.denied?.length > 0) && (
-                        <span className="admin-badge" title={de ? "Individuelle Berechtigungen aktiv" : "Custom permissions active"}>
-                          {de ? "Individuelle Rechte" : "Custom perms"}
-                        </span>
-                      )}
-                    </div>
+        {/* ── Users ──────────────────────────────────────────────────────── */}
+        {tab === "users" && (
+          <div className="admin-page-layout admin-page-layout--users">
+            <div className="admin-page-card admin-page-card--users-table">
+              <div className="admin-users-table">
+                <div className="admin-users-table-head">
+                  <div className="admin-users-col admin-users-col--user">
+                    {de ? "Benutzer" : "User"}
                   </div>
-                  <div className="admin-user-controls">
-                    <div className="admin-user-control-row">
-                      <span className="admin-user-control-label">{de ? "Rolle" : "Role"}</span>
-                      <select
-                        value={u.role}
-                        className="admin-role-select"
-                        aria-label={de ? `Rolle fuer ${u.full_name}` : `Role for ${u.full_name}`}
-                        disabled={u.id === user?.id || !canManagePermissions}
-                        title={
-                          u.id === user?.id
-                            ? (de ? "Eigene Rolle kann nicht geändert werden" : "Cannot change your own role")
-                            : !canManagePermissions
-                              ? (de ? "Rollenänderung erfordert Berechtigung zur Rechteverwaltung" : "Role changes require permission management access")
-                              : undefined
-                        }
-                        onChange={(e) => void updateRole(u.id, e.target.value as User["role"])}
-                      >
-                        {ALL_ROLES.map((r) => (
-                          <option key={r} value={r}>{r}</option>
-                        ))}
-                      </select>
-                    </div>
-                    <div className="admin-user-control-row">
-                      <span className="admin-user-control-label">{de ? "Ansicht" : "View"}</span>
-                      <select
-                        value={u.workspace_lock ?? ""}
-                        className="admin-role-select"
-                        aria-label={de ? `Ansichtssperre für ${u.full_name}` : `View lock for ${u.full_name}`}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          void updateWorkspaceLock(u.id, val === "" ? null : (val as "construction" | "office"));
-                        }}
-                      >
-                        <option value="">{de ? "Frei wählbar" : "User's choice"}</option>
-                        <option value="construction">{de ? "Nur Baustelle" : "Construction only"}</option>
-                        <option value="office">{de ? "Nur Büro" : "Office only"}</option>
-                      </select>
-                    </div>
-                    <div className="admin-user-control-row admin-hours-row">
-                      <span className="admin-user-control-label">{de ? "Soll h/Tag" : "Req. h/day"}</span>
-                      <input
-                        type="number"
-                        min={1}
-                        max={24}
-                        step={0.25}
-                        value={requiredHoursDrafts[u.id] ?? String(u.required_daily_hours ?? 8)}
-                        onChange={(e) => setRequiredHoursDrafts({ ...requiredHoursDrafts, [u.id]: e.target.value })}
-                        className="admin-hours-input"
-                        aria-label={de ? "Pflichtarbeitszeit h/Tag" : "Required h/day"}
-                        disabled={!canAdjustRequiredHours}
-                      />
-                      <span className="admin-hours-unit muted">h/d</span>
-                      <button
-                        type="button"
-                        className="admin-save-btn"
-                        disabled={!canAdjustRequiredHours}
-                        onClick={() => void updateRequiredDailyHours(u.id)}
-                      >
-                        {de ? "Spch." : "Save"}
-                      </button>
-                    </div>
-                    <div className="admin-user-control-row admin-hours-row">
-                      <span className="admin-user-control-label">{de ? "Urlaub" : "Vacation"}</span>
-                      <input
-                        type="number"
-                        min={0}
-                        step={0.5}
-                        value={vacationBalanceDrafts[u.id]?.perYear ?? String(u.vacation_days_per_year ?? 0)}
-                        onChange={(e) =>
-                          setVacationBalanceDrafts((current) => {
-                            const previousPerYear = current[u.id]?.perYear ?? String(u.vacation_days_per_year ?? 0);
-                            const previousAvailable = current[u.id]?.available ?? String(u.vacation_days_available ?? 0);
-                            const previousCarryover = current[u.id]?.carryover ?? String(u.vacation_days_carryover ?? 0);
-                            const initialAvailable = Number(u.vacation_days_available ?? 0);
-                            const initialCarryover = Number(u.vacation_days_carryover ?? 0);
-                            const isInitialSetup = initialAvailable <= 0 && initialCarryover <= 0;
-                            const shouldAutofillAvailable =
-                              isInitialSetup &&
-                              (current[u.id] === undefined || previousAvailable === previousPerYear);
-                            return {
-                              ...current,
-                              [u.id]: {
-                                perYear: e.target.value,
-                                available: shouldAutofillAvailable
-                                  ? e.target.value
-                                  : previousAvailable,
-                                carryover: previousCarryover,
-                              },
-                            };
-                          })
-                        }
-                        className="admin-hours-input"
-                        aria-label={de ? "Urlaubstage pro Jahr" : "Vacation days per year"}
-                      />
-                      <span className="admin-hours-unit muted">{de ? "Jahr" : "year"}</span>
-                      <input
-                        type="number"
-                        min={0}
-                        step={0.5}
-                        value={vacationBalanceDrafts[u.id]?.available ?? String(u.vacation_days_available ?? 0)}
-                        onChange={(e) =>
-                          setVacationBalanceDrafts((current) => ({
-                            ...current,
-                            [u.id]: {
-                              perYear: current[u.id]?.perYear ?? String(u.vacation_days_per_year ?? 0),
-                              available: e.target.value,
-                              carryover: current[u.id]?.carryover ?? String(u.vacation_days_carryover ?? 0),
-                            },
-                          }))
-                        }
-                        className="admin-hours-input"
-                        aria-label={de ? "Verfügbare Urlaubstage" : "Available vacation days"}
-                      />
-                      <span className="admin-hours-unit muted">{de ? "offen" : "left"}</span>
-                      <input
-                        type="number"
-                        min={0}
-                        step={0.5}
-                        value={vacationBalanceDrafts[u.id]?.carryover ?? String(u.vacation_days_carryover ?? 0)}
-                        onChange={(e) =>
-                          setVacationBalanceDrafts((current) => ({
-                            ...current,
-                            [u.id]: {
-                              perYear: current[u.id]?.perYear ?? String(u.vacation_days_per_year ?? 0),
-                              available: current[u.id]?.available ?? String(u.vacation_days_available ?? 0),
-                              carryover: e.target.value,
-                            },
-                          }))
-                        }
-                        className="admin-hours-input"
-                        aria-label={de ? "Übertrag Urlaubstage" : "Vacation carryover days"}
-                      />
-                      <span className="admin-hours-unit muted">{de ? "Vorjahr" : "carry"}</span>
-                      <button type="button" className="admin-save-btn" onClick={() => void updateVacationBalance(u.id)}>
-                        {de ? "Spch." : "Save"}
-                      </button>
-                      <span className="admin-hours-unit muted" style={{ minWidth: "auto" }}>
-                        {de ? "Gesamt offen" : "Total left"}:{" "}
-                        {(
-                          vacationBalanceDrafts[u.id]
-                            ? Number(vacationBalanceDrafts[u.id]?.available ?? 0) +
-                              Number(vacationBalanceDrafts[u.id]?.carryover ?? 0)
-                            : Number(u.vacation_days_total_remaining ?? 0)
-                        ).toFixed(1).replace(/\\.0$/, "")}
-                      </span>
-                    </div>
+                  <div className="admin-users-col admin-users-col--role">
+                    {de ? "Rolle" : "Role"}
                   </div>
-                  <div className="admin-user-actions">
-                    <button
-                      type="button"
-                      className="icon-btn"
-                      title={de ? "Einladungs-E-Mail senden" : "Send invite email"}
-                      onClick={() => void sendInviteToUser(u.id)}
-                    >
-                      <MailIcon />
-                    </button>
-                    <button
-                      type="button"
-                      className="icon-btn"
-                      title={de ? "Passwort zurücksetzen" : "Send password reset"}
-                      onClick={() => void sendPasswordResetToUser(u.id)}
-                    >
-                      <KeyIcon />
-                    </button>
-                    <button
-                      type="button"
-                      className={`icon-btn${expandedPermUserId === u.id ? " active" : ""}`}
-                      title={de ? "Individuelle Berechtigungen" : "Custom permissions"}
-                      disabled={!canManagePermissions}
-                      onClick={() => openUserPermPanel(u.id)}
-                    >
-                      <ShieldIcon />
-                    </button>
-                    <button
-                      type="button"
-                      className="icon-btn admin-btn-danger"
-                      title={de ? "Benutzer archivieren" : "Archive user"}
-                      disabled={u.id === user?.id}
-                      onClick={() => void softDeleteUser(u.id)}
-                    >
-                      <ArchiveUserIcon />
-                    </button>
+                  <div className="admin-users-col admin-users-col--hours">
+                    {de ? "Std./Tag" : "Hours / day"}
+                  </div>
+                  <div className="admin-users-col admin-users-col--vacation">
+                    {de ? "Urlaubstage" : "Vacation days"}
+                  </div>
+                  <div className="admin-users-col admin-users-col--actions">
+                    {de ? "Aktionen" : "Actions"}
                   </div>
                 </div>
-
-                {/* ── Per-user permission panel ─────────────────────────── */}
-                {expandedPermUserId === u.id && permDraft && rolePermissionsMeta && (
-                  <div
-                    ref={(node) => { userPermPanelRefs.current[u.id] = node; }}
-                    className="admin-user-perm-panel"
-                  >
-                    <div className="admin-user-perm-header">
-                      <span className="admin-user-perm-title">
-                        {de ? "Individuelle Berechtigungen" : "Custom permissions"}
-                        {" — "}<em>{u.full_name}</em>
-                      </span>
-                      <small className="muted">
-                        {de
-                          ? "Grün = Zusätzlich gewährt · Rot = Verweigert (unabhängig von der Rolle)"
-                          : "Green = Extra grant · Red = Deny (overrides role)"}
-                      </small>
-                    </div>
-                    <div className="admin-perm-groups">
-                      {rolePermissionsMeta.permission_groups.map((group) => (
-                        <div key={group.key} className="admin-perm-group">
-                          <div className="admin-perm-group-label">{group.label}</div>
-                          <div className="admin-perm-items">
-                            {group.permissions.map((perm) => {
-                              const roleHas = (rolePermissionsMeta.permissions[u.role] ?? []).includes(perm);
-                              const isExtra = permDraft.extra.has(perm);
-                              const isDenied = permDraft.denied.has(perm);
-                              const label = rolePermissionsMeta.permission_labels[perm] ?? perm;
-                              return (
-                                <div key={perm} className={`admin-perm-item${isExtra ? " admin-perm-item--extra" : isDenied ? " admin-perm-item--denied" : ""}`}>
-                                  <span className="admin-perm-item-label">
-                                    {label}
-                                    {roleHas
-                                      ? <span className="admin-perm-role-dot admin-perm-role-dot--on" title={de ? "Rolle hat diese Berechtigung" : "Role has this permission"} />
-                                      : <span className="admin-perm-role-dot admin-perm-role-dot--off" title={de ? "Rolle hat diese Berechtigung nicht" : "Role doesn't have this permission"} />
-                                    }
-                                  </span>
-                                  <div className="admin-perm-toggles">
-                                    <label className="admin-perm-toggle-label admin-perm-toggle-label--extra" title={de ? "Zusätzlich gewähren" : "Extra grant"}>
-                                      <input
-                                        type="checkbox"
-                                        checked={isExtra}
-                                        onChange={() => togglePermExtra(perm)}
-                                      />
-                                      <span>{de ? "Gewähren" : "Grant"}</span>
-                                    </label>
-                                    <label className="admin-perm-toggle-label admin-perm-toggle-label--deny" title={de ? "Verweigern" : "Deny"}>
-                                      <input
-                                        type="checkbox"
-                                        checked={isDenied}
-                                        onChange={() => togglePermDenied(perm)}
-                                      />
-                                      <span>{de ? "Sperren" : "Deny"}</span>
-                                    </label>
-                                  </div>
-                                </div>
-                              );
-                            })}
+                <div className="admin-users-table-body">
+                  {activeAdminUsers.map((u) => {
+                    const isExpanded = expandedUserId === u.id;
+                    const isSelf = u.id === user?.id;
+                    const hoursDraft =
+                      requiredHoursDrafts[u.id] ?? String(u.required_daily_hours ?? 8);
+                    const hasHoursChanges =
+                      requiredHoursDrafts[u.id] !== undefined &&
+                      hoursDraft !== String(u.required_daily_hours ?? 8);
+                    const vacDraft = vacationBalanceDrafts[u.id];
+                    const vacPerYearValue =
+                      vacDraft?.perYear ?? String(u.vacation_days_per_year ?? 0);
+                    const vacAvailableValue =
+                      vacDraft?.available ?? String(u.vacation_days_available ?? 0);
+                    const vacCarryoverValue =
+                      vacDraft?.carryover ?? String(u.vacation_days_carryover ?? 0);
+                    const totalRemaining = vacDraft
+                      ? Number(vacDraft.available ?? 0) + Number(vacDraft.carryover ?? 0)
+                      : Number(u.vacation_days_total_remaining ?? 0);
+                    const hasCustomPerms =
+                      (userPermissionOverrides[u.id]?.extra?.length ?? 0) > 0 ||
+                      (userPermissionOverrides[u.id]?.denied?.length ?? 0) > 0;
+                    return (
+                      <div key={u.id} className="admin-users-row-wrap">
+                        <button
+                          type="button"
+                          className={`admin-users-row${isExpanded ? " admin-users-row--open" : ""}`}
+                          onClick={() => setExpandedUserId(isExpanded ? null : u.id)}
+                          aria-expanded={isExpanded}
+                        >
+                          <div className="admin-users-col admin-users-col--user">
+                            <AvatarBadge
+                              userId={u.id}
+                              initials={userInitialsById(u.id)}
+                              hasAvatar={userHasAvatar(u.id)}
+                              versionKey={userAvatarVersionById(u.id)}
+                              className="admin-users-avatar"
+                            />
+                            <div className="admin-users-user-text">
+                              <span className="admin-users-user-name">{u.full_name}</span>
+                              <span className="admin-users-user-email">{u.email}</span>
+                            </div>
                           </div>
-                        </div>
-                      ))}
-                    </div>
-                    <div className="row" style={{ gap: "0.5rem", marginTop: "0.85rem", flexWrap: "wrap" }}>
-                      <button type="button" disabled={permSaving} onClick={() => void saveUserPermDraft(u.id)}>
-                        {permSaving ? (de ? "Speichern…" : "Saving…") : (de ? "Speichern" : "Save")}
-                      </button>
-                      <button
-                        type="button"
-                        disabled={permSaving}
-                        onClick={() => void handleResetUserPerms(u.id)}
-                        style={{ color: "var(--danger)" }}
-                      >
-                        {de ? "Überschreibungen entfernen" : "Remove overrides"}
-                      </button>
-                      <button type="button" onClick={() => { setExpandedPermUserId(null); setPermDraft(null); }}>
-                        {de ? "Abbrechen" : "Cancel"}
-                      </button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            ))}
-            {activeAdminUsers.length === 0 && (
-              <p className="muted">{de ? "Keine aktiven Benutzer." : "No active users."}</p>
-            )}
-          </div>
+                          <div className="admin-users-col admin-users-col--role">
+                            <span className={`admin-role-chip admin-role-chip--${u.role}`}>
+                              {roleLabel(u.role, de)}
+                            </span>
+                          </div>
+                          <div className="admin-users-col admin-users-col--hours">
+                            {Number(u.required_daily_hours ?? 8).toFixed(1).replace(/\.0$/, "")}
+                            <span className="admin-users-unit">h</span>
+                          </div>
+                          <div className="admin-users-col admin-users-col--vacation">
+                            {totalRemaining.toFixed(1).replace(/\.0$/, "")}
+                          </div>
+                          <div className="admin-users-col admin-users-col--actions">
+                            <span
+                              className="admin-users-action-icon"
+                              title={de ? "Einladungs-E-Mail senden" : "Send invite email"}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void sendInviteToUser(u.id);
+                              }}
+                              role="button"
+                              tabIndex={0}
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter" || event.key === " ") {
+                                  event.stopPropagation();
+                                  event.preventDefault();
+                                  void sendInviteToUser(u.id);
+                                }
+                              }}
+                            >
+                              <MailIcon />
+                            </span>
+                            <span
+                              className="admin-users-action-icon admin-users-action-icon--key"
+                              title={de ? "Passwort zurücksetzen" : "Send password reset"}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void sendPasswordResetToUser(u.id);
+                              }}
+                              role="button"
+                              tabIndex={0}
+                              onKeyDown={(event) => {
+                                if (event.key === "Enter" || event.key === " ") {
+                                  event.stopPropagation();
+                                  event.preventDefault();
+                                  void sendPasswordResetToUser(u.id);
+                                }
+                              }}
+                            >
+                              <KeyIcon />
+                            </span>
+                          </div>
+                        </button>
 
-          {archivedAdminUsers.length > 0 && (
-            <div className="admin-archived-section">
-              <button
-                type="button"
-                className="linklike"
-                onClick={() => setShowArchived((v) => !v)}
-              >
-                {showArchived
-                  ? (de ? "▾ Archiv ausblenden" : "▾ Hide archive")
-                  : (de
-                      ? `▸ Archiv anzeigen (${archivedAdminUsers.length})`
-                      : `▸ Show archive (${archivedAdminUsers.length})`)}
-              </button>
-              {showArchived && (
-                <div className="admin-user-list admin-archived-list">
-                  {archivedAdminUsers.map((u) => (
-                    <div key={u.id} className="admin-user-row-wrap">
-                      <div className="admin-user-row admin-user-row--archived">
-                        <AvatarBadge
-                          userId={u.id}
-                          initials={userInitialsById(u.id)}
-                          hasAvatar={userHasAvatar(u.id)}
-                          versionKey={userAvatarVersionById(u.id)}
-                          className="admin-avatar admin-avatar--muted"
-                        />
-                        <div className="admin-user-info">
-                          <div className="admin-user-name">{u.full_name}</div>
-                          <div className="admin-user-email">
-                            {u.email} · {u.role}
-                            {usersWithRecentTimeEditGroupAccess.has(u.id) && (
-                              <span className="muted" style={{ marginLeft: "0.5rem" }}>
-                                · {de ? "Gruppe: letzte 3 Zeiteinträge" : "Group: last 3 time entries"}
-                              </span>
+                        {isExpanded && (
+                          <div className="admin-users-detail">
+                            {u.invite_accepted_at == null && u.invite_sent_at != null && (
+                              <div className="admin-users-detail-banner admin-users-detail-banner--warn">
+                                {de ? "Einladung ausstehend" : "Invite pending"}
+                              </div>
+                            )}
+                            {hasCustomPerms && (
+                              <div className="admin-users-detail-banner">
+                                {de ? "Individuelle Berechtigungen aktiv" : "Custom permissions active"}
+                              </div>
+                            )}
+
+                            <div className="admin-users-detail-grid">
+                              <label className="admin-users-field">
+                                <span className="admin-users-field-label">
+                                  {de ? "Rolle" : "Role"}
+                                </span>
+                                <select
+                                  className="admin-users-select"
+                                  value={u.role}
+                                  disabled={isSelf || !canManagePermissions}
+                                  onChange={(e) => void updateRole(u.id, e.target.value as User["role"])}
+                                  title={
+                                    isSelf
+                                      ? de ? "Eigene Rolle kann nicht geändert werden" : "Cannot change your own role"
+                                      : !canManagePermissions
+                                        ? de ? "Rollenänderung erfordert Berechtigung" : "Role changes require permission"
+                                        : undefined
+                                  }
+                                >
+                                  {ALL_ROLES.map((r) => (
+                                    <option key={r} value={r}>{roleLabel(r, de)}</option>
+                                  ))}
+                                </select>
+                              </label>
+
+                              <label className="admin-users-field">
+                                <span className="admin-users-field-label">
+                                  {de ? "Ansicht" : "Workspace lock"}
+                                </span>
+                                <select
+                                  className="admin-users-select"
+                                  value={u.workspace_lock ?? ""}
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    void updateWorkspaceLock(
+                                      u.id,
+                                      val === "" ? null : (val as "construction" | "office"),
+                                    );
+                                  }}
+                                >
+                                  <option value="">{de ? "Frei wählbar" : "User's choice"}</option>
+                                  <option value="construction">{de ? "Nur Baustelle" : "Construction only"}</option>
+                                  <option value="office">{de ? "Nur Büro" : "Office only"}</option>
+                                </select>
+                              </label>
+
+                              <div className="admin-users-field admin-users-field--span-2">
+                                <span className="admin-users-field-label">
+                                  {de ? "Pflichtarbeitszeit" : "Required hours per day"}
+                                </span>
+                                <div className="admin-users-inline-row">
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    max={24}
+                                    step={0.25}
+                                    value={hoursDraft}
+                                    disabled={!canAdjustRequiredHours}
+                                    onChange={(e) =>
+                                      setRequiredHoursDrafts({
+                                        ...requiredHoursDrafts,
+                                        [u.id]: e.target.value,
+                                      })
+                                    }
+                                    className="admin-users-input admin-users-input--short"
+                                  />
+                                  <span className="admin-users-inline-unit">h/d</span>
+                                  <button
+                                    type="button"
+                                    className="admin-users-inline-save"
+                                    disabled={!canAdjustRequiredHours || !hasHoursChanges}
+                                    onClick={() => void updateRequiredDailyHours(u.id)}
+                                  >
+                                    {de ? "Speichern" : "Save"}
+                                  </button>
+                                </div>
+                              </div>
+
+                              <div className="admin-users-field admin-users-field--span-2">
+                                <span className="admin-users-field-label">
+                                  {de ? "Urlaubstage" : "Vacation days"}
+                                </span>
+                                <div className="admin-users-inline-row admin-users-inline-row--vac">
+                                  <label className="admin-users-vac-label">
+                                    <span>{de ? "pro Jahr" : "per year"}</span>
+                                    <input
+                                      type="number"
+                                      min={0}
+                                      step={0.5}
+                                      value={vacPerYearValue}
+                                      className="admin-users-input admin-users-input--short"
+                                      onChange={(e) =>
+                                        setVacationBalanceDrafts((current) => {
+                                          const previousPerYear =
+                                            current[u.id]?.perYear ?? String(u.vacation_days_per_year ?? 0);
+                                          const previousAvailable =
+                                            current[u.id]?.available ?? String(u.vacation_days_available ?? 0);
+                                          const previousCarryover =
+                                            current[u.id]?.carryover ?? String(u.vacation_days_carryover ?? 0);
+                                          const initialAvailable = Number(u.vacation_days_available ?? 0);
+                                          const initialCarryover = Number(u.vacation_days_carryover ?? 0);
+                                          const isInitialSetup =
+                                            initialAvailable <= 0 && initialCarryover <= 0;
+                                          const shouldAutofillAvailable =
+                                            isInitialSetup &&
+                                            (current[u.id] === undefined ||
+                                              previousAvailable === previousPerYear);
+                                          return {
+                                            ...current,
+                                            [u.id]: {
+                                              perYear: e.target.value,
+                                              available: shouldAutofillAvailable
+                                                ? e.target.value
+                                                : previousAvailable,
+                                              carryover: previousCarryover,
+                                            },
+                                          };
+                                        })
+                                      }
+                                    />
+                                  </label>
+                                  <label className="admin-users-vac-label">
+                                    <span>{de ? "offen" : "left"}</span>
+                                    <input
+                                      type="number"
+                                      min={0}
+                                      step={0.5}
+                                      value={vacAvailableValue}
+                                      className="admin-users-input admin-users-input--short"
+                                      onChange={(e) =>
+                                        setVacationBalanceDrafts((current) => ({
+                                          ...current,
+                                          [u.id]: {
+                                            perYear:
+                                              current[u.id]?.perYear ?? String(u.vacation_days_per_year ?? 0),
+                                            available: e.target.value,
+                                            carryover:
+                                              current[u.id]?.carryover ?? String(u.vacation_days_carryover ?? 0),
+                                          },
+                                        }))
+                                      }
+                                    />
+                                  </label>
+                                  <label className="admin-users-vac-label">
+                                    <span>{de ? "Übertrag" : "carryover"}</span>
+                                    <input
+                                      type="number"
+                                      min={0}
+                                      step={0.5}
+                                      value={vacCarryoverValue}
+                                      className="admin-users-input admin-users-input--short"
+                                      onChange={(e) =>
+                                        setVacationBalanceDrafts((current) => ({
+                                          ...current,
+                                          [u.id]: {
+                                            perYear:
+                                              current[u.id]?.perYear ?? String(u.vacation_days_per_year ?? 0),
+                                            available:
+                                              current[u.id]?.available ?? String(u.vacation_days_available ?? 0),
+                                            carryover: e.target.value,
+                                          },
+                                        }))
+                                      }
+                                    />
+                                  </label>
+                                  <button
+                                    type="button"
+                                    className="admin-users-inline-save"
+                                    onClick={() => void updateVacationBalance(u.id)}
+                                  >
+                                    {de ? "Speichern" : "Save"}
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="admin-users-detail-actions">
+                              <button
+                                type="button"
+                                className={`admin-users-detail-btn${
+                                  expandedPermUserId === u.id ? " admin-users-detail-btn--active" : ""
+                                }`}
+                                disabled={!canManagePermissions}
+                                onClick={() => openUserPermPanel(u.id)}
+                              >
+                                <ShieldIcon />
+                                <span>
+                                  {de ? "Individuelle Berechtigungen" : "Custom permissions"}
+                                </span>
+                              </button>
+                              <button
+                                type="button"
+                                className="admin-users-detail-btn admin-users-detail-btn--danger"
+                                disabled={isSelf}
+                                onClick={() => void softDeleteUser(u.id)}
+                              >
+                                <ArchiveUserIcon />
+                                <span>{de ? "Archivieren" : "Archive"}</span>
+                              </button>
+                            </div>
+
+                            {expandedPermUserId === u.id && permDraft && rolePermissionsMeta && (
+                              <div
+                                ref={(node) => {
+                                  userPermPanelRefs.current[u.id] = node;
+                                }}
+                                className="admin-users-perm-panel"
+                              >
+                                <div className="admin-users-perm-header">
+                                  <b>
+                                    {de ? "Individuelle Berechtigungen" : "Custom permissions"}
+                                  </b>
+                                  <small>
+                                    {de
+                                      ? "Grün = zusätzlich gewährt · Rot = verweigert"
+                                      : "Green = extra grant · Red = deny"}
+                                  </small>
+                                </div>
+                                <div className="admin-users-perm-groups">
+                                  {rolePermissionsMeta.permission_groups.map((group) => (
+                                    <div key={group.key} className="admin-users-perm-group">
+                                      <div className="admin-users-perm-group-title">
+                                        {group.label}
+                                      </div>
+                                      {group.permissions.map((perm) => {
+                                        const roleHas = (
+                                          rolePermissionsMeta.permissions[u.role] ?? []
+                                        ).includes(perm);
+                                        const isExtra = permDraft.extra.has(perm);
+                                        const isDenied = permDraft.denied.has(perm);
+                                        const label =
+                                          rolePermissionsMeta.permission_labels[perm] ?? perm;
+                                        return (
+                                          <div
+                                            key={perm}
+                                            className={`admin-users-perm-row${
+                                              isExtra
+                                                ? " admin-users-perm-row--extra"
+                                                : isDenied
+                                                  ? " admin-users-perm-row--deny"
+                                                  : ""
+                                            }`}
+                                          >
+                                            <span className="admin-users-perm-label">
+                                              {label}
+                                              <span
+                                                className={`admin-users-perm-dot admin-users-perm-dot--${
+                                                  roleHas ? "on" : "off"
+                                                }`}
+                                              />
+                                            </span>
+                                            <div className="admin-users-perm-toggles">
+                                              <label>
+                                                <input
+                                                  type="checkbox"
+                                                  checked={isExtra}
+                                                  onChange={() => togglePermExtra(perm)}
+                                                />
+                                                <span>{de ? "Gewähren" : "Grant"}</span>
+                                              </label>
+                                              <label>
+                                                <input
+                                                  type="checkbox"
+                                                  checked={isDenied}
+                                                  onChange={() => togglePermDenied(perm)}
+                                                />
+                                                <span>{de ? "Sperren" : "Deny"}</span>
+                                              </label>
+                                            </div>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  ))}
+                                </div>
+                                <div className="admin-users-perm-actions">
+                                  <button
+                                    type="button"
+                                    className="admin-users-inline-save"
+                                    disabled={permSaving}
+                                    onClick={() => void saveUserPermDraft(u.id)}
+                                  >
+                                    {permSaving
+                                      ? de ? "Speichern…" : "Saving…"
+                                      : de ? "Speichern" : "Save"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="admin-users-inline-save admin-users-inline-save--ghost"
+                                    disabled={permSaving}
+                                    onClick={() => void handleResetUserPerms(u.id)}
+                                  >
+                                    {de ? "Überschreibungen entfernen" : "Remove overrides"}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="admin-users-inline-save admin-users-inline-save--ghost"
+                                    onClick={() => {
+                                      setExpandedPermUserId(null);
+                                      setPermDraft(null);
+                                    }}
+                                  >
+                                    {de ? "Abbrechen" : "Cancel"}
+                                  </button>
+                                </div>
+                              </div>
                             )}
                           </div>
-                        </div>
-                        <div />
-                        <div className="admin-user-actions">
-                          <button type="button" onClick={() => void restoreArchivedUser(u.id)}>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {activeAdminUsers.length === 0 && (
+                    <div className="admin-users-empty">
+                      {de ? "Keine aktiven Benutzer." : "No active users."}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {archivedAdminUsers.length > 0 && (
+                <div className="admin-users-archived">
+                  <button
+                    type="button"
+                    className="admin-users-archived-toggle"
+                    onClick={() => setShowArchived((v) => !v)}
+                  >
+                    {showArchived
+                      ? (de ? "▾ Archiv ausblenden" : "▾ Hide archive")
+                      : (de
+                          ? `▸ Archiv anzeigen (${archivedAdminUsers.length})`
+                          : `▸ Show archive (${archivedAdminUsers.length})`)}
+                  </button>
+                  {showArchived && (
+                    <div className="admin-users-archived-list">
+                      {archivedAdminUsers.map((u) => (
+                        <div key={u.id} className="admin-users-archived-row">
+                          <AvatarBadge
+                            userId={u.id}
+                            initials={userInitialsById(u.id)}
+                            hasAvatar={userHasAvatar(u.id)}
+                            versionKey={userAvatarVersionById(u.id)}
+                            className="admin-users-avatar admin-users-avatar--muted"
+                          />
+                          <div className="admin-users-user-text">
+                            <span className="admin-users-user-name">{u.full_name}</span>
+                            <span className="admin-users-user-email">
+                              {u.email} · {roleLabel(u.role, de)}
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            className="admin-users-inline-save admin-users-inline-save--ghost"
+                            onClick={() => void restoreArchivedUser(u.id)}
+                          >
                             {de ? "Wiederherstellen" : "Restore"}
                           </button>
                         </div>
-                      </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* ── Groups ─────────────────────────────────────────────────────────── */}
-      {tab === "groups" && (
-        <div className="admin-tab-pane">
-          {groupDraft === null && (
-            <button type="button" onClick={openNewGroup}>
-              + {de ? "Neue Gruppe" : "New group"}
-            </button>
-          )}
-
-          {groupDraft !== null && (
-            <div className="admin-form-section admin-group-form">
-              <h4 className="admin-form-title">
-                {editingGroupId !== null
-                  ? (de ? "Gruppe bearbeiten" : "Edit group")
-                  : (de ? "Neue Gruppe" : "New group")}
-              </h4>
-              <label style={{ display: "block", marginBottom: "0.75rem" }}>
-                {de ? "Gruppenname" : "Group name"}
-                <input
-                  autoFocus
-                  value={groupDraft.name}
-                  maxLength={120}
-                  onChange={(e) => setGroupDraft({ ...groupDraft, name: e.target.value })}
-                />
-              </label>
-              <div style={{ marginBottom: "0.85rem" }}>
-                <p className="muted" style={{ fontSize: "0.82rem", marginBottom: "0.35rem" }}>
-                  {de ? "Gruppenrechte" : "Group permissions"}
-                </p>
-              <label className="admin-member-check-row" style={{ marginBottom: "0.85rem" }}>
-                <input
-                  type="checkbox"
-                  checked={groupDraft.canUpdateRecentOwnTimeEntries}
-                  onChange={(e) =>
-                    setGroupDraft({ ...groupDraft, canUpdateRecentOwnTimeEntries: e.target.checked })
-                  }
-                />
-                {de
-                  ? "Darf die letzten 3 eigenen Zeiteinträge sehen und ändern"
-                  : "Can view and update the last 3 own time entries"}
-              </label>
-              </div>
-              <div className="admin-group-form-body">
-                <p className="muted" style={{ fontSize: "0.82rem", marginBottom: "0.4rem" }}>
-                  {de ? "Mitglieder" : "Members"} ({groupDraft.memberIds.size})
-                </p>
-                <div className="admin-member-checklist">
-                  {activeAdminUsers.map((u) => (
-                    <label key={u.id} className="admin-member-check-row">
-                      <input
-                        type="checkbox"
-                        checked={groupDraft.memberIds.has(u.id)}
-                        onChange={() => toggleGroupMember(u.id)}
-                      />
-                      {u.display_name}
-                      <span className="muted" style={{ fontSize: "0.78rem" }}>· {u.role}</span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-              <div className="row admin-group-form-footer" style={{ gap: "0.5rem" }}>
-                <button type="button" onClick={() => void submitGroupDraft()}>
-                  {de ? "Speichern" : "Save"}
-                </button>
-                <button type="button" onClick={cancelGroupDraft}>
-                  {de ? "Abbrechen" : "Cancel"}
-                </button>
-              </div>
-            </div>
-          )}
-
-          {employeeGroupsLoading && <p className="muted">{de ? "Lädt…" : "Loading…"}</p>}
-          {!employeeGroupsLoading && employeeGroups.length === 0 && (
-            <p className="muted">{de ? "Noch keine Gruppen vorhanden." : "No groups yet."}</p>
-          )}
-          {employeeGroups.map((group) => (
-            <div key={group.id} className="admin-group-card">
-              <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-                <div>
-                  <b>{group.name}</b>
-                  <span className="muted" style={{ marginLeft: "0.5rem", fontSize: "0.84rem" }}>
-                    {group.members.length} {de ? "Mitglied(er)" : "member(s)"}
-                  </span>
-                  {group.can_update_recent_own_time_entries && (
-                    <span className="muted" style={{ marginLeft: "0.5rem", fontSize: "0.84rem" }}>
-                      · {de ? "letzte 3 Eigeneinträge sichtbar und editierbar" : "last 3 own entries visible and editable"}
-                    </span>
                   )}
                 </div>
-                <div className="row" style={{ gap: "0.4rem" }}>
-                  <button type="button" className="icon-btn" title={de ? "Bearbeiten" : "Edit"} onClick={() => openEditGroup(group)}>✏</button>
-                  <button type="button" className="icon-btn admin-btn-danger" title={de ? "Löschen" : "Delete"} onClick={() => void deleteEmployeeGroup(group.id)}>✕</button>
-                </div>
-              </div>
-              {group.members.length > 0 && (
-                <div className="admin-group-members">
-                  {group.members.map((m) => (
-                    <span key={m.user_id} className={`admin-member-chip${m.is_active ? "" : " admin-member-chip--inactive"}`}>
-                      {m.display_name}
-                    </span>
-                  ))}
-                </div>
               )}
-              <div className="admin-group-members" style={{ marginTop: "0.5rem" }}>
-                <span className="admin-member-chip">
-                  {group.can_update_recent_own_time_entries
-                    ? (de ? "Recht: letzte 3 eigene Zeiteinträge sehen und bearbeiten" : "Permission: view and edit last 3 own time entries")
-                    : (de ? "Kein zusätzliches Gruppenrecht" : "No extra group permission")}
-                </span>
-              </div>
             </div>
-          ))}
-        </div>
-      )}
 
-      {/* ── Roles ──────────────────────────────────────────────────────────── */}
-      {tab === "roles" && (
-        <div className="admin-tab-pane">
-          <div className="perm-header">
-            <div>
-              <h4 className="perm-heading">
-                {de ? "Rollenberechtigungen" : "Role Permissions"}
-              </h4>
-              <p className="perm-subline muted">
-                {de
-                  ? "Legen Sie fest, welche Aktionen jede Rolle ausführen darf. Änderungen gelten sofort."
-                  : "Define what each role is allowed to do. Changes take effect immediately."}
-              </p>
-            </div>
-          </div>
-
-          {rolePermissionsLoading && !rolePermissionsMeta && (
-            <p className="muted" style={{ padding: "1rem 0" }}>{de ? "Lade…" : "Loading…"}</p>
-          )}
-
-          {rolePermissionsMeta && (() => {
-            const { permissions, permission_groups, permission_labels, permission_descriptions, all_roles } = rolePermissionsMeta;
-
-            const roleLabel = (r: string) => r.charAt(0).toUpperCase() + r.slice(1);
-            const hasPermission = (role: string, perm: string) => (permissions[role] ?? []).includes(perm);
-            const groupAllEnabled = (group: { permissions: string[] }, role: string) =>
-              group.permissions.every((p) => hasPermission(role, p));
-
-            const toggleGroupForRole = (group: { permissions: string[] }, role: string, enable: boolean) => {
-              group.permissions.forEach((perm) => {
-                if (hasPermission(role, perm) !== enable) void setRolePermission(role, perm, enable);
-              });
-            };
-
-            const handleReset = async (role: string) => {
-              setResettingRole(role);
-              try { await resetRoleToDefaults(role); }
-              finally { setResettingRole(null); }
-            };
-
-            return (
-              <div className="perm-matrix-wrapper">
-                <table className="perm-matrix">
-                  <thead>
-                    <tr>
-                      <th className="perm-col-label">{de ? "Berechtigung" : "Permission"}</th>
-                      {all_roles.map((role) => (
-                        <th key={role} className="perm-col-role">
-                          <div className="perm-role-header">
-                            <span className="perm-role-name">{roleLabel(role)}</span>
-                            {role === "admin" ? (
-                              <span className="perm-locked-badge" title={de ? "Admin-Rolle ist schreibgeschützt" : "Admin role is read-only"}>🔒</span>
-                            ) : (
-                              <button
-                                type="button"
-                                className="perm-reset-btn"
-                                title={de ? "Auf Standard zurücksetzen" : "Reset to defaults"}
-                                disabled={resettingRole === role}
-                                onClick={() => void handleReset(role)}
-                              >
-                                <ResetIcon />
-                              </button>
-                            )}
-                          </div>
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {permission_groups.map((group) => (
-                      <tr key={`group-${group.key}`} className="perm-group-row">
-                        <td className="perm-group-label" colSpan={1}>{group.label}</td>
-                        {all_roles.map((role) => {
-                          const allOn = groupAllEnabled(group, role);
-                          const isLocked = role === "admin";
-                          return (
-                            <td key={role} className="perm-cell perm-cell--group">
-                              <label className="perm-toggle-label" title={
-                                isLocked
-                                  ? (de ? "Admin-Rolle ist schreibgeschützt" : "Admin role is read-only")
-                                  : allOn ? (de ? "Alle deaktivieren" : "Disable all") : (de ? "Alle aktivieren" : "Enable all")
-                              }>
-                                <input
-                                  type="checkbox"
-                                  className="perm-checkbox"
-                                  checked={allOn}
-                                  disabled={isLocked}
-                                  onChange={(e) => !isLocked && toggleGroupForRole(group, role, e.target.checked)}
-                                />
-                              </label>
-                            </td>
-                          );
-                        })}
-                      </tr>
-                    ))}
-                    {permission_groups.flatMap((group) =>
-                      group.permissions.map((perm) => (
-                        <tr key={perm} className="perm-perm-row">
-                          <td
-                            className="perm-perm-label"
-                            onMouseEnter={(e) => {
-                              const desc = permission_descriptions[perm];
-                              if (!desc) return;
-                              const rect = e.currentTarget.getBoundingClientRect();
-                              setPermTooltip({ text: desc, x: rect.left + 16, y: rect.bottom + 6 });
-                            }}
-                            onMouseLeave={() => setPermTooltip(null)}
-                          >
-                            {permission_labels[perm] ?? perm}
-                            <code className="perm-key">{perm}</code>
-                          </td>
-                          {all_roles.map((role) => {
-                            const isLocked = role === "admin";
-                            return (
-                              <td key={role} className="perm-cell">
-                                <label className="perm-toggle-label"
-                                  title={isLocked ? (de ? "Admin-Rolle ist schreibgeschützt" : "Admin role is read-only") : undefined}>
-                                  <input
-                                    type="checkbox"
-                                    className="perm-checkbox"
-                                    checked={hasPermission(role, perm)}
-                                    disabled={isLocked}
-                                    onChange={(e) => !isLocked && void setRolePermission(role, perm, e.target.checked)}
-                                  />
-                                </label>
-                              </td>
-                            );
-                          })}
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            );
-          })()}
-        </div>
-      )}
-
-      {/* ── Tools ──────────────────────────────────────────────────────────── */}
-      {tab === "tools" && (
-        <div className="admin-tab-pane">
-          {canManageProjectImport && (
-            <>
-              <div className="admin-settings-card">
-                <h4>{de ? "Projektklassen-Template" : "Project class template"}</h4>
-                <p className="muted" style={{ fontSize: "0.88rem", marginTop: "0.25rem" }}>
-                  {de
-                    ? "CSV mit Projektklassen, Standard-Materialien und Aufgaben."
-                    : "CSV containing project classes, default materials and tasks."}
-                </p>
-                <div className="row wrap" style={{ gap: "0.5rem", marginBottom: "0.5rem" }}>
-                  <button type="button" onClick={downloadProjectClassTemplateCsv}>
-                    {de ? "Template herunterladen" : "Download template"}
-                  </button>
-                </div>
-                <form className="row wrap" style={{ gap: "0.5rem" }} onSubmit={importProjectClassTemplateCsv}>
-                  <input type="file" name="file" accept=".csv,text/csv" required />
-                  <button type="submit">{de ? "Importieren" : "Import"}</button>
-                </form>
-              </div>
-
-              <div className="admin-settings-card">
-                <h4>{de ? "Projekt-CSV Import" : "Project CSV import"}</h4>
-                <div className="row wrap" style={{ gap: "0.5rem", marginBottom: "0.5rem" }}>
-                  <button type="button" onClick={downloadProjectCsvTemplate}>
-                    {de ? "CSV-Template herunterladen" : "Download CSV template"}
-                  </button>
-                </div>
-                <form className="row wrap" style={{ gap: "0.5rem" }} onSubmit={importProjectsCsv}>
-                  <input type="file" name="file" accept=".csv,text/csv" required />
-                  <button type="submit">{de ? "CSV importieren" : "Import CSV"}</button>
-                </form>
-              </div>
-            </>
-          )}
-
-          {canManageSchoolAbsences && (
-            <div className="admin-settings-card">
-              <h4>{de ? "Berufsschule verwalten" : "Manage school dates"}</h4>
-              <p className="muted" style={{ fontSize: "0.88rem", marginTop: "0.25rem" }}>
-                {de
-                  ? "Schulblöcke oder wiederkehrende Schultage für Mitarbeiter eintragen."
-                  : "Add school blocks or recurring school days for employees."}
-              </p>
-              <form className="modal-form" onSubmit={submitSchoolAbsence}>
-                <label>
-                  {de ? "Mitarbeiter" : "Employee"}
-                  <select
-                    value={schoolAbsenceForm.user_id}
-                    onChange={(e) => setSchoolAbsenceForm({ ...schoolAbsenceForm, user_id: e.target.value })}
+            <aside className="admin-page-card admin-page-card--invite">
+              <h2 className="admin-page-card-title">
+                {de ? "Neuen Benutzer einladen" : "Invite new user"}
+              </h2>
+              <form
+                className="admin-invite-form"
+                onSubmit={(e: FormEvent<HTMLFormElement>) => void submitCreateInvite(e)}
+              >
+                <label className="admin-invite-field">
+                  <span className="admin-invite-field-label">
+                    {de ? "Name" : "Full name"}
+                  </span>
+                  <input
                     required
+                    className="admin-invite-input"
+                    placeholder={de ? "z. B. Max Müller" : "e.g. Max Müller"}
+                    value={inviteCreateForm.full_name}
+                    onChange={(e) =>
+                      setInviteCreateForm({ ...inviteCreateForm, full_name: e.target.value })
+                    }
+                  />
+                </label>
+                <label className="admin-invite-field">
+                  <span className="admin-invite-field-label">Email</span>
+                  <input
+                    required
+                    type="email"
+                    className="admin-invite-input"
+                    placeholder="max@company.de"
+                    value={inviteCreateForm.email}
+                    onChange={(e) =>
+                      setInviteCreateForm({ ...inviteCreateForm, email: e.target.value })
+                    }
+                  />
+                </label>
+                <label className="admin-invite-field">
+                  <span className="admin-invite-field-label">
+                    {de ? "Rolle" : "Role"}
+                  </span>
+                  <select
+                    className="admin-invite-input"
+                    value={inviteCreateForm.role}
+                    disabled={!canManagePermissions}
+                    onChange={(e) =>
+                      setInviteCreateForm({
+                        ...inviteCreateForm,
+                        role: e.target.value as User["role"],
+                      })
+                    }
                   >
-                    <option value="">{de ? "Bitte auswählen" : "Please select"}</option>
-                    {assignableUsers.map((u) => (
-                      <option key={`tools-school-${u.id}`} value={String(u.id)}>
-                        {menuUserNameById(u.id, u.display_name || u.full_name)}
-                      </option>
+                    {(canManagePermissions ? ALL_ROLES : ["employee"]).map((r) => (
+                      <option key={r} value={r}>{roleLabel(r, de)}</option>
                     ))}
                   </select>
                 </label>
-                <div className="row wrap">
-                  <label>
-                    {de ? "Start" : "Start"}
-                    <input
-                      type="date"
-                      value={schoolAbsenceForm.start_date}
-                      onChange={(e) => setSchoolAbsenceForm({ ...schoolAbsenceForm, start_date: e.target.value })}
-                      required
-                    />
-                  </label>
-                  <label>
-                    {de ? "Ende" : "End"}
-                    <input
-                      type="date"
-                      value={schoolAbsenceForm.end_date}
-                      onChange={(e) => setSchoolAbsenceForm({ ...schoolAbsenceForm, end_date: e.target.value })}
-                      required
-                    />
-                  </label>
-                </div>
-                <div className="weekday-checkbox-group">
-                  <small>{de ? "Wiederholung (Mo–Fr)" : "Recurring days (Mon–Fri)"}</small>
-                  <div className="weekday-checkbox-row">
-                    {[0, 1, 2, 3, 4].map((day) => (
-                      <label key={`tools-school-day-${day}`} className="weekday-checkbox-item">
-                        <input
-                          type="checkbox"
-                          checked={schoolAbsenceForm.recurrence_weekdays.includes(day)}
-                          onChange={(e) => toggleSchoolRecurrenceWeekday(day, e.target.checked)}
-                        />
-                        <span>{schoolWeekdayLabel(day, language)}</span>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-                <label>
-                  {de ? "Intervall bis (optional)" : "Recurring until (optional)"}
-                  <input
-                    type="date"
-                    value={schoolAbsenceForm.recurrence_until}
-                    onChange={(e) => setSchoolAbsenceForm({ ...schoolAbsenceForm, recurrence_until: e.target.value })}
-                  />
-                </label>
-                <button type="submit">{de ? "Schulzeit speichern" : "Save school date"}</button>
+                <button type="submit" className="admin-invite-submit">
+                  {de ? "Einladung senden" : "Send invite"}
+                </button>
               </form>
-            </div>
-          )}
+            </aside>
+          </div>
+        )}
 
-          {!canManageProjectImport && !canManageSchoolAbsences && (
-            <p className="muted">{de ? "Keine Werkzeuge verfügbar." : "No tools available."}</p>
-          )}
-        </div>
-      )}
-
-      {/* ── Audit log ──────────────────────────────────────────────────────── */}
-      {tab === "audit" && (
-        <div className="admin-tab-pane">
-          <div className="row wrap" style={{ marginBottom: "1rem", gap: "0.75rem", alignItems: "center" }}>
-            <details className="admin-audit-filters">
-              <summary className="admin-audit-filters-summary">
-                <span>{de ? "Filter" : "Filters"}</span>
-                {activeAuditFilterCount > 0 && <span className="admin-audit-filter-count">{activeAuditFilterCount}</span>}
-                <span className="admin-audit-filter-summary-text">
-                  {auditCategoryFilters.length > 0
-                    ? `${auditCategoryFilters.length} ${de ? "Kategorie(n)" : "categories"}`
-                    : (de ? "Alle Kategorien" : "All categories")}
-                  {" · "}
-                  {formatAuditPeriodLabel(
-                    hasAuditDateFilter ? auditPeriodFilter : "all",
-                    de,
+        {/* ── Groups ─────────────────────────────────────────────────────── */}
+        {tab === "groups" && (
+          <div className="admin-page-layout admin-page-layout--groups">
+            <div className="admin-groups-main">
+              {employeeGroupsLoading && (
+                <div className="admin-page-card admin-page-card--muted">
+                  {de ? "Lädt…" : "Loading…"}
+                </div>
+              )}
+              {!employeeGroupsLoading && employeeGroups.length === 0 && (
+                <div className="admin-page-card admin-page-card--muted">
+                  {de ? "Noch keine Gruppen vorhanden." : "No groups yet."}
+                </div>
+              )}
+              {employeeGroups.map((group) => (
+                <div key={group.id} className="admin-page-card admin-group-card">
+                  <div className="admin-group-card-head">
+                    <h3 className="admin-group-card-title">{group.name}</h3>
+                    <div className="admin-group-card-actions">
+                      <button
+                        type="button"
+                        className="admin-group-edit-btn"
+                        onClick={() => openEditGroup(group)}
+                      >
+                        {de ? "Bearbeiten" : "Edit"}
+                      </button>
+                      <button
+                        type="button"
+                        className="admin-group-delete-btn"
+                        onClick={() => void deleteEmployeeGroup(group.id)}
+                      >
+                        {de ? "Löschen" : "Delete"}
+                      </button>
+                    </div>
+                  </div>
+                  {group.members.length > 0 ? (
+                    <div className="admin-group-members">
+                      {group.members.map((m) => {
+                        const adminUser = adminUsersById.get(m.user_id);
+                        return (
+                          <span
+                            key={m.user_id}
+                            className={`admin-group-member-chip${
+                              m.is_active ? "" : " admin-group-member-chip--inactive"
+                            }`}
+                          >
+                            <AvatarBadge
+                              userId={m.user_id}
+                              initials={userInitialsById(m.user_id)}
+                              hasAvatar={userHasAvatar(m.user_id)}
+                              versionKey={userAvatarVersionById(m.user_id)}
+                              className="admin-group-member-avatar"
+                            />
+                            <span>{adminUser?.display_name || m.display_name}</span>
+                          </span>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="admin-group-empty">
+                      {de ? "Keine Mitglieder" : "No members"}
+                    </div>
                   )}
+                  <div className="admin-group-perm-line">
+                    <span
+                      className={`admin-group-perm-dot${
+                        group.can_update_recent_own_time_entries ? " admin-group-perm-dot--on" : ""
+                      }`}
+                    />
+                    {group.can_update_recent_own_time_entries
+                      ? de
+                        ? "Darf letzte eigene Zeiteinträge bearbeiten"
+                        : "Can edit own recent time entries"
+                      : de
+                        ? "Keine eigenen Zeiteinträge editieren"
+                        : "Cannot edit own time entries"}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <aside className="admin-page-card admin-page-card--group-form">
+              <h2 className="admin-page-card-title">
+                {editingGroupId !== null
+                  ? de ? "Gruppe bearbeiten" : "Edit group"
+                  : de ? "Neue Gruppe" : "New group"}
+              </h2>
+              <label className="admin-invite-field">
+                <span className="admin-invite-field-label">
+                  {de ? "Gruppenname" : "Group name"}
                 </span>
-              </summary>
-              <div className="admin-audit-filters-panel">
-                <div className="admin-audit-filter-group">
-                  <span className="admin-audit-filter-label">{de ? "Kategorien" : "Categories"}</span>
-                  <div className="admin-audit-filter-options">
-                    {auditCategories.map((category) => (
-                      <label key={category} className="admin-audit-filter-pill">
+                <input
+                  className="admin-invite-input"
+                  placeholder={de ? "z. B. Baustellenführer" : "e.g. Site Supervisors"}
+                  value={groupDraft?.name ?? ""}
+                  maxLength={120}
+                  onChange={(e) => {
+                    if (groupDraft) {
+                      setGroupDraft({ ...groupDraft, name: e.target.value });
+                    } else {
+                      setGroupDraft({
+                        name: e.target.value,
+                        memberIds: new Set(),
+                        canUpdateRecentOwnTimeEntries: false,
+                      });
+                    }
+                  }}
+                />
+              </label>
+              <div className="admin-group-form-section">
+                <span className="admin-invite-field-label">
+                  {de ? "Mitglieder" : "Members"}
+                </span>
+                <div className="admin-group-member-list">
+                  {activeAdminUsers.map((u) => {
+                    const checked = groupDraft?.memberIds.has(u.id) ?? false;
+                    return (
+                      <label key={u.id} className="admin-group-member-check">
                         <input
                           type="checkbox"
-                          checked={auditCategoryFilters.includes(category)}
-                          onChange={() => toggleAuditCategoryFilter(category)}
+                          checked={checked}
+                          onChange={() => {
+                            if (!groupDraft) {
+                              setGroupDraft({
+                                name: "",
+                                memberIds: new Set([u.id]),
+                                canUpdateRecentOwnTimeEntries: false,
+                              });
+                              return;
+                            }
+                            toggleGroupMember(u.id);
+                          }}
                         />
-                        <span>{formatAuditCategory(category, de)}</span>
+                        <span>{u.display_name}</span>
                       </label>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="admin-audit-filter-grid">
-                  <div className="admin-audit-filter-group">
-                    <label className="admin-audit-filter-field">
-                      <span className="admin-audit-filter-label">{de ? "Zeitraum" : "Period"}</span>
-                      <select
-                        value={auditPeriodFilter}
-                        onChange={(e) => setAuditPeriodFilter(e.target.value as AuditPeriodFilter)}
-                        aria-label={de ? "Zeitraum filtern" : "Filter by period"}
-                      >
-                        <option value="all">{de ? "Gesamter Zeitraum" : "All time"}</option>
-                        <option value="today">{de ? "Heute" : "Today"}</option>
-                        <option value="7d">{de ? "Letzte 7 Tage" : "Last 7 days"}</option>
-                        <option value="30d">{de ? "Letzte 30 Tage" : "Last 30 days"}</option>
-                        <option value="90d">{de ? "Letzte 90 Tage" : "Last 90 days"}</option>
-                        <option value="custom">{de ? "Benutzerdefiniert" : "Custom"}</option>
-                      </select>
-                    </label>
-                  </div>
-                </div>
-
-                {auditPeriodFilter === "custom" && (
-                  <div className="admin-audit-filter-grid">
-                    <label className="admin-audit-filter-field">
-                      <span className="admin-audit-filter-label">{de ? "Von" : "From"}</span>
-                      <input
-                        type="date"
-                        value={auditDateFrom}
-                        onChange={(e) => setAuditDateFrom(e.target.value)}
-                        aria-label={de ? "Startdatum" : "Start date"}
-                      />
-                    </label>
-                    <label className="admin-audit-filter-field">
-                      <span className="admin-audit-filter-label">{de ? "Bis" : "To"}</span>
-                      <input
-                        type="date"
-                        value={auditDateTo}
-                        onChange={(e) => setAuditDateTo(e.target.value)}
-                        aria-label={de ? "Enddatum" : "End date"}
-                      />
-                    </label>
-                  </div>
-                )}
-
-                <div className="admin-audit-filter-actions">
-                  <button type="button" onClick={clearAuditFilters} disabled={!hasAuditFilters}>
-                    {de ? "Filter zurücksetzen" : "Reset filters"}
-                  </button>
-                </div>
-              </div>
-            </details>
-            <input
-              type="search"
-              placeholder={de ? "Suche nach Aktion oder Benutzer…" : "Search by action or user…"}
-              value={auditSearch}
-              onChange={(e) => setAuditSearch(e.target.value)}
-              className="admin-audit-search"
-            />
-            <button type="button" onClick={() => void loadAuditLogs()}>
-              {de ? "Aktualisieren" : "Refresh"}
-            </button>
-            {auditLogs.length > 0 && (
-              <span className="muted" style={{ fontSize: "0.82rem" }}>
-                {filteredLogs.length}
-                {(auditSearch || hasAuditFilters) ? `/${auditLogs.length}` : ""}
-                {" "}
-                {de ? "Einträge" : "entries"}
-              </span>
-            )}
-          </div>
-
-          {auditLogsLoading && <p className="muted">{de ? "Lädt…" : "Loading…"}</p>}
-          {!auditLogsLoading && auditLogs.length === 0 && (
-            <p className="muted">{de ? "Keine Protokolleinträge." : "No audit log entries."}</p>
-          )}
-
-          {filteredLogs.length > 0 && (
-            <div className="table-responsive">
-              <table>
-                <thead>
-                  <tr>
-                    <th>{de ? "Zeitpunkt" : "Time"}</th>
-                    <th>{de ? "Kategorie" : "Category"}</th>
-                    <th>{de ? "Benutzer" : "Actor"}</th>
-                    <th>{de ? "Aktion" : "Action"}</th>
-                    <th>{de ? "Ziel" : "Target"}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredLogs.map((log) => {
-                    const actor = log.actor_user_id
-                      ? (adminUsersById.get(log.actor_user_id)?.display_name ?? `#${log.actor_user_id}`)
-                      : (de ? "System" : "System");
-                    const target = log.target_type
-                      ? `${log.target_type}${log.target_id != null ? ` · ${log.target_id}` : ""}`
-                      : "—";
-                    return (
-                      <tr key={log.id}>
-                        <td className="muted" style={{ whiteSpace: "nowrap", fontSize: "0.8rem" }}>{fmtTs(log.created_at)}</td>
-                        <td className="muted" style={{ fontSize: "0.84rem" }}>{formatAuditCategory(log.category, de)}</td>
-                        <td>{actor}</td>
-                        <td><code className="admin-audit-code">{log.action}</code></td>
-                        <td className="muted" style={{ fontSize: "0.84rem" }}>{target}</td>
-                      </tr>
                     );
                   })}
-                </tbody>
-              </table>
+                </div>
+              </div>
+              <label className="admin-group-member-check admin-group-member-check--full">
+                <input
+                  type="checkbox"
+                  checked={groupDraft?.canUpdateRecentOwnTimeEntries ?? false}
+                  onChange={(e) => {
+                    if (!groupDraft) {
+                      setGroupDraft({
+                        name: "",
+                        memberIds: new Set(),
+                        canUpdateRecentOwnTimeEntries: e.target.checked,
+                      });
+                      return;
+                    }
+                    setGroupDraft({
+                      ...groupDraft,
+                      canUpdateRecentOwnTimeEntries: e.target.checked,
+                    });
+                  }}
+                />
+                <span>
+                  {de
+                    ? "Darf eigene letzte Zeiteinträge bearbeiten"
+                    : "Can edit own recent time entries"}
+                </span>
+              </label>
+              <div className="admin-group-form-actions">
+                {editingGroupId !== null && (
+                  <button
+                    type="button"
+                    className="admin-invite-submit admin-invite-submit--ghost"
+                    onClick={cancelGroupDraft}
+                  >
+                    {de ? "Abbrechen" : "Cancel"}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="admin-invite-submit"
+                  disabled={!groupDraft || groupDraft.name.trim() === ""}
+                  onClick={() => void submitGroupDraft()}
+                >
+                  {editingGroupId !== null
+                    ? de ? "Gruppe speichern" : "Save group"
+                    : de ? "Gruppe erstellen" : "Create group"}
+                </button>
+              </div>
+            </aside>
+          </div>
+        )}
+
+        {/* ── Roles ──────────────────────────────────────────────────────── */}
+        {tab === "roles" && (
+          <div className="admin-page-card admin-roles-card">
+            {rolePermissionsLoading && !rolePermissionsMeta && (
+              <p className="admin-page-muted">{de ? "Lade…" : "Loading…"}</p>
+            )}
+            {rolePermissionsMeta && (() => {
+              const { permissions, permission_groups, permission_labels, permission_descriptions, all_roles } =
+                rolePermissionsMeta;
+
+              const hasPermission = (role: string, perm: string) =>
+                (permissions[role] ?? []).includes(perm);
+
+              const handleReset = async (role: string) => {
+                setResettingRole(role);
+                try {
+                  await resetRoleToDefaults(role);
+                } finally {
+                  setResettingRole(null);
+                }
+              };
+
+              return (
+                <div className="admin-roles-table-wrap">
+                  <table className="admin-roles-table">
+                    <thead>
+                      <tr>
+                        <th className="admin-roles-head admin-roles-head--label">
+                          {de ? "Berechtigung" : "Permission"}
+                        </th>
+                        {all_roles.map((role) => (
+                          <th
+                            key={role}
+                            className={`admin-roles-head admin-roles-head--role admin-roles-head--${role}`}
+                          >
+                            <div className="admin-roles-head-inner">
+                              <span>{roleLabel(role, de)}</span>
+                              {role === "admin" ? (
+                                <span className="admin-roles-lock" title={de ? "Admin-Rolle ist schreibgeschützt" : "Admin role is read-only"}>
+                                  🔒
+                                </span>
+                              ) : (
+                                <button
+                                  type="button"
+                                  className="admin-roles-reset-btn"
+                                  title={de ? "Auf Standard zurücksetzen" : "Reset to defaults"}
+                                  disabled={resettingRole === role}
+                                  onClick={() => void handleReset(role)}
+                                >
+                                  <ResetIcon />
+                                </button>
+                              )}
+                            </div>
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {permission_groups.flatMap((group) =>
+                        group.permissions.map((perm) => (
+                          <tr key={perm} className="admin-roles-row">
+                            <td
+                              className="admin-roles-perm-cell"
+                              onMouseEnter={(e) => {
+                                const desc = permission_descriptions[perm];
+                                if (!desc) return;
+                                const rect = e.currentTarget.getBoundingClientRect();
+                                setPermTooltip({ text: desc, x: rect.left + 16, y: rect.bottom + 6 });
+                              }}
+                              onMouseLeave={() => setPermTooltip(null)}
+                            >
+                              <span className="admin-roles-perm-label">
+                                {permission_labels[perm] ?? perm}
+                              </span>
+                              <code className="admin-roles-perm-key">{perm}</code>
+                            </td>
+                            {all_roles.map((role) => {
+                              const isLocked = role === "admin";
+                              const on = hasPermission(role, perm);
+                              return (
+                                <td key={role} className="admin-roles-cell">
+                                  <button
+                                    type="button"
+                                    className={`admin-roles-check${on ? " admin-roles-check--on" : ""}`}
+                                    aria-label={on ? "Enabled" : "Disabled"}
+                                    disabled={isLocked}
+                                    title={isLocked ? de ? "Schreibgeschützt" : "Read-only" : undefined}
+                                    onClick={() => !isLocked && void setRolePermission(role, perm, !on)}
+                                  >
+                                    {on ? "✓" : "—"}
+                                  </button>
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        )),
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })()}
+          </div>
+        )}
+
+        {/* ── Tools ──────────────────────────────────────────────────────── */}
+        {tab === "tools" && (
+          <div className="admin-page-layout admin-page-layout--tools">
+            {canManageProjectImport && (
+              <>
+                <div className="admin-page-card admin-tools-card">
+                  <h2 className="admin-page-card-title">
+                    {de ? "Projektklassen-Template" : "Project class template"}
+                  </h2>
+                  <p className="admin-tools-desc">
+                    {de
+                      ? "CSV mit Projektklassen, Standard-Materialien und Aufgaben. Template herunterladen, ausfüllen, importieren."
+                      : "CSV containing project classes, default materials and tasks. Download the template, fill it in, then import."}
+                  </p>
+                  <div className="admin-tools-step">
+                    <div className="admin-tools-step-label">
+                      {de ? "Schritt 1 — Template herunterladen" : "Step 1 — Download template"}
+                    </div>
+                    <button
+                      type="button"
+                      className="admin-tools-step-btn"
+                      onClick={downloadProjectClassTemplateCsv}
+                    >
+                      ↓ {de ? "Template herunterladen" : "Download template"}
+                    </button>
+                  </div>
+                  <form className="admin-tools-step" onSubmit={importProjectClassTemplateCsv}>
+                    <div className="admin-tools-step-label">
+                      {de ? "Schritt 2 — Ausgefüllte CSV importieren" : "Step 2 — Import filled CSV"}
+                    </div>
+                    <div className="admin-tools-upload">
+                      <div className="admin-tools-upload-icon">📄</div>
+                      <div className="admin-tools-upload-text">
+                        {de ? "CSV-Datei auswählen oder ablegen" : "Choose CSV file or drag & drop"}
+                      </div>
+                      <label className="admin-tools-upload-btn">
+                        <span>{de ? "Datei wählen" : "Browse file"}</span>
+                        <input type="file" name="file" accept=".csv,text/csv" required />
+                      </label>
+                    </div>
+                    <button type="submit" className="admin-tools-step-primary">
+                      {de ? "Importieren" : "Import"}
+                    </button>
+                  </form>
+                </div>
+
+                <div className="admin-page-card admin-tools-card">
+                  <h2 className="admin-page-card-title">
+                    {de ? "Projekt-CSV-Import" : "Project CSV import"}
+                  </h2>
+                  <p className="admin-tools-desc">
+                    {de
+                      ? "Projekte per CSV-Datei importieren. Template herunterladen, um das erwartete Spaltenformat zu sehen."
+                      : "Bulk-import projects from a CSV file. Download the template to see the required column format."}
+                  </p>
+                  <div className="admin-tools-step">
+                    <div className="admin-tools-step-label">
+                      {de ? "Schritt 1 — Template herunterladen" : "Step 1 — Download template"}
+                    </div>
+                    <button
+                      type="button"
+                      className="admin-tools-step-btn"
+                      onClick={downloadProjectCsvTemplate}
+                    >
+                      ↓ {de ? "CSV-Template herunterladen" : "Download CSV template"}
+                    </button>
+                  </div>
+                  <form className="admin-tools-step" onSubmit={importProjectsCsv}>
+                    <div className="admin-tools-step-label">
+                      {de ? "Schritt 2 — CSV importieren" : "Step 2 — Import CSV"}
+                    </div>
+                    <div className="admin-tools-upload">
+                      <div className="admin-tools-upload-icon">📄</div>
+                      <div className="admin-tools-upload-text">
+                        {de ? "CSV-Datei auswählen oder ablegen" : "Choose CSV file or drag & drop"}
+                      </div>
+                      <label className="admin-tools-upload-btn">
+                        <span>{de ? "Datei wählen" : "Browse file"}</span>
+                        <input type="file" name="file" accept=".csv,text/csv" required />
+                      </label>
+                    </div>
+                    <button type="submit" className="admin-tools-step-primary">
+                      {de ? "CSV importieren" : "Import CSV"}
+                    </button>
+                  </form>
+                </div>
+              </>
+            )}
+
+            {canManageSchoolAbsences && (
+              <div className="admin-page-card admin-tools-card">
+                <h2 className="admin-page-card-title">
+                  {de ? "Berufsschul-Termine" : "Manage school dates"}
+                </h2>
+                <p className="admin-tools-desc">
+                  {de
+                    ? "Schulblöcke oder wiederkehrende Schultage für Auszubildende eintragen."
+                    : "Add school blocks or recurring school days for apprentices and trainees."}
+                </p>
+                <form className="admin-tools-form" onSubmit={submitSchoolAbsence}>
+                  <label className="admin-invite-field">
+                    <span className="admin-invite-field-label">
+                      {de ? "Mitarbeiter" : "Employee"}
+                    </span>
+                    <select
+                      className="admin-invite-input"
+                      value={schoolAbsenceForm.user_id}
+                      onChange={(e) =>
+                        setSchoolAbsenceForm({ ...schoolAbsenceForm, user_id: e.target.value })
+                      }
+                      required
+                    >
+                      <option value="">{de ? "Bitte auswählen" : "Please select"}</option>
+                      {assignableUsers.map((u) => (
+                        <option key={`tools-school-${u.id}`} value={String(u.id)}>
+                          {menuUserNameById(u.id, u.display_name || u.full_name)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <div className="admin-tools-form-row">
+                    <label className="admin-invite-field">
+                      <span className="admin-invite-field-label">Start</span>
+                      <input
+                        type="date"
+                        className="admin-invite-input"
+                        value={schoolAbsenceForm.start_date}
+                        onChange={(e) =>
+                          setSchoolAbsenceForm({ ...schoolAbsenceForm, start_date: e.target.value })
+                        }
+                        required
+                      />
+                    </label>
+                    <label className="admin-invite-field">
+                      <span className="admin-invite-field-label">End</span>
+                      <input
+                        type="date"
+                        className="admin-invite-input"
+                        value={schoolAbsenceForm.end_date}
+                        onChange={(e) =>
+                          setSchoolAbsenceForm({ ...schoolAbsenceForm, end_date: e.target.value })
+                        }
+                        required
+                      />
+                    </label>
+                  </div>
+                  <div className="admin-invite-field">
+                    <span className="admin-invite-field-label">
+                      {de ? "Wochentage (Mo–Fr)" : "Recurring days (Mon–Fri)"}
+                    </span>
+                    <div className="admin-tools-weekday-row">
+                      {[0, 1, 2, 3, 4].map((day) => {
+                        const checked = schoolAbsenceForm.recurrence_weekdays.includes(day);
+                        return (
+                          <label
+                            key={`tools-school-day-${day}`}
+                            className={`admin-tools-weekday-pill${
+                              checked ? " admin-tools-weekday-pill--on" : ""
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(e) => toggleSchoolRecurrenceWeekday(day, e.target.checked)}
+                            />
+                            <span>{schoolWeekdayLabel(day, language)}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <label className="admin-invite-field">
+                    <span className="admin-invite-field-label">
+                      {de ? "Wiederholung bis (optional)" : "Recurring until (optional)"}
+                    </span>
+                    <input
+                      type="date"
+                      className="admin-invite-input"
+                      placeholder={de ? "Leer für einmaligen Block" : "Leave empty for single block"}
+                      value={schoolAbsenceForm.recurrence_until}
+                      onChange={(e) =>
+                        setSchoolAbsenceForm({
+                          ...schoolAbsenceForm,
+                          recurrence_until: e.target.value,
+                        })
+                      }
+                    />
+                  </label>
+                  <button type="submit" className="admin-invite-submit">
+                    {de ? "Schultermin speichern" : "Save school date"}
+                  </button>
+                </form>
+              </div>
+            )}
+
+            {!canManageProjectImport && !canManageSchoolAbsences && (
+              <div className="admin-page-card admin-page-card--muted">
+                {de ? "Keine Werkzeuge verfügbar." : "No tools available."}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── Audit ──────────────────────────────────────────────────────── */}
+        {tab === "audit" && (
+          <div className="admin-audit-wrap">
+            <div className="admin-audit-toolbar">
+              <div className="admin-audit-search-wrap">
+                <input
+                  type="search"
+                  className="admin-audit-search"
+                  placeholder={de ? "Ereignisse suchen…" : "Search events…"}
+                  value={auditSearch}
+                  onChange={(e) => setAuditSearch(e.target.value)}
+                />
+              </div>
+              <select
+                className="admin-audit-select"
+                value={auditPeriodFilter}
+                onChange={(e) => setAuditPeriodFilter(e.target.value as AuditPeriodFilter)}
+              >
+                <option value="all">{formatAuditPeriodLabel("all", de)}</option>
+                <option value="today">{formatAuditPeriodLabel("today", de)}</option>
+                <option value="7d">{formatAuditPeriodLabel("7d", de)}</option>
+                <option value="30d">{formatAuditPeriodLabel("30d", de)}</option>
+                <option value="90d">{formatAuditPeriodLabel("90d", de)}</option>
+                <option value="custom">{formatAuditPeriodLabel("custom", de)}</option>
+              </select>
+              <select
+                className="admin-audit-select"
+                value={auditCategoryFilters[0] ?? "all"}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setAuditCategoryFilters(val === "all" ? [] : [val]);
+                }}
+              >
+                <option value="all">{de ? "Alle Kategorien" : "All categories"}</option>
+                {auditCategories.map((category) => (
+                  <option key={category} value={category}>
+                    {formatAuditCategory(category, de)}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="admin-audit-refresh"
+                onClick={() => void loadAuditLogs()}
+              >
+                {de ? "Aktualisieren" : "Refresh"}
+              </button>
+              {hasAuditFilters && (
+                <button
+                  type="button"
+                  className="admin-audit-refresh admin-audit-refresh--ghost"
+                  onClick={clearAuditFilters}
+                >
+                  {de ? "Filter löschen" : "Clear filters"}
+                </button>
+              )}
             </div>
-          )}
-        </div>
-      )}
 
-      {/* ── Settings ───────────────────────────────────────────────────────── */}
-      {tab === "settings" && (
-        <div className="admin-tab-pane">
-          <div className="admin-settings-card">
-            <h4>{de ? "SMTP-Mailserver" : "SMTP mail server"}</h4>
-            <p className="muted" style={{ fontSize: "0.88rem", marginTop: "0.25rem" }}>
-              {de
-                ? "Wird für Einladungen und Passwort-Reset-E-Mails verwendet."
-                : "Used for invite and password reset emails."}
-            </p>
-            {smtpSettings && (
-              <div className="muted" style={{ fontSize: "0.82rem", display: "grid", gap: "0.2rem", marginBottom: "0.75rem" }}>
-                <div>
-                  {de ? "Status:" : "Status:"}{" "}
-                  <code>{smtpSettings.configured ? (de ? "konfiguriert" : "configured") : (de ? "nicht konfiguriert" : "not configured")}</code>
-                </div>
-                <div>
-                  {de ? "Gespeicherter Host:" : "Saved host:"}{" "}
-                  <code>{smtpSettings.host || (de ? "nicht gesetzt" : "not set")}</code>
-                </div>
-                <div>
-                  {de ? "Gespeichertes Passwort:" : "Saved password:"}{" "}
-                  <code>{smtpSettings.masked_password || (de ? "nicht gesetzt" : "not set")}</code>
-                </div>
+            {auditPeriodFilter === "custom" && (
+              <div className="admin-audit-custom-range">
+                <label>
+                  <span>{de ? "Von" : "From"}</span>
+                  <input
+                    type="date"
+                    value={auditDateFrom}
+                    onChange={(e) => setAuditDateFrom(e.target.value)}
+                  />
+                </label>
+                <label>
+                  <span>{de ? "Bis" : "To"}</span>
+                  <input
+                    type="date"
+                    value={auditDateTo}
+                    onChange={(e) => setAuditDateTo(e.target.value)}
+                  />
+                </label>
               </div>
             )}
-            <form onSubmit={(e: FormEvent<HTMLFormElement>) => void saveSmtpSettings(e)}>
-              <div className="admin-form-row">
-                <label>
-                  SMTP Host
-                  <input
-                    type="text"
-                    value={smtpSettingsForm.host}
-                    onChange={(e) => setSmtpSettingsForm({ ...smtpSettingsForm, host: e.target.value })}
-                    placeholder={de ? "z. B. smtp.example.com" : "e.g. smtp.example.com"}
-                    autoComplete="off"
-                  />
-                </label>
-                <label>
-                  Port
-                  <input
-                    type="number"
-                    min={1}
-                    max={65535}
-                    value={smtpSettingsForm.port}
-                    onChange={(e) => setSmtpSettingsForm({ ...smtpSettingsForm, port: e.target.value })}
-                    placeholder="587"
-                  />
-                </label>
-              </div>
-              <div className="admin-form-row">
-                <label>
-                  {de ? "Benutzername" : "Username"}
-                  <input
-                    type="text"
-                    value={smtpSettingsForm.username}
-                    onChange={(e) => setSmtpSettingsForm({ ...smtpSettingsForm, username: e.target.value })}
-                    placeholder={de ? "Optional" : "Optional"}
-                    autoComplete="username"
-                  />
-                </label>
-                <label>
-                  {de ? "Neues Passwort" : "New password"}
-                  <input
-                    type="password"
-                    value={smtpSettingsForm.password}
-                    onChange={(e) => setSmtpSettingsForm({ ...smtpSettingsForm, password: e.target.value, clear_password: false })}
-                    placeholder={de ? "Leer lassen zum Beibehalten" : "Leave blank to keep current"}
-                    autoComplete="new-password"
-                  />
-                </label>
-              </div>
-              <div className="admin-form-row">
-                <label>
-                  {de ? "Absender-E-Mail" : "Sender email"}
-                  <input
-                    type="email"
-                    value={smtpSettingsForm.from_email}
-                    onChange={(e) => setSmtpSettingsForm({ ...smtpSettingsForm, from_email: e.target.value })}
-                    placeholder="noreply@example.com"
-                    autoComplete="email"
-                  />
-                </label>
-                <label>
-                  {de ? "Absender-Name" : "Sender name"}
-                  <input
-                    type="text"
-                    value={smtpSettingsForm.from_name}
-                    onChange={(e) => setSmtpSettingsForm({ ...smtpSettingsForm, from_name: e.target.value })}
-                    placeholder={de ? "Optional" : "Optional"}
-                    autoComplete="off"
-                  />
-                </label>
-              </div>
-              <div className="admin-form-row">
-                <label className="admin-audit-filter-check">
-                  <input
-                    type="checkbox"
-                    checked={smtpSettingsForm.starttls}
-                    onChange={(e) => {
-                      const checked = e.target.checked;
-                      setSmtpSettingsForm({
-                        ...smtpSettingsForm,
-                        starttls: checked,
-                        ssl: checked ? false : smtpSettingsForm.ssl,
-                      });
-                    }}
-                  />
-                  <span>STARTTLS</span>
-                </label>
-                <label className="admin-audit-filter-check">
-                  <input
-                    type="checkbox"
-                    checked={smtpSettingsForm.ssl}
-                    onChange={(e) => {
-                      const checked = e.target.checked;
-                      setSmtpSettingsForm({
-                        ...smtpSettingsForm,
-                        ssl: checked,
-                        starttls: checked ? false : smtpSettingsForm.starttls,
-                      });
-                    }}
-                  />
-                  <span>SSL/TLS</span>
-                </label>
-                <label className="admin-audit-filter-check">
-                  <input
-                    type="checkbox"
-                    checked={smtpSettingsForm.clear_password}
-                    onChange={(e) => setSmtpSettingsForm({ ...smtpSettingsForm, clear_password: e.target.checked, password: e.target.checked ? "" : smtpSettingsForm.password })}
-                  />
-                  <span>{de ? "Gespeichertes Passwort löschen" : "Clear saved password"}</span>
-                </label>
-              </div>
-              <button type="submit" disabled={smtpSettingsSaving}>
-                {smtpSettingsSaving ? (de ? "Speichern…" : "Saving…") : (de ? "SMTP speichern" : "Save SMTP")}
-              </button>
-            </form>
-          </div>
 
-          <div className="admin-settings-card">
-            <h4>{de ? "Wetter-Integration" : "Weather integration"}</h4>
-            <p className="muted" style={{ fontSize: "0.88rem", marginTop: "0.25rem" }}>
-              {de
-                ? "OpenWeather API-Schlüssel für die Baustellenwetter-Karte."
-                : "OpenWeather API key for the construction site weather widget."}
-            </p>
-            {weatherSettings && (
-              <p className="muted" style={{ fontSize: "0.82rem" }}>
-                {de ? "Aktueller Schlüssel:" : "Current key:"}{" "}
-                <code>{weatherSettings.masked_api_key || (de ? "nicht gesetzt" : "not set")}</code>
-              </p>
-            )}
-            <form onSubmit={(e: FormEvent<HTMLFormElement>) => void saveWeatherSettings(e)}>
-              <div className="admin-form-row">
-                <label>
-                  {de ? "Neuer API-Schlüssel" : "New API key"}
-                  <input
-                    type="password"
-                    value={weatherApiKeyInput}
-                    onChange={(e) => setWeatherApiKeyInput(e.target.value)}
-                    placeholder={de ? "OpenWeather-Schlüssel eingeben" : "Enter OpenWeather API key"}
-                    autoComplete="new-password"
-                  />
-                </label>
+            <div className="admin-page-card admin-audit-card">
+              <div className="admin-audit-table-head">
+                <div className="admin-audit-col admin-audit-col--time">
+                  {de ? "Zeitpunkt" : "Timestamp"}
+                </div>
+                <div className="admin-audit-col admin-audit-col--cat">
+                  {de ? "Kategorie" : "Category"}
+                </div>
+                <div className="admin-audit-col admin-audit-col--user">
+                  {de ? "Benutzer" : "User"}
+                </div>
+                <div className="admin-audit-col admin-audit-col--event">
+                  {de ? "Ereignis" : "Event"}
+                </div>
               </div>
-              <button type="submit" disabled={weatherSettingsSaving || weatherApiKeyInput.trim() === ""}>
-                {weatherSettingsSaving ? (de ? "Speichern…" : "Saving…") : (de ? "Speichern" : "Save key")}
-              </button>
-            </form>
-          </div>
-        </div>
-      )}
 
-      {/* ── System ─────────────────────────────────────────────────────────── */}
-      {tab === "system" && (
-        <div className="admin-tab-pane">
-          <AdminUpdateMenu />
-          {canExportBackups && (
-            <div className="admin-settings-card">
-              <h4>{de ? "Datenbank-Backup" : "Database backup"}</h4>
-              <p className="muted" style={{ fontSize: "0.88rem", marginTop: "0.25rem" }}>
-                {de
-                  ? "AES-256-GCM verschlüsseltes Backup erstellen. Eine Schlüsseldatei wird zur Verschlüsselung benötigt."
-                  : "Generate an AES-256-GCM encrypted backup. A key file is required for encryption."}
-              </p>
-              <form onSubmit={(e: FormEvent<HTMLFormElement>) => void exportEncryptedDatabaseBackup(e)}>
-                <div className="admin-form-row">
-                  <label>
-                    {de ? "Schlüsseldatei" : "Key file"}
-                    <input type="file" name="key_file" accept="*/*" required />
+              {auditLogsLoading && (
+                <div className="admin-page-muted admin-audit-empty">
+                  {de ? "Lädt…" : "Loading…"}
+                </div>
+              )}
+
+              {!auditLogsLoading && filteredLogs.length === 0 && (
+                <div className="admin-page-muted admin-audit-empty">
+                  {de ? "Keine Einträge gefunden." : "No entries found."}
+                </div>
+              )}
+
+              {filteredLogs.map((log) => {
+                const actor = log.actor_user_id
+                  ? (adminUsersById.get(log.actor_user_id)?.display_name ?? `#${log.actor_user_id}`)
+                  : (de ? "System" : "System");
+                return (
+                  <div key={log.id} className="admin-audit-row">
+                    <div className="admin-audit-col admin-audit-col--time">{fmtTs(log.created_at)}</div>
+                    <div className="admin-audit-col admin-audit-col--cat">
+                      <span className={`admin-audit-chip admin-audit-chip--${log.category}`}>
+                        {formatAuditCategory(log.category, de)}
+                      </span>
+                    </div>
+                    <div className="admin-audit-col admin-audit-col--user">{actor}</div>
+                    <div className="admin-audit-col admin-audit-col--event">
+                      <code className="admin-audit-code">{log.action}</code>
+                      {log.target_type && (
+                        <span className="admin-audit-target">
+                          {log.target_type}
+                          {log.target_id != null ? ` · ${log.target_id}` : ""}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* ── Settings ───────────────────────────────────────────────────── */}
+        {tab === "settings" && (
+          <div className="admin-page-layout admin-page-layout--settings">
+            <div className="admin-page-card admin-settings-block">
+              <h2 className="admin-page-card-title">
+                {de ? "Firma" : "Company"}
+              </h2>
+              <form
+                className="admin-settings-form"
+                onSubmit={(e: FormEvent<HTMLFormElement>) => void saveCompanySettings(e)}
+              >
+                <div className="admin-tools-form-row">
+                  <label className="admin-invite-field">
+                    <span className="admin-invite-field-label">
+                      {de ? "Firmenname" : "Company name"}
+                    </span>
+                    <input
+                      type="text"
+                      className="admin-invite-input"
+                      value={companySettingsForm.company_name}
+                      onChange={(e) =>
+                        setCompanySettingsForm({
+                          ...companySettingsForm,
+                          company_name: e.target.value,
+                        })
+                      }
+                      placeholder="SMPL GmbH"
+                    />
+                  </label>
+                  <label className="admin-invite-field">
+                    <span className="admin-invite-field-label">
+                      {de ? "Titel links oben" : "Top-left title"}
+                    </span>
+                    <input
+                      type="text"
+                      className="admin-invite-input"
+                      value={companySettingsForm.navigation_title}
+                      onChange={(e) =>
+                        setCompanySettingsForm({
+                          ...companySettingsForm,
+                          navigation_title: e.target.value,
+                        })
+                      }
+                      placeholder="SMPL"
+                    />
                   </label>
                 </div>
-                <button type="submit" disabled={backupExporting}>
-                  {backupExporting ? (de ? "Backup läuft…" : "Exporting…") : (de ? "Backup erstellen" : "Create backup")}
+                <label className="admin-invite-field">
+                  <span className="admin-invite-field-label">
+                    {de ? "Adresse" : "Address"}
+                  </span>
+                  <input
+                    type="text"
+                    className="admin-invite-input"
+                    value={companySettingsForm.company_address}
+                    onChange={(e) =>
+                      setCompanySettingsForm({
+                        ...companySettingsForm,
+                        company_address: e.target.value,
+                      })
+                    }
+                    placeholder={de ? "Straße, PLZ Ort" : "Street, ZIP City"}
+                  />
+                </label>
+                <label className="admin-invite-field">
+                  <span className="admin-invite-field-label">
+                    {de ? "Logo-URL oder Datei" : "Logo URL or file"}
+                  </span>
+                  <input
+                    type="text"
+                    className="admin-invite-input"
+                    value={companySettingsForm.logo_url}
+                    onChange={(e) =>
+                      setCompanySettingsForm({
+                        ...companySettingsForm,
+                        logo_url: e.target.value,
+                      })
+                    }
+                    placeholder={de ? "https://… oder Datei wählen" : "https://… or choose file"}
+                  />
+                </label>
+                <div className="admin-tools-form-row">
+                  <label className="admin-invite-field">
+                    <span className="admin-invite-field-label">
+                      {de ? "Logo hochladen" : "Upload logo"}
+                    </span>
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="admin-invite-input admin-invite-input--file"
+                      onChange={(event) => {
+                        const file = event.target.files?.[0];
+                        if (!file) return;
+                        const reader = new FileReader();
+                        reader.onload = () => {
+                          const result =
+                            typeof reader.result === "string" ? reader.result : "";
+                          setCompanySettingsForm({
+                            ...companySettingsForm,
+                            logo_url: result,
+                          });
+                        };
+                        reader.readAsDataURL(file);
+                      }}
+                    />
+                  </label>
+                  <div className="admin-settings-logo-preview">
+                    <img
+                      src={companySettingsForm.logo_url.trim() || "/logo.jpeg"}
+                      alt={de ? "Logovorschau" : "Logo preview"}
+                    />
+                  </div>
+                </div>
+                <button
+                  type="submit"
+                  className="admin-invite-submit"
+                  disabled={companySettingsSaving}
+                >
+                  {companySettingsSaving
+                    ? de ? "Speichern…" : "Saving…"
+                    : de ? "Speichern" : "Save"}
                 </button>
               </form>
             </div>
-          )}
+
+            <div className="admin-page-card admin-settings-block">
+              <h2 className="admin-page-card-title">Weather API</h2>
+              <p className="admin-tools-desc">
+                {de
+                  ? "OpenWeatherMap API-Schlüssel verbinden, um Live-Wetter auf Projektseiten anzuzeigen."
+                  : "Connect an OpenWeatherMap API key to show live weather on project pages."}
+              </p>
+              <form
+                className="admin-settings-form"
+                onSubmit={(e: FormEvent<HTMLFormElement>) => void saveWeatherSettings(e)}
+              >
+                <label className="admin-invite-field">
+                  <span className="admin-invite-field-label">API Key</span>
+                  <input
+                    type="password"
+                    className="admin-invite-input"
+                    value={weatherApiKeyInput}
+                    onChange={(e) => setWeatherApiKeyInput(e.target.value)}
+                    placeholder={
+                      weatherSettings?.masked_api_key ||
+                      (de ? "OpenWeather-Schlüssel eingeben" : "Enter OpenWeather API key")
+                    }
+                    autoComplete="new-password"
+                  />
+                </label>
+                {weatherSettings?.masked_api_key && (
+                  <div className="admin-settings-status">
+                    <span className="admin-settings-status-dot admin-settings-status-dot--ok" />
+                    {de
+                      ? `Verbunden — aktueller Schlüssel ${weatherSettings.masked_api_key}`
+                      : `Connected — current key ${weatherSettings.masked_api_key}`}
+                  </div>
+                )}
+                <button
+                  type="submit"
+                  className="admin-invite-submit"
+                  disabled={weatherSettingsSaving || weatherApiKeyInput.trim() === ""}
+                >
+                  {weatherSettingsSaving
+                    ? de ? "Speichern…" : "Saving…"
+                    : de ? "Speichern" : "Save"}
+                </button>
+              </form>
+            </div>
+
+            <div className="admin-page-card admin-settings-block">
+              <h2 className="admin-page-card-title">Email (SMTP)</h2>
+              <form
+                className="admin-settings-form"
+                onSubmit={(e: FormEvent<HTMLFormElement>) => void saveSmtpSettings(e)}
+              >
+                <div className="admin-tools-form-row">
+                  <label className="admin-invite-field">
+                    <span className="admin-invite-field-label">Host</span>
+                    <input
+                      type="text"
+                      className="admin-invite-input"
+                      value={smtpSettingsForm.host}
+                      onChange={(e) =>
+                        setSmtpSettingsForm({ ...smtpSettingsForm, host: e.target.value })
+                      }
+                      placeholder="smtp.example.com"
+                    />
+                  </label>
+                  <label className="admin-invite-field admin-invite-field--short">
+                    <span className="admin-invite-field-label">Port</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={65535}
+                      className="admin-invite-input"
+                      value={smtpSettingsForm.port}
+                      onChange={(e) =>
+                        setSmtpSettingsForm({ ...smtpSettingsForm, port: e.target.value })
+                      }
+                      placeholder="587"
+                    />
+                  </label>
+                </div>
+                <div className="admin-tools-form-row">
+                  <label className="admin-invite-field">
+                    <span className="admin-invite-field-label">
+                      {de ? "Benutzername" : "Username"}
+                    </span>
+                    <input
+                      type="text"
+                      className="admin-invite-input"
+                      value={smtpSettingsForm.username}
+                      onChange={(e) =>
+                        setSmtpSettingsForm({ ...smtpSettingsForm, username: e.target.value })
+                      }
+                      placeholder="noreply@smpl.app"
+                    />
+                  </label>
+                  <label className="admin-invite-field">
+                    <span className="admin-invite-field-label">
+                      {de ? "Passwort" : "Password"}
+                    </span>
+                    <input
+                      type="password"
+                      className="admin-invite-input"
+                      value={smtpSettingsForm.password}
+                      onChange={(e) =>
+                        setSmtpSettingsForm({
+                          ...smtpSettingsForm,
+                          password: e.target.value,
+                          clear_password: false,
+                        })
+                      }
+                      placeholder={de ? "Leer lassen zum Beibehalten" : "Leave blank to keep current"}
+                    />
+                  </label>
+                </div>
+                <div className="admin-tools-form-row">
+                  <label className="admin-invite-field">
+                    <span className="admin-invite-field-label">
+                      {de ? "Absender-E-Mail" : "Sender email"}
+                    </span>
+                    <input
+                      type="email"
+                      className="admin-invite-input"
+                      value={smtpSettingsForm.from_email}
+                      onChange={(e) =>
+                        setSmtpSettingsForm({ ...smtpSettingsForm, from_email: e.target.value })
+                      }
+                      placeholder="noreply@example.com"
+                    />
+                  </label>
+                  <label className="admin-invite-field">
+                    <span className="admin-invite-field-label">
+                      {de ? "Absender-Name" : "Sender name"}
+                    </span>
+                    <input
+                      type="text"
+                      className="admin-invite-input"
+                      value={smtpSettingsForm.from_name}
+                      onChange={(e) =>
+                        setSmtpSettingsForm({ ...smtpSettingsForm, from_name: e.target.value })
+                      }
+                      placeholder="SMPL"
+                    />
+                  </label>
+                </div>
+                <div className="admin-settings-checkbox-row">
+                  <label className="admin-settings-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={smtpSettingsForm.starttls}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setSmtpSettingsForm({
+                          ...smtpSettingsForm,
+                          starttls: checked,
+                          ssl: checked ? false : smtpSettingsForm.ssl,
+                        });
+                      }}
+                    />
+                    <span>STARTTLS</span>
+                  </label>
+                  <label className="admin-settings-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={smtpSettingsForm.ssl}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        setSmtpSettingsForm({
+                          ...smtpSettingsForm,
+                          ssl: checked,
+                          starttls: checked ? false : smtpSettingsForm.starttls,
+                        });
+                      }}
+                    />
+                    <span>SSL/TLS</span>
+                  </label>
+                  <label className="admin-settings-checkbox">
+                    <input
+                      type="checkbox"
+                      checked={smtpSettingsForm.clear_password}
+                      onChange={(e) =>
+                        setSmtpSettingsForm({
+                          ...smtpSettingsForm,
+                          clear_password: e.target.checked,
+                          password: e.target.checked ? "" : smtpSettingsForm.password,
+                        })
+                      }
+                    />
+                    <span>{de ? "Gespeichertes Passwort löschen" : "Clear saved password"}</span>
+                  </label>
+                </div>
+                {smtpSettings && (
+                  <div className="admin-settings-status admin-settings-status--muted">
+                    <span
+                      className={`admin-settings-status-dot${
+                        smtpSettings.configured ? " admin-settings-status-dot--ok" : ""
+                      }`}
+                    />
+                    {smtpSettings.configured
+                      ? de ? "Konfiguriert" : "Configured"
+                      : de ? "Nicht konfiguriert" : "Not configured"}
+                  </div>
+                )}
+                <button
+                  type="submit"
+                  className="admin-invite-submit"
+                  disabled={smtpSettingsSaving}
+                >
+                  {smtpSettingsSaving
+                    ? de ? "Speichern…" : "Saving…"
+                    : de ? "Speichern" : "Save"}
+                </button>
+              </form>
+            </div>
+          </div>
+        )}
+
+        {/* ── System ─────────────────────────────────────────────────────── */}
+        {tab === "system" && (
+          <div className="admin-page-layout admin-page-layout--system">
+            {canManageSystem && (
+              <div className="admin-page-card admin-system-block">
+                <h2 className="admin-page-card-title">
+                  {de ? "App-Update" : "App update"}
+                </h2>
+                <AdminUpdateMenu />
+              </div>
+            )}
+            {canExportBackups && (
+              <div className="admin-page-card admin-system-block">
+                <h2 className="admin-page-card-title">
+                  {de ? "Datenbank-Backup" : "Database backup"}
+                </h2>
+                <p className="admin-tools-desc">
+                  {de
+                    ? "AES-256-GCM verschlüsseltes Backup der gesamten Datenbank erzeugen. Eine Schlüsseldatei ist erforderlich — separat und sicher aufbewahren."
+                    : "Generate an AES-256-GCM encrypted backup of the full database. A key file is required for encryption — keep it in a safe place separate from the backup."}
+                </p>
+                <div className="admin-system-warning">
+                  <span className="admin-system-warning-icon" aria-hidden="true">⚠</span>
+                  <span>
+                    {de
+                      ? "Speichere die Backup-Datei und die Schlüsseldatei getrennt. Ohne Schlüssel kann das Backup nicht entschlüsselt werden."
+                      : "Store the backup file and key file separately. The backup cannot be decrypted without the key."}
+                  </span>
+                </div>
+                <form
+                  className="admin-settings-form"
+                  onSubmit={(e: FormEvent<HTMLFormElement>) =>
+                    void exportEncryptedDatabaseBackup(e)
+                  }
+                >
+                  <label className="admin-invite-field">
+                    <span className="admin-invite-field-label">
+                      {de ? "Schlüsseldatei" : "Key file"}
+                    </span>
+                    <input
+                      type="file"
+                      name="key_file"
+                      accept="*/*"
+                      required
+                      className="admin-invite-input admin-invite-input--file"
+                    />
+                  </label>
+                  <button
+                    type="submit"
+                    className="admin-invite-submit"
+                    disabled={backupExporting}
+                  >
+                    {backupExporting
+                      ? de ? "Backup läuft…" : "Exporting…"
+                      : de ? "Backup erstellen" : "Create backup"}
+                  </button>
+                </form>
+              </div>
+            )}
+          </div>
+        )}
+      </section>
+
+      {permTooltip && (
+        <div
+          className="perm-tooltip-popup"
+          style={{ top: permTooltip.y, left: permTooltip.x }}
+        >
+          {permTooltip.text}
         </div>
       )}
-    </section>
-
-    {/* ── Permission description tooltip ─────────────────────────────────── */}
-    {permTooltip && (
-      <div
-        className="perm-tooltip-popup"
-        style={{ top: permTooltip.y, left: permTooltip.x }}
-      >
-        {permTooltip.text}
-      </div>
-    )}
     </>
   );
 }

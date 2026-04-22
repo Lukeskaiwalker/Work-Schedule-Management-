@@ -11,6 +11,7 @@ from app.models.entities import AppSetting
 INITIAL_ADMIN_BOOTSTRAP_COMPLETED_KEY = "initial_admin_bootstrap_completed"
 OPENWEATHER_API_KEY = "openweather_api_key"
 SMTP_SETTINGS_KEY = "smtp_settings"
+COMPANY_SETTINGS_KEY = "company_settings"
 ROLE_PERMISSIONS_KEY = "role_permissions"
 USER_PERMISSIONS_KEY = "user_permissions"
 
@@ -119,6 +120,59 @@ def set_smtp_settings(
                 "ssl": bool(ssl),
                 "from_email": (from_email or "").strip(),
                 "from_name": (from_name or "").strip(),
+            }
+        ),
+    )
+
+
+def get_company_settings(db: Session) -> dict[str, Any]:
+    defaults: dict[str, Any] = {
+        "logo_url": "",
+        "navigation_title": "SMPL",
+        "company_name": "SMPL",
+        "company_address": "",
+    }
+    raw = get_runtime_setting(db, COMPANY_SETTINGS_KEY)
+    if not raw:
+        return defaults
+    try:
+        stored = json.loads(raw)
+    except Exception:
+        return defaults
+    if not isinstance(stored, dict):
+        return defaults
+
+    merged = {**defaults}
+    if "logo_url" in stored:
+        merged["logo_url"] = str(stored.get("logo_url") or "").strip()
+    if "navigation_title" in stored:
+        navigation_title = str(stored.get("navigation_title") or "").strip()
+        merged["navigation_title"] = navigation_title or defaults["navigation_title"]
+    if "company_name" in stored:
+        company_name = str(stored.get("company_name") or "").strip()
+        merged["company_name"] = company_name or defaults["company_name"]
+    if "company_address" in stored:
+        merged["company_address"] = str(stored.get("company_address") or "").strip()
+    return merged
+
+
+def set_company_settings(
+    db: Session,
+    *,
+    logo_url: str,
+    navigation_title: str,
+    company_name: str,
+    company_address: str,
+) -> None:
+    set_runtime_setting(
+        db,
+        COMPANY_SETTINGS_KEY,
+        json.dumps(
+            {
+                "logo_url": (logo_url or "").strip(),
+                "navigation_title": (navigation_title or "").strip() or "SMPL",
+                "company_name": (company_name or "").strip() or "SMPL",
+                "company_address": (company_address or "").strip(),
             }
         ),
     )

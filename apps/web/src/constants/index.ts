@@ -4,6 +4,8 @@ export const MAIN_LABELS: Record<Language, Record<MainView, string>> = {
   en: {
     overview: "Overview",
     materials: "Materials",
+    werkstatt: "Workshop",
+    werkstatt_scan: "Scan",
     projects_all: "All Projects",
     projects_archive: "Project Archive",
     my_tasks: "My Tasks",
@@ -17,10 +19,15 @@ export const MAIN_LABELS: Record<Language, Record<MainView, string>> = {
     time: "Time Tracking",
     profile: "Profile",
     admin: "Admin",
+    projects_map: "Map",
+    customers: "Customers",
+    customer_detail: "Customer details",
   },
   de: {
     overview: "Übersicht",
     materials: "Material",
+    werkstatt: "Werkstatt",
+    werkstatt_scan: "Scannen",
     projects_all: "Alle Projekte",
     projects_archive: "Projektarchiv",
     my_tasks: "Meine Aufgaben",
@@ -34,12 +41,16 @@ export const MAIN_LABELS: Record<Language, Record<MainView, string>> = {
     time: "Zeiterfassung",
     profile: "Profil",
     admin: "Admin",
+    projects_map: "Karte",
+    customers: "Kunden",
+    customer_detail: "Kundendetails",
   },
 };
 
 export const TAB_LABELS: Record<Language, Record<ProjectTab, string>> = {
   en: {
     overview: "Overview",
+    gantt: "Gantt Plan",
     tasks: "Tasks",
     hours: "Project Hours",
     materials: "Materials",
@@ -49,6 +60,7 @@ export const TAB_LABELS: Record<Language, Record<ProjectTab, string>> = {
   },
   de: {
     overview: "Übersicht",
+    gantt: "Gantt-Plan",
     tasks: "Aufgaben",
     hours: "Projektstunden",
     materials: "Material",
@@ -93,7 +105,11 @@ export const MATERIAL_UNIT_EXAMPLES = ["pcs", "m", "cm", "mm", "m2", "m3", "kg",
 export const MATERIAL_CATALOG_SEARCH_LIMIT = 10;
 
 export const WORKSPACE_MODE_STORAGE_KEY = "smpl_workspace_mode";
+/** @deprecated single-slot draft storage. Kept for one-time migration to
+ *  REPORT_DRAFTS_LS_KEY on first read. */
 export const REPORT_DRAFT_LS_KEY = "report_draft_v2";
+/** Multi-draft storage: an array of `StoredReportDraft` (v3). */
+export const REPORT_DRAFTS_LS_KEY = "smpl_report_drafts_v3";
 
 export const HHMM_PATTERN = "^([01]\\d|2[0-3]):[0-5]\\d$";
 export const HHMM_REGEX = /^([01]\d|2[0-3]):[0-5]\d$/;
@@ -187,12 +203,14 @@ export const EMPTY_PROJECT_FORM: ProjectFormState = {
   status: "active",
   last_state: "",
   last_status_at: "",
+  customer_id: null,
   customer_name: "",
   customer_address: "",
   construction_site_address: "",
   customer_contact: "",
   customer_email: "",
   customer_phone: "",
+  use_separate_site_address: false,
   site_access_type: "",
   site_access_note: "",
   class_template_ids: [],

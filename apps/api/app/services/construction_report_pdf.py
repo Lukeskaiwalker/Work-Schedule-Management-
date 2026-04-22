@@ -48,6 +48,7 @@ def build_report_pdf_bytes(
     submitted_by: str,
     project_name: str | None = None,
     logo_path: str | None = None,
+    company_name: str | None = None,
     photos: list[tuple[str, bytes]] | None = None,
 ) -> bytes:
     buffer = BytesIO()
@@ -73,7 +74,7 @@ def build_report_pdf_bytes(
     styles.add(ParagraphStyle(name="NormalSmall", fontSize=9, leading=11))
 
     elements: list[Any] = []
-    elements.extend(_build_header(styles, report_date, logo_path, doc.width))
+    elements.extend(_build_header(styles, report_date, logo_path, doc.width, company_name=company_name))
     elements.append(Paragraph(f"Submitted by: {submitted_by}", styles["Normal"]))
     elements.append(Spacer(0, 4))
 
@@ -199,10 +200,12 @@ def _section_title(title: str, styles) -> Paragraph:
     return Paragraph(title, styles["SectionHeader"])
 
 
-def _build_header(styles, report_date: date, logo_path: str | None, width: float) -> list[Any]:
+def _build_header(styles, report_date: date, logo_path: str | None, width: float, *, company_name: str | None = None) -> list[Any]:
+    company_label = (company_name or "").strip() or "SMPL"
     title = Paragraph("<b>Baustellenbericht</b>", styles["Title"])
+    company = Paragraph(company_label, styles["Heading3"])
     subtitle = Paragraph(f"Datum: {report_date.isoformat()}", styles["Normal"])
-    right = [title, subtitle]
+    right = [company, title, subtitle]
     logo = _scaled_image_from_path(logo_path, max_width=40 * mm, max_height=20 * mm) if logo_path else None
     if logo:
         table = Table([[logo, right]], colWidths=[50 * mm, width - 50 * mm])

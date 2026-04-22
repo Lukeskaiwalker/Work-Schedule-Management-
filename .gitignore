@@ -3,13 +3,47 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .venv/
+
+# Dev / smoke / test databases (broad glob covers *.db.backup-* etc.)
 apps/api/test.db
 apps/api/smoke.db
+apps/api/smoke*.db*
+apps/api/*.db
 
 # Node
 node_modules/
 apps/web/dist/
 dist/
+
+# Claude Code scratch
+.claude/
+
+# Playwright MCP scratch (console logs + page snapshot YAMLs at repo root)
+.playwright-mcp/
+
+# Scratch / planning
+plan.txt
+*.code-workspace
+
+# Root-level debug artifacts produced during iterative UI work.
+# Legit YAMLs live in subdirectories (docker-compose stays tracked).
+/*.png
+/*.log
+/after-*.yml
+/b*.yml
+/bestand-*.yml
+/kat-*.yml
+/loc-*.yml
+/m*.yml
+/modal-*.yml
+/n*.yml
+/nav.yml
+/post-*.yml
+/re-*.yml
+/refresh.yml
+/v*.yml
+/werkstatt-*.yml
+/wp*.yml
 
 # Env / secrets
 .env

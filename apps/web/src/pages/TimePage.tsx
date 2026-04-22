@@ -1,10 +1,60 @@
-import { useRef, useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useAppContext } from "../context/AppContext";
-import { WorkHoursGauge, WeeklyHoursGauge, MonthlyHoursGauge } from "../components/gauges";
 import { isoToLocalDateTimeInput } from "../utils/dates";
 import { shiftMonthStart, schoolWeekdayLabel } from "../utils/dates";
-import { formatHours } from "../utils/misc";
+import { formatHours, clamp } from "../utils/misc";
 import { formatServerDateTime } from "../utils/dates";
+
+// ── Paper-style KPI donut ────────────────────────────────────────────────────
+function TimeKpiDonut({
+  worked,
+  required,
+  size = 72,
+  stroke = 8,
+}: {
+  worked: number;
+  required: number;
+  size?: number;
+  stroke?: number;
+}) {
+  const safeRequired = required > 0 ? required : 1;
+  const percent = clamp((worked / safeRequired) * 100, 0, 100);
+  const radius = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const dashOffset = circumference - (percent / 100) * circumference;
+  const centerLabel = `${worked.toFixed(worked >= 10 ? 1 : 2)}h`;
+  const subLabel = `of ${required.toFixed(0)}h`;
+  return (
+    <div className="time-kpi-donut" style={{ width: size, height: size }}>
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="none"
+          stroke="#E2ECF7"
+          strokeWidth={stroke}
+        />
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          fill="none"
+          stroke="#2F70B7"
+          strokeWidth={stroke}
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          strokeDashoffset={dashOffset}
+          transform={`rotate(-90 ${size / 2} ${size / 2})`}
+        />
+      </svg>
+      <div className="time-kpi-donut-center">
+        <span className="time-kpi-donut-value">{centerLabel}</span>
+        <span className="time-kpi-donut-sub">{subLabel}</span>
+      </div>
+    </div>
+  );
+}
 
 export function TimePage() {
   const {
@@ -13,8 +63,6 @@ export function TimePage() {
     now,
     user,
     timeCurrent,
-    timeInfoOpen,
-    setTimeInfoOpen,
     gaugeNetHours,
     requiredDailyHours,
     clockIn,
@@ -29,7 +77,6 @@ export function TimePage() {
     setTimeTargetSearch,
     timeTargetDropdownOpen,
     setTimeTargetDropdownOpen,
-    timeTargetUser,
     menuUserNameById,
     timeMonthCursor,
     setTimeMonthCursor,
@@ -61,9 +108,7 @@ export function TimePage() {
     removeSchoolAbsence,
     absenceTypes,
     publicHolidays,
-    timeEntriesStartDate,
     setTimeEntriesStartDate,
-    timeEntriesEndDate,
     setTimeEntriesEndDate,
   } = useAppContext();
 
@@ -73,12 +118,25 @@ export function TimePage() {
   }, [publicHolidays, monthCursorISO]);
 
   const de = language === "de";
-  const timeInfoRef = useRef<HTMLDivElement | null>(null);
-  const searchRef = useRef<HTMLDivElement | null>(null);
+  const [editEntriesDate, setEditEntriesDate] = useState<string | null>(null);
+  const employeeSearchRef = useRef<HTMLDivElement | null>(null);
+
+  // Keep the entries date range synced to the currently displayed month so the
+  // calendar / recent-entries / edit modal always have data for that month.
+  useEffect(() => {
+    const monthEnd = new Date(timeMonthCursor.getFullYear(), timeMonthCursor.getMonth() + 1, 0);
+    setTimeEntriesStartDate(`${monthCursorISO}-01`);
+    setTimeEntriesEndDate(`${monthCursorISO}-${String(monthEnd.getDate()).padStart(2, "0")}`);
+  }, [timeMonthCursor, monthCursorISO, setTimeEntriesStartDate, setTimeEntriesEndDate]);
 
   if (mainView !== "time") return null;
 
-  // Employee combobox helpers
+  // Build export URL — includes selected employee when a manager has picked one
+  const exportUrl = `/api/time/timesheet/export.xlsx?month=${monthCursorISO}${
+    isTimeManager && timeTargetUserId ? `&user_id=${Number(timeTargetUserId)}` : ""
+  }`;
+
+  // Manager employee picker helpers
   const filteredEmployees = assignableUsers.filter((u) => {
     const name = menuUserNameById(u.id, u.display_name || u.full_name).toLowerCase();
     return name.includes(timeTargetSearch.toLowerCase());
@@ -95,16 +153,6 @@ export function TimePage() {
     setTimeTargetSearch("");
     setTimeTargetDropdownOpen(false);
   }
-
-  function resetEntriesRangeToMonth() {
-    setTimeEntriesStartDate(`${monthCursorISO}-01`);
-    const monthEnd = new Date(timeMonthCursor.getFullYear(), timeMonthCursor.getMonth() + 1, 0);
-    const endIso = `${monthCursorISO}-${String(monthEnd.getDate()).padStart(2, "0")}`;
-    setTimeEntriesEndDate(endIso);
-  }
-
-  // Build export URL
-  const exportUrl = `/api/time/timesheet/export.xlsx?month=${monthCursorISO}${isTimeManager && timeTargetUserId ? `&user_id=${Number(timeTargetUserId)}` : ""}`;
 
   // Absence type label helper
   function absenceTypeLabel(key: string) {
@@ -133,299 +181,678 @@ export function TimePage() {
     })
     .slice(0, 10);
 
+  // Calculate current week hours from the month rows (for the "This week" donut)
+  const currentWeekRow = useMemo(() => {
+    const todayIsoLocal = now.toISOString().slice(0, 10);
+    return timeMonthRows.find((row) => row.weekStart <= todayIsoLocal && row.weekEnd >= todayIsoLocal)
+      ?? timeMonthRows[0]
+      ?? null;
+  }, [timeMonthRows, now]);
+
+  // Build day-by-day calendar data for the current month from timeEntries
+  const monthCalendar = useMemo(() => {
+    const monthDate = timeMonthCursor;
+    const year = monthDate.getFullYear();
+    const month = monthDate.getMonth();
+    const firstDay = new Date(year, month, 1);
+    const lastDay = new Date(year, month + 1, 0);
+    const daysInMonth = lastDay.getDate();
+
+    // Group entry hours by YYYY-MM-DD
+    const hoursByDate = new Map<string, number>();
+    for (const entry of timeEntries) {
+      if (!entry.clock_in) continue;
+      const entryDate = new Date(entry.clock_in);
+      if (entryDate.getFullYear() !== year || entryDate.getMonth() !== month) continue;
+      const iso = entryDate.toISOString().slice(0, 10);
+      hoursByDate.set(iso, (hoursByDate.get(iso) ?? 0) + entry.net_hours);
+    }
+
+    // Build 6-row × 7-col grid starting on Monday
+    type CalendarCell = {
+      date: number | null;
+      iso: string;
+      hours: number;
+      isToday: boolean;
+      isPast: boolean;
+    };
+    const cells: CalendarCell[] = [];
+    // JS: 0 = Sunday, 1 = Monday, ..., 6 = Saturday. We want Monday as first.
+    const firstWeekdayJs = firstDay.getDay(); // 0..6 (Sun..Sat)
+    const leadingBlanks = firstWeekdayJs === 0 ? 6 : firstWeekdayJs - 1;
+    for (let i = 0; i < leadingBlanks; i += 1) {
+      cells.push({ date: null, iso: "", hours: 0, isToday: false, isPast: false });
+    }
+    const todayIso = now.toISOString().slice(0, 10);
+    for (let d = 1; d <= daysInMonth; d += 1) {
+      const iso = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+      cells.push({
+        date: d,
+        iso,
+        hours: hoursByDate.get(iso) ?? 0,
+        isToday: iso === todayIso,
+        isPast: iso < todayIso,
+      });
+    }
+    // Pad to full rows of 7
+    while (cells.length % 7 !== 0) {
+      cells.push({ date: null, iso: "", hours: 0, isToday: false, isPast: false });
+    }
+    return cells;
+  }, [timeMonthCursor, timeEntries, now]);
+
+  // Group recent entries by date for the Paper-style Recent Entries list (latest 4-6 days)
+  const recentEntriesGrouped = useMemo(() => {
+    const sorted = [...timeEntries].sort((a, b) => (a.clock_in < b.clock_in ? 1 : -1));
+    const groups = new Map<string, typeof timeEntries>();
+    for (const entry of sorted) {
+      if (!entry.clock_in) continue;
+      const iso = new Date(entry.clock_in).toISOString().slice(0, 10);
+      const arr = groups.get(iso) ?? [];
+      arr.push(entry);
+      groups.set(iso, arr);
+    }
+    return Array.from(groups.entries()).slice(0, 6);
+  }, [timeEntries]);
+
+  function formatTimeHHMM(iso: string | null | undefined): string {
+    if (!iso) return "--:--";
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "--:--";
+    return d.toLocaleTimeString(de ? "de-DE" : "en-US", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
+  }
+
+  function recentGroupLabel(iso: string): string {
+    const date = new Date(iso + "T00:00:00");
+    const today = new Date(now.toISOString().slice(0, 10) + "T00:00:00");
+    const diffDays = Math.round((today.getTime() - date.getTime()) / (1000 * 60 * 60 * 24));
+    if (diffDays === 0) return (de ? "HEUTE" : "TODAY") + ", " + date.toLocaleDateString(de ? "de-DE" : "en-US", { month: "short", day: "numeric" }).toUpperCase();
+    if (diffDays === 1) return (de ? "GESTERN" : "YESTERDAY") + ", " + date.toLocaleDateString(de ? "de-DE" : "en-US", { month: "short", day: "numeric" }).toUpperCase();
+    const weekday = date.toLocaleDateString(de ? "de-DE" : "en-US", { weekday: "long" }).toUpperCase();
+    const rest = date.toLocaleDateString(de ? "de-DE" : "en-US", { month: "short", day: "numeric" }).toUpperCase();
+    return `${weekday}, ${rest}`;
+  }
+
+  function entriesForDate(iso: string) {
+    return timeEntries.filter((entry) => {
+      if (!entry.clock_in) return false;
+      return new Date(entry.clock_in).toISOString().slice(0, 10) === iso;
+    });
+  }
+
+  function formatDayHeading(iso: string): string {
+    const d = new Date(iso + "T00:00:00");
+    if (Number.isNaN(d.getTime())) return iso;
+    return d.toLocaleDateString(de ? "de-DE" : "en-US", {
+      weekday: "long",
+      day: "2-digit",
+      month: "long",
+      year: "numeric",
+    });
+  }
+  const weekWorkedHours = currentWeekRow?.workedHours ?? 0;
+  const weekRequiredHours = currentWeekRow?.requiredHours ?? 40;
+  const weekPercent = weekRequiredHours > 0 ? (weekWorkedHours / weekRequiredHours) * 100 : 0;
+  const weekLabel = currentWeekRow ? `KW ${currentWeekRow.weekNumber}` : "";
+
+  const monthPercent = monthlyRequiredHours > 0 ? (monthlyWorkedHours / monthlyRequiredHours) * 100 : 0;
+  const todayPercent = requiredDailyHours > 0 ? (gaugeNetHours / requiredDailyHours) * 100 : 0;
+  const clockedInLabel = timeCurrent?.clock_in
+    ? new Date(timeCurrent.clock_in).toLocaleTimeString(de ? "de-DE" : "en-US", {
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    : null;
+  const bigTimeDisplay = (() => {
+    const hours = Math.floor(gaugeNetHours);
+    const minutes = Math.round((gaugeNetHours - hours) * 60);
+    return `${hours}h ${String(minutes).padStart(2, "0")}m`;
+  })();
+  const todayDateLabel = now.toLocaleDateString(de ? "de-DE" : "en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+  const monthDayInfo = (() => {
+    const monthDate = timeMonthCursor;
+    const lastDay = new Date(monthDate.getFullYear(), monthDate.getMonth() + 1, 0).getDate();
+    const todayInMonth =
+      now.getFullYear() === monthDate.getFullYear() && now.getMonth() === monthDate.getMonth()
+        ? now.getDate()
+        : lastDay;
+    return { lastDay, todayInMonth, daysLeft: Math.max(lastDay - todayInMonth, 0) };
+  })();
+
   return (
-    <section className="grid time-grid">
-      <div className="card time-current-card">
-        <div className="row wrap time-current-head">
-          <h3>{de ? "Aktuelle Schicht" : "Current shift"}</h3>
-          <div ref={timeInfoRef} className={timeInfoOpen ? "time-info-wrap open" : "time-info-wrap"}>
-            <button
-              type="button"
-              className="time-info-trigger"
-              onClick={() => setTimeInfoOpen(!timeInfoOpen)}
-              aria-expanded={timeInfoOpen}
-              aria-label={de ? "Schichtdetails anzeigen" : "Show shift details"}
-            >
-              <small className="muted">
-                {de ? "Aktuelle Uhrzeit" : "Current time"}:{" "}
-                <b>{now.toLocaleTimeString(de ? "de-DE" : "en-US")}</b>
-              </small>
-            </button>
-            <div className="time-info-popover">
-              {timeCurrent?.clock_entry_id ? (
-                <div className="metric-grid time-info-metrics">
-                  <div><b>{de ? "Schicht-ID" : "Shift ID"}:</b> {timeCurrent.clock_entry_id}</div>
-                  <div>
-                    <b>{de ? "Eingestempelt" : "Clocked in"}:</b>{" "}
-                    {formatServerDateTime(timeCurrent.clock_in || "", language)}
-                  </div>
-                  <div><b>{de ? "Arbeitszeit" : "Worked"}:</b> {timeCurrent.worked_hours_live}h</div>
-                  <div><b>{de ? "Pause" : "Break"}:</b> {timeCurrent.break_hours_live}h</div>
-                  <div><b>{de ? "Gesetzliche Pause" : "Legal break"}:</b> {timeCurrent.required_break_hours_live}h</div>
-                  <div><b>{de ? "Nettozeit Schicht" : "Net shift hours"}:</b> {timeCurrent.net_hours_live}h</div>
-                </div>
-              ) : (
-                <p className="muted">{de ? "Keine offene Schicht." : "No open shift."}</p>
+    <section className="time-page">
+      {/* ── Manager toolbar (employee picker + export) ─────────────── */}
+      {isTimeManager && (
+        <div className="time-manager-toolbar">
+          <div ref={employeeSearchRef} className="time-employee-search">
+            <label className="time-employee-search-label">
+              {de ? "Mitarbeiter" : "Employee"}
+            </label>
+            <div className="time-employee-search-input-wrap">
+              <svg
+                className="time-employee-search-icon"
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                aria-hidden="true"
+              >
+                <circle cx="11" cy="11" r="6.3" stroke="#5C7895" strokeWidth="1.8" />
+                <path
+                  d="m15.6 15.6 4 4"
+                  stroke="#5C7895"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                />
+              </svg>
+              <input
+                type="text"
+                className="time-employee-search-input"
+                placeholder={de ? "Mitarbeiter suchen…" : "Search employee…"}
+                value={timeTargetSearch}
+                onChange={(event) => {
+                  setTimeTargetSearch(event.target.value);
+                  setTimeTargetDropdownOpen(true);
+                  if (!event.target.value) setTimeTargetUserId("");
+                }}
+                onFocus={() => setTimeTargetDropdownOpen(true)}
+                onBlur={() => setTimeout(() => setTimeTargetDropdownOpen(false), 150)}
+                autoComplete="off"
+              />
+              {timeTargetSearch && (
+                <button
+                  type="button"
+                  className="time-employee-search-clear"
+                  onClick={clearEmployeeFilter}
+                  aria-label={de ? "Filter zurücksetzen" : "Clear filter"}
+                >
+                  ×
+                </button>
               )}
-              <small className="muted">
-                {de
-                  ? "Gesetzliche Pause: über 6h = 30 Min, über 9h = 45 Min."
-                  : "German legal break defaults: over 6h = 30m, over 9h = 45m."}
-              </small>
             </div>
+            {timeTargetDropdownOpen && filteredEmployees.length > 0 && (
+              <ul className="time-employee-search-dropdown">
+                {filteredEmployees.slice(0, 10).map((u) => {
+                  const name = menuUserNameById(u.id, u.display_name || u.full_name);
+                  return (
+                    <li
+                      key={`emp-${u.id}`}
+                      className="time-employee-search-option"
+                      onMouseDown={() => selectEmployee(u.id, name)}
+                    >
+                      {name}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
           </div>
-        </div>
-        <div className="time-current-main">
-          <WorkHoursGauge language={language} netHours={gaugeNetHours} requiredHours={requiredDailyHours} />
-        </div>
-        <div className="row wrap time-current-actions">
-          {timeCurrent?.clock_entry_id ? (
-            <button onClick={clockOut} disabled={!viewingOwnTime}>
-              {de ? "Ausstempeln" : "Clock out"}
-            </button>
+          {!timeTargetUserId ? (
+            <span className="time-manager-toolbar-status muted">
+              {de ? "Sie sehen Ihre eigenen Daten." : "Viewing your own data."}
+            </span>
           ) : (
-            <button onClick={clockIn} disabled={!viewingOwnTime}>
-              {de ? "Einstempeln" : "Clock in"}
-            </button>
+            <span className="time-manager-toolbar-status time-manager-toolbar-status--alt">
+              {de ? "Mitarbeitendenansicht aktiv" : "Employee view active"}
+            </span>
           )}
-          {Boolean(timeCurrent?.clock_entry_id) &&
-            (timeCurrent?.break_open ? (
-              <button onClick={endBreak} disabled={!viewingOwnTime}>
-                {de ? "Pause Ende" : "Break end"}
-              </button>
-            ) : (
-              <button onClick={startBreak} disabled={!viewingOwnTime}>
-                {de ? "Pause Start" : "Break start"}
-              </button>
-            ))}
-          <a href={exportUrl} target="_blank" rel="noreferrer" className="btn-secondary">
-            {de ? `Export ${monthCursorLabel}` : `Export ${monthCursorLabel}`}
+          <a
+            href={exportUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="time-manager-toolbar-export"
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              aria-hidden="true"
+            >
+              <path
+                d="M12 4v12m0 0-4-4m4 4 4-4M5 18h14"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+            {de ? "Export" : "Export"} {monthCursorLabel}
           </a>
         </div>
-        {!viewingOwnTime && (
-          <small className="muted">
-            {de
-              ? "Sie sehen die Zeitdaten eines Mitarbeiters. Clock-In/Out ist deaktiviert."
-              : "You are viewing another employee. Clock actions are disabled."}
-          </small>
-        )}
-      </div>
+      )}
 
-      <div className="card time-month-card">
-        <h3>{de ? "Monats- und Wochenstunden" : "Monthly and weekly hours"}</h3>
-        <div className="time-month-nav">
-          <button
-            type="button"
-            className="icon-btn"
-            onClick={() => setTimeMonthCursor(shiftMonthStart(timeMonthCursor, -1))}
-            aria-label={de ? "Vorheriger Monat" : "Previous month"}
-          >
-            ←
-          </button>
-          <b>{monthCursorLabel}</b>
-          <button
-            type="button"
-            className="icon-btn"
-            onClick={() => setTimeMonthCursor(shiftMonthStart(timeMonthCursor, 1))}
-            aria-label={de ? "Nächster Monat" : "Next month"}
-          >
-            →
-          </button>
-        </div>
-        <MonthlyHoursGauge
-          language={language}
-          workedHours={monthlyWorkedHours}
-          requiredHours={monthlyRequiredHours}
-        />
-        {monthlyWorkedHours > monthlyRequiredHours && (
-          <small className="muted">
-            {de ? "Überstunden" : "Overtime"}: {formatHours(monthlyWorkedHours - monthlyRequiredHours)}
-          </small>
-        )}
-        <div className="weekly-hours-list">
-          {timeMonthRows.map((row) => (
-            <WeeklyHoursGauge key={`${row.weekYear}-${row.weekNumber}-${row.weekStart}`} language={language} row={row} />
-          ))}
-        </div>
-        {monthHolidays.length > 0 && (
-          <div className="month-holidays-list">
-            <small className="muted">{de ? "Feiertage (NRW)" : "Public holidays (NRW)"}</small>
-            {monthHolidays.map((h) => (
-              <div key={h.date} className="month-holiday-row">
-                <span className="month-holiday-date">
-                  {new Date(h.date + "T00:00:00").toLocaleDateString(de ? "de-DE" : "en-GB", { day: "2-digit", month: "2-digit" })}
-                </span>
-                <span className="month-holiday-name">{h.name}</span>
-              </div>
-            ))}
+      {/* ── Row 1: KPI cards ───────────────────────────────────────── */}
+      <div className="time-kpi-row">
+        <div className="time-kpi-card time-kpi-card--clocked">
+          <div className="time-kpi-clocked-head">
+            {timeCurrent?.clock_entry_id ? (
+              <span className="time-kpi-clocked-status time-kpi-clocked-status--active">
+                <span aria-hidden="true" className="time-kpi-clocked-dot" />
+                {de ? "Eingestempelt" : "Clocked in"}
+                {clockedInLabel && <> · {clockedInLabel}</>}
+              </span>
+            ) : (
+              <span className="time-kpi-clocked-status">
+                <span aria-hidden="true" className="time-kpi-clocked-dot time-kpi-clocked-dot--off" />
+                {de ? "Nicht eingestempelt" : "Not clocked in"}
+              </span>
+            )}
           </div>
-        )}
+          <div className="time-kpi-clocked-value-wrap">
+            <div
+              className="time-kpi-clocked-value"
+              tabIndex={0}
+              role="button"
+              aria-label={de ? "Schichtdetails anzeigen" : "Show shift details"}
+            >
+              {bigTimeDisplay}
+            </div>
+            <div className="time-kpi-clocked-popover" role="tooltip">
+              {timeCurrent?.clock_entry_id ? (
+                <>
+                  <div className="time-kpi-clocked-popover-row">
+                    <span>{de ? "Schicht-ID" : "Shift ID"}</span>
+                    <b>#{timeCurrent.clock_entry_id}</b>
+                  </div>
+                  <div className="time-kpi-clocked-popover-row">
+                    <span>{de ? "Eingestempelt" : "Clocked in"}</span>
+                    <b>{formatServerDateTime(timeCurrent.clock_in || "", language)}</b>
+                  </div>
+                  <div className="time-kpi-clocked-popover-row">
+                    <span>{de ? "Arbeitszeit" : "Worked"}</span>
+                    <b>{timeCurrent.worked_hours_live}h</b>
+                  </div>
+                  <div className="time-kpi-clocked-popover-row">
+                    <span>{de ? "Pause" : "Break"}</span>
+                    <b>{timeCurrent.break_hours_live}h</b>
+                  </div>
+                  <div className="time-kpi-clocked-popover-row">
+                    <span>{de ? "Gesetzliche Pause" : "Legal break"}</span>
+                    <b>{timeCurrent.required_break_hours_live}h</b>
+                  </div>
+                  <div className="time-kpi-clocked-popover-row">
+                    <span>{de ? "Nettozeit Schicht" : "Net shift hours"}</span>
+                    <b>{timeCurrent.net_hours_live}h</b>
+                  </div>
+                </>
+              ) : (
+                <div className="time-kpi-clocked-popover-empty muted">
+                  {de ? "Keine offene Schicht." : "No open shift."}
+                </div>
+              )}
+              <div className="time-kpi-clocked-popover-foot">
+                <a
+                  href={exportUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="time-kpi-clocked-popover-export"
+                >
+                  {de ? `Export ${monthCursorLabel}` : `Export ${monthCursorLabel}`}
+                </a>
+                <small className="muted">
+                  {de
+                    ? "Gesetzl. Pause: > 6h = 30 Min, > 9h = 45 Min."
+                    : "Legal break: > 6h = 30m, > 9h = 45m."}
+                </small>
+              </div>
+            </div>
+          </div>
+          <div className="time-kpi-clocked-date">
+            {de ? "Heute" : "Today"} · {todayDateLabel}
+          </div>
+          <div className="time-kpi-clocked-actions">
+            {timeCurrent?.clock_entry_id ? (
+              <button
+                type="button"
+                className="time-kpi-btn time-kpi-btn--primary"
+                onClick={clockOut}
+                disabled={!viewingOwnTime}
+              >
+                {de ? "Ausstempeln" : "Clock out"}
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="time-kpi-btn time-kpi-btn--primary"
+                onClick={clockIn}
+                disabled={!viewingOwnTime}
+              >
+                {de ? "Einstempeln" : "Clock in"}
+              </button>
+            )}
+            {Boolean(timeCurrent?.clock_entry_id) &&
+              (timeCurrent?.break_open ? (
+                <button
+                  type="button"
+                  className="time-kpi-btn time-kpi-btn--ghost"
+                  onClick={endBreak}
+                  disabled={!viewingOwnTime}
+                >
+                  {de ? "Pause Ende" : "Break end"}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="time-kpi-btn time-kpi-btn--ghost"
+                  onClick={startBreak}
+                  disabled={!viewingOwnTime}
+                >
+                  {de ? "Pause" : "Break"}
+                </button>
+              ))}
+          </div>
+        </div>
+
+        <div className="time-kpi-card time-kpi-card--donut">
+          <TimeKpiDonut worked={gaugeNetHours} required={requiredDailyHours} />
+          <div className="time-kpi-info">
+            <span className="time-kpi-info-label">{de ? "Heute" : "Today"}</span>
+            <span className="time-kpi-info-value">
+              {formatHours(gaugeNetHours)} / {formatHours(requiredDailyHours)}{" "}
+              {de ? "benötigt" : "req."}
+            </span>
+            <span
+              className={`time-kpi-info-foot${todayPercent >= 100 ? " time-kpi-info-foot--good" : todayPercent >= 50 ? " time-kpi-info-foot--ontrack" : ""}`}
+            >
+              {todayPercent >= 100
+                ? de
+                  ? "Ziel erreicht"
+                  : "target hit"
+                : todayPercent >= 50
+                  ? de
+                    ? "im Plan"
+                    : "on track"
+                  : de
+                    ? "unter Plan"
+                    : "behind"}
+            </span>
+          </div>
+        </div>
+
+        <div className="time-kpi-card time-kpi-card--donut">
+          <TimeKpiDonut worked={weekWorkedHours} required={weekRequiredHours} />
+          <div className="time-kpi-info">
+            <span className="time-kpi-info-label">
+              {de ? "Diese Woche" : "This week"}
+              {weekLabel && ` (${weekLabel})`}
+            </span>
+            <span className="time-kpi-info-value">
+              {formatHours(weekWorkedHours)} / {formatHours(weekRequiredHours)}{" "}
+              {de ? "benötigt" : "req."}
+            </span>
+            <span className="time-kpi-info-foot">
+              {weekPercent.toFixed(1)}%
+            </span>
+          </div>
+        </div>
+
+        <div className="time-kpi-card time-kpi-card--donut">
+          <TimeKpiDonut worked={monthlyWorkedHours} required={monthlyRequiredHours} />
+          <div className="time-kpi-info">
+            <span className="time-kpi-info-label">{monthCursorLabel}</span>
+            <span className="time-kpi-info-value">
+              {formatHours(monthlyWorkedHours)} / {formatHours(monthlyRequiredHours)}{" "}
+              {de ? "benötigt" : "req."}
+            </span>
+            <span className="time-kpi-info-foot">
+              {monthPercent.toFixed(1)}% ·{" "}
+              {de
+                ? `${monthDayInfo.daysLeft} Tage übrig`
+                : `${monthDayInfo.daysLeft} days left`}
+            </span>
+          </div>
+        </div>
       </div>
 
-      <div className="card time-entries-card">
-        <div className="row wrap">
-          <h3>{de ? "Zeiteinträge" : "Time entries"}</h3>
-          {isTimeManager && (
-            <div ref={searchRef} className="employee-search-wrap">
-              <div className="employee-search-input-row">
-                <input
-                  type="text"
-                  className="employee-search-input"
-                  placeholder={de ? "Mitarbeiter suchen…" : "Search employee…"}
-                  value={timeTargetSearch}
-                  onChange={(e) => {
-                    setTimeTargetSearch(e.target.value);
-                    setTimeTargetDropdownOpen(true);
-                    if (!e.target.value) setTimeTargetUserId("");
-                  }}
-                  onFocus={() => setTimeTargetDropdownOpen(true)}
-                  onBlur={() => setTimeout(() => setTimeTargetDropdownOpen(false), 150)}
-                  autoComplete="off"
+      {!viewingOwnTime && (
+        <small className="muted time-shift-viewer-note">
+          {de
+            ? "Sie sehen die Zeitdaten eines Mitarbeiters. Clock-In/Out ist deaktiviert."
+            : "You are viewing another employee. Clock actions are disabled."}
+        </small>
+      )}
+
+      {/* ── Row 2: Calendar + Recent Entries ──────────────────────── */}
+      <div className="time-calendar-row">
+        <div className="time-calendar-card">
+          <div className="time-calendar-head">
+            <button
+              type="button"
+              className="time-calendar-nav-btn"
+              onClick={() => setTimeMonthCursor(shiftMonthStart(timeMonthCursor, -1))}
+              aria-label={de ? "Vorheriger Monat" : "Previous month"}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path
+                  d="m15 6-6 6 6 6"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
                 />
-                {timeTargetSearch && (
+              </svg>
+            </button>
+            <h3 className="time-calendar-title">{monthCursorLabel}</h3>
+            <button
+              type="button"
+              className="time-calendar-nav-btn"
+              onClick={() => setTimeMonthCursor(shiftMonthStart(timeMonthCursor, 1))}
+              aria-label={de ? "Nächster Monat" : "Next month"}
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path
+                  d="m9 6 6 6-6 6"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
+            <a
+              href={exportUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="time-calendar-export-btn"
+              aria-label={de ? `Export ${monthCursorLabel}` : `Export ${monthCursorLabel}`}
+              title={de ? `Export ${monthCursorLabel}` : `Export ${monthCursorLabel}`}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path
+                  d="M12 4v12m0 0-4-4m4 4 4-4M5 18h14"
+                  stroke="currentColor"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+              <span>{de ? "Export" : "Export"}</span>
+            </a>
+          </div>
+          <div className="time-calendar-grid">
+            <div className="time-calendar-weekday">Mo</div>
+            <div className="time-calendar-weekday">Tu</div>
+            <div className="time-calendar-weekday">We</div>
+            <div className="time-calendar-weekday">Th</div>
+            <div className="time-calendar-weekday">Fr</div>
+            <div className="time-calendar-weekday">Sa</div>
+            <div className="time-calendar-weekday">Su</div>
+            {monthCalendar.map((cell, idx) => {
+              if (cell.date === null) {
+                return <div key={`cal-blank-${idx}`} className="time-calendar-cell time-calendar-cell--blank" />;
+              }
+              // Managers can click any day in the calendar to edit. Regular users can
+              // only edit days that have at least one editable entry (handled via
+              // recent-entries hours click below).
+              const isClickable = isTimeManager;
+              const classes = [
+                "time-calendar-cell",
+                cell.hours > 0 ? "time-calendar-cell--has-hours" : "time-calendar-cell--empty",
+                cell.isToday ? "time-calendar-cell--today" : "",
+                cell.isPast ? "time-calendar-cell--past" : "",
+                isClickable ? "time-calendar-cell--clickable" : "",
+              ]
+                .filter((v) => v)
+                .join(" ");
+              if (isClickable) {
+                return (
                   <button
+                    key={`cal-${cell.iso}`}
                     type="button"
-                    className="employee-search-clear"
-                    onClick={clearEmployeeFilter}
-                    aria-label={de ? "Filter zurücksetzen" : "Clear filter"}
+                    className={classes}
+                    onClick={() => setEditEntriesDate(cell.iso)}
+                    aria-label={`${de ? "Bearbeiten" : "Edit"} ${cell.iso}`}
                   >
-                    ×
+                    <span className="time-calendar-cell-date">{cell.date}</span>
+                    {cell.hours > 0 && (
+                      <span className="time-calendar-cell-hours">{formatHours(cell.hours)}</span>
+                    )}
                   </button>
-                )}
+                );
+              }
+              return (
+                <div key={`cal-${cell.iso}`} className={classes}>
+                  <span className="time-calendar-cell-date">{cell.date}</span>
+                  {cell.hours > 0 && (
+                    <span className="time-calendar-cell-hours">{formatHours(cell.hours)}</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          {monthHolidays.length > 0 && (
+            <div className="time-calendar-holidays">
+              <small className="muted">{de ? "Feiertage (NRW)" : "Public holidays (NRW)"}</small>
+              <div className="time-calendar-holidays-list">
+                {monthHolidays.map((h) => (
+                  <div key={h.date} className="time-calendar-holiday-row">
+                    <span className="time-calendar-holiday-date">
+                      {new Date(h.date + "T00:00:00").toLocaleDateString(de ? "de-DE" : "en-GB", {
+                        day: "2-digit",
+                        month: "2-digit",
+                      })}
+                    </span>
+                    <span className="time-calendar-holiday-name">{h.name}</span>
+                  </div>
+                ))}
               </div>
-              {timeTargetDropdownOpen && filteredEmployees.length > 0 && (
-                <ul className="employee-search-dropdown">
-                  {filteredEmployees.map((u) => {
-                    const name = menuUserNameById(u.id, u.display_name || u.full_name);
-                    return (
-                      <li
-                        key={u.id}
-                        className="employee-search-option"
-                        onMouseDown={() => selectEmployee(u.id, name)}
-                      >
-                        {name}
-                      </li>
-                    );
-                  })}
-                </ul>
-              )}
             </div>
           )}
         </div>
-        <div className="row wrap" style={{ gap: "0.75rem", marginBottom: "0.75rem", alignItems: "end" }}>
-          <label>
-            {de ? "Von" : "From"}
-            <input
-              type="date"
-              value={timeEntriesStartDate}
-              onChange={(e) => setTimeEntriesStartDate(e.target.value)}
-            />
-          </label>
-          <label>
-            {de ? "Bis" : "Until"}
-            <input
-              type="date"
-              value={timeEntriesEndDate}
-              onChange={(e) => setTimeEntriesEndDate(e.target.value)}
-            />
-          </label>
-          <button type="button" className="btn-secondary" onClick={resetEntriesRangeToMonth}>
-            {de ? "Auf Monatsansicht setzen" : "Use current month"}
-          </button>
-        </div>
-        {isTimeManager && !timeTargetUserId && (
-          <small className="muted">
-            {de ? "Es werden Einträge aller Mitarbeiter angezeigt." : "Showing entries for all employees."}
-          </small>
-        )}
-        {timeEntries.length === 0 && (
-          <p className="muted" style={{ marginTop: "0.75rem" }}>
-            {de
-              ? "Keine Zeiteinträge im gewählten Zeitraum gefunden."
-              : "No time entries found in the selected date range."}
-          </p>
-        )}
-        <div className="time-entry-list">
-          {timeEntries.map((entry) => (
-            <form key={entry.id} className="time-entry" onSubmit={(event) => updateTimeEntry(event, entry.id)}>
-              <div className="row wrap">
-                <b>#{entry.id}</b>
-                <span>{menuUserNameById(entry.user_id, `#${entry.user_id}`)}</span>
-                <span>{entry.net_hours}h</span>
+
+        <div className="time-recent-card">
+          <div className="time-recent-head">
+            <h3 className="time-recent-title">{de ? "Letzte Einträge" : "Recent Entries"}</h3>
+          </div>
+          <div className="time-recent-list">
+            {recentEntriesGrouped.length === 0 && (
+              <div className="time-recent-empty muted">
+                {de ? "Keine Einträge im Zeitraum." : "No entries in this range."}
               </div>
-              <div className="grid compact">
-                <label>
-                  Clock in
-                  <input
-                    type="datetime-local"
-                    name="clock_in"
-                    required
-                    defaultValue={isoToLocalDateTimeInput(entry.clock_in)}
-                    disabled={!entry.can_edit}
-                  />
-                </label>
-                <label>
-                  Clock out
-                  <input
-                    type="datetime-local"
-                    name="clock_out"
-                    defaultValue={isoToLocalDateTimeInput(entry.clock_out)}
-                    disabled={!entry.can_edit}
-                  />
-                </label>
-                <label>
-                  Break min
-                  <input
-                    type="number"
-                    name="break_minutes"
-                    min={0}
-                    defaultValue={Math.round(entry.break_hours * 60)}
-                    disabled={!entry.can_edit}
-                  />
-                </label>
-              </div>
-              <div className="row wrap">
-                <small>
-                  break: {entry.break_hours}h | legal: {entry.required_break_hours}h | deducted: {entry.deducted_break_hours}h
-                </small>
-                {!entry.can_edit && (
-                  <small className="muted">
-                    {de ? "Nicht bearbeitbar" : "Not editable"}
-                  </small>
-                )}
-                <button type="submit" disabled={!entry.can_edit}>{de ? "Ändern" : "Update"}</button>
-              </div>
-            </form>
-          ))}
+            )}
+            {recentEntriesGrouped.map(([iso, entries]) => {
+              const dayEditable = entries.some((entry) => entry.can_edit);
+              return (
+                <div key={`recent-${iso}`} className="time-recent-group">
+                  <div className="time-recent-group-label">{recentGroupLabel(iso)}</div>
+                  {entries.map((entry) => {
+                    const start = formatTimeHHMM(entry.clock_in);
+                    const end = entry.is_open
+                      ? de
+                        ? "läuft"
+                        : "running"
+                      : formatTimeHHMM(entry.clock_out);
+                    const timeRange = `${start} – ${end}`;
+                    const breakLabel =
+                      entry.break_hours > 0
+                        ? `${de ? "Pause" : "Break"}: ${Math.round(entry.break_hours * 60)} min`
+                        : de
+                          ? "Keine Pause aufgezeichnet"
+                          : "No break recorded";
+                    return (
+                      <div key={`recent-entry-${entry.id}`} className="time-recent-entry">
+                        <div className="time-recent-entry-body">
+                          <span className="time-recent-entry-range">
+                            {timeRange}
+                            {entry.is_open && (
+                              <span className="time-recent-entry-running"> ({de ? "läuft" : "running"})</span>
+                            )}
+                          </span>
+                          <span className="time-recent-entry-break">{breakLabel}</span>
+                        </div>
+                        {entry.can_edit ? (
+                          <button
+                            type="button"
+                            className={`time-recent-entry-hours time-recent-entry-hours--clickable${entry.is_open ? " time-recent-entry-hours--live" : ""}`}
+                            onClick={() => setEditEntriesDate(iso)}
+                            aria-label={de ? "Bearbeiten" : "Edit"}
+                            title={de ? "Bearbeiten" : "Edit"}
+                          >
+                            {formatHours(entry.net_hours)}
+                          </button>
+                        ) : (
+                          <span
+                            className={`time-recent-entry-hours${entry.is_open ? " time-recent-entry-hours--live" : ""}`}
+                          >
+                            {formatHours(entry.net_hours)}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {!dayEditable && entries.length > 0 && (
+                    <div className="time-recent-locked-hint muted">
+                      {de ? "Nur zur Ansicht" : "View only"}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
       </div>
 
-      <div className="card time-requests-card">
-        <h3>{de ? "Urlaubsanträge" : "Vacation requests"}</h3>
-        <div className="metric-grid" style={{ marginBottom: "1rem" }}>
-          <div>
-            <small className="muted">{de ? "Urlaub/Jahr" : "Vacation/year"}</small>
-            <div><b>{timeCurrent?.vacation_days_per_year ?? 0}</b></div>
+      {/* ── Row 3: Vacation requests card ──────────────────────── */}
+      <div className="time-vacation-card">
+        <h2 className="time-vacation-title">{de ? "Urlaubsanträge" : "Vacation requests"}</h2>
+
+        <div className="time-vacation-stats">
+          <div className="time-vacation-stat">
+            <span className="time-vacation-stat-label">{de ? "Tage/Jahr" : "Days / year"}</span>
+            <span className="time-vacation-stat-value">{timeCurrent?.vacation_days_per_year ?? 0}</span>
           </div>
-          <div>
-            <small className="muted">{de ? "Aktuell offen" : "Currently left"}</small>
-            <div><b>{timeCurrent?.vacation_days_available ?? 0}</b></div>
+          <div className="time-vacation-stat">
+            <span className="time-vacation-stat-label">{de ? "Aktuell offen" : "Currently left"}</span>
+            <span className="time-vacation-stat-value">{timeCurrent?.vacation_days_available ?? 0}</span>
           </div>
-          <div>
-            <small className="muted">{de ? "Übertrag Vorjahr" : "Carryover last year"}</small>
-            <div><b>{timeCurrent?.vacation_days_carryover ?? 0}</b></div>
+          <div className="time-vacation-stat">
+            <span className="time-vacation-stat-label">{de ? "Übertrag" : "Carryover"}</span>
+            <span className="time-vacation-stat-value">{timeCurrent?.vacation_days_carryover ?? 0}</span>
           </div>
-          <div>
-            <small className="muted">{de ? "Gesamt offen" : "Total left"}</small>
-            <div><b>{timeCurrent?.vacation_days_total_remaining ?? 0}</b></div>
+          <div className="time-vacation-stat">
+            <span className="time-vacation-stat-label">{de ? "Gesamt offen" : "Total left"}</span>
+            <span className="time-vacation-stat-value time-vacation-stat-value--accent">
+              {timeCurrent?.vacation_days_total_remaining ?? 0}
+            </span>
           </div>
         </div>
-        <form className="modal-form" onSubmit={submitVacationRequest}>
-          <div className="row wrap">
-            <label>
-              {de ? "Von" : "From"}
+
+        <form className="time-vacation-form" onSubmit={submitVacationRequest}>
+          <div className="time-vacation-form-grid">
+            <label className="time-vacation-field">
+              <span className="time-vacation-field-label">{de ? "Von" : "From"}</span>
               <input
                 type="date"
+                className="time-vacation-input"
                 value={vacationRequestForm.start_date}
                 onChange={(event) =>
                   setVacationRequestForm({ ...vacationRequestForm, start_date: event.target.value })
@@ -433,10 +860,11 @@ export function TimePage() {
                 required
               />
             </label>
-            <label>
-              {de ? "Bis" : "Until"}
+            <label className="time-vacation-field">
+              <span className="time-vacation-field-label">{de ? "Bis" : "Until"}</span>
               <input
                 type="date"
+                className="time-vacation-input"
                 value={vacationRequestForm.end_date}
                 onChange={(event) =>
                   setVacationRequestForm({ ...vacationRequestForm, end_date: event.target.value })
@@ -445,318 +873,531 @@ export function TimePage() {
               />
             </label>
           </div>
-          <label>
-            {de ? "Notiz" : "Note"}
+          <label className="time-vacation-field">
+            <span className="time-vacation-field-label">{de ? "Notiz (optional)" : "Note (optional)"}</span>
             <textarea
+              className="time-vacation-input time-vacation-textarea"
               value={vacationRequestForm.note}
               onChange={(event) =>
                 setVacationRequestForm({ ...vacationRequestForm, note: event.target.value })
               }
+              rows={2}
+              placeholder={de ? "z. B. Sommerurlaub" : "e.g. Summer holiday"}
             />
           </label>
-          <button type="submit">{de ? "Antrag senden" : "Submit request"}</button>
+          <div>
+            <button type="submit" className="time-vacation-submit-btn">
+              {de ? "Antrag senden" : "Submit request"}
+            </button>
+          </div>
         </form>
 
-        {canApproveVacation && (
-          <div className="metric-stack">
-            <b>{de ? "Offene Anträge" : "Pending requests"}</b>
-            <ul className="overview-list">
-              {pendingVacationRequests.map((row) => (
-                <li key={`vacation-pending-${row.id}`} className="task-list-item">
-                  <div className="task-list-main">
-                    <b>{menuUserNameById(row.user_id, row.user_name)}</b>
-                    <small>
-                      {row.start_date} - {row.end_date} · {row.vacation_days_used} {de ? "Tage" : "days"}
-                    </small>
-                    {row.note && <small>{row.note}</small>}
-                  </div>
-                  <div className="row wrap task-actions">
-                    <button type="button" onClick={() => void reviewVacationRequest(row.id, "approved")}>
-                      {de ? "Genehmigen" : "Approve"}
-                    </button>
-                    <button type="button" onClick={() => void reviewVacationRequest(row.id, "rejected")}>
-                      {de ? "Ablehnen" : "Reject"}
-                    </button>
-                  </div>
-                </li>
+        {approvedVacationRequests.length > 0 && (
+          <div className="time-vacation-section">
+            <span className="time-vacation-section-label">
+              {de ? "Genehmigter Urlaub" : "Approved vacation"}
+            </span>
+            <div className="time-vacation-approved-list">
+              {approvedVacationRequests.map((row) => (
+                <div key={`vacation-approved-${row.id}`} className="time-vacation-approved-row">
+                  <span className="time-vacation-approved-name">
+                    {menuUserNameById(row.user_id, row.user_name)}
+                    {" — "}
+                    {row.start_date} – {row.end_date}
+                  </span>
+                  <span className="time-vacation-approved-days">
+                    {row.vacation_days_used} {de ? "Tage" : "days"}
+                  </span>
+                </div>
               ))}
-              {pendingVacationRequests.length === 0 && (
-                <li className="muted">{de ? "Keine offenen Anträge." : "No pending requests."}</li>
-              )}
-            </ul>
+            </div>
           </div>
         )}
 
-        <div className="metric-stack">
-          <b>{de ? "Genehmigter Urlaub" : "Approved vacation"}</b>
-          <ul className="overview-list">
-            {approvedVacationRequests.map((row) => (
-              <li key={`vacation-approved-${row.id}`}>
-                <small>
-                  {menuUserNameById(row.user_id, row.user_name)}: {row.start_date} - {row.end_date} · {row.vacation_days_used} {de ? "Tage" : "days"}
-                </small>
-              </li>
-            ))}
-            {approvedVacationRequests.length === 0 && (
-              <li className="muted">{de ? "Keine genehmigten Urlaube." : "No approved vacations."}</li>
-            )}
-          </ul>
-        </div>
-      </div>
+        {canApproveVacation && pendingVacationRequests.length > 0 && (
+          <div className="time-vacation-section">
+            <span className="time-vacation-section-label">
+              {de ? "Offene Urlaubsanträge" : "Pending vacation requests"}
+            </span>
+            <div className="time-vacation-pending-list">
+              {pendingVacationRequests.map((row) => (
+                <div key={`vacation-pending-${row.id}`} className="time-vacation-pending-row">
+                  <div className="time-vacation-pending-main">
+                    <b>{menuUserNameById(row.user_id, row.user_name)}</b>
+                    <small>
+                      {row.start_date} – {row.end_date} · {row.vacation_days_used}{" "}
+                      {de ? "Tage" : "days"}
+                    </small>
+                    {row.note && <small className="muted">{row.note}</small>}
+                  </div>
+                  <div className="time-vacation-pending-actions">
+                    <button
+                      type="button"
+                      className="time-absence-action-btn time-absence-action-btn--approve"
+                      onClick={() => void reviewVacationRequest(row.id, "approved")}
+                    >
+                      {de ? "Genehmigen" : "Approve"}
+                    </button>
+                    <button
+                      type="button"
+                      className="time-absence-action-btn time-absence-action-btn--reject"
+                      onClick={() => void reviewVacationRequest(row.id, "rejected")}
+                    >
+                      {de ? "Ablehnen" : "Reject"}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
 
-      <div className="card time-school-card">
-        <h3>{de ? "Abwesenheiten" : "Absences"}</h3>
-        <form className="modal-form" onSubmit={submitSchoolAbsence}>
-          {canManageSchoolAbsences && (
-            <label>
-              {de ? "Mitarbeiter" : "Employee"}
-              <select
-                value={schoolAbsenceForm.user_id}
-                onChange={(event) =>
-                  setSchoolAbsenceForm({ ...schoolAbsenceForm, user_id: event.target.value })
-                }
-                required
-              >
-                <option value="">{de ? "Bitte auswählen" : "Please select"}</option>
-                {assignableUsers.map((entry) => (
-                  <option key={`school-user-${entry.id}`} value={String(entry.id)}>
-                    {menuUserNameById(entry.id, entry.display_name || entry.full_name)} (#{entry.id})
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-          {!canManageSchoolAbsences && (
-            <small className="muted">
-              {de ? "Neue Abwesenheiten werden als Antrag zur Freigabe gesendet." : "New absences are sent as requests for approval."}
-            </small>
-          )}
-          <div className="row wrap">
-            <label>
-              {de ? "Abwesenheitsart" : "Absence type"}
-              <select
-                value={schoolAbsenceForm.absence_type}
-                onChange={(event) => {
-                  const selectedType = absenceTypes.find((t) => t.key === event.target.value);
-                  const defaultTitle = selectedType
-                    ? (de ? selectedType.label_de : selectedType.label_en)
-                    : schoolAbsenceForm.title;
-                  setSchoolAbsenceForm({
-                    ...schoolAbsenceForm,
-                    absence_type: event.target.value,
-                    title: defaultTitle,
-                  });
-                }}
-                required
-              >
-                {absenceTypes.map((t) => (
-                  <option key={t.key} value={t.key}>
-                    {de ? t.label_de : t.label_en}
-                    {t.counts_as_hours ? "" : (de ? " (keine Stundenanrechnung)" : " (no hours credit)")}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              {de ? "Bezeichnung" : "Title"}
-              <input
-                value={schoolAbsenceForm.title}
-                onChange={(event) =>
-                  setSchoolAbsenceForm({ ...schoolAbsenceForm, title: event.target.value })
-                }
-                required
-              />
-            </label>
-          </div>
-          <div className="row wrap">
-            <label>
-              {de ? "Start" : "Start"}
-              <input
-                type="date"
-                value={schoolAbsenceForm.start_date}
-                onChange={(event) =>
-                  setSchoolAbsenceForm({ ...schoolAbsenceForm, start_date: event.target.value })
-                }
-                required
-              />
-            </label>
-            <label>
-              {de ? "Ende" : "End"}
-              <input
-                type="date"
-                value={schoolAbsenceForm.end_date}
-                onChange={(event) =>
-                  setSchoolAbsenceForm({ ...schoolAbsenceForm, end_date: event.target.value })
-                }
-                required
-              />
-            </label>
-          </div>
-          <div className="row wrap">
-            <div className="weekday-checkbox-group">
-              <small>{de ? "Wiederholung (Mo-Fr)" : "Recurring days (Mon-Fri)"}</small>
-              <div className="weekday-checkbox-row">
-                {[0, 1, 2, 3, 4].map((day) => (
-                  <label key={`school-day-${day}`} className="weekday-checkbox-item">
-                    <input
-                      type="checkbox"
-                      checked={schoolAbsenceForm.recurrence_weekdays.includes(day)}
-                      onChange={(event) => toggleSchoolRecurrenceWeekday(day, event.target.checked)}
-                    />
-                    <span>{schoolWeekdayLabel(day, language)}</span>
-                  </label>
+        {/* ── Absences subsection nested inside vacation card ────── */}
+        <div className="time-absences-nested">
+          <h3 className="time-absences-title">{de ? "Abwesenheiten" : "Absences"}</h3>
+          <form className="time-vacation-form" onSubmit={submitSchoolAbsence}>
+            {canManageSchoolAbsences && (
+              <label className="time-vacation-field">
+                <span className="time-vacation-field-label">{de ? "Mitarbeiter" : "Employee"}</span>
+                <select
+                  className="time-vacation-input"
+                  value={schoolAbsenceForm.user_id}
+                  onChange={(event) =>
+                    setSchoolAbsenceForm({ ...schoolAbsenceForm, user_id: event.target.value })
+                  }
+                  required
+                >
+                  <option value="">{de ? "Bitte auswählen" : "Please select"}</option>
+                  {assignableUsers.map((entry) => (
+                    <option key={`school-user-${entry.id}`} value={String(entry.id)}>
+                      {menuUserNameById(entry.id, entry.display_name || entry.full_name)} (#{entry.id})
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {!canManageSchoolAbsences && (
+              <small className="muted">
+                {de
+                  ? "Neue Abwesenheiten werden als Antrag zur Freigabe gesendet."
+                  : "New absences are sent as requests for approval."}
+              </small>
+            )}
+            <div className="time-vacation-form-grid">
+              <label className="time-vacation-field">
+                <span className="time-vacation-field-label">{de ? "Typ" : "Type"}</span>
+                <select
+                  className="time-vacation-input"
+                  value={schoolAbsenceForm.absence_type}
+                  onChange={(event) => {
+                    const selectedType = absenceTypes.find((t) => t.key === event.target.value);
+                    const defaultTitle = selectedType
+                      ? de
+                        ? selectedType.label_de
+                        : selectedType.label_en
+                      : schoolAbsenceForm.title;
+                    setSchoolAbsenceForm({
+                      ...schoolAbsenceForm,
+                      absence_type: event.target.value,
+                      title: defaultTitle,
+                    });
+                  }}
+                  required
+                >
+                  {absenceTypes.map((t) => (
+                    <option key={t.key} value={t.key}>
+                      {de ? t.label_de : t.label_en}
+                      {t.counts_as_hours ? "" : de ? " (keine Stundenanrechnung)" : " (no hours credit)"}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="time-vacation-field">
+                <span className="time-vacation-field-label">{de ? "Bezeichnung" : "Title"}</span>
+                <input
+                  className="time-vacation-input"
+                  value={schoolAbsenceForm.title}
+                  onChange={(event) =>
+                    setSchoolAbsenceForm({ ...schoolAbsenceForm, title: event.target.value })
+                  }
+                  placeholder={de ? "z. B. Berufsschule" : "e.g. School"}
+                  required
+                />
+              </label>
+            </div>
+            <div className="time-vacation-form-grid">
+              <label className="time-vacation-field">
+                <span className="time-vacation-field-label">{de ? "Start" : "Start"}</span>
+                <input
+                  type="date"
+                  className="time-vacation-input"
+                  value={schoolAbsenceForm.start_date}
+                  onChange={(event) =>
+                    setSchoolAbsenceForm({ ...schoolAbsenceForm, start_date: event.target.value })
+                  }
+                  required
+                />
+              </label>
+              <label className="time-vacation-field">
+                <span className="time-vacation-field-label">{de ? "Ende" : "End"}</span>
+                <input
+                  type="date"
+                  className="time-vacation-input"
+                  value={schoolAbsenceForm.end_date}
+                  onChange={(event) =>
+                    setSchoolAbsenceForm({ ...schoolAbsenceForm, end_date: event.target.value })
+                  }
+                  required
+                />
+              </label>
+            </div>
+            <div className="time-absence-recurring">
+              <span className="time-vacation-field-label">
+                {de ? "Wiederholung (Mo-Fr)" : "Recurring days (Mon-Fri)"}
+              </span>
+              <div className="time-absence-recurring-chips">
+                {[0, 1, 2, 3, 4].map((day) => {
+                  const active = schoolAbsenceForm.recurrence_weekdays.includes(day);
+                  return (
+                    <button
+                      key={`school-day-${day}`}
+                      type="button"
+                      className={`time-absence-chip${active ? " time-absence-chip--active" : ""}`}
+                      onClick={() => toggleSchoolRecurrenceWeekday(day, !active)}
+                      aria-pressed={active}
+                    >
+                      {schoolWeekdayLabel(day, language)}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            {schoolAbsenceForm.recurrence_weekdays.length > 0 && (
+              <label className="time-vacation-field">
+                <span className="time-vacation-field-label">
+                  {de ? "Intervall bis (optional)" : "Recurring until (optional)"}
+                </span>
+                <input
+                  type="date"
+                  className="time-vacation-input"
+                  value={schoolAbsenceForm.recurrence_until}
+                  onChange={(event) =>
+                    setSchoolAbsenceForm({ ...schoolAbsenceForm, recurrence_until: event.target.value })
+                  }
+                />
+              </label>
+            )}
+            <div className="time-absence-form-actions">
+              <button type="submit" className="time-vacation-submit-btn">
+                {editingSchoolAbsenceId !== null
+                  ? de
+                    ? "Abwesenheit aktualisieren"
+                    : "Update absence"
+                  : canManageSchoolAbsences
+                    ? de
+                      ? "Abwesenheit speichern"
+                      : "Save absence"
+                    : de
+                      ? "Antrag senden"
+                      : "Submit request"}
+              </button>
+              {editingSchoolAbsenceId !== null && (
+                <button
+                  type="button"
+                  className="time-absence-cancel-btn"
+                  onClick={cancelSchoolAbsenceEdit}
+                >
+                  {de ? "Bearbeitung abbrechen" : "Cancel edit"}
+                </button>
+              )}
+            </div>
+          </form>
+
+          {activeApprovedAbsences.length > 0 && (
+            <div className="time-vacation-section">
+              <span className="time-vacation-section-label">
+                {de ? "Aktuelle und kommende Abwesenheiten" : "Current & upcoming"}
+              </span>
+              <div className="time-absence-active-list">
+                {activeApprovedAbsences.map((row) => (
+                  <div key={`absence-active-${row.id}`} className="time-absence-active-row">
+                    <div className="time-absence-active-main">
+                      <b>{menuUserNameById(row.user_id, row.user_name)}</b>
+                      <div>
+                        <span
+                          className={`time-absence-type-badge ${row.counts_as_hours ? "" : "time-absence-type-badge--muted"}`}
+                        >
+                          {absenceTypeLabel(row.absence_type)}
+                        </span>
+                        <span className="time-absence-active-meta">
+                          {row.title} · {row.start_date} – {row.end_date}
+                          {row.recurrence_weekday !== null && row.recurrence_weekday !== undefined
+                            ? ` · ${de ? "wöchentlich" : "every"} ${schoolWeekdayLabel(row.recurrence_weekday, language)}${row.recurrence_until ? ` ${de ? "bis" : "until"} ${row.recurrence_until}` : ""}`
+                            : ""}
+                        </span>
+                      </div>
+                    </div>
+                    {canManageSchoolAbsences && (
+                      <div className="time-absence-row-actions">
+                        <button
+                          type="button"
+                          className="time-absence-action-btn"
+                          onClick={() => startSchoolAbsenceEdit(row)}
+                        >
+                          {de ? "Bearbeiten" : "Edit"}
+                        </button>
+                        <button
+                          type="button"
+                          className="time-absence-action-btn time-absence-action-btn--reject"
+                          onClick={() => void removeSchoolAbsence(row.id)}
+                        >
+                          {de ? "Löschen" : "Delete"}
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 ))}
               </div>
             </div>
-            <label>
-              {de ? "Intervall bis (optional)" : "Recurring until (optional)"}
-              <input
-                type="date"
-                value={schoolAbsenceForm.recurrence_until}
-                onChange={(event) =>
-                  setSchoolAbsenceForm({ ...schoolAbsenceForm, recurrence_until: event.target.value })
-                }
-              />
-            </label>
-          </div>
-          <div className="row wrap task-actions">
-            <button type="submit">
-              {editingSchoolAbsenceId !== null
-                ? de ? "Abwesenheit aktualisieren" : "Update absence"
-                : canManageSchoolAbsences
-                  ? de ? "Abwesenheit speichern" : "Save absence"
-                  : de ? "Antrag senden" : "Submit request"}
-            </button>
-            {editingSchoolAbsenceId !== null && (
-              <button type="button" onClick={cancelSchoolAbsenceEdit}>
-                {de ? "Bearbeitung abbrechen" : "Cancel edit"}
-              </button>
-            )}
-          </div>
-        </form>
+          )}
 
-        <div className="metric-stack">
-          <b>{de ? "Offene Abwesenheitsanträge" : "Pending absence requests"}</b>
-          <ul className="overview-list">
-            {pendingAbsenceRequests.map((row) => (
-              <li key={`absence-pending-${row.id}`} className="task-list-item">
-                <div className="task-list-main">
-                  <b>{menuUserNameById(row.user_id, row.user_name)}</b>
-                  <small>
-                    <span className={`absence-type-badge ${row.counts_as_hours ? "counts" : "no-counts"}`}>
-                      {absenceTypeLabel(row.absence_type)}
-                    </span>
-                    {" "}{row.title}: {row.start_date} – {row.end_date}
-                  </small>
-                  <small>{absenceStatusLabel(row.status)}</small>
-                </div>
-                <div className="row wrap task-actions">
-                  {canManageSchoolAbsences && (
-                    <>
-                      <button type="button" onClick={() => void reviewSchoolAbsence(row.id, "approved")}>
-                        {de ? "Genehmigen" : "Approve"}
-                      </button>
-                      <button type="button" onClick={() => void reviewSchoolAbsence(row.id, "rejected")}>
-                        {de ? "Ablehnen" : "Reject"}
-                      </button>
-                      <button type="button" onClick={() => startSchoolAbsenceEdit(row)}>
-                        {de ? "Bearbeiten" : "Edit"}
-                      </button>
-                    </>
-                  )}
-                  {(canManageSchoolAbsences || row.user_id === user?.id) && (
-                    <button type="button" className="danger-btn" onClick={() => void removeSchoolAbsence(row.id)}>
-                      {de ? "Löschen" : "Delete"}
-                    </button>
-                  )}
-                </div>
-              </li>
-            ))}
-            {pendingAbsenceRequests.length === 0 && (
-              <li className="muted">{de ? "Keine offenen Abwesenheitsanträge." : "No pending absence requests."}</li>
-            )}
-          </ul>
-        </div>
-
-        <div className="metric-stack">
-          <b>{de ? "Aktuelle und kommende Abwesenheiten" : "Current and upcoming absences"}</b>
-          <ul className="overview-list">
-            {activeApprovedAbsences.map((row) => (
-              <li key={`absence-active-${row.id}`} className="task-list-item">
-                <div className="task-list-main">
-                  <b>{menuUserNameById(row.user_id, row.user_name)}</b>
-                  <small>
-                    <span className={`absence-type-badge ${row.counts_as_hours ? "counts" : "no-counts"}`}>
-                      {absenceTypeLabel(row.absence_type)}
-                    </span>
-                    {" "}{row.title}: {row.start_date} – {row.end_date}
-                  </small>
-                  {row.recurrence_weekday !== null && row.recurrence_weekday !== undefined && (
-                    <small>
-                      {de ? "Wöchentlich" : "Weekly"}: {schoolWeekdayLabel(row.recurrence_weekday, language)}
-                      {row.recurrence_until ? ` | ${de ? "bis" : "until"} ${row.recurrence_until}` : ""}
-                    </small>
-                  )}
-                  {!row.counts_as_hours && (
-                    <small className="muted">{de ? "Keine Stundenanrechnung" : "No hours credited"}</small>
-                  )}
-                </div>
-                {canManageSchoolAbsences && (
-                  <div className="row wrap task-actions">
-                    <button type="button" onClick={() => startSchoolAbsenceEdit(row)}>
-                      {de ? "Bearbeiten" : "Edit"}
-                    </button>
-                    <button type="button" className="danger-btn" onClick={() => void removeSchoolAbsence(row.id)}>
-                      {de ? "Löschen" : "Delete"}
-                    </button>
+          {pendingAbsenceRequests.length > 0 && (
+            <div className="time-vacation-section">
+              <span className="time-vacation-section-label">
+                {de ? "Offene Abwesenheitsanträge" : "Pending requests"}
+              </span>
+              <div className="time-absence-pending-list">
+                {pendingAbsenceRequests.map((row) => (
+                  <div key={`absence-pending-${row.id}`} className="time-absence-pending-row">
+                    <div className="time-absence-pending-main">
+                      <b>{menuUserNameById(row.user_id, row.user_name)}</b>
+                      <div>
+                        <span
+                          className={`time-absence-type-badge ${row.counts_as_hours ? "" : "time-absence-type-badge--muted"}`}
+                        >
+                          {absenceTypeLabel(row.absence_type)}
+                        </span>
+                        <span className="time-absence-active-meta">
+                          {row.title} · {row.start_date} – {row.end_date}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="time-absence-row-actions">
+                      {canManageSchoolAbsences && (
+                        <>
+                          <button
+                            type="button"
+                            className="time-absence-action-btn time-absence-action-btn--approve"
+                            onClick={() => void reviewSchoolAbsence(row.id, "approved")}
+                          >
+                            {de ? "Genehmigen" : "Approve"}
+                          </button>
+                          <button
+                            type="button"
+                            className="time-absence-action-btn time-absence-action-btn--reject"
+                            onClick={() => void reviewSchoolAbsence(row.id, "rejected")}
+                          >
+                            {de ? "Ablehnen" : "Reject"}
+                          </button>
+                        </>
+                      )}
+                      {(canManageSchoolAbsences || row.user_id === user?.id) && (
+                        <button
+                          type="button"
+                          className="time-absence-action-btn time-absence-action-btn--reject"
+                          onClick={() => void removeSchoolAbsence(row.id)}
+                        >
+                          {de ? "Löschen" : "Delete"}
+                        </button>
+                      )}
+                    </div>
                   </div>
-                )}
-              </li>
-            ))}
-            {activeApprovedAbsences.length === 0 && (
-              <li className="muted">{de ? "Keine aktuellen oder kommenden Abwesenheiten." : "No current or upcoming absences."}</li>
-            )}
-          </ul>
-        </div>
+                ))}
+              </div>
+            </div>
+          )}
 
-        <div className="metric-stack">
-          <b>{de ? "Letzte Einträge" : "Recent history"}</b>
-          <ul className="overview-list">
-            {pastAbsenceRows.map((row) => (
-              <li key={`absence-history-${row.id}`} className="task-list-item">
-                <div className="task-list-main">
-                  <b>{menuUserNameById(row.user_id, row.user_name)}</b>
-                  <small>
-                    <span className={`absence-type-badge ${row.counts_as_hours ? "counts" : "no-counts"}`}>
-                      {absenceTypeLabel(row.absence_type)}
-                    </span>
-                    {" "}{row.title}: {row.start_date} – {row.end_date}
-                  </small>
-                  <small>{absenceStatusLabel(row.status)}</small>
-                </div>
-                {canManageSchoolAbsences && (
-                  <div className="row wrap task-actions">
-                    <button type="button" onClick={() => startSchoolAbsenceEdit(row)}>
-                      {de ? "Bearbeiten" : "Edit"}
-                    </button>
-                    <button type="button" className="danger-btn" onClick={() => void removeSchoolAbsence(row.id)}>
-                      {de ? "Löschen" : "Delete"}
-                    </button>
+          {pastAbsenceRows.length > 0 && (
+            <div className="time-vacation-section">
+              <span className="time-vacation-section-label">{de ? "Letzte Einträge" : "Recent history"}</span>
+              <div className="time-absence-active-list">
+                {pastAbsenceRows.map((row) => (
+                  <div key={`absence-history-${row.id}`} className="time-absence-active-row">
+                    <div className="time-absence-active-main">
+                      <b>{menuUserNameById(row.user_id, row.user_name)}</b>
+                      <div>
+                        <span
+                          className={`time-absence-type-badge ${row.counts_as_hours ? "" : "time-absence-type-badge--muted"}`}
+                        >
+                          {absenceTypeLabel(row.absence_type)}
+                        </span>
+                        <span className="time-absence-active-meta">
+                          {row.title} · {row.start_date} – {row.end_date} · {absenceStatusLabel(row.status)}
+                        </span>
+                      </div>
+                    </div>
+                    {canManageSchoolAbsences && (
+                      <div className="time-absence-row-actions">
+                        <button
+                          type="button"
+                          className="time-absence-action-btn"
+                          onClick={() => startSchoolAbsenceEdit(row)}
+                        >
+                          {de ? "Bearbeiten" : "Edit"}
+                        </button>
+                        <button
+                          type="button"
+                          className="time-absence-action-btn time-absence-action-btn--reject"
+                          onClick={() => void removeSchoolAbsence(row.id)}
+                        >
+                          {de ? "Löschen" : "Delete"}
+                        </button>
+                      </div>
+                    )}
                   </div>
-                )}
-              </li>
-            ))}
-            {pastAbsenceRows.length === 0 && (
-              <li className="muted">{de ? "Keine älteren Abwesenheiten." : "No older absences."}</li>
-            )}
-          </ul>
-          {schoolAbsences.length > activeApprovedAbsences.length + pendingAbsenceRequests.length + pastAbsenceRows.length && (
-            <small className="muted">
-              {de ? "Es werden die letzten 10 älteren Einträge angezeigt." : "Showing the latest 10 older entries."}
-            </small>
+                ))}
+              </div>
+            </div>
           )}
         </div>
       </div>
+
+      {editEntriesDate &&
+        (() => {
+          const dayEntries = entriesForDate(editEntriesDate);
+          return (
+            <div
+              className="modal-backdrop"
+              onClick={() => setEditEntriesDate(null)}
+              role="dialog"
+              aria-modal="true"
+            >
+              <div
+                className="modal-card edit-day-modal"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <div className="edit-day-modal-head">
+                  <div className="edit-day-modal-title-block">
+                    <span className="edit-day-modal-eyebrow">
+                      {de ? "ZEITEINTRAG BEARBEITEN" : "EDIT TIME ENTRY"}
+                    </span>
+                    <h2 className="edit-day-modal-title">{formatDayHeading(editEntriesDate)}</h2>
+                  </div>
+                  <button
+                    type="button"
+                    className="edit-day-modal-close"
+                    onClick={() => setEditEntriesDate(null)}
+                    aria-label={de ? "Schließen" : "Close"}
+                  >
+                    ×
+                  </button>
+                </div>
+                <div className="edit-day-modal-body">
+                  {dayEntries.length === 0 && (
+                    <p className="muted edit-day-modal-empty">
+                      {de
+                        ? "Keine Zeiteinträge für diesen Tag gefunden."
+                        : "No time entries for this day."}
+                    </p>
+                  )}
+                  {dayEntries.map((entry, index) => (
+                    <form
+                      key={entry.id}
+                      className="edit-day-entry-form"
+                      onSubmit={(event) => {
+                        void updateTimeEntry(event, entry.id);
+                      }}
+                    >
+                      <div className="edit-day-entry-head">
+                        <span className="edit-day-entry-title">
+                          {de ? "Schicht" : "Shift"} #{index + 1}
+                        </span>
+                        <span className="edit-day-entry-id">ID #{entry.id}</span>
+                        <span className="edit-day-entry-net">{formatHours(entry.net_hours)}</span>
+                      </div>
+                      <div className="edit-day-entry-grid">
+                        <label className="edit-day-entry-field">
+                          <span className="edit-day-entry-field-label">
+                            {de ? "Eingestempelt" : "Clock in"}
+                          </span>
+                          <input
+                            type="datetime-local"
+                            name="clock_in"
+                            className="edit-day-entry-input"
+                            required
+                            defaultValue={isoToLocalDateTimeInput(entry.clock_in)}
+                            disabled={!entry.can_edit}
+                          />
+                        </label>
+                        <label className="edit-day-entry-field">
+                          <span className="edit-day-entry-field-label">
+                            {de ? "Ausgestempelt" : "Clock out"}
+                          </span>
+                          <input
+                            type="datetime-local"
+                            name="clock_out"
+                            className="edit-day-entry-input"
+                            defaultValue={isoToLocalDateTimeInput(entry.clock_out)}
+                            disabled={!entry.can_edit}
+                          />
+                        </label>
+                        <label className="edit-day-entry-field">
+                          <span className="edit-day-entry-field-label">
+                            {de ? "Pause (Min)" : "Break (min)"}
+                          </span>
+                          <input
+                            type="number"
+                            name="break_minutes"
+                            className="edit-day-entry-input"
+                            min={0}
+                            defaultValue={Math.round(entry.break_hours * 60)}
+                            disabled={!entry.can_edit}
+                          />
+                        </label>
+                      </div>
+                      <div className="edit-day-entry-foot">
+                        <small className="muted">
+                          {de ? "Pause" : "Break"}: {entry.break_hours}h ·{" "}
+                          {de ? "Gesetzlich" : "Legal"}: {entry.required_break_hours}h ·{" "}
+                          {de ? "Abgezogen" : "Deducted"}: {entry.deducted_break_hours}h
+                        </small>
+                        {!entry.can_edit && (
+                          <small className="muted">
+                            {de ? "Nicht bearbeitbar" : "Not editable"}
+                          </small>
+                        )}
+                        <button
+                          type="submit"
+                          className="edit-day-entry-save-btn"
+                          disabled={!entry.can_edit}
+                        >
+                          {de ? "Speichern" : "Save"}
+                        </button>
+                      </div>
+                    </form>
+                  ))}
+                </div>
+                <div className="edit-day-modal-foot">
+                  <a
+                    className="edit-day-modal-export"
+                    href={exportUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    {de ? `Monatsexport (${monthCursorLabel})` : `Export month (${monthCursorLabel})`}
+                  </a>
+                  <button
+                    type="button"
+                    className="edit-day-modal-close-btn"
+                    onClick={() => setEditEntriesDate(null)}
+                  >
+                    {de ? "Fertig" : "Done"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
     </section>
   );
 }

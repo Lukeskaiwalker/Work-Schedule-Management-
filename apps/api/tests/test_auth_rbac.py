@@ -437,6 +437,94 @@ def test_admin_update_status_infers_current_version_from_matching_latest_commit(
     assert payload["update_available"] is False
 
 
+def test_admin_update_status_uses_release_tag_commit_instead_of_branch_tip(
+    client: TestClient,
+    admin_token: str,
+    monkeypatch,
+):
+    monkeypatch.setattr(admin_router.settings, "app_release_version", "v1.2.0", raising=False)
+    monkeypatch.setattr(
+        admin_router.settings,
+        "app_release_commit",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        raising=False,
+    )
+    monkeypatch.setattr(admin_router.settings, "update_repo_owner", "example", raising=False)
+    monkeypatch.setattr(admin_router.settings, "update_repo_name", "repo", raising=False)
+    monkeypatch.setattr(admin_router.settings, "update_repo_branch", "main", raising=False)
+    monkeypatch.setattr(admin_router, "_can_auto_install_updates", lambda: False)
+
+    def fake_github_api_json(path: str):
+        if path.endswith("/releases"):
+            return [
+                {
+                    "tag_name": "v1.2.0",
+                    "html_url": "https://github.com/example/repo/releases/tag/v1.2.0",
+                    "published_at": "2026-02-20T10:00:00Z",
+                    "target_commitish": "main",
+                    "draft": False,
+                    "prerelease": False,
+                }
+            ]
+        if path.endswith("/commits/v1.2.0"):
+            return {"sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+        if path.endswith("/commits/main"):
+            return {"sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+        raise AssertionError(f"Unexpected path: {path}")
+
+    monkeypatch.setattr(admin_router, "_github_api_json", fake_github_api_json)
+
+    response = client.get("/api/admin/updates/status", headers=auth_headers(admin_token))
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["latest_version"] == "v1.2.0"
+    assert payload["latest_commit"] == "aaaaaaaaaaaa"
+    assert payload["update_available"] is False
+
+
+def test_admin_update_status_resolves_current_commit_from_current_version_tag(
+    client: TestClient,
+    admin_token: str,
+    monkeypatch,
+):
+    monkeypatch.setattr(admin_router.settings, "app_release_version", "v1.1.0", raising=False)
+    monkeypatch.setattr(admin_router.settings, "app_release_commit", "", raising=False)
+    monkeypatch.setattr(admin_router.settings, "update_repo_owner", "example", raising=False)
+    monkeypatch.setattr(admin_router.settings, "update_repo_name", "repo", raising=False)
+    monkeypatch.setattr(admin_router.settings, "update_repo_branch", "main", raising=False)
+    monkeypatch.setattr(admin_router, "_can_auto_install_updates", lambda: False)
+    monkeypatch.setattr(admin_router, "_resolve_current_release_from_git", lambda: (None, None))
+
+    def fake_github_api_json(path: str):
+        if path.endswith("/releases"):
+            return [
+                {
+                    "tag_name": "v1.2.0",
+                    "html_url": "https://github.com/example/repo/releases/tag/v1.2.0",
+                    "published_at": "2026-02-20T10:00:00Z",
+                    "target_commitish": "main",
+                    "draft": False,
+                    "prerelease": False,
+                }
+            ]
+        if path.endswith("/commits/v1.1.0"):
+            return {"sha": "1111111111111111111111111111111111111111"}
+        if path.endswith("/commits/v1.2.0"):
+            return {"sha": "2222222222222222222222222222222222222222"}
+        raise AssertionError(f"Unexpected path: {path}")
+
+    monkeypatch.setattr(admin_router, "_github_api_json", fake_github_api_json)
+
+    response = client.get("/api/admin/updates/status", headers=auth_headers(admin_token))
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["current_version"] == "v1.1.0"
+    assert payload["current_commit"] == "111111111111"
+    assert payload["latest_version"] == "v1.2.0"
+    assert payload["latest_commit"] == "222222222222"
+    assert payload["update_available"] is True
+
+
 def test_admin_install_update_returns_manual_when_auto_install_unavailable(
     client: TestClient,
     admin_token: str,

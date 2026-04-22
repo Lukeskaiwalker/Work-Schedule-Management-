@@ -1,5 +1,6 @@
 import { useAppContext } from "../context/AppContext";
 import { formatServerDateTime } from "../utils/dates";
+import { CriticalDot } from "../components/project/CriticalDot";
 
 export function ProjectsArchivePage() {
   const {
@@ -35,7 +36,10 @@ export function ProjectsArchivePage() {
                   .filter(Boolean)
                   .join(" ")}
               >
-                <b>{projectLabel.title}</b>
+                <b>
+                  {projectLabel.title}
+                  <CriticalDot project={project} />
+                </b>
                 {projectLabel.subtitle && <small className="project-name-subtle">{projectLabel.subtitle}</small>}
                 <small>
                   {language === "de" ? "Letzter Stand" : "Last state"}: {project.last_state || "-"} |{" "}

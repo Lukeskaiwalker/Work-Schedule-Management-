@@ -19,6 +19,9 @@ class Project(Base):
     last_state: Mapped[str | None] = mapped_column(Text)
     last_status_at: Mapped[datetime | None] = mapped_column(DateTime)
     last_updated_at: Mapped[datetime | None] = mapped_column(DateTime, default=utcnow, nullable=True)
+    customer_id: Mapped[int | None] = mapped_column(
+        ForeignKey("customers.id", ondelete="SET NULL"), index=True
+    )
     customer_name: Mapped[str | None] = mapped_column(String(255))
     customer_address: Mapped[str | None] = mapped_column(String(500))
     construction_site_address: Mapped[str | None] = mapped_column(String(500))
@@ -28,6 +31,11 @@ class Project(Base):
     site_access_type: Mapped[str | None] = mapped_column(String(64))
     site_access_note: Mapped[str | None] = mapped_column(String(500))
     extra_attributes: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    is_critical: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    critical_since: Mapped[datetime | None] = mapped_column(DateTime)
+    critical_set_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), index=True
+    )
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 

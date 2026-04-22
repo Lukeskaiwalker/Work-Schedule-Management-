@@ -32,6 +32,8 @@ from app.core.security import get_password_hash
 from app.core.time import utcnow
 from app.models.entities import AuditLog, EmployeeGroup, EmployeeGroupMember, ProjectClassTemplate, User, UserActionToken
 from app.schemas.api import (
+    CompanySettingsOut,
+    CompanySettingsUpdate,
     EmployeeGroupCreate,
     EmployeeGroupOut,
     EmployeeGroupUpdate,
@@ -53,12 +55,14 @@ from app.services.audit import log_admin_action
 from app.services.emailer import send_email_message
 from app.services.project_import import import_projects_from_csv
 from app.services.runtime_settings import (
+    get_company_settings,
     get_smtp_settings,
     get_openweather_api_key,
     reset_role_to_defaults,
     reset_user_permissions_from_db,
     save_role_permissions_to_db,
     save_user_permissions_to_db,
+    set_company_settings,
     set_smtp_settings,
     set_openweather_api_key,
 )
@@ -95,6 +99,13 @@ PROJECT_CLASS_TEMPLATE_HEADERS = [
     "class_name",
     "materials_required",
     "tools_required",
+    "task_title",
+    "task_description",
+    "task_type",
+    "task_subtasks",
+]
+PROJECT_CLASS_TEMPLATE_REQUIRED_HEADERS = [
+    "class_name",
     "task_title",
     "task_description",
     "task_type",
@@ -295,6 +306,36 @@ def _resolve_release_tag_for_commit(owner: str, repo: str, commit_ref: str | Non
             tag_commit = _trim_or_none(str(commit_row.get("sha") or ""))
         if tag_name and _commit_refs_match(commit_ref, tag_commit):
             return tag_name
+    return None
+
+
+def _resolve_commit_for_ref(owner: str, repo: str, ref: str | None) -> str | None:
+    normalized_ref = _trim_or_none(ref)
+    if not normalized_ref:
+        return None
+    try:
+        commit_row = _github_api_json(
+            f"/repos/{owner}/{repo}/commits/{quote(normalized_ref, safe='')}"
+        )
+    except Exception:
+        return None
+    if not isinstance(commit_row, dict):
+        return None
+    return _short_commit(str(commit_row.get("sha") or ""))
+
+
+def _latest_published_release(releases: object) -> dict | None:
+    if not isinstance(releases, list):
+        return None
+    for row in releases:
+        if not isinstance(row, dict):
+            continue
+        if row.get("draft") or row.get("prerelease"):
+            continue
+        return row
+    for row in releases:
+        if isinstance(row, dict):
+            return row
     return None
 
 
@@ -548,8 +589,11 @@ def _fetch_update_status() -> UpdateStatusOut:
     update_available: bool | None = None
     message: str | None = None
     try:
+        if current_version and not current_commit:
+            current_commit = _resolve_commit_for_ref(owner, repo, current_version)
+
         releases = _github_api_json(f"/repos/{owner}/{repo}/releases")
-        latest_release = releases[0] if isinstance(releases, list) and releases else None
+        latest_release = _latest_published_release(releases)
         if latest_release:
             latest_version = _trim_or_none(str(latest_release.get("tag_name") or ""))
             latest_url = _trim_or_none(str(latest_release.get("html_url") or ""))
@@ -560,14 +604,11 @@ def _fetch_update_status() -> UpdateStatusOut:
                 except ValueError:
                     latest_published_at = None
             commitish = _trim_or_none(str(latest_release.get("target_commitish") or "")) or branch
-            try:
-                commit_row = _github_api_json(
-                    f"/repos/{owner}/{repo}/commits/{quote(commitish, safe='')}"
-                )
-                if isinstance(commit_row, dict):
-                    latest_commit = _short_commit(str(commit_row.get("sha") or ""))
-            except Exception:
-                latest_commit = None
+            latest_commit = (
+                _resolve_commit_for_ref(owner, repo, latest_version)
+                or _resolve_commit_for_ref(owner, repo, commitish)
+                or _resolve_commit_for_ref(owner, repo, branch)
+            )
             if current_version and latest_version:
                 current_semver = _to_semver_tuple(current_version)
                 latest_semver = _to_semver_tuple(latest_version)
@@ -615,7 +656,10 @@ def _fetch_update_status() -> UpdateStatusOut:
         message = f"Could not fetch update status from GitHub: {exc}"
 
     if unresolved_placeholder and not current_version and not message:
-        message = "Current release version is unresolved; set APP_RELEASE_VERSION or run from a tagged git checkout."
+        message = (
+            "Current release version is unresolved; run ./scripts/update_release_metadata.sh "
+            "and restart api/api_worker, or set APP_RELEASE_VERSION and APP_RELEASE_COMMIT explicitly."
+        )
 
     return UpdateStatusOut(
         repository=repository,
@@ -651,9 +695,10 @@ def _normalize_task_type(raw_value: str | None, *, default: str = "construction"
 def _split_multiline(value: str | None) -> list[str]:
     if not value:
         return []
+    normalized = str(value).replace("\\r\\n", "\n").replace("\\n", "\n").replace("\r", "\n")
     rows = [
         line.strip()
-        for line in str(value).replace("\r", "\n").split("\n")
+        for line in normalized.split("\n")
         if line.strip()
     ]
     deduped: list[str] = []
@@ -675,6 +720,59 @@ def _task_template_key(task: dict[str, str | None]) -> tuple[str, str, str]:
     )
 
 
+def _material_row_key(row: dict[str, str]) -> tuple[str, str, str, str]:
+    return (
+        str(row.get("item") or "").strip().lower(),
+        str(row.get("qty") or "").strip().lower(),
+        str(row.get("unit") or "").strip().lower(),
+        str(row.get("article_no") or "").strip().lower(),
+    )
+
+
+def _serialize_material_rows(rows: list[dict[str, str]]) -> str | None:
+    lines: list[str] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for raw_row in rows:
+        item = str(raw_row.get("item") or "").strip()
+        if not item:
+            continue
+        row = {
+            "item": item,
+            "qty": str(raw_row.get("qty") or "").strip(),
+            "unit": str(raw_row.get("unit") or "").strip(),
+            "article_no": str(raw_row.get("article_no") or "").strip(),
+        }
+        key = _material_row_key(row)
+        if key in seen:
+            continue
+        seen.add(key)
+        if not row["qty"] and not row["unit"] and not row["article_no"]:
+            lines.append(row["item"])
+        else:
+            lines.append(" | ".join([row["item"], row["qty"], row["unit"], row["article_no"]]))
+    return "\n".join(lines).strip() or None
+
+
+def _parse_material_lines(value: str | None) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for raw_line in _split_multiline(value):
+        parts = [part.strip() for part in raw_line.split("|", 3)]
+        item = parts[0] if parts else ""
+        if not item:
+            continue
+        while len(parts) < 4:
+            parts.append("")
+        rows.append(
+            {
+                "item": item,
+                "qty": parts[1],
+                "unit": parts[2],
+                "article_no": parts[3],
+            }
+        )
+    return rows
+
+
 def _parse_project_class_template_csv(payload: bytes) -> dict[str, dict]:
     try:
         text = payload.decode("utf-8-sig")
@@ -685,7 +783,7 @@ def _parse_project_class_template_csv(payload: bytes) -> dict[str, dict]:
     if not reader.fieldnames:
         raise HTTPException(status_code=400, detail="CSV has no header row")
 
-    missing_headers = [header for header in PROJECT_CLASS_TEMPLATE_HEADERS if header not in reader.fieldnames]
+    missing_headers = [header for header in PROJECT_CLASS_TEMPLATE_REQUIRED_HEADERS if header not in reader.fieldnames]
     if missing_headers:
         raise HTTPException(
             status_code=400,
@@ -708,18 +806,30 @@ def _parse_project_class_template_csv(payload: bytes) -> dict[str, dict]:
             },
         )
         bucket["name"] = class_name
-        bucket["materials"].extend(_split_multiline(row.get("materials_required")))
+        material_item = str(row.get("material_item") or "").strip()
+        if material_item:
+            bucket["materials"].append(
+                {
+                    "item": material_item,
+                    "qty": str(row.get("material_qty") or "").strip(),
+                    "unit": str(row.get("material_unit") or "").strip(),
+                    "article_no": str(row.get("material_article_no") or "").strip(),
+                }
+            )
+        bucket["materials"].extend(_parse_material_lines(row.get("materials_required")))
         bucket["tools"].extend(_split_multiline(row.get("tools_required")))
 
         task_title = str(row.get("task_title") or "").strip()
         if task_title:
             task_description = str(row.get("task_description") or "").strip() or None
             task_type = _normalize_task_type(str(row.get("task_type") or ""), default="construction")
+            task_subtasks = _split_multiline(row.get("task_subtasks"))
             bucket["task_templates"].append(
                 {
                     "title": task_title,
                     "description": task_description,
                     "task_type": task_type,
+                    "subtasks": task_subtasks,
                 }
             )
 
@@ -745,27 +855,27 @@ def _upsert_project_class_templates(
     total_tasks = 0
     for key in sorted(parsed.keys()):
         entry = parsed[key]
-        materials_list = _split_multiline("\n".join(entry["materials"]))
+        materials_value = _serialize_material_rows(entry["materials"])
         tools_list = _split_multiline("\n".join(entry["tools"]))
 
-        task_templates: list[dict[str, str | None]] = []
-        seen_tasks: set[tuple[str, str, str]] = set()
+        task_templates: list[dict[str, object]] = []
+        seen_tasks: set[tuple[str, str, str, str]] = set()
         for task in entry["task_templates"]:
             row = {
                 "title": str(task.get("title") or "").strip(),
                 "description": str(task.get("description") or "").strip() or None,
                 "task_type": _normalize_task_type(str(task.get("task_type") or ""), default="construction"),
+                "subtasks": _split_multiline("\n".join(task.get("subtasks") or [])),
             }
             if not row["title"]:
                 continue
-            task_key = _task_template_key(row)
+            task_key = (*_task_template_key(row), "\n".join(row["subtasks"]).strip().lower())
             if task_key in seen_tasks:
                 continue
             seen_tasks.add(task_key)
             task_templates.append(row)
 
         total_tasks += len(task_templates)
-        materials_value = "\n".join(materials_list).strip() or None
         tools_value = "\n".join(tools_list).strip() or None
 
         existing = existing_by_name.get(key)
@@ -1547,41 +1657,45 @@ def download_project_class_template(
     writer.writerow(
         [
             "PV Standard",
-            "PV modules\nDC cable set\nMounting rails",
+            "PV modules | 24 | pcs | PV-001\nDC cable set | 2 | roll | CAB-002\nChecklist | 1 | set | CHK-010",
             "Cable cutter\nCrimping tool",
             "Mount PV modules",
             "Mount rails and modules on the target roof section.",
             "construction",
+            "Mount rails\nInstall modules",
         ]
     )
     writer.writerow(
         [
             "PV Standard",
-            "PV modules\nDC cable set\nMounting rails",
+            "PV modules | 24 | pcs | PV-001\nDC cable set | 2 | roll | CAB-002\nChecklist | 1 | set | CHK-010",
             "Cable cutter\nCrimping tool",
             "Commissioning and handover",
             "Check inverter parameters and document customer handover.",
             "office",
+            "Check inverter\nDocument handover",
         ]
     )
     writer.writerow(
         [
             "PV Standard",
-            "Offer documents\nChecklist",
+            "PV modules | 24 | pcs | PV-001\nDC cable set | 2 | roll | CAB-002\nChecklist | 1 | set | CHK-010",
             "Tablet\nMeasuring tape",
             "Customer on-site appointment",
             "Visit customer, confirm measurements, and collect required signatures.",
             "customer_appointment",
+            "Measure roof\nCollect signatures",
         ]
     )
     writer.writerow(
         [
             "Heat Pump Retrofit",
-            "Heat pump unit\nPipe insulation",
+            "Heat pump unit | 1 | pcs | HP-100",
             "Vacuum pump\nPressure gauge",
             "Install heat pump",
             "Prepare hydraulics and connect the heat pump unit.",
             "construction",
+            "Connect hydraulics\nPressure test",
         ]
     )
     return Response(
@@ -1651,6 +1765,73 @@ def update_weather_settings(
         provider="openweather",
         configured=bool(api_key),
         masked_api_key=_mask_secret(api_key),
+    )
+
+
+@router.get("/settings/company/public", response_model=CompanySettingsOut)
+def get_public_company_settings(
+    db: Session = Depends(get_db),
+):
+    effective = get_company_settings(db)
+    return CompanySettingsOut(
+        logo_url=str(effective.get("logo_url") or "").strip(),
+        navigation_title=str(effective.get("navigation_title") or "").strip() or "SMPL",
+        company_name=str(effective.get("company_name") or "").strip() or "SMPL",
+        company_address=str(effective.get("company_address") or "").strip(),
+    )
+
+
+@router.get("/settings/company", response_model=CompanySettingsOut)
+def get_company_runtime_settings(
+    _: User = Depends(require_permission("settings:manage")),
+    db: Session = Depends(get_db),
+):
+    effective = get_company_settings(db)
+    return CompanySettingsOut(
+        logo_url=str(effective.get("logo_url") or "").strip(),
+        navigation_title=str(effective.get("navigation_title") or "").strip() or "SMPL",
+        company_name=str(effective.get("company_name") or "").strip() or "SMPL",
+        company_address=str(effective.get("company_address") or "").strip(),
+    )
+
+
+@router.patch("/settings/company", response_model=CompanySettingsOut)
+def update_company_runtime_settings(
+    payload: CompanySettingsUpdate,
+    admin: User = Depends(require_permission("settings:manage")),
+    db: Session = Depends(get_db),
+):
+    logo_url = (payload.logo_url or "").strip()
+    navigation_title = (payload.navigation_title or "").strip() or "SMPL"
+    company_name = (payload.company_name or "").strip() or "SMPL"
+    company_address = (payload.company_address or "").strip()
+
+    set_company_settings(
+        db,
+        logo_url=logo_url,
+        navigation_title=navigation_title,
+        company_name=company_name,
+        company_address=company_address,
+    )
+    db.commit()
+    log_admin_action(
+        db,
+        admin,
+        "settings.company.update",
+        "settings",
+        "company",
+        {
+            "has_logo": bool(logo_url),
+            "navigation_title": navigation_title,
+            "company_name": company_name,
+            "company_address": company_address,
+        },
+    )
+    return CompanySettingsOut(
+        logo_url=logo_url,
+        navigation_title=navigation_title,
+        company_name=company_name,
+        company_address=company_address,
     )
 
 

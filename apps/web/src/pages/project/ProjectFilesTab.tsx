@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react";
 import { useAppContext } from "../../context/AppContext";
 import { formatServerDateTime } from "../../utils/dates";
-import type { ProjectFile } from "../../types";
+import type { Language, ProjectFile } from "../../types";
 
 function isReportFolder(folder: string): boolean {
   const f = folder.toLowerCase();
@@ -18,23 +18,29 @@ function fileTypeLabel(contentType: string): string {
 function FileRow({
   file,
   language,
+  canManageFiles,
   isPreviewable,
   filePreviewUrl,
   fileDownloadUrl,
+  onDelete,
 }: {
   file: ProjectFile;
-  language: string;
+  language: Language;
+  canManageFiles: boolean;
   isPreviewable: (f: ProjectFile) => boolean;
   filePreviewUrl: (id: number) => string;
   fileDownloadUrl: (id: number) => string;
+  onDelete: (fileId: number) => void;
 }) {
+  const [confirming, setConfirming] = useState(false);
+
   return (
     <div className="file-row">
       <span>{file.file_name}</span>
       <small>{file.folder || "/"}</small>
       <small>{fileTypeLabel(file.content_type)}</small>
       <small>{formatServerDateTime(file.created_at, language)}</small>
-      <div className="row wrap">
+      <div className="row wrap file-row-actions">
         {isPreviewable(file) && (
           <a href={filePreviewUrl(file.id)} target="_blank" rel="noreferrer">
             {language === "de" ? "Vorschau" : "Preview"}
@@ -43,6 +49,35 @@ function FileRow({
         <a href={fileDownloadUrl(file.id)} target="_blank" rel="noreferrer">
           {language === "de" ? "Download" : "Download"}
         </a>
+        {canManageFiles && (
+          confirming ? (
+            <>
+              <button
+                type="button"
+                className="file-delete-confirm-btn"
+                onClick={() => { setConfirming(false); onDelete(file.id); }}
+              >
+                {language === "de" ? "Löschen" : "Delete"}
+              </button>
+              <button
+                type="button"
+                className="linklike"
+                onClick={() => setConfirming(false)}
+              >
+                {language === "de" ? "Abbrechen" : "Cancel"}
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              className="file-delete-btn linklike"
+              onClick={() => setConfirming(true)}
+              title={language === "de" ? "Datei löschen" : "Delete file"}
+            >
+              {language === "de" ? "Löschen" : "Delete"}
+            </button>
+          )
+        )}
       </div>
     </div>
   );
@@ -62,11 +97,13 @@ export function ProjectFilesTab() {
     setFileUploadModalOpen,
     projectFolders,
     canUseProtectedFolders,
+    canManageFiles,
     activeProjectDavUrl,
     copyToClipboard,
     fileDownloadUrl,
     filePreviewUrl,
     isPreviewable,
+    deleteFile,
   } = useAppContext();
 
   // Single set tracks which folders have been manually toggled from their default state.
@@ -218,9 +255,11 @@ export function ProjectFilesTab() {
                   key={file.id}
                   file={file}
                   language={language}
+                  canManageFiles={canManageFiles}
                   isPreviewable={isPreviewable}
                   filePreviewUrl={filePreviewUrl}
                   fileDownloadUrl={fileDownloadUrl}
+                  onDelete={(id) => void deleteFile(id)}
                 />
               ))}
               {fileRows.length === 0 && (
@@ -257,9 +296,11 @@ export function ProjectFilesTab() {
                         key={file.id}
                         file={file}
                         language={language}
+                        canManageFiles={canManageFiles}
                         isPreviewable={isPreviewable}
                         filePreviewUrl={filePreviewUrl}
                         fileDownloadUrl={fileDownloadUrl}
+                        onDelete={(id) => void deleteFile(id)}
                       />
                     ))}
                   </div>

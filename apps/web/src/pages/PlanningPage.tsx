@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 import { useAppContext } from "../context/AppContext";
 import { addDaysISO, normalizeWeekStartISO, formatDayLabel, isoWeekdayMondayFirst } from "../utils/dates";
-import { sortTasksByDueTime, formatTaskTimeRange } from "../utils/tasks";
+import { sortTasksByDueTime, formatTaskTimeRange, taskEndTimeMinutes, taskStartTimeMinutes } from "../utils/tasks";
 import { PenIcon } from "../components/icons";
-import type { Language } from "../types";
+import type { Language, Task } from "../types";
 
 const EN_DAY_COLS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
 const DE_DAY_COLS = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"] as const;
@@ -33,11 +33,28 @@ function monthAbbr(month: number, language: Language): string {
   return ((language === "de" ? DE_MONTHS : EN_MONTHS)[month - 1]) ?? "";
 }
 
+function minutesToHHMM(totalMinutes: number | null) {
+  if (totalMinutes == null || !Number.isFinite(totalMinutes)) return "";
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
+}
+
+function summarizeProjectWindow(tasks: Task[]) {
+  const starts = tasks.map((task) => taskStartTimeMinutes(task)).filter((value): value is number => value != null);
+  const ends = tasks.map((task) => taskEndTimeMinutes(task)).filter((value): value is number => value != null);
+  if (starts.length === 0) return "";
+  const start = Math.min(...starts);
+  const end = ends.length > 0 ? Math.max(...ends) : null;
+  return end != null && end > start ? `${minutesToHHMM(start)}-${minutesToHHMM(end)}` : minutesToHHMM(start);
+}
+
 export function PlanningPage() {
   const {
     mainView,
     language,
     user,
+    workspaceMode,
     saveUserPreference,
     planningWeekStart,
     setPlanningWeekStart,
@@ -52,16 +69,18 @@ export function PlanningPage() {
     taskProjectTitleParts,
     openTaskFromPlanning,
     openProjectFromTask,
+    openTaskModal,
     openTaskEditModal,
     exportTaskCalendar,
     markTaskDone,
+    openProjectGanttById,
     menuUserNameById,
     absenceTypes,
   } = useAppContext();
 
   const [isPhoneViewport, setIsPhoneViewport] = useState(() => {
     if (typeof window === "undefined") return false;
-    return window.matchMedia("(max-width: 480px)").matches;
+    return window.matchMedia("(max-width: 767px)").matches;
   });
   const [mobileDayIndex, setMobileDayIndex] = useState(0);
   // Initialise from localStorage for instant paint; server value synced below.
@@ -72,7 +91,7 @@ export function PlanningPage() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const media = window.matchMedia("(max-width: 480px)");
+    const media = window.matchMedia("(max-width: 767px)");
     const onChange = () => setIsPhoneViewport(media.matches);
     onChange();
     media.addEventListener("change", onChange);
@@ -105,56 +124,157 @@ export function PlanningPage() {
   if (mainView !== "planning") return null;
 
   const dayColLabels = de ? DE_DAY_COLS : EN_DAY_COLS;
+  const showProjectRows = workspaceMode === "office";
   const absenceTypeLabel = (type: string) => {
     if (type === "vacation") return de ? "Urlaub" : "Vacation";
     const match = absenceTypes.find((entry) => entry.key === type);
     return match ? (de ? match.label_de : match.label_en) : type;
   };
 
-  // Grid modifier class depends on mobile view mode
+  // Grid modifier class depends on mobile view mode.
+  // On mobile (<768px), always use list mode for the Paper flat-card layout.
+  const effectiveMobileMode = isPhoneViewport ? "list" : null;
   const gridClass = [
     "planning-grid-unified",
-    isPhoneViewport && mobileViewMode === "list" ? "planning-grid-mobile-list" : "",
-    isPhoneViewport && mobileViewMode === "scroll" ? "planning-grid-mobile-scroll" : "",
+    effectiveMobileMode === "list" ? "planning-grid-mobile-list" : "",
   ].filter(Boolean).join(" ");
 
+  const weekRangeLabel = (() => {
+    const startDate = new Date(planningWeekStart + "T00:00:00");
+    const endDate = new Date(addDaysISO(planningWeekStart, 6) + "T00:00:00");
+    if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) return "";
+    const locale = de ? "de-DE" : "en-US";
+    const startStr = startDate.toLocaleDateString(locale, { month: "short", day: "numeric" });
+    const endStr = endDate.toLocaleDateString(locale, { month: "short", day: "numeric" });
+    return `${startStr} – ${endStr}`;
+  })();
+
   return (
-    <section className="card planning-only">
-      {/* ── Toolbar ── */}
-      <div className="row wrap planning-toolbar">
-        <h3>{de ? "Kalenderansicht" : "Calendar view"}</h3>
-        <div className="row planning-week-nav" role="group" aria-label={de ? "Wochenwechsel" : "Week switch"}>
+    <section className="planning-page">
+      {/* Page title — visible on all viewports (added to PAGES_WITH_OWN_TITLE) */}
+      <h1 className="planning-page-title">{de ? "Wochenplanung" : "Weekly Planning"}</h1>
+
+      {/* ── Toolbar — matches Paper design WH-0 (single row, no duplicated title) ── */}
+      <div className="planning-toolbar">
+        <div
+          className="planning-filter-pills"
+          role="tablist"
+          aria-label={de ? "Aufgabenfilter" : "Task filter"}
+        >
           <button
             type="button"
-            className="icon-btn"
-            aria-label={de ? "Vorherige Woche" : "Previous week"}
-            title={de ? "Vorherige Woche" : "Previous week"}
-            onClick={() => setPlanningWeekStart(normalizeWeekStartISO(addDaysISO(planningWeekStart, -7)))}
+            role="tab"
+            aria-selected={planningTaskTypeView === "all"}
+            className={`planning-filter-pill${planningTaskTypeView === "all" ? " planning-filter-pill--active" : ""}`}
+            onClick={() => setPlanningTaskTypeView("all")}
           >
-            ←
+            {de ? "Alle" : "All"}
           </button>
-          <div className="planning-week-number">
-            {de ? "KW" : "CW"} {planningWeekInfo.week}/{planningWeekInfo.year}
+          <button
+            type="button"
+            role="tab"
+            aria-selected={planningTaskTypeView === "construction"}
+            className={`planning-filter-pill${planningTaskTypeView === "construction" ? " planning-filter-pill--active" : ""}`}
+            onClick={() => setPlanningTaskTypeView("construction")}
+          >
+            {de ? "Baustelle" : "Construction"}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={planningTaskTypeView === "office"}
+            className={`planning-filter-pill${planningTaskTypeView === "office" ? " planning-filter-pill--active" : ""}`}
+            onClick={() => setPlanningTaskTypeView("office")}
+          >
+            {de ? "Büro" : "Office"}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={planningTaskTypeView === "customer_appointment"}
+            className={`planning-filter-pill${planningTaskTypeView === "customer_appointment" ? " planning-filter-pill--active" : ""}`}
+            onClick={() => setPlanningTaskTypeView("customer_appointment")}
+          >
+            {de ? "Termin" : "Appointment"}
+          </button>
+        </div>
+
+        <div
+          className="planning-week-nav"
+          role="group"
+          aria-label={de ? "Wochenwechsel" : "Week switch"}
+        >
+          <button
+            type="button"
+            className="planning-week-nav-btn"
+            aria-label={de ? "Vorherige Woche" : "Previous week"}
+            onClick={() =>
+              setPlanningWeekStart(normalizeWeekStartISO(addDaysISO(planningWeekStart, -7)))
+            }
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="m15 6-6 6 6 6"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </button>
+          <div className="planning-week-label">
+            <span className="planning-week-label-cw">
+              {de ? "KW" : "CW"} {planningWeekInfo.week}
+            </span>
+            <span aria-hidden="true" className="planning-week-label-sep">·</span>
+            <span className="planning-week-label-range">{weekRangeLabel}</span>
+            <input
+              type="date"
+              className="planning-week-date-input"
+              value={planningWeekStart}
+              onChange={(e) => setPlanningWeekStart(normalizeWeekStartISO(e.target.value))}
+              aria-label={de ? "Wochenstart wählen" : "Pick week start"}
+            />
           </div>
           <button
             type="button"
-            className="icon-btn"
+            className="planning-week-nav-btn"
             aria-label={de ? "Nächste Woche" : "Next week"}
-            title={de ? "Nächste Woche" : "Next week"}
-            onClick={() => setPlanningWeekStart(normalizeWeekStartISO(addDaysISO(planningWeekStart, 7)))}
+            onClick={() =>
+              setPlanningWeekStart(normalizeWeekStartISO(addDaysISO(planningWeekStart, 7)))
+            }
           >
-            →
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="m9 6 6 6-6 6"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
           </button>
         </div>
-        <label className="planning-week-picker">
-          {de ? "Wochenstart (Montag)" : "Week start (Monday)"}
-          <input
-            type="date"
-            value={planningWeekStart}
-            onChange={(e) => setPlanningWeekStart(normalizeWeekStartISO(e.target.value))}
-            required
-          />
-        </label>
+
+        {canManageTasks && (
+          <button
+            type="button"
+            className="planning-add-task-btn"
+            onClick={() =>
+              openTaskModal({
+                taskType:
+                  planningTaskTypeView === "customer_appointment"
+                    ? "customer_appointment"
+                    : planningTaskTypeView === "office"
+                      ? "office"
+                      : "construction",
+                dueDate: planningWeekStart,
+              })
+            }
+          >
+            + {de ? "Aufgabe" : "Add task"}
+          </button>
+        )}
       </div>
 
       {/* ── Mobile view mode toggle (phone only) ── */}
@@ -216,31 +336,6 @@ export function PlanningPage() {
         </div>
       )}
 
-      {/* ── Task type toggle ── */}
-      <div className="row wrap task-view-toggle planning-task-type-toggle">
-        <button
-          type="button"
-          className={planningTaskTypeView === "construction" ? "active" : ""}
-          onClick={() => setPlanningTaskTypeView("construction")}
-        >
-          {de ? "Baustellenaufgaben" : "Construction tasks"}
-        </button>
-        <button
-          type="button"
-          className={planningTaskTypeView === "office" ? "active" : ""}
-          onClick={() => setPlanningTaskTypeView("office")}
-        >
-          {de ? "Büroaufgaben" : "Office tasks"}
-        </button>
-        <button
-          type="button"
-          className={planningTaskTypeView === "customer_appointment" ? "active" : ""}
-          onClick={() => setPlanningTaskTypeView("customer_appointment")}
-        >
-          {de ? "Kundentermine" : "Customer appointments"}
-        </button>
-      </div>
-
       {/* ── Calendar grid ── */}
       <div className="planning-calendar-scroll">
         <div className={gridClass}>
@@ -250,7 +345,40 @@ export function PlanningPage() {
             const dayNum = parseInt(day.date.split("-")[2] ?? "1", 10);
             const monthNum = parseInt(day.date.split("-")[1] ?? "1", 10);
             const dayTasks = sortTasksByDueTime(day.tasks);
+            const visibleTaskRows = showProjectRows ? dayTasks : dayTasks.filter((task) => isTaskAssignedToCurrentUser(task));
             const absences = day.absences ?? [];
+            const projectRows = Array.from(
+              visibleTaskRows.reduce((map, task) => {
+                const current = map.get(task.project_id) ?? [];
+                current.push(task);
+                map.set(task.project_id, current);
+                return map;
+              }, new Map<number, Task[]>()),
+            )
+              .map(([projectId, rows]) => {
+                const sortedRows = sortTasksByDueTime(rows);
+                const leadTask = sortedRows[0];
+                const assigneeLabels = Array.from(new Set(sortedRows.map((task) => getTaskAssigneeLabel(task)).filter(Boolean)));
+                const assigneeSummary =
+                  assigneeLabels.length <= 2
+                    ? assigneeLabels.join(", ")
+                    : `${assigneeLabels.slice(0, 2).join(", ")} +${assigneeLabels.length - 2}`;
+                return {
+                  projectId,
+                  tasks: sortedRows,
+                  leadTask,
+                  label: taskProjectTitleParts(leadTask),
+                  taskCount: sortedRows.length,
+                  assigneeSummary,
+                  windowLabel: summarizeProjectWindow(sortedRows),
+                };
+              })
+              .sort((left, right) => {
+                const leftMinutes = taskStartTimeMinutes(left.leadTask) ?? Number.MAX_SAFE_INTEGER;
+                const rightMinutes = taskStartTimeMinutes(right.leadTask) ?? Number.MAX_SAFE_INTEGER;
+                if (leftMinutes !== rightMinutes) return leftMinutes - rightMinutes;
+                return left.label.title.localeCompare(right.label.title, language === "de" ? "de" : "en");
+              });
 
             // Hide/show logic: only in "single" mobile mode
             const mobileVisClass =
@@ -297,92 +425,127 @@ export function PlanningPage() {
                       </small>
                     </li>
                   ))}
-                  {dayTasks.map((task) => {
-                    const isMine = isTaskAssignedToCurrentUser(task);
-                    const taskProjectLabel = taskProjectTitleParts(task);
-                    return (
-                      <li
-                        key={task.id}
-                        className={
-                          isMine
-                            ? "planning-task planning-task-mine planning-task-clickable"
-                            : "planning-task"
-                        }
-                        onClick={isMine ? () => openTaskFromPlanning(task) : undefined}
-                        onKeyDown={
-                          isMine
-                            ? (event) => {
-                                if (event.key === "Enter" || event.key === " ") {
-                                  event.preventDefault();
-                                  openTaskFromPlanning(task);
-                                }
+                  {showProjectRows
+                    ? projectRows.map((projectRow) => {
+                        const primaryTask = projectRow.leadTask;
+                        return (
+                          <li
+                            key={`planning-project-${day.date}-${projectRow.projectId}`}
+                            className="planning-project planning-task-clickable"
+                            onClick={() => openProjectGanttById(projectRow.projectId, "planning")}
+                            onKeyDown={(event) => {
+                              if (event.key === "Enter" || event.key === " ") {
+                                event.preventDefault();
+                                openProjectGanttById(projectRow.projectId, "planning");
                               }
-                            : undefined
-                        }
-                        role={isMine ? "button" : undefined}
-                        tabIndex={isMine ? 0 : undefined}
-                      >
-                        <b>{task.title}</b>
-                        <small>
-                          <button
-                            type="button"
-                            className="linklike"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              openProjectFromTask(task, null);
                             }}
+                            role="button"
+                            tabIndex={0}
                           >
-                            {taskProjectLabel.title}
-                          </button>
-                          {task.start_time ? ` · ${formatTaskTimeRange(task)}` : ""}
-                          {" · "}
-                          {getTaskAssigneeLabel(task)}
-                        </small>
-                        {taskProjectLabel.subtitle && (
-                          <small className="project-name-subtle">{taskProjectLabel.subtitle}</small>
-                        )}
-                        <div className="row wrap task-actions task-actions-left">
-                          {canManageTasks && (
-                            <button
-                              type="button"
-                              className="icon-btn task-edit-icon-btn"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                openTaskEditModal(task);
-                              }}
-                              aria-label={de ? "Aufgabe bearbeiten" : "Edit task"}
-                              title={de ? "Aufgabe bearbeiten" : "Edit task"}
-                            >
-                              <PenIcon />
-                            </button>
-                          )}
-                          {isMine && (
-                            <button
-                              type="button"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                void exportTaskCalendar(task);
-                              }}
-                            >
-                              {de ? "Kalender" : "Calendar"}
-                            </button>
-                          )}
-                          {isMine && task.status !== "done" && (
-                            <button
-                              type="button"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                void markTaskDone(task);
-                              }}
-                            >
-                              {de ? "Erledigt" : "Complete"}
-                            </button>
-                          )}
-                        </div>
-                      </li>
-                    );
-                  })}
-                  {dayTasks.length === 0 && absences.length === 0 && (
+                            <div className="planning-project-head">
+                              <b>{projectRow.label.title}</b>
+                              <span className="planning-project-count">
+                                {projectRow.taskCount} {de ? (projectRow.taskCount === 1 ? "Aufgabe" : "Aufgaben") : projectRow.taskCount === 1 ? "task" : "tasks"}
+                              </span>
+                            </div>
+                            {projectRow.label.subtitle && <small className="project-name-subtle">{projectRow.label.subtitle}</small>}
+                            <small>
+                              {projectRow.windowLabel
+                                ? `${de ? "Zeitraum" : "Window"}: ${projectRow.windowLabel}`
+                                : de
+                                  ? "Ohne feste Uhrzeit"
+                                  : "No fixed time"}
+                              {projectRow.assigneeSummary ? ` · ${projectRow.assigneeSummary}` : ""}
+                            </small>
+                            <small>
+                              {de ? "Nächste Aufgabe" : "Next task"}: {primaryTask.title}
+                            </small>
+                          </li>
+                        );
+                      })
+                    : visibleTaskRows.map((task) => {
+                        const projectLabel = taskProjectTitleParts(task);
+                        const isMine = isTaskAssignedToCurrentUser(task);
+                        return (
+                          <li
+                            key={`planning-task-${day.date}-${task.id}`}
+                            className={isMine ? "planning-task planning-task-mine planning-task-clickable" : "planning-task"}
+                            data-task-type={task.task_type ?? "construction"}
+                            onClick={isMine ? () => openTaskFromPlanning(task) : undefined}
+                            onKeyDown={
+                              isMine
+                                ? (event) => {
+                                    if (event.key === "Enter" || event.key === " ") {
+                                      event.preventDefault();
+                                      openTaskFromPlanning(task);
+                                    }
+                                  }
+                                : undefined
+                            }
+                            role={isMine ? "button" : undefined}
+                            tabIndex={isMine ? 0 : undefined}
+                          >
+                            <b>{task.title}</b>
+                            <small>
+                              <button
+                                type="button"
+                                className="linklike"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  openProjectFromTask(task, null);
+                                }}
+                              >
+                                {projectLabel.title}
+                              </button>
+                              {task.start_time ? ` · ${formatTaskTimeRange(task)}` : ""}
+                              {" · "}
+                              {getTaskAssigneeLabel(task)}
+                            </small>
+                            {projectLabel.subtitle && (
+                              <small className="project-name-subtle">{projectLabel.subtitle}</small>
+                            )}
+                            <div className="row wrap task-actions task-actions-left">
+                              {canManageTasks && (
+                                <button
+                                  type="button"
+                                  className="icon-btn task-edit-icon-btn"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    openTaskEditModal(task);
+                                  }}
+                                  aria-label={de ? "Aufgabe bearbeiten" : "Edit task"}
+                                  title={de ? "Aufgabe bearbeiten" : "Edit task"}
+                                >
+                                  <PenIcon />
+                                </button>
+                              )}
+                              {isMine && (
+                                <button
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    void exportTaskCalendar(task);
+                                  }}
+                                >
+                                  {de ? "Kalender" : "Calendar"}
+                                </button>
+                              )}
+                              {isMine && task.status !== "done" && (
+                                <button
+                                  type="button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    void markTaskDone(task);
+                                  }}
+                                >
+                                  {de ? "Erledigt" : "Complete"}
+                                </button>
+                              )}
+                            </div>
+                          </li>
+                        );
+                      })}
+                  {visibleTaskRows.length === 0 && absences.length === 0 && (
                     <li className="planning-empty-cell" aria-hidden="true">–</li>
                   )}
                 </ul>

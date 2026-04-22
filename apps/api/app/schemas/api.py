@@ -18,6 +18,12 @@ from app.schemas.chat import (
     ThreadOut,
     ThreadUpdate,
 )
+from app.schemas.customer import (
+    CustomerCreate,
+    CustomerListItemOut,
+    CustomerOut,
+    CustomerUpdate,
+)
 from app.schemas.files import ProjectFolderCreate, ProjectFolderOut
 from app.schemas.materials import (
     MaterialCatalogImportStateOut,
@@ -28,11 +34,18 @@ from app.schemas.materials import (
     ProjectTrackedMaterialOut,
 )
 from app.schemas.notification import NotificationOut
+from app.schemas.partner import (
+    PartnerCreate,
+    PartnerListItemOut,
+    PartnerOut,
+    PartnerUpdate,
+)
 from app.schemas.project import (
     ProjectActivityOut,
     ProjectClassTaskTemplateOut,
     ProjectClassTemplateOut,
     ProjectCreate,
+    ProjectCriticalUpdate,
     ProjectFinanceOut,
     ProjectFinanceUpdate,
     ProjectImportStatsOut,
@@ -52,6 +65,8 @@ from app.schemas.report import (
     RecentConstructionReportOut,
 )
 from app.schemas.settings import (
+    CompanySettingsOut,
+    CompanySettingsUpdate,
     SmtpSettingsOut,
     SmtpSettingsUpdate,
     UpdateInstallOut,
@@ -117,9 +132,18 @@ __all__ = [
     "EmployeeGroupOut",
     "EmployeeGroupCreate",
     "EmployeeGroupUpdate",
+    "CustomerCreate",
+    "CustomerUpdate",
+    "CustomerOut",
+    "CustomerListItemOut",
+    "PartnerCreate",
+    "PartnerUpdate",
+    "PartnerOut",
+    "PartnerListItemOut",
     "ProjectCreate",
     "ProjectUpdate",
     "ProjectOut",
+    "ProjectCriticalUpdate",
     "ProjectFinanceUpdate",
     "ProjectFinanceOut",
     "ProjectActivityOut",
@@ -189,6 +213,8 @@ __all__ = [
     "PasswordResetConfirm",
     "WeatherSettingsOut",
     "WeatherSettingsUpdate",
+    "CompanySettingsOut",
+    "CompanySettingsUpdate",
     "SmtpSettingsOut",
     "SmtpSettingsUpdate",
     "UpdateStatusOut",

@@ -14,8 +14,22 @@ export type PublicHoliday = {
   name: string;
 };
 
+export const MAP_PIN_FILTERS = [
+  "critical",
+  "active",
+  "planning",
+  "on_hold",
+  "completed",
+  "archived",
+] as const;
+export type MapPinFilter = (typeof MAP_PIN_FILTERS)[number];
+
 export type UserPreferences = {
   planning_mobile_view?: "single" | "list" | "scroll";
+  /** Pin types currently HIDDEN on the Map page. Empty/omitted = all visible.
+   *  Stored as a blacklist so new pin types added later are visible by default
+   *  for existing users. */
+  map_pin_filter_hidden?: MapPinFilter[];
 };
 
 export type User = {
@@ -53,6 +67,13 @@ export type Project = {
   last_state?: string | null;
   last_status_at?: string | null;
   last_updated_at?: string | null;
+  /**
+   * Canonical link to a Customer row. When set, the project's customer
+   * details are sourced from `customers` and the legacy `customer_*` free-text
+   * columns below are treated as a denormalised snapshot kept for backwards
+   * compatibility (old reports, CSV imports, and display fallback).
+   */
+  customer_id?: number | null;
   customer_name?: string | null;
   customer_address?: string | null;
   construction_site_address?: string | null;
@@ -62,12 +83,83 @@ export type Project = {
   site_access_type?: string | null;
   site_access_note?: string | null;
   extra_attributes?: Record<string, any> | null;
+  is_critical?: boolean;
+  critical_since?: string | null;
+  critical_set_by_user_id?: number | null;
+};
+
+// ── Customers (Kunden) ─────────────────────────────────────────────────────
+// Canonical shape shared with the backend. Do NOT rename keys; the API agent
+// writes against the same schema. When the real API lands, only the fetch
+// layer in `utils/customersApi.ts` swaps — consumers stay unchanged.
+export type Customer = {
+  id: number;
+  name: string;
+  address: string | null;
+  contact_person: string | null;
+  email: string | null;
+  phone: string | null;
+  tax_id: string | null;
+  notes: string | null;
+  /** ISO datetime when the row was archived, or null when active. */
+  archived_at: string | null;
+  created_by: number | null;
+  created_at: string;
+  updated_at: string;
+};
+
+/**
+ * Customer row enriched with project-rollup counts. This is what the list
+ * page renders (Projekte column + last-activity column) and what the detail
+ * page uses for its right-column project tabs.
+ */
+export type CustomerListItem = Customer & {
+  project_count: number;
+  active_project_count: number;
+  last_project_activity_at: string | null;
+};
+
+// ── Partners (External contractors) ────────────────────────────────────────
+// Canonical shape shared with the backend. Do NOT rename keys; the API agent
+// writes against the same schema. Partners are external firms (Elektriker,
+// Installateur, …) that get assigned to tasks alongside internal employees.
+// They are NOT app users and have no login.
+export type Partner = {
+  id: number;
+  name: string;
+  contact_person: string | null;
+  email: string | null;
+  phone: string | null;
+  address: string | null;
+  /** Free-text trade label, e.g. "Elektro", "Sanitär", "Maler". Known trades
+   *  map to coloured pills (see `components/partners/PartnerTradePill.tsx`);
+   *  unknown trades fall back to a neutral slate pill. */
+  trade: string | null;
+  tax_id: string | null;
+  notes: string | null;
+  /** ISO datetime when the row was archived, or null when active. */
+  archived_at: string | null;
+  created_by: number | null;
+  created_at: string;
+  updated_at: string;
+};
+
+/**
+ * Partner row enriched with task-rollup counts. This is what the Werkstatt →
+ * Partner list page renders (Aktuelle Aufgaben column + last-activity column)
+ * and what `PartnerDetailOverlay` uses for its summary strip.
+ */
+export type PartnerListItem = Partner & {
+  task_count: number;
+  open_task_count: number;
+  last_task_activity_at: string | null;
 };
 
 export type ProjectClassTaskTemplate = {
   title: string;
   description?: string | null;
   task_type: string;
+  subtasks?: string[];
 };
 
 export type ProjectClassTemplate = {
@@ -162,6 +254,7 @@ export type ProjectMaterialNeed = {
   quantity?: string | null;
   image_url?: string | null;
   image_source?: string | null;
+  notes?: string | null;
   status: MaterialNeedStatus | string;
   created_by?: number | null;
   updated_by?: number | null;
@@ -231,6 +324,12 @@ export type Task = {
   end_time?: string | null;
   assignee_id?: number | null;
   assignee_ids?: number[];
+  /** IDs of Partner rows (external firms) assigned to this task. */
+  partner_ids?: number[];
+  /** Denormalised snapshot of the assigned Partner rows so task lists can
+   *  render trade pills and names without a second lookup. Server sends this
+   *  alongside `partner_ids`. */
+  partners?: Partner[];
   week_start?: string | null;
   updated_at?: string | null;
 };
@@ -281,7 +380,22 @@ export type WikiLibraryFile = {
   modified_at: string;
 };
 
-export type Ticket = { id: number; title: string; site_address: string; ticket_date: string };
+export type TicketStatus = "open" | "in_review" | "closed";
+
+export type TicketChecklistItem = { label: string; done: boolean };
+
+export type Ticket = {
+  id: number;
+  title: string;
+  site_address: string;
+  ticket_date: string;
+  status?: TicketStatus;
+  assigned_crew?: string[];
+  checklist?: TicketChecklistItem[];
+  notes?: string;
+  attachments_count?: number;
+  reference?: string;
+};
 
 export type Thread = {
   id: number;
@@ -498,6 +612,13 @@ export type SmtpSettings = {
   configured: boolean;
 };
 
+export type CompanySettings = {
+  logo_url: string;
+  navigation_title: string;
+  company_name: string;
+  company_address: string;
+};
+
 export type UpdateStatus = {
   repository: string;
   branch: string;
@@ -538,9 +659,13 @@ export type ReportDraft = {
   project_number: string;
 };
 
-/** Serialised form state stored in localStorage for draft recovery. */
+/** Serialised form state stored in localStorage for draft recovery.
+ *  v3 introduces a per-draft `id` and moves storage from a single LS slot
+ *  to an array (smpl_report_drafts_v3), enabling multiple drafts per user.
+ *  The legacy v2 shape is auto-migrated on first read. */
 export type StoredReportDraft = {
-  v: 2;
+  v: 3;
+  id: string;
   projectId: string;
   draft: ReportDraft;
   workDone: string;
@@ -633,12 +758,25 @@ export type ProjectFormState = {
   status: string;
   last_state: string;
   last_status_at: string;
+  /**
+   * When non-null, the project is linked to a Customer row. The legacy
+   * `customer_*` fields below are kept as a denormalised snapshot so old
+   * drafts/reports still render, but the source of truth is this id.
+   */
+  customer_id: number | null;
   customer_name: string;
   customer_address: string;
   construction_site_address: string;
   customer_contact: string;
   customer_email: string;
   customer_phone: string;
+  /**
+   * True when the user explicitly wants to use a construction-site address
+   * that differs from the customer's stammdaten address. Purely UI state —
+   * when false, `construction_site_address` is cleared on submit so the
+   * backend treats the customer address as authoritative.
+   */
+  use_separate_site_address: boolean;
   site_access_type: string;
   site_access_note: string;
   class_template_ids: number[];
@@ -670,6 +808,8 @@ export type ProjectFinanceFormState = {
   contribution_margin: string;
 };
 
+export type TaskPriority = "low" | "normal" | "high" | "urgent";
+
 export type TaskModalState = {
   title: string;
   description: string;
@@ -684,8 +824,11 @@ export type TaskModalState = {
   due_date: string;
   start_time: string;
   estimated_hours: string;
+  priority: TaskPriority;
   assignee_query: string;
   assignee_ids: number[];
+  /** IDs of Partner rows (external firms) attached to this task. */
+  partner_ids: number[];
   create_project_from_task: boolean;
   new_project_name: string;
   new_project_number: string;
@@ -706,8 +849,11 @@ export type TaskEditFormState = {
   due_date: string;
   start_time: string;
   estimated_hours: string;
+  priority: TaskPriority;
   assignee_query: string;
   assignee_ids: number[];
+  /** IDs of Partner rows (external firms) attached to this task. */
+  partner_ids: number[];
   week_start: string;
 };
 
@@ -720,14 +866,23 @@ export type WorkspaceMode = "construction" | "office";
  * Sidebar.tsx in the same commit.
  *
  * Current nav map:
- *   sidebar nav items  → overview, materials, projects_all, projects_archive,
+ *   sidebar nav items  → overview, werkstatt, projects_all, projects_archive,
  *                         my_tasks, office_tasks, project, calendar, planning,
  *                         construction, wiki, messages, time
  *   sidebar user menu  → profile, admin
+ *
+ * Legacy / transitional:
+ *   - "materials" is kept for deep-link backwards compatibility. On load,
+ *     App.tsx redirects it to mainView="werkstatt" + werkstattTab="bedarfe".
+ *     The sidebar no longer surfaces it. Plan to drop entirely once soak.
+ *   - "werkstatt_scan" is a fullscreen scanner experience (mobile camera
+ *     fallback; external HID scanners stay in-context via useBarcodeScanner).
  */
 export type MainView =
   | "overview"
   | "materials"
+  | "werkstatt"
+  | "werkstatt_scan"
   | "projects_all"
   | "projects_archive"
   | "my_tasks"
@@ -740,9 +895,31 @@ export type MainView =
   | "messages"
   | "time"
   | "profile"
-  | "admin";
+  | "admin"
+  | "projects_map"
+  | "customers"
+  | "customer_detail";
 
-export type ProjectTab = "overview" | "tasks" | "hours" | "materials" | "tickets" | "files" | "finances";
+/**
+ * Sub-tab state for the Werkstatt main view. Analogous to `ProjectTab`.
+ * Every value maps to a page component under `pages/werkstatt/*` which
+ * self-gates on `{ mainView === "werkstatt" && werkstattTab === "<value>" }`.
+ */
+export type WerkstattTab =
+  | "dashboard"
+  | "inventar"
+  | "artikel"            // article detail — selected via activeWerkstattArticleId
+  | "nachbestellen"
+  | "on_site"            // "Auf Baustelle" — all checked-out items grouped by project
+  | "bedarfe"            // Projekt-Bedarfe (absorbed from legacy Materials view)
+  | "katalog"            // Datanorm pool browse (absorbed from legacy Materials view)
+  | "lieferanten"
+  | "partner"            // external contractors (Elektro / Sanitär / Maler … subcontractors)
+  | "kategorien"         // kategorien & lagerorte (one page, tabbed within)
+  | "orders"
+  | "datanorm_import";
+
+export type ProjectTab = "overview" | "gantt" | "tasks" | "hours" | "materials" | "tickets" | "files" | "finances";
 
 export type CompactNameParts = {
   first: string;

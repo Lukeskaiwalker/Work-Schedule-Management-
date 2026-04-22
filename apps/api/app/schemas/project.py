@@ -11,6 +11,7 @@ class ProjectCreate(BaseModel):
     status: str = "active"
     last_state: str | None = None
     last_status_at: datetime | None = None
+    customer_id: int | None = None
     customer_name: str | None = None
     customer_address: str | None = None
     construction_site_address: str | None = None
@@ -31,6 +32,7 @@ class ProjectUpdate(BaseModel):
     status: str | None = None
     last_state: str | None = None
     last_status_at: datetime | None = None
+    customer_id: int | None = None
     customer_name: str | None = None
     customer_address: str | None = None
     construction_site_address: str | None = None
@@ -52,6 +54,7 @@ class ProjectOut(BaseModel):
     last_state: str | None = None
     last_status_at: datetime | None = None
     last_updated_at: datetime | None = None
+    customer_id: int | None = None
     customer_name: str | None = None
     customer_address: str | None = None
     construction_site_address: str | None = None
@@ -61,8 +64,15 @@ class ProjectOut(BaseModel):
     site_access_type: str | None = None
     site_access_note: str | None = None
     extra_attributes: dict[str, Any] = Field(default_factory=dict)
+    is_critical: bool = False
+    critical_since: datetime | None = None
+    critical_set_by_user_id: int | None = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class ProjectCriticalUpdate(BaseModel):
+    is_critical: bool
 
 
 class ProjectFinanceUpdate(BaseModel):
@@ -150,6 +160,7 @@ class ProjectClassTaskTemplateOut(BaseModel):
     title: str
     description: str | None = None
     task_type: str = "construction"
+    subtasks: list[str] = Field(default_factory=list)
 
 
 class ProjectClassTemplateOut(BaseModel):

@@ -17,6 +17,7 @@ ALL_PERMISSIONS: frozenset[str] = frozenset(
         "projects:manage",
         "projects:view",
         "projects:import",
+        "projects:mark_critical",
         "tasks:manage",
         "tasks:view_all",
         "tasks:view_own",
@@ -46,6 +47,7 @@ ALL_PERMISSIONS: frozenset[str] = frozenset(
         "backups:export",
         "finance:view",
         "finance:manage",
+        "werkstatt:manage",
     ]
 )
 
@@ -55,6 +57,7 @@ PERMISSION_LABELS: dict[str, str] = {
     "projects:manage": "Manage projects",
     "projects:view": "View projects",
     "projects:import": "Import projects and class templates",
+    "projects:mark_critical": "Mark projects as critical",
     "tasks:manage": "Manage tasks",
     "tasks:view_all": "View all tasks",
     "tasks:view_own": "View own tasks",
@@ -84,6 +87,7 @@ PERMISSION_LABELS: dict[str, str] = {
     "backups:export": "Export encrypted backups",
     "finance:view": "View project finances",
     "finance:manage": "Edit project finances",
+    "werkstatt:manage": "Manage Werkstatt (workshop inventory)",
 }
 
 PERMISSION_DESCRIPTIONS: dict[str, str] = {
@@ -91,6 +95,7 @@ PERMISSION_DESCRIPTIONS: dict[str, str] = {
     "projects:manage":     "Create, edit, archive and delete projects; manage members and settings.",
     "projects:view":       "Browse the project list and open project detail pages.",
     "projects:import":     "Import projects and project class templates from CSV in the admin center.",
+    "projects:mark_critical": "Flag projects as critical / clear the critical flag.",
     "tasks:manage":        "Create, edit, reassign and delete tasks across all projects.",
     "tasks:view_all":      "See every task in the system regardless of assignment.",
     "tasks:view_own":      "See only tasks that are assigned to the current user.",
@@ -120,13 +125,14 @@ PERMISSION_DESCRIPTIONS: dict[str, str] = {
     "backups:export":      "Export encrypted database backups.",
     "finance:view":        "View the finances tab on projects (order values, budgets, margins).",
     "finance:manage":      "Edit financial data on projects (order values, down payments, costs).",
+    "werkstatt:manage":    "Create, edit and archive Werkstatt articles, suppliers, categories, locations and import Datanorm catalogs.",
 }
 
 # Logical groups of permissions for the admin UI matrix.
 PERMISSION_GROUPS: list[dict] = [
     {"key": "users",    "label": "Users",    "permissions": ["users:manage"]},
     {"key": "permissions", "label": "Permissions", "permissions": ["permissions:manage"]},
-    {"key": "projects", "label": "Projects", "permissions": ["projects:manage", "projects:view", "projects:import"]},
+    {"key": "projects", "label": "Projects", "permissions": ["projects:manage", "projects:view", "projects:import", "projects:mark_critical"]},
     {"key": "tasks",    "label": "Tasks",    "permissions": ["tasks:manage", "tasks:view_all", "tasks:view_own"]},
     {"key": "planning", "label": "Planning", "permissions": ["planning:manage"]},
     {"key": "tickets",  "label": "Tickets",  "permissions": ["tickets:manage"]},
@@ -139,6 +145,7 @@ PERMISSION_GROUPS: list[dict] = [
     {"key": "settings", "label": "Settings", "permissions": ["settings:manage"]},
     {"key": "system",   "label": "System",   "permissions": ["system:manage", "backups:export"]},
     {"key": "finance",  "label": "Finance",  "permissions": ["finance:view", "finance:manage"]},
+    {"key": "werkstatt","label": "Werkstatt","permissions": ["werkstatt:manage"]},
 ]
 
 # Default permission map — the hard-coded baseline.  Never mutated at runtime.
@@ -149,6 +156,7 @@ PERMISSIONS_BY_ROLE: dict[str, set[str]] = {
         "projects:manage",
         "projects:view",
         "projects:import",
+        "projects:mark_critical",
         "tasks:manage",
         "tasks:view_all",
         "tasks:view_own",
@@ -178,11 +186,13 @@ PERMISSIONS_BY_ROLE: dict[str, set[str]] = {
         "backups:export",
         "finance:view",
         "finance:manage",
+        "werkstatt:manage",
     },
     ROLE_CEO: {
         "projects:manage",
         "projects:view",
         "projects:import",
+        "projects:mark_critical",
         "tasks:manage",
         "tasks:view_all",
         "tickets:manage",
@@ -203,6 +213,7 @@ PERMISSIONS_BY_ROLE: dict[str, set[str]] = {
     },
     ROLE_ACCOUNTANT: {
         "projects:view",
+        "projects:mark_critical",
         "tasks:view_all",
         "time:view_all",
         "time:manage_absences",
@@ -216,6 +227,7 @@ PERMISSIONS_BY_ROLE: dict[str, set[str]] = {
     },
     ROLE_PLANNING: {
         "projects:view",
+        "projects:mark_critical",
         "tasks:manage",
         "tasks:view_all",
         "planning:manage",
@@ -229,6 +241,7 @@ PERMISSIONS_BY_ROLE: dict[str, set[str]] = {
     },
     ROLE_EMPLOYEE: {
         "projects:view",
+        "projects:mark_critical",
         "tasks:view_own",
         "time:clock",
         "time:view_own",

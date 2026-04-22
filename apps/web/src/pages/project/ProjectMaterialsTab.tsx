@@ -2,7 +2,7 @@ import { useState, useMemo } from "react";
 import { useAppContext } from "../../context/AppContext";
 import { formatMaterialQuantity } from "../../utils/materials";
 import { formatShortIsoDate } from "../../utils/dates";
-import type { ProjectTrackedMaterial } from "../../types";
+import { SearchIcon } from "../../components/icons";
 
 function escapeCsvCell(value: string | number | null | undefined): string {
   const str = String(value ?? "");
@@ -65,7 +65,11 @@ export function ProjectMaterialsTab() {
 
   function sortIndicator(key: SortKey) {
     if (sortKey !== key) return null;
-    return <span className="project-mat-sort-arrow">{sortDir === "asc" ? " ↑" : " ↓"}</span>;
+    return (
+      <span className="project-mat-tab-sort-arrow" aria-hidden="true">
+        {sortDir === "asc" ? "↑" : "↓"}
+      </span>
+    );
   }
 
   function exportCSV() {
@@ -112,119 +116,146 @@ export function ProjectMaterialsTab() {
   if (mainView !== "project" || !activeProject || projectTab !== "materials") return null;
 
   const totalEntries = projectTrackedMaterials.reduce((s, m) => s + m.occurrence_count, 0);
+  const itemCount = projectTrackedMaterials.length;
 
   return (
-    <section className="grid">
-      <div className="card project-materials-card">
-        {/* Header */}
-        <div className="project-overview-card-head">
-          <div>
-            <h3>{de ? "Material aus Berichten" : "Materials from reports"}</h3>
-            <small className="muted">
-              {de
-                ? "Gleiche Positionen (Artikel + Einheit + ArtNr) werden zusammengeführt."
-                : "Matching rows (item + unit + article no.) are merged."}
-            </small>
-          </div>
-          <div className="row">
-            <button
-              type="button"
-              onClick={exportCSV}
-              disabled={projectTrackedMaterials.length === 0}
-              title={de ? "Als CSV-Datei exportieren (Excel-kompatibel)" : "Export as CSV (Excel-compatible)"}
-            >
-              {de ? "CSV exportieren" : "Export CSV"}
-            </button>
-            <button
-              type="button"
-              onClick={() => void loadProjectTrackedMaterials(activeProject.id)}
-            >
-              {de ? "Aktualisieren" : "Refresh"}
-            </button>
-          </div>
+    <div className="project-mat-tab">
+      <div className="project-mat-tab-toolbar">
+        <label className="project-mat-tab-search">
+          <span className="project-mat-tab-search-icon" aria-hidden="true">
+            <SearchIcon />
+          </span>
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder={de ? "Material suchen…" : "Search materials…"}
+            aria-label={de ? "Material suchen" : "Search materials"}
+          />
+        </label>
+
+        <div className="project-mat-tab-stats" aria-live="polite">
+          <span>
+            <b>{itemCount}</b> {de ? "Positionen" : "items"}
+          </span>
+          <span className="project-mat-tab-stats-sep" aria-hidden="true">·</span>
+          <span>
+            <b>{totalEntries}</b> {de ? "Einträge gesamt" : "total entries"}
+          </span>
+          {query && (
+            <>
+              <span className="project-mat-tab-stats-sep" aria-hidden="true">·</span>
+              <span className="project-mat-tab-stats-match">
+                {filteredMaterials.length} {de ? "Treffer" : "matches"}
+              </span>
+            </>
+          )}
         </div>
 
-        {/* Summary stats */}
-        {projectTrackedMaterials.length > 0 && (
-          <div className="project-mat-stats">
-            <span>
-              <b>{projectTrackedMaterials.length}</b>{" "}
-              {de ? "Positionen" : "items"}
-            </span>
-            <span className="project-mat-stats-sep">·</span>
-            <span>
-              <b>{totalEntries}</b>{" "}
-              {de ? "Einträge gesamt" : "total entries"}
-            </span>
-            {query && (
-              <>
-                <span className="project-mat-stats-sep">·</span>
-                <span className="project-mat-filter-hint">
-                  {filteredMaterials.length}{" "}
-                  {de ? "Treffer" : "matches"}
-                </span>
-              </>
-            )}
-          </div>
-        )}
+        <button
+          type="button"
+          className="project-mat-tab-tool-btn"
+          onClick={exportCSV}
+          disabled={projectTrackedMaterials.length === 0}
+          title={de ? "Als CSV exportieren (Excel-kompatibel)" : "Export as CSV (Excel-compatible)"}
+        >
+          <span className="project-mat-tab-tool-btn-icon" aria-hidden="true">↓</span>
+          {de ? "CSV exportieren" : "Export CSV"}
+        </button>
 
-        {/* Search */}
-        <input
-          className="project-mat-search"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder={de ? "Material suchen…" : "Search materials…"}
-        />
+        <button
+          type="button"
+          className="project-mat-tab-tool-btn"
+          onClick={() => void loadProjectTrackedMaterials(activeProject.id)}
+          title={de ? "Aktualisieren" : "Refresh"}
+        >
+          <span className="project-mat-tab-tool-btn-icon" aria-hidden="true">↻</span>
+          {de ? "Aktualisieren" : "Refresh"}
+        </button>
+      </div>
 
-        {projectTrackedMaterials.length === 0 ? (
-          <small className="muted">
-            {de
-              ? "Noch kein Material in Berichten erfasst."
-              : "No materials tracked in reports yet."}
-          </small>
-        ) : (
-          <div className="project-mat-table">
-            {/* Column headers */}
-            <div className="project-mat-row project-mat-row--head">
-              <button
-                type="button"
-                className="project-mat-col-btn"
-                onClick={() => toggleSort("item")}
-              >
-                {de ? "Material" : "Material"}{sortIndicator("item")}
-              </button>
-              <button
-                type="button"
-                className="project-mat-col-btn"
-                onClick={() => toggleSort("article_no")}
-              >
-                {de ? "ArtNr" : "Art. No."}{sortIndicator("article_no")}
-              </button>
-              <button
-                type="button"
-                className="project-mat-col-btn"
-                onClick={() => toggleSort("quantity")}
-              >
-                {de ? "Menge" : "Qty"}{sortIndicator("quantity")}
-              </button>
-              <b className="project-mat-col-notes">{de ? "Manuelle Notizen" : "Manual notes"}</b>
-              <button
-                type="button"
-                className="project-mat-col-btn"
-                onClick={() => toggleSort("occurrence_count")}
-              >
-                {de ? "Eintr. / Ber." : "Entries / Rep."}{sortIndicator("occurrence_count")}
-              </button>
-              <button
-                type="button"
-                className="project-mat-col-btn"
-                onClick={() => toggleSort("last_report_date")}
-              >
-                {de ? "Zuletzt" : "Last report"}{sortIndicator("last_report_date")}
-              </button>
+      <div className="project-mat-tab-card">
+        <div className="project-mat-tab-table" role="table">
+          <div className="project-mat-tab-table-head" role="row">
+            <button
+              type="button"
+              className="project-mat-tab-th project-mat-tab-th--item"
+              onClick={() => toggleSort("item")}
+              role="columnheader"
+              aria-sort={
+                sortKey === "item" ? (sortDir === "asc" ? "ascending" : "descending") : "none"
+              }
+            >
+              {"Material"} {sortIndicator("item")}
+            </button>
+            <button
+              type="button"
+              className="project-mat-tab-th project-mat-tab-th--article"
+              onClick={() => toggleSort("article_no")}
+              role="columnheader"
+              aria-sort={
+                sortKey === "article_no" ? (sortDir === "asc" ? "ascending" : "descending") : "none"
+              }
+            >
+              {de ? "ArtNr." : "Art. No."} {sortIndicator("article_no")}
+            </button>
+            <button
+              type="button"
+              className="project-mat-tab-th project-mat-tab-th--qty"
+              onClick={() => toggleSort("quantity")}
+              role="columnheader"
+              aria-sort={
+                sortKey === "quantity" ? (sortDir === "asc" ? "ascending" : "descending") : "none"
+              }
+            >
+              {de ? "Menge" : "Qty"} {sortIndicator("quantity")}
+            </button>
+            <div className="project-mat-tab-th project-mat-tab-th--notes" role="columnheader">
+              {de ? "Manuelle Notizen" : "Manual notes"}
             </div>
+            <button
+              type="button"
+              className="project-mat-tab-th project-mat-tab-th--count"
+              onClick={() => toggleSort("occurrence_count")}
+              role="columnheader"
+              aria-sort={
+                sortKey === "occurrence_count"
+                  ? sortDir === "asc"
+                    ? "ascending"
+                    : "descending"
+                  : "none"
+              }
+            >
+              {de ? "Eintr. / Ber." : "Entries / Rep."}{" "}
+              {sortIndicator("occurrence_count")}
+            </button>
+            <button
+              type="button"
+              className="project-mat-tab-th project-mat-tab-th--last"
+              onClick={() => toggleSort("last_report_date")}
+              role="columnheader"
+              aria-sort={
+                sortKey === "last_report_date"
+                  ? sortDir === "asc"
+                    ? "ascending"
+                    : "descending"
+                  : "none"
+              }
+            >
+              {de ? "Zuletzt" : "Last report"} {sortIndicator("last_report_date")}
+            </button>
+          </div>
 
-            {filteredMaterials.map((entry, index) => {
+          {projectTrackedMaterials.length === 0 && (
+            <div className="project-mat-tab-empty">
+              {de
+                ? "Noch kein Material in Berichten erfasst."
+                : "No materials tracked in reports yet."}
+            </div>
+          )}
+
+          {projectTrackedMaterials.length > 0 &&
+            filteredMaterials.map((entry, index) => {
               const quantityParts: string[] = [];
               if (entry.quantity_total != null) {
                 quantityParts.push(formatMaterialQuantity(entry.quantity_total, language));
@@ -233,41 +264,50 @@ export function ProjectMaterialsTab() {
               const quantityLabel = quantityParts.join("\u00a0").trim();
               const quantityNotes =
                 entry.quantity_notes.length > 0 ? entry.quantity_notes.join(", ") : "–";
+              // Paper design always shows both numbers (e.g. "3 / 2") so the
+              // grid column reads with a consistent "entries / reports" shape
+              // even when they happen to be equal.
+              const countLabel = `${entry.occurrence_count} / ${entry.report_count}`;
 
               return (
                 <div
                   key={`pm-${entry.item}-${entry.unit ?? ""}-${entry.article_no ?? ""}-${index}`}
-                  className="project-mat-row"
+                  className="project-mat-tab-row"
+                  role="row"
                 >
-                  <span className="project-mat-name">{entry.item}</span>
-                  <small>{entry.article_no || "–"}</small>
-                  <small className="project-mat-qty">
+                  <div className="project-mat-tab-td project-mat-tab-td--item" role="cell">
+                    {entry.item}
+                  </div>
+                  <div className="project-mat-tab-td project-mat-tab-td--article" role="cell">
+                    {entry.article_no || "–"}
+                  </div>
+                  <div className="project-mat-tab-td project-mat-tab-td--qty" role="cell">
                     {quantityLabel || "–"}
-                  </small>
-                  <small className="project-mat-notes">{quantityNotes}</small>
-                  <small className="project-mat-counts">
-                    {entry.occurrence_count}
-                    {entry.occurrence_count !== entry.report_count && (
-                      <span className="project-mat-report-count"> / {entry.report_count}</span>
-                    )}
-                  </small>
-                  <small>
+                  </div>
+                  <div className="project-mat-tab-td project-mat-tab-td--notes" role="cell">
+                    {quantityNotes}
+                  </div>
+                  <div className="project-mat-tab-td project-mat-tab-td--count" role="cell">
+                    {countLabel}
+                  </div>
+                  <div className="project-mat-tab-td project-mat-tab-td--last" role="cell">
                     {entry.last_report_date
                       ? formatShortIsoDate(entry.last_report_date, language)
                       : "–"}
-                  </small>
+                  </div>
                 </div>
               );
             })}
 
-            {filteredMaterials.length === 0 && query && (
-              <small className="muted project-mat-empty">
+          {projectTrackedMaterials.length > 0 &&
+            filteredMaterials.length === 0 &&
+            query && (
+              <div className="project-mat-tab-empty">
                 {de ? "Keine Treffer für diese Suche." : "No matches for this search."}
-              </small>
+              </div>
             )}
-          </div>
-        )}
+        </div>
       </div>
-    </section>
+    </div>
   );
 }

@@ -11,15 +11,16 @@ def test_project_class_templates_import_and_autocreate_tasks(client: TestClient,
     template_download = client.get("/api/admin/project-classes/template.csv", headers=auth_headers(admin_token))
     assert template_download.status_code == 200
     assert "class_name" in template_download.text
+    assert "materials_required" in template_download.text
 
     csv_payload = (
-        "class_name,materials_required,tools_required,task_title,task_description,task_type\n"
-        "PV Standard,\"PV modules\\nDC cable set\",\"Crimp tool\\nCable cutter\","
-        "Mount modules,Install modules on roof,construction\n"
-        "PV Standard,\"PV modules\\nDC cable set\",\"Crimp tool\\nCable cutter\","
-        "Commissioning,Prepare handover checklist,office\n"
-        "Heat Pump Retrofit,\"Heat pump unit\",\"Vacuum pump\","
-        "Install heat pump,Install and pressure test the new unit,construction\n"
+        "class_name,materials_required,tools_required,task_title,task_description,task_type,task_subtasks\n"
+        "\"PV Standard\",\"PV modules | 24 | pcs | PV-001\\nDC cable set | 2 | roll | CAB-002\",\"Crimp tool\\nCable cutter\","
+        "\"Mount modules\",\"Install modules on roof\",construction,\"Mount rails\\nInstall modules\"\n"
+        "\"PV Standard\",\"PV modules | 24 | pcs | PV-001\\nDC cable set | 2 | roll | CAB-002\\nPrepare handover checklist\",\"Crimp tool\\nCable cutter\","
+        "Commissioning,Prepare handover checklist,office,\"Check inverter\\nPrepare handover\"\n"
+        "\"Heat Pump Retrofit\",\"Heat pump unit | 1 | pcs | HP-100\",Vacuum pump,"
+        "\"Install heat pump\",\"Install and pressure test the new unit\",construction,\"Connect hydraulics\\nPressure test\"\n"
     )
     template_import = client.post(
         "/api/admin/project-classes/import-csv",
@@ -70,6 +71,13 @@ def test_project_class_templates_import_and_autocreate_tasks(client: TestClient,
         assert row["assignee_id"] is None
         assert row["assignee_ids"] == []
         assert row["class_template_id"] == pv_template_id
+        assert "Tool:" in (row["materials_required"] or "")
+        if row["title"] == "Mount modules":
+            assert row["subtasks"] == ["Mount rails", "Install modules"]
+            assert "PV modules | 24 | pcs | PV-001" in (row["materials_required"] or "")
+        if row["title"] == "Commissioning":
+            assert row["subtasks"] == ["Check inverter", "Prepare handover"]
+            assert "DC cable set | 2 | roll | CAB-002" in (row["materials_required"] or "")
 
     class_based_task = client.post(
         "/api/tasks",
@@ -84,8 +92,8 @@ def test_project_class_templates_import_and_autocreate_tasks(client: TestClient,
     )
     assert class_based_task.status_code == 200
     assert class_based_task.json()["class_template_id"] == pv_template_id
-    assert "Materials:" in (class_based_task.json()["materials_required"] or "")
-    assert "Tools:" in (class_based_task.json()["materials_required"] or "")
+    assert "PV modules | 24 | pcs | PV-001" in (class_based_task.json()["materials_required"] or "")
+    assert "Tool: Crimp tool" in (class_based_task.json()["materials_required"] or "")
 
     class_not_assigned = client.post(
         "/api/tasks",
