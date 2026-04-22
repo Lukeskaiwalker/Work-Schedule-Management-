@@ -4,29 +4,41 @@ Self-hosted construction operations platform (FastAPI + React + PostgreSQL + Doc
 
 ## Current Release
 
-Version: `v1.6.0`  
-Release date: `2026-03-12`
+Version: `v2.0.0`  
+Release date: `2026-04-22`
+
+Full release notes: [`docs/releases/v2.0.0.md`](docs/releases/v2.0.0.md)
 
 ## Last Changes Included In This Release
 
-- Admin Center RBAC expansion:
-  - dedicated Admin Center navigation from the sidebar user menu,
-  - redesigned admin workspace with role-permission matrix and per-user permission overrides,
-  - admin self-lockout prevention and locked admin-role permissions,
-  - follow-up UI fixes for Safari/WebKit layout, role reset icon, and control readability.
-- Notifications and PWA:
-  - browser push notifications for tasks and messages,
-  - PWA manifest and iOS install/notification guidance,
-  - iOS-specific notification permission handling and `showNotification()` fallback.
-- Workspace redesign:
-  - calendar and weekly planning reworked into a unified grid style,
-  - overview/dashboard visual refresh,
-  - notification panel/sidebar layout fixes.
-- Materials improvements:
-  - faster search, image prioritization, shopping-cart UX refinements,
-  - Unielektro image lookup expansion and `/brand/` fallback hardening.
-- Operations:
-  - release metadata continues to derive from git during safe updates via `scripts/update_release_metadata.sh`.
+- Customer master data (Kunden):
+  - new first-class `customers` table with CRUD API under `/api/customers`,
+  - new Kunden sidebar entry with list and detail pages (projects, activity feed, notes),
+  - project modal now uses a searchable customer combobox with "+ Neuen Kunden anlegen" inline create,
+  - legacy project `customer_*` columns preserved as a mirrored cache; the additive `20260501_0048_customers` migration backfills existing projects by normalised `(customer_name, customer_address)`.
+- External partners (Subunternehmer / Fremdfirmen):
+  - new `partners` table and `task_partners` join via the additive `20260505_0049_partners` migration,
+  - task create/edit modals gain a "Partner / Externe Firma" multi-select with trade-coloured pills,
+  - task list endpoints accept `has_partners` and `partner_id` filters,
+  - "Nur Partner-Aufgaben" filter chip on My Tasks, Office Tasks, and the project Tasks tab.
+- Werkstatt (workshop / inventory) module:
+  - new top-level entry with tabs for Dashboard, Bestand, Auf Baustelle, Nachbestellen, Projekt-Bedarfe, Katalog, Lieferanten, Partner, Kategorien & Lagerorte, Bestellungen, and Datanorm-Import,
+  - full core schema shipped via the additive `20260425_0047_werkstatt_core` migration,
+  - Partner tab fully wired to real endpoints; remaining tabs render empty states until their backend read-endpoints land in a follow-up release,
+  - mobile surfaces (QR scanner, home, Artikel-Detail, Nachbestellen) included.
+- Project Gantt view:
+  - new Gantt tab on project detail with a timeline of scheduled tasks,
+  - auto-scroll to today, weekend shading, per-bar inline actions for Calendar export, mark-done, and Construction Report shortcut,
+  - unscheduled tasks listed separately beneath the timeline.
+- Workspace switcher (Construction / Office):
+  - top-of-sidebar segmented control for switching between site and office modes,
+  - workspace preference persisted in `localStorage`; sidebar entries and task surfaces adapt to the active mode.
+- Construction report improvements:
+  - PDF / Excel output now accepts an explicit `company_name` argument,
+  - submitted-by line uses the user's nickname when configured.
+- Tooling and hygiene:
+  - `.gitignore` broadened to exclude dev / smoke / test SQLite files, Claude Code scratch, Playwright MCP output, and root-level debug snapshot YAMLs/PNGs,
+  - test fixture for `test_construction_report_uses_nickname_for_submitted_by` updated to accept the new `company_name` kwarg; the full suite is now 180/180 green.
 
 ## Download And Install This Release
 
