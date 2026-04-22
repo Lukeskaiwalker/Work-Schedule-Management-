@@ -1,38 +1,127 @@
-import { useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAppContext } from "../../context/AppContext";
 import {
-  MOCK_DATANORM_IMPORTS,
-  MOCK_SUPPLIERS,
-} from "../../components/werkstatt/mockData";
+  commitImport,
+  listHistory,
+  listSuppliers,
+  previewUpload,
+  type DatanormImportPreview,
+  type DatanormImportRecord,
+  type WerkstattSupplier,
+} from "../../utils/datanormApi";
 
 /**
  * WerkstattDatanormImportPage — two-column admin page. Ported from Paper
- * B8X-0. Left column: supplier combobox + file drop zone. Right column:
+ * B8X-0. Left column: supplier picker + file drop zone. Right column:
  * live preview card (row counts, conflicts). Below: "Letzte Imports" table.
  *
  * This view is admin-only. It self-gates on werkstattTab plus the
- * werkstatt:manage stub permission from WerkstattBanner. All mutators are
- * visual placeholders — TODO(werkstatt): wire to /api/werkstatt/datanorm/*
- * once the Desktop BE endpoints land.
+ * werkstatt:manage permission enforced by the backend on upload/commit/
+ * history endpoints.
+ *
+ * Flow:
+ *   1. Supplier dropdown + file picker + "Vorschau analysieren" button
+ *   2. → POST /werkstatt/datanorm/upload returns a preview with import_token
+ *   3. Preview card renders rows_new / rows_updated / rows_unchanged / conflicts
+ *   4. "Import starten" → POST /werkstatt/datanorm/commit replaces this
+ *      supplier's Werkstatt catalog entries atomically and writes an audit
+ *   5. "Letzte Imports" refreshes from /werkstatt/datanorm/history
  */
 export function WerkstattDatanormImportPage() {
-  const { mainView, language, werkstattTab, setWerkstattTab, setNotice } = useAppContext();
+  const {
+    mainView,
+    language,
+    werkstattTab,
+    setWerkstattTab,
+    setNotice,
+    setError,
+    token,
+  } = useAppContext();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  const [supplierId, setSupplierId] = useState<string>("s1");
+  const [suppliers, setSuppliers] = useState<WerkstattSupplier[]>([]);
+  const [suppliersLoading, setSuppliersLoading] = useState(false);
+  const [supplierId, setSupplierId] = useState<number | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [preview, setPreview] = useState<DatanormImportPreview | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [committing, setCommitting] = useState(false);
+  const [history, setHistory] = useState<DatanormImportRecord[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
 
-  if (mainView !== "werkstatt" || werkstattTab !== "datanorm_import") return null;
-
+  const isActive = mainView === "werkstatt" && werkstattTab === "datanorm_import";
   const de = language === "de";
-  const supplier = MOCK_SUPPLIERS.find((s) => s.id === supplierId) ?? MOCK_SUPPLIERS[0];
+
+  /* ── Load suppliers + history on tab open ─────────────────────────── */
+  const reloadHistory = useCallback(async () => {
+    if (!token) return;
+    setHistoryLoading(true);
+    try {
+      const rows = await listHistory(token);
+      setHistory(rows);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(
+        message ||
+          (de ? "Import-Verlauf konnte nicht geladen werden." : "Could not load import history."),
+      );
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, [token, de, setError]);
+
+  useEffect(() => {
+    if (!isActive || !token) return;
+    let cancelled = false;
+    setSuppliersLoading(true);
+    listSuppliers(token, false)
+      .then((rows) => {
+        if (cancelled) return;
+        setSuppliers(rows);
+        // Auto-pick the first supplier when nothing's selected yet.
+        setSupplierId((current) => current ?? rows[0]?.id ?? null);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        const message = err instanceof Error ? err.message : String(err);
+        setError(
+          message ||
+            (de ? "Lieferanten konnten nicht geladen werden." : "Could not load suppliers."),
+        );
+      })
+      .finally(() => {
+        if (!cancelled) setSuppliersLoading(false);
+      });
+    void reloadHistory();
+    return () => {
+      cancelled = true;
+    };
+  }, [isActive, token, de, reloadHistory, setError]);
+
+  const supplier = useMemo<WerkstattSupplier | null>(
+    () => suppliers.find((s) => s.id === supplierId) ?? null,
+    [suppliers, supplierId],
+  );
+
+  if (!isActive) return null;
+
+  /* ── Handlers ─────────────────────────────────────────────────────── */
+
+  function clearAfterUpload() {
+    setFile(null);
+    setPreview(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
 
   function handleDrop(event: React.DragEvent<HTMLDivElement>) {
     event.preventDefault();
     setIsDragging(false);
     const dropped = event.dataTransfer.files[0];
-    if (dropped) setFile(dropped);
+    if (dropped) {
+      setFile(dropped);
+      setPreview(null);
+    }
   }
 
   function handleFileClick() {
@@ -41,8 +130,61 @@ export function WerkstattDatanormImportPage() {
 
   function handleFileChange(event: React.ChangeEvent<HTMLInputElement>) {
     const picked = event.target.files?.[0];
-    if (picked) setFile(picked);
+    if (picked) {
+      setFile(picked);
+      setPreview(null);
+    }
   }
+
+  async function handleAnalyse() {
+    if (!file || supplierId == null || !token) return;
+    setUploading(true);
+    try {
+      const result = await previewUpload(token, supplierId, file);
+      setPreview(result);
+      setNotice(
+        de
+          ? `Vorschau fertig: ${result.total_rows} Artikel erkannt.`
+          : `Preview ready: ${result.total_rows} items detected.`,
+      );
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(
+        message ||
+          (de ? "Vorschau fehlgeschlagen." : "Preview failed."),
+      );
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function handleCommit(replaceMode: boolean) {
+    if (!preview || !token) return;
+    setCommitting(true);
+    try {
+      const record = await commitImport(token, preview.import_token, replaceMode);
+      setNotice(
+        de
+          ? `Import abgeschlossen: ${record.rows_new} neu, ${record.rows_updated} aktualisiert (${record.supplier_name}).`
+          : `Import complete: ${record.rows_new} new, ${record.rows_updated} updated (${record.supplier_name}).`,
+      );
+      clearAfterUpload();
+      await reloadHistory();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(
+        message ||
+          (de ? "Import fehlgeschlagen." : "Import failed."),
+      );
+    } finally {
+      setCommitting(false);
+    }
+  }
+
+  /* ── Derived preview-row presentations ────────────────────────────── */
+
+  const canAnalyse = !!file && supplierId != null && !uploading;
+  const canCommit = !!preview && !committing;
 
   return (
     <section className="werkstatt-tab-page">
@@ -66,22 +208,22 @@ export function WerkstattDatanormImportPage() {
           <button
             type="button"
             className="werkstatt-action-btn"
-            onClick={() => setWerkstattTab("dashboard")}
+            onClick={() => {
+              clearAfterUpload();
+              setWerkstattTab("dashboard");
+            }}
           >
             {de ? "Abbrechen" : "Cancel"}
           </button>
           <button
             type="button"
             className="werkstatt-action-btn"
-            onClick={() =>
-              setNotice(
-                de
-                  ? "Import-Verlauf folgt — Endpoint: GET /api/werkstatt/datanorm/history"
-                  : "Import history coming soon — endpoint: GET /api/werkstatt/datanorm/history",
-              )
-            }
+            onClick={() => void reloadHistory()}
+            disabled={historyLoading}
           >
-            {de ? "Import-Verlauf" : "Import history"}
+            {historyLoading
+              ? de ? "Lade…" : "Loading…"
+              : de ? "Import-Verlauf aktualisieren" : "Refresh import history"}
           </button>
         </div>
       </header>
@@ -102,13 +244,26 @@ export function WerkstattDatanormImportPage() {
                 {de ? "Welcher Lieferant?" : "Which supplier?"}
               </span>
               <select
-                value={supplierId}
-                onChange={(event) => setSupplierId(event.target.value)}
+                value={supplierId ?? ""}
+                onChange={(event) =>
+                  setSupplierId(event.target.value ? Number(event.target.value) : null)
+                }
                 className="werkstatt-field-select"
+                disabled={suppliersLoading || suppliers.length === 0}
               >
-                {MOCK_SUPPLIERS.map((s) => (
+                {suppliers.length === 0 && (
+                  <option value="">
+                    {suppliersLoading
+                      ? de ? "Lade Lieferanten…" : "Loading suppliers…"
+                      : de ? "Noch keine Lieferanten angelegt" : "No suppliers yet"}
+                  </option>
+                )}
+                {suppliers.map((s) => (
                   <option key={s.id} value={s.id}>
-                    {s.name} — {s.lead_time_days} {de ? "Werktage" : "days"}
+                    {s.name}
+                    {s.default_lead_time_days != null
+                      ? ` — ${s.default_lead_time_days} ${de ? "Werktage" : "days"}`
+                      : ""}
                   </option>
                 ))}
               </select>
@@ -116,9 +271,7 @@ export function WerkstattDatanormImportPage() {
             <button
               type="button"
               className="werkstatt-link-btn"
-              onClick={() => {
-                setWerkstattTab("lieferanten");
-              }}
+              onClick={() => setWerkstattTab("lieferanten")}
             >
               + {de ? "Neuen Lieferanten anlegen" : "Create new supplier"}
             </button>
@@ -163,11 +316,11 @@ export function WerkstattDatanormImportPage() {
               <b>
                 {de ? "Datei ablegen oder auswählen" : "Drop file or choose"}
               </b>
-              <small>.ENP, .001, .002, .DNF · max. 50 MB</small>
+              <small>.ENP, .001, .002, .DNF · max. 25 MB</small>
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".enp,.001,.002,.dnf"
+                accept=".enp,.001,.002,.dnf,application/octet-stream,text/plain"
                 onChange={handleFileChange}
                 hidden
               />
@@ -188,13 +341,18 @@ export function WerkstattDatanormImportPage() {
                   <b>{file.name}</b>
                   <small>
                     {(file.size / 1024 / 1024).toFixed(1)} MB ·{" "}
-                    {de ? "hochgeladen soeben" : "uploaded just now"}
+                    {preview
+                      ? de ? "Vorschau bereit" : "preview ready"
+                      : de ? "bereit zur Analyse" : "ready to analyse"}
                   </small>
                 </span>
                 <button
                   type="button"
                   className="werkstatt-file-chip-remove"
-                  onClick={() => setFile(null)}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    clearAfterUpload();
+                  }}
                   aria-label={de ? "Datei entfernen" : "Remove file"}
                 >
                   ✕
@@ -205,16 +363,12 @@ export function WerkstattDatanormImportPage() {
               <button
                 type="button"
                 className="werkstatt-action-btn werkstatt-action-btn--primary"
-                disabled={!file}
-                onClick={() =>
-                  setNotice(
-                    de
-                      ? `Vorschau für "${file?.name ?? ""}" wird berechnet (API folgt)`
-                      : `Analysing preview for "${file?.name ?? ""}" (API pending)`,
-                  )
-                }
+                disabled={!canAnalyse}
+                onClick={() => void handleAnalyse()}
               >
-                {de ? "Vorschau analysieren" : "Analyse preview"}
+                {uploading
+                  ? de ? "Analysiere…" : "Analysing…"
+                  : de ? "Vorschau analysieren" : "Analyse preview"}
               </button>
             </div>
           </section>
@@ -228,127 +382,149 @@ export function WerkstattDatanormImportPage() {
                   {de ? "VORSCHAU" : "PREVIEW"}
                 </span>
                 <h3 className="werkstatt-card-title">
-                  {de ? "1.247 Artikel erkannt" : "1,247 items detected"}
+                  {preview
+                    ? de
+                      ? `${preview.total_rows.toLocaleString("de-DE")} Artikel erkannt`
+                      : `${preview.total_rows.toLocaleString("en-US")} items detected`
+                    : de ? "Noch keine Datei analysiert" : "No file analysed yet"}
                 </h3>
               </div>
-              <span className="werkstatt-preview-badge">
-                <span className="werkstatt-preview-badge-dot" aria-hidden="true" />
-                {de ? "Bereit" : "Ready"}
-              </span>
+              {preview && (
+                <span className="werkstatt-preview-badge">
+                  <span className="werkstatt-preview-badge-dot" aria-hidden="true" />
+                  {de ? "Bereit" : "Ready"}
+                </span>
+              )}
             </header>
 
-            <div className="werkstatt-preview-meta-grid">
-              <div className="werkstatt-preview-meta">
-                <span className="werkstatt-preview-meta-label">
-                  {de ? "Version" : "Version"}
-                </span>
-                <b>Datanorm 4</b>
-              </div>
-              <div className="werkstatt-preview-meta">
-                <span className="werkstatt-preview-meta-label">
-                  {de ? "Codierung" : "Encoding"}
-                </span>
-                <b>UTF-8</b>
-              </div>
-              <div className="werkstatt-preview-meta">
-                <span className="werkstatt-preview-meta-label">
-                  {de ? "Währung" : "Currency"}
-                </span>
-                <b>EUR · {de ? "netto" : "net"}</b>
-              </div>
-            </div>
+            {preview ? (
+              <>
+                <div className="werkstatt-preview-meta-grid">
+                  <div className="werkstatt-preview-meta">
+                    <span className="werkstatt-preview-meta-label">
+                      {de ? "Version" : "Version"}
+                    </span>
+                    <b>{preview.detected_version ?? "—"}</b>
+                  </div>
+                  <div className="werkstatt-preview-meta">
+                    <span className="werkstatt-preview-meta-label">
+                      {de ? "Codierung" : "Encoding"}
+                    </span>
+                    <b>{preview.detected_encoding ?? "—"}</b>
+                  </div>
+                  <div className="werkstatt-preview-meta">
+                    <span className="werkstatt-preview-meta-label">
+                      {de ? "Lieferant" : "Supplier"}
+                    </span>
+                    <b>{preview.supplier_name}</b>
+                  </div>
+                </div>
 
-            <ul className="werkstatt-preview-rows">
-              <li className="werkstatt-preview-row werkstatt-preview-row--ok">
-                <span className="werkstatt-preview-row-icon" aria-hidden="true">+</span>
-                <span className="werkstatt-preview-row-main">
-                  <b>{de ? "Neu" : "New"}</b>
-                  <small>{de ? "noch nicht im Bestand" : "not in stock yet"}</small>
-                </span>
-                <span className="werkstatt-preview-row-count">843</span>
-              </li>
-              <li className="werkstatt-preview-row werkstatt-preview-row--info">
-                <span className="werkstatt-preview-row-icon" aria-hidden="true">↺</span>
-                <span className="werkstatt-preview-row-main">
-                  <b>{de ? "Aktualisiert" : "Updated"}</b>
-                  <small>
-                    {de ? "Preis oder Bezeichnung geändert" : "price or name changed"}
-                  </small>
-                </span>
-                <span className="werkstatt-preview-row-count">398</span>
-              </li>
-              <li className="werkstatt-preview-row">
-                <span className="werkstatt-preview-row-icon" aria-hidden="true">−</span>
-                <span className="werkstatt-preview-row-main">
-                  <b>{de ? "Unverändert" : "Unchanged"}</b>
-                  <small>{de ? "werden übersprungen" : "will be skipped"}</small>
-                </span>
-                <span className="werkstatt-preview-row-count">0</span>
-              </li>
-              <li className="werkstatt-preview-row werkstatt-preview-row--warn">
-                <span className="werkstatt-preview-row-icon" aria-hidden="true">⚠</span>
-                <span className="werkstatt-preview-row-main">
-                  <b>{de ? "Konflikte" : "Conflicts"}</b>
-                  <small>
-                    {de
-                      ? "EAN bereits bei anderem Lieferanten"
-                      : "EAN already at a different supplier"}
-                  </small>
-                </span>
-                <span className="werkstatt-preview-row-count">6</span>
-              </li>
-            </ul>
+                <ul className="werkstatt-preview-rows">
+                  <li className="werkstatt-preview-row werkstatt-preview-row--ok">
+                    <span className="werkstatt-preview-row-icon" aria-hidden="true">+</span>
+                    <span className="werkstatt-preview-row-main">
+                      <b>{de ? "Neu" : "New"}</b>
+                      <small>{de ? "noch nicht im Bestand" : "not in stock yet"}</small>
+                    </span>
+                    <span className="werkstatt-preview-row-count">{preview.rows_new}</span>
+                  </li>
+                  <li className="werkstatt-preview-row werkstatt-preview-row--info">
+                    <span className="werkstatt-preview-row-icon" aria-hidden="true">↺</span>
+                    <span className="werkstatt-preview-row-main">
+                      <b>{de ? "Aktualisiert" : "Updated"}</b>
+                      <small>
+                        {de ? "Preis oder Bezeichnung geändert" : "price or name changed"}
+                      </small>
+                    </span>
+                    <span className="werkstatt-preview-row-count">{preview.rows_updated}</span>
+                  </li>
+                  <li className="werkstatt-preview-row">
+                    <span className="werkstatt-preview-row-icon" aria-hidden="true">−</span>
+                    <span className="werkstatt-preview-row-main">
+                      <b>{de ? "Unverändert" : "Unchanged"}</b>
+                      <small>{de ? "werden übersprungen" : "will be skipped"}</small>
+                    </span>
+                    <span className="werkstatt-preview-row-count">{preview.rows_unchanged}</span>
+                  </li>
+                  {preview.ean_conflicts.length > 0 && (
+                    <li className="werkstatt-preview-row werkstatt-preview-row--warn">
+                      <span className="werkstatt-preview-row-icon" aria-hidden="true">⚠</span>
+                      <span className="werkstatt-preview-row-main">
+                        <b>{de ? "Konflikte" : "Conflicts"}</b>
+                        <small>
+                          {de
+                            ? "EAN bereits bei anderem Lieferanten"
+                            : "EAN already at a different supplier"}
+                        </small>
+                      </span>
+                      <span className="werkstatt-preview-row-count">
+                        {preview.ean_conflicts.length}
+                      </span>
+                    </li>
+                  )}
+                </ul>
 
-            <div className="werkstatt-preview-conflicts">
-              <b>
-                {de ? "Konflikte prüfen" : "Review conflicts"} ·{" "}
-                <span className="muted">3 {de ? "von" : "of"} 6</span>
-              </b>
-              <ul>
-                <li>EAN 4059952054858 · Bosch GSR 18V-55 — Konflikt mit voestalpine Böhler (#BÖH-4521)</li>
-                <li>EAN 4047254537189 · Makita Akku 18V 5,0 Ah — Konflikt mit Hoffmann Group (#HG-BL1850B)</li>
-                <li>EAN 4013228201099 · Hilti TE 30 SDS-plus — Konflikt mit K+W Elektro (#KWE-HIL-TE30)</li>
-              </ul>
-              <button
-                type="button"
-                className="werkstatt-link-btn"
-                onClick={() =>
-                  setNotice(
-                    de
-                      ? "Alle Konflikte werden in einem Dialog gezeigt (folgt)"
-                      : "All conflicts will open in a dialog (coming soon)",
-                  )
-                }
-              >
-                {de ? "Alle 6 Konflikte anzeigen →" : "Show all 6 conflicts →"}
-              </button>
-            </div>
+                {preview.ean_conflicts.length > 0 && (
+                  <div className="werkstatt-preview-conflicts">
+                    <b>
+                      {de ? "Konflikte prüfen" : "Review conflicts"} ·{" "}
+                      <span className="muted">
+                        {Math.min(3, preview.ean_conflicts.length)} {de ? "von" : "of"}{" "}
+                        {preview.ean_conflicts.length}
+                      </span>
+                    </b>
+                    <ul>
+                      {preview.ean_conflicts.slice(0, 3).map((c) => (
+                        <li key={c.ean}>
+                          EAN {c.ean} · {c.item_name}
+                          {c.existing_supplier_name
+                            ? de
+                              ? ` — Konflikt mit ${c.existing_supplier_name}`
+                              : ` — conflict with ${c.existing_supplier_name}`
+                            : ""}
+                          {c.existing_article_no ? ` (#${c.existing_article_no})` : ""}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
 
-            <div className="werkstatt-preview-cta">
-              <button
-                type="button"
-                className="werkstatt-action-btn"
-                onClick={() => {
-                  setFile(null);
-                  setWerkstattTab("dashboard");
-                }}
-              >
-                {de ? "Abbrechen" : "Cancel"}
-              </button>
-              <button
-                type="button"
-                className="werkstatt-action-btn werkstatt-action-btn--primary"
-                onClick={() =>
-                  setNotice(
-                    de
-                      ? `Import gestartet für ${supplier.name} — 1.247 Artikel (API folgt)`
-                      : `Import started for ${supplier.name} — 1,247 items (API pending)`,
-                  )
-                }
-              >
-                ✓ {de ? `Import starten · 1.247 Artikel · ${supplier.name}` : `Start import · 1,247 items · ${supplier.name}`}
-              </button>
-            </div>
+                <div className="werkstatt-preview-cta">
+                  <button
+                    type="button"
+                    className="werkstatt-action-btn"
+                    onClick={clearAfterUpload}
+                    disabled={committing}
+                  >
+                    {de ? "Abbrechen" : "Cancel"}
+                  </button>
+                  <button
+                    type="button"
+                    className="werkstatt-action-btn werkstatt-action-btn--primary"
+                    disabled={!canCommit}
+                    onClick={() => void handleCommit(true)}
+                  >
+                    {committing
+                      ? de ? "Import läuft…" : "Importing…"
+                      : de
+                        ? `✓ Import starten · ${preview.total_rows.toLocaleString("de-DE")} Artikel · ${preview.supplier_name}`
+                        : `✓ Start import · ${preview.total_rows.toLocaleString("en-US")} items · ${preview.supplier_name}`}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <p className="muted" style={{ padding: "16px 0" }}>
+                {de
+                  ? "Wähle oben einen Lieferanten und eine Datei aus, dann klicke auf „Vorschau analysieren“."
+                  : "Pick a supplier and file above, then click \"Analyse preview\"."}
+                {supplier && !supplier.article_count
+                  ? de
+                    ? ` Für diesen Lieferanten ist aktuell kein Katalog hinterlegt (${supplier.name}).`
+                    : ` No catalogue is currently stored for this supplier (${supplier.name}).`
+                  : ""}
+              </p>
+            )}
           </section>
         </div>
       </div>
@@ -360,51 +536,91 @@ export function WerkstattDatanormImportPage() {
               {de ? "Letzte Imports" : "Recent imports"}
             </h3>
             <span className="werkstatt-card-subtitle">
-              {de
-                ? "Die letzten 4 Importe sind hier sichtbar · vollständige Historie im Import-Verlauf"
-                : "The 4 most recent imports · full history in the import log"}
+              {historyLoading
+                ? de ? "Lade Verlauf…" : "Loading history…"
+                : history.length === 0
+                  ? de ? "Noch keine Imports vorhanden." : "No imports yet."
+                  : de
+                    ? `${history.length} Imports insgesamt`
+                    : `${history.length} imports total`}
             </span>
           </div>
-          <button type="button" className="werkstatt-card-action">
-            {de ? "Alle ansehen →" : "View all →"}
-          </button>
         </header>
-        <div className="werkstatt-table-head werkstatt-table-head--imports" role="row">
-          <span className="werkstatt-col">{de ? "ZEITPUNKT" : "WHEN"}</span>
-          <span className="werkstatt-col">{de ? "LIEFERANT" : "SUPPLIER"}</span>
-          <span className="werkstatt-col">{de ? "DATEI" : "FILE"}</span>
-          <span className="werkstatt-col">{de ? "ANZAHL" : "COUNT"}</span>
-          <span className="werkstatt-col">{de ? "ERGEBNIS" : "RESULT"}</span>
-          <span className="werkstatt-col werkstatt-col-actions" />
-        </div>
-        <ul className="werkstatt-table-body">
-          {MOCK_DATANORM_IMPORTS.map((row) => (
-            <li key={row.id} className="werkstatt-row werkstatt-row--imports" role="row">
-              <span className="werkstatt-col">
-                <b className="werkstatt-row-name">{de ? row.when_de : row.when_en}</b>
-                <small className="werkstatt-row-meta">{de ? row.sub_de : row.sub_en}</small>
-              </span>
-              <span className="werkstatt-col">{row.supplier}</span>
-              <span className="werkstatt-col werkstatt-col-mono">{row.filename}</span>
-              <span className="werkstatt-col">{row.row_count}</span>
-              <span className="werkstatt-col">
-                <span className={`werkstatt-import-tag werkstatt-import-tag--${row.outcome_variant}`}>
-                  {row.outcome_label}
-                </span>
-              </span>
-              <span className="werkstatt-col werkstatt-col-actions">
-                <button
-                  type="button"
-                  className="werkstatt-row-overflow"
-                  aria-label={de ? "Mehr Aktionen" : "More actions"}
+        {history.length > 0 && (
+          <>
+            <div className="werkstatt-table-head werkstatt-table-head--imports" role="row">
+              <span className="werkstatt-col">{de ? "ZEITPUNKT" : "WHEN"}</span>
+              <span className="werkstatt-col">{de ? "LIEFERANT" : "SUPPLIER"}</span>
+              <span className="werkstatt-col">{de ? "DATEI" : "FILE"}</span>
+              <span className="werkstatt-col">{de ? "ANZAHL" : "COUNT"}</span>
+              <span className="werkstatt-col">{de ? "ERGEBNIS" : "RESULT"}</span>
+              <span className="werkstatt-col werkstatt-col-actions" />
+            </div>
+            <ul className="werkstatt-table-body">
+              {history.slice(0, 20).map((row) => (
+                <li
+                  key={row.id}
+                  className="werkstatt-row werkstatt-row--imports"
+                  role="row"
                 >
-                  …
-                </button>
-              </span>
-            </li>
-          ))}
-        </ul>
+                  <span className="werkstatt-col">
+                    <b className="werkstatt-row-name">{formatWhen(row.started_at, de)}</b>
+                    <small className="werkstatt-row-meta">
+                      {row.created_by_name ? `${de ? "durch" : "by"} ${row.created_by_name}` : ""}
+                    </small>
+                  </span>
+                  <span className="werkstatt-col">{row.supplier_name}</span>
+                  <span className="werkstatt-col werkstatt-col-mono">{row.filename}</span>
+                  <span className="werkstatt-col">
+                    {row.total_rows.toLocaleString(de ? "de-DE" : "en-US")}
+                  </span>
+                  <span className="werkstatt-col">
+                    <span
+                      className={`werkstatt-import-tag werkstatt-import-tag--${outcomeVariant(row)}`}
+                    >
+                      {outcomeLabel(row, de)}
+                    </span>
+                  </span>
+                  <span className="werkstatt-col werkstatt-col-actions" />
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
       </section>
     </section>
   );
+}
+
+/* ── helpers ─────────────────────────────────────────────────────────── */
+
+function formatWhen(iso: string, de: boolean): string {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleString(de ? "de-DE" : "en-US", {
+      dateStyle: "short",
+      timeStyle: "short",
+    });
+  } catch {
+    return iso;
+  }
+}
+
+function outcomeVariant(row: DatanormImportRecord): "ok" | "warn" | "error" {
+  if (row.status === "failed") return "error";
+  if (row.rows_failed > 0) return "warn";
+  return "ok";
+}
+
+function outcomeLabel(row: DatanormImportRecord, de: boolean): string {
+  if (row.status === "failed") return de ? "Fehlgeschlagen" : "Failed";
+  if (row.status === "pending") return de ? "Offen" : "Pending";
+  if (row.status === "in_progress") return de ? "Läuft" : "Running";
+  if (row.rows_failed > 0)
+    return de
+      ? `Teilweise (${row.rows_failed} Fehler)`
+      : `Partial (${row.rows_failed} errors)`;
+  return de
+    ? `${row.rows_new} neu · ${row.rows_updated} akt.`
+    : `${row.rows_new} new · ${row.rows_updated} upd.`;
 }
