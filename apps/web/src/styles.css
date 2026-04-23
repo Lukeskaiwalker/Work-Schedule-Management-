@@ -10179,10 +10179,10 @@ li {
   gap: 12px;
   max-height: 340px;
   overflow-y: auto;
-  /* The row is now a grid that can't overflow its column track, so we no
-     longer need horizontal scroll-lock or a scrollbar-gutter reservation
-     to prevent clipping. Keep a small right padding purely for visual
-     breathing room between the row and the (overlay) scrollbar track. */
+  /* Hard cap horizontal scrolling. The new absolute-positioned toggle
+     layout can't produce overflow anyway, but this removes any chance
+     of a stray horizontal scrollbar appearing in any browser. */
+  overflow-x: hidden;
   padding-right: 8px;
 }
 
@@ -10204,36 +10204,53 @@ li {
   margin-bottom: 4px;
 }
 
-/* ── Row layout: CSS Grid ───────────────────────────────────────────────
-   Switched from flex+wrap to grid after multiple rounds of Safari-specific
-   clipping bugs with the flex approach. Grid is deterministic: two columns,
-   one fluid (label) and one content-sized (toggles). No overflow, no
-   scrollbar interaction, no wrap-vs-shrink ambiguity — behaves identically
-   in every browser.
+/* ── Row layout: absolute-positioned toggles ────────────────────────────
+   Final approach after flex-with-wrap and grid-with-auto-column both
+   surfaced Safari-specific clipping quirks. Absolute positioning is
+   less elegant but *unconditionally correct*: the toggle cluster is
+   anchored at `right: 16px` on every row, independent of flex/grid
+   negotiation, scrollbar behaviour, or content intrinsic sizes.
 
-     column 1  minmax(0, 1fr)   label — fluid, shrinks to 0 if needed
-     column 2  auto             toggles — always their intrinsic width
-*/
+   How it works:
+     - Row reserves 220px of right padding so the label column can't
+       expand into where the toggles sit.
+     - Toggles are position: absolute, pinned to the row's right edge,
+       vertically centered via transform.
+
+   This is the pattern jQuery-era dashboards used for lists with
+   trailing action clusters; it's boring and bulletproof. */
 .admin-users-perm-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  column-gap: 16px;
-  padding: 6px 16px 6px 10px;
+  position: relative;
+  padding: 6px 220px 6px 10px;
+  min-height: 32px;
   border-radius: 6px;
   box-sizing: border-box;
+  display: flex;
+  align-items: center;
+}
+
+.admin-users-perm-row .admin-users-perm-toggles {
+  position: absolute;
+  top: 50%;
+  right: 16px;
+  transform: translateY(-50%);
+  display: flex;
+  gap: 10px;
 }
 
 /* On very narrow panels (e.g. admin view with the right-side invite card
-   open on a smaller laptop), stack the two columns vertically so the
-   toggles drop to their own line instead of compressing the label. */
+   open on a small laptop), drop the toggle cluster to the bottom of the
+   row instead of the right — then the label isn't forced to squeeze
+   into a sliver at the left. */
 @media (max-width: 560px) {
   .admin-users-perm-row {
-    grid-template-columns: 1fr;
-    row-gap: 6px;
+    padding: 6px 10px 32px;
   }
-  .admin-users-perm-toggles {
-    justify-self: end;
+  .admin-users-perm-row .admin-users-perm-toggles {
+    top: auto;
+    bottom: 6px;
+    right: 10px;
+    transform: none;
   }
 }
 
@@ -10251,14 +10268,10 @@ li {
   gap: 8px;
   font-size: 12px;
   color: #14293D;
-  /* Grid column 1 is already fluid with minmax(0, 1fr). min-width: 0 here
-     ensures the label text can break onto multiple lines rather than
-     forcing the grid column to stretch past its allotment. */
+  /* Sits in the left portion of the row; the row's 220px right padding
+     guarantees it never overlaps the absolutely-positioned toggles. */
+  flex: 1 1 auto;
   min-width: 0;
-  /* Allow natural wrapping of long labels like "Import projects and class
-     templates" — the row gets taller, but every word stays readable
-     and the toggles keep their position on the right. */
-  overflow-wrap: anywhere;
 }
 
 .admin-users-perm-dot {
@@ -10276,13 +10289,10 @@ li {
   background-color: #c9d9ea;
 }
 
-.admin-users-perm-toggles {
-  display: flex;
-  gap: 10px;
-  /* No flex-shrink / margin hacks needed: the parent row is a grid with
-     `auto` on this column, so this cluster always sizes to its content
-     and never has to compete with the label for space. */
-}
+/* .admin-users-perm-toggles positioning is defined above inside the
+   .admin-users-perm-row rule (position: absolute). Kept out of a standalone
+   block so nothing else on the page can accidentally style this class and
+   break the positioning contract. */
 
 .admin-users-perm-toggles label span {
   /* Prevent per-label wrapping — if "Gewähren" / "Sperren" / "Grant" /
