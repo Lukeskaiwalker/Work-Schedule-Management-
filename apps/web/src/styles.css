@@ -5558,6 +5558,15 @@ li {
   background-color: #eef5fc;
 }
 
+/* Public-holiday tint — warmer than weekend so it reads differently at a
+   glance. `today` still wins if both match. */
+.planning-page .planning-holiday-col {
+  background-color: #fff7ed;
+}
+.planning-page .planning-holiday-col .planning-col-head {
+  background-color: #fef3c7;
+}
+
 /* Column header: centered day name + big day number */
 .planning-page .planning-col-head {
   display: flex;

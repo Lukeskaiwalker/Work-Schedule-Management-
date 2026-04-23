@@ -41,6 +41,7 @@ class TimeCurrentOut(BaseModel):
 class TimeEntryOut(BaseModel):
     id: int
     user_id: int
+    user_name: str | None = None
     clock_in: datetime
     clock_out: datetime | None = None
     is_open: bool

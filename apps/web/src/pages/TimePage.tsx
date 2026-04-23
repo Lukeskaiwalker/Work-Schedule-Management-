@@ -3,7 +3,7 @@ import { useAppContext } from "../context/AppContext";
 import { isoToLocalDateTimeInput } from "../utils/dates";
 import { shiftMonthStart, schoolWeekdayLabel } from "../utils/dates";
 import { formatHours, clamp } from "../utils/misc";
-import { formatServerDateTime } from "../utils/dates";
+import { formatServerDateTime, parseServerDateTime } from "../utils/dates";
 
 // ── Paper-style KPI donut ────────────────────────────────────────────────────
 function TimeKpiDonut({
@@ -206,14 +206,22 @@ export function TimePage() {
     const lastDay = new Date(year, month + 1, 0);
     const daysInMonth = lastDay.getDate();
 
-    // Group entry hours by YYYY-MM-DD
+    // Group entry hours by YYYY-MM-DD — use parseServerDateTime so naive UTC
+    // strings from the backend are read as UTC (not local), then converted
+    // to the user's timezone via the Date object's getFullYear/Month/Date.
     const hoursByDate = new Map<string, number>();
     for (const entry of timeEntries) {
-      if (!entry.clock_in) continue;
-      const entryDate = new Date(entry.clock_in);
+      const entryDate = parseServerDateTime(entry.clock_in);
+      if (!entryDate) continue;
       if (entryDate.getFullYear() !== year || entryDate.getMonth() !== month) continue;
-      const iso = entryDate.toISOString().slice(0, 10);
-      hoursByDate.set(iso, (hoursByDate.get(iso) ?? 0) + entry.net_hours);
+      // Build the local-time YYYY-MM-DD key manually — toISOString() would
+      // give back the UTC date, which can be off by a day for late-evening
+      // clock-ins in positive-offset timezones.
+      const localIso =
+        `${entryDate.getFullYear()}-` +
+        `${String(entryDate.getMonth() + 1).padStart(2, "0")}-` +
+        `${String(entryDate.getDate()).padStart(2, "0")}`;
+      hoursByDate.set(localIso, (hoursByDate.get(localIso) ?? 0) + entry.net_hours);
     }
 
     // Build 6-row × 7-col grid starting on Monday
@@ -254,8 +262,12 @@ export function TimePage() {
     const sorted = [...timeEntries].sort((a, b) => (a.clock_in < b.clock_in ? 1 : -1));
     const groups = new Map<string, typeof timeEntries>();
     for (const entry of sorted) {
-      if (!entry.clock_in) continue;
-      const iso = new Date(entry.clock_in).toISOString().slice(0, 10);
+      const parsed = parseServerDateTime(entry.clock_in);
+      if (!parsed) continue;
+      const iso =
+        `${parsed.getFullYear()}-` +
+        `${String(parsed.getMonth() + 1).padStart(2, "0")}-` +
+        `${String(parsed.getDate()).padStart(2, "0")}`;
       const arr = groups.get(iso) ?? [];
       arr.push(entry);
       groups.set(iso, arr);
@@ -264,9 +276,8 @@ export function TimePage() {
   }, [timeEntries]);
 
   function formatTimeHHMM(iso: string | null | undefined): string {
-    if (!iso) return "--:--";
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return "--:--";
+    const d = parseServerDateTime(iso);
+    if (!d) return "--:--";
     return d.toLocaleTimeString(de ? "de-DE" : "en-US", {
       hour: "2-digit",
       minute: "2-digit",
@@ -287,8 +298,13 @@ export function TimePage() {
 
   function entriesForDate(iso: string) {
     return timeEntries.filter((entry) => {
-      if (!entry.clock_in) return false;
-      return new Date(entry.clock_in).toISOString().slice(0, 10) === iso;
+      const parsed = parseServerDateTime(entry.clock_in);
+      if (!parsed) return false;
+      const local =
+        `${parsed.getFullYear()}-` +
+        `${String(parsed.getMonth() + 1).padStart(2, "0")}-` +
+        `${String(parsed.getDate()).padStart(2, "0")}`;
+      return local === iso;
     });
   }
 
@@ -309,8 +325,9 @@ export function TimePage() {
 
   const monthPercent = monthlyRequiredHours > 0 ? (monthlyWorkedHours / monthlyRequiredHours) * 100 : 0;
   const todayPercent = requiredDailyHours > 0 ? (gaugeNetHours / requiredDailyHours) * 100 : 0;
-  const clockedInLabel = timeCurrent?.clock_in
-    ? new Date(timeCurrent.clock_in).toLocaleTimeString(de ? "de-DE" : "en-US", {
+  const clockedInParsed = parseServerDateTime(timeCurrent?.clock_in);
+  const clockedInLabel = clockedInParsed
+    ? clockedInParsed.toLocaleTimeString(de ? "de-DE" : "en-US", {
         hour: "2-digit",
         minute: "2-digit",
       })
@@ -786,6 +803,10 @@ export function TimePage() {
                         : de
                           ? "Keine Pause aufgezeichnet"
                           : "No break recorded";
+                    const entryUserLabel =
+                      menuUserNameById(entry.user_id, entry.user_name || "") ||
+                      entry.user_name ||
+                      (de ? `Benutzer #${entry.user_id}` : `User #${entry.user_id}`);
                     return (
                       <div key={`recent-entry-${entry.id}`} className="time-recent-entry">
                         <div className="time-recent-entry-body">
@@ -794,6 +815,12 @@ export function TimePage() {
                             {entry.is_open && (
                               <span className="time-recent-entry-running"> ({de ? "läuft" : "running"})</span>
                             )}
+                          </span>
+                          <span
+                            className="time-recent-entry-user muted"
+                            style={{ fontSize: 11, marginTop: 2 }}
+                          >
+                            {entryUserLabel}
                           </span>
                           <span className="time-recent-entry-break">{breakLabel}</span>
                         </div>

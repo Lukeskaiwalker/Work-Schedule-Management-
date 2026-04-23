@@ -472,6 +472,7 @@ export type TimeCurrent = {
 export type TimeEntry = {
   id: number;
   user_id: number;
+  user_name?: string | null;
   clock_in: string;
   clock_out?: string | null;
   is_open: boolean;

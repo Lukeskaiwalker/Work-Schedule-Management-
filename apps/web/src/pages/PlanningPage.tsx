@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAppContext } from "../context/AppContext";
 import { addDaysISO, normalizeWeekStartISO, formatDayLabel, isoWeekdayMondayFirst } from "../utils/dates";
 import { sortTasksByDueTime, formatTaskTimeRange, taskEndTimeMinutes, taskStartTimeMinutes } from "../utils/tasks";
@@ -76,7 +76,17 @@ export function PlanningPage() {
     openProjectGanttById,
     menuUserNameById,
     absenceTypes,
+    publicHolidays,
   } = useAppContext();
+
+  // Map holidays by date once per render so the per-column lookup below is
+  // O(1) instead of O(n) for the week. `publicHolidays` covers the year(s)
+  // the user is viewing, so a small flat Map is plenty.
+  const holidayByDate = useMemo(() => {
+    const map = new Map<string, { name: string; date: string }>();
+    for (const h of publicHolidays) map.set(h.date, h);
+    return map;
+  }, [publicHolidays]);
 
   const [isPhoneViewport, setIsPhoneViewport] = useState(() => {
     if (typeof window === "undefined") return false;
@@ -344,6 +354,7 @@ export function PlanningPage() {
             const isToday = day.date === todayIso;
             const dayNum = parseInt(day.date.split("-")[2] ?? "1", 10);
             const monthNum = parseInt(day.date.split("-")[1] ?? "1", 10);
+            const holiday = holidayByDate.get(day.date) ?? null;
             const dayTasks = sortTasksByDueTime(day.tasks);
             const visibleTaskRows = showProjectRows ? dayTasks : dayTasks.filter((task) => isTaskAssignedToCurrentUser(task));
             const absences = day.absences ?? [];
@@ -392,6 +403,7 @@ export function PlanningPage() {
               "planning-col",
               isWeekend ? "planning-weekend-col" : "",
               isToday ? "planning-today-col" : "",
+              holiday ? "planning-holiday-col" : "",
               mobileVisClass,
             ]
               .filter(Boolean)
@@ -407,6 +419,24 @@ export function PlanningPage() {
                   </span>
                   {dayNum === 1 && (
                     <span className="planning-col-month-label">{monthAbbr(monthNum, language)}</span>
+                  )}
+                  {holiday && (
+                    <span
+                      className="planning-col-holiday-label"
+                      title={holiday.name}
+                      style={{
+                        display: "block",
+                        fontSize: 10,
+                        fontWeight: 600,
+                        color: "#b45309",
+                        marginTop: 2,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      🎌 {holiday.name}
+                    </span>
                   )}
                 </div>
 
