@@ -10170,6 +10170,10 @@ li {
   gap: 12px;
   max-height: 340px;
   overflow-y: auto;
+  /* Lock horizontal scroll OFF — the row is supposed to wrap (not scroll)
+     when cramped. Without this, some browser/font combos let the row grow
+     past clientWidth and clip the "Gewähren" / "Sperren" text on the right. */
+  overflow-x: hidden;
   padding-right: 4px;
 }
 
@@ -10199,6 +10203,10 @@ li {
   border-radius: 6px;
   gap: 10px;
   flex-wrap: wrap;
+  /* Allow the row to shrink below its content's intrinsic width — flex items
+     default to `min-width: auto`, which would prevent wrapping even with
+     `flex-wrap: wrap` set. */
+  min-width: 0;
 }
 
 .admin-users-perm-row--extra {
@@ -10215,6 +10223,9 @@ li {
   gap: 8px;
   font-size: 12px;
   color: #14293D;
+  /* Label can shrink — the toggles on the right must stay readable. */
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .admin-users-perm-dot {
@@ -10235,6 +10246,10 @@ li {
 .admin-users-perm-toggles {
   display: flex;
   gap: 10px;
+  /* Never shrink — "Gewähren" and "Sperren" must always render in full even
+     when the row is cramped. If they don't fit, the whole row wraps (the
+     row is flex-wrap: wrap) rather than clipping the toggle text. */
+  flex-shrink: 0;
 }
 
 .admin-users-perm-toggles label {
