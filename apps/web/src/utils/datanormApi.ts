@@ -148,3 +148,36 @@ export async function listHistory(
 ): Promise<DatanormImportRecord[]> {
   return apiFetch<DatanormImportRecord[]>(`/werkstatt/datanorm/history`, token);
 }
+
+/* ── Legacy reassignment ───────────────────────────────────────────── */
+
+export type DatanormReassignResult = {
+  reassigned: number;
+  supplier_id: number;
+  supplier_name: string;
+  audit_id: number | null;
+};
+
+export async function fetchUnassignedCount(
+  token: string | null,
+): Promise<number> {
+  const res = await apiFetch<{ count: number }>(
+    `/werkstatt/datanorm/unassigned-count`,
+    token,
+  );
+  return res.count;
+}
+
+export async function reassignLegacy(
+  token: string | null,
+  supplierId: number,
+): Promise<DatanormReassignResult> {
+  return apiFetch<DatanormReassignResult>(
+    `/werkstatt/datanorm/reassign-legacy`,
+    token,
+    {
+      method: "POST",
+      body: JSON.stringify({ supplier_id: supplierId }),
+    },
+  );
+}

@@ -1,20 +1,28 @@
 """Werkstatt Datanorm import endpoints.
 
-- POST /werkstatt/datanorm/upload  — multipart upload → preview with import_token
-- POST /werkstatt/datanorm/commit  — apply preview, write audit row
-- GET  /werkstatt/datanorm/history — audit log, latest first
+- POST /werkstatt/datanorm/upload             — multipart upload → preview with import_token
+- POST /werkstatt/datanorm/commit             — apply preview, write audit row
+- GET  /werkstatt/datanorm/history            — audit log, latest first
+- GET  /werkstatt/datanorm/unassigned-count   — legacy rows with supplier_id IS NULL
+- POST /werkstatt/datanorm/reassign-legacy    — bulk-assign unassigned rows to a supplier
 """
 
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
 from app.core.deps import require_permission
-from app.models.entities import User, WerkstattDatanormImport, WerkstattSupplier
+from app.core.time import utcnow
+from app.models.entities import (
+    MaterialCatalogItem,
+    User,
+    WerkstattDatanormImport,
+    WerkstattSupplier,
+)
 from app.schemas.werkstatt import (
     DatanormEanConflictOut,
     DatanormImportPreviewOut,
@@ -197,3 +205,113 @@ def _user_display_name(db: Session, user_id: int | None) -> str | None:
     if user is None:
         return None
     return user.full_name or user.email or f"User #{user.id}"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Legacy filesystem-scan rows (supplier_id IS NULL) — migration helpers.
+#
+# Before the new UI, Datanorm files were dropped into MATERIAL_CATALOG_DIR on
+# disk and imported via the `ensure_material_catalog_up_to_date` service
+# with no supplier ownership. Those rows live in `material_catalog_items`
+# with `supplier_id = NULL`. The endpoints below let an admin reassign
+# those legacy rows to a real Werkstatt supplier in one operation, so the
+# catalog moves forward with consistent ownership.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+class DatanormUnassignedCountOut(BaseModel):
+    count: int
+
+
+class DatanormReassignLegacyPayload(BaseModel):
+    supplier_id: int = Field(ge=1)
+
+
+class DatanormReassignLegacyOut(BaseModel):
+    reassigned: int
+    supplier_id: int
+    supplier_name: str
+    audit_id: int | None = None
+
+
+@router.get(
+    "/datanorm/unassigned-count",
+    response_model=DatanormUnassignedCountOut,
+)
+def unassigned_count(
+    _: User = Depends(require_permission("werkstatt:manage")),
+    db: Session = Depends(get_db),
+) -> DatanormUnassignedCountOut:
+    """How many legacy catalog rows still have `supplier_id IS NULL`."""
+    n = db.scalar(
+        select(func.count(MaterialCatalogItem.id)).where(
+            MaterialCatalogItem.supplier_id.is_(None)
+        )
+    )
+    return DatanormUnassignedCountOut(count=int(n or 0))
+
+
+@router.post(
+    "/datanorm/reassign-legacy",
+    response_model=DatanormReassignLegacyOut,
+)
+def reassign_legacy(
+    payload: DatanormReassignLegacyPayload,
+    current_user: User = Depends(require_permission("werkstatt:manage")),
+    db: Session = Depends(get_db),
+) -> DatanormReassignLegacyOut:
+    """Bulk-assign every `material_catalog_items` row where `supplier_id IS NULL`
+    to the given supplier. Writes a `WerkstattDatanormImport` audit row so the
+    operation shows up in the Import history for traceability.
+
+    Idempotent: calling it twice when there are no unassigned rows is a no-op.
+    """
+    supplier = db.get(WerkstattSupplier, payload.supplier_id)
+    if supplier is None:
+        raise HTTPException(status_code=404, detail="Supplier not found")
+
+    count = int(
+        db.scalar(
+            select(func.count(MaterialCatalogItem.id)).where(
+                MaterialCatalogItem.supplier_id.is_(None)
+            )
+        )
+        or 0
+    )
+    if count == 0:
+        return DatanormReassignLegacyOut(
+            reassigned=0,
+            supplier_id=supplier.id,
+            supplier_name=supplier.name,
+            audit_id=None,
+        )
+
+    now = utcnow()
+    audit = WerkstattDatanormImport(
+        supplier_id=supplier.id,
+        filename="legacy-filesystem-import",
+        status="committed",
+        total_rows=count,
+        rows_new=0,
+        rows_updated=count,
+        rows_failed=0,
+        started_at=now,
+        finished_at=now,
+        error_message=None,
+        created_by=current_user.id,
+    )
+    db.add(audit)
+    db.flush()
+
+    db.execute(
+        update(MaterialCatalogItem)
+        .where(MaterialCatalogItem.supplier_id.is_(None))
+        .values(supplier_id=supplier.id, updated_at=now)
+    )
+    db.commit()
+    return DatanormReassignLegacyOut(
+        reassigned=count,
+        supplier_id=supplier.id,
+        supplier_name=supplier.name,
+        audit_id=audit.id,
+    )

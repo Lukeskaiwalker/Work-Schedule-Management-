@@ -2,9 +2,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAppContext } from "../../context/AppContext";
 import {
   commitImport,
+  fetchUnassignedCount,
   listHistory,
   listSuppliers,
   previewUpload,
+  reassignLegacy,
   type DatanormImportPreview,
   type DatanormImportRecord,
   type WerkstattSupplier,
@@ -50,10 +52,16 @@ export function WerkstattDatanormImportPage() {
   const [history, setHistory] = useState<DatanormImportRecord[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
 
+  // Legacy-reassignment panel — rows from the pre-v2 filesystem scan that
+  // still have `supplier_id IS NULL`. Hidden entirely when the count is 0.
+  const [legacyCount, setLegacyCount] = useState<number>(0);
+  const [legacyReassignTargetId, setLegacyReassignTargetId] = useState<number | null>(null);
+  const [reassigning, setReassigning] = useState(false);
+
   const isActive = mainView === "werkstatt" && werkstattTab === "datanorm_import";
   const de = language === "de";
 
-  /* ── Load suppliers + history on tab open ─────────────────────────── */
+  /* ── Load suppliers + history + legacy count on tab open ──────────── */
   const reloadHistory = useCallback(async () => {
     if (!token) return;
     setHistoryLoading(true);
@@ -70,6 +78,18 @@ export function WerkstattDatanormImportPage() {
       setHistoryLoading(false);
     }
   }, [token, de, setError]);
+
+  const reloadLegacyCount = useCallback(async () => {
+    if (!token) return;
+    try {
+      const n = await fetchUnassignedCount(token);
+      setLegacyCount(n);
+    } catch {
+      // Non-blocking: older backends may not expose this endpoint yet; the
+      // panel simply stays hidden until the count loads.
+      setLegacyCount(0);
+    }
+  }, [token]);
 
   useEffect(() => {
     if (!isActive || !token) return;
@@ -94,10 +114,11 @@ export function WerkstattDatanormImportPage() {
         if (!cancelled) setSuppliersLoading(false);
       });
     void reloadHistory();
+    void reloadLegacyCount();
     return () => {
       cancelled = true;
     };
-  }, [isActive, token, de, reloadHistory, setError]);
+  }, [isActive, token, de, reloadHistory, reloadLegacyCount, setError]);
 
   const supplier = useMemo<WerkstattSupplier | null>(
     () => suppliers.find((s) => s.id === supplierId) ?? null,
@@ -158,6 +179,31 @@ export function WerkstattDatanormImportPage() {
     }
   }
 
+  async function handleReassignLegacy() {
+    if (legacyReassignTargetId == null || !token) return;
+    const target = suppliers.find((s) => s.id === legacyReassignTargetId);
+    if (!target) return;
+    setReassigning(true);
+    try {
+      const result = await reassignLegacy(token, legacyReassignTargetId);
+      setNotice(
+        de
+          ? `${result.reassigned.toLocaleString("de-DE")} Alt-Einträge an „${result.supplier_name}" zugeordnet.`
+          : `${result.reassigned.toLocaleString("en-US")} legacy entries reassigned to "${result.supplier_name}".`,
+      );
+      await reloadLegacyCount();
+      await reloadHistory();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setError(
+        message ||
+          (de ? "Zuordnung fehlgeschlagen." : "Reassignment failed."),
+      );
+    } finally {
+      setReassigning(false);
+    }
+  }
+
   async function handleCommit(replaceMode: boolean) {
     if (!preview || !token) return;
     setCommitting(true);
@@ -200,8 +246,8 @@ export function WerkstattDatanormImportPage() {
           </h1>
           <p className="werkstatt-sub-subtitle">
             {de
-              ? "Aktualisiere den Produktkatalog eines Lieferanten. Bestehende Einträge dieses Lieferanten werden ersetzt — andere Lieferanten bleiben unverändert."
-              : "Update a supplier's product catalog. Existing entries for that supplier are replaced — other suppliers remain unchanged."}
+              ? "Aktualisiere den Produktkatalog eines Lieferanten. Beim Start des Imports werden alle bestehenden Einträge dieses Lieferanten durch die neue Datei ersetzt — so laufen auch Folge-Updates sauber ohne Duplikate. Andere Lieferanten bleiben unverändert."
+              : "Update a supplier's product catalog. Starting the import replaces every existing row for that supplier with the new file — follow-up updates apply cleanly without duplicates. Other suppliers remain unchanged."}
           </p>
         </div>
         <div className="werkstatt-sub-actions">
@@ -227,6 +273,73 @@ export function WerkstattDatanormImportPage() {
           </button>
         </div>
       </header>
+
+      {legacyCount > 0 && (
+        <section className="werkstatt-card werkstatt-datanorm-legacy">
+          <header className="werkstatt-card-head">
+            <div className="werkstatt-card-title-block">
+              <h3 className="werkstatt-card-title">
+                {de
+                  ? `Alte Einträge ohne Lieferant · ${legacyCount.toLocaleString("de-DE")}`
+                  : `Legacy entries without a supplier · ${legacyCount.toLocaleString("en-US")}`}
+              </h3>
+              <span className="werkstatt-card-subtitle">
+                {de
+                  ? "Diese Artikel wurden vor der v2.0 direkt aus dem Dateisystem importiert und haben noch keinen Lieferanten. Weise sie einmalig einem Lieferanten zu — danach werden zukünftige Datanorm-Updates sauber ersetzt."
+                  : "These items came from the pre-v2.0 filesystem import and have no supplier yet. Assign them to one supplier once — future Datanorm updates for that supplier will then replace them cleanly."}
+              </span>
+            </div>
+          </header>
+          <div
+            style={{
+              display: "flex",
+              gap: 12,
+              flexWrap: "wrap",
+              alignItems: "center",
+              padding: "8px 16px 16px",
+            }}
+          >
+            <label className="werkstatt-field" style={{ flex: "1 1 260px", minWidth: 0 }}>
+              <span className="werkstatt-field-label">
+                {de ? "Ziel-Lieferant" : "Target supplier"}
+              </span>
+              <select
+                value={legacyReassignTargetId ?? ""}
+                onChange={(event) =>
+                  setLegacyReassignTargetId(
+                    event.target.value ? Number(event.target.value) : null,
+                  )
+                }
+                className="werkstatt-field-select"
+                disabled={suppliersLoading || suppliers.length === 0 || reassigning}
+              >
+                <option value="">
+                  {suppliers.length === 0
+                    ? de ? "Kein Lieferant verfügbar" : "No supplier available"
+                    : de ? "Lieferant wählen …" : "Choose supplier …"}
+                </option>
+                {suppliers.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <button
+              type="button"
+              className="werkstatt-action-btn werkstatt-action-btn--primary"
+              disabled={legacyReassignTargetId == null || reassigning}
+              onClick={() => void handleReassignLegacy()}
+            >
+              {reassigning
+                ? de ? "Weise zu …" : "Assigning …"
+                : de
+                  ? `${legacyCount.toLocaleString("de-DE")} Einträge zuordnen`
+                  : `Assign ${legacyCount.toLocaleString("en-US")} entries`}
+            </button>
+          </div>
+        </section>
+      )}
 
       <div className="werkstatt-datanorm-grid">
         <div className="werkstatt-datanorm-left">
