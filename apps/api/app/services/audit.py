@@ -57,15 +57,17 @@ def _infer_audit_category(action: str, target_type: str) -> str:
 
 def log_admin_action(
     db: Session,
-    actor: User,
+    actor: User | None,
     action: str,
     target_type: str,
     target_id: str,
     details: dict | None = None,
     category: str | None = None,
 ) -> None:
+    """Record an audit-log row. `actor` may be None — required for events
+    like a failed login attempt where we don't have a resolved user."""
     entry = AuditLog(
-        actor_user_id=actor.id,
+        actor_user_id=actor.id if actor is not None else None,
         category=category or _infer_audit_category(action, target_type),
         action=action,
         target_type=target_type,

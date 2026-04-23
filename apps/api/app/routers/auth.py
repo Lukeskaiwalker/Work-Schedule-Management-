@@ -3,7 +3,7 @@ import hashlib
 import re
 import secrets
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -23,6 +23,7 @@ from app.schemas.api import (
     UserOut,
 )
 from app.schemas.user import UserMeOut
+from app.services.audit import log_admin_action
 from app.services.runtime_settings import mark_initial_admin_bootstrap_completed
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -62,13 +63,69 @@ def _nickname_normalized(value: str) -> str:
     return value.strip().lower()
 
 
+def _client_ip(request: Request | None) -> str | None:
+    """Best-effort client IP for audit rows.
+    Prefers X-Forwarded-For / X-Real-IP (set by the reverse proxy) over the
+    direct peer — the Docker stack sits behind Caddy so the direct peer is
+    usually the proxy container."""
+    if request is None:
+        return None
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",", 1)[0].strip()
+    real_ip = request.headers.get("x-real-ip")
+    if real_ip:
+        return real_ip.strip()
+    return request.client.host if request.client else None
+
+
 @router.post("/login", response_model=UserOut)
-def login(payload: LoginRequest, response: Response, db: Session = Depends(get_db)):
-    stmt = select(User).where(User.email == payload.email.strip().lower())
+def login(
+    payload: LoginRequest,
+    response: Response,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    email_normalized = payload.email.strip().lower()
+    client_ip = _client_ip(request)
+    user_agent = request.headers.get("user-agent", "")[:255] if request else ""
+
+    stmt = select(User).where(User.email == email_normalized)
     user = db.scalars(stmt).first()
     if not user or not verify_password(payload.password, user.password_hash):
+        # Record the attempt without an actor — email is preserved in details
+        # so admins can correlate brute-force patterns without exposing
+        # actor_user_id to a user that might not exist.
+        log_admin_action(
+            db,
+            None,
+            "auth.login_failed",
+            "user",
+            email_normalized or "(unknown)",
+            details={
+                "email": email_normalized,
+                "reason": "invalid_credentials",
+                "ip": client_ip,
+                "user_agent": user_agent,
+            },
+            category="auth",
+        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     if not user.is_active:
+        log_admin_action(
+            db,
+            None,
+            "auth.login_blocked",
+            "user",
+            str(user.id),
+            details={
+                "email": email_normalized,
+                "reason": "inactive",
+                "ip": client_ip,
+                "user_agent": user_agent,
+            },
+            category="auth",
+        )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive user")
 
     token = create_access_token(str(user.id), extra={"role": user.role})
@@ -89,13 +146,65 @@ def login(payload: LoginRequest, response: Response, db: Session = Depends(get_d
         max_age=settings.access_token_expire_minutes * 60,
     )
     response.headers["X-Access-Token"] = token
+
+    # Successful login — captured last so a commit failure earlier never
+    # leaves a dangling "logged in" row with no actual session.
+    log_admin_action(
+        db,
+        user,
+        "auth.login",
+        "user",
+        str(user.id),
+        details={
+            "email": user.email,
+            "role": user.role,
+            "ip": client_ip,
+            "user_agent": user_agent,
+        },
+        category="auth",
+    )
     return user
 
 
 @router.post("/logout")
-def logout(response: Response):
+def logout(
+    response: Response,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """Clear cookies and, when the caller was authenticated, record the
+    logout event. Keep this endpoint anonymous-safe — a browser with a
+    stale/expired cookie calling /logout should still clear cleanly, so
+    we can't hard-depend on get_current_user (which raises 401)."""
+    # Try to resolve the caller so we can audit the event. Never raise
+    # from this path — logout should always clear cookies.
+    current_user: User | None = None
+    try:
+        from app.core.deps import get_current_user_from_token
+        token = (
+            request.cookies.get("access_token")
+            or (request.headers.get("authorization") or "").removeprefix("Bearer ").strip()
+        )
+        if token:
+            current_user = get_current_user_from_token(token, db)
+    except Exception:  # pragma: no cover — best-effort audit only
+        current_user = None
+
     response.delete_cookie("access_token")
     response.delete_cookie("csrf_token")
+    if current_user is not None:
+        log_admin_action(
+            db,
+            current_user,
+            "auth.logout",
+            "user",
+            str(current_user.id),
+            details={
+                "email": current_user.email,
+                "ip": _client_ip(request),
+            },
+            category="auth",
+        )
     return {"ok": True}
 
 
