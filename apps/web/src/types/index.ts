@@ -575,6 +575,8 @@ export type InviteDispatchResponse = {
   sent: boolean;
   invite_link: string;
   expires_at: string;
+  email_error_type?: string | null;
+  email_error_detail?: string | null;
 };
 
 export type PasswordResetDispatchResponse = {
@@ -584,6 +586,15 @@ export type PasswordResetDispatchResponse = {
   sent: boolean;
   reset_link: string;
   expires_at: string;
+  email_error_type?: string | null;
+  email_error_detail?: string | null;
+};
+
+export type SmtpTestResult = {
+  ok: boolean;
+  error_type: string | null;
+  error_detail: string | null;
+  to_email: string;
 };
 
 export type NicknameAvailability = {

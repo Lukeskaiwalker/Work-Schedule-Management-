@@ -42,6 +42,8 @@ from app.schemas.api import (
     PasswordResetDispatchOut,
     SmtpSettingsOut,
     SmtpSettingsUpdate,
+    SmtpTestRequest,
+    SmtpTestResultOut,
     UserCreate,
     UserOut,
     UserUpdate,
@@ -52,7 +54,7 @@ from app.schemas.api import (
     WeatherSettingsUpdate,
 )
 from app.services.audit import log_admin_action
-from app.services.emailer import send_email_message
+from app.services.emailer import send_email_detailed, send_email_message
 from app.services.project_import import import_projects_from_csv
 from app.services.runtime_settings import (
     get_company_settings,
@@ -1235,7 +1237,7 @@ def create_and_send_invite(
         ttl_hours=72,
     )
     invite_link = _build_action_link("/invite", raw_token, request)
-    sent = send_email_message(
+    email_result = send_email_detailed(
         to_email=user.email,
         subject="Einladung zur SMPL Workflow Software",
         body=(
@@ -1257,14 +1259,21 @@ def create_and_send_invite(
         "user.invite.send",
         "user",
         str(user.id),
-        {"email": user.email, "role": user.role, "sent": sent},
+        {
+            "email": user.email,
+            "role": user.role,
+            "sent": email_result.ok,
+            "email_error_type": email_result.error_type,
+        },
     )
     return InviteDispatchOut(
         user_id=user.id,
         email=user.email,
-        sent=sent,
+        sent=email_result.ok,
         invite_link=invite_link,
         expires_at=expires_at,
+        email_error_type=email_result.error_type,
+        email_error_detail=email_result.error_detail,
     )
 
 
@@ -1324,7 +1333,7 @@ def send_user_invite(
         ttl_hours=72,
     )
     invite_link = _build_action_link("/invite", raw_token, request)
-    sent = send_email_message(
+    email_result = send_email_detailed(
         to_email=user.email,
         subject="Einladung zur SMPL Workflow Software",
         body=(
@@ -1344,14 +1353,20 @@ def send_user_invite(
         "user.invite.resend",
         "user",
         str(user.id),
-        {"email": user.email, "sent": sent},
+        {
+            "email": user.email,
+            "sent": email_result.ok,
+            "email_error_type": email_result.error_type,
+        },
     )
     return InviteDispatchOut(
         user_id=user.id,
         email=user.email,
-        sent=sent,
+        sent=email_result.ok,
         invite_link=invite_link,
         expires_at=expires_at,
+        email_error_type=email_result.error_type,
+        email_error_detail=email_result.error_detail,
     )
 
 
@@ -1376,7 +1391,7 @@ def send_password_reset(
         ttl_hours=24,
     )
     reset_link = _build_action_link("/reset-password", raw_token, request)
-    sent = send_email_message(
+    email_result = send_email_detailed(
         to_email=user.email,
         subject="Passwort zuruecksetzen - SMPL Workflow",
         body=(
@@ -1397,12 +1412,18 @@ def send_password_reset(
         "user.password_reset.send",
         "user",
         str(user.id),
-        {"email": user.email, "sent": sent},
+        {
+            "email": user.email,
+            "sent": email_result.ok,
+            "email_error_type": email_result.error_type,
+        },
     )
     return PasswordResetDispatchOut(
         user_id=user.id,
         email=user.email,
-        sent=sent,
+        sent=email_result.ok,
+        email_error_type=email_result.error_type,
+        email_error_detail=email_result.error_detail,
         reset_link=reset_link,
         expires_at=expires_at,
     )
@@ -1924,6 +1945,59 @@ def update_smtp_runtime_settings(
         from_email=from_email,
         from_name=from_name,
         configured=bool(host and from_email),
+    )
+
+
+@router.post("/settings/smtp/test", response_model=SmtpTestResultOut)
+def send_smtp_test_email(
+    payload: SmtpTestRequest,
+    admin: User = Depends(require_permission("settings:manage")),
+    db: Session = Depends(get_db),
+) -> SmtpTestResultOut:
+    """Send a short test email using the currently saved SMTP settings.
+
+    Response always has HTTP 200 — the outcome sits in `ok`/`error_type`/
+    `error_detail` so admins see WHY the send failed instead of a silent
+    'clipboard fallback'. Defaults the recipient to the admin's own email
+    when none is provided (safest no-typo path)."""
+    to_email = (payload.to_email or admin.email).strip()
+    if not to_email:
+        return SmtpTestResultOut(
+            ok=False,
+            error_type="recipient",
+            error_detail="No recipient email available.",
+            to_email="",
+        )
+
+    body = (
+        "Dies ist eine SMTP-Test-E-Mail von SMPL Workflow.\n"
+        "Wenn Sie diese Nachricht erhalten haben, sind die SMTP-Einstellungen korrekt.\n\n"
+        f"Ausgelöst durch: {admin.full_name or admin.email}\n"
+        f"Zeitpunkt (UTC): {utcnow().isoformat()}Z\n"
+    )
+    result = send_email_detailed(
+        to_email=to_email,
+        subject="SMPL Workflow — SMTP-Testnachricht",
+        body=body,
+        db=db,
+    )
+    log_admin_action(
+        db,
+        admin,
+        "settings.smtp.test",
+        "settings",
+        "smtp",
+        {
+            "to_email": to_email,
+            "ok": result.ok,
+            "error_type": result.error_type,
+        },
+    )
+    return SmtpTestResultOut(
+        ok=result.ok,
+        error_type=result.error_type,
+        error_detail=result.error_detail,
+        to_email=to_email,
     )
 
 

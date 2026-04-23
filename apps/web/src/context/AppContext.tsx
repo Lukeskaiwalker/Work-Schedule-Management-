@@ -52,6 +52,7 @@ import type {
   NicknameAvailability,
   WeatherSettings,
   SmtpSettings,
+  SmtpTestResult,
   CompanySettings,
   EmployeeGroup,
   AuditLogEntry,
@@ -983,6 +984,9 @@ export interface AppContextValue {
   saveWeatherSettings: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   saveCompanySettings: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   saveSmtpSettings: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+  sendSmtpTest: (toEmail?: string) => Promise<SmtpTestResult | null>;
+  smtpTestSending: boolean;
+  smtpTestLastResult: SmtpTestResult | null;
   loadUpdateStatus: (showNotice?: boolean) => Promise<void>;
   installSystemUpdate: (dryRun: boolean) => Promise<void>;
   loadPlanningWeek: (projectId: number | null, weekStart: string, taskType?: TaskType | null) => Promise<void>;

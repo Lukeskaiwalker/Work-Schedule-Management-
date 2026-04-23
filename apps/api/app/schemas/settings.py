@@ -39,6 +39,20 @@ class SmtpSettingsUpdate(BaseModel):
     from_name: str = ""
 
 
+class SmtpTestRequest(BaseModel):
+    """Admin-triggered test send. `to_email` is optional — when omitted, the
+    test is sent to the admin's own account."""
+
+    to_email: EmailStr | str | None = None
+
+
+class SmtpTestResultOut(BaseModel):
+    ok: bool
+    error_type: str | None = None
+    error_detail: str | None = None
+    to_email: str
+
+
 class CompanySettingsOut(BaseModel):
     logo_url: str = ""
     navigation_title: str = "SMPL"

@@ -40,6 +40,7 @@ import type {
   SchoolAbsence,
   InviteDispatchResponse,
   PasswordResetDispatchResponse,
+  SmtpTestResult,
   NicknameAvailability,
   WeatherSettings,
   SmtpSettings,
@@ -460,6 +461,8 @@ export function App() {
     from_name: "",
   });
   const [smtpSettingsSaving, setSmtpSettingsSaving] = useState(false);
+  const [smtpTestSending, setSmtpTestSending] = useState(false);
+  const [smtpTestLastResult, setSmtpTestLastResult] = useState<SmtpTestResult | null>(null);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
   const [updateStatusLoading, setUpdateStatusLoading] = useState(false);
   const [updateInstallRunning, setUpdateInstallRunning] = useState(false);
@@ -3184,6 +3187,51 @@ export function App() {
       setError(err.message ?? "Failed to save SMTP settings");
     } finally {
       setSmtpSettingsSaving(false);
+    }
+  }
+
+  async function sendSmtpTest(toEmail?: string): Promise<SmtpTestResult | null> {
+    if (!canManageSettings) return null;
+    setSmtpTestSending(true);
+    setSmtpTestLastResult(null);
+    try {
+      const result = await apiFetch<SmtpTestResult>(
+        "/admin/settings/smtp/test",
+        token,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            to_email: toEmail && toEmail.trim().length > 0 ? toEmail.trim() : null,
+          }),
+        },
+      );
+      setSmtpTestLastResult(result);
+      if (result.ok) {
+        setNotice(
+          language === "de"
+            ? `Test-E-Mail an ${result.to_email} gesendet.`
+            : `Test email sent to ${result.to_email}.`,
+        );
+      } else {
+        setError(
+          (language === "de" ? "SMTP-Test fehlgeschlagen: " : "SMTP test failed: ") +
+            (result.error_detail ||
+              (language === "de" ? "Unbekannter Fehler" : "Unknown error")),
+        );
+      }
+      return result;
+    } catch (err: any) {
+      const message = err?.message ?? "SMTP test failed";
+      setError(message);
+      setSmtpTestLastResult({
+        ok: false,
+        error_type: "request",
+        error_detail: message,
+        to_email: toEmail ?? "",
+      });
+      return null;
+    } finally {
+      setSmtpTestSending(false);
     }
   }
 
@@ -6420,13 +6468,24 @@ export function App() {
           ? "Password reset email sent and link copied"
           : "Password reset email sent. Opened link dialog for copying";
     }
+    // Send failed — surface the reason so admins know WHY clipboard took over.
+    const detail = result.email_error_detail?.trim();
+    const reason = detail
+      ? detail
+      : result.email_error_type === "not_configured"
+        ? language === "de"
+          ? "SMTP nicht konfiguriert"
+          : "SMTP not configured"
+        : language === "de"
+          ? "E-Mail-Versand fehlgeschlagen"
+          : "Email send failed";
     return language === "de"
       ? copied
-        ? "Kein SMTP aktiv. Link wurde kopiert"
-        : "Kein SMTP aktiv. Link zum Kopieren geoeffnet"
+        ? `${reason}. Link wurde kopiert.`
+        : `${reason}. Link zum Kopieren geöffnet.`
       : copied
-        ? "SMTP not configured. Link copied"
-        : "SMTP not configured. Opened link dialog for copying";
+        ? `${reason}. Link copied.`
+        : `${reason}. Opened link dialog for copying.`;
   }
 
   async function copyActionLink(value: string) {
@@ -8277,6 +8336,9 @@ export function App() {
     saveWeatherSettings,
     saveCompanySettings,
     saveSmtpSettings,
+    sendSmtpTest,
+    smtpTestSending,
+    smtpTestLastResult,
     loadUpdateStatus,
     installSystemUpdate,
     loadPlanningWeek,
