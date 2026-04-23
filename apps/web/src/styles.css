@@ -10179,21 +10179,11 @@ li {
   gap: 12px;
   max-height: 340px;
   overflow-y: auto;
-  /* Lock horizontal scroll OFF — the row is supposed to wrap (not scroll)
-     when cramped. Without this, some browser/font combos let the row grow
-     past clientWidth and clip the "Gewähren" / "Sperren" text on the right. */
-  overflow-x: hidden;
-  /* Reserve the scrollbar's space permanently so the 15–17px vertical
-     scrollbar never overlays the row contents (which was clipping
-     "Gewähren" / "Sperren" behind it on some OS/browser combos).
-     Chromium honours this; Safari <18.2 ignores it, which is why we ALSO
-     set an explicit right-side buffer below that works everywhere. */
-  scrollbar-gutter: stable;
-  /* Explicit right-side buffer that works in every browser, including
-     Safari with overlay scrollbars (which don't take any width of their
-     own, letting content flow to the edge). 28px = comfortable on the
-     widest toggle label "Gewähren" in the widest font-metric profile. */
-  padding-right: 28px;
+  /* The row is now a grid that can't overflow its column track, so we no
+     longer need horizontal scroll-lock or a scrollbar-gutter reservation
+     to prevent clipping. Keep a small right padding purely for visual
+     breathing room between the row and the (overlay) scrollbar track. */
+  padding-right: 8px;
 }
 
 .admin-users-perm-group {
@@ -10214,26 +10204,37 @@ li {
   margin-bottom: 4px;
 }
 
+/* ── Row layout: CSS Grid ───────────────────────────────────────────────
+   Switched from flex+wrap to grid after multiple rounds of Safari-specific
+   clipping bugs with the flex approach. Grid is deterministic: two columns,
+   one fluid (label) and one content-sized (toggles). No overflow, no
+   scrollbar interaction, no wrap-vs-shrink ambiguity — behaves identically
+   in every browser.
+
+     column 1  minmax(0, 1fr)   label — fluid, shrinks to 0 if needed
+     column 2  auto             toggles — always their intrinsic width
+*/
 .admin-users-perm-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
-  /* Right padding explicit on the row itself (not just the scrollable parent)
-     so the toggle cluster has guaranteed clearance from the panel edge in
-     every browser, regardless of how it handles scrollbar gutters or flex
-     overflow. Safari with overlay scrollbars was still clipping text
-     against the panel's right edge even after we padded the outer groups. */
-  padding: 6px 24px 6px 10px;
+  column-gap: 16px;
+  padding: 6px 16px 6px 10px;
   border-radius: 6px;
-  gap: 10px;
-  flex-wrap: wrap;
-  /* Allow the row to shrink below its content's intrinsic width — flex items
-     default to `min-width: auto`, which would prevent wrapping even with
-     `flex-wrap: wrap` set. */
-  min-width: 0;
-  /* Belt-and-braces: enforce box-sizing explicitly (we set it globally, but
-     a user-agent style mismatch on Safari was suspected as a co-factor). */
   box-sizing: border-box;
+}
+
+/* On very narrow panels (e.g. admin view with the right-side invite card
+   open on a smaller laptop), stack the two columns vertically so the
+   toggles drop to their own line instead of compressing the label. */
+@media (max-width: 560px) {
+  .admin-users-perm-row {
+    grid-template-columns: 1fr;
+    row-gap: 6px;
+  }
+  .admin-users-perm-toggles {
+    justify-self: end;
+  }
 }
 
 .admin-users-perm-row--extra {
@@ -10250,9 +10251,14 @@ li {
   gap: 8px;
   font-size: 12px;
   color: #14293D;
-  /* Label can shrink — the toggles on the right must stay readable. */
-  flex: 1 1 auto;
+  /* Grid column 1 is already fluid with minmax(0, 1fr). min-width: 0 here
+     ensures the label text can break onto multiple lines rather than
+     forcing the grid column to stretch past its allotment. */
   min-width: 0;
+  /* Allow natural wrapping of long labels like "Import projects and class
+     templates" — the row gets taller, but every word stays readable
+     and the toggles keep their position on the right. */
+  overflow-wrap: anywhere;
 }
 
 .admin-users-perm-dot {
@@ -10273,14 +10279,9 @@ li {
 .admin-users-perm-toggles {
   display: flex;
   gap: 10px;
-  /* Never shrink — "Gewähren" / "Sperren" (and their EN "Grant" / "Deny"
-     equivalents) must always render in full even when the row is cramped.
-     If they don't fit, the whole row wraps (.admin-users-perm-row is
-     flex-wrap: wrap) rather than clipping the toggle text. */
-  flex-shrink: 0;
-  /* Pull the whole toggle cluster away from the row's right edge so the
-     labels aren't flush against the panel border / scrollbar. */
-  margin-right: 8px;
+  /* No flex-shrink / margin hacks needed: the parent row is a grid with
+     `auto` on this column, so this cluster always sizes to its content
+     and never has to compete with the label for space. */
 }
 
 .admin-users-perm-toggles label span {
