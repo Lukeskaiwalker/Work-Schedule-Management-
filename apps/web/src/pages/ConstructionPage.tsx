@@ -3,6 +3,7 @@ import { useAppContext } from "../context/AppContext";
 import { IMAGE_INPUT_ACCEPT } from "../constants";
 import { formatTimeInputForTyping, formatTimeInputForBlur } from "../utils/tasks";
 import { formatProjectTitle } from "../utils/projects";
+import { WorkerNameCombobox } from "../components/shared/WorkerNameCombobox";
 
 export function ConstructionPage() {
   const {
@@ -443,12 +444,18 @@ export function ConstructionPage() {
             </div>
             {reportWorkers.map((worker, index) => (
               <div key={`worker-${index}`} className="construction-report-table-row">
-                <input
+                <WorkerNameCombobox
+                  language={de ? "de" : "en"}
                   className="construction-report-input"
                   value={worker.name}
-                  list="report-worker-options"
-                  placeholder={de ? "Name suchen" : "Search name"}
-                  onChange={(e) => updateReportWorker(index, "name", e.target.value)}
+                  users={assignableUsers}
+                  onChange={(name) => updateReportWorker(index, "name", name)}
+                  placeholder={de ? "Mitarbeiter suchen oder eintippen" : "Search or type a worker"}
+                  freeTextHint={
+                    de
+                      ? "Freitext — kein hinterlegter Mitarbeiter."
+                      : "Free text — not an app user."
+                  }
                 />
                 <input
                   className="construction-report-input"
@@ -487,11 +494,6 @@ export function ConstructionPage() {
                 </button>
               </div>
             ))}
-            <datalist id="report-worker-options">
-              {assignableUsers.map((entry) => (
-                <option key={`report-worker-option-${entry.id}`} value={entry.full_name} />
-              ))}
-            </datalist>
           </div>
         </div>
 
