@@ -10218,7 +10218,12 @@ li {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 10px;
+  /* Right padding explicit on the row itself (not just the scrollable parent)
+     so the toggle cluster has guaranteed clearance from the panel edge in
+     every browser, regardless of how it handles scrollbar gutters or flex
+     overflow. Safari with overlay scrollbars was still clipping text
+     against the panel's right edge even after we padded the outer groups. */
+  padding: 6px 24px 6px 10px;
   border-radius: 6px;
   gap: 10px;
   flex-wrap: wrap;
@@ -10226,6 +10231,9 @@ li {
      default to `min-width: auto`, which would prevent wrapping even with
      `flex-wrap: wrap` set. */
   min-width: 0;
+  /* Belt-and-braces: enforce box-sizing explicitly (we set it globally, but
+     a user-agent style mismatch on Safari was suspected as a co-factor). */
+  box-sizing: border-box;
 }
 
 .admin-users-perm-row--extra {
