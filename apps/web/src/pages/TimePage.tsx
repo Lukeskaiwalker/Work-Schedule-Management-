@@ -131,9 +131,17 @@ export function TimePage() {
 
   if (mainView !== "time") return null;
 
-  // Build export URL — includes selected employee when a manager has picked one
+  // Build export URL — always scope by user_id so the XLSX never accidentally
+  // aggregates every employee. Managers with no explicit selection get their
+  // own timesheet (matching what the calendar now shows). Non-managers don't
+  // need the param; the backend resolves it to the session user.
+  const exportTargetUserId: number | null = isTimeManager
+    ? timeTargetUserId
+      ? Number(timeTargetUserId)
+      : user?.id ?? null
+    : null;
   const exportUrl = `/api/time/timesheet/export.xlsx?month=${monthCursorISO}${
-    isTimeManager && timeTargetUserId ? `&user_id=${Number(timeTargetUserId)}` : ""
+    exportTargetUserId != null ? `&user_id=${exportTargetUserId}` : ""
   }`;
 
   // Manager employee picker helpers

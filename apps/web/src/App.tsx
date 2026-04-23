@@ -3404,11 +3404,22 @@ export function App() {
   async function refreshTimeData() {
     try {
       const currentDefs = monthWeekDefsRef.current;
-      const useManagerFilter = mainView === "time" && isTimeManager && timeTargetUserId;
-      const userQuery = useManagerFilter ? `&user_id=${Number(timeTargetUserId)}` : "";
-      const currentQuery = useManagerFilter ? `?user_id=${Number(timeTargetUserId)}` : "";
-      const vacationQuery = useManagerFilter ? `?user_id=${Number(timeTargetUserId)}` : "";
-      const schoolQuery = useManagerFilter ? `?user_id=${Number(timeTargetUserId)}` : "";
+      // Managers see ALL users' time entries by default when no user_id is
+      // sent (backend guard at time_tracking.py:1679). That aggregates
+      // everyone into the Time-page calendar, which is wrong — the user
+      // expects "their own hours" unless they explicitly pick someone in
+      // the employee picker. Default to the logged-in user's id so the
+      // calendar stays scoped, matching what non-managers see.
+      const effectiveTimeUserId: number | null =
+        mainView === "time" && isTimeManager
+          ? timeTargetUserId
+            ? Number(timeTargetUserId)
+            : user?.id ?? null
+          : null;
+      const userQuery = effectiveTimeUserId != null ? `&user_id=${effectiveTimeUserId}` : "";
+      const currentQuery = effectiveTimeUserId != null ? `?user_id=${effectiveTimeUserId}` : "";
+      const vacationQuery = effectiveTimeUserId != null ? `?user_id=${effectiveTimeUserId}` : "";
+      const schoolQuery = effectiveTimeUserId != null ? `?user_id=${effectiveTimeUserId}` : "";
       const entriesRangeQuery =
         timeEntriesStartDate && timeEntriesEndDate
           ? `&start_date=${timeEntriesStartDate}&end_date=${timeEntriesEndDate}`
