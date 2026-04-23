@@ -2710,6 +2710,87 @@ export function App() {
     }
   }
 
+  async function uploadMaterialCatalogImage(
+    externalKey: string,
+    file: File,
+  ): Promise<MaterialCatalogItem | null> {
+    if (!externalKey) {
+      setError(
+        language === "de"
+          ? "Dieser Katalog-Eintrag hat keinen externen Schlüssel."
+          : "This catalog item has no external key.",
+      );
+      return null;
+    }
+    const form = new FormData();
+    form.append("file", file);
+    try {
+      const result = await apiFetch<{
+        ok: boolean;
+        external_key: string;
+        image_url: string;
+        image_source: string;
+      }>(`/materials/catalog/images/${encodeURIComponent(externalKey)}`, token, {
+        method: "POST",
+        body: form,
+      });
+      setMaterialCatalogRows((current) =>
+        current.map((row) =>
+          row.external_key === externalKey
+            ? {
+                ...row,
+                image_url: result.image_url,
+                image_source: result.image_source,
+                image_checked_at: new Date().toISOString(),
+              }
+            : row,
+        ),
+      );
+      setNotice(
+        language === "de"
+          ? "Bild hochgeladen."
+          : "Image uploaded.",
+      );
+      const match = materialCatalogRows.find((row) => row.external_key === externalKey);
+      return match
+        ? {
+            ...match,
+            image_url: result.image_url,
+            image_source: result.image_source,
+            image_checked_at: new Date().toISOString(),
+          }
+        : null;
+    } catch (err: any) {
+      setError(err?.message ?? "Image upload failed");
+      return null;
+    }
+  }
+
+  async function deleteMaterialCatalogImage(externalKey: string): Promise<void> {
+    if (!externalKey) return;
+    try {
+      await apiFetch<{ ok: boolean }>(
+        `/materials/catalog/images/${encodeURIComponent(externalKey)}`,
+        token,
+        { method: "DELETE" },
+      );
+      setMaterialCatalogRows((current) =>
+        current.map((row) =>
+          row.external_key === externalKey
+            ? { ...row, image_url: null, image_source: null, image_checked_at: null }
+            : row,
+        ),
+      );
+      setNotice(
+        language === "de"
+          ? "Bild entfernt. Automatische Suche aktiv."
+          : "Image removed. Auto-lookup re-enabled.",
+      );
+    } catch (err: any) {
+      setError(err?.message ?? "Image removal failed");
+    }
+  }
+
   async function loadMaterialCatalog(query: string) {
     const requestSeq = ++materialCatalogRequestSeqRef.current;
     setMaterialCatalogLoading(true);
@@ -8321,6 +8402,8 @@ export function App() {
     loadTasks,
     loadMaterialNeeds,
     loadMaterialCatalog,
+    uploadMaterialCatalogImage,
+    deleteMaterialCatalogImage,
     lookupMaterialCatalogByIdentifier,
     enrichTaskModalMaterialRowFromCatalog,
     enrichTaskEditMaterialRowFromCatalog,

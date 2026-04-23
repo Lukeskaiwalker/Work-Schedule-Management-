@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useAppContext } from "../context/AppContext";
 import { formatDayLabel } from "../utils/dates";
 import {
@@ -36,6 +36,8 @@ export function MaterialsPage() {
     setMainView,
     loadMaterialNeeds,
     loadMaterialCatalog,
+    uploadMaterialCatalogImage,
+    deleteMaterialCatalogImage,
     updateMaterialNeedState,
     updateMaterialNeedNote,
     selectMaterialCatalogProject,
@@ -49,6 +51,26 @@ export function MaterialsPage() {
   const [pendingNotes, setPendingNotes] = useState<Record<number, string>>({});
   // Set of project IDs whose group is collapsed
   const [collapsedGroups, setCollapsedGroups] = useState<Set<number>>(new Set());
+  // Per-catalog-item image-upload state (keyed by external_key).
+  const [imageUploadingKeys, setImageUploadingKeys] = useState<Set<string>>(new Set());
+  const imageFileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+
+  async function triggerCatalogImageUpload(externalKey: string, file: File) {
+    setImageUploadingKeys((current) => {
+      const next = new Set(current);
+      next.add(externalKey);
+      return next;
+    });
+    try {
+      await uploadMaterialCatalogImage(externalKey, file);
+    } finally {
+      setImageUploadingKeys((current) => {
+        const next = new Set(current);
+        next.delete(externalKey);
+        return next;
+      });
+    }
+  }
 
   // Group material needs by project, preserving insertion order (sorted by project number)
   const needGroups = useMemo(() => {
@@ -443,11 +465,145 @@ export function MaterialsPage() {
               if (catalogItem.unit) {
                 metaPieces.push(catalogItem.unit);
               }
+              const externalKey = catalogItem.external_key ?? "";
+              const hasImage = Boolean(catalogItem.image_url);
+              const isManualImage = catalogItem.image_source === "manual";
+              const isImageUploading = externalKey
+                ? imageUploadingKeys.has(externalKey)
+                : false;
               return (
                 <li
                   key={`catalog-item-${catalogItem.id}`}
                   className="materials-page-catalog-item"
                 >
+                  {/* Left: thumbnail or upload placeholder. Clicking the
+                       thumbnail lets the user replace; a small "×" removes
+                       the manual image and re-enables auto-scrape. */}
+                  {externalKey && (
+                    <div
+                      className="materials-page-catalog-item-thumb"
+                      style={{
+                        position: "relative",
+                        width: 44,
+                        height: 44,
+                        flexShrink: 0,
+                        borderRadius: 6,
+                        border: "1px solid #c9d9ea",
+                        background: "#f3f7fc",
+                        overflow: "hidden",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        marginRight: 10,
+                      }}
+                      title={
+                        hasImage
+                          ? isManualImage
+                            ? de
+                              ? "Manuell hochgeladen. Klicken zum Ersetzen."
+                              : "Manually uploaded. Click to replace."
+                            : de
+                              ? "Automatisch gefunden. Klicken zum Ersetzen."
+                              : "Auto-fetched. Click to replace."
+                          : de
+                            ? "Kein Bild — klicken zum Hochladen."
+                            : "No image — click to upload."
+                      }
+                    >
+                      {hasImage ? (
+                        <img
+                          src={catalogItem.image_url || ""}
+                          alt=""
+                          style={{ width: "100%", height: "100%", objectFit: "contain" }}
+                        />
+                      ) : (
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                          <path
+                            d="M12 16V4M6 10l6-6 6 6M4 20h16"
+                            stroke="#5c7895"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => imageFileInputRefs.current[externalKey]?.click()}
+                        disabled={isImageUploading}
+                        aria-label={
+                          hasImage
+                            ? de ? "Bild ersetzen" : "Replace image"
+                            : de ? "Bild hochladen" : "Upload image"
+                        }
+                        style={{
+                          position: "absolute",
+                          inset: 0,
+                          background: "transparent",
+                          border: "none",
+                          cursor: "pointer",
+                          padding: 0,
+                        }}
+                      />
+                      {isManualImage && (
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void deleteMaterialCatalogImage(externalKey);
+                          }}
+                          aria-label={de ? "Bild entfernen" : "Remove image"}
+                          title={de ? "Bild entfernen" : "Remove image"}
+                          style={{
+                            position: "absolute",
+                            top: 2,
+                            right: 2,
+                            width: 16,
+                            height: 16,
+                            padding: 0,
+                            borderRadius: 8,
+                            border: "none",
+                            background: "rgba(20, 41, 61, 0.7)",
+                            color: "#ffffff",
+                            fontSize: 10,
+                            lineHeight: "14px",
+                            cursor: "pointer",
+                          }}
+                        >
+                          ×
+                        </button>
+                      )}
+                      {isImageUploading && (
+                        <span
+                          style={{
+                            position: "absolute",
+                            inset: 0,
+                            background: "rgba(255,255,255,0.6)",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            fontSize: 10,
+                            color: "#14293d",
+                          }}
+                        >
+                          …
+                        </span>
+                      )}
+                      <input
+                        ref={(node) => {
+                          imageFileInputRefs.current[externalKey] = node;
+                        }}
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp,image/gif"
+                        hidden
+                        onChange={(event) => {
+                          const picked = event.target.files?.[0];
+                          event.target.value = "";
+                          if (picked) void triggerCatalogImageUpload(externalKey, picked);
+                        }}
+                      />
+                    </div>
+                  )}
                   <div className="materials-page-catalog-item-main">
                     <span className="materials-page-catalog-item-title">
                       {catalogItem.item_name}

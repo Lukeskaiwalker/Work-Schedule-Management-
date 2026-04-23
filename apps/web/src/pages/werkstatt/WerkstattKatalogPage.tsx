@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useAppContext } from "../../context/AppContext";
 import { NeuerArtikelModal } from "../../components/werkstatt/NeuerArtikelModal";
 import {
@@ -6,6 +6,7 @@ import {
   MOCK_SUPPLIERS,
   type MockCatalogEntry,
 } from "../../components/werkstatt/mockData";
+import type { MaterialCatalogItem } from "../../types";
 
 /**
  * WerkstattKatalogPage — Datanorm catalog browse / search. Relocated from
@@ -34,12 +35,53 @@ export function WerkstattKatalogPage() {
     setMaterialCatalogQuery,
     materialCatalogLoading,
     loadMaterialCatalog,
+    uploadMaterialCatalogImage,
+    deleteMaterialCatalogImage,
     setNotice,
   } = useAppContext();
 
   const [activeSupplier, setActiveSupplier] = useState<string | null>(null);
   const [neuerArtikelOpen, setNeuerArtikelOpen] = useState(false);
   const [neuerArtikelSeed, setNeuerArtikelSeed] = useState<MockCatalogEntry | null>(null);
+  const [imageUploadingKeys, setImageUploadingKeys] = useState<Set<string>>(new Set());
+  const imageFileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+
+  // Map each folded MockCatalogEntry back to its source MaterialCatalogItem so
+  // we can render thumbnails + per-row upload controls without extending the
+  // fake-first MockCatalogEntry shape.
+  const rowsByEntryId = useMemo(() => {
+    const map = new Map<string, MaterialCatalogItem>();
+    for (const row of materialCatalogRows) {
+      if (row.ean) {
+        const key = `ean-${row.ean}`;
+        // Prefer the row that already has an image — that's the one users
+        // care about when there are multiple supplier listings per EAN.
+        if (!map.has(key) || (!map.get(key)?.image_url && row.image_url)) {
+          map.set(key, row);
+        }
+      } else {
+        map.set(`row-entry-${row.id}`, row);
+      }
+    }
+    return map;
+  }, [materialCatalogRows]);
+
+  async function handleCatalogImageUpload(externalKey: string, file: File) {
+    setImageUploadingKeys((current) => {
+      const next = new Set(current);
+      next.add(externalKey);
+      return next;
+    });
+    try {
+      await uploadMaterialCatalogImage(externalKey, file);
+    } finally {
+      setImageUploadingKeys((current) => {
+        const next = new Set(current);
+        next.delete(externalKey);
+        return next;
+      });
+    }
+  }
 
   // Kick a search on first mount so the panel isn't empty.
   useEffect(() => {
@@ -204,21 +246,133 @@ export function WerkstattKatalogPage() {
           {visibleEntries.map((entry) => {
             const isMulti = entry.offers.length > 1;
             const preferred = entry.offers.find((o) => o.is_preferred) ?? entry.offers[0];
+            const sourceRow = rowsByEntryId.get(entry.id) ?? null;
+            const externalKey = sourceRow?.external_key ?? "";
+            const imageUrl = sourceRow?.image_url ?? null;
+            const isManualImage = sourceRow?.image_source === "manual";
+            const isImageUploading = externalKey
+              ? imageUploadingKeys.has(externalKey)
+              : false;
             return (
               <li
                 key={entry.id}
                 className={`werkstatt-katalog-card${isMulti ? " werkstatt-katalog-card--hero" : ""}`}
               >
                 <div className="werkstatt-katalog-card-head">
-                  <span className="werkstatt-katalog-thumb" aria-hidden="true">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                      <path
-                        d="M12 3 3 7.5v9L12 21l9-4.5v-9L12 3Z"
-                        stroke="#5C7895"
-                        strokeWidth="1.6"
-                        strokeLinejoin="round"
+                  <span
+                    className="werkstatt-katalog-thumb"
+                    style={{ position: "relative", overflow: "hidden" }}
+                    title={
+                      externalKey
+                        ? imageUrl
+                          ? isManualImage
+                            ? de
+                              ? "Manuell hochgeladen. Klicken zum Ersetzen."
+                              : "Manually uploaded. Click to replace."
+                            : de
+                              ? "Automatisch gefunden. Klicken zum Ersetzen."
+                              : "Auto-fetched. Click to replace."
+                          : de
+                            ? "Kein Bild — klicken zum Hochladen."
+                            : "No image — click to upload."
+                        : undefined
+                    }
+                  >
+                    {imageUrl ? (
+                      <img
+                        src={imageUrl}
+                        alt=""
+                        style={{ width: "100%", height: "100%", objectFit: "contain" }}
                       />
-                    </svg>
+                    ) : (
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                        <path
+                          d="M12 3 3 7.5v9L12 21l9-4.5v-9L12 3Z"
+                          stroke="#5C7895"
+                          strokeWidth="1.6"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                    )}
+                    {externalKey && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => imageFileInputRefs.current[externalKey]?.click()}
+                          disabled={isImageUploading}
+                          aria-label={
+                            imageUrl
+                              ? de ? "Bild ersetzen" : "Replace image"
+                              : de ? "Bild hochladen" : "Upload image"
+                          }
+                          style={{
+                            position: "absolute",
+                            inset: 0,
+                            background: "transparent",
+                            border: "none",
+                            cursor: "pointer",
+                            padding: 0,
+                          }}
+                        />
+                        {isManualImage && (
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void deleteMaterialCatalogImage(externalKey);
+                            }}
+                            aria-label={de ? "Bild entfernen" : "Remove image"}
+                            title={de ? "Bild entfernen" : "Remove image"}
+                            style={{
+                              position: "absolute",
+                              top: 2,
+                              right: 2,
+                              width: 14,
+                              height: 14,
+                              padding: 0,
+                              borderRadius: 7,
+                              border: "none",
+                              background: "rgba(20, 41, 61, 0.72)",
+                              color: "#ffffff",
+                              fontSize: 9,
+                              lineHeight: "12px",
+                              cursor: "pointer",
+                            }}
+                          >
+                            ×
+                          </button>
+                        )}
+                        {isImageUploading && (
+                          <span
+                            style={{
+                              position: "absolute",
+                              inset: 0,
+                              background: "rgba(255,255,255,0.6)",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              fontSize: 11,
+                              color: "#14293d",
+                            }}
+                          >
+                            …
+                          </span>
+                        )}
+                        <input
+                          ref={(node) => {
+                            imageFileInputRefs.current[externalKey] = node;
+                          }}
+                          type="file"
+                          accept="image/jpeg,image/png,image/webp,image/gif"
+                          hidden
+                          onChange={(event) => {
+                            const picked = event.target.files?.[0];
+                            event.target.value = "";
+                            if (picked) void handleCatalogImageUpload(externalKey, picked);
+                          }}
+                        />
+                      </>
+                    )}
                   </span>
                   <span className="werkstatt-katalog-title">
                     <b>{entry.item_name}</b>

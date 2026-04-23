@@ -1,14 +1,18 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, BackgroundTasks
+from fastapi import APIRouter, BackgroundTasks, File, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse
 
 from app.core.config import get_settings
 from app.core.db import SessionLocal
 from app.routers.workflow_helpers import *  # noqa: F401,F403
 from app.services.material_catalog_images import (
+    CATALOG_IMAGE_MAX_BYTES,
+    CATALOG_IMAGE_PUBLIC_URL_PREFIX,
     normalize_material_catalog_image_external_key,
+    remove_cached_material_catalog_image,
     resolve_cached_material_catalog_image_file,
+    store_uploaded_material_catalog_image,
 )
 
 
@@ -125,6 +129,131 @@ def get_material_catalog_image_asset(
     if fallback_url.startswith("http://") or fallback_url.startswith("https://"):
         return RedirectResponse(url=fallback_url, status_code=307)
     raise HTTPException(status_code=404, detail="Catalog image not found")
+
+
+# Upload endpoint: user-supplied image overrides the scraped one. After this
+# lands, `image_source = "manual"` — the background Unielektro/EAN lookup
+# loop skips rows with a non-empty source (see
+# `material_catalog._should_lookup_image`), so the manual image sticks.
+@router.post("/materials/catalog/images/{external_key}")
+async def upload_material_catalog_image(
+    external_key: str,
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    normalized_key = normalize_material_catalog_image_external_key(external_key)
+    if not normalized_key:
+        raise HTTPException(status_code=404, detail="Catalog item not found")
+
+    catalog_row = db.scalar(
+        select(MaterialCatalogItem).where(MaterialCatalogItem.external_key == normalized_key)
+    )
+    if catalog_row is None:
+        raise HTTPException(status_code=404, detail="Catalog item not found")
+
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="File body is required")
+    if len(raw) > CATALOG_IMAGE_MAX_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Image exceeds {CATALOG_IMAGE_MAX_BYTES // (1024 * 1024)} MB limit",
+        )
+
+    stored = store_uploaded_material_catalog_image(
+        external_key=normalized_key,
+        uploads_dir=get_settings().uploads_dir,
+        image_bytes=raw,
+        content_type=file.content_type or "",
+    )
+    if stored is None:
+        raise HTTPException(
+            status_code=415,
+            detail="Unsupported image type — upload a JPEG, PNG, WebP or GIF.",
+        )
+
+    # Point the catalog row at the freshly-cached file and tag the source as
+    # 'manual' so the scraper leaves it alone.
+    catalog_row.image_url = stored.public_url[:1000]
+    catalog_row.image_source = "manual"
+    catalog_row.image_checked_at = utcnow()
+    db.add(catalog_row)
+    db.commit()
+
+    log_admin_action(
+        db,
+        current_user,
+        "material_catalog.image.upload",
+        "material_catalog_item",
+        str(catalog_row.id),
+        {
+            "external_key": normalized_key,
+            "filename": file.filename or "",
+            "content_type": stored.content_type,
+            "byte_size": stored.byte_size,
+        },
+        category="files",
+    )
+    return {
+        "ok": True,
+        "external_key": normalized_key,
+        "image_url": stored.public_url,
+        "image_source": "manual",
+        "byte_size": stored.byte_size,
+        "content_type": stored.content_type,
+    }
+
+
+@router.delete("/materials/catalog/images/{external_key}")
+def delete_material_catalog_image(
+    external_key: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Remove the cached image and reset the row's image state so the
+    auto-scraper can retry from scratch on the next sync."""
+    normalized_key = normalize_material_catalog_image_external_key(external_key)
+    if not normalized_key:
+        raise HTTPException(status_code=404, detail="Catalog item not found")
+
+    catalog_row = db.scalar(
+        select(MaterialCatalogItem).where(MaterialCatalogItem.external_key == normalized_key)
+    )
+    if catalog_row is None:
+        raise HTTPException(status_code=404, detail="Catalog item not found")
+
+    removed_any = remove_cached_material_catalog_image(
+        external_key=normalized_key,
+        uploads_dir=get_settings().uploads_dir,
+    )
+
+    previous_source = catalog_row.image_source or ""
+    catalog_row.image_url = None
+    catalog_row.image_source = None
+    catalog_row.image_checked_at = None
+    db.add(catalog_row)
+    db.commit()
+
+    log_admin_action(
+        db,
+        current_user,
+        "material_catalog.image.delete",
+        "material_catalog_item",
+        str(catalog_row.id),
+        {
+            "external_key": normalized_key,
+            "previous_source": previous_source,
+            "removed_cached_file": removed_any,
+        },
+        category="files",
+    )
+    return {
+        "ok": True,
+        "external_key": normalized_key,
+        "removed_cached_file": removed_any,
+    }
+
 
 @router.get("/materials/catalog/state", response_model=MaterialCatalogImportStateOut)
 def get_material_catalog_state(

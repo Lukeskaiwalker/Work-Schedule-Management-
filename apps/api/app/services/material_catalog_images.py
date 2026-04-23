@@ -248,6 +248,95 @@ def cache_material_catalog_image(
     return None
 
 
+def store_uploaded_material_catalog_image(
+    *,
+    external_key: str,
+    uploads_dir: str,
+    image_bytes: bytes,
+    content_type: str | None,
+) -> MaterialImageCacheResult | None:
+    """Persist user-supplied image bytes to the catalog image cache.
+
+    Mirrors `cache_material_catalog_image` but skips the network fetch — the
+    caller is a multipart upload handler, not a scraper. Returns None if
+    the content type isn't an accepted image format, the file is too large,
+    or the filesystem write fails. On success, the image is at the same
+    public URL scheme as scraped images (/api/materials/catalog/images/{key})
+    so the rest of the app sees them uniformly.
+    """
+    normalized_key = normalize_material_catalog_image_external_key(external_key)
+    if not normalized_key:
+        return None
+    if not image_bytes:
+        return None
+    if len(image_bytes) > CATALOG_IMAGE_MAX_BYTES:
+        return None
+    resolved_ct = _normalized_image_content_type(content_type, url="")
+    if not resolved_ct:
+        return None
+    extension = IMAGE_CONTENT_TYPE_TO_EXT.get(resolved_ct)
+    if not extension:
+        return None
+
+    cache_dir = _material_catalog_image_cache_dir(uploads_dir)
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+
+    temp_path = cache_dir / f"{normalized_key}.{extension}.tmp"
+    final_path = cache_dir / f"{normalized_key}.{extension}"
+    try:
+        with temp_path.open("wb") as handle:
+            handle.write(image_bytes)
+    except OSError:
+        temp_path.unlink(missing_ok=True)
+        return None
+
+    # Wipe any previously-cached variants (e.g. a .png when the user uploads
+    # a new .jpg for the same key) so only one image per external_key exists.
+    _remove_cached_material_image_variants(
+        cache_dir, normalized_key, keep={final_path.name, temp_path.name}
+    )
+    final_path.unlink(missing_ok=True)
+    try:
+        temp_path.replace(final_path)
+    except OSError:
+        temp_path.unlink(missing_ok=True)
+        return None
+    _remove_cached_material_image_variants(cache_dir, normalized_key, keep={final_path.name})
+
+    return MaterialImageCacheResult(
+        public_url=f"{CATALOG_IMAGE_PUBLIC_URL_PREFIX}{normalized_key}",
+        stored_path=str(final_path),
+        content_type=resolved_ct,
+        byte_size=len(image_bytes),
+    )
+
+
+def remove_cached_material_catalog_image(
+    *, external_key: str, uploads_dir: str
+) -> bool:
+    """Delete every cached variant for the given external_key. Returns True
+    if at least one file was removed. Does NOT touch DB state — caller must
+    also clear `image_url` / `image_source` on the MaterialCatalogItem row
+    so auto-scraping can run again on the next catalog sync."""
+    normalized_key = normalize_material_catalog_image_external_key(external_key)
+    if not normalized_key:
+        return False
+    cache_dir = _material_catalog_image_cache_dir(uploads_dir)
+    if not cache_dir.exists() or not cache_dir.is_dir():
+        return False
+    removed = False
+    for candidate in cache_dir.glob(f"{normalized_key}.*"):
+        try:
+            candidate.unlink(missing_ok=True)
+            removed = True
+        except OSError:
+            continue
+    return removed
+
+
 def resolve_cached_material_catalog_image_file(*, external_key: str, uploads_dir: str) -> CachedMaterialImageFile | None:
     normalized_key = normalize_material_catalog_image_external_key(external_key)
     if not normalized_key:

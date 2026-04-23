@@ -969,6 +969,8 @@ export interface AppContextValue {
   loadTasks: (mode: TaskView, projectId: number | null) => Promise<void>;
   loadMaterialNeeds: () => Promise<void>;
   loadMaterialCatalog: (query: string) => Promise<void>;
+  uploadMaterialCatalogImage: (externalKey: string, file: File) => Promise<MaterialCatalogItem | null>;
+  deleteMaterialCatalogImage: (externalKey: string) => Promise<void>;
   lookupMaterialCatalogByIdentifier: (rawValue: string) => Promise<MaterialCatalogItem | null>;
   enrichTaskModalMaterialRowFromCatalog: (index: number, lookupField: "item" | "article_no") => Promise<void>;
   enrichTaskEditMaterialRowFromCatalog: (index: number, lookupField: "item" | "article_no") => Promise<void>;

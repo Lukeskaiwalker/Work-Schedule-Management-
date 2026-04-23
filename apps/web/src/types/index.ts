@@ -264,6 +264,7 @@ export type ProjectMaterialNeed = {
 
 export type MaterialCatalogItem = {
   id: number;
+  external_key?: string | null;
   article_no?: string | null;
   item_name: string;
   unit?: string | null;
