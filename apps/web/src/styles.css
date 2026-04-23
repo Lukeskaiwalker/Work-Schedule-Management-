@@ -10185,12 +10185,15 @@ li {
   overflow-x: hidden;
   /* Reserve the scrollbar's space permanently so the 15–17px vertical
      scrollbar never overlays the row contents (which was clipping
-     "Gewähren" / "Sperren" behind it on some OS/browser combos). */
+     "Gewähren" / "Sperren" behind it on some OS/browser combos).
+     Chromium honours this; Safari <18.2 ignores it, which is why we ALSO
+     set an explicit right-side buffer below that works everywhere. */
   scrollbar-gutter: stable;
-  /* Inner breathing room so the right-most toggle sits comfortably away
-     from the scrollbar track, both in the desktop layout and when the
-     admin page is narrowed by the right-side invite card. */
-  padding-right: 16px;
+  /* Explicit right-side buffer that works in every browser, including
+     Safari with overlay scrollbars (which don't take any width of their
+     own, letting content flow to the edge). 28px = comfortable on the
+     widest toggle label "Gewähren" in the widest font-metric profile. */
+  padding-right: 28px;
 }
 
 .admin-users-perm-group {
