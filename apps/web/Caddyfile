@@ -30,30 +30,43 @@
 		file_server
 	}
 
-	# API reverse proxy. SMPL_API_UPSTREAM is overrideable for tests but
-	# defaults to the docker-network address of the api service.
-	@api path /api*
-	reverse_proxy @api {$SMPL_API_UPSTREAM:api:8000}
+	# API reverse proxy and SPA fallback are wrapped in mutually-exclusive
+	# `handle` blocks. This matters: Caddy auto-orders directives by its
+	# standard list, and `try_files` runs *before* `reverse_proxy`. Without
+	# `handle`, `try_files {path} /index.html` would see /api/* doesn't
+	# exist on disk and rewrite to /index.html *before* the reverse_proxy
+	# matcher fires — every API call would silently fall through to the
+	# SPA. `handle` blocks short-circuit, so a request that matches the
+	# API handler never visits the SPA handler.
+	#
+	# SMPL_API_UPSTREAM is overrideable for tests but defaults to the
+	# docker-network address of the api service.
+	handle /api* {
+		reverse_proxy {$SMPL_API_UPSTREAM:api:8000}
+	}
 
-	# SPA static files. Vite emits content-hashed filenames in /assets/
-	# and /chunks/, so those can be cached aggressively (a new build = a
-	# new filename, so no risk of stale references).
-	root * /srv/web
+	handle {
+		# SPA static files. Vite emits content-hashed filenames in /assets/
+		# and /chunks/, so those can be cached aggressively (a new build =
+		# a new filename, so no risk of stale references).
+		root * /srv/web
 
-	@hashed path /assets/* /chunks/*
-	header @hashed Cache-Control "public, max-age=31536000, immutable"
+		@hashed path /assets/* /chunks/*
+		header @hashed Cache-Control "public, max-age=31536000, immutable"
 
-	# index.html and the service worker MUST revalidate every load — they
-	# point at the hashed asset filenames, so a cached copy can leave the
-	# browser referencing ghost files after a deploy. no-cache means
-	# "always revalidate" (a cheap 304 round-trip), not "don't store".
-	@nocache path /index.html /sw.js
-	header @nocache Cache-Control "no-cache"
+		# index.html and the service worker MUST revalidate every load —
+		# they point at the hashed asset filenames, so a cached copy can
+		# leave the browser referencing ghost files after a deploy.
+		# no-cache means "always revalidate" (a cheap 304 round-trip),
+		# not "don't store".
+		@nocache path /index.html /sw.js
+		header @nocache Cache-Control "no-cache"
 
-	# SPA fallback: client-side routes like /admin, /time, /planning fall
-	# through to index.html so React Router can take over.
-	try_files {path} /index.html
-	file_server
+		# SPA fallback: client-side routes like /admin, /time, /planning
+		# fall through to index.html so React Router can take over.
+		try_files {path} /index.html
+		file_server
+	}
 }
 
 {
