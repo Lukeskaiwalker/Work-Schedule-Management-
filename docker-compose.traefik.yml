@@ -1,5 +1,14 @@
+# Production override: hooks the SMPL stack into the household-shared Traefik
+# proxy (running as `mac-proxy-1` in the `mac_default` external network). The
+# Traefik instance terminates Let's Encrypt TLS for the public Host header and
+# forwards plain HTTP into the web container on the docker network.
+#
+# This file used to attach the labels to a separate `caddy` service that sat
+# in front of an nginx-based `web` container. The two were collapsed into a
+# single Caddy-based `web` container, so the labels now hang off `web`.
+
 services:
-  caddy:
+  web:
     networks:
       - default
       - traefik_proxy

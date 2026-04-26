@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 from app.main import _initialize_runtime_data
 from app.core.permissions import set_permissions_override
 from app.routers import admin as admin_router
+from app.services import update_runner_client
 
 
 def auth_headers(token: str) -> dict[str, str]:
@@ -352,6 +353,63 @@ def test_admin_can_read_update_status(client: TestClient, admin_token: str, monk
     assert len(payload["install_steps"]) >= 2
 
 
+def test_admin_update_status_prefers_disk_release_env_over_stale_settings(
+    client: TestClient,
+    admin_token: str,
+    monkeypatch,
+):
+    """After an in-place update regenerates ``.release.env``, the running api
+    process still has the OLD version cached in ``Settings`` (env files are
+    read once at startup). The disk read in ``_current_release_metadata``
+    closes that gap so the UI reflects reality without a container restart.
+    """
+    monkeypatch.setattr(admin_router.settings, "app_release_version", "v1.0.0", raising=False)
+    monkeypatch.setattr(
+        admin_router.settings,
+        "app_release_commit",
+        "0000000000000000000000000000000000000000",
+        raising=False,
+    )
+    monkeypatch.setattr(admin_router.settings, "update_repo_owner", "example", raising=False)
+    monkeypatch.setattr(admin_router.settings, "update_repo_name", "repo", raising=False)
+    monkeypatch.setattr(admin_router.settings, "update_repo_branch", "main", raising=False)
+    monkeypatch.setattr(admin_router, "_can_auto_install_updates", lambda: False)
+    # Override the autouse fixture: simulate a freshly regenerated .release.env
+    # on disk that's newer than the cached settings.
+    monkeypatch.setattr(
+        admin_router,
+        "_read_release_env_file",
+        lambda: ("v1.4.0", "9999999999999999999999999999999999999999"),
+    )
+
+    def fake_github_api_json(path: str):
+        if path.endswith("/releases"):
+            return [
+                {
+                    "tag_name": "v1.4.0",
+                    "html_url": "https://github.com/example/repo/releases/tag/v1.4.0",
+                    "published_at": "2026-04-01T10:00:00Z",
+                    "target_commitish": "main",
+                }
+            ]
+        if path.endswith("/commits/v1.4.0"):
+            return {"sha": "9999999999999999999999999999999999999999"}
+        if path.endswith("/commits/main"):
+            return {"sha": "9999999999999999999999999999999999999999"}
+        raise AssertionError(f"Unexpected path: {path}")
+
+    monkeypatch.setattr(admin_router, "_github_api_json", fake_github_api_json)
+
+    response = client.get("/api/admin/updates/status", headers=auth_headers(admin_token))
+    assert response.status_code == 200
+    payload = response.json()
+    # The disk file ("v1.4.0") wins over the stale settings ("v1.0.0").
+    assert payload["current_version"] == "v1.4.0"
+    assert payload["current_commit"] == "999999999999"
+    # And the system correctly reports it's already on the latest release.
+    assert payload["update_available"] is False
+
+
 def test_admin_update_status_resolves_placeholder_release_version_from_git(
     client: TestClient,
     admin_token: str,
@@ -656,3 +714,228 @@ def test_admin_install_update_creates_snapshot_and_runs_preflight_before_migrati
     ]
     assert any("pre-update snapshot:" in step for step in payload["ran_steps"])
     assert any("alembic upgrade head (preflight temp db)" in step for step in payload["ran_steps"])
+
+
+def test_admin_install_update_delegates_real_install_to_runner_when_reachable(
+    client: TestClient,
+    admin_token: str,
+    monkeypatch,
+):
+    """When the update_runner sidecar accepts the job, the api returns 202-style
+    UpdateInstallOut with async_mode=True + job_id, and does NOT execute any
+    in-process git/alembic commands."""
+    monkeypatch.setattr(
+        admin_router,
+        "_fetch_update_status",
+        lambda: admin_router.UpdateStatusOut(
+            repository="example/repo",
+            branch="main",
+            install_supported=True,
+            install_mode="auto",
+            install_steps=[],
+        ),
+    )
+    # Override the autouse "runner unreachable" fixture: this test exercises
+    # the happy-path delegation explicitly.
+    monkeypatch.setattr(
+        update_runner_client,
+        "queue_update_job",
+        lambda branch="main", pull=True: {"job_id": "job-abc-123", "status": "queued"},
+    )
+    executed_legacy: list[str] = []
+    monkeypatch.setattr(
+        admin_router,
+        "_run_update_command",
+        lambda *args, **kwargs: executed_legacy.append("legacy_called"),
+    )
+
+    response = client.post(
+        "/api/admin/updates/install",
+        headers=auth_headers(admin_token),
+        json={"dry_run": False},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["mode"] == "auto"
+    assert payload["async_mode"] is True
+    assert payload["job_id"] == "job-abc-123"
+    assert payload["dry_run"] is False
+    # The legacy in-process flow must NOT have run when the runner accepted.
+    assert executed_legacy == []
+
+
+def test_admin_install_update_falls_back_to_in_process_when_runner_unreachable(
+    client: TestClient,
+    admin_token: str,
+    monkeypatch,
+):
+    """When the runner is unreachable, the legacy in-process logic still runs.
+    This guarantees backward compatibility with deployments that haven't yet
+    rolled out the update_runner sidecar."""
+    monkeypatch.setattr(
+        admin_router,
+        "_fetch_update_status",
+        lambda: admin_router.UpdateStatusOut(
+            repository="example/repo",
+            branch="main",
+            install_supported=True,
+            install_mode="auto",
+            install_steps=[],
+        ),
+    )
+    monkeypatch.setattr(admin_router, "_resolve_repo_root", lambda: Path("/tmp/repo"))
+    monkeypatch.setattr(
+        admin_router,
+        "_create_pre_update_db_snapshot",
+        lambda repo_root: Path("/tmp/repo/backups/pre-update/db-smpl-fallback.dump"),
+    )
+    monkeypatch.setattr(
+        admin_router,
+        "_run_migration_preflight",
+        lambda **_: ["alembic upgrade head (preflight temp db)"],
+    )
+
+    executed: list[str] = []
+
+    def fake_run_update_command(command: list[str], *, cwd: Path, env=None):  # noqa: ANN001
+        executed.append(" ".join(command))
+
+        class _Result:
+            returncode = 0
+            stdout = ""
+            stderr = ""
+
+        return _Result()
+
+    monkeypatch.setattr(admin_router, "_run_update_command", fake_run_update_command)
+    # Autouse fixture already makes the runner appear unreachable, but we
+    # re-pin here for clarity — this test specifically asserts the fallback.
+    monkeypatch.setattr(update_runner_client, "is_runner_reachable", lambda: False)
+
+    response = client.post(
+        "/api/admin/updates/install",
+        headers=auth_headers(admin_token),
+        json={"dry_run": False},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["async_mode"] is False
+    assert payload["job_id"] is None
+    # Legacy git+alembic commands ran exactly as in the no-runner world.
+    assert executed == [
+        "git fetch --tags --prune origin",
+        "git pull --ff-only origin main",
+        "./scripts/update_release_metadata.sh",
+        "alembic upgrade head",
+    ]
+
+
+def test_admin_install_update_surfaces_runner_job_conflict(
+    client: TestClient,
+    admin_token: str,
+    monkeypatch,
+):
+    """When the runner already has an active job, return ok=False but still
+    include the existing job_id so the UI can resume polling that job."""
+    monkeypatch.setattr(
+        admin_router,
+        "_fetch_update_status",
+        lambda: admin_router.UpdateStatusOut(
+            repository="example/repo",
+            branch="main",
+            install_supported=True,
+            install_mode="auto",
+            install_steps=[],
+        ),
+    )
+
+    def _conflict(branch="main", pull=True):
+        raise update_runner_client.UpdateRunnerJobConflict(
+            "existing-job-456",
+            "An update job is already running.",
+        )
+
+    monkeypatch.setattr(update_runner_client, "queue_update_job", _conflict)
+
+    response = client.post(
+        "/api/admin/updates/install",
+        headers=auth_headers(admin_token),
+        json={"dry_run": False},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["async_mode"] is True
+    assert payload["job_id"] == "existing-job-456"
+    assert "already running" in payload["detail"]
+
+
+def test_admin_get_update_progress_proxies_runner_status(
+    client: TestClient,
+    admin_token: str,
+    monkeypatch,
+):
+    """The progress endpoint pass-through-translates runner status snapshots
+    into UpdateProgressOut. Smoke test for shape + permission gating."""
+    monkeypatch.setattr(
+        update_runner_client,
+        "get_job_status",
+        lambda job_id: {
+            "job_id": job_id,
+            "kind": "update",
+            "status": "running",
+            "started_at": "2026-04-26T10:00:00+00:00",
+            "finished_at": None,
+            "exit_code": None,
+            "detail": None,
+            "log_tail": "Building API image...\nApplying real migrations...\n",
+        },
+    )
+
+    response = client.get(
+        "/api/admin/updates/progress/job-abc-123",
+        headers=auth_headers(admin_token),
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["job_id"] == "job-abc-123"
+    assert payload["status"] == "running"
+    assert payload["started_at"] == "2026-04-26T10:00:00+00:00"
+    assert payload["finished_at"] is None
+    assert "Applying real migrations" in payload["log_tail"]
+
+
+def test_admin_get_update_progress_returns_404_for_unknown_job(
+    client: TestClient,
+    admin_token: str,
+    monkeypatch,
+):
+    def _missing(job_id: str):
+        raise KeyError(job_id)
+
+    monkeypatch.setattr(update_runner_client, "get_job_status", _missing)
+
+    response = client.get(
+        "/api/admin/updates/progress/no-such-job",
+        headers=auth_headers(admin_token),
+    )
+    assert response.status_code == 404
+
+
+def test_admin_get_update_progress_returns_503_when_runner_unreachable(
+    client: TestClient,
+    admin_token: str,
+    monkeypatch,
+):
+    def _unreachable(job_id: str):
+        raise update_runner_client.UpdateRunnerUnreachable("connection refused")
+
+    monkeypatch.setattr(update_runner_client, "get_job_status", _unreachable)
+
+    response = client.get(
+        "/api/admin/updates/progress/job-abc-123",
+        headers=auth_headers(admin_token),
+    )
+    assert response.status_code == 503

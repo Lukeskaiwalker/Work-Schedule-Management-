@@ -1,0 +1,80 @@
+# Single Caddyfile that handles every flavour of how this stack is fronted:
+#   - Local dev: HTTPS via tls internal (browser sees self-signed but trustable)
+#   - Behind Traefik in prod: plain HTTP on :80, Traefik does Let's Encrypt
+#
+# Maintenance mode is toggled by the existence of /srv/maintenance/.flag.
+# The Caddy `file` matcher evaluates per request, so creating or removing
+# that file flips the page instantly — no reload, no restart, no dropped
+# connections.
+
+(spa_routing) {
+	encode gzip
+
+	# Maintenance mode: when /srv/maintenance/.flag exists, every request
+	# is served the maintenance page with no-store cache headers and a
+	# Retry-After hint so well-behaved clients back off.
+	#
+	# The `file` matcher resolves try_files relative to its own `root`, not
+	# the surrounding site root, which is why we scope it explicitly here.
+	# Without the inner root, the matcher would join /srv/maintenance/.flag
+	# against /srv/web (the site root set further down) and never find it.
+	@maintenance file {
+		root /srv/maintenance
+		try_files /.flag
+	}
+	handle @maintenance {
+		header Cache-Control "no-store, must-revalidate"
+		header Retry-After "120"
+		rewrite * /index.html
+		root * /srv/maintenance
+		file_server
+	}
+
+	# API reverse proxy. SMPL_API_UPSTREAM is overrideable for tests but
+	# defaults to the docker-network address of the api service.
+	@api path /api*
+	reverse_proxy @api {$SMPL_API_UPSTREAM:api:8000}
+
+	# SPA static files. Vite emits content-hashed filenames in /assets/
+	# and /chunks/, so those can be cached aggressively (a new build = a
+	# new filename, so no risk of stale references).
+	root * /srv/web
+
+	@hashed path /assets/* /chunks/*
+	header @hashed Cache-Control "public, max-age=31536000, immutable"
+
+	# index.html and the service worker MUST revalidate every load — they
+	# point at the hashed asset filenames, so a cached copy can leave the
+	# browser referencing ghost files after a deploy. no-cache means
+	# "always revalidate" (a cheap 304 round-trip), not "don't store".
+	@nocache path /index.html /sw.js
+	header @nocache Cache-Control "no-cache"
+
+	# SPA fallback: client-side routes like /admin, /time, /planning fall
+	# through to index.html so React Router can take over.
+	try_files {path} /index.html
+	file_server
+}
+
+{
+	auto_https disable_redirects
+}
+
+# Local dev: terminate TLS with an internal cert. The HTTP listener below
+# upgrades to HTTPS so http://localhost still works.
+https://localhost, https://127.0.0.1, https://[::1] {
+	tls internal
+	import spa_routing
+}
+
+http://localhost, http://127.0.0.1, http://[::1] {
+	redir https://{host}{uri}
+}
+
+# Production / fallback HTTP listener. In the prod stack Traefik terminates
+# TLS at the household edge and forwards plain HTTP to us on port 80, so
+# this block carries all real traffic. Locally it's never reached because
+# the localhost block above wins on the Host header.
+http:// {
+	import spa_routing
+}

@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { useAppContext } from "../../context/AppContext";
 
 export function AdminUpdateMenu() {
@@ -8,9 +9,25 @@ export function AdminUpdateMenu() {
     updateStatus,
     updateStatusLoading,
     updateInstallRunning,
+    updateProgress,
+    setUpdateProgress,
     loadUpdateStatus,
     installSystemUpdate,
   } = useAppContext();
+
+  // Auto-fetch the update status the first time the System tab is opened in a session.
+  // The component is conditionally rendered, so this fires when the admin lands on
+  // the tab. Skipped when status is already cached (avoids a refetch on every tab
+  // switch) and when an explicit refresh is already in flight.
+  useEffect(() => {
+    if (!canManageSystem) return;
+    if (updateStatus !== null && updateStatus !== undefined) return;
+    if (updateStatusLoading) return;
+    void loadUpdateStatus(false);
+    // We only want to run once per mount — the effect intentionally captures the
+    // initial state and triggers a single fetch.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canManageSystem]);
 
   if (!canManageSystem) return null;
 
@@ -22,6 +39,23 @@ export function AdminUpdateMenu() {
   } else if (updateStatus?.update_available === false) {
     statusLabel = language === "de" ? "Bereits aktuell" : "Up to date";
   }
+
+  // Map runner job status to a localized human label. Falls back to the raw
+  // status string for any future status values we haven't translated yet.
+  const progressStatusLabel = (() => {
+    if (!updateProgress) return null;
+    const map: Record<string, { de: string; en: string }> = {
+      queued: { de: "In Warteschlange", en: "Queued" },
+      running: { de: "Läuft...", en: "Running..." },
+      succeeded: { de: "Erfolgreich", en: "Succeeded" },
+      failed: { de: "Fehlgeschlagen", en: "Failed" },
+    };
+    const entry = map[updateProgress.status];
+    return entry ? entry[language === "de" ? "de" : "en"] : updateProgress.status;
+  })();
+
+  const isTerminalProgress =
+    updateProgress?.status === "succeeded" || updateProgress?.status === "failed";
 
   return (
     <div className="metric-stack admin-update-tools">
@@ -90,6 +124,52 @@ export function AdminUpdateMenu() {
               : "Install update"}
         </button>
       </div>
+      {updateProgress && (
+        <div className="admin-update-progress">
+          <small className="muted">
+            <b>{language === "de" ? "Job-Status" : "Job status"}:</b>{" "}
+            {progressStatusLabel ?? updateProgress.status}
+            {updateProgress.exit_code !== null && updateProgress.exit_code !== undefined ? (
+              <> · {language === "de" ? "Exit-Code" : "exit code"} {updateProgress.exit_code}</>
+            ) : null}
+          </small>
+          {updateProgress.detail && <small className="muted">{updateProgress.detail}</small>}
+          {updateProgress.log_tail ? (
+            <pre
+              className="admin-update-log-tail"
+              style={{
+                maxHeight: 220,
+                overflow: "auto",
+                background: "var(--surface-2, #111)",
+                color: "var(--text-on-surface-2, #ddd)",
+                padding: "8px 12px",
+                borderRadius: 6,
+                fontSize: 12,
+                lineHeight: 1.4,
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-word",
+              }}
+            >
+              {updateProgress.log_tail}
+            </pre>
+          ) : (
+            <small className="muted">
+              {language === "de"
+                ? "Noch keine Log-Ausgabe verfügbar."
+                : "No log output yet."}
+            </small>
+          )}
+          {isTerminalProgress && (
+            <button
+              type="button"
+              onClick={() => setUpdateProgress(null)}
+              className="ghost"
+            >
+              {language === "de" ? "Anzeige schließen" : "Dismiss"}
+            </button>
+          )}
+        </div>
+      )}
       {!updateStatus?.install_supported && updateStatus?.install_steps?.length ? (
         <>
           <small className="muted">

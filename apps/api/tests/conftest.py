@@ -77,6 +77,44 @@ def reset_db() -> Generator[None, None, None]:
     yield
 
 
+@pytest.fixture(autouse=True)
+def _isolate_release_env_file_reader(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Short-circuit the on-disk ``.release.env`` reader during tests.
+
+    The admin update endpoints prefer fresh on-disk values over the ``Settings``
+    cache so a regenerated ``apps/api/.release.env`` becomes visible without
+    requiring an api container restart. Tests pin the release version via
+    ``monkeypatch.setattr(settings, ...)``, which would silently lose to a
+    leftover ``.release.env`` in the working tree. This fixture neutralizes
+    the file reader by default; tests that exercise the disk-precedence path
+    re-monkeypatch it themselves.
+    """
+    from app.routers import admin as admin_router
+    monkeypatch.setattr(admin_router, "_read_release_env_file", lambda: (None, None))
+
+
+@pytest.fixture(autouse=True)
+def _isolate_update_runner_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the update_runner client look unreachable by default.
+
+    The api may run inside a docker compose stack where the runner sidecar is
+    actually reachable on the network — without isolation, every test that
+    exercises the install endpoint would dispatch a *real* update job to that
+    sidecar. This fixture forces the "runner unreachable" code path so the
+    legacy in-process logic executes, which is what the existing tests assert.
+    Tests for the runner-mediated path opt in by re-monkeypatching the
+    individual functions on the client module.
+    """
+    from app.services import update_runner_client
+
+    def _unreachable(*args, **kwargs):
+        raise update_runner_client.UpdateRunnerUnreachable("runner disabled in tests")
+
+    monkeypatch.setattr(update_runner_client, "is_runner_reachable", lambda: False)
+    monkeypatch.setattr(update_runner_client, "queue_update_job", _unreachable)
+    monkeypatch.setattr(update_runner_client, "get_job_status", _unreachable)
+
+
 @pytest.fixture
 def client() -> Generator[TestClient, None, None]:
     with TestClient(app) as c:

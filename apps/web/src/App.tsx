@@ -49,6 +49,7 @@ import type {
   AuditLogEntry,
   UpdateStatus,
   UpdateInstallResponse,
+  UpdateProgress,
   ReportWorker,
   ReportDraft,
   StoredReportDraft,
@@ -466,6 +467,11 @@ export function App() {
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
   const [updateStatusLoading, setUpdateStatusLoading] = useState(false);
   const [updateInstallRunning, setUpdateInstallRunning] = useState(false);
+  const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null);
+  // Holds the active polling timer so we can cancel cleanly on unmount or
+  // when the user dismisses a finished job. Lives in a ref instead of state
+  // because the timer ID changes don't need to trigger re-renders.
+  const updateProgressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [timeMonthCursor, setTimeMonthCursor] = useState<Date>(() => {
     const current = new Date();
     return new Date(current.getFullYear(), current.getMonth(), 1);
@@ -1770,6 +1776,18 @@ export function App() {
       document.removeEventListener("keydown", onEscape);
     };
   }, [threadActionMenuOpen]);
+
+  // Cancel any in-flight update-progress poll when App unmounts. Without this,
+  // the chained setTimeout could fire after teardown and call setState on an
+  // unmounted tree (React would warn, and we'd leak a request per tab close).
+  useEffect(() => {
+    return () => {
+      if (updateProgressTimerRef.current !== null) {
+        clearTimeout(updateProgressTimerRef.current);
+        updateProgressTimerRef.current = null;
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (!threadActionMenuOpen) return;
@@ -3334,9 +3352,75 @@ export function App() {
     }
   }
 
+  async function getUpdateProgress(jobId: string): Promise<UpdateProgress | null> {
+    try {
+      return await apiFetch<UpdateProgress>(`/admin/updates/progress/${jobId}`, token);
+    } catch (err: any) {
+      // 404 means the runner forgot the job (e.g., restart). Treat as terminal
+      // by returning null so the caller stops polling — surfacing this as an
+      // error toast every 2s would be noisy.
+      const status = err?.status ?? err?.response?.status;
+      if (status === 404) return null;
+      throw err;
+    }
+  }
+
+  function clearUpdateProgressTimer() {
+    if (updateProgressTimerRef.current !== null) {
+      clearTimeout(updateProgressTimerRef.current);
+      updateProgressTimerRef.current = null;
+    }
+  }
+
+  /** Poll the runner for a job's progress every 2s until it reaches a terminal
+   *  state (succeeded/failed) or the runner forgets it (404 → null). On terminal
+   *  state we refresh the update status (so the version label flips) and clear
+   *  the running flag. Errors during a single poll don't tear down the loop —
+   *  they're surfaced as a notice and the next tick retries. */
+  async function pollUpdateProgress(jobId: string) {
+    clearUpdateProgressTimer();
+    try {
+      const snapshot = await getUpdateProgress(jobId);
+      if (snapshot === null) {
+        // Runner forgot the job; nothing more we can show.
+        setUpdateInstallRunning(false);
+        return;
+      }
+      setUpdateProgress(snapshot);
+      const isTerminal = snapshot.status === "succeeded" || snapshot.status === "failed";
+      if (isTerminal) {
+        setUpdateInstallRunning(false);
+        if (snapshot.status === "succeeded") {
+          setNotice(
+            snapshot.detail ||
+              (language === "de" ? "Update erfolgreich abgeschlossen" : "Update completed successfully"),
+          );
+        } else {
+          setError(
+            snapshot.detail ||
+              (language === "de" ? "Update fehlgeschlagen" : "Update failed"),
+          );
+        }
+        await loadUpdateStatus(false);
+        return;
+      }
+      updateProgressTimerRef.current = setTimeout(() => {
+        void pollUpdateProgress(jobId);
+      }, 2000);
+    } catch (err: any) {
+      // Transient error (network blip, runner restart) — schedule another tick
+      // rather than aborting. The user can still see the last good snapshot.
+      updateProgressTimerRef.current = setTimeout(() => {
+        void pollUpdateProgress(jobId);
+      }, 4000);
+    }
+  }
+
   async function installSystemUpdate(dryRun: boolean) {
     if (!canManageSystem) return;
     setUpdateInstallRunning(true);
+    setUpdateProgress(null);
+    clearUpdateProgressTimer();
     try {
       const result = await apiFetch<UpdateInstallResponse>("/admin/updates/install", token, {
         method: "POST",
@@ -3344,13 +3428,38 @@ export function App() {
       });
       if (!result.ok) {
         setError(result.detail || (language === "de" ? "Update fehlgeschlagen" : "Update failed"));
+        setUpdateInstallRunning(false);
         return;
       }
+      // Async path: the api delegated to the update_runner sidecar. Start polling
+      // the job's progress; the running flag stays true until the poller sees a
+      // terminal status. We do NOT await pollUpdateProgress because the loop is
+      // self-scheduling via setTimeout.
+      if (result.async_mode && result.job_id) {
+        setNotice(
+          result.detail ||
+            (language === "de" ? "Update gestartet (läuft im Hintergrund)" : "Update started (running in background)"),
+        );
+        setUpdateProgress({
+          job_id: result.job_id,
+          kind: "update",
+          status: "queued",
+          log_tail: null,
+          detail: result.detail ?? null,
+          exit_code: null,
+          started_at: null,
+          finished_at: null,
+        });
+        void pollUpdateProgress(result.job_id);
+        return;
+      }
+      // Sync path: legacy in-process flow already finished by the time we got
+      // here. Show the result and clear the running flag.
       setNotice(result.detail || (language === "de" ? "Update ausgeführt" : "Update completed"));
       await loadUpdateStatus(false);
+      setUpdateInstallRunning(false);
     } catch (err: any) {
       setError(err.message ?? "Failed to run update");
-    } finally {
       setUpdateInstallRunning(false);
     }
   }
@@ -8075,6 +8184,8 @@ export function App() {
     setUpdateStatusLoading,
     updateInstallRunning,
     setUpdateInstallRunning,
+    updateProgress,
+    setUpdateProgress,
     preUserMenuOpen,
     setPreUserMenuOpen,
     adminUserMenuOpenId,
@@ -8424,6 +8535,7 @@ export function App() {
     smtpTestLastResult,
     loadUpdateStatus,
     installSystemUpdate,
+    getUpdateProgress,
     loadPlanningWeek,
     loadPlanningWindow,
     loadSitesAndTickets,

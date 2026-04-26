@@ -49,10 +49,12 @@ from app.schemas.api import (
     UserUpdate,
     UpdateInstallOut,
     UpdateInstallRequest,
+    UpdateProgressOut,
     UpdateStatusOut,
     WeatherSettingsOut,
     WeatherSettingsUpdate,
 )
+from app.services import update_runner_client
 from app.services.audit import log_admin_action
 from app.services.emailer import send_email_detailed, send_email_message
 from app.services.project_import import import_projects_from_csv
@@ -272,9 +274,80 @@ def _resolve_current_release_from_git() -> tuple[str | None, str | None]:
     return None, head_short_commit
 
 
+def _read_release_env_file() -> tuple[str | None, str | None]:
+    """Re-read ``apps/api/.release.env`` from disk on demand.
+
+    The Settings instance is ``@lru_cache``'d (see ``app.core.config``) and reads
+    env files exactly once at process startup. After an update flow regenerates
+    ``.release.env`` (via ``scripts/update_release_metadata.sh``), the freshly
+    written values are invisible to the running api process until it restarts.
+
+    This helper closes that gap: every call to ``_current_release_metadata``
+    consults the file fresh, so the in-app "Aktuell" version reflects the
+    real on-disk release as soon as the script writes it — no container
+    restart, no docker socket access required.
+
+    Probes, in order:
+      1. ``<repo_root>/apps/api/.release.env`` — covers production servers
+         that bind-mount the repo into the api container, which is also
+         where ``update_release_metadata.sh`` writes the file.
+      2. ``/app/.release.env`` — covers the build-time copy baked into the
+         api image from the Dockerfile's ``COPY . .`` step (build context
+         is ``apps/api``).
+      3. The path relative to this source file — defensive fallback for
+         non-container runs (tests, local uvicorn).
+    """
+    candidates: list[Path] = []
+    repo_root = _resolve_repo_root()
+    if repo_root is not None:
+        candidates.append(repo_root / "apps" / "api" / ".release.env")
+    candidates.append(Path("/app/.release.env"))
+    try:
+        candidates.append(Path(__file__).resolve().parents[2] / ".release.env")
+    except (IndexError, OSError):
+        pass
+
+    seen: set[Path] = set()
+    for path in candidates:
+        try:
+            resolved = path.resolve()
+        except OSError:
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        if not resolved.is_file():
+            continue
+        try:
+            contents = resolved.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        version: str | None = None
+        commit: str | None = None
+        for raw_line in contents.splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key == "APP_RELEASE_VERSION":
+                version = value or None
+            elif key == "APP_RELEASE_COMMIT":
+                commit = value or None
+        return version, commit
+
+    return None, None
+
+
 def _current_release_metadata() -> tuple[str | None, str | None, bool]:
-    current_version = _trim_or_none(settings.app_release_version)
-    current_commit = _short_commit(settings.app_release_commit)
+    # Prefer a fresh on-disk read of .release.env so a freshly regenerated file
+    # surfaces immediately, without relying on the lru_cached Settings being
+    # re-read (which only happens on full process restart). Fall back to the
+    # cached env value, then to git describe, in that order.
+    file_version, file_commit = _read_release_env_file()
+    current_version = _trim_or_none(file_version) or _trim_or_none(settings.app_release_version)
+    current_commit = _short_commit(file_commit) or _short_commit(settings.app_release_commit)
     placeholder_requested = _is_placeholder_release_version(current_version)
     unresolved_placeholder = False
 
@@ -389,6 +462,20 @@ def _resolve_repo_root() -> Path | None:
 
 
 def _can_auto_install_updates() -> bool:
+    """Return True when at least one auto-install path is available.
+
+    Two valid paths:
+      1. The ``update_runner`` sidecar is reachable. This is the preferred
+         path because the runner can do the full safe_update.sh flow
+         (encrypted backup, maintenance mode, rebuild) without the api
+         restarting itself mid-request.
+      2. The legacy in-process path: a git repo is resolvable from the api
+         container itself, so we can run git pull + alembic in-process.
+         No rebuild step in this path — operators must trigger that
+         out-of-band.
+    """
+    if update_runner_client.is_runner_reachable():
+        return True
     return _resolve_repo_root() is not None
 
 
@@ -2008,6 +2095,91 @@ def get_updates_status(
     return _fetch_update_status()
 
 
+def _delegate_real_install_to_runner(
+    *,
+    branch: str,
+    status: UpdateStatusOut,
+    admin: User,
+    db: Session,
+) -> UpdateInstallOut | None:
+    """Try the runner-mediated install path.
+
+    Returns the response to send to the client when the runner accepted (or
+    explicitly rejected with a known status) the job. Returns ``None`` when
+    the runner is unavailable, signalling the caller should fall back to the
+    legacy in-process path.
+
+    A 409 conflict (job already in flight) is surfaced as an ``ok=False``
+    response that still carries ``job_id`` so the UI can offer to resume
+    polling rather than silently swallow the prior run.
+    """
+    try:
+        runner_response = update_runner_client.queue_update_job(branch=branch, pull=True)
+    except update_runner_client.UpdateRunnerUnreachable:
+        return None
+    except update_runner_client.UpdateRunnerJobConflict as exc:
+        return UpdateInstallOut(
+            ok=False,
+            mode="auto",
+            async_mode=True,
+            job_id=exc.active_job_id,
+            detail=str(exc),
+            ran_steps=[],
+            dry_run=False,
+        )
+    except update_runner_client.UpdateRunnerError as exc:
+        return UpdateInstallOut(
+            ok=False,
+            mode="auto",
+            detail=f"Update runner returned an error: {exc}",
+            ran_steps=[],
+            dry_run=False,
+        )
+
+    job_id = str(runner_response.get("job_id") or "").strip()
+    if not job_id:
+        return UpdateInstallOut(
+            ok=False,
+            mode="auto",
+            detail="Update runner accepted the request but returned no job id.",
+            ran_steps=[],
+            dry_run=False,
+        )
+
+    log_admin_action(
+        db,
+        admin,
+        "system.update.install.dispatched",
+        "system",
+        "updates",
+        {
+            "repository": status.repository,
+            "branch": branch,
+            "job_id": job_id,
+            "delegated_to": "update_runner",
+            "latest_version": status.latest_version,
+            "latest_commit": status.latest_commit,
+        },
+    )
+    return UpdateInstallOut(
+        ok=True,
+        mode="auto",
+        async_mode=True,
+        job_id=job_id,
+        detail=(
+            f"Update job {job_id} dispatched to the update runner. "
+            "The full safety flow (encrypted backup, maintenance mode, "
+            "alembic preflight + migrate, rebuild + healthchecks) is now "
+            "running in the background."
+        ),
+        ran_steps=[
+            "delegated to update_runner sidecar",
+            f"job_id={job_id}",
+        ],
+        dry_run=False,
+    )
+
+
 @router.post("/updates/install", response_model=UpdateInstallOut)
 def install_updates(
     payload: UpdateInstallRequest,
@@ -2015,6 +2187,12 @@ def install_updates(
     db: Session = Depends(get_db),
 ):
     status = _fetch_update_status()
+    branch = status.branch or "main"
+
+    # Honour the status's install_supported gate first: if no auto path is
+    # available, we must not silently try to delegate or run in-process.
+    # ``_can_auto_install_updates`` (which feeds install_supported) accounts
+    # for both the runner and the legacy repo-mount path.
     if not status.install_supported:
         return UpdateInstallOut(
             ok=False,
@@ -2023,6 +2201,18 @@ def install_updates(
             ran_steps=[],
             dry_run=payload.dry_run,
         )
+
+    # Real installs are preferentially delegated to the update_runner sidecar
+    # so safe_update.sh can rebuild + restart the api stack without the api
+    # process taking itself out mid-request. Returns immediately with a
+    # job_id; the UI polls /admin/updates/progress/{job_id}. Falls through
+    # to the in-process path when the runner is unreachable.
+    if not payload.dry_run:
+        delegated = _delegate_real_install_to_runner(
+            branch=branch, status=status, admin=admin, db=db
+        )
+        if delegated is not None:
+            return delegated
 
     repo_root = _resolve_repo_root()
     if repo_root is None:
@@ -2033,8 +2223,6 @@ def install_updates(
             ran_steps=[],
             dry_run=payload.dry_run,
         )
-
-    branch = status.branch or "main"
     command_steps: list[tuple[str, list[str], Path]] = [
         ("git.fetch", ["git", "fetch", "--tags", "--prune", "origin"], repo_root),
         ("git.pull", ["git", "pull", "--ff-only", "origin", branch], repo_root),
@@ -2123,6 +2311,41 @@ def install_updates(
         ),
         ran_steps=ran_steps,
         dry_run=False,
+    )
+
+
+@router.get("/updates/progress/{job_id}", response_model=UpdateProgressOut)
+def get_update_progress(
+    job_id: str,
+    _: User = Depends(require_permission("system:manage")),
+):
+    """Proxy the runner's job-status snapshot to the admin UI.
+
+    This is the polling endpoint the System tab hits while a runner-mediated
+    install is in flight. Translates runner errors into HTTP statuses the
+    client can act on:
+      - 404 if the job id is unknown to the runner (e.g. runner restarted)
+      - 503 if the runner is unreachable from this api process
+      - 502 for any other runner-side failure
+    """
+    try:
+        payload = update_runner_client.get_job_status(job_id)
+    except update_runner_client.UpdateRunnerUnreachable as exc:
+        raise HTTPException(status_code=503, detail=f"Update runner is unreachable: {exc}")
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Unknown update job id")
+    except update_runner_client.UpdateRunnerError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+
+    return UpdateProgressOut(
+        job_id=str(payload.get("job_id") or job_id),
+        kind=str(payload.get("kind") or "update"),
+        status=str(payload.get("status") or "unknown"),
+        started_at=payload.get("started_at"),
+        finished_at=payload.get("finished_at"),
+        exit_code=payload.get("exit_code"),
+        detail=payload.get("detail"),
+        log_tail=str(payload.get("log_tail") or ""),
     )
 
 

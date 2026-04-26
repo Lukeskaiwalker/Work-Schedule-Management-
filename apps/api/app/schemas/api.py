@@ -73,6 +73,7 @@ from app.schemas.settings import (
     SmtpTestResultOut,
     UpdateInstallOut,
     UpdateInstallRequest,
+    UpdateProgressOut,
     UpdateStatusOut,
     WeatherSettingsOut,
     WeatherSettingsUpdate,
@@ -224,4 +225,5 @@ __all__ = [
     "UpdateStatusOut",
     "UpdateInstallRequest",
     "UpdateInstallOut",
+    "UpdateProgressOut",
 ]
