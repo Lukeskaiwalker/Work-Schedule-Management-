@@ -116,11 +116,61 @@ def _load_user_permissions() -> None:
         pass  # DB not yet migrated — silently start with empty user overrides
 
 
+def _log_release_metadata_on_startup() -> None:
+    """Surface release metadata + update-install gate state at api startup.
+
+    Prod has bitten us twice now with empty release metadata silently rendering
+    as "nicht gesetzt" in the admin UI, and the "Update installieren" button
+    being disabled because neither the runner sidecar nor a repo_root could be
+    resolved from inside the api container. By logging both the resolved
+    (version, commit, source) tuple AND the install-gate components at
+    startup, future diagnosis is one `docker logs api | grep '\\[release\\]'`
+    away — no need to shell into the container, hit
+    /api/admin/updates/status as an admin, or read the source.
+
+    Imports are local so any failure in the admin module can't break startup.
+    The runner reachability check is bounded by a short timeout and never
+    raises (it's a best-effort probe).
+    """
+    try:
+        from app.routers.admin import (
+            _can_auto_install_updates,
+            _current_release_metadata,
+            _read_release_env_file,
+            _resolve_repo_root,
+        )
+        from app.services.update_runner_client import is_runner_reachable
+
+        file_version, file_commit = _read_release_env_file()
+        version, commit, unresolved = _current_release_metadata()
+        runner_ok = is_runner_reachable()
+        repo_root = _resolve_repo_root()
+        install_supported = _can_auto_install_updates()
+    except Exception as exc:  # noqa: BLE001 — diagnostic only, never crash startup
+        print(f"[release] failed to resolve release metadata at startup: {exc!r}", flush=True)
+        return
+
+    source = "file" if file_version else ("settings" if settings.app_release_version else "unresolved")
+    print(
+        f"[release] version={version or '<none>'} "
+        f"commit={commit or '<none>'} "
+        f"source={source} "
+        f"settings.app_release_version={settings.app_release_version or '<empty>'} "
+        f"file.version={file_version or '<none>'} "
+        f"unresolved_placeholder={unresolved} "
+        f"runner_reachable={runner_ok} "
+        f"repo_root={repo_root if repo_root else '<none>'} "
+        f"install_supported={install_supported}",
+        flush=True,
+    )
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     _initialize_runtime_data()
     _load_role_permissions()
     _load_user_permissions()
+    _log_release_metadata_on_startup()
     image_task = asyncio.create_task(_image_loop())
     try:
         yield

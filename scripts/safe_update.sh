@@ -137,6 +137,17 @@ fi
 echo "Refreshing release metadata..."
 ./scripts/update_release_metadata.sh
 
+# Export the freshly-written values so `docker compose build` forwards them
+# to the api Dockerfile's ARGs. This is the belt-and-braces path: even on
+# Compose versions < 2.24 (which silently skip env_file `path:/required:`
+# long-form) the api image still ends up with /app/.release.env populated.
+if [[ -f apps/api/.release.env ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  . ./apps/api/.release.env
+  set +a
+fi
+
 echo "Building API image..."
 docker compose build api
 

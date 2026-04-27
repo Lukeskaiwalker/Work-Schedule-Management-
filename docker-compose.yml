@@ -17,6 +17,16 @@ services:
   api:
     build:
       context: ./apps/api
+      # Forward release metadata as build args so the api Dockerfile can bake
+      # it into /app/.release.env when the host's .release.env is missing or
+      # empty. safe_update.sh sources .release.env before `docker compose
+      # build api`, putting these vars in scope. Without this, prod can end
+      # up with an api image that has no release metadata at all (Compose
+      # silently skips `path:/required:` long-form env_file on versions
+      # below 2.24).
+      args:
+        APP_RELEASE_VERSION: ${APP_RELEASE_VERSION:-}
+        APP_RELEASE_COMMIT: ${APP_RELEASE_COMMIT:-}
     restart: unless-stopped
     env_file:
       - ./apps/api/.env.example
@@ -39,6 +49,12 @@ services:
   api_worker:
     build:
       context: ./apps/api
+      # Mirror the api service so the worker image has the same release
+      # metadata baked in (relevant for any release-aware code paths the
+      # worker may exercise).
+      args:
+        APP_RELEASE_VERSION: ${APP_RELEASE_VERSION:-}
+        APP_RELEASE_COMMIT: ${APP_RELEASE_COMMIT:-}
     restart: unless-stopped
     command: ["python", "-m", "app.worker"]
     env_file:
