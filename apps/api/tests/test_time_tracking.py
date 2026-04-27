@@ -28,6 +28,52 @@ def _login(client: TestClient, email: str):
     return response.headers["X-Access-Token"]
 
 
+def test_clock_summary_lists_currently_clocked_in_users(
+    client: TestClient, admin_token: str
+):
+    """The /time/clock-summary endpoint surfaces users who haven't clocked
+    out yet, with their start time and worked-hours-so-far. Used by the
+    "wer ist noch eingestempelt?" admin panel and the daily worker.
+    """
+    _create_user(client, admin_token, "summary-still-in@example.com", "employee")
+    _create_user(client, admin_token, "summary-out-already@example.com", "employee")
+    still_in_token = _login(client, "summary-still-in@example.com")
+    already_out_token = _login(client, "summary-out-already@example.com")
+
+    # Both clock in.
+    in1 = client.post("/api/time/clock-in", headers=auth_headers(still_in_token))
+    in2 = client.post("/api/time/clock-in", headers=auth_headers(already_out_token))
+    assert in1.status_code == 200 and in2.status_code == 200
+
+    # The second user clocks out; the first stays in.
+    out2 = client.post("/api/time/clock-out", headers=auth_headers(already_out_token))
+    assert out2.status_code == 200
+
+    response = client.get(
+        "/api/time/clock-summary", headers=auth_headers(admin_token)
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    names = [row["name"] for row in payload["clocked_in"]]
+    # The clocked-in user should be in the list; the clocked-out user
+    # should not.
+    assert any("summary-still-in" in n.lower() or "still" in n.lower() or n.startswith("Employee") for n in names)
+    assert all(
+        "out-already" not in n.lower() and "Already" not in n
+        for n in names
+    ), f"unexpectedly listed clocked-out user: names={names}"
+    assert payload["total_users_with_entries"] >= 1
+
+
+def test_clock_summary_rejects_non_admin(client: TestClient, admin_token: str):
+    _create_user(client, admin_token, "summary-noaccess@example.com", "employee")
+    employee_token = _login(client, "summary-noaccess@example.com")
+    response = client.get(
+        "/api/time/clock-summary", headers=auth_headers(employee_token)
+    )
+    assert response.status_code == 403
+
+
 def test_time_tracking_timesheet_and_csv(client: TestClient, admin_token: str):
     employee = _create_user(client, admin_token, "employee3@example.com", "employee")
     ceo_user = _create_user(client, admin_token, "ceo-time@example.com", "ceo")

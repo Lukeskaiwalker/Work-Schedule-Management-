@@ -1777,3 +1777,83 @@ def update_entry(
             category="time",
         )
     return _entry_out(db, entry, can_edit=update_scope is not None)
+
+
+# ── Daily clocked-in summary ─────────────────────────────────────────────
+@router.get("/clock-summary")
+def get_clock_summary(
+    target_date: str | None = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return today's clocked-in summary on demand.
+
+    Same data the worker sends out at end-of-day, returned as JSON for the
+    admin UI's "Wer ist noch eingestempelt?" panel. `target_date` is an
+    optional YYYY-MM-DD override for spot-checking past days.
+    """
+    if not _can_view_all_time_entries(current_user):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    from app.services.daily_clock_summary import build_clock_summary_for_date
+
+    if target_date:
+        try:
+            target = date.fromisoformat(target_date)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail="target_date must be YYYY-MM-DD"
+            ) from exc
+    else:
+        target = datetime.now(_app_timezone()).date()
+
+    summary = build_clock_summary_for_date(db, target)
+    return {
+        "target_local_date": summary.target_local_date.isoformat(),
+        "clocked_in": [
+            {
+                "user_id": entry.user_id,
+                "name": entry.name,
+                "clocked_in_since": entry.clocked_in_since_iso,
+                "hours_today": entry.hours_today,
+            }
+            for entry in summary.clocked_in
+        ],
+        "total_users_with_entries": summary.total_users_with_entries,
+        "total_hours_today": summary.total_hours_today,
+    }
+
+
+@router.post("/clock-summary/dispatch")
+def trigger_clock_summary_dispatch(
+    target_date: str | None = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Send the daily clocked-in summary right now via the configured
+    channels (Telegram and/or email). Returns the summary plus
+    per-channel send outcomes so the UI can show "Telegram: ✓ / Email:
+    ✗ (SMTP not configured)" without a separate request.
+    """
+    if not _can_manage_time_entries(current_user):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    from app.services.daily_clock_summary import dispatch_daily_clock_summary
+
+    target = None
+    if target_date:
+        try:
+            target = date.fromisoformat(target_date)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail="target_date must be YYYY-MM-DD"
+            ) from exc
+
+    outcome = dispatch_daily_clock_summary(db, target_local_date=target)
+    return {
+        "target_local_date": outcome.summary.target_local_date.isoformat(),
+        "clocked_in_count": len(outcome.summary.clocked_in),
+        "telegram_sent": outcome.telegram_sent,
+        "email_sent": outcome.email_sent,
+        "error": outcome.error,
+    }

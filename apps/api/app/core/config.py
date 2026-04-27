@@ -63,6 +63,20 @@ class Settings(BaseSettings):
 
     secure_cookies: bool = True
 
+    # ── Daily clocked-in summary ───────────────────────────────────────────
+    # When enabled, the worker dispatches a once-per-day summary listing
+    # every active clock entry plus today's worked hours per user. Used
+    # by admins to spot people who forgot to clock out at end-of-day.
+    # Triggered as soon as `now()` in the app timezone passes the target
+    # hour:minute, exactly once per local date (idempotent — survives
+    # worker restarts via an AppSetting bookmark).
+    daily_clock_summary_enabled: bool = False
+    daily_clock_summary_target_hour_local: int = 18
+    daily_clock_summary_target_minute_local: int = 0
+    daily_clock_summary_send_telegram: bool = True
+    daily_clock_summary_send_email: bool = False
+    daily_clock_summary_email_recipient: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:
