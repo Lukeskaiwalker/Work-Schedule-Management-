@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from io import StringIO
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
-from urllib.request import Request, urlopen
+from urllib.request import Request as URLRequest, urlopen
 
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -427,7 +427,11 @@ def _github_api_json(path: str) -> dict | list:
     api_token = (settings.github_api_token or "").strip()
     if api_token:
         headers["Authorization"] = f"Bearer {api_token}"
-    request = Request(url, headers=headers)
+    # Use the aliased URLRequest so it's not shadowed by fastapi.Request,
+    # which is also imported in this module for endpoint type annotations.
+    # urllib.request.Request accepts headers=, fastapi.Request does not —
+    # mixing them up was the root cause of /api/admin/updates/status 500-ing.
+    request = URLRequest(url, headers=headers)
     with urlopen(request, timeout=8) as response:
         payload = response.read().decode("utf-8")
     return json.loads(payload)

@@ -317,6 +317,68 @@ def test_users_manage_without_permissions_manage_cannot_assign_roles(client: Tes
     assert promote_employee.status_code == 403
 
 
+def test_github_api_json_request_construction_does_not_shadow_fastapi_request(monkeypatch):
+    """Regression test for the v2.2.0 production bug:
+    `_github_api_json` constructs a `urllib.request.Request(url, headers=...)`,
+    but `fastapi.Request` was also imported in admin.py for endpoint type
+    annotations and silently shadowed the urllib import. Calling the
+    endpoint then raised `TypeError: Request.__init__() got an unexpected
+    keyword argument 'headers'` and the admin UI's "Aktuell" / "Check for
+    updates" both broke.
+
+    Existing tests stub `_github_api_json` entirely, so the urllib code
+    path was never exercised. This test calls the real implementation
+    with `urlopen` patched to return a fake JSON body, so the failure
+    mode (Request shadow → TypeError) reappears immediately if anyone
+    re-introduces the import collision.
+    """
+    import io
+    import json as _json
+    from app.routers import admin as admin_router
+
+    captured_args: dict[str, object] = {}
+
+    class _FakeResponse:
+        def __init__(self, body: bytes) -> None:
+            self._body = body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return None
+
+        def read(self) -> bytes:
+            return self._body
+
+    def fake_urlopen(req, timeout: float = 0.0):  # noqa: ARG001
+        # `req` must be a urllib Request — assert key attributes so a future
+        # mismatch (e.g. plain string url) trips the test rather than 500-ing
+        # at runtime.
+        captured_args["full_url"] = req.full_url
+        # urllib's Request stores headers in dict with capitalised keys.
+        captured_args["headers"] = dict(req.headers)
+        return _FakeResponse(_json.dumps({"ok": True}).encode("utf-8"))
+
+    monkeypatch.setattr(admin_router, "urlopen", fake_urlopen)
+    monkeypatch.setattr(
+        admin_router.settings, "update_repo_owner", "example", raising=False
+    )
+    monkeypatch.setattr(
+        admin_router.settings, "update_repo_name", "repo", raising=False
+    )
+    monkeypatch.setattr(
+        admin_router.settings, "github_api_token", "", raising=False
+    )
+
+    result = admin_router._github_api_json("/repos/example/repo/releases")
+
+    assert result == {"ok": True}
+    assert captured_args["full_url"] == "https://api.github.com/repos/example/repo/releases"
+    assert "User-agent" in captured_args["headers"] or "User-Agent" in captured_args["headers"]
+    assert "Accept" in captured_args["headers"]
+
+
 def test_admin_can_read_update_status(client: TestClient, admin_token: str, monkeypatch):
     monkeypatch.setattr(admin_router.settings, "app_release_version", "1.0.0", raising=False)
     monkeypatch.setattr(admin_router.settings, "app_release_commit", "1111111111111111111111111111111111111111", raising=False)
