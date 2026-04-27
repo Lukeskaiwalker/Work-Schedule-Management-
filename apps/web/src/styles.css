@@ -19505,6 +19505,80 @@ td {
   color: #ffffff;
 }
 
+/* ── Absences in the personal time-tracking calendar ─────────────────── */
+/* Compact pill that shows the absence label inside a day cell. Sits above
+   the hours line so days with both absences and hours render both signals. */
+.time-calendar-cell-absence {
+  display: inline-block;
+  align-self: center;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.15;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background-color: #f0e6d2;
+  color: #6a4f1a;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Tinted backgrounds for whole cells with absences, layered under the
+   --has-hours / --today rules. Color-coded so users can scan at a glance. */
+.time-calendar-cell--has-absence {
+  background-color: #fff7e6;
+  border-color: #f3e1bd;
+}
+
+.time-calendar-cell--absence-vacation {
+  background-color: #e6f6ec;
+  border-color: #cfe9d7;
+}
+.time-calendar-cell--absence-vacation .time-calendar-cell-absence {
+  background-color: #34a853;
+  color: #ffffff;
+}
+
+.time-calendar-cell--absence-sick {
+  background-color: #fde7e9;
+  border-color: #f7c8cd;
+}
+.time-calendar-cell--absence-sick .time-calendar-cell-absence {
+  background-color: #dc3545;
+  color: #ffffff;
+}
+
+.time-calendar-cell--absence-school {
+  background-color: #ece5fa;
+  border-color: #d6c9f1;
+}
+.time-calendar-cell--absence-school .time-calendar-cell-absence {
+  background-color: #6c4ab6;
+  color: #ffffff;
+}
+
+.time-calendar-cell--absence-holiday {
+  background-color: #eef2f7;
+  border-color: #d8e0eb;
+}
+.time-calendar-cell--absence-holiday .time-calendar-cell-absence {
+  background-color: #6b7c8e;
+  color: #ffffff;
+}
+
+/* When today has an absence, --today's solid blue still wins for the date
+   color; restore the pill's contrast against the blue background. */
+.time-calendar-cell--today.time-calendar-cell--has-absence {
+  background-color: #2f70b7;
+  border-color: #2f70b7;
+}
+.time-calendar-cell--today .time-calendar-cell-absence {
+  background-color: rgba(255, 255, 255, 0.92);
+  color: #14293d;
+}
+
 .time-calendar-holidays {
   display: flex;
   flex-direction: column;

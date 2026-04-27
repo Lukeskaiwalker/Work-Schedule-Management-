@@ -198,6 +198,11 @@ export function TimePage() {
   }, [timeMonthRows, now]);
 
   // Build day-by-day calendar data for the current month from timeEntries
+  // and approved absences (vacation + school/sick/etc.). The personal
+  // time-tracking calendar previously only summed entries; the user
+  // reported absences not showing up — they're now merged in here, scoped
+  // to whichever user the page is currently viewing (self, or another
+  // user when a manager has switched targets).
   const monthCalendar = useMemo(() => {
     const monthDate = timeMonthCursor;
     const year = monthDate.getFullYear();
@@ -224,6 +229,111 @@ export function TimePage() {
       hoursByDate.set(localIso, (hoursByDate.get(localIso) ?? 0) + entry.net_hours);
     }
 
+    // ── Absences by date ────────────────────────────────────────────────
+    // The personal calendar shows the active target user's own absences:
+    // self when no target is set, otherwise the manager's selected target.
+    // School absences with `recurrence_weekday` repeat on that weekday from
+    // start_date until min(end_date, recurrence_until). We mirror the
+    // backend's `_expand_school_absence_days` rule client-side so the same
+    // days light up that the planning endpoint would surface.
+    type AbsenceMarker = { type: string; label: string };
+    // timeTargetUserId is a string (form value, "" when no manager target
+    // is selected). Coerce explicitly so the empty string doesn't fall
+    // through to NaN/0 and match the wrong user.
+    const explicitTarget =
+      typeof timeTargetUserId === "string" && timeTargetUserId.trim() !== ""
+        ? Number(timeTargetUserId)
+        : null;
+    const targetUserId: number | null =
+      explicitTarget != null && Number.isFinite(explicitTarget)
+        ? explicitTarget
+        : (user?.id ?? null);
+    const absencesByDate = new Map<string, AbsenceMarker[]>();
+    const monthFirstIso = `${year}-${String(month + 1).padStart(2, "0")}-01`;
+    const monthLastIso =
+      `${year}-${String(month + 1).padStart(2, "0")}-${String(daysInMonth).padStart(2, "0")}`;
+
+    function pushAbsence(iso: string, marker: AbsenceMarker) {
+      const list = absencesByDate.get(iso) ?? [];
+      // Avoid duplicate markers for the same (type, label) on the same day.
+      if (!list.some((m) => m.type === marker.type && m.label === marker.label)) {
+        list.push(marker);
+        absencesByDate.set(iso, list);
+      }
+    }
+
+    function isoOfDate(d: Date): string {
+      return (
+        `${d.getFullYear()}-` +
+        `${String(d.getMonth() + 1).padStart(2, "0")}-` +
+        `${String(d.getDate()).padStart(2, "0")}`
+      );
+    }
+
+    function clampIso(value: string, lo: string, hi: string): string | null {
+      const lower = value < lo ? lo : value;
+      if (lower > hi) return null;
+      return lower;
+    }
+
+    function spanDays(startIso: string, endIso: string, push: (iso: string) => void) {
+      const cursor = new Date(`${startIso}T00:00:00`);
+      const stop = new Date(`${endIso}T00:00:00`);
+      while (cursor <= stop) {
+        push(isoOfDate(cursor));
+        cursor.setDate(cursor.getDate() + 1);
+      }
+    }
+
+    // Vacation rows: only "approved" status comes through approvedVacationRequests.
+    for (const row of approvedVacationRequests) {
+      if (targetUserId != null && row.user_id !== targetUserId) continue;
+      const lo = clampIso(row.start_date, monthFirstIso, monthLastIso);
+      if (lo === null) continue;
+      const hiCandidate = row.end_date > monthLastIso ? monthLastIso : row.end_date;
+      if (hiCandidate < lo) continue;
+      const label = de ? "Urlaub" : "Vacation";
+      spanDays(lo, hiCandidate, (iso) => pushAbsence(iso, { type: "vacation", label }));
+    }
+
+    // School / sick / Berufsschule / etc. — drop pending+rejected.
+    for (const row of schoolAbsences) {
+      if (row.status !== "approved") continue;
+      if (targetUserId != null && row.user_id !== targetUserId) continue;
+      const typeMeta = absenceTypes.find((t) => t.key === row.absence_type);
+      const label = typeMeta ? (de ? typeMeta.label_de : typeMeta.label_en) : row.title;
+
+      if (row.recurrence_weekday == null) {
+        const lo = clampIso(row.start_date, monthFirstIso, monthLastIso);
+        if (lo === null) continue;
+        const hiCandidate = row.end_date > monthLastIso ? monthLastIso : row.end_date;
+        if (hiCandidate < lo) continue;
+        spanDays(lo, hiCandidate, (iso) =>
+          pushAbsence(iso, { type: row.absence_type, label }),
+        );
+        continue;
+      }
+
+      // Recurring: include only days where weekday matches recurrence_weekday.
+      // The DB convention is Python's date.weekday() (0=Mon..6=Sun); JS's
+      // Date.getDay() is 0=Sun..6=Sat. Convert via (jsDay + 6) % 7.
+      const recurUpper =
+        row.recurrence_until && row.recurrence_until < monthLastIso
+          ? row.recurrence_until
+          : monthLastIso;
+      const lo = clampIso(row.start_date, monthFirstIso, monthLastIso);
+      if (lo === null) continue;
+      const hiCandidate = row.end_date > recurUpper ? recurUpper : row.end_date;
+      if (hiCandidate < lo) continue;
+      spanDays(lo, hiCandidate, (iso) => {
+        const cursorDate = new Date(`${iso}T00:00:00`);
+        const pyWeekday = (cursorDate.getDay() + 6) % 7;
+        if (pyWeekday === row.recurrence_weekday) {
+          pushAbsence(iso, { type: row.absence_type, label });
+        }
+      });
+    }
+
     // Build 6-row × 7-col grid starting on Monday
     type CalendarCell = {
       date: number | null;
@@ -231,13 +341,14 @@ export function TimePage() {
       hours: number;
       isToday: boolean;
       isPast: boolean;
+      absences: AbsenceMarker[];
     };
     const cells: CalendarCell[] = [];
     // JS: 0 = Sunday, 1 = Monday, ..., 6 = Saturday. We want Monday as first.
     const firstWeekdayJs = firstDay.getDay(); // 0..6 (Sun..Sat)
     const leadingBlanks = firstWeekdayJs === 0 ? 6 : firstWeekdayJs - 1;
     for (let i = 0; i < leadingBlanks; i += 1) {
-      cells.push({ date: null, iso: "", hours: 0, isToday: false, isPast: false });
+      cells.push({ date: null, iso: "", hours: 0, isToday: false, isPast: false, absences: [] });
     }
     const todayIso = now.toISOString().slice(0, 10);
     for (let d = 1; d <= daysInMonth; d += 1) {
@@ -248,14 +359,25 @@ export function TimePage() {
         hours: hoursByDate.get(iso) ?? 0,
         isToday: iso === todayIso,
         isPast: iso < todayIso,
+        absences: absencesByDate.get(iso) ?? [],
       });
     }
     // Pad to full rows of 7
     while (cells.length % 7 !== 0) {
-      cells.push({ date: null, iso: "", hours: 0, isToday: false, isPast: false });
+      cells.push({ date: null, iso: "", hours: 0, isToday: false, isPast: false, absences: [] });
     }
     return cells;
-  }, [timeMonthCursor, timeEntries, now]);
+  }, [
+    timeMonthCursor,
+    timeEntries,
+    now,
+    approvedVacationRequests,
+    schoolAbsences,
+    absenceTypes,
+    timeTargetUserId,
+    user?.id,
+    de,
+  ]);
 
   // Group recent entries by date for the Paper-style Recent Entries list (latest 4-6 days)
   const recentEntriesGrouped = useMemo(() => {
@@ -719,15 +841,43 @@ export function TimePage() {
               // only edit days that have at least one editable entry (handled via
               // recent-entries hours click below).
               const isClickable = isTimeManager;
+              const hasAbsence = cell.absences.length > 0;
+              const primaryAbsenceType = hasAbsence ? cell.absences[0].type : null;
+              // Stable hover/aria summary: comma-joined absence labels.
+              const absenceTitle = hasAbsence
+                ? cell.absences.map((m) => m.label).join(", ")
+                : "";
               const classes = [
                 "time-calendar-cell",
                 cell.hours > 0 ? "time-calendar-cell--has-hours" : "time-calendar-cell--empty",
                 cell.isToday ? "time-calendar-cell--today" : "",
                 cell.isPast ? "time-calendar-cell--past" : "",
                 isClickable ? "time-calendar-cell--clickable" : "",
+                hasAbsence ? "time-calendar-cell--has-absence" : "",
+                primaryAbsenceType
+                  ? `time-calendar-cell--absence-${primaryAbsenceType}`
+                  : "",
               ]
                 .filter((v) => v)
                 .join(" ");
+              const cellInner = (
+                <>
+                  <span className="time-calendar-cell-date">{cell.date}</span>
+                  {hasAbsence && (
+                    <span
+                      className="time-calendar-cell-absence"
+                      title={absenceTitle}
+                      aria-label={absenceTitle}
+                    >
+                      {cell.absences[0].label}
+                      {cell.absences.length > 1 ? ` +${cell.absences.length - 1}` : ""}
+                    </span>
+                  )}
+                  {cell.hours > 0 && (
+                    <span className="time-calendar-cell-hours">{formatHours(cell.hours)}</span>
+                  )}
+                </>
+              );
               if (isClickable) {
                 return (
                   <button
@@ -735,21 +885,17 @@ export function TimePage() {
                     type="button"
                     className={classes}
                     onClick={() => setEditEntriesDate(cell.iso)}
-                    aria-label={`${de ? "Bearbeiten" : "Edit"} ${cell.iso}`}
+                    aria-label={`${de ? "Bearbeiten" : "Edit"} ${cell.iso}${
+                      absenceTitle ? ` (${absenceTitle})` : ""
+                    }`}
                   >
-                    <span className="time-calendar-cell-date">{cell.date}</span>
-                    {cell.hours > 0 && (
-                      <span className="time-calendar-cell-hours">{formatHours(cell.hours)}</span>
-                    )}
+                    {cellInner}
                   </button>
                 );
               }
               return (
-                <div key={`cal-${cell.iso}`} className={classes}>
-                  <span className="time-calendar-cell-date">{cell.date}</span>
-                  {cell.hours > 0 && (
-                    <span className="time-calendar-cell-hours">{formatHours(cell.hours)}</span>
-                  )}
+                <div key={`cal-${cell.iso}`} className={classes} title={absenceTitle || undefined}>
+                  {cellInner}
                 </div>
               );
             })}
