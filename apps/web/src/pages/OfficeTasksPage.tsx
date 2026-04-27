@@ -41,10 +41,27 @@ export function OfficeTasksPage() {
   } = useAppContext();
 
   const [partnerOnly, setPartnerOnly] = useState(false);
+  const [nameQuery, setNameQuery] = useState("");
   const visibleTasks = useMemo(() => {
-    if (!partnerOnly) return officeFilteredTasks;
-    return officeFilteredTasks.filter((task) => (task.partners ?? []).length > 0);
-  }, [officeFilteredTasks, partnerOnly]);
+    const trimmed = nameQuery.trim().toLowerCase();
+    let rows = officeFilteredTasks;
+    if (partnerOnly) {
+      rows = rows.filter((task) => (task.partners ?? []).length > 0);
+    }
+    if (trimmed) {
+      // Search title primarily and description as a fallback so users can find
+      // a task by either the headline name or a remembered detail in the body.
+      // The list is already client-side, so this stays purely local — no
+      // backend round-trip on every keystroke.
+      rows = rows.filter((task) => {
+        const title = (task.title ?? "").toLowerCase();
+        if (title.includes(trimmed)) return true;
+        const desc = (task.description ?? "").toLowerCase();
+        return desc.includes(trimmed);
+      });
+    }
+    return rows;
+  }, [officeFilteredTasks, partnerOnly, nameQuery]);
 
   if (mainView !== "office_tasks") return null;
 
@@ -71,6 +88,19 @@ export function OfficeTasksPage() {
           : "Shows all available tasks, including unassigned tasks."}
       </small>
       <div className="row wrap office-task-filter-row">
+        <label className="office-task-filter-field office-task-filter-field-name">
+          {language === "de" ? "Aufgabenname" : "Task name"}
+          <input
+            type="search"
+            value={nameQuery}
+            onChange={(event) => setNameQuery(event.target.value)}
+            placeholder={
+              language === "de"
+                ? "Aufgabe suchen…"
+                : "Search tasks…"
+            }
+          />
+        </label>
         <label className="office-task-filter-field">
           {language === "de" ? "Status" : "Status"}
           <select value={officeTaskStatusFilter} onChange={(event) => setOfficeTaskStatusFilter(event.target.value)}>
@@ -188,6 +218,7 @@ export function OfficeTasksPage() {
             setOfficeTaskProjectFilterQuery("");
             setOfficeTaskProjectFilterIds([]);
             setPartnerOnly(false);
+            setNameQuery("");
           }}
         >
           {language === "de" ? "Filter zurücksetzen" : "Reset filters"}
