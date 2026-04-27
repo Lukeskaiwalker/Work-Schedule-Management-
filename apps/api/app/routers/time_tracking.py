@@ -326,9 +326,17 @@ def _entry_out(
     can_edit: bool = False,
 ) -> TimeEntryOut:
     metrics = _entry_metrics(db, entry, now=now)
+    # Populate a display-friendly user name so the frontend can label each
+    # row. Cheap lookup; a larger manager view could preload names in bulk
+    # but the current list sizes (≤ 1 month per request) don't warrant it.
+    user_name: str | None = None
+    user = db.get(User, entry.user_id)
+    if user is not None:
+        user_name = (user.nickname or user.full_name or user.email or "").strip() or None
     return TimeEntryOut(
         id=entry.id,
         user_id=entry.user_id,
+        user_name=user_name,
         clock_in=entry.clock_in,
         clock_out=entry.clock_out,
         is_open=entry.clock_out is None,

@@ -4,8 +4,16 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-MAINTENANCE_ENV_FILE="$ROOT_DIR/infra/.maintenance.env"
-MAINTENANCE_PROFILE_ARGS=(--profile maintenance)
+# Maintenance mode is now driven by a single sentinel file inside
+# infra/maintenance/. The web container has that directory mounted read-only
+# and Caddy's `file` matcher checks for the flag at *request time*, so
+# creating or removing the file flips the page instantly with no reload,
+# no restart, and no dropped connections.
+MAINTENANCE_FLAG_FILE="$ROOT_DIR/infra/maintenance/.flag"
+# Legacy env file from the older two-container layout. Cleaned up on entry
+# so a stale leftover from a previous version of this script can't influence
+# the new web container's env.
+LEGACY_MAINTENANCE_ENV_FILE="$ROOT_DIR/infra/.maintenance.env"
 MAINTENANCE_ENABLED=false
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -32,28 +40,27 @@ cleanup_on_error() {
   local exit_code=$?
   if [[ $exit_code -ne 0 && "$MAINTENANCE_ENABLED" == "true" ]]; then
     echo "Update interrupted. Maintenance page remains enabled." >&2
-    echo "After fixing the issue, rerun ./scripts/safe_update.sh or remove $MAINTENANCE_ENV_FILE and run 'docker compose up -d caddy'." >&2
+    echo "After fixing the issue, rerun ./scripts/safe_update.sh or remove $MAINTENANCE_FLAG_FILE to exit maintenance mode." >&2
   fi
   exit "$exit_code"
 }
 
 enable_maintenance_mode() {
   echo "Enabling maintenance page..."
-  cat > "$MAINTENANCE_ENV_FILE" <<EOF
-SMPL_API_UPSTREAM=maintenance:80
-SMPL_WEB_UPSTREAM=maintenance:80
-EOF
-  docker compose "${MAINTENANCE_PROFILE_ARGS[@]}" up -d maintenance
-  wait_for_service_health maintenance 60
-  docker compose "${MAINTENANCE_PROFILE_ARGS[@]}" up -d caddy
+  # Drop a stale env file from the previous two-container design if it's
+  # still hanging around — otherwise it would silently keep injecting the
+  # old upstream-swap variables into web's env.
+  rm -f "$LEGACY_MAINTENANCE_ENV_FILE"
+  # The flag file is what Caddy's `file` matcher checks at request time.
+  # No container restart needed — the next incoming request will see the
+  # maintenance page.
+  touch "$MAINTENANCE_FLAG_FILE"
   MAINTENANCE_ENABLED=true
 }
 
 disable_maintenance_mode() {
   echo "Disabling maintenance page..."
-  rm -f "$MAINTENANCE_ENV_FILE"
-  docker compose up -d caddy
-  docker compose "${MAINTENANCE_PROFILE_ARGS[@]}" stop maintenance >/dev/null 2>&1 || true
+  rm -f "$MAINTENANCE_FLAG_FILE"
   MAINTENANCE_ENABLED=false
 }
 
@@ -154,7 +161,7 @@ echo "Applying real migrations..."
 docker compose run --rm api sh -lc "cd /app && alembic upgrade head"
 
 echo "Rebuilding and starting services..."
-docker compose up -d --build api api_worker web caddy
+docker compose up -d --build api api_worker web
 
 echo "Waiting for API and web services to become healthy..."
 wait_for_service_health api

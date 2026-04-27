@@ -52,11 +52,13 @@ import type {
   NicknameAvailability,
   WeatherSettings,
   SmtpSettings,
+  SmtpTestResult,
   CompanySettings,
   EmployeeGroup,
   AuditLogEntry,
   UpdateStatus,
   UpdateInstallResponse,
+  UpdateProgress,
   ReportWorker,
   ReportDraft,
   ReportMaterialRow,
@@ -608,6 +610,10 @@ export interface AppContextValue {
   setUpdateStatusLoading: (loading: boolean) => void;
   updateInstallRunning: boolean;
   setUpdateInstallRunning: (running: boolean) => void;
+  /** Latest progress snapshot for an in-flight runner-mediated update job.
+   *  null when no async install is running or the last one has been dismissed. */
+  updateProgress: UpdateProgress | null;
+  setUpdateProgress: (progress: UpdateProgress | null) => void;
   preUserMenuOpen: boolean;
   setPreUserMenuOpen: (open: boolean) => void;
   adminUserMenuOpenId: number | null;
@@ -968,6 +974,8 @@ export interface AppContextValue {
   loadTasks: (mode: TaskView, projectId: number | null) => Promise<void>;
   loadMaterialNeeds: () => Promise<void>;
   loadMaterialCatalog: (query: string) => Promise<void>;
+  uploadMaterialCatalogImage: (externalKey: string, file: File) => Promise<MaterialCatalogItem | null>;
+  deleteMaterialCatalogImage: (externalKey: string) => Promise<void>;
   lookupMaterialCatalogByIdentifier: (rawValue: string) => Promise<MaterialCatalogItem | null>;
   enrichTaskModalMaterialRowFromCatalog: (index: number, lookupField: "item" | "article_no") => Promise<void>;
   enrichTaskEditMaterialRowFromCatalog: (index: number, lookupField: "item" | "article_no") => Promise<void>;
@@ -983,8 +991,15 @@ export interface AppContextValue {
   saveWeatherSettings: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   saveCompanySettings: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   saveSmtpSettings: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+  sendSmtpTest: (toEmail?: string) => Promise<SmtpTestResult | null>;
+  smtpTestSending: boolean;
+  smtpTestLastResult: SmtpTestResult | null;
   loadUpdateStatus: (showNotice?: boolean) => Promise<void>;
   installSystemUpdate: (dryRun: boolean) => Promise<void>;
+  /** Fetch one progress snapshot for a runner job. Returns null if the job
+   *  is unknown (e.g., runner restart cleared in-memory registry) so callers
+   *  can stop polling gracefully. */
+  getUpdateProgress: (jobId: string) => Promise<UpdateProgress | null>;
   loadPlanningWeek: (projectId: number | null, weekStart: string, taskType?: TaskType | null) => Promise<void>;
   loadPlanningWindow: (projectId: number | null, weekStart: string, weekCount: number) => Promise<void>;
   loadSitesAndTickets: (projectId: number) => Promise<void>;

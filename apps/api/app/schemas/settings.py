@@ -39,6 +39,20 @@ class SmtpSettingsUpdate(BaseModel):
     from_name: str = ""
 
 
+class SmtpTestRequest(BaseModel):
+    """Admin-triggered test send. `to_email` is optional — when omitted, the
+    test is sent to the admin's own account."""
+
+    to_email: EmailStr | str | None = None
+
+
+class SmtpTestResultOut(BaseModel):
+    ok: bool
+    error_type: str | None = None
+    error_detail: str | None = None
+    to_email: str
+
+
 class CompanySettingsOut(BaseModel):
     logo_url: str = ""
     navigation_title: str = "SMPL"
@@ -79,3 +93,25 @@ class UpdateInstallOut(BaseModel):
     detail: str
     ran_steps: list[str] = Field(default_factory=list)
     dry_run: bool = False
+    # When the install was delegated to the update_runner sidecar, ``async_mode``
+    # is True and ``job_id`` carries the runner-side handle the UI polls via
+    # /admin/updates/progress/{job_id}. For dry runs and the legacy in-process
+    # flow these fields stay None for backward compatibility.
+    async_mode: bool = False
+    job_id: str | None = None
+
+
+class UpdateProgressOut(BaseModel):
+    """Snapshot of an in-flight (or finished) update job, proxied from the
+    update_runner sidecar. Status values mirror the runner's vocabulary:
+    ``queued`` | ``running`` | ``succeeded`` | ``failed``.
+    """
+
+    job_id: str
+    kind: str
+    status: str
+    started_at: str | None = None
+    finished_at: str | None = None
+    exit_code: int | None = None
+    detail: str | None = None
+    log_tail: str = ""

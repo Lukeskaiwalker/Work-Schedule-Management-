@@ -76,3 +76,8 @@ agents.md
 # Large local content (mount at runtime)
 local wiki/*
 !local wiki/.gitkeep
+
+# Runtime sentinel — created by safe_update.sh to flip the web container into
+# maintenance mode, removed when the update finishes. Must never be committed
+# (a stale committed flag would put fresh clones into perma-maintenance).
+infra/maintenance/.flag

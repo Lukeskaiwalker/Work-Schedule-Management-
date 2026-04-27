@@ -63,7 +63,10 @@ export function NeuerArtikelModal({
   const [stockTotal, setStockTotal] = useState(4);
   const [stockMin, setStockMin] = useState(2);
   const [priceEur, setPriceEur] = useState("1248,00");
-  const [supplierId, setSupplierId] = useState<string>(MOCK_SUPPLIERS[0].id);
+  // MOCK_SUPPLIERS is intentionally empty since v2.0.0 — fall back to "" so
+  // the modal mounts cleanly. Real supplier pick is driven by the parent
+  // once the Werkstatt BE endpoints land.
+  const [supplierId, setSupplierId] = useState<string>(MOCK_SUPPLIERS[0]?.id ?? "");
   const [supplierArticleNo, setSupplierArticleNo] = useState("26190");
   const [bgRequired, setBgRequired] = useState(true);
 

@@ -17,6 +17,9 @@ class InviteDispatchOut(BaseModel):
     sent: bool
     invite_link: str
     expires_at: datetime
+    # When `sent` is False, these explain why — safe to show in the admin UI.
+    email_error_type: str | None = None
+    email_error_detail: str | None = None
 
 
 class PasswordResetDispatchOut(BaseModel):
@@ -26,6 +29,8 @@ class PasswordResetDispatchOut(BaseModel):
     sent: bool
     reset_link: str
     expires_at: datetime
+    email_error_type: str | None = None
+    email_error_detail: str | None = None
 
 
 class InviteAccept(BaseModel):

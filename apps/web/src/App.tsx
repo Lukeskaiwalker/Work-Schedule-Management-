@@ -40,6 +40,7 @@ import type {
   SchoolAbsence,
   InviteDispatchResponse,
   PasswordResetDispatchResponse,
+  SmtpTestResult,
   NicknameAvailability,
   WeatherSettings,
   SmtpSettings,
@@ -48,6 +49,7 @@ import type {
   AuditLogEntry,
   UpdateStatus,
   UpdateInstallResponse,
+  UpdateProgress,
   ReportWorker,
   ReportDraft,
   StoredReportDraft,
@@ -460,9 +462,16 @@ export function App() {
     from_name: "",
   });
   const [smtpSettingsSaving, setSmtpSettingsSaving] = useState(false);
+  const [smtpTestSending, setSmtpTestSending] = useState(false);
+  const [smtpTestLastResult, setSmtpTestLastResult] = useState<SmtpTestResult | null>(null);
   const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
   const [updateStatusLoading, setUpdateStatusLoading] = useState(false);
   const [updateInstallRunning, setUpdateInstallRunning] = useState(false);
+  const [updateProgress, setUpdateProgress] = useState<UpdateProgress | null>(null);
+  // Holds the active polling timer so we can cancel cleanly on unmount or
+  // when the user dismisses a finished job. Lives in a ref instead of state
+  // because the timer ID changes don't need to trigger re-renders.
+  const updateProgressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [timeMonthCursor, setTimeMonthCursor] = useState<Date>(() => {
     const current = new Date();
     return new Date(current.getFullYear(), current.getMonth(), 1);
@@ -1768,6 +1777,18 @@ export function App() {
     };
   }, [threadActionMenuOpen]);
 
+  // Cancel any in-flight update-progress poll when App unmounts. Without this,
+  // the chained setTimeout could fire after teardown and call setState on an
+  // unmounted tree (React would warn, and we'd leak a request per tab close).
+  useEffect(() => {
+    return () => {
+      if (updateProgressTimerRef.current !== null) {
+        clearTimeout(updateProgressTimerRef.current);
+        updateProgressTimerRef.current = null;
+      }
+    };
+  }, []);
+
   useEffect(() => {
     if (!threadActionMenuOpen) return;
     if (!activeThread || !activeThread.can_edit || mainView !== "messages") {
@@ -2707,6 +2728,87 @@ export function App() {
     }
   }
 
+  async function uploadMaterialCatalogImage(
+    externalKey: string,
+    file: File,
+  ): Promise<MaterialCatalogItem | null> {
+    if (!externalKey) {
+      setError(
+        language === "de"
+          ? "Dieser Katalog-Eintrag hat keinen externen Schlüssel."
+          : "This catalog item has no external key.",
+      );
+      return null;
+    }
+    const form = new FormData();
+    form.append("file", file);
+    try {
+      const result = await apiFetch<{
+        ok: boolean;
+        external_key: string;
+        image_url: string;
+        image_source: string;
+      }>(`/materials/catalog/images/${encodeURIComponent(externalKey)}`, token, {
+        method: "POST",
+        body: form,
+      });
+      setMaterialCatalogRows((current) =>
+        current.map((row) =>
+          row.external_key === externalKey
+            ? {
+                ...row,
+                image_url: result.image_url,
+                image_source: result.image_source,
+                image_checked_at: new Date().toISOString(),
+              }
+            : row,
+        ),
+      );
+      setNotice(
+        language === "de"
+          ? "Bild hochgeladen."
+          : "Image uploaded.",
+      );
+      const match = materialCatalogRows.find((row) => row.external_key === externalKey);
+      return match
+        ? {
+            ...match,
+            image_url: result.image_url,
+            image_source: result.image_source,
+            image_checked_at: new Date().toISOString(),
+          }
+        : null;
+    } catch (err: any) {
+      setError(err?.message ?? "Image upload failed");
+      return null;
+    }
+  }
+
+  async function deleteMaterialCatalogImage(externalKey: string): Promise<void> {
+    if (!externalKey) return;
+    try {
+      await apiFetch<{ ok: boolean }>(
+        `/materials/catalog/images/${encodeURIComponent(externalKey)}`,
+        token,
+        { method: "DELETE" },
+      );
+      setMaterialCatalogRows((current) =>
+        current.map((row) =>
+          row.external_key === externalKey
+            ? { ...row, image_url: null, image_source: null, image_checked_at: null }
+            : row,
+        ),
+      );
+      setNotice(
+        language === "de"
+          ? "Bild entfernt. Automatische Suche aktiv."
+          : "Image removed. Auto-lookup re-enabled.",
+      );
+    } catch (err: any) {
+      setError(err?.message ?? "Image removal failed");
+    }
+  }
+
   async function loadMaterialCatalog(query: string) {
     const requestSeq = ++materialCatalogRequestSeqRef.current;
     setMaterialCatalogLoading(true);
@@ -3187,6 +3289,51 @@ export function App() {
     }
   }
 
+  async function sendSmtpTest(toEmail?: string): Promise<SmtpTestResult | null> {
+    if (!canManageSettings) return null;
+    setSmtpTestSending(true);
+    setSmtpTestLastResult(null);
+    try {
+      const result = await apiFetch<SmtpTestResult>(
+        "/admin/settings/smtp/test",
+        token,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            to_email: toEmail && toEmail.trim().length > 0 ? toEmail.trim() : null,
+          }),
+        },
+      );
+      setSmtpTestLastResult(result);
+      if (result.ok) {
+        setNotice(
+          language === "de"
+            ? `Test-E-Mail an ${result.to_email} gesendet.`
+            : `Test email sent to ${result.to_email}.`,
+        );
+      } else {
+        setError(
+          (language === "de" ? "SMTP-Test fehlgeschlagen: " : "SMTP test failed: ") +
+            (result.error_detail ||
+              (language === "de" ? "Unbekannter Fehler" : "Unknown error")),
+        );
+      }
+      return result;
+    } catch (err: any) {
+      const message = err?.message ?? "SMTP test failed";
+      setError(message);
+      setSmtpTestLastResult({
+        ok: false,
+        error_type: "request",
+        error_detail: message,
+        to_email: toEmail ?? "",
+      });
+      return null;
+    } finally {
+      setSmtpTestSending(false);
+    }
+  }
+
   async function loadUpdateStatus(showNotice = false) {
     if (!canManageSystem) return;
     setUpdateStatusLoading(true);
@@ -3205,9 +3352,75 @@ export function App() {
     }
   }
 
+  async function getUpdateProgress(jobId: string): Promise<UpdateProgress | null> {
+    try {
+      return await apiFetch<UpdateProgress>(`/admin/updates/progress/${jobId}`, token);
+    } catch (err: any) {
+      // 404 means the runner forgot the job (e.g., restart). Treat as terminal
+      // by returning null so the caller stops polling — surfacing this as an
+      // error toast every 2s would be noisy.
+      const status = err?.status ?? err?.response?.status;
+      if (status === 404) return null;
+      throw err;
+    }
+  }
+
+  function clearUpdateProgressTimer() {
+    if (updateProgressTimerRef.current !== null) {
+      clearTimeout(updateProgressTimerRef.current);
+      updateProgressTimerRef.current = null;
+    }
+  }
+
+  /** Poll the runner for a job's progress every 2s until it reaches a terminal
+   *  state (succeeded/failed) or the runner forgets it (404 → null). On terminal
+   *  state we refresh the update status (so the version label flips) and clear
+   *  the running flag. Errors during a single poll don't tear down the loop —
+   *  they're surfaced as a notice and the next tick retries. */
+  async function pollUpdateProgress(jobId: string) {
+    clearUpdateProgressTimer();
+    try {
+      const snapshot = await getUpdateProgress(jobId);
+      if (snapshot === null) {
+        // Runner forgot the job; nothing more we can show.
+        setUpdateInstallRunning(false);
+        return;
+      }
+      setUpdateProgress(snapshot);
+      const isTerminal = snapshot.status === "succeeded" || snapshot.status === "failed";
+      if (isTerminal) {
+        setUpdateInstallRunning(false);
+        if (snapshot.status === "succeeded") {
+          setNotice(
+            snapshot.detail ||
+              (language === "de" ? "Update erfolgreich abgeschlossen" : "Update completed successfully"),
+          );
+        } else {
+          setError(
+            snapshot.detail ||
+              (language === "de" ? "Update fehlgeschlagen" : "Update failed"),
+          );
+        }
+        await loadUpdateStatus(false);
+        return;
+      }
+      updateProgressTimerRef.current = setTimeout(() => {
+        void pollUpdateProgress(jobId);
+      }, 2000);
+    } catch (err: any) {
+      // Transient error (network blip, runner restart) — schedule another tick
+      // rather than aborting. The user can still see the last good snapshot.
+      updateProgressTimerRef.current = setTimeout(() => {
+        void pollUpdateProgress(jobId);
+      }, 4000);
+    }
+  }
+
   async function installSystemUpdate(dryRun: boolean) {
     if (!canManageSystem) return;
     setUpdateInstallRunning(true);
+    setUpdateProgress(null);
+    clearUpdateProgressTimer();
     try {
       const result = await apiFetch<UpdateInstallResponse>("/admin/updates/install", token, {
         method: "POST",
@@ -3215,13 +3428,38 @@ export function App() {
       });
       if (!result.ok) {
         setError(result.detail || (language === "de" ? "Update fehlgeschlagen" : "Update failed"));
+        setUpdateInstallRunning(false);
         return;
       }
+      // Async path: the api delegated to the update_runner sidecar. Start polling
+      // the job's progress; the running flag stays true until the poller sees a
+      // terminal status. We do NOT await pollUpdateProgress because the loop is
+      // self-scheduling via setTimeout.
+      if (result.async_mode && result.job_id) {
+        setNotice(
+          result.detail ||
+            (language === "de" ? "Update gestartet (läuft im Hintergrund)" : "Update started (running in background)"),
+        );
+        setUpdateProgress({
+          job_id: result.job_id,
+          kind: "update",
+          status: "queued",
+          log_tail: null,
+          detail: result.detail ?? null,
+          exit_code: null,
+          started_at: null,
+          finished_at: null,
+        });
+        void pollUpdateProgress(result.job_id);
+        return;
+      }
+      // Sync path: legacy in-process flow already finished by the time we got
+      // here. Show the result and clear the running flag.
       setNotice(result.detail || (language === "de" ? "Update ausgeführt" : "Update completed"));
       await loadUpdateStatus(false);
+      setUpdateInstallRunning(false);
     } catch (err: any) {
       setError(err.message ?? "Failed to run update");
-    } finally {
       setUpdateInstallRunning(false);
     }
   }
@@ -3404,11 +3642,22 @@ export function App() {
   async function refreshTimeData() {
     try {
       const currentDefs = monthWeekDefsRef.current;
-      const useManagerFilter = mainView === "time" && isTimeManager && timeTargetUserId;
-      const userQuery = useManagerFilter ? `&user_id=${Number(timeTargetUserId)}` : "";
-      const currentQuery = useManagerFilter ? `?user_id=${Number(timeTargetUserId)}` : "";
-      const vacationQuery = useManagerFilter ? `?user_id=${Number(timeTargetUserId)}` : "";
-      const schoolQuery = useManagerFilter ? `?user_id=${Number(timeTargetUserId)}` : "";
+      // Managers see ALL users' time entries by default when no user_id is
+      // sent (backend guard at time_tracking.py:1679). That aggregates
+      // everyone into the Time-page calendar, which is wrong — the user
+      // expects "their own hours" unless they explicitly pick someone in
+      // the employee picker. Default to the logged-in user's id so the
+      // calendar stays scoped, matching what non-managers see.
+      const effectiveTimeUserId: number | null =
+        mainView === "time" && isTimeManager
+          ? timeTargetUserId
+            ? Number(timeTargetUserId)
+            : user?.id ?? null
+          : null;
+      const userQuery = effectiveTimeUserId != null ? `&user_id=${effectiveTimeUserId}` : "";
+      const currentQuery = effectiveTimeUserId != null ? `?user_id=${effectiveTimeUserId}` : "";
+      const vacationQuery = effectiveTimeUserId != null ? `?user_id=${effectiveTimeUserId}` : "";
+      const schoolQuery = effectiveTimeUserId != null ? `?user_id=${effectiveTimeUserId}` : "";
       const entriesRangeQuery =
         timeEntriesStartDate && timeEntriesEndDate
           ? `&start_date=${timeEntriesStartDate}&end_date=${timeEntriesEndDate}`
@@ -6409,13 +6658,24 @@ export function App() {
           ? "Password reset email sent and link copied"
           : "Password reset email sent. Opened link dialog for copying";
     }
+    // Send failed — surface the reason so admins know WHY clipboard took over.
+    const detail = result.email_error_detail?.trim();
+    const reason = detail
+      ? detail
+      : result.email_error_type === "not_configured"
+        ? language === "de"
+          ? "SMTP nicht konfiguriert"
+          : "SMTP not configured"
+        : language === "de"
+          ? "E-Mail-Versand fehlgeschlagen"
+          : "Email send failed";
     return language === "de"
       ? copied
-        ? "Kein SMTP aktiv. Link wurde kopiert"
-        : "Kein SMTP aktiv. Link zum Kopieren geoeffnet"
+        ? `${reason}. Link wurde kopiert.`
+        : `${reason}. Link zum Kopieren geöffnet.`
       : copied
-        ? "SMTP not configured. Link copied"
-        : "SMTP not configured. Opened link dialog for copying";
+        ? `${reason}. Link copied.`
+        : `${reason}. Opened link dialog for copying.`;
   }
 
   async function copyActionLink(value: string) {
@@ -7924,6 +8184,8 @@ export function App() {
     setUpdateStatusLoading,
     updateInstallRunning,
     setUpdateInstallRunning,
+    updateProgress,
+    setUpdateProgress,
     preUserMenuOpen,
     setPreUserMenuOpen,
     adminUserMenuOpenId,
@@ -8251,6 +8513,8 @@ export function App() {
     loadTasks,
     loadMaterialNeeds,
     loadMaterialCatalog,
+    uploadMaterialCatalogImage,
+    deleteMaterialCatalogImage,
     lookupMaterialCatalogByIdentifier,
     enrichTaskModalMaterialRowFromCatalog,
     enrichTaskEditMaterialRowFromCatalog,
@@ -8266,8 +8530,12 @@ export function App() {
     saveWeatherSettings,
     saveCompanySettings,
     saveSmtpSettings,
+    sendSmtpTest,
+    smtpTestSending,
+    smtpTestLastResult,
     loadUpdateStatus,
     installSystemUpdate,
+    getUpdateProgress,
     loadPlanningWeek,
     loadPlanningWindow,
     loadSitesAndTickets,

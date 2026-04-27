@@ -264,6 +264,7 @@ export type ProjectMaterialNeed = {
 
 export type MaterialCatalogItem = {
   id: number;
+  external_key?: string | null;
   article_no?: string | null;
   item_name: string;
   unit?: string | null;
@@ -471,6 +472,7 @@ export type TimeCurrent = {
 export type TimeEntry = {
   id: number;
   user_id: number;
+  user_name?: string | null;
   clock_in: string;
   clock_out?: string | null;
   is_open: boolean;
@@ -575,6 +577,8 @@ export type InviteDispatchResponse = {
   sent: boolean;
   invite_link: string;
   expires_at: string;
+  email_error_type?: string | null;
+  email_error_detail?: string | null;
 };
 
 export type PasswordResetDispatchResponse = {
@@ -584,6 +588,15 @@ export type PasswordResetDispatchResponse = {
   sent: boolean;
   reset_link: string;
   expires_at: string;
+  email_error_type?: string | null;
+  email_error_detail?: string | null;
+};
+
+export type SmtpTestResult = {
+  ok: boolean;
+  error_type: string | null;
+  error_detail: string | null;
+  to_email: string;
 };
 
 export type NicknameAvailability = {
@@ -641,6 +654,28 @@ export type UpdateInstallResponse = {
   detail: string;
   ran_steps: string[];
   dry_run: boolean;
+  /** When true, the api delegated the install to the update_runner sidecar.
+   *  The actual safe_update.sh run is in flight; poll /admin/updates/progress/{job_id}
+   *  to follow it. When false, the sync legacy path ran inline and ran_steps holds
+   *  the executed commands. */
+  async_mode?: boolean;
+  /** Set when async_mode is true. Use with getUpdateProgress() to poll status. */
+  job_id?: string | null;
+};
+
+/** Progress snapshot for a runner-mediated update job.
+ *  Mirrors UpdateProgressOut on the api side. status is one of
+ *  "queued" | "running" | "succeeded" | "failed". The latter two are terminal. */
+export type UpdateProgress = {
+  job_id: string;
+  kind: string;
+  status: "queued" | "running" | "succeeded" | "failed" | string;
+  started_at?: string | null;
+  finished_at?: string | null;
+  exit_code?: number | null;
+  detail?: string | null;
+  /** Tail of the runner's stdout+stderr log. May be empty until the job starts running. */
+  log_tail?: string | null;
 };
 
 export type ReportWorker = {

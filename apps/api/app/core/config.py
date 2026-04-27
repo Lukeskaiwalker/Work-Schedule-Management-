@@ -46,6 +46,12 @@ class Settings(BaseSettings):
     update_repo_branch: str = "main"
     update_repo_path: str = ""
     github_api_token: str = ""
+    # Update runner sidecar — when reachable, the install endpoint delegates
+    # the full safe_update.sh flow (encrypted backup, maintenance mode, rebuild)
+    # to a separate container that owns docker socket access. Empty url disables.
+    update_runner_url: str = "http://update_runner:9000"
+    update_runner_token: str = ""
+    update_runner_timeout_seconds: float = 5.0
 
     mail_from: str = "technik@smpl-energy.de"
     smtp_host: str = ""

@@ -167,6 +167,9 @@ export function AdminPage() {
     setSmtpSettingsForm,
     smtpSettingsSaving,
     saveSmtpSettings,
+    sendSmtpTest,
+    smtpTestSending,
+    smtpTestLastResult,
     // System tab
     backupExporting,
     exportEncryptedDatabaseBackup,
@@ -1979,15 +1982,61 @@ export function AdminPage() {
                       : de ? "Nicht konfiguriert" : "Not configured"}
                   </div>
                 )}
-                <button
-                  type="submit"
-                  className="admin-invite-submit"
-                  disabled={smtpSettingsSaving}
-                >
-                  {smtpSettingsSaving
-                    ? de ? "Speichern…" : "Saving…"
-                    : de ? "Speichern" : "Save"}
-                </button>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <button
+                    type="submit"
+                    className="admin-invite-submit"
+                    disabled={smtpSettingsSaving}
+                  >
+                    {smtpSettingsSaving
+                      ? de ? "Speichern…" : "Saving…"
+                      : de ? "Speichern" : "Save"}
+                  </button>
+                  <button
+                    type="button"
+                    className="admin-invite-submit"
+                    style={{ background: "#ffffff", color: "#14293d", border: "1px solid #c9d9ea" }}
+                    disabled={smtpTestSending || !smtpSettings?.configured}
+                    onClick={() => void sendSmtpTest()}
+                    title={
+                      !smtpSettings?.configured
+                        ? de
+                          ? "Bitte zuerst speichern und konfigurieren."
+                          : "Save and configure SMTP first."
+                        : de
+                          ? "Sendet eine Testmail an deine eigene Adresse."
+                          : "Sends a test email to your own address."
+                    }
+                  >
+                    {smtpTestSending
+                      ? de ? "Sende…" : "Sending…"
+                      : de ? "Test senden" : "Send test"}
+                  </button>
+                </div>
+                {smtpTestLastResult && (
+                  <div
+                    className="admin-settings-status admin-settings-status--muted"
+                    style={{
+                      color: smtpTestLastResult.ok ? "#1a7a45" : "#b91c1c",
+                      fontWeight: 500,
+                    }}
+                  >
+                    <span
+                      className={`admin-settings-status-dot${
+                        smtpTestLastResult.ok ? " admin-settings-status-dot--ok" : ""
+                      }`}
+                      style={{
+                        background: smtpTestLastResult.ok ? "#1a7a45" : "#b91c1c",
+                      }}
+                    />
+                    {smtpTestLastResult.ok
+                      ? de
+                        ? `Testmail an ${smtpTestLastResult.to_email} gesendet.`
+                        : `Test email sent to ${smtpTestLastResult.to_email}.`
+                      : (smtpTestLastResult.error_detail ||
+                          (de ? "Unbekannter Fehler" : "Unknown error"))}
+                  </div>
+                )}
               </form>
             </div>
           </div>

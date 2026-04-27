@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 class MaterialCatalogItemOut(BaseModel):
     id: int
+    external_key: str | None = None
     article_no: str | None = None
     item_name: str
     unit: str | None = None

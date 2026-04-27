@@ -53,10 +53,27 @@ services:
       api:
         condition: service_healthy
 
+  # Single container that serves the SPA, reverse-proxies /api/*, and renders
+  # a maintenance page when ./infra/maintenance/.flag exists. Replaces the
+  # older "web (nginx)" + "caddy" two-container split. See apps/web/Caddyfile
+  # for the routing config.
   web:
     build:
       context: ./apps/web
     restart: unless-stopped
+    ports:
+      # SMPL_CADDY_* names preserved for backward compatibility with prod's
+      # existing .env. In production these usually map to 8080/8443 because
+      # Traefik owns 80/443 at the host level.
+      - "${SMPL_CADDY_HTTP_PORT:-80}:80"
+      - "${SMPL_CADDY_HTTPS_PORT:-443}:443"
+    volumes:
+      # Maintenance assets read-only mount. Caddy checks for .flag at request
+      # time, so safe_update.sh can toggle maintenance instantly without any
+      # reload or container restart.
+      - ./infra/maintenance:/srv/maintenance:ro
+      - caddy_data:/data
+      - caddy_config:/config
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
       interval: 10s
@@ -67,42 +84,39 @@ services:
       api:
         condition: service_healthy
 
-  maintenance:
-    image: nginx:1.27-alpine
+  # Sidecar that owns docker-socket access for orchestrating updates. The api
+  # container delegates "real" install runs to this service via internal HTTP,
+  # which lets safe_update.sh restart the api/web/caddy stack without the
+  # api restarting itself mid-request. No host ports are exposed: the runner
+  # is reachable only on the docker default network.
+  update_runner:
+    build:
+      context: ./apps/update_runner
     restart: unless-stopped
-    profiles:
-      - maintenance
+    environment:
+      UPDATE_RUNNER_REPO_ROOT: /repo
+      UPDATE_RUNNER_LOG_DIR: /var/log/update_runner
+      UPDATE_RUNNER_TOKEN: ${UPDATE_RUNNER_TOKEN:-}
+      # Force the project name so docker compose targets the running stack
+      # instead of deriving a separate project from the /repo bind mount path.
+      COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-smplall}
+      # Forwarded so the runner can invoke ./scripts/backup.sh successfully.
+      BACKUP_PASSPHRASE: ${BACKUP_PASSPHRASE:-}
+      BACKUP_PASSPHRASE_FILE: ${BACKUP_PASSPHRASE_FILE:-}
     volumes:
-      - ./infra/maintenance/index.html:/usr/share/nginx/html/index.html:ro
-      - ./infra/maintenance/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+      - .:/repo
+      - update_runner_logs:/var/log/update_runner
     healthcheck:
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/healthz || exit 1"]
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:9000/health || exit 1"]
       interval: 10s
       timeout: 5s
-      retries: 10
-      start_period: 5s
-
-  caddy:
-    image: caddy:2.10.2-alpine
-    restart: unless-stopped
-    ports:
-      - "${SMPL_CADDY_HTTP_PORT:-80}:80"
-      - "${SMPL_CADDY_HTTPS_PORT:-443}:443"
-    volumes:
-      - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    env_file:
-      - path: ./infra/.maintenance.env
-        required: false
-    depends_on:
-      web:
-        condition: service_healthy
-      api:
-        condition: service_healthy
+      retries: 3
+      start_period: 10s
 
 volumes:
   pg_data:
   uploads_data:
   caddy_data:
   caddy_config:
+  update_runner_logs:
