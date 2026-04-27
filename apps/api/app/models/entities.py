@@ -25,6 +25,7 @@ from app.models.chat import (
     ChatThreadParticipantUser,
     ChatThreadRead,
     Message,
+    MessageReaction,
 )
 from app.models.report import ConstructionReport, ConstructionReportJob
 from app.models.materials import MaterialCatalogItem, MaterialCatalogImportState, ProjectMaterialNeed
@@ -65,6 +66,7 @@ __all__ = [
     "MaterialCatalogImportState",
     "MaterialCatalogItem",
     "Message",
+    "MessageReaction",
     "Notification",
     "Partner",
     "Project",

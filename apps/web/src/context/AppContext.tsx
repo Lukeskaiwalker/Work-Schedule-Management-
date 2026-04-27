@@ -1016,6 +1016,10 @@ export interface AppContextValue {
   loadThreads: () => Promise<void>;
   loadArchivedThreads: () => Promise<void>;
   loadMessages: (threadId: number) => Promise<void>;
+  /** Toggle the current user's reaction on a message. Idempotent: calling
+   *  twice with the same emoji adds then removes. The local message list
+   *  is updated in place — no full refetch needed. */
+  toggleMessageReaction: (messageId: number, emoji: string) => Promise<void>;
   refreshTimeData: () => Promise<void>;
   onLogin: (event: FormEvent) => Promise<void>;
   submitPublicInviteAccept: (event: FormEvent<HTMLFormElement>) => Promise<void>;

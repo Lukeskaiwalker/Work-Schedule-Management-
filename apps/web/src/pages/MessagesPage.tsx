@@ -6,6 +6,7 @@ import {
   MessageImageLightbox,
   type LightboxImage,
 } from "../components/chat/MessageImageLightbox";
+import { MessageReactionStrip } from "../components/chat/MessageReactionStrip";
 
 function formatThreadTimestamp(
   iso: string | null | undefined,
@@ -49,6 +50,7 @@ export function MessagesPage() {
     clearMessageAttachment,
     sendMessage,
     canSendMessage,
+    toggleMessageReaction,
     threadActionMenuOpen,
     setThreadActionMenuOpen,
     threadProjectTitleParts,
@@ -392,6 +394,11 @@ export function MessagesPage() {
                             );
                           });
                         })()}
+                        <MessageReactionStrip
+                          reactions={message.reactions ?? []}
+                          onToggle={(emoji) => toggleMessageReaction(message.id, emoji)}
+                          language={language}
+                        />
                       </div>
                       {row.mine && (
                         <span className="messages-page-row-avatar-slot" aria-hidden="true">

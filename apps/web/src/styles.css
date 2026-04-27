@@ -8986,6 +8986,101 @@ li {
   outline-offset: 2px;
 }
 
+/* ── Message reactions ─────────────────────────────────────────────────
+   Strip below a message bubble showing aggregated emoji reactions plus
+   a "+" button to add a new reaction via a small palette. The bucket
+   styling deliberately mimics Slack: rounded pill, soft tint when the
+   current viewer hasn't reacted, stronger tint when they have. */
+.message-reactions {
+  position: relative;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.message-reactions-bucket,
+.message-reactions-add {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid #d6e0eb;
+  border-radius: 999px;
+  background-color: #f5f9fd;
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: #14293d;
+  cursor: pointer;
+  transition: background-color 0.12s ease, border-color 0.12s ease;
+  min-height: 0;
+}
+
+.message-reactions-bucket:hover,
+.message-reactions-add:hover {
+  background-color: #edf4ff;
+  border-color: #bcd1e8;
+}
+
+.message-reactions-bucket--mine {
+  background-color: #d9e8f7;
+  border-color: #91b5da;
+  color: #14293d;
+}
+
+.message-reactions-bucket-emoji {
+  font-size: 14px;
+  line-height: 1;
+}
+
+.message-reactions-bucket-count {
+  font-weight: 600;
+}
+
+.message-reactions-add--ghost {
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+/* Reveal the ghost "+" only when the user hovers the bubble area.
+   Keeps the chat clean when there are no reactions. */
+.messages-page-bubble:hover .message-reactions-add--ghost,
+.messages-page-bubble:focus-within .message-reactions-add--ghost {
+  opacity: 1;
+}
+
+.message-reactions-picker {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 6px;
+  background-color: #ffffff;
+  border: 1px solid #d6e0eb;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  z-index: 10;
+}
+
+.message-reactions-picker-btn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  font-size: 18px;
+  line-height: 1;
+  padding: 4px 6px;
+  cursor: pointer;
+  border-radius: 6px;
+  min-height: 0;
+}
+
+.message-reactions-picker-btn:hover {
+  background-color: #f5f9fd;
+}
+
 /* ── Image lightbox ───────────────────────────────────────────────────
    Full-viewport overlay shown when a thread image is clicked. Sits at
    z-index above modals so it covers anything else open. */

@@ -3643,6 +3643,38 @@ export function App() {
     }
   }
 
+  /**
+   * Toggle the current user's reaction on a message. The backend already
+   * has separate add/remove endpoints; we pick the right one based on
+   * whether the user already has that emoji on the message. The returned
+   * MessageOut carries the updated reaction summary, which we splice into
+   * the local list so the UI updates without waiting for a full refetch.
+   */
+  async function toggleMessageReaction(messageId: number, emoji: string) {
+    if (!emoji) return;
+    const current = messages.find((m) => m.id === messageId);
+    const alreadyReacted = (current?.reactions ?? []).some(
+      (r) => r.emoji === emoji && r.me_reacted,
+    );
+    try {
+      const updated = alreadyReacted
+        ? await apiFetch<Message>(
+            `/messages/${messageId}/reactions?emoji=${encodeURIComponent(emoji)}`,
+            token,
+            { method: "DELETE" },
+          )
+        : await apiFetch<Message>(`/messages/${messageId}/reactions`, token, {
+            method: "POST",
+            body: JSON.stringify({ emoji }),
+          });
+      setMessages(
+        messages.map((m) => (m.id === messageId ? { ...m, ...updated } : m)),
+      );
+    } catch (err: any) {
+      setError(err.message ?? "Failed to update reaction");
+    }
+  }
+
   async function refreshTimeData() {
     try {
       const currentDefs = monthWeekDefsRef.current;
@@ -8587,6 +8619,7 @@ export function App() {
     loadThreads,
     loadArchivedThreads,
     loadMessages,
+    toggleMessageReaction,
     refreshTimeData,
     onLogin,
     submitPublicInviteAccept,

@@ -431,12 +431,24 @@ export type MessageAttachment = {
   created_at: string;
 };
 
+/** One emoji "bucket" on a message, aggregated server-side. */
+export type MessageReactionSummary = {
+  emoji: string;
+  count: number;
+  user_ids: number[];
+  /** True when the currently authenticated user is in `user_ids`.
+   *  Used to highlight the bucket in the reaction strip. */
+  me_reacted: boolean;
+};
+
 export type Message = {
   id: number;
   body?: string | null;
   sender_id: number;
   created_at: string;
   attachments: MessageAttachment[];
+  /** Aggregated per-emoji reactions. Empty list when nobody reacted. */
+  reactions?: MessageReactionSummary[];
 };
 
 export type ChatRenderRow =

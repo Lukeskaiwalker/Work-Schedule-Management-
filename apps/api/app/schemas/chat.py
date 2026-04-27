@@ -53,6 +53,23 @@ class MessageAttachmentOut(BaseModel):
     created_at: datetime
 
 
+class MessageReactionSummaryOut(BaseModel):
+    """One emoji bucket with the users who reacted with it.
+
+    Aggregated server-side so the frontend can render
+    "👍 3 (Anna, Bernd, You)" without a second round-trip.
+    """
+
+    emoji: str
+    count: int
+    user_ids: list[int] = Field(default_factory=list)
+    me_reacted: bool = False
+
+
+class MessageReactionToggle(BaseModel):
+    emoji: str = Field(min_length=1, max_length=32)
+
+
 class MessageOut(BaseModel):
     id: int
     thread_id: int
@@ -60,5 +77,6 @@ class MessageOut(BaseModel):
     body: str | None = None
     created_at: datetime
     attachments: list[MessageAttachmentOut] = Field(default_factory=list)
+    reactions: list[MessageReactionSummaryOut] = Field(default_factory=list)
 
     model_config = ConfigDict(from_attributes=True)

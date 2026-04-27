@@ -75,3 +75,37 @@ class Message(Base):
     sender_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     body: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
+class MessageReaction(Base):
+    """A single user's emoji reaction on a message.
+
+    The (message_id, user_id, emoji) triple is unique so the same user
+    can react with multiple emojis to one message but cannot
+    double-stack identical reactions (mirrors Slack/WhatsApp).
+
+    Reactions are NOT cascade-loaded with messages; they're fetched in a
+    bulk join inside `_message_out` so a list of N messages still costs
+    one extra query (not N+1).
+    """
+
+    __tablename__ = "message_reactions"
+    __table_args__ = (
+        UniqueConstraint(
+            "message_id", "user_id", "emoji", name="uq_message_reaction"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    message_id: Mapped[int] = mapped_column(
+        ForeignKey("messages.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    # Unicode glyph; String(32) leaves room for grapheme clusters such as
+    # skin-tone or family emojis that span several codepoints.
+    emoji: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, nullable=False
+    )

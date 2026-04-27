@@ -385,9 +385,97 @@ async def create_message(
     )
     db.commit()
     db.refresh(message)
-    created = _message_out(db, message)
+    created = _message_out(db, message, current_user_id=current_user.id)
     notify(db, "message.created", created.model_dump(mode="json"))
     return created
+
+
+@router.post("/messages/{message_id}/reactions", response_model=MessageOut)
+def add_message_reaction(
+    message_id: int,
+    payload: MessageReactionToggle,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Add the current user's reaction to a message (idempotent).
+
+    Calling twice with the same emoji is a no-op rather than an error so
+    the frontend doesn't have to track whether it already reacted before
+    optimistically updating the UI.
+    """
+    message = db.get(Message, message_id)
+    if message is None:
+        raise HTTPException(status_code=404, detail="Message not found")
+    thread = db.get(ChatThread, message.thread_id)
+    if thread is None:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    _assert_thread_access(db, current_user, thread)
+    if _thread_is_archived(thread):
+        raise HTTPException(status_code=409, detail="Thread is archived")
+
+    emoji = payload.emoji.strip()
+    if not emoji:
+        raise HTTPException(status_code=400, detail="emoji is required")
+
+    existing = db.scalars(
+        select(MessageReaction).where(
+            MessageReaction.message_id == message_id,
+            MessageReaction.user_id == current_user.id,
+            MessageReaction.emoji == emoji,
+        )
+    ).first()
+    if existing is None:
+        db.add(
+            MessageReaction(
+                message_id=message_id,
+                user_id=current_user.id,
+                emoji=emoji,
+            )
+        )
+        db.commit()
+    return _message_out(db, message, current_user_id=current_user.id)
+
+
+@router.delete("/messages/{message_id}/reactions", response_model=MessageOut)
+def remove_message_reaction(
+    message_id: int,
+    emoji: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Remove the current user's reaction with the given emoji.
+
+    The emoji is passed as a query parameter (DELETE bodies aren't
+    universally supported by clients/proxies). Returns the message with
+    its updated reaction summary so the caller can render the result
+    without a separate fetch.
+    """
+    message = db.get(Message, message_id)
+    if message is None:
+        raise HTTPException(status_code=404, detail="Message not found")
+    thread = db.get(ChatThread, message.thread_id)
+    if thread is None:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    _assert_thread_access(db, current_user, thread)
+    if _thread_is_archived(thread):
+        raise HTTPException(status_code=409, detail="Thread is archived")
+
+    target = emoji.strip()
+    if not target:
+        raise HTTPException(status_code=400, detail="emoji is required")
+
+    existing = db.scalars(
+        select(MessageReaction).where(
+            MessageReaction.message_id == message_id,
+            MessageReaction.user_id == current_user.id,
+            MessageReaction.emoji == target,
+        )
+    ).first()
+    if existing is not None:
+        db.delete(existing)
+        db.commit()
+    return _message_out(db, message, current_user_id=current_user.id)
+
 
 @router.get("/threads/{thread_id}/messages", response_model=list[MessageOut])
 def list_messages(
@@ -408,4 +496,4 @@ def list_messages(
         last_message_id=last_message_id,
         commit=True,
     )
-    return [_message_out(db, message) for message in messages]
+    return [_message_out(db, message, current_user_id=current_user.id) for message in messages]

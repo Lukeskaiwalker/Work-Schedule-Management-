@@ -40,6 +40,7 @@ from app.models.entities import (
     JobTicket,
     MaterialCatalogItem,
     Message,
+    MessageReaction,
     Partner,
     Project,
     ProjectActivity,
@@ -68,6 +69,7 @@ from app.schemas.api import (
     JobTicketCreate,
     JobTicketOut,
     MessageOut,
+    MessageReactionToggle,
     ProjectCreate,
     ProjectCriticalUpdate,
     ProjectFinanceOut,
@@ -658,10 +660,42 @@ def _scan_wiki_library_files(root: Path) -> list[WikiLibraryFileOut]:
     return files
 
 
-def _message_out(db: Session, message: Message) -> MessageOut:
+def _message_out(
+    db: Session,
+    message: Message,
+    *,
+    current_user_id: int | None = None,
+) -> MessageOut:
     attachments = db.scalars(
         select(Attachment).where(Attachment.message_id == message.id).order_by(Attachment.created_at.asc())
     ).all()
+    # Reactions are aggregated per emoji so the frontend can render
+    # "👍 3" buckets directly without grouping client-side. Order is
+    # by first-reactor timestamp ascending — the longest-standing
+    # reaction shows first, which keeps order stable across refreshes.
+    reaction_rows = db.scalars(
+        select(MessageReaction)
+        .where(MessageReaction.message_id == message.id)
+        .order_by(MessageReaction.created_at.asc())
+    ).all()
+    bucket_order: list[str] = []
+    bucket_users: dict[str, list[int]] = {}
+    for row in reaction_rows:
+        if row.emoji not in bucket_users:
+            bucket_users[row.emoji] = []
+            bucket_order.append(row.emoji)
+        bucket_users[row.emoji].append(row.user_id)
+
+    reaction_summary = [
+        {
+            "emoji": emoji,
+            "count": len(bucket_users[emoji]),
+            "user_ids": bucket_users[emoji],
+            "me_reacted": current_user_id is not None
+            and current_user_id in bucket_users[emoji],
+        }
+        for emoji in bucket_order
+    ]
     return MessageOut(
         id=message.id,
         thread_id=message.thread_id,
@@ -677,6 +711,7 @@ def _message_out(db: Session, message: Message) -> MessageOut:
             }
             for attachment in attachments
         ],
+        reactions=reaction_summary,
     )
 
 
