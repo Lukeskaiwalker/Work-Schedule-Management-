@@ -8963,6 +8963,149 @@ li {
   display: block;
 }
 
+/* Wrap image attachments in a button so clicking opens the lightbox.
+   Looks identical to a plain image but is keyboard- and screenreader-
+   friendly (focusable, announceable as "open image preview"). */
+.messages-page-bubble-attachment-image-btn {
+  appearance: none;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: zoom-in;
+  display: block;
+  border-radius: 8px;
+  transition: transform 0.12s ease;
+}
+
+.messages-page-bubble-attachment-image-btn:hover {
+  transform: scale(1.01);
+}
+
+.messages-page-bubble-attachment-image-btn:focus-visible {
+  outline: 2px solid #2f70b7;
+  outline-offset: 2px;
+}
+
+/* ── Image lightbox ───────────────────────────────────────────────────
+   Full-viewport overlay shown when a thread image is clicked. Sits at
+   z-index above modals so it covers anything else open. */
+.message-lightbox-backdrop {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(7, 14, 22, 0.92);
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+
+.message-lightbox-stage {
+  position: relative;
+  max-width: min(96vw, 1400px);
+  max-height: 92vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.message-lightbox-image {
+  max-width: 100%;
+  max-height: 92vh;
+  border-radius: 6px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+  display: block;
+  cursor: default;
+}
+
+.message-lightbox-close {
+  position: absolute;
+  top: -44px;
+  right: 0;
+  appearance: none;
+  border: 0;
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+
+.message-lightbox-close:hover {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+.message-lightbox-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  appearance: none;
+  border: 0;
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  font-size: 28px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+
+.message-lightbox-nav:hover {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+.message-lightbox-nav--prev {
+  left: -56px;
+}
+
+.message-lightbox-nav--next {
+  right: -56px;
+}
+
+.message-lightbox-caption {
+  position: absolute;
+  bottom: -36px;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: #d8e4f1;
+  font-size: 12px;
+  padding: 0 4px;
+}
+
+.message-lightbox-caption-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 70%;
+}
+
+/* Mobile: drop the side-arrow buttons inside the stage so they don't
+   sit off-screen, and keep the close button fully visible. */
+@media (max-width: 700px) {
+  .message-lightbox-nav--prev {
+    left: 8px;
+  }
+  .message-lightbox-nav--next {
+    right: 8px;
+  }
+  .message-lightbox-close {
+    top: 8px;
+    right: 8px;
+  }
+  .message-lightbox-caption {
+    bottom: -28px;
+  }
+}
+
 .messages-page-bubble-attachment-links {
   display: flex;
   flex-wrap: wrap;
@@ -9054,6 +9197,15 @@ li {
   border-color: #2f70b7;
   background-color: #ffffff;
   box-shadow: 0 0 0 3px rgba(47, 112, 183, 0.15);
+}
+
+/* Container holding one chip per attached file. Wraps on narrow widths
+   so 5+ pictures don't blow out the composer row. */
+.messages-page-composer-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
 }
 
 .messages-page-composer-attachment {

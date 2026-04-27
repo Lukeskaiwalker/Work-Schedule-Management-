@@ -472,8 +472,13 @@ export interface AppContextValue {
   setMessages: (messages: Message[]) => void;
   messageBody: string;
   setMessageBody: (body: string) => void;
-  messageAttachment: File | null;
-  setMessageAttachment: (file: File | null) => void;
+  /** Files queued for the in-progress message, in selection order. The
+   *  composer renders one chip per file; sending posts each as a separate
+   *  multipart `attachments` field which the backend folds into one
+   *  message with N Attachment rows. */
+  messageAttachments: File[];
+  setMessageAttachments: (files: File[]) => void;
+  removeMessageAttachment: (index: number) => void;
   activeThreadId: number | null;
   setActiveThreadId: (id: number | null) => void;
   threadModalMode: "create" | "edit" | null;

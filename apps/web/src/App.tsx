@@ -390,7 +390,11 @@ export function App() {
   const [archivedThreadsModalOpen, setArchivedThreadsModalOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [messageBody, setMessageBody] = useState("");
-  const [messageAttachment, setMessageAttachment] = useState<File | null>(null);
+  // Attachments selected for the in-progress message, in selection order.
+  // Multiple pictures can be picked at once via the file input's `multiple`
+  // attribute; each becomes its own chip in the composer and its own
+  // Attachment row server-side.
+  const [messageAttachments, setMessageAttachments] = useState<File[]>([]);
   const messageAttachmentInputRef = useRef<HTMLInputElement | null>(null);
 
   const [timeCurrent, setTimeCurrent] = useState<TimeCurrent | null>(null);
@@ -1115,7 +1119,7 @@ export function App() {
   const activeAdminUsers = useMemo(() => users.filter((entry) => entry.is_active), [users]);
   const archivedAdminUsers = useMemo(() => users.filter((entry) => !entry.is_active), [users]);
   const hasMessageText = messageBody.trim().length > 0;
-  const canSendMessage = hasMessageText || Boolean(messageAttachment);
+  const canSendMessage = hasMessageText || messageAttachments.length > 0;
   const chatRenderRows = useMemo<ChatRenderRow[]>(() => {
     const rows: ChatRenderRow[] = [];
     let previousDay = "";
@@ -5708,12 +5712,24 @@ export function App() {
     if (!activeThreadId) return;
     const form = new FormData();
     const text = messageBody.trim();
-    const selectedAttachment = messageAttachment ?? messageAttachmentInputRef.current?.files?.[0] ?? null;
+    // Use the React state list as the source of truth. The hidden input's
+    // FileList is a fallback for the rare case the user submits before the
+    // change handler ran (e.g. paste-then-Enter very fast).
+    const inputFiles = messageAttachmentInputRef.current?.files;
+    const selectedFiles: File[] =
+      messageAttachments.length > 0
+        ? messageAttachments
+        : inputFiles
+          ? Array.from(inputFiles)
+          : [];
     if (text) form.set("body", text);
-    if (selectedAttachment) {
-      form.set("attachment", selectedAttachment);
+    // Append every file under the same `attachments` field name so FastAPI
+    // sees them as a repeating multipart field. The backend folds them into
+    // a list[UploadFile].
+    for (const file of selectedFiles) {
+      form.append("attachments", file);
     }
-    if (!text && !selectedAttachment) return;
+    if (!text && selectedFiles.length === 0) return;
     try {
       await apiFetch(`/threads/${activeThreadId}/messages`, token, {
         method: "POST",
@@ -5722,7 +5738,7 @@ export function App() {
       shouldFollowMessagesRef.current = true;
       forceScrollToBottomRef.current = true;
       setMessageBody("");
-      setMessageAttachment(null);
+      setMessageAttachments([]);
       if (messageAttachmentInputRef.current) {
         messageAttachmentInputRef.current.value = "";
       }
@@ -5789,8 +5805,31 @@ export function App() {
   }
 
   function onMessageAttachmentChange(event: ChangeEvent<HTMLInputElement>) {
-    const selected = event.target.files?.[0] ?? null;
-    setMessageAttachment(selected);
+    const picked = Array.from(event.target.files ?? []);
+    if (picked.length === 0) return;
+    // Append rather than replace so the user can pick a few, pick a few
+    // more, and end up with the union — matches expectations from message
+    // composers in WhatsApp / Slack. Dedupe by (name, size, lastModified)
+    // so the same file isn't accidentally added twice.
+    setMessageAttachments((current) => {
+      const seen = new Set(current.map((f) => `${f.name}|${f.size}|${f.lastModified}`));
+      const next = [...current];
+      for (const file of picked) {
+        const key = `${file.name}|${file.size}|${file.lastModified}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        next.push(file);
+      }
+      return next;
+    });
+    // Clear the input value so picking the *same* file again triggers a
+    // fresh change event (browsers suppress the event for identical
+    // FileList contents otherwise).
+    event.target.value = "";
+  }
+
+  function removeMessageAttachment(index: number) {
+    setMessageAttachments((current) => current.filter((_, i) => i !== index));
   }
 
   function scrollMessageListToBottom() {
@@ -5800,7 +5839,7 @@ export function App() {
   }
 
   function clearMessageAttachment() {
-    setMessageAttachment(null);
+    setMessageAttachments([]);
     if (messageAttachmentInputRef.current) {
       messageAttachmentInputRef.current.value = "";
     }
@@ -8094,8 +8133,9 @@ export function App() {
     setMessages,
     messageBody,
     setMessageBody,
-    messageAttachment,
-    setMessageAttachment,
+    messageAttachments,
+    setMessageAttachments,
+    removeMessageAttachment,
     activeThreadId,
     setActiveThreadId,
     threadModalMode,

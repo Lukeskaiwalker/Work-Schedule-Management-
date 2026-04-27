@@ -2,6 +2,10 @@ import React from "react";
 import { useAppContext } from "../context/AppContext";
 import { AvatarBadge } from "../components/shared/AvatarBadge";
 import { ThreadIconBadge, threadInitials } from "../components/shared/ThreadIconBadge";
+import {
+  MessageImageLightbox,
+  type LightboxImage,
+} from "../components/chat/MessageImageLightbox";
 
 function formatThreadTimestamp(
   iso: string | null | undefined,
@@ -36,7 +40,8 @@ export function MessagesPage() {
     chatRenderRows,
     messageBody,
     setMessageBody,
-    messageAttachment,
+    messageAttachments,
+    removeMessageAttachment,
     messageAttachmentInputRef,
     messageListRef,
     onMessageListScroll,
@@ -61,6 +66,16 @@ export function MessagesPage() {
   } = useAppContext();
 
   const [mobileThreadListOpen, setMobileThreadListOpen] = React.useState(true);
+
+  // Lightbox state. Holds the list of images from the message bubble that
+  // was clicked plus the index of the specific image inside that list, so
+  // arrow-key nav steps through siblings of the same message rather than
+  // jumping across messages. `null` means the lightbox is closed.
+  const [lightbox, setLightbox] = React.useState<{
+    images: LightboxImage[];
+    index: number;
+  } | null>(null);
+  const closeLightbox = React.useCallback(() => setLightbox(null), []);
 
   React.useEffect(() => {
     if (mainView === "messages") {
@@ -319,26 +334,64 @@ export function MessagesPage() {
                         className={`messages-page-bubble messages-page-bubble--${row.mine ? "mine" : "other"}`}
                       >
                         {message.body && <p className="messages-page-bubble-text">{message.body}</p>}
-                        {message.attachments.map((attachment) => (
-                          <div key={attachment.id} className="messages-page-bubble-attachment">
-                            {attachment.content_type.startsWith("image/") && (
-                              <img
-                                src={filePreviewUrl(attachment.id)}
-                                alt={attachment.file_name}
-                              />
-                            )}
-                            <div className="messages-page-bubble-attachment-links">
-                              <a
-                                href={filePreviewUrl(attachment.id)}
-                                target="_blank"
-                                rel="noreferrer"
+                        {(() => {
+                          // Pre-compute the image list for this message so
+                          // every clicked thumbnail can hand the lightbox
+                          // the full sibling set for arrow navigation.
+                          const messageImages: LightboxImage[] = message.attachments
+                            .filter((a) => a.content_type.startsWith("image/"))
+                            .map((a) => ({
+                              id: a.id,
+                              src: filePreviewUrl(a.id),
+                              alt: a.file_name,
+                              fileName: a.file_name,
+                            }));
+                          return message.attachments.map((attachment) => {
+                            const isImage = attachment.content_type.startsWith("image/");
+                            const imageIndex = messageImages.findIndex(
+                              (img) => img.id === attachment.id,
+                            );
+                            return (
+                              <div
+                                key={attachment.id}
+                                className="messages-page-bubble-attachment"
                               >
-                                {de ? "Vorschau" : "Preview"}
-                              </a>
-                              <a href={fileDownloadUrl(attachment.id)}>{attachment.file_name}</a>
-                            </div>
-                          </div>
-                        ))}
+                                {isImage && (
+                                  <button
+                                    type="button"
+                                    className="messages-page-bubble-attachment-image-btn"
+                                    onClick={() =>
+                                      setLightbox({
+                                        images: messageImages,
+                                        index: imageIndex >= 0 ? imageIndex : 0,
+                                      })
+                                    }
+                                    aria-label={
+                                      de ? "Bild vergrößern" : "Open image preview"
+                                    }
+                                  >
+                                    <img
+                                      src={filePreviewUrl(attachment.id)}
+                                      alt={attachment.file_name}
+                                    />
+                                  </button>
+                                )}
+                                <div className="messages-page-bubble-attachment-links">
+                                  <a
+                                    href={filePreviewUrl(attachment.id)}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                  >
+                                    {de ? "Vorschau" : "Preview"}
+                                  </a>
+                                  <a href={fileDownloadUrl(attachment.id)}>
+                                    {attachment.file_name}
+                                  </a>
+                                </div>
+                              </div>
+                            );
+                          });
+                        })()}
                       </div>
                       {row.mine && (
                         <span className="messages-page-row-avatar-slot" aria-hidden="true">
@@ -379,7 +432,8 @@ export function MessagesPage() {
                 <input
                   ref={messageAttachmentInputRef as React.RefObject<HTMLInputElement>}
                   type="file"
-                  name="attachment"
+                  name="attachments"
+                  multiple
                   onChange={onMessageAttachmentChange}
                 />
               </label>
@@ -391,18 +445,36 @@ export function MessagesPage() {
                   placeholder={de ? "Nachricht eingeben…" : "Type a message…"}
                   className="messages-page-composer-input"
                 />
-                {messageAttachment && (
-                  <div className="messages-page-composer-attachment">
-                    <small title={messageAttachment.name}>{messageAttachment.name}</small>
-                    <button
-                      type="button"
-                      className="messages-page-composer-attachment-remove"
-                      onClick={clearMessageAttachment}
-                      aria-label={de ? "Anhang entfernen" : "Remove attachment"}
-                      title={de ? "Anhang entfernen" : "Remove attachment"}
-                    >
-                      ×
-                    </button>
+                {messageAttachments.length > 0 && (
+                  <div className="messages-page-composer-attachments">
+                    {messageAttachments.map((file, index) => (
+                      <div
+                        key={`composer-attachment-${index}-${file.name}`}
+                        className="messages-page-composer-attachment"
+                      >
+                        <small title={file.name}>{file.name}</small>
+                        <button
+                          type="button"
+                          className="messages-page-composer-attachment-remove"
+                          onClick={() => removeMessageAttachment(index)}
+                          aria-label={de ? "Anhang entfernen" : "Remove attachment"}
+                          title={de ? "Anhang entfernen" : "Remove attachment"}
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                    {messageAttachments.length > 1 && (
+                      <button
+                        type="button"
+                        className="messages-page-composer-attachment-remove"
+                        onClick={clearMessageAttachment}
+                        aria-label={de ? "Alle entfernen" : "Remove all"}
+                        title={de ? "Alle entfernen" : "Remove all"}
+                      >
+                        {de ? "Alle entfernen" : "Clear all"}
+                      </button>
+                    )}
                   </div>
                 )}
               </div>
@@ -427,6 +499,17 @@ export function MessagesPage() {
           </>
         )}
       </div>
+      {lightbox && (
+        <MessageImageLightbox
+          images={lightbox.images}
+          index={lightbox.index}
+          onIndexChange={(next) =>
+            setLightbox((prev) => (prev ? { ...prev, index: next } : prev))
+          }
+          onClose={closeLightbox}
+          language={language}
+        />
+      )}
     </section>
   );
 }

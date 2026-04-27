@@ -27,6 +27,69 @@ def _login(client: TestClient, email: str):
     return response.headers["X-Access-Token"]
 
 
+def test_message_create_supports_multiple_attachments(client: TestClient, admin_token: str):
+    """A single message-create request with several `attachments` files
+    should produce one Message row carrying N Attachment rows in the
+    selection order. Backwards-compatibility is verified separately by
+    other tests that exercise the legacy single-`image`/`attachment`
+    path; this one locks in the multi-file contract."""
+    _create_user(client, admin_token, "msg-multi-owner@example.com", "employee")
+    employee_token = _login(client, "msg-multi-owner@example.com")
+
+    created = client.post(
+        "/api/threads",
+        headers=auth_headers(employee_token),
+        json={"name": "Multi-attachment thread"},
+    )
+    assert created.status_code == 200
+    thread_id = created.json()["id"]
+
+    response = client.post(
+        f"/api/threads/{thread_id}/messages",
+        headers=auth_headers(employee_token),
+        data={"body": "Hier sind die Bilder:"},
+        files=[
+            ("attachments", ("first.png", b"\x89PNG\r\n\x1a\nfirst", "image/png")),
+            ("attachments", ("second.png", b"\x89PNG\r\n\x1a\nsecond", "image/png")),
+            ("attachments", ("third.jpg", b"\xff\xd8\xff\xe0third", "image/jpeg")),
+        ],
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["body"] == "Hier sind die Bilder:"
+    assert len(payload["attachments"]) == 3
+    file_names = [att["file_name"] for att in payload["attachments"]]
+    assert file_names == ["first.png", "second.png", "third.jpg"]
+
+
+def test_message_create_falls_back_to_legacy_single_attachment_field(
+    client: TestClient, admin_token: str
+):
+    """Older clients (and any external integrations) still post a single
+    file under `attachment` or `image`. The endpoint must keep accepting
+    that — it gets folded into the same code path as multi-attach."""
+    _create_user(client, admin_token, "msg-legacy-owner@example.com", "employee")
+    employee_token = _login(client, "msg-legacy-owner@example.com")
+
+    thread = client.post(
+        "/api/threads",
+        headers=auth_headers(employee_token),
+        json={"name": "Legacy attachment thread"},
+    )
+    thread_id = thread.json()["id"]
+
+    response = client.post(
+        f"/api/threads/{thread_id}/messages",
+        headers=auth_headers(employee_token),
+        data={"body": "legacy"},
+        files={"attachment": ("legacy.png", b"\x89PNG\r\nlegacy", "image/png")},
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert len(payload["attachments"]) == 1
+    assert payload["attachments"][0]["file_name"] == "legacy.png"
+
+
 def test_thread_icon_upload_accepts_heic_extension_without_image_mime(client: TestClient, admin_token: str):
     _create_user(client, admin_token, "thread-heic-owner@example.com", "employee")
     employee_token = _login(client, "thread-heic-owner@example.com")

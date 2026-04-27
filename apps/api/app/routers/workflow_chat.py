@@ -310,6 +310,13 @@ def get_thread_icon(
 async def create_message(
     thread_id: int,
     body: str | None = Form(default=None),
+    # Multi-file path: the new frontend sends `attachments` as a repeating
+    # field. Each entry becomes a separate Attachment row, so a single
+    # message can carry several pictures.
+    attachments: list[UploadFile] | None = File(default=None),
+    # Legacy single-file params kept for backward compatibility with older
+    # clients (and any external automation that still posts one file at a
+    # time). They're folded into the same list as `attachments` below.
     image: UploadFile | None = File(default=None),
     attachment: UploadFile | None = File(default=None),
     current_user: User = Depends(get_current_user),
@@ -323,37 +330,50 @@ async def create_message(
         raise HTTPException(status_code=409, detail="Thread is archived")
 
     text = (body or "").strip() or None
-    upload = None
-    if image and image.filename:
-        upload = image
-    elif attachment and attachment.filename:
-        upload = attachment
-    if not text and not upload:
+
+    # Collect every uploaded file into one list. Filter out empty rows
+    # (FastAPI sometimes hands back a phantom empty UploadFile when a form
+    # field is declared but no file was actually provided).
+    uploads: list[UploadFile] = []
+    for candidate in (attachments or []):
+        if candidate and candidate.filename:
+            uploads.append(candidate)
+    for legacy in (image, attachment):
+        if legacy and legacy.filename:
+            uploads.append(legacy)
+
+    if not text and not uploads:
         raise HTTPException(status_code=400, detail="Message text or attachment is required")
 
     message = Message(thread_id=thread_id, sender_id=current_user.id, body=text)
     db.add(message)
     db.flush()
 
-    if upload:
+    for upload in uploads:
         raw = await upload.read()
-        if raw:
-            extension = upload.filename.rsplit(".", 1)[-1] if "." in upload.filename else "bin"
-            stored_path = store_encrypted_file(raw, extension)
-            db.add(
-                Attachment(
-                    project_id=thread.project_id,
-                    site_id=thread.site_id,
-                    message_id=message.id,
-                    uploaded_by=current_user.id,
-                    file_name=upload.filename,
-                    content_type=upload.content_type or "application/octet-stream",
-                    stored_path=stored_path,
-                    is_encrypted=True,
-                )
+        if not raw:
+            # Skip empty files silently when there's other content; raise
+            # otherwise so the user sees a useful error rather than an
+            # apparently-successful empty message.
+            if not text and len(uploads) == 1:
+                raise HTTPException(status_code=400, detail="Attachment file is empty")
+            continue
+        extension = (
+            upload.filename.rsplit(".", 1)[-1] if "." in upload.filename else "bin"
+        )
+        stored_path = store_encrypted_file(raw, extension)
+        db.add(
+            Attachment(
+                project_id=thread.project_id,
+                site_id=thread.site_id,
+                message_id=message.id,
+                uploaded_by=current_user.id,
+                file_name=upload.filename,
+                content_type=upload.content_type or "application/octet-stream",
+                stored_path=stored_path,
+                is_encrypted=True,
             )
-        elif not text:
-            raise HTTPException(status_code=400, detail="Attachment file is empty")
+        )
 
     db.flush()
     _mark_thread_read(
