@@ -9,7 +9,7 @@ Kept in lock-step with `apps/web/src/types/customer.ts`.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
@@ -22,6 +22,8 @@ class CustomerCreate(BaseModel):
     phone: str | None = None
     tax_id: str | None = None
     notes: str | None = None
+    birthday: date | None = None
+    marktakteur_nummer: str | None = Field(default=None, max_length=64)
 
 
 class CustomerUpdate(BaseModel):
@@ -32,6 +34,8 @@ class CustomerUpdate(BaseModel):
     phone: str | None = None
     tax_id: str | None = None
     notes: str | None = None
+    birthday: date | None = None
+    marktakteur_nummer: str | None = Field(default=None, max_length=64)
 
 
 class CustomerOut(BaseModel):
@@ -43,6 +47,8 @@ class CustomerOut(BaseModel):
     phone: str | None = None
     tax_id: str | None = None
     notes: str | None = None
+    birthday: date | None = None
+    marktakteur_nummer: str | None = None
     archived_at: datetime | None = None
     created_by: int | None = None
     created_at: datetime

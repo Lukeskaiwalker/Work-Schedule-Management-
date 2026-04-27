@@ -21,6 +21,10 @@ export type CustomerWriteInput = {
   phone?: string | null;
   tax_id?: string | null;
   notes?: string | null;
+  /** ISO YYYY-MM-DD or null. Sent as null to clear an existing birthday. */
+  birthday?: string | null;
+  /** Marktstammdatenregister "Marktakteur-Nummer" (PV/energy customers). */
+  marktakteur_nummer?: string | null;
 };
 
 /** Subset of `Project` used by `CustomerDetailPage`. The backend returns the
@@ -80,6 +84,8 @@ export async function saveCustomer(
     phone: data.phone ?? null,
     tax_id: data.tax_id ?? null,
     notes: data.notes ?? null,
+    birthday: data.birthday ?? null,
+    marktakteur_nummer: data.marktakteur_nummer ?? null,
   };
   if (id) {
     return apiFetch<CustomerListItem>(`/customers/${id}`, token, {

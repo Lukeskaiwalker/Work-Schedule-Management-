@@ -10,6 +10,10 @@ type DraftState = {
   phone: string;
   tax_id: string;
   notes: string;
+  // ISO YYYY-MM-DD or "" when unset; matches the value shape of `<input
+  // type="date">` so we can two-way-bind without a parser/formatter.
+  birthday: string;
+  marktakteur_nummer: string;
 };
 
 const EMPTY_DRAFT: DraftState = {
@@ -20,6 +24,8 @@ const EMPTY_DRAFT: DraftState = {
   phone: "",
   tax_id: "",
   notes: "",
+  birthday: "",
+  marktakteur_nummer: "",
 };
 
 function draftFromCustomer(customer: CustomerListItem | null): DraftState {
@@ -32,6 +38,8 @@ function draftFromCustomer(customer: CustomerListItem | null): DraftState {
     phone: customer.phone ?? "",
     tax_id: customer.tax_id ?? "",
     notes: customer.notes ?? "",
+    birthday: customer.birthday ?? "",
+    marktakteur_nummer: customer.marktakteur_nummer ?? "",
   };
 }
 
@@ -114,6 +122,10 @@ export function CustomerModal() {
           phone: draft.phone.trim() || null,
           tax_id: draft.tax_id.trim() || null,
           notes: draft.notes.trim() || null,
+          // Empty string from <input type="date"> means "no birthday set",
+          // so we send null rather than "" — Pydantic rejects "" for date.
+          birthday: draft.birthday.trim() || null,
+          marktakteur_nummer: draft.marktakteur_nummer.trim() || null,
         },
         editingId ?? undefined,
       );
@@ -235,6 +247,38 @@ export function CustomerModal() {
                 value={draft.tax_id}
                 onChange={(event) => updateField("tax_id", event.target.value)}
                 placeholder="DE123456789"
+              />
+            </label>
+          </section>
+
+          <section className="task-modal-section task-modal-section--grid2">
+            <label className="task-modal-field">
+              <span className="task-modal-field-label">
+                {de ? "Geburtstag" : "Birthday"}
+              </span>
+              <input
+                className="task-modal-input"
+                type="date"
+                value={draft.birthday}
+                onChange={(event) => updateField("birthday", event.target.value)}
+              />
+            </label>
+            <label className="task-modal-field">
+              <span className="task-modal-field-label">
+                {de ? "Marktakteur-Nr." : "Market actor no."}
+              </span>
+              <input
+                className="task-modal-input"
+                value={draft.marktakteur_nummer}
+                onChange={(event) =>
+                  updateField("marktakteur_nummer", event.target.value)
+                }
+                placeholder="SEE901234567890"
+                title={
+                  de
+                    ? "Marktstammdatenregister-Nummer (für PV-Anlagen, Speicher, etc.)"
+                    : "Marktstammdatenregister number (for PV plants, batteries, etc.)"
+                }
               />
             </label>
           </section>

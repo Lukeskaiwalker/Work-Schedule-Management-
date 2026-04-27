@@ -13,9 +13,9 @@ user only clears `created_by` (SET NULL), never the Customer itself.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Date, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
@@ -33,6 +33,15 @@ class Customer(Base):
     phone: Mapped[str | None] = mapped_column(String(128))
     tax_id: Mapped[str | None] = mapped_column(String(64))
     notes: Mapped[str | None] = mapped_column(Text)
+    # Optional birthday for individual contacts. Calendar `date` (not
+    # datetime) — purely informational, surfaced in the customer card so
+    # field staff can wish a private customer happy birthday on visits.
+    birthday: Mapped[date | None] = mapped_column(Date)
+    # Marktakteur-Nummer from the German Marktstammdatenregister (MaStR),
+    # used when the customer is the operator of a PV / energy installation.
+    # Format example: "SEE901234567890" — registry IDs run up to ~15 chars
+    # but the column is wider for safety against future format changes.
+    marktakteur_nummer: Mapped[str | None] = mapped_column(String(64))
     archived_at: Mapped[datetime | None] = mapped_column(DateTime)
     created_by: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL")

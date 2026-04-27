@@ -101,6 +101,11 @@ export type Customer = {
   phone: string | null;
   tax_id: string | null;
   notes: string | null;
+  /** ISO calendar date (YYYY-MM-DD) when the customer was born, or null. */
+  birthday: string | null;
+  /** Marktstammdatenregister "Marktakteur-Nummer" — populated for PV/energy
+   *  customers that operate a registered installation. Null otherwise. */
+  marktakteur_nummer: string | null;
   /** ISO datetime when the row was archived, or null when active. */
   archived_at: string | null;
   created_by: number | null;

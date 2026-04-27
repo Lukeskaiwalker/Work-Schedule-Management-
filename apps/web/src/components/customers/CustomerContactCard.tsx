@@ -12,6 +12,20 @@ type Props = {
  */
 export function CustomerContactCard({ customer, language }: Props) {
   const de = language === "de";
+  // Birthday comes from the API as ISO YYYY-MM-DD; format it for display
+  // using the user's preferred locale. Falls back to the raw string if
+  // parsing fails (defensive — the input came from a `<input type="date">`).
+  const birthdayDisplay = (() => {
+    if (!customer.birthday) return null;
+    const parsed = new Date(`${customer.birthday}T00:00:00`);
+    if (Number.isNaN(parsed.getTime())) return customer.birthday;
+    return parsed.toLocaleDateString(de ? "de-DE" : "en-GB", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+    });
+  })();
+
   const rows: Array<{ label: string; value: string | null; href?: string | null }> = [
     {
       label: de ? "Adresse" : "Address",
@@ -32,8 +46,19 @@ export function CustomerContactCard({ customer, language }: Props) {
       href: customer.phone ? `tel:${customer.phone.replace(/\s+/g, "")}` : null,
     },
     {
+      label: de ? "Geburtstag" : "Birthday",
+      value: birthdayDisplay,
+    },
+    {
       label: de ? "Steuer-ID" : "Tax ID",
       value: customer.tax_id,
+    },
+    {
+      // Marktakteur-Nummer from the German Marktstammdatenregister, e.g. for
+      // private PV operators. Only meaningful for energy-customer rows;
+      // falls back to em-dash when null (matches the other optional rows).
+      label: de ? "Marktakteur-Nr." : "Market actor no.",
+      value: customer.marktakteur_nummer,
     },
   ];
 

@@ -54,6 +54,8 @@ def _customer_list_item(
             "phone": row.phone,
             "tax_id": row.tax_id,
             "notes": row.notes,
+            "birthday": row.birthday,
+            "marktakteur_nummer": row.marktakteur_nummer,
             "archived_at": row.archived_at,
             "created_by": row.created_by,
             "created_at": row.created_at,
@@ -189,6 +191,8 @@ def create_customer(
         phone=(payload.phone or None),
         tax_id=(payload.tax_id or None),
         notes=(payload.notes or None),
+        birthday=payload.birthday,
+        marktakteur_nummer=(payload.marktakteur_nummer or None),
         created_by=current_user.id,
     )
     db.add(row)
