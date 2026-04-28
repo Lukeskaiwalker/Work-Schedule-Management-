@@ -197,12 +197,14 @@ export function TimePage() {
       ?? null;
   }, [timeMonthRows, now]);
 
-  // Build day-by-day calendar data for the current month from timeEntries
-  // and approved absences (vacation + school/sick/etc.). The personal
-  // time-tracking calendar previously only summed entries; the user
-  // reported absences not showing up — they're now merged in here, scoped
-  // to whichever user the page is currently viewing (self, or another
-  // user when a manager has switched targets).
+  // Build day-by-day calendar data for the current month from timeEntries,
+  // approved absences (vacation + school/sick/etc.), and the configured
+  // region's public holidays. The personal time-tracking calendar previously
+  // only summed entries; the user reported absences not showing up — they're
+  // now merged in here, scoped to whichever user the page is currently
+  // viewing (self, or another user when a manager has switched targets).
+  // Public holidays do NOT scope by user since they apply to everyone in
+  // the region.
   const monthCalendar = useMemo(() => {
     const monthDate = timeMonthCursor;
     const year = monthDate.getFullYear();
@@ -283,6 +285,18 @@ export function TimePage() {
         push(isoOfDate(cursor));
         cursor.setDate(cursor.getDate() + 1);
       }
+    }
+
+    // Public holidays apply to everyone in the configured region (NRW today),
+    // so we merge them into the day cells without a targetUserId scope. Type
+    // is "holiday" so the cell picks up the existing .time-calendar-cell--
+    // absence-holiday styling and matches the shape of school-absence rows
+    // whose absence_type is also "holiday". The separate "Feiertage" callout
+    // below the calendar still summarises them as a list — the pill on the
+    // cell is purely additive.
+    for (const holiday of publicHolidays) {
+      if (!holiday.date.startsWith(monthCursorISO)) continue;
+      pushAbsence(holiday.date, { type: "holiday", label: holiday.name });
     }
 
     // Vacation rows: only "approved" status comes through approvedVacationRequests.
@@ -374,6 +388,8 @@ export function TimePage() {
     approvedVacationRequests,
     schoolAbsences,
     absenceTypes,
+    publicHolidays,
+    monthCursorISO,
     timeTargetUserId,
     user?.id,
     de,

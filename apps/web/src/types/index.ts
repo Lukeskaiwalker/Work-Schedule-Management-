@@ -695,6 +695,34 @@ export type UpdateProgress = {
   log_tail?: string | null;
 };
 
+/** Single encrypted-archive backup file as returned by GET /admin/backups. */
+export type BackupFile = {
+  filename: string;
+  size_bytes: number;
+  /** ISO-8601 mtime — used as a stand-in for "created at" because the upload
+   *  flow recreates the file via temp-rename (cleaner than parsing the
+   *  filename's embedded timestamp on the client). */
+  created_at: string;
+  /** True for files produced by scripts/backup.sh (timestamped pattern);
+   *  false for operator-uploaded files. UI renders an "Imported" badge for
+   *  the latter so the source is obvious. */
+  is_generated: boolean;
+};
+
+export type BackupListResponse = {
+  files: BackupFile[];
+  free_bytes: number;
+  total_bytes: number;
+  /** Echoed from the api so the UI can warn if BACKUP_PASSPHRASE is empty.
+   *  Does NOT expose the passphrase itself. */
+  passphrase_configured: boolean;
+};
+
+/** Progress snapshot for a backup or restore job. Same shape as UpdateProgress
+ *  on the wire (the runner uses one Job model for all kinds), but typed as
+ *  a separate alias to keep the polling state readable. */
+export type BackupJobProgress = UpdateProgress;
+
 export type ReportWorker = {
   name: string;
   start_time: string;

@@ -19,7 +19,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy.engine import make_url
 from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
@@ -1401,6 +1401,262 @@ async def create_database_backup(
             "X-Backup-Encryption": "aes-256-gcm+pbkdf2",
         },
     )
+
+
+# ── Full encrypted-archive backups (delegated to update_runner sidecar) ──────
+#
+# The /backups/database endpoint above produces a DB-only ad-hoc archive that
+# the operator downloads with a per-export key file. The endpoints below cover
+# the operational workflow: list / create / restore / upload / delete encrypted
+# `backup-<ts>.tar.enc` archives produced by scripts/backup.sh — which include
+# uploads + db dump + manifest, encrypted via the system-wide BACKUP_PASSPHRASE.
+#
+# All file I/O happens inside the update_runner container (which has the host
+# repo bind-mounted at /repo). The api proxies via update_runner_client so the
+# trust boundary stays clean: api validates permissions and audits, runner does
+# the privileged work.
+
+
+def _runner_unavailable_response() -> HTTPException:
+    return HTTPException(
+        status_code=503,
+        detail=(
+            "The update_runner sidecar is not reachable. "
+            "Backup management requires the runner to be running."
+        ),
+    )
+
+
+def _job_conflict_response(exc: update_runner_client.UpdateRunnerJobConflict) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={
+            "message": str(exc),
+            "active_job_id": exc.active_job_id,
+        },
+    )
+
+
+@router.get("/backups")
+def list_backup_archives(
+    admin: User = Depends(require_permission("backups:manage")),
+):
+    """Enumerate encrypted `backup-*.tar.enc` files known to the runner.
+
+    Returns metadata (filename, size, mtime) plus disk-usage stats so the UI
+    can warn before the operator triggers a backup that would exhaust the
+    partition. No file content is read.
+    """
+    try:
+        payload = update_runner_client.list_backups()
+    except update_runner_client.UpdateRunnerUnreachable:
+        raise _runner_unavailable_response()
+    except update_runner_client.UpdateRunnerRemoteError as exc:
+        raise HTTPException(status_code=502, detail=f"Runner error: {exc}")
+
+    files = payload.get("files") or []
+    passphrase_set = bool(
+        (settings.backup_passphrase or "").strip()
+        or (settings.backup_passphrase_file or "").strip()
+    )
+    return {
+        "files": files,
+        "free_bytes": int(payload.get("free_bytes") or 0),
+        "total_bytes": int(payload.get("total_bytes") or 0),
+        "passphrase_configured": passphrase_set,
+    }
+
+
+@router.post("/backups/full")
+def create_full_backup(
+    admin: User = Depends(require_permission("backups:manage")),
+    db: Session = Depends(get_db),
+):
+    """Kick off ``scripts/backup.sh`` via the runner. Returns a job id to poll.
+
+    The runner reads the passphrase from its own ``BACKUP_PASSPHRASE`` env;
+    the api never sees it. This means the api can verify "passphrase is set
+    on this stack" only via the runtime check exposed in the list endpoint.
+    """
+    try:
+        payload = update_runner_client.queue_backup_job()
+    except update_runner_client.UpdateRunnerUnreachable:
+        raise _runner_unavailable_response()
+    except update_runner_client.UpdateRunnerJobConflict as exc:
+        raise _job_conflict_response(exc)
+    except update_runner_client.UpdateRunnerRemoteError as exc:
+        raise HTTPException(status_code=502, detail=f"Runner error: {exc}")
+
+    log_admin_action(
+        db,
+        admin,
+        "backup.full.start",
+        "backup",
+        payload.get("job_id") or "",
+        {"job_id": payload.get("job_id")},
+    )
+    return payload
+
+
+@router.get("/backups/jobs/{job_id}")
+def get_backup_job_progress(
+    job_id: str,
+    _: User = Depends(require_permission("backups:manage")),
+):
+    """Poll a backup-or-restore job. Mirrors the update-job progress endpoint."""
+    try:
+        payload = update_runner_client.get_job_status(job_id)
+    except update_runner_client.UpdateRunnerUnreachable:
+        raise _runner_unavailable_response()
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Unknown job id")
+    except update_runner_client.UpdateRunnerRemoteError as exc:
+        raise HTTPException(status_code=502, detail=f"Runner error: {exc}")
+    return payload
+
+
+@router.get("/backups/{filename}")
+def download_backup_archive(
+    filename: str,
+    admin: User = Depends(require_permission("backups:export")),
+    db: Session = Depends(get_db),
+):
+    """Stream an encrypted backup file from the runner straight to the caller.
+
+    The api never buffers the file — both ends use chunked streaming, so
+    multi-GB downloads work even on a 512 MB api container.
+    """
+    try:
+        chunks, headers = update_runner_client.stream_backup_download(filename)
+    except update_runner_client.UpdateRunnerUnreachable:
+        raise _runner_unavailable_response()
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Backup not found: {filename}")
+    except update_runner_client.UpdateRunnerRemoteError as exc:
+        raise HTTPException(status_code=502, detail=f"Runner error: {exc}")
+
+    log_admin_action(
+        db,
+        admin,
+        "backup.full.download",
+        "backup",
+        filename,
+        {"size_bytes": int(headers.get("content-length") or 0)},
+    )
+
+    forward_headers = {
+        "Content-Disposition": headers.get(
+            "content-disposition", f'attachment; filename="{filename}"'
+        ),
+    }
+    if "content-length" in headers:
+        forward_headers["Content-Length"] = headers["content-length"]
+    return StreamingResponse(
+        chunks,
+        media_type=headers.get("content-type", "application/octet-stream"),
+        headers=forward_headers,
+    )
+
+
+@router.post("/backups/upload")
+def upload_backup_archive(
+    file: UploadFile = File(...),
+    admin: User = Depends(require_permission("backups:restore")),
+    db: Session = Depends(get_db),
+):
+    """Forward an externally-stored backup file to the runner's backups dir.
+
+    Requires ``backups:restore`` rather than ``backups:manage`` because an
+    uploaded file is a foothold for a subsequent restore — making the two
+    actions cost the same trust opens fewer surprising authorization gaps.
+    """
+    raw_name = (file.filename or "").strip()
+    if not raw_name:
+        raise HTTPException(status_code=400, detail="Uploaded file has no filename")
+
+    try:
+        payload = update_runner_client.upload_backup(
+            filename=raw_name,
+            fileobj=file.file,
+            content_type=file.content_type or "application/octet-stream",
+        )
+    except update_runner_client.UpdateRunnerUnreachable:
+        raise _runner_unavailable_response()
+    except update_runner_client.UpdateRunnerRemoteError as exc:
+        # Runner returns 400 for invalid filename — surface that verbatim.
+        if exc.status_code == 400:
+            raise HTTPException(status_code=400, detail=exc.body)
+        raise HTTPException(status_code=502, detail=f"Runner error: {exc}")
+
+    log_admin_action(
+        db,
+        admin,
+        "backup.full.upload",
+        "backup",
+        payload.get("filename") or raw_name,
+        {"size_bytes": payload.get("size_bytes")},
+    )
+    return payload
+
+
+@router.post("/backups/{filename}/restore")
+def restore_from_backup(
+    filename: str,
+    admin: User = Depends(require_permission("backups:restore")),
+    db: Session = Depends(get_db),
+):
+    """Kick off ``scripts/restore.sh <file>``. Returns a job id for polling.
+
+    DESTRUCTIVE: the script runs ``pg_restore --clean --if-exists`` and wipes
+    the uploads volume before restoring its contents. We rely on the UI's
+    "type the filename to confirm" modal to avoid mis-clicks; the audit log
+    captures who initiated each restore.
+    """
+    try:
+        payload = update_runner_client.queue_restore_job(filename=filename)
+    except update_runner_client.UpdateRunnerUnreachable:
+        raise _runner_unavailable_response()
+    except update_runner_client.UpdateRunnerJobConflict as exc:
+        raise _job_conflict_response(exc)
+    except update_runner_client.UpdateRunnerRemoteError as exc:
+        # Runner returns 404 when the filename doesn't exist on disk.
+        if exc.status_code == 404:
+            raise HTTPException(status_code=404, detail=f"Backup not found: {filename}")
+        if exc.status_code == 400:
+            raise HTTPException(status_code=400, detail=exc.body)
+        raise HTTPException(status_code=502, detail=f"Runner error: {exc}")
+
+    log_admin_action(
+        db,
+        admin,
+        "backup.full.restore.start",
+        "backup",
+        filename,
+        {"job_id": payload.get("job_id")},
+    )
+    return payload
+
+
+@router.delete("/backups/{filename}")
+def delete_backup_archive(
+    filename: str,
+    admin: User = Depends(require_permission("backups:manage")),
+    db: Session = Depends(get_db),
+):
+    """Remove an encrypted archive from the runner's backups directory."""
+    try:
+        payload = update_runner_client.delete_backup(filename)
+    except update_runner_client.UpdateRunnerUnreachable:
+        raise _runner_unavailable_response()
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Backup not found: {filename}")
+    except update_runner_client.UpdateRunnerRemoteError as exc:
+        if exc.status_code == 400:
+            raise HTTPException(status_code=400, detail=exc.body)
+        raise HTTPException(status_code=502, detail=f"Runner error: {exc}")
+
+    log_admin_action(db, admin, "backup.full.delete", "backup", filename, {})
+    return payload
 
 
 @router.post("/users/{user_id}/send-invite", response_model=InviteDispatchOut)

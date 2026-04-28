@@ -113,6 +113,15 @@ def _isolate_update_runner_client(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(update_runner_client, "is_runner_reachable", lambda: False)
     monkeypatch.setattr(update_runner_client, "queue_update_job", _unreachable)
     monkeypatch.setattr(update_runner_client, "get_job_status", _unreachable)
+    # Backup helpers added in v2.3.0 — same isolation rationale: the runner is
+    # not part of the api unit-test surface, so default every call to the
+    # "unreachable" branch and let opt-in tests stub each helper.
+    monkeypatch.setattr(update_runner_client, "list_backups", _unreachable)
+    monkeypatch.setattr(update_runner_client, "queue_backup_job", _unreachable)
+    monkeypatch.setattr(update_runner_client, "queue_restore_job", _unreachable)
+    monkeypatch.setattr(update_runner_client, "delete_backup", _unreachable)
+    monkeypatch.setattr(update_runner_client, "stream_backup_download", _unreachable)
+    monkeypatch.setattr(update_runner_client, "upload_backup", _unreachable)
 
 
 @pytest.fixture

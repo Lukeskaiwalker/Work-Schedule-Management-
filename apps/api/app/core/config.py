@@ -52,6 +52,14 @@ class Settings(BaseSettings):
     update_runner_url: str = "http://update_runner:9000"
     update_runner_token: str = ""
     update_runner_timeout_seconds: float = 5.0
+    # Passphrase for backup.sh / restore.sh. Forwarded to the update_runner
+    # container via docker-compose.yml — the api container itself never invokes
+    # the scripts, but this setting is also surfaced via the admin backups page
+    # so operators can confirm one is configured before kicking off a backup.
+    backup_passphrase: str = ""
+    # Alternative to backup_passphrase: a path (mounted into the runner) holding
+    # the passphrase. Either one being set is enough to satisfy the scripts.
+    backup_passphrase_file: str = ""
 
     mail_from: str = "technik@smpl-energy.de"
     smtp_host: str = ""

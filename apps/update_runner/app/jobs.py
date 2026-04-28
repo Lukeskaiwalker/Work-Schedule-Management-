@@ -1,4 +1,4 @@
-"""In-memory job registry + the safe_update.sh subprocess runner.
+"""In-memory job registry + subprocess runners for the update_runner sidecar.
 
 Design constraints worth knowing before changing this module:
 
@@ -6,16 +6,26 @@ Design constraints worth knowing before changing this module:
   because the runner runs with ``--workers 1``. Adding a worker would silently
   break the "one job at a time" invariant; if you ever scale the runner,
   promote this lock to something like a filesystem flock or a Redis SETNX.
+  This invariant is what keeps ``backup``, ``restore`` and ``update`` jobs
+  from ever overlapping — running ``pg_dump`` while ``safe_update.sh`` is
+  rebuilding the db service would corrupt either side.
 
 - **Subprocess is detached from the request.** ``threading.Thread`` is fine
   here because uvicorn's request lifecycle does not bound the subprocess —
   the http response returns the moment the job is queued, then the worker
-  thread runs ``safe_update.sh`` to completion in the background.
+  thread runs the script to completion in the background.
 
 - **Logs go to disk, not the process buffer.** A complete safe_update.sh run
   can produce tens of thousands of lines (docker build output, alembic SQL,
   etc). We write to a per-job file and serve a tail; we do not hold the
-  full transcript in memory.
+  full transcript in memory. backup/restore output is much smaller but uses
+  the same plumbing for consistency.
+
+- **Passphrases never land in process state.** ``BACKUP_PASSPHRASE`` is
+  forwarded into the subprocess env and immediately discarded — Job objects
+  carry only ids, status flags, and human-readable detail strings. The log
+  files contain whatever the scripts print, which is intentionally never the
+  passphrase.
 """
 from __future__ import annotations
 
@@ -31,10 +41,16 @@ from .config import COMPOSE_PROJECT_NAME, JOB_LOG_DIR, LOG_TAIL_BYTES, REPO_ROOT
 
 
 JobStatus = Literal["queued", "running", "succeeded", "failed"]
+JobKind = Literal["update", "backup", "restore"]
 
 
 class Job:
-    """A single safe_update.sh invocation tracked by the runner."""
+    """A single privileged subprocess invocation tracked by the runner.
+
+    The ``kind`` field discriminates between safe_update.sh, backup.sh and
+    restore.sh runs — all three share the same lifecycle and log plumbing
+    but produce different artefacts.
+    """
 
     __slots__ = (
         "id",
@@ -47,9 +63,9 @@ class Job:
         "log_path",
     )
 
-    def __init__(self, job_id: str, kind: str) -> None:
+    def __init__(self, job_id: str, kind: JobKind) -> None:
         self.id: str = job_id
-        self.kind: str = kind
+        self.kind: JobKind = kind
         self.status: JobStatus = "queued"
         self.started_at: str | None = None
         self.finished_at: str | None = None
@@ -100,7 +116,6 @@ def read_log_tail(job: Job) -> str:
             try:
                 handle.seek(-LOG_TAIL_BYTES, os.SEEK_END)
             except OSError:
-                # File smaller than tail size; read from start.
                 handle.seek(0)
             data = handle.read()
         return data.decode("utf-8", errors="replace")
@@ -108,56 +123,60 @@ def read_log_tail(job: Job) -> str:
         return ""
 
 
-def queue_update_job(*, branch: str, pull: bool) -> Job:
-    """Create and start a new safe_update.sh job. Raises if one is in flight."""
+# ── Subprocess runner (shared by all job kinds) ───────────────────────────────
+
+
+def _start_job(kind: JobKind) -> Job:
+    """Allocate a Job, register it as the active one, return it.
+
+    Raises ``JobInFlightError`` when another job is still running. The active
+    flag is cleared by ``_finish_job``.
+    """
     global _active_job
     with _lock:
         if _active_job is not None and _active_job.status in ("queued", "running"):
             raise JobInFlightError(_active_job)
         job_id = uuid.uuid4().hex[:12]
-        job = Job(job_id, "update")
+        job = Job(job_id, kind)
         _jobs[job_id] = job
         _active_job = job
-
-    thread = threading.Thread(
-        target=_run_safe_update,
-        args=(job, branch, pull),
-        daemon=False,
-        name=f"update-runner-{job_id}",
-    )
-    thread.start()
     return job
 
 
-class JobInFlightError(RuntimeError):
-    def __init__(self, active: Job) -> None:
-        self.active = active
-        super().__init__(f"An update job is already running: {active.id}")
-
-
-def _build_command(branch: str, pull: bool) -> list[str]:
-    cmd = ["./scripts/safe_update.sh"]
-    if pull:
-        cmd.extend(["--pull", "--branch", branch])
-    return cmd
-
-
-def _run_safe_update(job: Job, branch: str, pull: bool) -> None:
-    """Background worker. Captures all output to the per-job log file."""
+def _finish_job(job: Job) -> None:
+    """Mark the active slot empty if it still points at this job."""
     global _active_job
+    with _lock:
+        if _active_job is job:
+            _active_job = None
 
+
+def _run_subprocess(
+    job: Job,
+    cmd: list[str],
+    env: dict[str, str],
+    *,
+    success_detail: str,
+    failure_detail_prefix: str,
+    header: str | None = None,
+) -> None:
+    """Run ``cmd`` to completion, capturing all output to the job log file.
+
+    Common shape for all three job kinds. The ``cwd`` is always ``REPO_ROOT``
+    so script-relative paths (``./scripts/...``) resolve correctly. Keeps
+    Job state immutable-by-method: each call sets a coherent
+    started_at → exit_code → status → detail → finished_at sequence.
+    """
     job.status = "running"
     job.started_at = _utcnow_iso()
-    cmd = _build_command(branch, pull)
-    env = os.environ.copy()
-    env["COMPOSE_PROJECT_NAME"] = COMPOSE_PROJECT_NAME
 
     try:
         with job.log_path.open("w", encoding="utf-8") as log:
             log.write(
-                f"[{job.started_at}] Starting safe_update.sh "
-                f"(cwd={REPO_ROOT}, cmd={' '.join(cmd)}, "
-                f"COMPOSE_PROJECT_NAME={COMPOSE_PROJECT_NAME})\n"
+                f"[{job.started_at}] {header or 'Starting subprocess'}\n"
+                f"  cwd={REPO_ROOT}\n"
+                f"  cmd={' '.join(cmd)}\n"
+                f"  COMPOSE_PROJECT_NAME={COMPOSE_PROJECT_NAME}\n"
             )
             log.flush()
             try:
@@ -172,18 +191,18 @@ def _run_safe_update(job: Job, branch: str, pull: bool) -> None:
                 job.exit_code = result.returncode
                 if result.returncode == 0:
                     job.status = "succeeded"
-                    job.detail = "safe_update.sh completed successfully."
+                    job.detail = success_detail
                 else:
                     job.status = "failed"
                     job.detail = (
-                        f"safe_update.sh exited with code {result.returncode}. "
-                        "Check the log tail for details."
+                        f"{failure_detail_prefix} exited with code "
+                        f"{result.returncode}. Check the log tail for details."
                     )
             except FileNotFoundError as exc:
                 job.status = "failed"
-                job.detail = f"Update script missing: {exc}"
+                job.detail = f"Script missing: {exc}"
                 log.write(f"\n[runner-error] FileNotFoundError: {exc}\n")
-            except Exception as exc:  # noqa: BLE001 — we want to surface anything
+            except Exception as exc:  # noqa: BLE001
                 job.status = "failed"
                 job.detail = f"Update runner crashed: {exc!r}"
                 log.write(f"\n[runner-error] {exc!r}\n")
@@ -197,6 +216,120 @@ def _run_safe_update(job: Job, branch: str, pull: bool) -> None:
                 )
         except OSError:
             pass
-        with _lock:
-            if _active_job is job:
-                _active_job = None
+        _finish_job(job)
+
+
+# ── safe_update.sh ────────────────────────────────────────────────────────────
+
+
+class JobInFlightError(RuntimeError):
+    def __init__(self, active: Job) -> None:
+        self.active = active
+        super().__init__(f"A runner job is already running: {active.id}")
+
+
+def _build_update_command(branch: str, pull: bool) -> list[str]:
+    cmd = ["./scripts/safe_update.sh"]
+    if pull:
+        cmd.extend(["--pull", "--branch", branch])
+    return cmd
+
+
+def queue_update_job(*, branch: str, pull: bool) -> Job:
+    """Create and start a new safe_update.sh job. Raises if one is in flight."""
+    job = _start_job("update")
+    thread = threading.Thread(
+        target=_run_update,
+        args=(job, branch, pull),
+        daemon=False,
+        name=f"update-runner-{job.id}",
+    )
+    thread.start()
+    return job
+
+
+def _run_update(job: Job, branch: str, pull: bool) -> None:
+    cmd = _build_update_command(branch, pull)
+    env = os.environ.copy()
+    env["COMPOSE_PROJECT_NAME"] = COMPOSE_PROJECT_NAME
+    _run_subprocess(
+        job,
+        cmd,
+        env,
+        success_detail="safe_update.sh completed successfully.",
+        failure_detail_prefix="safe_update.sh",
+        header="Starting safe_update.sh",
+    )
+
+
+# ── scripts/backup.sh ─────────────────────────────────────────────────────────
+
+
+def queue_backup_job() -> Job:
+    """Create and start a new backup.sh job. Raises if one is in flight.
+
+    The runner reads ``BACKUP_PASSPHRASE`` from its own env (forwarded by
+    docker-compose). We do not accept the passphrase as a request parameter
+    because every additional hop is one more place a leaked log could embarrass
+    us. If the env var is missing the script bails out cleanly.
+    """
+    job = _start_job("backup")
+    thread = threading.Thread(
+        target=_run_backup,
+        args=(job,),
+        daemon=False,
+        name=f"backup-runner-{job.id}",
+    )
+    thread.start()
+    return job
+
+
+def _run_backup(job: Job) -> None:
+    cmd = ["./scripts/backup.sh"]
+    env = os.environ.copy()
+    env["COMPOSE_PROJECT_NAME"] = COMPOSE_PROJECT_NAME
+    _run_subprocess(
+        job,
+        cmd,
+        env,
+        success_detail="Encrypted backup created in backups/.",
+        failure_detail_prefix="backup.sh",
+        header="Starting scripts/backup.sh",
+    )
+
+
+# ── scripts/restore.sh ────────────────────────────────────────────────────────
+
+
+def queue_restore_job(*, filename: str) -> Job:
+    """Create and start a restore.sh job for the given backup filename.
+
+    The filename is resolved relative to the runner's repo root, which is the
+    same path the api sees for listing. Filename safety is the caller's
+    responsibility — endpoints validate via ``backups.safe_resolve`` before
+    handing in.
+    """
+    job = _start_job("restore")
+    thread = threading.Thread(
+        target=_run_restore,
+        args=(job, filename),
+        daemon=False,
+        name=f"restore-runner-{job.id}",
+    )
+    thread.start()
+    return job
+
+
+def _run_restore(job: Job, filename: str) -> None:
+    backup_relpath = f"backups/{filename}"
+    cmd = ["./scripts/restore.sh", backup_relpath]
+    env = os.environ.copy()
+    env["COMPOSE_PROJECT_NAME"] = COMPOSE_PROJECT_NAME
+    _run_subprocess(
+        job,
+        cmd,
+        env,
+        success_detail=f"Restore from {filename} completed.",
+        failure_detail_prefix="restore.sh",
+        header=f"Starting scripts/restore.sh for {filename}",
+    )

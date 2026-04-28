@@ -2,11 +2,12 @@ import { useState, useEffect, useRef, type FormEvent } from "react";
 import { useAppContext } from "../context/AppContext";
 import { AvatarBadge } from "../components/shared/AvatarBadge";
 import { AdminUpdateMenu } from "../components/shared/AdminUpdateMenu";
+import { AdminBackupsPanel } from "../components/admin/AdminBackupsPanel";
 import { MailIcon, KeyIcon, ArchiveUserIcon, ShieldIcon, ResetIcon } from "../components/icons";
 import { schoolWeekdayLabel } from "../utils/dates";
 import type { User, EmployeeGroup } from "../types";
 
-type AdminTab = "users" | "groups" | "roles" | "tools" | "audit" | "settings" | "system";
+type AdminTab = "users" | "groups" | "roles" | "tools" | "audit" | "settings" | "system" | "backups";
 type AuditPeriodFilter = "all" | "today" | "7d" | "30d" | "90d" | "custom";
 
 const ALL_ROLES: User["role"][] = ["admin", "ceo", "accountant", "planning", "employee"];
@@ -107,6 +108,8 @@ export function AdminPage() {
     canManageSettings,
     canManageSystem,
     canExportBackups,
+    canManageBackups,
+    canRestoreBackups,
     canAdjustRequiredHours,
     // Users tab
     activeAdminUsers,
@@ -194,10 +197,16 @@ export function AdminPage() {
     canViewAudit ||
     canManageSettings ||
     canManageSystem ||
-    canExportBackups;
+    canExportBackups ||
+    canManageBackups ||
+    canRestoreBackups;
 
   const toolsVisible = canManageProjectImport || canManageSchoolAbsences;
+  // The legacy "System" tab now hosts only update controls + the legacy
+  // DB-only backup form. Full-archive backup management lives in its own tab
+  // because the listing/upload/restore UI doesn't fit alongside the update menu.
   const systemVisible = canManageSystem || canExportBackups;
+  const backupsVisible = canManageBackups || canRestoreBackups;
   const availableTabs: AdminTab[] = [
     ...(canManageUsers ? (["users", "groups"] as AdminTab[]) : []),
     ...(canManagePermissions ? (["roles"] as AdminTab[]) : []),
@@ -205,6 +214,7 @@ export function AdminPage() {
     ...(canViewAudit ? (["audit"] as AdminTab[]) : []),
     ...(canManageSettings ? (["settings"] as AdminTab[]) : []),
     ...(systemVisible ? (["system"] as AdminTab[]) : []),
+    ...(backupsVisible ? (["backups"] as AdminTab[]) : []),
   ];
 
   const [tab, setTab] = useState<AdminTab>(availableTabs[0] ?? "tools");
@@ -275,6 +285,7 @@ export function AdminPage() {
     { id: "audit", label: de ? "Protokoll" : "Audit", visible: canViewAudit },
     { id: "settings", label: de ? "Einstellungen" : "Settings", visible: canManageSettings },
     { id: "system", label: "System", visible: systemVisible },
+    { id: "backups", label: de ? "Backups" : "Backups", visible: backupsVisible },
   ];
   const TABS = ALL_TABS.filter((t) => t.visible);
 
@@ -2101,6 +2112,13 @@ export function AdminPage() {
                 </form>
               </div>
             )}
+          </div>
+        )}
+
+        {/* ── Backups (full encrypted-archive flow) ──────────────────────── */}
+        {tab === "backups" && (
+          <div className="admin-page-layout admin-page-layout--system">
+            <AdminBackupsPanel />
           </div>
         )}
       </section>

@@ -59,6 +59,8 @@ import type {
   UpdateStatus,
   UpdateInstallResponse,
   UpdateProgress,
+  BackupListResponse,
+  BackupJobProgress,
   ReportWorker,
   ReportDraft,
   ReportMaterialRow,
@@ -619,6 +621,20 @@ export interface AppContextValue {
    *  null when no async install is running or the last one has been dismissed. */
   updateProgress: UpdateProgress | null;
   setUpdateProgress: (progress: UpdateProgress | null) => void;
+
+  // ── Backups (full encrypted-archive flow) ──────────────────────────────────
+  /** Listing snapshot for the admin Backups tab; null = not yet loaded. */
+  backupsList: BackupListResponse | null;
+  setBackupsList: (list: BackupListResponse | null) => void;
+  backupsListLoading: boolean;
+  setBackupsListLoading: (loading: boolean) => void;
+  /** Progress for the active backup or restore job. Distinct from
+   *  updateProgress so the two banners don't fight; the runner enforces
+   *  "one active job" so only one of these is ever non-null. */
+  backupJobProgress: BackupJobProgress | null;
+  setBackupJobProgress: (progress: BackupJobProgress | null) => void;
+  backupJobRunning: boolean;
+  setBackupJobRunning: (running: boolean) => void;
   preUserMenuOpen: boolean;
   setPreUserMenuOpen: (open: boolean) => void;
   adminUserMenuOpenId: number | null;
@@ -724,6 +740,8 @@ export interface AppContextValue {
   canManageSettings: boolean;
   canManageSystem: boolean;
   canExportBackups: boolean;
+  canManageBackups: boolean;
+  canRestoreBackups: boolean;
   canManageProjectImport: boolean;
   canMarkCritical: boolean;
   setProjectCritical: (projectId: number, isCritical: boolean) => Promise<void>;
@@ -1005,6 +1023,22 @@ export interface AppContextValue {
    *  is unknown (e.g., runner restart cleared in-memory registry) so callers
    *  can stop polling gracefully. */
   getUpdateProgress: (jobId: string) => Promise<UpdateProgress | null>;
+
+  // ── Backup actions ─────────────────────────────────────────────────────────
+  /** Refresh the list of backup archives. Quiet (no notice) by default. */
+  loadBackupsList: () => Promise<void>;
+  /** Kick off a new full backup via the runner sidecar. Starts polling on
+   *  success; does nothing when permissions are missing. */
+  startFullBackup: () => Promise<void>;
+  /** Kick off a restore job for the named file. The caller is expected to
+   *  show a confirmation modal first — this function does NOT prompt. */
+  startRestoreFromBackup: (filename: string) => Promise<void>;
+  /** Stream-download a backup file to disk via the browser. */
+  downloadBackup: (filename: string) => Promise<void>;
+  /** Upload a local file as a new backup archive. */
+  uploadBackup: (file: File) => Promise<void>;
+  /** Remove a backup file. Caller confirms first. */
+  deleteBackup: (filename: string) => Promise<void>;
   loadPlanningWeek: (projectId: number | null, weekStart: string, taskType?: TaskType | null) => Promise<void>;
   loadPlanningWindow: (projectId: number | null, weekStart: string, weekCount: number) => Promise<void>;
   loadSitesAndTickets: (projectId: number) => Promise<void>;

@@ -50,6 +50,8 @@ import type {
   UpdateStatus,
   UpdateInstallResponse,
   UpdateProgress,
+  BackupListResponse,
+  BackupJobProgress,
   ReportWorker,
   ReportDraft,
   StoredReportDraft,
@@ -476,6 +478,15 @@ export function App() {
   // when the user dismisses a finished job. Lives in a ref instead of state
   // because the timer ID changes don't need to trigger re-renders.
   const updateProgressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ── Backup state (Admin → Backups tab) ───────────────────────────────────
+  const [backupsList, setBackupsList] = useState<BackupListResponse | null>(null);
+  const [backupsListLoading, setBackupsListLoading] = useState(false);
+  const [backupJobProgress, setBackupJobProgress] = useState<BackupJobProgress | null>(null);
+  const [backupJobRunning, setBackupJobRunning] = useState(false);
+  // Same reasoning as updateProgressTimerRef: a ref so that cancelling the
+  // poll loop does not cause an extra re-render.
+  const backupJobTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [timeMonthCursor, setTimeMonthCursor] = useState<Date>(() => {
     const current = new Date();
     return new Date(current.getFullYear(), current.getMonth(), 1);
@@ -642,6 +653,8 @@ export function App() {
   const canManageSettings = effectivePermissions.has("settings:manage");
   const canManageSystem = effectivePermissions.has("system:manage");
   const canExportBackups = effectivePermissions.has("backups:export");
+  const canManageBackups = effectivePermissions.has("backups:manage");
+  const canRestoreBackups = effectivePermissions.has("backups:restore");
   const canManageProjectImport = effectivePermissions.has("projects:import");
   const canMarkCritical = effectivePermissions.has("projects:mark_critical");
   const canUseProtectedFolders = effectivePermissions.has("files:view_protected");
@@ -1789,6 +1802,10 @@ export function App() {
       if (updateProgressTimerRef.current !== null) {
         clearTimeout(updateProgressTimerRef.current);
         updateProgressTimerRef.current = null;
+      }
+      if (backupJobTimerRef.current !== null) {
+        clearTimeout(backupJobTimerRef.current);
+        backupJobTimerRef.current = null;
       }
     };
   }, []);
@@ -3465,6 +3482,240 @@ export function App() {
     } catch (err: any) {
       setError(err.message ?? "Failed to run update");
       setUpdateInstallRunning(false);
+    }
+  }
+
+  // ── Backups (full encrypted-archive flow) ──────────────────────────────────
+  //
+  // Pattern mirrors the safe-update install flow: kick off → start polling →
+  // show terminal result. Both backup and restore jobs share one polling loop
+  // (the runner uses one Job model for all kinds), but we surface them in a
+  // separate progress slot so the System tab and Backups tab can render banners
+  // independently.
+
+  function clearBackupJobTimer() {
+    if (backupJobTimerRef.current !== null) {
+      clearTimeout(backupJobTimerRef.current);
+      backupJobTimerRef.current = null;
+    }
+  }
+
+  /** Poll a backup/restore job every 2s until terminal. On terminal status the
+   *  list is refreshed (so a freshly-created backup appears, or so a restore
+   *  outcome is reflected) and the running flag is cleared. */
+  async function pollBackupJobProgress(jobId: string) {
+    clearBackupJobTimer();
+    try {
+      const snapshot = await apiFetch<BackupJobProgress>(
+        `/admin/backups/jobs/${jobId}`,
+        token,
+      );
+      setBackupJobProgress(snapshot);
+      const isTerminal = snapshot.status === "succeeded" || snapshot.status === "failed";
+      if (isTerminal) {
+        setBackupJobRunning(false);
+        if (snapshot.status === "succeeded") {
+          setNotice(
+            snapshot.detail ||
+              (language === "de" ? "Backup-Vorgang erfolgreich" : "Backup job succeeded"),
+          );
+        } else {
+          setError(
+            snapshot.detail ||
+              (language === "de" ? "Backup-Vorgang fehlgeschlagen" : "Backup job failed"),
+          );
+        }
+        // Best-effort refresh — failures here shouldn't block the user from
+        // dismissing the progress card.
+        try {
+          await loadBackupsList();
+        } catch {
+          // ignore
+        }
+        return;
+      }
+      backupJobTimerRef.current = setTimeout(() => {
+        void pollBackupJobProgress(jobId);
+      }, 2000);
+    } catch (err: any) {
+      const status = err?.status ?? err?.response?.status;
+      if (status === 404) {
+        // Runner forgot the job (e.g., its container restarted). Treat as
+        // terminal so the spinner doesn't run forever.
+        setBackupJobRunning(false);
+        return;
+      }
+      backupJobTimerRef.current = setTimeout(() => {
+        void pollBackupJobProgress(jobId);
+      }, 4000);
+    }
+  }
+
+  async function loadBackupsList() {
+    if (!effectivePermissions.has("backups:manage")) return;
+    setBackupsListLoading(true);
+    try {
+      const list = await apiFetch<BackupListResponse>("/admin/backups", token);
+      setBackupsList(list);
+    } catch (err: any) {
+      setError(err.message ?? "Failed to load backups");
+    } finally {
+      setBackupsListLoading(false);
+    }
+  }
+
+  async function startFullBackup() {
+    if (!effectivePermissions.has("backups:manage")) return;
+    setBackupJobRunning(true);
+    setBackupJobProgress(null);
+    clearBackupJobTimer();
+    try {
+      const result = await apiFetch<{ job_id: string; status: string }>(
+        "/admin/backups/full",
+        token,
+        { method: "POST" },
+      );
+      setNotice(
+        language === "de"
+          ? "Backup gestartet (läuft im Hintergrund)"
+          : "Backup started (running in background)",
+      );
+      setBackupJobProgress({
+        job_id: result.job_id,
+        kind: "backup",
+        status: (result.status as BackupJobProgress["status"]) || "queued",
+        log_tail: null,
+        detail: null,
+        exit_code: null,
+        started_at: null,
+        finished_at: null,
+      });
+      void pollBackupJobProgress(result.job_id);
+    } catch (err: any) {
+      setError(err.message ?? "Failed to start backup");
+      setBackupJobRunning(false);
+    }
+  }
+
+  async function startRestoreFromBackup(filename: string) {
+    if (!effectivePermissions.has("backups:restore")) return;
+    setBackupJobRunning(true);
+    setBackupJobProgress(null);
+    clearBackupJobTimer();
+    try {
+      const result = await apiFetch<{ job_id: string; status: string }>(
+        `/admin/backups/${encodeURIComponent(filename)}/restore`,
+        token,
+        { method: "POST" },
+      );
+      setNotice(
+        language === "de"
+          ? `Wiederherstellung gestartet: ${filename}`
+          : `Restore started: ${filename}`,
+      );
+      setBackupJobProgress({
+        job_id: result.job_id,
+        kind: "restore",
+        status: (result.status as BackupJobProgress["status"]) || "queued",
+        log_tail: null,
+        detail: `Restoring ${filename}`,
+        exit_code: null,
+        started_at: null,
+        finished_at: null,
+      });
+      void pollBackupJobProgress(result.job_id);
+    } catch (err: any) {
+      setError(err.message ?? "Failed to start restore");
+      setBackupJobRunning(false);
+    }
+  }
+
+  async function downloadBackup(filename: string) {
+    if (!effectivePermissions.has("backups:export")) return;
+    try {
+      const headers: HeadersInit = {};
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const response = await fetch(
+        `/api/admin/backups/${encodeURIComponent(filename)}`,
+        { headers, credentials: "include" },
+      );
+      if (!response.ok) {
+        let detail = response.statusText;
+        try {
+          const payload = await response.json();
+          detail = payload.detail ?? detail;
+        } catch {
+          // no-op
+        }
+        throw new Error(detail || "Download failed");
+      }
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = blobUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(blobUrl);
+      setNotice(
+        language === "de"
+          ? `Backup heruntergeladen: ${filename}`
+          : `Backup downloaded: ${filename}`,
+      );
+    } catch (err: any) {
+      setError(err.message ?? "Failed to download backup");
+    }
+  }
+
+  async function uploadBackup(file: File) {
+    if (!effectivePermissions.has("backups:restore")) return;
+    const formData = new FormData();
+    formData.append("file", file, file.name);
+    try {
+      const headers: HeadersInit = {};
+      if (token) headers.Authorization = `Bearer ${token}`;
+      const response = await fetch("/api/admin/backups/upload", {
+        method: "POST",
+        headers,
+        credentials: "include",
+        body: formData,
+      });
+      if (!response.ok) {
+        let detail = response.statusText;
+        try {
+          const payload = await response.json();
+          detail = payload.detail ?? detail;
+        } catch {
+          // no-op
+        }
+        throw new Error(detail || "Upload failed");
+      }
+      setNotice(
+        language === "de"
+          ? `Backup hochgeladen: ${file.name}`
+          : `Backup uploaded: ${file.name}`,
+      );
+      await loadBackupsList();
+    } catch (err: any) {
+      setError(err.message ?? "Failed to upload backup");
+    }
+  }
+
+  async function deleteBackup(filename: string) {
+    if (!effectivePermissions.has("backups:manage")) return;
+    try {
+      await apiFetch(`/admin/backups/${encodeURIComponent(filename)}`, token, {
+        method: "DELETE",
+      });
+      setNotice(
+        language === "de"
+          ? `Backup gelöscht: ${filename}`
+          : `Backup deleted: ${filename}`,
+      );
+      await loadBackupsList();
+    } catch (err: any) {
+      setError(err.message ?? "Failed to delete backup");
     }
   }
 
@@ -8258,6 +8509,14 @@ export function App() {
     setUpdateInstallRunning,
     updateProgress,
     setUpdateProgress,
+    backupsList,
+    setBackupsList,
+    backupsListLoading,
+    setBackupsListLoading,
+    backupJobProgress,
+    setBackupJobProgress,
+    backupJobRunning,
+    setBackupJobRunning,
     preUserMenuOpen,
     setPreUserMenuOpen,
     adminUserMenuOpenId,
@@ -8337,6 +8596,8 @@ export function App() {
     canManageSettings,
     canManageSystem,
     canExportBackups,
+    canManageBackups,
+    canRestoreBackups,
     canManageProjectImport,
     canMarkCritical,
     setProjectCritical,
@@ -8608,6 +8869,12 @@ export function App() {
     loadUpdateStatus,
     installSystemUpdate,
     getUpdateProgress,
+    loadBackupsList,
+    startFullBackup,
+    startRestoreFromBackup,
+    downloadBackup,
+    uploadBackup,
+    deleteBackup,
     loadPlanningWeek,
     loadPlanningWindow,
     loadSitesAndTickets,
