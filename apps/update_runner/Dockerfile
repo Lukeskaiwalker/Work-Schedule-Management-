@@ -26,6 +26,16 @@ RUN apk add --no-cache \
         coreutils \
         curl
 
+# Tell git to trust /repo regardless of file ownership. The runner container
+# runs as root (uid 0) but the bind-mounted /repo is owned by the host user
+# (e.g. mac, uid 1000). Without this, git's CVE-2022-24765 protection refuses
+# every operation with "fatal: detected dubious ownership in repository at
+# '/repo'", which broke the in-UI update-installer flow ever since runner-
+# mediated `git pull` was introduced. Setting safe.directory globally for the
+# root user is fine because this image has exactly one purpose — driving
+# scripts under /repo — so there's no other repo to protect against.
+RUN git config --global --add safe.directory /repo
+
 WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
