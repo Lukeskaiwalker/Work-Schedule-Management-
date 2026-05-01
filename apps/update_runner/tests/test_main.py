@@ -13,6 +13,30 @@ from typing import Any
 import pytest
 
 
+def test_runner_app_exposes_upload_endpoint(runner_test_client):
+    """Regression for v2.3.0 prod outage:
+
+    `/backups/upload` is decorated with `Form()` / `UploadFile` parameters,
+    which FastAPI's route loader validates at import time by trying to
+    import `python-multipart`. If the runner's requirements.txt forgets
+    that dep (as v2.3.0 originally did), the entire app fails to load
+    with `RuntimeError: Form data requires python-multipart to be
+    installed`, the container crashloops, and every backup-UI button
+    starts returning 405 against the still-running v2.2.x runner.
+
+    This assertion is the smallest possible smoke test: if the route
+    isn't registered, the runner image is missing python-multipart
+    (or some other Form-related dep) — fail CI early instead of
+    discovering it during a prod rollout.
+    """
+    paths = {route.path for route in runner_test_client.app.routes}
+    assert "/backups/upload" in paths, (
+        "POST /backups/upload missing — likely python-multipart not in "
+        "apps/update_runner/requirements.txt; FastAPI silently skipped the "
+        "route during import. See v2.3.1 changelog."
+    )
+
+
 def test_health_endpoint(runner_test_client):
     response = runner_test_client.get("/health")
     assert response.status_code == 200

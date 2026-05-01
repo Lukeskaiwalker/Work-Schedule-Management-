@@ -1,2 +1,6 @@
 fastapi==0.116.1
 uvicorn[standard]==0.35.0
+# Required by /backups/upload (Form + UploadFile). FastAPI raises at import
+# time without it: "Form data requires python-multipart to be installed".
+# Pinned conservatively — any 0.0.x of python-multipart is API-stable.
+python-multipart==0.0.20

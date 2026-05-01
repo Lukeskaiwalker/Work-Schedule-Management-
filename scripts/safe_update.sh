@@ -148,8 +148,14 @@ if [[ -f apps/api/.release.env ]]; then
   set +a
 fi
 
-echo "Building API image..."
-docker compose build api
+echo "Building API + update_runner images..."
+# update_runner has its own Dockerfile and requirements.txt, so any change to
+# apps/update_runner/ (new endpoints, new dependencies — see v2.3.0's backup
+# feature) is NOT picked up by `docker compose up -d` alone — Compose reuses
+# the cached image when no build is requested. Including update_runner in the
+# explicit build step here means every safe_update run produces a fresh image
+# matching the pulled source, never a stale one.
+docker compose build api update_runner
 
 LATEST_BACKUP=""
 if ! $CHECK_ONLY; then
@@ -172,11 +178,16 @@ echo "Applying real migrations..."
 docker compose run --rm api sh -lc "cd /app && alembic upgrade head"
 
 echo "Rebuilding and starting services..."
-docker compose up -d --build api api_worker web
+# update_runner included so a fresh image (built above) gets recreated as a
+# container. Without this, a runner-side bug fix or new endpoint shipped in a
+# release would land on disk but not in the running container until the next
+# manual `docker compose up -d --build update_runner`.
+docker compose up -d --build api api_worker web update_runner
 
-echo "Waiting for API and web services to become healthy..."
+echo "Waiting for API, web, and update_runner services to become healthy..."
 wait_for_service_health api
 wait_for_service_health web
+wait_for_service_health update_runner
 
 disable_maintenance_mode
 
