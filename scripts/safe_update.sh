@@ -182,7 +182,16 @@ echo "Rebuilding and starting services..."
 # container. Without this, a runner-side bug fix or new endpoint shipped in a
 # release would land on disk but not in the running container until the next
 # manual `docker compose up -d --build update_runner`.
-docker compose up -d --build api api_worker web update_runner
+#
+# Why update_runner specifically gets --force-recreate: Docker Compose's
+# image-change detection sometimes doesn't recreate a container when the
+# image content changes but the tag stays the same. We hit this on the
+# v2.3.1→v2.3.2 rollout — the new image was built and tagged, but the
+# running container kept its older image. Forcing recreation on the
+# runner specifically avoids this trap without churning api/api_worker/web
+# unnecessarily (those almost always change image content per release).
+docker compose up -d --build api api_worker web
+docker compose up -d --build --force-recreate update_runner
 
 echo "Waiting for API, web, and update_runner services to become healthy..."
 wait_for_service_health api

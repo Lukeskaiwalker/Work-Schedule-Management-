@@ -165,6 +165,20 @@ def test_backup_job_queued_writes_log(runner_test_client, monkeypatch: pytest.Mo
     assert response.status_code == 202
     job_id = response.json()["job_id"]
 
+    # Regression for v2.3.3 prod outage: backup.sh's progress markers were
+    # invisible during the run because libc inside the subprocess full-
+    # buffered stdout when piped. The fix is to prepend `stdbuf -oL` so
+    # libc switches to line-buffering. Lock that contract in here so any
+    # future refactor that drops the wrapping fails loudly at CI time.
+    captured_cmd = captured.get("cmd", [])
+    assert captured_cmd[:2] == ["stdbuf", "-oL"], (
+        f"runner must prepend stdbuf -oL for line-buffered progress markers; "
+        f"got cmd={captured_cmd}"
+    )
+    assert "backup.sh" in str(captured_cmd[2:]), (
+        f"backup.sh script invocation should follow stdbuf args; got {captured_cmd}"
+    )
+
     # The thread runs synchronously enough that by the time we poll, it should
     # have completed. We're stubbing subprocess.Popen so there's no I/O latency.
     import time

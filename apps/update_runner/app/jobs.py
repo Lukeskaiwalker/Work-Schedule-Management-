@@ -251,6 +251,16 @@ def _run_subprocess(
     job.status = "running"
     job.started_at = _utcnow_iso()
 
+    # Wrap the script invocation in stdbuf so libc inside the subprocess
+    # line-buffers stdout instead of full-buffering. Without this, bash's
+    # printf — which goes through libc — would batch ::SMPL_STAGE: markers
+    # in 4KB blocks and only flush at script exit, making real-time progress
+    # signaling pointless. stdbuf is part of GNU coreutils, added to the
+    # runner image since v2.3.3. The Python-side bufsize=1 below is still
+    # necessary but not sufficient on its own — it controls Python's read
+    # buffer, not the subprocess's write buffer.
+    wrapped_cmd = ["stdbuf", "-oL", *cmd]
+
     try:
         with job.log_path.open("w", encoding="utf-8") as log:
             log.write(
@@ -262,13 +272,13 @@ def _run_subprocess(
             log.flush()
             try:
                 process = subprocess.Popen(
-                    cmd,
+                    wrapped_cmd,
                     cwd=str(REPO_ROOT),
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     env=env,
                     text=True,
-                    bufsize=1,  # line-buffered so progress shows up live
+                    bufsize=1,  # line-buffered on Python's read side
                 )
                 assert process.stdout is not None  # PIPE is always set above
                 for line in process.stdout:

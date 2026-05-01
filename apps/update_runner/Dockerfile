@@ -11,6 +11,11 @@ FROM python:3.12-alpine
 # - git: required by safe_update.sh --pull
 # - openssl: required by backup.sh for AES-256 encryption
 # - bash: safe_update.sh / backup.sh shebangs assume bash (set -euo pipefail)
+# - coreutils: provides `stdbuf`, which the runner uses to force line-buffering
+#   on the subprocess's stdout. Without it, bash's printf to a pipe is full-
+#   buffered (4KB blocks) by libc, so v2.3.2 progress markers from backup.sh
+#   got batched and only flushed at script exit — making the stage UI silent
+#   until the very end. See v2.3.3 release notes for the user-visible symptom.
 # - curl: for the healthcheck and ad-hoc diagnostics
 RUN apk add --no-cache \
         docker-cli \
@@ -18,6 +23,7 @@ RUN apk add --no-cache \
         git \
         openssl \
         bash \
+        coreutils \
         curl
 
 WORKDIR /app
