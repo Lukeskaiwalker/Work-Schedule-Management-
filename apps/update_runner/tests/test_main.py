@@ -125,36 +125,48 @@ def test_restore_400_for_invalid_filename(runner_test_client):
 
 
 def test_backup_job_queued_writes_log(runner_test_client, monkeypatch: pytest.MonkeyPatch):
-    """Replace subprocess.run so the job completes immediately without forking
-    a real shell — we want to verify the runner's lifecycle plumbing, not the
-    contents of backup.sh.
+    """Replace subprocess.Popen so the job completes immediately without forking
+    a real shell — we want to verify the runner's lifecycle plumbing AND the
+    new ::SMPL_STAGE: marker parsing, not the contents of backup.sh.
+
+    v2.3.2 switched _run_subprocess from subprocess.run() to subprocess.Popen()
+    so it can read stdout line-by-line and parse progress markers in real time.
+    The stub here mirrors that contract: returns a Popen-like object whose
+    .stdout iterates over canned lines including marker lines.
     """
     import subprocess
 
     captured: dict[str, Any] = {}
 
-    def fake_run(cmd, cwd, stdout, stderr, env, check):  # noqa: D401
-        captured["cmd"] = cmd
-        captured["cwd"] = cwd
-        captured["env_has_compose"] = "COMPOSE_PROJECT_NAME" in env
-        # Write something so read_log_tail() returns it.
-        if hasattr(stdout, "write"):
-            stdout.write("backup.sh starting\nbackup-...tar.enc created\n")
-            stdout.flush()
+    class _FakePopen:
+        def __init__(self, cmd, cwd, stdout, stderr, env, text, bufsize):
+            captured["cmd"] = cmd
+            captured["cwd"] = cwd
+            captured["env_has_compose"] = "COMPOSE_PROJECT_NAME" in env
+            self.returncode = 0
+            self.stdout = iter([
+                "backup.sh starting\n",
+                "::SMPL_STAGE: ensure_containers 5 Container vorbereiten\n",
+                "Ensuring database + api containers are running...\n",
+                "::SMPL_STAGE: db_dump 25 Datenbank-Dump\n",
+                "Creating database dump...\n",
+                "::SMPL_STAGE: done 100 Fertig\n",
+                "::SMPL_SUMMARY: filename=backup-20260501-145012.tar.enc "
+                "size_bytes=3671152672 duration_seconds=492 warnings=0\n",
+                "backup-...tar.enc created\n",
+            ])
 
-        class _Result:
-            returncode = 0
+        def wait(self):
+            return 0
 
-        return _Result()
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "Popen", _FakePopen)
 
     response = runner_test_client.post("/jobs/backup")
     assert response.status_code == 202
     job_id = response.json()["job_id"]
 
     # The thread runs synchronously enough that by the time we poll, it should
-    # have completed. We're stubbing subprocess.run so there's no I/O latency.
+    # have completed. We're stubbing subprocess.Popen so there's no I/O latency.
     import time
     for _ in range(20):
         status = runner_test_client.get(f"/jobs/{job_id}").json()
@@ -166,3 +178,13 @@ def test_backup_job_queued_writes_log(runner_test_client, monkeypatch: pytest.Mo
     assert status["kind"] == "backup"
     assert "backup.sh" in str(captured.get("cmd"))
     assert captured.get("env_has_compose") is True
+    # Marker parsing reached the final stage and summary
+    assert status["stage"] == "done"
+    assert status["progress_percent"] == 100
+    assert status["stage_label"] == "Fertig"
+    assert status["summary_filename"] == "backup-20260501-145012.tar.enc"
+    assert status["summary_size_bytes"] == 3671152672
+    assert status["summary_duration_seconds"] == 492
+    assert status["summary_warnings"] == 0
+    # Marker lines are still preserved in the log_tail (operators see them)
+    assert "::SMPL_STAGE: db_dump" in status["log_tail"]

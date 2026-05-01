@@ -17215,6 +17215,18 @@ td {
   }
 }
 
+/* Indeterminate progress bar for runner jobs that haven't yet emitted a
+   ::SMPL_STAGE: marker — keeps the bar visually alive instead of frozen
+   at 0%. The 30%-wide stripe slides left→right across the track. */
+@keyframes admin-backup-progress-indeterminate {
+  from {
+    left: -30%;
+  }
+  to {
+    left: 100%;
+  }
+}
+
 /* ───────────────────────────────────────────────────────────
    Project Tickets Tab — matches Paper design 4QI-0
    ─────────────────────────────────────────────────────────── */

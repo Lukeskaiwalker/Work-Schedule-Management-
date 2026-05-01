@@ -81,6 +81,15 @@ class JobResponse(BaseModel):
     exit_code: int | None
     detail: str | None
     log_tail: str
+    # ── progress fields (populated from ::SMPL_STAGE: markers) ──
+    stage: str | None = None
+    stage_label: str | None = None
+    progress_percent: int | None = None
+    # ── summary fields (populated from ::SMPL_SUMMARY: marker on success) ──
+    summary_filename: str | None = None
+    summary_size_bytes: int | None = None
+    summary_duration_seconds: int | None = None
+    summary_warnings: int | None = None
 
 
 class HealthResponse(BaseModel):
@@ -209,6 +218,13 @@ def get_job_status(
         exit_code=job.exit_code,
         detail=job.detail,
         log_tail=read_log_tail(job),
+        stage=job.stage,
+        stage_label=job.stage_label,
+        progress_percent=job.progress_percent,
+        summary_filename=job.summary_filename,
+        summary_size_bytes=job.summary_size_bytes,
+        summary_duration_seconds=job.summary_duration_seconds,
+        summary_warnings=job.summary_warnings,
     )
 
 

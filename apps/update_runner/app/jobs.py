@@ -61,6 +61,15 @@ class Job:
         "exit_code",
         "detail",
         "log_path",
+        # ── progress fields, populated by ::SMPL_STAGE: markers ──
+        "stage",                       # short key, e.g. "db_dump"
+        "stage_label",                 # human label, e.g. "Datenbank-Dump"
+        "progress_percent",            # int 0..100
+        # ── summary fields, populated by ::SMPL_SUMMARY: marker on success ──
+        "summary_filename",
+        "summary_size_bytes",
+        "summary_duration_seconds",
+        "summary_warnings",
     )
 
     def __init__(self, job_id: str, kind: JobKind) -> None:
@@ -72,6 +81,13 @@ class Job:
         self.exit_code: int | None = None
         self.detail: str | None = None
         self.log_path: Path = JOB_LOG_DIR / f"{job_id}.log"
+        self.stage: str | None = None
+        self.stage_label: str | None = None
+        self.progress_percent: int | None = None
+        self.summary_filename: str | None = None
+        self.summary_size_bytes: int | None = None
+        self.summary_duration_seconds: int | None = None
+        self.summary_warnings: int | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -82,6 +98,13 @@ class Job:
             "finished_at": self.finished_at,
             "exit_code": self.exit_code,
             "detail": self.detail,
+            "stage": self.stage,
+            "stage_label": self.stage_label,
+            "progress_percent": self.progress_percent,
+            "summary_filename": self.summary_filename,
+            "summary_size_bytes": self.summary_size_bytes,
+            "summary_duration_seconds": self.summary_duration_seconds,
+            "summary_warnings": self.summary_warnings,
         }
 
 
@@ -151,6 +174,58 @@ def _finish_job(job: Job) -> None:
             _active_job = None
 
 
+_STAGE_MARKER_PREFIX = "::SMPL_STAGE: "
+_SUMMARY_MARKER_PREFIX = "::SMPL_SUMMARY: "
+
+
+def _maybe_parse_marker(line: str, job: Job) -> None:
+    """Update ``job`` in place when ``line`` carries a progress marker.
+
+    Markers are emitted by scripts/backup.sh (and future scripts). Format:
+        ::SMPL_STAGE: <key> <percent> <human label may include spaces>
+        ::SMPL_SUMMARY: filename=<f> size_bytes=<n> duration_seconds=<n> warnings=<n>
+
+    Lines that don't match are passed through to the log unchanged. Parsing
+    is intentionally forgiving — a malformed marker is treated as a regular
+    log line, never as a job failure.
+    """
+    if line.startswith(_STAGE_MARKER_PREFIX):
+        rest = line[len(_STAGE_MARKER_PREFIX):].rstrip("\n")
+        parts = rest.split(maxsplit=2)
+        if len(parts) >= 2:
+            job.stage = parts[0]
+            try:
+                job.progress_percent = max(0, min(100, int(parts[1])))
+            except ValueError:
+                # Malformed percent — leave previous value, but still record stage
+                pass
+            if len(parts) == 3:
+                job.stage_label = parts[2]
+        return
+
+    if line.startswith(_SUMMARY_MARKER_PREFIX):
+        rest = line[len(_SUMMARY_MARKER_PREFIX):].rstrip("\n")
+        # Each token is "key=value". We only accept a small whitelist so an
+        # accidentally-emitted marker can't poison fields it shouldn't.
+        for token in rest.split():
+            if "=" not in token:
+                continue
+            key, value = token.split("=", 1)
+            if key == "filename":
+                job.summary_filename = value
+            elif key in ("size_bytes", "duration_seconds", "warnings"):
+                try:
+                    int_value = int(value)
+                except ValueError:
+                    continue
+                if key == "size_bytes":
+                    job.summary_size_bytes = int_value
+                elif key == "duration_seconds":
+                    job.summary_duration_seconds = int_value
+                elif key == "warnings":
+                    job.summary_warnings = int_value
+
+
 def _run_subprocess(
     job: Job,
     cmd: list[str],
@@ -166,6 +241,12 @@ def _run_subprocess(
     so script-relative paths (``./scripts/...``) resolve correctly. Keeps
     Job state immutable-by-method: each call sets a coherent
     started_at → exit_code → status → detail → finished_at sequence.
+
+    Reads the subprocess's stdout line-by-line so progress markers can be
+    parsed in real time (see ``_maybe_parse_marker``). Each line is still
+    written to the log file unchanged — the marker prefix is preserved as a
+    breadcrumb so an operator viewing the log tail sees the same checkpoints
+    the UI does.
     """
     job.status = "running"
     job.started_at = _utcnow_iso()
@@ -180,23 +261,30 @@ def _run_subprocess(
             )
             log.flush()
             try:
-                result = subprocess.run(
+                process = subprocess.Popen(
                     cmd,
                     cwd=str(REPO_ROOT),
-                    stdout=log,
+                    stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                     env=env,
-                    check=False,
+                    text=True,
+                    bufsize=1,  # line-buffered so progress shows up live
                 )
-                job.exit_code = result.returncode
-                if result.returncode == 0:
+                assert process.stdout is not None  # PIPE is always set above
+                for line in process.stdout:
+                    log.write(line)
+                    log.flush()
+                    _maybe_parse_marker(line, job)
+                process.wait()
+                job.exit_code = process.returncode
+                if process.returncode == 0:
                     job.status = "succeeded"
                     job.detail = success_detail
                 else:
                     job.status = "failed"
                     job.detail = (
                         f"{failure_detail_prefix} exited with code "
-                        f"{result.returncode}. Check the log tail for details."
+                        f"{process.returncode}. Check the log tail for details."
                     )
             except FileNotFoundError as exc:
                 job.status = "failed"

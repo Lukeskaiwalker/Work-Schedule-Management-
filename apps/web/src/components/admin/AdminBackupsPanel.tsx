@@ -28,6 +28,18 @@ function formatTimestamp(iso: string, language: "de" | "en"): string {
 }
 
 
+/** Format a duration in seconds as a compact human label. Used by the
+ *  job-success card to show "8m 12s" rather than "492s". */
+function formatDuration(totalSeconds: number, language: "de" | "en"): string {
+  if (!Number.isFinite(totalSeconds) || totalSeconds < 0) return "—";
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = Math.round(totalSeconds % 60);
+  if (minutes === 0) return `${seconds}s`;
+  const minLabel = language === "de" ? "min" : "m";
+  return `${minutes}${minLabel} ${seconds}s`;
+}
+
+
 /** Small banner mirroring the AdminUpdateMenu progress card. Used for both
  *  backup and restore jobs since they share the runner's job shape. */
 function BackupJobBanner({
@@ -39,12 +51,14 @@ function BackupJobBanner({
   language: "de" | "en";
   onDismiss: () => void;
 }) {
-  const isTerminal = progress.status === "succeeded" || progress.status === "failed";
+  const isSucceeded = progress.status === "succeeded";
+  const isFailed = progress.status === "failed";
+  const isTerminal = isSucceeded || isFailed;
   const isRestore = progress.kind === "restore";
   const statusLabel = (() => {
     const map: Record<string, { de: string; en: string }> = {
       queued: { de: "In Warteschlange", en: "Queued" },
-      running: { de: "Läuft...", en: "Running..." },
+      running: { de: "Läuft…", en: "Running…" },
       succeeded: { de: "Erfolgreich", en: "Succeeded" },
       failed: { de: "Fehlgeschlagen", en: "Failed" },
     };
@@ -54,6 +68,21 @@ function BackupJobBanner({
   const titlePrefix = isRestore
     ? language === "de" ? "Wiederherstellung" : "Restore"
     : language === "de" ? "Backup" : "Backup";
+
+  // Stage label is what users care about while the job is running. Fall back
+  // to "Vorbereitung" when the job is queued or hasn't emitted a stage yet —
+  // gives the operator confidence the system is doing *something*.
+  const stageLabel = progress.stage_label
+    ?? (progress.status === "running"
+      ? (language === "de" ? "Vorbereitung…" : "Preparing…")
+      : null);
+
+  // Real measured progress when available; otherwise an indeterminate
+  // (animated) bar so the operator sees motion. We deliberately keep
+  // pre-v2.3.2 behavior (no progress field) graceful.
+  const hasMeasuredProgress = typeof progress.progress_percent === "number";
+  const measuredPercent = Math.max(0, Math.min(100, progress.progress_percent ?? 0));
+
   return (
     <div className="admin-update-progress" role="status" aria-live="polite">
       {!isTerminal && isRestore && (
@@ -66,43 +95,183 @@ function BackupJobBanner({
           </span>
         </div>
       )}
-      <small className="muted">
+
+      {/* Header line: title + status pill */}
+      <div
+        className="admin-backup-progress-head"
+        style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap" }}
+      >
         <b>
-          {titlePrefix} — {language === "de" ? "Job-Status" : "Job status"}:
-        </b>{" "}
-        {statusLabel}
-        {progress.exit_code !== null && progress.exit_code !== undefined ? (
-          <> · {language === "de" ? "Exit-Code" : "exit code"} {progress.exit_code}</>
-        ) : null}
-      </small>
-      {progress.detail && <small className="muted">{progress.detail}</small>}
-      {progress.log_tail ? (
-        <pre
-          className="admin-update-log-tail"
+          {titlePrefix} — {language === "de" ? "Status" : "Status"}: {statusLabel}
+        </b>
+        {progress.exit_code !== null && progress.exit_code !== undefined && (
+          <small className="muted">
+            {language === "de" ? "Exit-Code" : "exit code"} {progress.exit_code}
+          </small>
+        )}
+      </div>
+
+      {/* Stage label + progress bar — only while running */}
+      {!isTerminal && (
+        <div className="admin-backup-progress-stage" style={{ marginTop: 8 }}>
+          {stageLabel && (
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "baseline",
+                fontSize: 13,
+                marginBottom: 6,
+              }}
+            >
+              <span>{stageLabel}</span>
+              {hasMeasuredProgress && (
+                <small className="muted">{measuredPercent}%</small>
+              )}
+            </div>
+          )}
+          <div
+            role="progressbar"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={hasMeasuredProgress ? measuredPercent : undefined}
+            style={{
+              height: 6,
+              background: "#edf4ff",
+              borderRadius: 3,
+              overflow: "hidden",
+              position: "relative",
+            }}
+          >
+            {hasMeasuredProgress ? (
+              <div
+                style={{
+                  height: "100%",
+                  width: `${measuredPercent}%`,
+                  background: "#2f70b7",
+                  transition: "width 0.4s ease",
+                }}
+              />
+            ) : (
+              // Indeterminate: animated stripe (legacy behavior for old
+              // runners or scripts that don't emit stage markers).
+              <div
+                style={{
+                  height: "100%",
+                  width: "30%",
+                  background: "#2f70b7",
+                  position: "absolute",
+                  left: 0,
+                  animation: "admin-backup-progress-indeterminate 1.4s linear infinite",
+                }}
+              />
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Success summary card — file size, duration, warning count */}
+      {isSucceeded && progress.summary_filename && (
+        <div
+          className="admin-backup-progress-summary"
           style={{
-            maxHeight: 220,
-            overflow: "auto",
-            background: "var(--surface-2, #111)",
-            color: "var(--text-on-surface-2, #ddd)",
+            marginTop: 10,
             padding: "8px 12px",
+            background: "#e6f6ec",
             borderRadius: 6,
-            fontSize: 12,
-            lineHeight: 1.4,
-            whiteSpace: "pre-wrap",
-            wordBreak: "break-word",
+            fontSize: 13,
+            color: "#1f6f3c",
+            border: "1px solid #cfe9d7",
           }}
         >
-          {progress.log_tail}
-        </pre>
-      ) : (
-        <small className="muted">
-          {language === "de"
-            ? "Noch keine Log-Ausgabe verfügbar."
-            : "No log output yet."}
-        </small>
+          <div style={{ fontWeight: 600 }}>
+            {progress.summary_filename}
+          </div>
+          <small style={{ display: "block", marginTop: 2 }}>
+            {progress.summary_size_bytes != null
+              ? formatBytes(progress.summary_size_bytes)
+              : "—"}
+            {" · "}
+            {progress.summary_duration_seconds != null
+              ? formatDuration(progress.summary_duration_seconds, language)
+              : "—"}
+            {progress.summary_warnings != null && progress.summary_warnings > 0 && (
+              <>
+                {" · "}
+                <span style={{ color: "#a0670c", fontWeight: 600 }}>
+                  {language === "de"
+                    ? `${progress.summary_warnings} Warnung${progress.summary_warnings === 1 ? "" : "en"}`
+                    : `${progress.summary_warnings} warning${progress.summary_warnings === 1 ? "" : "s"}`}
+                </span>
+              </>
+            )}
+          </small>
+        </div>
       )}
+
+      {/* Failure detail — surface the runner's detail message prominently */}
+      {isFailed && progress.detail && (
+        <div
+          style={{
+            marginTop: 10,
+            padding: "8px 12px",
+            background: "#fde7e9",
+            borderRadius: 6,
+            fontSize: 13,
+            color: "#a02732",
+            border: "1px solid #f7c8cd",
+          }}
+        >
+          {progress.detail}
+        </div>
+      )}
+
+      {/* Log tail — collapsible during run, always visible on failure for
+          fast diagnosis. */}
+      {progress.log_tail ? (
+        <details
+          style={{ marginTop: 10 }}
+          open={isFailed}
+        >
+          <summary style={{ cursor: "pointer", fontSize: 12, color: "#5c7895" }}>
+            {language === "de" ? "Log-Ausgabe" : "Log output"}
+          </summary>
+          <pre
+            className="admin-update-log-tail"
+            style={{
+              maxHeight: 220,
+              overflow: "auto",
+              background: "var(--surface-2, #111)",
+              color: "var(--text-on-surface-2, #ddd)",
+              padding: "8px 12px",
+              borderRadius: 6,
+              fontSize: 12,
+              lineHeight: 1.4,
+              whiteSpace: "pre-wrap",
+              wordBreak: "break-word",
+              marginTop: 6,
+            }}
+          >
+            {progress.log_tail}
+          </pre>
+        </details>
+      ) : (
+        !isTerminal && (
+          <small className="muted" style={{ display: "block", marginTop: 8 }}>
+            {language === "de"
+              ? "Noch keine Log-Ausgabe verfügbar."
+              : "No log output yet."}
+          </small>
+        )
+      )}
+
       {isTerminal && (
-        <button type="button" onClick={onDismiss} className="ghost">
+        <button
+          type="button"
+          onClick={onDismiss}
+          className="ghost"
+          style={{ marginTop: 10 }}
+        >
           {language === "de" ? "Anzeige schließen" : "Dismiss"}
         </button>
       )}

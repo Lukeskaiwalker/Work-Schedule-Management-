@@ -693,6 +693,20 @@ export type UpdateProgress = {
   detail?: string | null;
   /** Tail of the runner's stdout+stderr log. May be empty until the job starts running. */
   log_tail?: string | null;
+  // ── Progress fields (v2.3.2+) populated from ::SMPL_STAGE: markers
+  //    emitted by the running script. Older runners return null. ──
+  /** Short key, e.g. "db_dump" / "encrypt". Stable identifier for icons. */
+  stage?: string | null;
+  /** Localized human label, e.g. "Datenbank-Dump". Surfaced in the banner. */
+  stage_label?: string | null;
+  /** 0-100 measured progress estimate. */
+  progress_percent?: number | null;
+  // ── Summary fields (v2.3.2+) populated from ::SMPL_SUMMARY: marker
+  //    on success. Used by the success card to show file size + duration. ──
+  summary_filename?: string | null;
+  summary_size_bytes?: number | null;
+  summary_duration_seconds?: number | null;
+  summary_warnings?: number | null;
 };
 
 /** Single encrypted-archive backup file as returned by GET /admin/backups. */
