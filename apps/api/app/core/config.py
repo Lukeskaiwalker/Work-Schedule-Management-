@@ -85,6 +85,31 @@ class Settings(BaseSettings):
     daily_clock_summary_send_email: bool = False
     daily_clock_summary_email_recipient: str = ""
 
+    # ── Audit log retention ────────────────────────────────────────────────
+    # Worker prunes audit_logs rows older than this many days, once per local
+    # day at the configured hour. Set to 0 to disable pruning entirely.
+    # Default 730 (≈ 2 years) — enough to cover most compliance windows
+    # while keeping the table from growing forever.
+    audit_log_retention_days: int = 730
+    audit_log_retention_run_hour_local: int = 3  # 03:00 local — quiet window
+
+    # ── Brute-force login alert ────────────────────────────────────────────
+    # When enabled, the api raises an alert (Telegram and/or email) when
+    # repeated `auth.login_failed` events cross either threshold:
+    #   * ≥ N failures for the same email within `window_seconds`
+    #   * ≥ M failures from the same IP within a 60-second window
+    # Dedup is anchored in the audit_logs table itself (a `auth.alert_brute_force`
+    # row) so multiple api workers can't double-fire and so restarts don't
+    # reset the dedup state.
+    audit_alerts_enabled: bool = False
+    audit_alerts_failures_per_email_threshold: int = 5
+    audit_alerts_failures_per_email_window_seconds: int = 300
+    audit_alerts_failures_per_ip_threshold: int = 10
+    audit_alerts_dedup_window_seconds: int = 600
+    audit_alerts_send_telegram: bool = True
+    audit_alerts_send_email: bool = False
+    audit_alerts_email_recipient: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:

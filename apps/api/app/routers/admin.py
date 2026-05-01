@@ -17,7 +17,7 @@ from urllib.request import Request as URLRequest, urlopen
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel
 from fastapi.responses import Response, StreamingResponse
 from sqlalchemy.engine import make_url
@@ -56,6 +56,7 @@ from app.schemas.api import (
 )
 from app.services import update_runner_client
 from app.services.audit import log_admin_action
+from app.routers.workflow_helpers import _content_disposition
 from app.services.emailer import send_email_detailed, send_email_message
 from app.services.project_import import import_projects_from_csv
 from app.services.runtime_settings import (
@@ -1918,6 +1919,104 @@ def audit_logs(_: User = Depends(require_permission("audit:view")), db: Session 
         }
         for log in logs
     ]
+
+
+def _audit_log_query_with_filters(
+    db: Session,
+    *,
+    from_iso: str | None,
+    to_iso: str | None,
+    categories: list[str] | None,
+    limit: int | None,
+):
+    """Shared query helper for audit-log list + CSV export. Filters mirror
+    the Audit tab's UI controls: ISO date range + multi-category."""
+    stmt = select(AuditLog).order_by(AuditLog.created_at.desc())
+    if from_iso:
+        try:
+            from_dt = datetime.fromisoformat(from_iso)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid 'from' date: {exc}") from exc
+        stmt = stmt.where(AuditLog.created_at >= from_dt)
+    if to_iso:
+        try:
+            to_dt = datetime.fromisoformat(to_iso)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid 'to' date: {exc}") from exc
+        stmt = stmt.where(AuditLog.created_at <= to_dt)
+    if categories:
+        stmt = stmt.where(AuditLog.category.in_(categories))
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    return list(db.scalars(stmt).all())
+
+
+@router.get("/audit-logs/export.csv")
+def export_audit_logs_csv(
+    from_: str | None = Query(default=None, alias="from"),
+    to: str | None = Query(default=None),
+    category: list[str] | None = Query(default=None),
+    _: User = Depends(require_permission("audit:view")),
+    db: Session = Depends(get_db),
+):
+    """Stream the audit log as CSV with the same filters as the UI panel.
+
+    Query params:
+        from        ISO datetime (inclusive lower bound) — e.g. 2026-04-01
+        to          ISO datetime (inclusive upper bound) — e.g. 2026-04-30T23:59:59
+        category    repeatable; multiple categories OR'd together
+
+    No row cap on the export — operators downloading for compliance need
+    the full slice. Streaming output keeps memory bounded for multi-million
+    row exports if the table is ever that large.
+    """
+    rows = _audit_log_query_with_filters(
+        db,
+        from_iso=from_,
+        to_iso=to,
+        categories=category,
+        limit=None,
+    )
+
+    buffer = StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(
+        [
+            "id",
+            "created_at_utc",
+            "category",
+            "action",
+            "actor_user_id",
+            "target_type",
+            "target_id",
+            "details_json",
+        ]
+    )
+    for row in rows:
+        writer.writerow(
+            [
+                row.id,
+                row.created_at.isoformat() if row.created_at else "",
+                row.category,
+                row.action,
+                row.actor_user_id if row.actor_user_id is not None else "",
+                row.target_type,
+                row.target_id,
+                json.dumps(row.details, ensure_ascii=False, sort_keys=True),
+            ]
+        )
+
+    timestamp = utcnow().strftime("%Y%m%d-%H%M%S")
+    filename = f"audit-logs-{timestamp}.csv"
+    return Response(
+        buffer.getvalue(),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": _content_disposition(filename, inline=False),
+            # Cache buster: the CSV reflects the live DB state, never re-use.
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @router.get("/projects/import-template.csv")

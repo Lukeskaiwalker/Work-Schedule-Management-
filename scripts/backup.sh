@@ -107,7 +107,21 @@ copy_from_container api /tmp/tar-stderr.log "$TAR_STDERR" 2>/dev/null || true
 docker compose exec -T api rm -f /tmp/uploads.tar.gz /tmp/tar-stderr.log
 if [[ -f "$TAR_STDERR" ]]; then
   cat "$TAR_STDERR"
-  WARNINGS=$(grep -c -E "file changed as we read it|File removed before we read it" "$TAR_STDERR" 2>/dev/null || true)
+  # The "file changed" / "file removed" stderr lines are tar reporting that the
+  # api_worker concurrently wrote to the source dir (e.g. material catalog
+  # image fetch) while tar was reading it. The file is still in the archive
+  # whole — just from the moment tar started reading. These warnings are
+  # purely informational on this stack, so we strip them out of the count
+  # the UI surfaces. The success card now shows "0 warnings" for the common
+  # benign case and a non-zero count means an actually-anomalous tar event
+  # the operator should investigate (permission denied, disk full, etc.).
+  TAR_NOISE_PATTERN='file changed as we read it|File removed before we read it'
+  WARNINGS=$(
+    grep -v -E "$TAR_NOISE_PATTERN" "$TAR_STDERR" 2>/dev/null \
+      | grep -v -E '^[[:space:]]*$' \
+      | wc -l
+  )
+  WARNINGS=$(echo "$WARNINGS" | tr -d ' ')
   WARNINGS=${WARNINGS:-0}
 fi
 

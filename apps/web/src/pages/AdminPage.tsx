@@ -155,6 +155,7 @@ export function AdminPage() {
     auditLogs,
     auditLogsLoading,
     loadAuditLogs,
+    exportAuditLogsCsv,
     // Settings tab
     weatherSettings,
     weatherApiKeyInput,
@@ -1577,6 +1578,45 @@ export function AdminPage() {
                 onClick={() => void loadAuditLogs()}
               >
                 {de ? "Aktualisieren" : "Refresh"}
+              </button>
+              <button
+                type="button"
+                className="admin-audit-refresh admin-audit-refresh--ghost"
+                onClick={() => {
+                  // Translate the in-page filters into ISO bounds the backend
+                  // understands. Custom range uses the date pickers verbatim;
+                  // "today/7d/30d/90d" compute to a half-day-resolution range
+                  // matching what the in-page filter applies. "all" sends
+                  // unbounded.
+                  let fromIso: string | null = null;
+                  let toIso: string | null = null;
+                  if (auditPeriodFilter === "custom") {
+                    if (auditDateFrom) fromIso = `${auditDateFrom}T00:00:00`;
+                    if (auditDateTo) toIso = `${auditDateTo}T23:59:59.999`;
+                  } else if (auditPeriodFilter !== "all") {
+                    const end = new Date();
+                    end.setHours(23, 59, 59, 999);
+                    const start = new Date(end);
+                    start.setHours(0, 0, 0, 0);
+                    if (auditPeriodFilter === "7d") start.setDate(start.getDate() - 6);
+                    else if (auditPeriodFilter === "30d") start.setDate(start.getDate() - 29);
+                    else if (auditPeriodFilter === "90d") start.setDate(start.getDate() - 89);
+                    fromIso = start.toISOString();
+                    toIso = end.toISOString();
+                  }
+                  void exportAuditLogsCsv({
+                    fromIso,
+                    toIso,
+                    categories: auditCategoryFilters.length > 0 ? auditCategoryFilters : undefined,
+                  });
+                }}
+                title={
+                  de
+                    ? "Aktuelle Filter exportieren als CSV"
+                    : "Export current filtered view as CSV"
+                }
+              >
+                {de ? "CSV exportieren" : "Export CSV"}
               </button>
               {hasAuditFilters && (
                 <button

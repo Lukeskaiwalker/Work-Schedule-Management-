@@ -110,6 +110,21 @@ def login(
             },
             category="auth",
         )
+        # Run brute-force evaluation AFTER the audit row commits so the new
+        # failure is included in the threshold count. The service is
+        # feature-flagged off by default; when enabled it dispatches Telegram
+        # / email alerts with audit-log-anchored dedup. Wrapped in a try/except
+        # so the alert path can never block a legitimate login response with
+        # a 500 — the worst case is a missed alert, not a broken login.
+        try:
+            from app.services.auth_alerts import evaluate_after_failed_login
+
+            evaluate_after_failed_login(db, email=email_normalized, ip=client_ip)
+        except Exception:  # noqa: BLE001 — diagnostic only, never crash login
+            import logging
+            logging.getLogger("smpl.auth_alerts").exception(
+                "brute-force evaluator raised; ignored to keep login responsive"
+            )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     if not user.is_active:
         log_admin_action(

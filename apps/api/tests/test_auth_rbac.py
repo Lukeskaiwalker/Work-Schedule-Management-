@@ -379,6 +379,59 @@ def test_github_api_json_request_construction_does_not_shadow_fastapi_request(mo
     assert "Accept" in captured_args["headers"]
 
 
+def test_audit_logs_csv_export_returns_filtered_rows(client: TestClient, admin_token: str):
+    """Verify the new /admin/audit-logs/export.csv endpoint streams a
+    valid CSV with the documented columns and respects the category filter.
+    """
+    # Trigger an audit row via a known admin action so we have something
+    # to export. Creating a user logs `user.create` under the `users`
+    # category.
+    create = client.post(
+        "/api/admin/users",
+        headers=auth_headers(admin_token),
+        json={
+            "email": "csv-export-target@example.com",
+            "password": "Password123!",
+            "full_name": "CSV Export Target",
+            "role": "employee",
+        },
+    )
+    assert create.status_code == 200
+
+    # Hit a non-existent path triggering an audit row in a DIFFERENT
+    # category so we can verify the filter works.
+    client.post(
+        "/api/auth/login",
+        json={"email": "csv-export-target@example.com", "password": "Password123!"},
+    )
+
+    # Export with no filter — expect both rows
+    full_export = client.get(
+        "/api/admin/audit-logs/export.csv",
+        headers=auth_headers(admin_token),
+    )
+    assert full_export.status_code == 200
+    assert full_export.headers["content-type"].startswith("text/csv")
+    assert "attachment;" in full_export.headers["content-disposition"].lower()
+    assert "audit-logs-" in full_export.headers["content-disposition"]
+    body_lines = full_export.text.strip().splitlines()
+    assert body_lines[0] == "id,created_at_utc,category,action,actor_user_id,target_type,target_id,details_json"
+    assert len(body_lines) >= 2  # header + at least one row
+
+    # Export filtered by category=users — must include the user.create row
+    # but exclude any auth-category rows from the login attempt above.
+    users_only = client.get(
+        "/api/admin/audit-logs/export.csv?category=users",
+        headers=auth_headers(admin_token),
+    )
+    assert users_only.status_code == 200
+    rows = users_only.text.strip().splitlines()
+    # Every data row should be in the users category
+    for row in rows[1:]:
+        cols = row.split(",")
+        assert cols[2] == "users", f"unexpected category in filtered export: {row}"
+
+
 def test_admin_can_read_update_status(client: TestClient, admin_token: str, monkeypatch):
     monkeypatch.setattr(admin_router.settings, "app_release_version", "1.0.0", raising=False)
     monkeypatch.setattr(admin_router.settings, "app_release_commit", "1111111111111111111111111111111111111111", raising=False)

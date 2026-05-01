@@ -7310,6 +7310,51 @@ export function App() {
     }
   };
 
+  /** Download the full filtered audit log as CSV. Mirrors the in-page
+   *  filters: ISO date range + selected categories. We POST through fetch
+   *  so we can attach the auth bearer header — a plain `<a href>` would
+   *  hit the endpoint without auth. The blob is then handed to a synthetic
+   *  anchor for the actual save-as dialog. */
+  const exportAuditLogsCsv = async (options?: {
+    fromIso?: string | null;
+    toIso?: string | null;
+    categories?: string[];
+  }) => {
+    if (!token || !canViewAudit) return;
+    const params = new URLSearchParams();
+    if (options?.fromIso) params.set("from", options.fromIso);
+    if (options?.toIso) params.set("to", options.toIso);
+    for (const c of options?.categories ?? []) {
+      params.append("category", c);
+    }
+    const qs = params.toString();
+    try {
+      const res = await fetch(
+        `/api/admin/audit-logs/export.csv${qs ? `?${qs}` : ""}`,
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+      if (!res.ok) {
+        setError(`Export fehlgeschlagen (HTTP ${res.status})`);
+        return;
+      }
+      const blob = await res.blob();
+      const filename = res.headers
+        .get("content-disposition")
+        ?.match(/filename="?([^";]+)"?/i)?.[1]
+        ?? `audit-logs-${new Date().toISOString().slice(0, 10)}.csv`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      setError(err?.message ?? "Export failed");
+    }
+  };
+
   const loadRolePermissions = async () => {
     if (!token || !canManagePermissions) return;
     setRolePermissionsLoading(true);
@@ -8531,6 +8576,7 @@ export function App() {
     updateEmployeeGroup,
     deleteEmployeeGroup,
     loadAuditLogs,
+    exportAuditLogsCsv,
     rolePermissionsMeta,
     rolePermissionsLoading,
     loadRolePermissions,

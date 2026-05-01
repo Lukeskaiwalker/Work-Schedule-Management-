@@ -8,6 +8,7 @@ import time
 from app.core.config import get_settings
 from app.core.db import SessionLocal
 from app.main import _initialize_runtime_data
+from app.services.audit_retention import prune_audit_logs_if_due
 from app.services.daily_clock_summary import dispatch_daily_clock_summary_if_due
 from app.services.report_jobs import claim_next_construction_report_job, process_construction_report_job
 
@@ -19,6 +20,12 @@ _stop_requested = False
 # faster report poll interval. Keeps DB pressure trivial.
 _daily_summary_check_interval_seconds = 60.0
 _last_daily_summary_check_at: float = 0.0
+
+# Audit retention prune check runs at the same cadence — once per minute is
+# plenty since the prune itself is once per LOCAL DAY (gated by an
+# AppSetting bookmark inside the service).
+_audit_retention_check_interval_seconds = 60.0
+_last_audit_retention_check_at: float = 0.0
 
 
 def _request_stop(signum: int, _frame) -> None:
@@ -47,12 +54,37 @@ def _maybe_run_daily_summary() -> None:
         logger.exception("Daily clock summary check failed; will retry next minute")
 
 
+def _maybe_run_audit_retention() -> None:
+    """Prune old audit_logs rows once per local day. The service does the
+    once-per-day gating internally via an AppSetting bookmark; this wrapper
+    just rate-limits the check itself to once per minute so we don't pay the
+    cost of constructing a session every poll cycle."""
+    global _last_audit_retention_check_at
+    now_monotonic = time.monotonic()
+    if now_monotonic - _last_audit_retention_check_at < _audit_retention_check_interval_seconds:
+        return
+    _last_audit_retention_check_at = now_monotonic
+    try:
+        with SessionLocal() as db:
+            outcome = prune_audit_logs_if_due(db)
+        if outcome is not None:
+            logger.info(
+                "Audit retention prune ran: deleted=%d cutoff=%s date=%s",
+                outcome.deleted_count,
+                outcome.cutoff_utc.isoformat(),
+                outcome.target_local_date,
+            )
+    except Exception:
+        logger.exception("Audit retention prune check failed; will retry next minute")
+
+
 def run_worker_loop() -> None:
     poll_seconds = max(0.2, float(settings.report_worker_poll_seconds))
     logger.info("Starting report worker (poll=%ss)", poll_seconds)
     while not _stop_requested:
         try:
             _maybe_run_daily_summary()
+            _maybe_run_audit_retention()
             with SessionLocal() as db:
                 job = claim_next_construction_report_job(db)
                 if not job:

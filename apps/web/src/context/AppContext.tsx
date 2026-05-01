@@ -666,6 +666,14 @@ export interface AppContextValue {
   ) => Promise<void>;
   deleteEmployeeGroup: (id: number) => Promise<void>;
   loadAuditLogs: () => Promise<void>;
+  /** Stream the audit log as CSV honouring the current filters. The
+   *  browser's save-as dialog handles the rest. Permission-gated by
+   *  `audit:view` on the backend. */
+  exportAuditLogsCsv: (options?: {
+    fromIso?: string | null;
+    toIso?: string | null;
+    categories?: string[];
+  }) => Promise<void>;
   updateVacationBalance: (targetUserId: number) => Promise<void>;
 
   // ── Role permissions ──────────────────────────────────────────────────────────
