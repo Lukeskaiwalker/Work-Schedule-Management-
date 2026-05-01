@@ -115,10 +115,16 @@ if [[ -f "$TAR_STDERR" ]]; then
   # the UI surfaces. The success card now shows "0 warnings" for the common
   # benign case and a non-zero count means an actually-anomalous tar event
   # the operator should investigate (permission denied, disk full, etc.).
+  #
+  # Each `grep -v` is wrapped with `|| true` because grep exits **1** when
+  # EVERY input line matched the pattern (i.e. all output was benign noise).
+  # Without the wrapping, the pipeline propagates that exit-1 → command
+  # substitution fails → `set -euo pipefail` kills the script. v2.3.4
+  # introduced this bug; v2.3.6 fixed it. The braces preserve the pipeline.
   TAR_NOISE_PATTERN='file changed as we read it|File removed before we read it'
   WARNINGS=$(
-    grep -v -E "$TAR_NOISE_PATTERN" "$TAR_STDERR" 2>/dev/null \
-      | grep -v -E '^[[:space:]]*$' \
+    { grep -v -E "$TAR_NOISE_PATTERN" "$TAR_STDERR" 2>/dev/null || true; } \
+      | { grep -v -E '^[[:space:]]*$' || true; } \
       | wc -l
   )
   WARNINGS=$(echo "$WARNINGS" | tr -d ' ')
