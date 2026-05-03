@@ -1,7 +1,24 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import { useAppContext } from "../../context/AppContext";
 import { formatServerDateTime } from "../../utils/dates";
 import type { Language, ProjectFile } from "../../types";
+
+// View-mode persistence keeps the user's preference across sessions
+// without needing a backend round-trip — folders stay organised in
+// the list view, but operators who use this tab to scan project
+// photos shouldn't have to flip the toggle every visit.
+const VIEW_MODE_STORAGE_KEY = "smpl_project_files_view_mode";
+type FilesViewMode = "list" | "gallery";
+
+function readStoredViewMode(): FilesViewMode {
+  if (typeof window === "undefined") return "list";
+  try {
+    const raw = window.localStorage.getItem(VIEW_MODE_STORAGE_KEY);
+    return raw === "gallery" ? "gallery" : "list";
+  } catch {
+    return "list";
+  }
+}
 
 function isReportFolder(folder: string): boolean {
   const f = folder.toLowerCase();
@@ -13,6 +30,69 @@ function fileTypeLabel(contentType: string): string {
   if (contentType === "application/pdf") return "PDF";
   if (contentType.startsWith("text/")) return contentType.replace("text/", "");
   return contentType;
+}
+
+function isImageFile(file: ProjectFile): boolean {
+  return (file.content_type ?? "").toLowerCase().startsWith("image/");
+}
+
+/** Map a content_type to a single emoji used as the gallery tile glyph
+ *  for non-image files. Kept conservative on the type detection — we
+ *  prefer "📎" for the unknown case rather than guessing wrong. */
+function iconForContentType(contentType: string): string {
+  const ct = (contentType ?? "").toLowerCase();
+  if (ct === "application/pdf") return "📄";
+  if (ct.startsWith("video/")) return "🎥";
+  if (ct.startsWith("audio/")) return "🎵";
+  if (ct.startsWith("text/")) return "📝";
+  if (ct.includes("word") || ct.includes("document")) return "📝";
+  if (ct.includes("sheet") || ct.includes("excel") || ct.includes("csv")) return "📊";
+  if (ct.includes("zip") || ct.includes("archive") || ct.includes("compressed")) return "🗜️";
+  if (ct.includes("presentation") || ct.includes("powerpoint")) return "📽️";
+  return "📎";
+}
+
+function GalleryTile({
+  file,
+  isPreviewable,
+  filePreviewUrl,
+  fileDownloadUrl,
+}: {
+  file: ProjectFile;
+  isPreviewable: (f: ProjectFile) => boolean;
+  filePreviewUrl: (id: number) => string;
+  fileDownloadUrl: (id: number) => string;
+}) {
+  const previewable = isPreviewable(file);
+  // Click target: prefer in-browser preview when available, fall back to
+  // download for files the backend won't render inline (binary types,
+  // unsupported content). target="_blank" so the gallery stays open.
+  const targetHref = previewable ? filePreviewUrl(file.id) : fileDownloadUrl(file.id);
+  const isImage = isImageFile(file);
+  return (
+    <a
+      href={targetHref}
+      target="_blank"
+      rel="noreferrer"
+      className="gallery-tile"
+      title={`${file.file_name} · ${file.folder || "/"}`}
+    >
+      {isImage ? (
+        <img
+          src={filePreviewUrl(file.id)}
+          alt={file.file_name}
+          className="gallery-tile-image"
+          loading="lazy"
+        />
+      ) : (
+        <div className="gallery-tile-icon" aria-hidden="true">
+          {iconForContentType(file.content_type)}
+        </div>
+      )}
+      <div className="gallery-tile-name">{file.file_name}</div>
+      <div className="gallery-tile-folder">{file.folder || "/"}</div>
+    </a>
+  );
 }
 
 function FileRow({
@@ -110,6 +190,20 @@ export function ProjectFilesTab() {
   // Report-like folders default to collapsed; others default to expanded.
   // If a folder is in toggledFolders, its visible state is flipped from the default.
   const [toggledFolders, setToggledFolders] = useState<Set<string>>(new Set());
+  const [viewMode, setViewMode] = useState<FilesViewMode>(() => readStoredViewMode());
+
+  // Persist view-mode toggles to localStorage so the user's preference
+  // (list vs gallery) survives reloads. Done via useEffect rather than
+  // inline-on-toggle so the read path stays a single source of truth.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(VIEW_MODE_STORAGE_KEY, viewMode);
+    } catch {
+      // localStorage may be disabled (private mode, quota); silently
+      // ignore — the toggle still works for the current session.
+    }
+  }, [viewMode]);
 
   const isSearching = fileQuery.trim().length > 0;
 
@@ -160,6 +254,32 @@ export function ProjectFilesTab() {
         <div className="file-explorer-head">
           <h3>{language === "de" ? "Online Datei-Explorer" : "Online file explorer"}</h3>
           <div className="row">
+            <div
+              className="file-view-toggle"
+              role="tablist"
+              aria-label={language === "de" ? "Ansicht" : "View"}
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={viewMode === "list"}
+                className={viewMode === "list" ? "is-active" : undefined}
+                onClick={() => setViewMode("list")}
+                title={language === "de" ? "Listenansicht" : "List view"}
+              >
+                {language === "de" ? "Liste" : "List"}
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={viewMode === "gallery"}
+                className={viewMode === "gallery" ? "is-active" : undefined}
+                onClick={() => setViewMode("gallery")}
+                title={language === "de" ? "Galerieansicht" : "Gallery view"}
+              >
+                {language === "de" ? "Galerie" : "Gallery"}
+              </button>
+            </div>
             <input
               value={fileQuery}
               onChange={(e) => setFileQuery(e.target.value)}
@@ -237,7 +357,32 @@ export function ProjectFilesTab() {
           </div>
         </div>
 
-        <div className="file-explorer">
+        {viewMode === "gallery" ? (
+          /* Flat contact-sheet grid — every attachment as a tile,
+             images get thumbnails, others get an emoji-icon stand-in.
+             Search filter still applies; folder grouping is dropped
+             on purpose because the gallery's job is "see at a glance"
+             not "navigate hierarchy". */
+          <div className="file-gallery">
+            {fileRows.map((file) => (
+              <GalleryTile
+                key={file.id}
+                file={file}
+                isPreviewable={isPreviewable}
+                filePreviewUrl={filePreviewUrl}
+                fileDownloadUrl={fileDownloadUrl}
+              />
+            ))}
+            {fileRows.length === 0 && (
+              <small className="muted">
+                {isSearching
+                  ? (language === "de" ? "Keine Treffer" : "No files found")
+                  : (language === "de" ? "Keine Dateien vorhanden" : "No files yet")}
+              </small>
+            )}
+          </div>
+        ) : (
+          <div className="file-explorer">
           {/* Column headers */}
           <div className="file-row file-row-head">
             <b>{language === "de" ? "Datei" : "File"}</b>
@@ -312,6 +457,7 @@ export function ProjectFilesTab() {
             </>
           )}
         </div>
+        )}
       </div>
     </section>
   );
