@@ -211,6 +211,15 @@ export function LineItemImporterModal({ projectId, isOpen, onClose, onConfirmed 
     };
   }, [currentJob, phase, token, projectId, setError]);
 
+  // Derived value for the review-phase footer. MUST live above the
+  // ``if (!isOpen) return null`` early return so the hook count stays
+  // constant across renders — otherwise React error #310 fires the
+  // first time the modal is opened (10 hooks pre-open, 11 post-open).
+  const importableCount = useMemo(
+    () => editableRows.filter((row) => !row.skipped).length,
+    [editableRows],
+  );
+
   if (!isOpen) return null;
 
   // ── handlers ────────────────────────────────────────────────────────
@@ -291,13 +300,6 @@ export function LineItemImporterModal({ projectId, isOpen, onClose, onConfirmed 
       rows.map((row, i) => (i === index ? { ...row, ...patch } : row)),
     );
   }
-
-  // ── derived values ──────────────────────────────────────────────────
-
-  const importableCount = useMemo(
-    () => editableRows.filter((row) => !row.skipped).length,
-    [editableRows],
-  );
 
   // ── render helpers ──────────────────────────────────────────────────
 
