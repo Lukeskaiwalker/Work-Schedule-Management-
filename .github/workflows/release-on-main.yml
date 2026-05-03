@@ -17,21 +17,22 @@ jobs:
     runs-on: ubuntu-latest
     env:
       RELEASE_USERNAME: ${{ vars.RELEASE_USERNAME != '' && vars.RELEASE_USERNAME || github.repository_owner }}
-      GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+      # Token fallback chain (added in v2.4.6):
+      #   1. RELEASE_TOKEN (PAT) — releases attributed to the human;
+      #      preferred path because the release author shows the user's
+      #      GitHub username instead of github-actions[bot].
+      #   2. GITHUB_TOKEN — auto-issued by Actions every run, never
+      #      expires, always carries the permissions declared above
+      #      (`contents: write`). Used automatically when RELEASE_TOKEN
+      #      is missing or empty so a stale PAT never blocks a release
+      #      the way it did between v2.3.6 and v2.3.7.
+      GH_TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
     steps:
-      - name: Require release token
-        run: |
-          if [[ -z "${GH_TOKEN}" ]]; then
-            echo "Missing required repository secret RELEASE_TOKEN." >&2
-            echo "Use a personal access token for the GitHub account whose username should appear on releases." >&2
-            exit 1
-          fi
-
       - name: Check out repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.RELEASE_TOKEN }}
+          token: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
 
       - name: Determine next release tag
         id: version
