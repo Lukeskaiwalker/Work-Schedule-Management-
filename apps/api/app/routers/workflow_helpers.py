@@ -26,6 +26,7 @@ from app.core.db import get_db
 from app.core.deps import assert_project_access, get_current_user, require_permission
 from app.core.permissions import ALL_ROLES, has_global_project_access, has_permission_for_user
 from app.core.time import utcnow
+from app.models.project import PROJECT_STATUS_AUFTRAG_ANGENOMMEN
 from app.models.entities import (
     Attachment,
     ChatThread,
@@ -2133,6 +2134,17 @@ def _sync_project_class_templates(
     class_template_ids: list[int],
     actor_user_id: int | None,
 ) -> dict[str, int]:
+    """Reconcile a project's class-template assignments + materialise
+    template-tasks under the v2.4.2 angenommen gate.
+
+    Behaviour matrix (project status → tasks created on assignment add):
+        "Auftrag angenommen"            → tasks created immediately
+        any other status                → assignment row created, but
+                                          tasks deferred (tasks_created_at
+                                          stays NULL); they materialise on
+                                          status transition into angenommen
+                                          via _create_deferred_class_template_tasks
+    """
     requested_ids = _normalize_class_template_ids(class_template_ids)
     existing_ids = set(
         db.scalars(
@@ -2162,45 +2174,138 @@ def _sync_project_class_templates(
             )
         )
 
+    project = db.get(Project, project_id)
+    project_status = (project.status or "").strip() if project is not None else ""
+    create_tasks_now = project_status == PROJECT_STATUS_AUFTRAG_ANGENOMMEN
+    now = utcnow()
+
+    new_assignments: dict[int, ProjectClassAssignment] = {}
     for template_id in added_ids:
-        db.add(ProjectClassAssignment(project_id=project_id, class_template_id=template_id))
+        assignment = ProjectClassAssignment(
+            project_id=project_id,
+            class_template_id=template_id,
+        )
+        db.add(assignment)
+        new_assignments[template_id] = assignment
+    if new_assignments:
+        # Flush so the new assignment rows have ids before we either
+        # stamp them as task-created or leave them deferred.
+        db.flush()
 
     created_task_count = 0
-    for template_id in added_ids:
-        template = templates_by_id[template_id]
-        for task_template in _class_template_task_rows(template.task_templates):
-            task = Task(
-                project_id=project_id,
-                title=task_template["title"] or "",
-                description=task_template["description"],
-                subtasks=_normalize_task_subtasks(task_template.get("subtasks")),
-                materials_required=_class_template_materials_text(template) or None,
-                task_type=_normalize_task_type(task_template["task_type"], default="construction"),
-                class_template_id=template.id,
-                status="open",
-            )
-            db.add(task)
-            db.flush()
-            created_task_count += 1
-            _record_project_activity(
+    if create_tasks_now:
+        for template_id in added_ids:
+            template = templates_by_id[template_id]
+            created_task_count += _materialise_class_template_tasks(
                 db,
                 project_id=project_id,
+                template=template,
                 actor_user_id=actor_user_id,
-                event_type="task.created",
-                message=f"Task created: {task.title}",
-                details={
-                    "task_id": task.id,
-                    "status": task.status,
-                    "source": "project_class_template",
-                    "class_template_id": template.id,
-                },
             )
+            assignment = new_assignments.get(template_id)
+            if assignment is not None:
+                assignment.tasks_created_at = now
 
     return {
         "added": len(added_ids),
         "removed": len(removed_ids),
         "created_tasks": created_task_count,
     }
+
+
+def _materialise_class_template_tasks(
+    db: Session,
+    *,
+    project_id: int,
+    template: ProjectClassTemplate,
+    actor_user_id: int | None,
+) -> int:
+    """Create the Task rows for ``template`` against ``project_id`` and
+    record one project-activity entry per task. Extracted so both the
+    immediate-create branch in ``_sync_project_class_templates`` and the
+    deferred-create branch in ``_create_deferred_class_template_tasks``
+    share identical row-construction logic."""
+    created = 0
+    for task_template in _class_template_task_rows(template.task_templates):
+        task = Task(
+            project_id=project_id,
+            title=task_template["title"] or "",
+            description=task_template["description"],
+            subtasks=_normalize_task_subtasks(task_template.get("subtasks")),
+            materials_required=_class_template_materials_text(template) or None,
+            task_type=_normalize_task_type(task_template["task_type"], default="construction"),
+            class_template_id=template.id,
+            status="open",
+        )
+        db.add(task)
+        db.flush()
+        created += 1
+        _record_project_activity(
+            db,
+            project_id=project_id,
+            actor_user_id=actor_user_id,
+            event_type="task.created",
+            message=f"Task created: {task.title}",
+            details={
+                "task_id": task.id,
+                "status": task.status,
+                "source": "project_class_template",
+                "class_template_id": template.id,
+            },
+        )
+    return created
+
+
+def _create_deferred_class_template_tasks(
+    db: Session,
+    *,
+    project_id: int,
+    actor_user_id: int | None,
+) -> int:
+    """Materialise tasks for any class assignments on ``project_id`` that
+    were created before the project reached ``Auftrag angenommen`` (their
+    ``tasks_created_at`` is still NULL). Called from the project update
+    endpoint when the status transitions INTO angenommen.
+
+    Idempotent: assignments whose tasks were already created
+    (``tasks_created_at`` is set) are skipped, so a project that bounces
+    between angenommen and another status doesn't duplicate tasks."""
+    pending = (
+        db.scalars(
+            select(ProjectClassAssignment).where(
+                ProjectClassAssignment.project_id == project_id,
+                ProjectClassAssignment.tasks_created_at.is_(None),
+            )
+        ).all()
+    )
+    if not pending:
+        return 0
+
+    template_ids = [row.class_template_id for row in pending]
+    templates = {
+        row.id: row
+        for row in db.scalars(
+            select(ProjectClassTemplate).where(ProjectClassTemplate.id.in_(template_ids))
+        ).all()
+    }
+    now = utcnow()
+    created_total = 0
+    for assignment in pending:
+        template = templates.get(assignment.class_template_id)
+        if template is None:
+            # Template was deleted after assignment but before tasks
+            # could be created — stamp the assignment so we don't keep
+            # retrying on every subsequent angenommen toggle.
+            assignment.tasks_created_at = now
+            continue
+        created_total += _materialise_class_template_tasks(
+            db,
+            project_id=project_id,
+            template=template,
+            actor_user_id=actor_user_id,
+        )
+        assignment.tasks_created_at = now
+    return created_total
 
 
 def _normalize_assignee_ids(candidate_ids: list[int | None]) -> list[int]:

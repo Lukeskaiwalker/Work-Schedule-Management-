@@ -256,6 +256,7 @@ def update_project(
         )
 
     next_status = (project.status or "").strip()
+    deferred_tasks_created = 0
     if next_status != previous_status:
         _record_project_activity(
             db,
@@ -265,6 +266,30 @@ def update_project(
             message=f"State changed to {next_status or '-'}",
             details={"from": previous_status, "to": next_status},
         )
+        # v2.4.2 angenommen-gate: when a project transitions INTO
+        # "Auftrag angenommen", any class assignments still flagged as
+        # tasks_created_at IS NULL are now allowed to materialise their
+        # tasks. Re-entry (angenommen → other → angenommen) is a no-op
+        # because the helper stamps tasks_created_at at creation time.
+        if next_status == PROJECT_STATUS_AUFTRAG_ANGENOMMEN:
+            deferred_tasks_created = _create_deferred_class_template_tasks(
+                db,
+                project_id=project.id,
+                actor_user_id=current_user.id,
+            )
+            if deferred_tasks_created:
+                _record_project_activity(
+                    db,
+                    project_id=project.id,
+                    actor_user_id=current_user.id,
+                    event_type="project.classes_updated",
+                    message="Auto-created deferred template tasks",
+                    details={
+                        "auto_created_tasks": deferred_tasks_created,
+                        "trigger": "status_transition",
+                        "to_status": next_status,
+                    },
+                )
     elif project.description != previous_description:
         _record_project_activity(
             db,

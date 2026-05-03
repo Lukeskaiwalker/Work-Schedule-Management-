@@ -113,3 +113,16 @@ class ProjectClassAssignment(Base):
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
     class_template_id: Mapped[int] = mapped_column(ForeignKey("project_class_templates.id", ondelete="CASCADE"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    # Stamped when the template's task_templates have been materialised
+    # into actual Task rows. NULL means "deferred — waiting for the
+    # project to transition into Auftrag angenommen status." Backfilled
+    # to created_at on existing rows by alembic 20260605_0054 so legacy
+    # assignments are treated as already-done.
+    tasks_created_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+
+# Status string for the "Auftrag angenommen" gate (template-task
+# creation is deferred until a project reaches this state). Centralised
+# here so the helpers + tests reference one canonical constant rather
+# than scattered string literals.
+PROJECT_STATUS_AUFTRAG_ANGENOMMEN = "Auftrag angenommen"
