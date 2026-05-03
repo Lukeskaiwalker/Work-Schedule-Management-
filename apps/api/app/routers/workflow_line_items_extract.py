@@ -24,16 +24,20 @@ from sqlalchemy.orm import Session
 
 from app.core.db import get_db
 from app.core.deps import require_permission
-from app.models.entities import LineItemExtractionJob, Project, User
+from app.core.time import utcnow
+from app.models.entities import LineItemExtractionJob, Project, ProjectLineItem, User
 from app.models.line_item_extraction_job import (
     DOC_TYPE_AUFTRAGSBESTAETIGUNG,
     DOC_TYPE_BESTELLBESTAETIGUNG,
     DOC_TYPE_LIEFERSCHEIN,
+    EXTRACTION_JOB_STATUS_COMPLETED,
     SOURCE_KIND_EMAIL_TEXT,
     SOURCE_KIND_IMAGE,
     SOURCE_KIND_PDF,
 )
 from app.schemas.api import (
+    ExtractionConfirmRequest,
+    ExtractionConfirmResult,
     LineItemExtractionEnqueueOut,
     LineItemExtractionJobOut,
 )
@@ -236,3 +240,111 @@ def list_extraction_jobs(
         .limit(50)
     ).all()
     return [_serialize_job(row) for row in rows]
+
+
+@router.post(
+    "/projects/{project_id}/line-items/extract/{job_id}/confirm",
+    response_model=ExtractionConfirmResult,
+)
+def confirm_extraction_job(
+    project_id: int,
+    job_id: int,
+    payload: ExtractionConfirmRequest,
+    user: User = Depends(require_permission("projects:manage")),
+    db: Session = Depends(get_db),
+):
+    """Promote the (operator-edited) extracted items into real
+    ``ProjectLineItem`` rows.
+
+    The flow:
+
+    1. Validate the job belongs to this project and is ``completed``.
+       Jobs in any other status (queued / processing / failed) cannot
+       be confirmed — re-trigger extraction first.
+    2. Reject re-confirm: ``confirmed_at`` must be null. We don't merge
+       or de-duplicate — if the operator wants to re-import after a
+       partial accept, they create a new extraction job.
+    3. Build all rows in memory, then ``add_all`` + commit in one
+       transaction. Either every item lands or none — no half-imports.
+    4. Stamp ``confirmed_at`` on the job and audit-log the action with
+       the count + job_id.
+
+    Source attribution on each created row comes from the job
+    (``source_doc_type``, ``source_doc_filename``, ``extracted_by_model``)
+    so the trail back to the originating document is preserved even if
+    the operator edited every field.
+    """
+    project = _get_project_or_404(db, project_id)
+
+    job = db.get(LineItemExtractionJob, job_id)
+    if job is None or job.project_id != project.id:
+        raise HTTPException(status_code=404, detail="Extraction job not found")
+
+    if job.status != EXTRACTION_JOB_STATUS_COMPLETED:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Extraction job is in status {job.status!r}; only "
+                "'completed' jobs can be confirmed."
+            ),
+        )
+
+    if job.confirmed_at is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Extraction job has already been confirmed.",
+        )
+
+    rows: list[ProjectLineItem] = []
+    for incoming in payload.items:
+        rows.append(
+            ProjectLineItem(
+                project_id=project.id,
+                type=incoming.type,
+                section_title=incoming.section_title,
+                position=incoming.position,
+                description=incoming.description.strip(),
+                sku=incoming.sku,
+                manufacturer=incoming.manufacturer,
+                quantity_required=incoming.quantity_required,
+                # The four follow-on quantity columns default to 0
+                # via the model defaults; only quantity_required carries
+                # extracted data at confirmation time.
+                unit=incoming.unit,
+                unit_price_eur=incoming.unit_price_eur,
+                total_price_eur=incoming.total_price_eur,
+                source_doc_type=job.doc_type,
+                source_doc_filename=job.source_filename,
+                extracted_by_model=job.extracted_by_model,
+                extraction_confidence=incoming.extraction_confidence,
+                notes=incoming.notes,
+                is_active=True,
+                created_by=user.id,
+            )
+        )
+
+    db.add_all(rows)
+    job.confirmed_at = utcnow()
+    db.commit()
+    for row in rows:
+        db.refresh(row)
+
+    log_admin_action(
+        db,
+        user,
+        "project_line_item_extraction.confirm",
+        "projects",
+        str(project.id),
+        {
+            "job_id": job.id,
+            "doc_type": job.doc_type,
+            "source_filename": job.source_filename,
+            "created_count": len(rows),
+        },
+    )
+
+    return ExtractionConfirmResult(
+        job_id=job.id,
+        created_count=len(rows),
+        line_item_ids=[row.id for row in rows],
+    )

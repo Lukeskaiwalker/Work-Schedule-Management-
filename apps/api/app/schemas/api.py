@@ -64,6 +64,9 @@ from app.schemas.project_line_item import (
     ProjectLineItemUpdate,
 )
 from app.schemas.line_item_extraction import (
+    ExtractionConfirmItem,
+    ExtractionConfirmRequest,
+    ExtractionConfirmResult,
     LineItemExtractionEnqueueOut,
     LineItemExtractionJobOut,
 )
@@ -173,6 +176,9 @@ __all__ = [
     "ProjectLineItemCreate",
     "ProjectLineItemOut",
     "ProjectLineItemUpdate",
+    "ExtractionConfirmItem",
+    "ExtractionConfirmRequest",
+    "ExtractionConfirmResult",
     "LineItemExtractionEnqueueOut",
     "LineItemExtractionJobOut",
     "NotificationOut",

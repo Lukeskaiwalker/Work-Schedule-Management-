@@ -485,6 +485,224 @@ def test_extract_list_returns_recent_jobs(client: TestClient, admin_token: str):
     assert rows[0]["id"] > rows[1]["id"] > rows[2]["id"]
 
 
+def test_confirm_creates_line_items_and_marks_job(
+    client: TestClient, admin_token: str, monkeypatch: pytest.MonkeyPatch
+):
+    """End-to-end: enqueue → worker completes → confirm → line items
+    exist in the project's CRUD list. Verifies source attribution is
+    propagated from the job onto each row."""
+    _save_openai_key_via_admin(client, admin_token)
+    user_token = _grant_user_with_projects_manage(
+        client, admin_token, "extract-confirm@example.com"
+    )
+    project_id = _create_project(client, user_token, "CONFIRM")
+
+    fake_items = [
+        {
+            "type": "material",
+            "section_title": "01 PV-Anlage",
+            "position": "01.01",
+            "description": "WINAICO Solarmodul",
+            "sku": "WST-485BD/X54-B2",
+            "manufacturer": "WINAICO",
+            "quantity_required": 26.0,
+            "unit": "Stk",
+            "unit_price_eur": 245.0,
+            "total_price_eur": 6370.0,
+            "confidence": 0.97,
+        },
+    ]
+    monkeypatch.setattr(line_item_extraction, "get_openai_client", lambda db: object())
+    monkeypatch.setattr(line_item_extraction, "get_extraction_model", lambda db: "gpt-4o-mini")
+    monkeypatch.setattr(
+        line_item_extraction,
+        "_call_openai_structured",
+        lambda client, *, model, messages: (
+            ExtractedLineItemList(items=[ExtractedLineItem(**item) for item in fake_items]),
+            500,
+            100,
+        ),
+    )
+
+    enqueue = client.post(
+        f"/api/projects/{project_id}/line-items/extract",
+        headers=auth_headers(user_token),
+        data={
+            "doc_type": DOC_TYPE_AUFTRAGSBESTAETIGUNG,
+            "email_text": "(synthetic body)",
+        },
+    )
+    assert enqueue.status_code == 202
+    job_id = enqueue.json()["job_id"]
+
+    with SessionLocal() as db:
+        claimed = line_item_extraction.claim_next_line_item_extraction_job(db)
+        assert claimed is not None
+        line_item_extraction.process_line_item_extraction_job(db, claimed.id)
+
+    # Confirm — operator may have edited; for the test we pass the
+    # extracted items through unchanged.
+    confirm_payload = {
+        "items": [
+            {
+                "type": "material",
+                "section_title": "01 PV-Anlage",
+                "position": "01.01",
+                "description": "WINAICO Solarmodul (operator-fixed casing)",
+                "sku": "WST-485BD/X54-B2",
+                "manufacturer": "WINAICO",
+                "quantity_required": "26.00",
+                "unit": "Stk",
+                "unit_price_eur": "245.00",
+                "total_price_eur": "6370.00",
+                "extraction_confidence": "0.97",
+            },
+        ]
+    }
+    confirm = client.post(
+        f"/api/projects/{project_id}/line-items/extract/{job_id}/confirm",
+        headers=auth_headers(user_token),
+        json=confirm_payload,
+    )
+    assert confirm.status_code == 200, confirm.text
+    body = confirm.json()
+    assert body["job_id"] == job_id
+    assert body["created_count"] == 1
+    assert len(body["line_item_ids"]) == 1
+
+    # Job is now marked confirmed_at — re-confirming must 409.
+    second = client.post(
+        f"/api/projects/{project_id}/line-items/extract/{job_id}/confirm",
+        headers=auth_headers(user_token),
+        json=confirm_payload,
+    )
+    assert second.status_code == 409
+    assert "already" in second.json()["detail"].lower()
+
+    # The line item is now visible via the regular CRUD list.
+    listed = client.get(
+        f"/api/projects/{project_id}/line-items",
+        headers=auth_headers(user_token),
+    )
+    assert listed.status_code == 200
+    rows = listed.json()
+    assert len(rows) == 1
+    row = rows[0]
+    # Operator-edited description landed.
+    assert row["description"] == "WINAICO Solarmodul (operator-fixed casing)"
+    # Source attribution copied from the job.
+    assert row["source_doc_type"] == DOC_TYPE_AUFTRAGSBESTAETIGUNG
+    assert row["extracted_by_model"] == "gpt-4o-mini"
+    # Quantity-derived status is "offen" because the four follow-on
+    # quantity columns all defaulted to 0 (we only set quantity_required).
+    assert row["status"] == "offen"
+    assert row["quantity_required"] == "26.00"
+    assert row["quantity_ordered"] == "0.00"
+
+
+def test_confirm_rejects_non_completed_job(client: TestClient, admin_token: str):
+    """A queued (not-yet-processed) job cannot be confirmed."""
+    user_token = _grant_user_with_projects_manage(
+        client, admin_token, "extract-confirm-q@example.com"
+    )
+    project_id = _create_project(client, user_token, "CONFIRMQ")
+
+    enqueue = client.post(
+        f"/api/projects/{project_id}/line-items/extract",
+        headers=auth_headers(user_token),
+        data={"doc_type": DOC_TYPE_AUFTRAGSBESTAETIGUNG, "email_text": "x"},
+    )
+    assert enqueue.status_code == 202
+    job_id = enqueue.json()["job_id"]
+    # Don't drain the worker — job stays queued.
+
+    response = client.post(
+        f"/api/projects/{project_id}/line-items/extract/{job_id}/confirm",
+        headers=auth_headers(user_token),
+        json={
+            "items": [
+                {
+                    "type": "material",
+                    "description": "anything",
+                    "quantity_required": "1.00",
+                },
+            ]
+        },
+    )
+    assert response.status_code == 409
+    assert "completed" in response.json()["detail"].lower()
+
+
+def test_confirm_404_for_cross_project_job(client: TestClient, admin_token: str):
+    user_token = _grant_user_with_projects_manage(
+        client, admin_token, "extract-confirm-cross@example.com"
+    )
+    project_a = _create_project(client, user_token, "CCROSSA")
+    project_b = _create_project(client, user_token, "CCROSSB")
+
+    enqueue = client.post(
+        f"/api/projects/{project_a}/line-items/extract",
+        headers=auth_headers(user_token),
+        data={"doc_type": DOC_TYPE_AUFTRAGSBESTAETIGUNG, "email_text": "x"},
+    )
+    job_id = enqueue.json()["job_id"]
+
+    cross = client.post(
+        f"/api/projects/{project_b}/line-items/extract/{job_id}/confirm",
+        headers=auth_headers(user_token),
+        json={
+            "items": [
+                {
+                    "type": "material",
+                    "description": "anything",
+                    "quantity_required": "1.00",
+                },
+            ]
+        },
+    )
+    assert cross.status_code == 404
+
+
+def test_confirm_rejects_empty_items_array(client: TestClient, admin_token: str, monkeypatch: pytest.MonkeyPatch):
+    """``min_length=1`` on the items field must reject empty payloads
+    with a 422 validation error — there's nothing to import."""
+    _save_openai_key_via_admin(client, admin_token)
+    user_token = _grant_user_with_projects_manage(
+        client, admin_token, "extract-confirm-empty@example.com"
+    )
+    project_id = _create_project(client, user_token, "CEMPTY")
+
+    monkeypatch.setattr(line_item_extraction, "get_openai_client", lambda db: object())
+    monkeypatch.setattr(line_item_extraction, "get_extraction_model", lambda db: "gpt-4o-mini")
+    monkeypatch.setattr(
+        line_item_extraction,
+        "_call_openai_structured",
+        lambda client, *, model, messages: (
+            ExtractedLineItemList(items=[]),
+            10,
+            10,
+        ),
+    )
+
+    enqueue = client.post(
+        f"/api/projects/{project_id}/line-items/extract",
+        headers=auth_headers(user_token),
+        data={"doc_type": DOC_TYPE_AUFTRAGSBESTAETIGUNG, "email_text": "x"},
+    )
+    job_id = enqueue.json()["job_id"]
+
+    with SessionLocal() as db:
+        claimed = line_item_extraction.claim_next_line_item_extraction_job(db)
+        line_item_extraction.process_line_item_extraction_job(db, claimed.id)
+
+    response = client.post(
+        f"/api/projects/{project_id}/line-items/extract/{job_id}/confirm",
+        headers=auth_headers(user_token),
+        json={"items": []},
+    )
+    assert response.status_code == 422
+
+
 def test_extract_endpoint_requires_projects_manage(client: TestClient, admin_token: str):
     """An employee without projects:manage cannot enqueue jobs."""
     # employee role does NOT inherit projects:manage by default.

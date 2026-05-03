@@ -17,6 +17,7 @@ what the API exposes, split this file later.
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -140,6 +141,52 @@ class LineItemExtractionEnqueueOut(BaseModel):
 
     job_id: int
     status: str
+
+
+class ExtractionConfirmItem(BaseModel):
+    """One item the operator decided to import, after review.
+
+    Same field set as ``ExtractedLineItem`` (the LLM output) but with
+    Pydantic ``Decimal`` types for round-trip-safe quantities + prices,
+    and without the strict ``extra='forbid'`` constraint — the operator
+    may have added fields the LLM didn't produce (e.g. a manual ``unit``
+    when the source doc is ambiguous). The endpoint converts these into
+    ``ProjectLineItem`` rows.
+
+    Items the operator decided to skip in the UI are simply omitted
+    from the payload — there's no ``skip`` flag here. This keeps the
+    confirm action equivalent to "create exactly these N line items"
+    so the audit log entry is unambiguous.
+    """
+
+    type: Literal["material", "leistung", "sonstige"]
+    section_title: str | None = Field(default=None, max_length=255)
+    position: str | None = Field(default=None, max_length=32)
+    description: str = Field(min_length=1)
+    sku: str | None = Field(default=None, max_length=255)
+    manufacturer: str | None = Field(default=None, max_length=128)
+    quantity_required: Decimal = Field(ge=0)
+    unit: str | None = Field(default=None, max_length=32)
+    unit_price_eur: Decimal | None = Field(default=None, ge=0)
+    total_price_eur: Decimal | None = Field(default=None, ge=0)
+    extraction_confidence: Decimal | None = Field(default=None, ge=0, le=1)
+    notes: str | None = None
+
+
+class ExtractionConfirmRequest(BaseModel):
+    """Request body for ``POST /extract/{job_id}/confirm``."""
+
+    items: list[ExtractionConfirmItem] = Field(min_length=1)
+
+
+class ExtractionConfirmResult(BaseModel):
+    """Response shape after a successful confirm. ``line_item_ids``
+    lets the FE update the parent line-items list optimistically
+    without a round-trip."""
+
+    job_id: int
+    created_count: int
+    line_item_ids: list[int]
 
 
 class LineItemExtractionJobOut(BaseModel):
