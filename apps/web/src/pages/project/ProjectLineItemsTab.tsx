@@ -13,6 +13,7 @@ import type {
   ProjectLineItemStatus,
   ProjectLineItemType,
 } from "../../types";
+import { LineItemImporterModal } from "./LineItemImporterModal";
 
 
 // ── Status presentation ──────────────────────────────────────────────────
@@ -101,6 +102,7 @@ export function ProjectLineItemsTab() {
   const [editingId, setEditingId] = useState<number | "new" | null>(null);
   const [draft, setDraft] = useState<ProjectLineItemCreate>(EMPTY_DRAFT);
   const [saving, setSaving] = useState(false);
+  const [importerOpen, setImporterOpen] = useState(false);
 
   const projectId = activeProject?.id ?? null;
 
@@ -255,9 +257,14 @@ export function ProjectLineItemsTab() {
                 : "items"}
           </small>
         </h3>
-        <button type="button" onClick={openCreate}>
-          {de ? "+ Position" : "+ Item"}
-        </button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button type="button" className="ghost" onClick={() => setImporterOpen(true)}>
+            {de ? "Aus Beleg importieren" : "Import from document"}
+          </button>
+          <button type="button" onClick={openCreate}>
+            {de ? "+ Position" : "+ Item"}
+          </button>
+        </div>
       </header>
 
       {loading && (
@@ -267,8 +274,8 @@ export function ProjectLineItemsTab() {
       {!loading && items.length === 0 && (
         <p className="muted">
           {de
-            ? "Noch keine Positionen erfasst. Manuelle Eingabe über '+ Position' oder Beleg-Import (folgt in v2.4.0)."
-            : "No line items yet. Add one manually with '+ Item' or via document import (coming in v2.4.0)."}
+            ? "Noch keine Positionen erfasst. Manuelle Eingabe über '+ Position' oder per Beleg-Import (PDF / Bild / E-Mail)."
+            : "No line items yet. Add one manually with '+ Item' or import from a document (PDF / image / email)."}
         </p>
       )}
 
@@ -388,6 +395,27 @@ export function ProjectLineItemsTab() {
           onCancel={closeEditor}
           saving={saving}
           language={language}
+        />
+      )}
+
+      {projectId !== null && (
+        <LineItemImporterModal
+          projectId={projectId}
+          isOpen={importerOpen}
+          onClose={() => setImporterOpen(false)}
+          onConfirmed={async () => {
+            // Re-fetch the items list so the newly imported rows
+            // appear immediately. Cheaper to refetch than to merge
+            // optimistically because the section grouping needs to
+            // re-sort and the backend may have done minor cleanup
+            // (e.g. trimming whitespace) on what we sent.
+            try {
+              const fresh = await listProjectLineItems(token, projectId);
+              setItems(fresh);
+            } catch (err: unknown) {
+              setError(err instanceof Error ? err.message : String(err));
+            }
+          }}
         />
       )}
     </section>

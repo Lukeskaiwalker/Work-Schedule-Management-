@@ -1103,6 +1103,94 @@ export type ProjectLineItemUpdate = Partial<ProjectLineItemCreate> & {
   is_active?: boolean;
 };
 
+// ── v2.4.0 line-item extraction (LLM-assisted import) ──────────────────────
+
+export type LineItemExtractionDocType =
+  | "auftragsbestaetigung"
+  | "bestellbestaetigung"
+  | "lieferschein";
+
+export type LineItemExtractionSourceKind =
+  | "pdf"
+  | "image"
+  | "email_text";
+
+export type LineItemExtractionStatus =
+  | "queued"
+  | "processing"
+  | "completed"
+  | "failed";
+
+/** Per-item shape returned in `extracted_items_json` after a successful
+ *  LLM extraction. Numeric values arrive as JSON numbers (not strings)
+ *  because they came from Pydantic floats — convert at the boundary
+ *  before sending to the confirm endpoint. */
+export type ExtractedLineItem = {
+  type: ProjectLineItemType;
+  section_title: string | null;
+  position: string | null;
+  description: string;
+  sku: string | null;
+  manufacturer: string | null;
+  quantity_required: number;
+  unit: string | null;
+  unit_price_eur: number | null;
+  total_price_eur: number | null;
+  confidence: number;
+};
+
+export type LineItemExtractionJob = {
+  id: number;
+  project_id: number;
+  doc_type: LineItemExtractionDocType;
+  source_kind: LineItemExtractionSourceKind;
+  source_filename: string | null;
+  status: LineItemExtractionStatus;
+  attempt_count: number;
+  max_attempts: number;
+  error_message: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  extracted_items_json: ExtractedLineItem[];
+  extracted_items_count: number;
+  extracted_by_model: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  confirmed_at: string | null;
+  created_by: number | null;
+  created_at: string;
+  updated_at: string;
+};
+
+/** Body shape for POST /extract/{job_id}/confirm. Mirror of
+ *  ExtractedLineItem with quantities/prices serialised as decimal
+ *  strings since the backend expects Pydantic Decimals. */
+export type ExtractionConfirmItem = {
+  type: ProjectLineItemType;
+  section_title: string | null;
+  position: string | null;
+  description: string;
+  sku: string | null;
+  manufacturer: string | null;
+  quantity_required: string;
+  unit: string | null;
+  unit_price_eur: string | null;
+  total_price_eur: string | null;
+  extraction_confidence: string | null;
+  notes: string | null;
+};
+
+export type ExtractionConfirmResult = {
+  job_id: number;
+  created_count: number;
+  line_item_ids: number[];
+};
+
+export type LineItemExtractionEnqueueResponse = {
+  job_id: number;
+  status: LineItemExtractionStatus;
+};
+
 export type CompactNameParts = {
   first: string;
   lastInitial: string;
