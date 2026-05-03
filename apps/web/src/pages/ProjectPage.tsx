@@ -4,6 +4,7 @@ import { ProjectGanttTab } from "./project/ProjectGanttTab";
 import { ProjectTasksTab } from "./project/ProjectTasksTab";
 import { ProjectHoursTab } from "./project/ProjectHoursTab";
 import { ProjectMaterialsTab } from "./project/ProjectMaterialsTab";
+import { ProjectLineItemsTab } from "./project/ProjectLineItemsTab";
 import { ProjectTicketsTab } from "./project/ProjectTicketsTab";
 import { ProjectFilesTab } from "./project/ProjectFilesTab";
 import { ProjectFinancesTab } from "./project/ProjectFinancesTab";
@@ -20,6 +21,7 @@ export function ProjectPage() {
       <ProjectTasksTab />
       <ProjectHoursTab />
       <ProjectMaterialsTab />
+      <ProjectLineItemsTab />
       <ProjectTicketsTab />
       <ProjectFilesTab />
       <ProjectFinancesTab />

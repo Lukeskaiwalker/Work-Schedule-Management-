@@ -58,6 +58,11 @@ from app.schemas.project import (
     ProjectWeatherDayOut,
     ProjectWeatherOut,
 )
+from app.schemas.project_line_item import (
+    ProjectLineItemCreate,
+    ProjectLineItemOut,
+    ProjectLineItemUpdate,
+)
 from app.schemas.report import (
     ConstructionReportCreate,
     ConstructionReportExtra,
@@ -159,6 +164,9 @@ __all__ = [
     "ProjectClassTaskTemplateOut",
     "ProjectClassTemplateOut",
     "ProjectImportStatsOut",
+    "ProjectLineItemCreate",
+    "ProjectLineItemOut",
+    "ProjectLineItemUpdate",
     "NotificationOut",
     "MaterialCatalogItemOut",
     "MaterialCatalogImportStateOut",

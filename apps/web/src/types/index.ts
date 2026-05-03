@@ -1013,7 +1013,88 @@ export type WerkstattTab =
   | "orders"
   | "datanorm_import";
 
-export type ProjectTab = "overview" | "gantt" | "tasks" | "hours" | "materials" | "tickets" | "files" | "finances";
+export type ProjectTab =
+  | "overview"
+  | "gantt"
+  | "tasks"
+  | "hours"
+  | "materials"
+  | "line_items"
+  | "tickets"
+  | "files"
+  | "finances";
+
+// ── Project line items (v2.4.0) ─────────────────────────────────────────
+// Captures what was sold/ordered/delivered per project, sourced manually
+// today and via LLM extraction in a follow-up release. The status field
+// is computed server-side from the quantity columns — see the model's
+// `status` property for the full priority order.
+export type ProjectLineItemType = "material" | "leistung" | "sonstige";
+
+export type ProjectLineItemStatus =
+  | "offen"
+  | "teilbestellt"
+  | "bestellt"
+  | "teilgeliefert"
+  | "vollstaendig_im_lager"
+  | "teilweise_auf_baustelle"
+  | "vollstaendig_auf_baustelle";
+
+export type ProjectLineItem = {
+  id: number;
+  project_id: number;
+  type: ProjectLineItemType;
+  section_title: string | null;
+  position: string | null;
+  description: string;
+  sku: string | null;
+  manufacturer: string | null;
+  /** Numeric values arrive as strings from the JSON-encoded Decimal —
+   *  parse with parseFloat() at the consumer if you need a number. */
+  quantity_required: string;
+  quantity_ordered: string;
+  quantity_delivered: string;
+  quantity_at_site: string;
+  quantity_reserved: string;
+  quantity_missing: string;
+  unit: string | null;
+  unit_price_eur: string | null;
+  total_price_eur: string | null;
+  supplier_id: number | null;
+  source_doc_type: string | null;
+  source_doc_filename: string | null;
+  extracted_by_model: string | null;
+  extraction_confidence: string | null;
+  notes: string | null;
+  is_active: boolean;
+  status: ProjectLineItemStatus;
+  created_by: number | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ProjectLineItemCreate = {
+  type: ProjectLineItemType;
+  section_title?: string | null;
+  position?: string | null;
+  description: string;
+  sku?: string | null;
+  manufacturer?: string | null;
+  quantity_required: string;
+  quantity_ordered?: string;
+  quantity_delivered?: string;
+  quantity_at_site?: string;
+  quantity_reserved?: string;
+  unit?: string | null;
+  unit_price_eur?: string | null;
+  total_price_eur?: string | null;
+  supplier_id?: number | null;
+  notes?: string | null;
+};
+
+export type ProjectLineItemUpdate = Partial<ProjectLineItemCreate> & {
+  is_active?: boolean;
+};
 
 export type CompactNameParts = {
   first: string;

@@ -16,6 +16,7 @@ from app.routers.workflow_files import router as files_router
 from app.routers.workflow_webdav import router as webdav_router
 from app.routers.workflow_wiki import router as wiki_router
 from app.routers.workflow_chat import router as chat_router
+from app.routers.workflow_line_items import router as line_items_router
 from app.routers.workflow_reports import router as reports_router
 from app.routers.workflow_system import router as system_router
 from app.routers.workflow_werkstatt_desktop import router as werkstatt_desktop_router
@@ -39,6 +40,7 @@ router.include_router(files_router)
 router.include_router(webdav_router)
 router.include_router(wiki_router)
 router.include_router(chat_router)
+router.include_router(line_items_router)
 router.include_router(reports_router)
 router.include_router(system_router)
 # Werkstatt — three persona-scoped routers under /api/werkstatt. All three

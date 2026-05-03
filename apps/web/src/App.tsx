@@ -1353,7 +1353,7 @@ export function App() {
   const projectTabs = useMemo<ProjectTab[]>(() => {
     const tabs: ProjectTab[] = ["overview"];
     if (workspaceMode === "office") tabs.push("gantt");
-    tabs.push("tasks", "hours", "materials", "tickets", "files");
+    tabs.push("tasks", "hours", "materials", "line_items", "tickets", "files");
     // Finances only visible in office mode — field workers in construction
     // view don't need access to financial data.
     if (canViewFinance && workspaceMode === "office") tabs.push("finances");
