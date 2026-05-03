@@ -34,6 +34,7 @@ from app.models.entities import (
     ChatThreadParticipantRole,
     ChatThreadParticipantUser,
     ChatThreadRead,
+    Customer,
     ConstructionReport,
     ConstructionReportJob,
     EmployeeGroup,
@@ -2330,6 +2331,15 @@ def _validate_assignee_ids(db: Session, assignee_ids: list[int]) -> None:
         raise HTTPException(status_code=400, detail=f"Unknown assignee id(s): {', '.join(str(x) for x in missing)}")
 
 
+def _validate_customer_id(db: Session, customer_id: int) -> None:
+    """Confirm a customer_id references an existing row before we let
+    a Task land against it. Centralised here so the task router and
+    any future customer-anchored entities reuse one error shape."""
+    exists = db.scalars(select(Customer.id).where(Customer.id == customer_id)).first()
+    if exists is None:
+        raise HTTPException(status_code=400, detail=f"Unknown customer id: {customer_id}")
+
+
 def _task_assignee_map(db: Session, tasks: list[Task]) -> dict[int, list[int]]:
     if not tasks:
         return {}
@@ -2593,6 +2603,7 @@ def _task_out(
     return TaskOut(
         id=task.id,
         project_id=task.project_id,
+        customer_id=task.customer_id,
         title=task.title,
         description=task.description,
         subtasks=_normalize_task_subtasks(task.subtasks),

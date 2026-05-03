@@ -42,6 +42,7 @@ def _create_assignment_notifications(
 def list_tasks(
     view: str = "all_open",
     project_id: int | None = None,
+    customer_id: int | None = None,
     week_start: date | None = None,
     task_type: str | None = None,
     has_partners: bool | None = None,
@@ -53,6 +54,12 @@ def list_tasks(
     if project_id:
         assert_project_access(db, current_user, project_id)
         stmt = stmt.where(Task.project_id == project_id)
+    if customer_id:
+        # No assert_customer_access yet — customer-tasks rely on
+        # tasks:view_all / _my_task_filter for visibility, same as
+        # any other unfiltered task list. The filter exists to support
+        # the customer-detail-page "Tasks" panel introduced in v2.4.5.
+        stmt = stmt.where(Task.customer_id == customer_id)
 
     # Respect the live permission map: only restrict to own tasks if the user
     # lacks tasks:view_all (e.g. default employee, or a role with that perm removed).
@@ -96,9 +103,21 @@ def create_task(
     current_user: User = Depends(require_permission("tasks:manage")),
     db: Session = Depends(get_db),
 ):
-    assert_project_access(db, current_user, payload.project_id, manage_required=True)
+    # v2.4.5 anchor handling: a task is project-scoped, customer-scoped,
+    # or both. The Pydantic model_validator already rejected the
+    # neither-set case, so reaching this point means at least one is
+    # populated. The DB CHECK constraint is the last line of defence.
+    if payload.project_id is not None:
+        assert_project_access(db, current_user, payload.project_id, manage_required=True)
+    if payload.customer_id is not None:
+        _validate_customer_id(db, payload.customer_id)
     class_template: ProjectClassTemplate | None = None
     if payload.class_template_id is not None:
+        if payload.project_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail="class_template_id requires a project_id",
+            )
         class_template = _resolve_project_class_template(
             db, project_id=payload.project_id, class_template_id=payload.class_template_id
         )
@@ -107,6 +126,10 @@ def create_task(
     partner_ids = _normalize_partner_ids(list(payload.partner_ids or []))
     _validate_partner_ids(db, partner_ids)
     _validate_task_schedule(start_time=payload.start_time, estimated_hours=payload.estimated_hours)
+    # Overlap detection is only meaningful when the task lives inside a
+    # project (the helper scans tasks-in-same-project for the same
+    # assignee). Customer-only tasks skip this; future work could add
+    # cross-anchor overlap if needed.
     overlaps = (
         _find_task_overlaps(
             db,
@@ -116,7 +139,7 @@ def create_task(
             estimated_hours=payload.estimated_hours,
             assignee_ids=assignee_ids,
         )
-        if not payload.confirm_overlap
+        if (not payload.confirm_overlap and payload.project_id is not None)
         else []
     )
     if overlaps:
@@ -151,14 +174,18 @@ def create_task(
     _sync_task_assignments(db, task, assignee_ids)
     _sync_task_partners(db, task, partner_ids)
     _create_assignment_notifications(db, task, assignee_ids, current_user)
-    _record_project_activity(
-        db,
-        project_id=task.project_id,
-        actor_user_id=current_user.id,
-        event_type="task.created",
-        message=f"Task created: {task.title}",
-        details={"task_id": task.id, "status": task.status},
-    )
+    # Project-activity is project-scoped — only record when the task
+    # actually has a project anchor. Customer-only tasks live without
+    # one (audit trail belongs to the customer record itself).
+    if task.project_id is not None:
+        _record_project_activity(
+            db,
+            project_id=task.project_id,
+            actor_user_id=current_user.id,
+            event_type="task.created",
+            message=f"Task created: {task.title}",
+            details={"task_id": task.id, "status": task.status},
+        )
     db.commit()
     db.refresh(task)
     partner_rows = _load_partners_by_id(db, partner_ids)

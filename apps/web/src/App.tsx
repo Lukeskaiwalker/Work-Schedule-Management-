@@ -1231,8 +1231,11 @@ export function App() {
   const officeTaskProjectOptions = useMemo(() => {
     const projectIds = new Set<number>();
     tasks.forEach((task) => {
-      if (Number.isFinite(task.project_id) && task.project_id > 0) {
-        projectIds.add(task.project_id);
+      // Customer-only tasks (v2.4.5+) have project_id === null and
+      // contribute nothing to the project-filter dropdown.
+      const pid = task.project_id;
+      if (pid != null && Number.isFinite(pid) && pid > 0) {
+        projectIds.add(pid);
       }
     });
     return Array.from(projectIds)
@@ -1310,7 +1313,10 @@ export function App() {
       } else if (officeTaskDueDateFilter && String(task.due_date || "") !== officeTaskDueDateFilter) {
         return false;
       }
-      if (officeTaskProjectFilterIds.length > 0 && !officeTaskProjectFilterIds.includes(task.project_id)) {
+      if (
+        officeTaskProjectFilterIds.length > 0 &&
+        (task.project_id == null || !officeTaskProjectFilterIds.includes(task.project_id))
+      ) {
         return false;
       }
       return true;
@@ -4303,6 +4309,12 @@ export function App() {
   }
 
   function taskProjectTitleParts(task: Task): ProjectTitleParts {
+    // Customer-only tasks (v2.4.5+) have no project_id — render an
+    // empty title so the row still lays out cleanly. Customer-detail
+    // pages already show the customer context above the task list.
+    if (task.project_id == null) {
+      return { title: "", subtitle: "" };
+    }
     const directProject = projectsById.get(task.project_id);
     if (directProject) return projectTitleParts(directProject);
     const overviewProject = overviewProjectsById.get(task.project_id);
@@ -4385,7 +4397,10 @@ export function App() {
       return;
     }
 
-    const project = projectsById.get(task.project_id);
+    // Customer-only task (no project_id) → no project context to look
+    // up; project stays undefined and the calendar entry is generated
+    // without project metadata.
+    const project = task.project_id != null ? projectsById.get(task.project_id) : undefined;
     const dueDateIso = task.due_date || formatDateISOLocal(new Date());
     const startTime = formatTaskStartTime(task.start_time || "") || "";
     const endTime = formatTaskStartTime(task.end_time || "") || "";
@@ -5550,7 +5565,9 @@ export function App() {
   }
 
   function openConstructionReportFromTask(task: Task, sourceView: MainView | null = "my_tasks") {
-    const project = projectsById.get(task.project_id) ?? null;
+    // Customer-only tasks have no project; reports are project-scoped,
+    // so project stays null and the workflow handles the empty case.
+    const project = task.project_id != null ? (projectsById.get(task.project_id) ?? null) : null;
     const projectIdValue = project ? String(project.id) : "";
     const taskAssignees = getTaskAssigneeIds(task);
     const workerRows = taskAssignees
@@ -5664,6 +5681,10 @@ export function App() {
   }
 
   function openProjectFromTask(task: Task, backView: MainView | null = "my_tasks") {
+    // No project to open for customer-only tasks; click is a no-op
+    // there. The customer-detail page is the canonical landing for
+    // those rows.
+    if (task.project_id == null) return;
     openProjectById(task.project_id, backView);
   }
 

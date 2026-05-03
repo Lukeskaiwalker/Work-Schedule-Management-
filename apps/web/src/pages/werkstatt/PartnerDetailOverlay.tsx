@@ -229,12 +229,19 @@ export function PartnerDetailOverlay({ partner, onClose }: Props) {
         )}
         <ul className="partner-detail-overlay-task-list">
           {visibleTasks.map((task) => {
-            const project = projectById.get(task.project_id) ?? null;
+            // Customer-only tasks (project_id == null) shouldn't reach
+            // the partner overlay (partner-task linkage requires a
+            // project), but the type allows null so we guard defensively.
+            const project = task.project_id != null ? (projectById.get(task.project_id) ?? null) : null;
             return (
               <li key={`partner-task-${task.id}`} className="partner-detail-overlay-task-row">
                 <span className="partner-detail-overlay-task-title">{task.title}</span>
                 <small>
-                  {project ? `${project.project_number} — ${project.name}` : `#${task.project_id}`}
+                  {project
+                    ? `${project.project_number} — ${project.name}`
+                    : task.project_id != null
+                      ? `#${task.project_id}`
+                      : ""}
                   {task.due_date ? ` · ${task.due_date}` : ""}
                 </small>
               </li>

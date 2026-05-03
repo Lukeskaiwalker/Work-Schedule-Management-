@@ -66,9 +66,13 @@ export function MyTasksPage() {
       dayTasks.forEach((task, index) => {
         const previousTask = index > 0 ? dayTasks[index - 1] : null;
         const nextTask = index < dayTasks.length - 1 ? dayTasks[index + 1] : null;
+      // Customer-only tasks (v2.4.5+) have no project_id, so look-up
+      // returns null and the travel-distance hint just becomes empty.
       const previousProject =
-        previousTask && previousTask.due_date === task.due_date ? projectsById.get(previousTask.project_id) : null;
-        const currentProject = projectsById.get(task.project_id);
+        previousTask && previousTask.due_date === task.due_date && previousTask.project_id != null
+          ? projectsById.get(previousTask.project_id)
+          : null;
+        const currentProject = task.project_id != null ? projectsById.get(task.project_id) : null;
         const previousProjectAddress = projectLocationAddress(previousProject);
         const currentProjectAddress = projectLocationAddress(currentProject);
         const previousProjectMinutes =
@@ -88,7 +92,7 @@ export function MyTasksPage() {
               ? (language === "de" ? "Fahrt vom Firmenstandort" : "Travel from company")
               : null;
         const nextProjectAddress =
-          nextTask && nextTask.due_date === task.due_date
+          nextTask && nextTask.due_date === task.due_date && nextTask.project_id != null
             ? projectLocationAddress(projectsById.get(nextTask.project_id))
             : "";
         const next =

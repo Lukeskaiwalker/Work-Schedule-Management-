@@ -1,13 +1,19 @@
 from __future__ import annotations
 from datetime import date, datetime, time
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.schemas.partner import PartnerOut
 
 
 class TaskCreate(BaseModel):
-    project_id: int
+    # v2.4.5: a task is anchored to a project, a customer, or both.
+    # The model_validator below enforces "at least one is set" so the
+    # request never bypasses the DB CHECK constraint with a more
+    # opaque IntegrityError. Both nullable individually so the UI can
+    # send either shape without sending an explicit null.
+    project_id: int | None = None
+    customer_id: int | None = None
     title: str
     description: str | None = None
     subtasks: list[str] = Field(default_factory=list)
@@ -24,6 +30,12 @@ class TaskCreate(BaseModel):
     partner_ids: list[int] = Field(default_factory=list)
     week_start: date | None = None
     confirm_overlap: bool = False
+
+    @model_validator(mode="after")
+    def _require_anchor(self) -> "TaskCreate":
+        if self.project_id is None and self.customer_id is None:
+            raise ValueError("project_id or customer_id is required")
+        return self
 
     @field_validator("estimated_hours")
     @classmethod
@@ -43,6 +55,12 @@ class TaskCreate(BaseModel):
 class TaskUpdate(BaseModel):
     expected_updated_at: datetime | None = None
     title: str | None = None
+    # Re-anchor support: an operator may move a task between projects
+    # or convert a project task into a customer task (or vice-versa)
+    # by patching these fields. Router-level logic enforces that the
+    # final state still satisfies the at-least-one-anchor invariant.
+    project_id: int | None = None
+    customer_id: int | None = None
     description: str | None = None
     subtasks: list[str] | None = None
     materials_required: str | None = None
@@ -76,7 +94,10 @@ class TaskUpdate(BaseModel):
 
 class TaskOut(BaseModel):
     id: int
-    project_id: int
+    # Both anchors are nullable on output now (v2.4.5). At least one is
+    # always set — the DB CHECK constraint guarantees it.
+    project_id: int | None = None
+    customer_id: int | None = None
     title: str
     description: str | None = None
     subtasks: list[str] = Field(default_factory=list)

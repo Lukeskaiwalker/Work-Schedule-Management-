@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useAppContext } from "../context/AppContext";
 import { CustomerContactCard } from "../components/customers/CustomerContactCard";
 import { CustomerProjectRow } from "../components/customers/CustomerProjectRow";
+import { CustomerTasksCard } from "../components/customers/CustomerTasksCard";
 import {
   getCustomer,
   listCustomerProjects,
@@ -223,6 +224,12 @@ export function CustomerDetailPage() {
               )}
             </div>
           </section>
+
+          {/* Customer-anchored tasks (v2.4.5+) — call-back reminders,
+              follow-ups, and other todo items that aren't tied to a
+              specific project. Lives on the left column to keep the
+              project list (right column) uncluttered. */}
+          <CustomerTasksCard customerId={customer.id} />
         </div>
 
         <div className="customer-detail-col customer-detail-col--right">

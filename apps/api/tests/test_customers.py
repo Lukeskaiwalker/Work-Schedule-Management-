@@ -325,3 +325,134 @@ def test_update_customer_syncs_to_linked_projects(
     )
     assert overview.status_code == 200
     assert overview.json()["project"]["customer_address"] == "New Str. 99"
+
+
+# ── v2.4.5 customer-scoped tasks ────────────────────────────────────────
+
+
+def test_customer_only_task_create_and_list(client: TestClient, admin_token: str):
+    """Customer-scoped task: no project_id, just a customer_id. Should
+    land cleanly and surface via the customer_id filter on /tasks."""
+    customer = _create_customer(
+        client, admin_token, name="Phone Customer", phone="+49 30 1234567"
+    )
+    customer_id = customer["id"]
+
+    create = client.post(
+        "/api/tasks",
+        headers=auth_headers(admin_token),
+        json={
+            "customer_id": customer_id,
+            "title": "Call about quote follow-up",
+            "task_type": "office",
+        },
+    )
+    assert create.status_code == 200, create.text
+    body = create.json()
+    assert body["customer_id"] == customer_id
+    assert body["project_id"] is None
+    assert body["title"] == "Call about quote follow-up"
+    task_id = body["id"]
+
+    # The customer_id query filter should surface this task.
+    listing = client.get(
+        f"/api/tasks?view=all_open&customer_id={customer_id}",
+        headers=auth_headers(admin_token),
+    )
+    assert listing.status_code == 200
+    rows = listing.json()
+    assert any(row["id"] == task_id for row in rows)
+    assert all(row["customer_id"] == customer_id for row in rows)
+
+
+def test_task_requires_project_or_customer(client: TestClient, admin_token: str):
+    """Pydantic model_validator must reject the neither-anchor case
+    before it reaches the DB CHECK constraint, so the operator gets a
+    clean 422 with a useful message."""
+    response = client.post(
+        "/api/tasks",
+        headers=auth_headers(admin_token),
+        json={"title": "Floating task"},
+    )
+    assert response.status_code == 422
+    body = response.json()
+    detail_text = str(body.get("detail", ""))
+    assert "project_id" in detail_text or "customer_id" in detail_text
+
+
+def test_task_with_unknown_customer_returns_400(client: TestClient, admin_token: str):
+    response = client.post(
+        "/api/tasks",
+        headers=auth_headers(admin_token),
+        json={"customer_id": 99999, "title": "Ghost customer task"},
+    )
+    assert response.status_code == 400
+    assert "customer" in response.json()["detail"].lower()
+
+
+def test_task_with_both_project_and_customer(client: TestClient, admin_token: str):
+    """A task can be anchored to BOTH — useful for "call John about
+    project X" — and shows up under either filter."""
+    customer = _create_customer(client, admin_token, name="Both-anchor Customer")
+    customer_id = customer["id"]
+
+    project = client.post(
+        "/api/projects",
+        headers=auth_headers(admin_token),
+        json={
+            "project_number": "2026-BOTH-1",
+            "name": "Both-anchor project",
+            "status": "Auftrag angenommen",
+            "customer_id": customer_id,
+        },
+    )
+    assert project.status_code == 200
+    project_id = project.json()["id"]
+
+    create = client.post(
+        "/api/tasks",
+        headers=auth_headers(admin_token),
+        json={
+            "project_id": project_id,
+            "customer_id": customer_id,
+            "title": "Call about project status",
+            "task_type": "office",
+        },
+    )
+    assert create.status_code == 200, create.text
+    body = create.json()
+    assert body["project_id"] == project_id
+    assert body["customer_id"] == customer_id
+    task_id = body["id"]
+
+    # Visible via project filter…
+    via_project = client.get(
+        f"/api/tasks?view=all_open&project_id={project_id}",
+        headers=auth_headers(admin_token),
+    )
+    assert any(row["id"] == task_id for row in via_project.json())
+
+    # …and via customer filter.
+    via_customer = client.get(
+        f"/api/tasks?view=all_open&customer_id={customer_id}",
+        headers=auth_headers(admin_token),
+    )
+    assert any(row["id"] == task_id for row in via_customer.json())
+
+
+def test_customer_only_task_skips_class_template_validation(client: TestClient, admin_token: str):
+    """class_template_id requires a project_id (the template lives on a
+    project class). A customer-only task with class_template_id is a
+    400, not a confusing IntegrityError."""
+    customer = _create_customer(client, admin_token, name="Template-blocked Customer")
+    response = client.post(
+        "/api/tasks",
+        headers=auth_headers(admin_token),
+        json={
+            "customer_id": customer["id"],
+            "title": "Should be rejected",
+            "class_template_id": 1,
+        },
+    )
+    assert response.status_code == 400
+    assert "class_template_id" in response.json()["detail"]

@@ -1,7 +1,19 @@
 from __future__ import annotations
 from datetime import date, datetime, time
 
-from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, JSON, String, Text, Time, UniqueConstraint
+from sqlalchemy import (
+    CheckConstraint,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    JSON,
+    String,
+    Text,
+    Time,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
@@ -10,9 +22,30 @@ from app.core.time import utcnow
 
 class Task(Base):
     __tablename__ = "tasks"
+    # Anchor invariant: every task must point to a project, a customer,
+    # or both. Tasks without an anchor are orphan data and the API
+    # rejects them — but we also enforce at the schema level so a
+    # mistaken UPDATE that clears both columns doesn't sneak through.
+    __table_args__ = (
+        CheckConstraint(
+            "project_id IS NOT NULL OR customer_id IS NOT NULL",
+            name="ck_tasks_project_or_customer",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    # Nullable since v2.4.5: a task can be customer-only ("call Jane
+    # about quote"). When set, ondelete=CASCADE removes the task with
+    # its parent project — same as before.
+    project_id: Mapped[int | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), index=True, nullable=True
+    )
+    # New in v2.4.5: customer-only tasks. CASCADE on customer deletion
+    # mirrors the project semantics — a task whose anchor record is
+    # gone is orphan data we don't want to keep.
+    customer_id: Mapped[int | None] = mapped_column(
+        ForeignKey("customers.id", ondelete="CASCADE"), index=True, nullable=True
+    )
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
     subtasks: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)

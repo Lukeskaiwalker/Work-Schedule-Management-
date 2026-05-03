@@ -314,7 +314,12 @@ export type ProjectTrackedMaterial = {
 
 export type Task = {
   id: number;
-  project_id: number;
+  // v2.4.5: a task is anchored to a project, a customer, or both.
+  // The DB CHECK constraint guarantees at least one is non-null, so
+  // every row always has at least one of these set even though the
+  // type allows null on each individually.
+  project_id: number | null;
+  customer_id?: number | null;
   title: string;
   description?: string | null;
   subtasks?: string[];

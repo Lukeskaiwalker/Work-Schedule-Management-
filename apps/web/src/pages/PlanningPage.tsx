@@ -360,6 +360,11 @@ export function PlanningPage() {
             const absences = day.absences ?? [];
             const projectRows = Array.from(
               visibleTaskRows.reduce((map, task) => {
+                // v2.4.5: customer-only tasks (project_id == null) are
+                // managed from the customer-detail page, not the
+                // planning grid. They're skipped here so the office-
+                // view layout stays project-centric and uncluttered.
+                if (task.project_id == null) return map;
                 const current = map.get(task.project_id) ?? [];
                 current.push(task);
                 map.set(task.project_id, current);
