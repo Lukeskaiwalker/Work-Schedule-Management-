@@ -79,6 +79,7 @@ from app.schemas.report import (
     RecentConstructionReportOut,
 )
 from app.schemas.settings import (
+    ActiveUpdateJobOut,
     CompanySettingsOut,
     CompanySettingsUpdate,
     OpenAISettingsOut,
@@ -254,4 +255,5 @@ __all__ = [
     "UpdateInstallRequest",
     "UpdateInstallOut",
     "UpdateProgressOut",
+    "ActiveUpdateJobOut",
 ]

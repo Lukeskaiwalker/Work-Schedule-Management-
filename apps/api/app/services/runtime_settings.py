@@ -15,6 +15,11 @@ SMTP_SETTINGS_KEY = "smtp_settings"
 COMPANY_SETTINGS_KEY = "company_settings"
 ROLE_PERMISSIONS_KEY = "role_permissions"
 USER_PERMISSIONS_KEY = "user_permissions"
+# v2.4.6: shared snapshot of any in-flight runner-mediated update so
+# every admin's System tab can attach to the same job instead of each
+# admin only seeing the job that THEIR own click initiated. Cleared
+# when the runner reports the job has reached a terminal status.
+ACTIVE_UPDATE_JOB_KEY = "active_update_job"
 
 # Default model for ProjectLineItem extraction. Operators can switch to
 # `gpt-4o` (more accurate, more expensive) or any other OpenAI Structured-
@@ -53,6 +58,69 @@ def get_openweather_api_key(db: Session) -> str:
 
 def set_openweather_api_key(db: Session, value: str) -> None:
     set_runtime_setting(db, OPENWEATHER_API_KEY, (value or "").strip())
+
+
+def get_active_update_job(db: Session) -> dict[str, Any] | None:
+    """Return the snapshot of an in-flight runner-mediated update job,
+    or None when no job is active.
+
+    The shape mirrors the columns we store: ``job_id``, ``started_at``
+    (UTC ISO-8601), ``started_by_user_id``, ``started_by_display_name``.
+    Reads never raise on malformed JSON — a corrupt setting returns
+    None, which the API treats the same as "no job," and the next
+    successful dispatch will overwrite it with a fresh snapshot.
+    """
+    raw = get_runtime_setting(db, ACTIVE_UPDATE_JOB_KEY)
+    if not raw:
+        return None
+    try:
+        stored = json.loads(raw)
+    except Exception:
+        return None
+    if not isinstance(stored, dict):
+        return None
+    job_id = (stored.get("job_id") or "").strip()
+    if not job_id:
+        return None
+    return {
+        "job_id": job_id,
+        "started_at": stored.get("started_at"),
+        "started_by_user_id": stored.get("started_by_user_id"),
+        "started_by_display_name": (stored.get("started_by_display_name") or "").strip() or None,
+    }
+
+
+def set_active_update_job(
+    db: Session,
+    *,
+    job_id: str,
+    started_at: str,
+    started_by_user_id: int | None,
+    started_by_display_name: str | None,
+) -> None:
+    """Store the snapshot of an in-flight update job. Caller is
+    responsible for committing the surrounding session."""
+    set_runtime_setting(
+        db,
+        ACTIVE_UPDATE_JOB_KEY,
+        json.dumps(
+            {
+                "job_id": (job_id or "").strip(),
+                "started_at": started_at,
+                "started_by_user_id": started_by_user_id,
+                "started_by_display_name": (started_by_display_name or "").strip() or None,
+            }
+        ),
+    )
+
+
+def clear_active_update_job(db: Session) -> None:
+    """Erase the active-update snapshot. Called when a polling read
+    finds the runner has finished (succeeded / failed). Idempotent —
+    no error if the row doesn't exist."""
+    row = db.get(AppSetting, ACTIVE_UPDATE_JOB_KEY)
+    if row is not None:
+        db.delete(row)
 
 
 def get_openai_settings(db: Session) -> dict[str, Any]:

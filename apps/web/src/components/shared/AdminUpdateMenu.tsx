@@ -13,6 +13,8 @@ export function AdminUpdateMenu() {
     setUpdateProgress,
     loadUpdateStatus,
     installSystemUpdate,
+    activeUpdateJob,
+    user,
   } = useAppContext();
 
   // Auto-fetch the update status the first time the System tab is opened in a session.
@@ -57,9 +59,43 @@ export function AdminUpdateMenu() {
   const isTerminalProgress =
     updateProgress?.status === "succeeded" || updateProgress?.status === "failed";
 
+  // v2.4.6: cross-admin banner — when an update is running and a
+  // DIFFERENT admin started it, surface their name so the local
+  // operator knows who's driving (instead of just seeing "Running").
+  // user?.id is checked to avoid showing the banner on the originator's
+  // own tab (where the buttons already say "Installing...").
+  const isRemoteUpdate = Boolean(
+    activeUpdateJob?.job_id &&
+      activeUpdateJob.started_by_user_id !== null &&
+      activeUpdateJob.started_by_user_id !== undefined &&
+      user?.id !== activeUpdateJob.started_by_user_id,
+  );
+  const remoteAdminName = activeUpdateJob?.started_by_display_name?.trim() || "";
+
   return (
     <div className="metric-stack admin-update-tools">
       <b>{language === "de" ? "System-Updates" : "System updates"}</b>
+      {isRemoteUpdate && (
+        <small
+          className="muted"
+          style={{
+            display: "block",
+            padding: "6px 10px",
+            background: "#fff7e6",
+            border: "1px solid #f6c97a",
+            borderRadius: 6,
+            color: "#7a4f00",
+          }}
+        >
+          {remoteAdminName
+            ? language === "de"
+              ? `${remoteAdminName} installiert gerade ein Update`
+              : `${remoteAdminName} is installing an update right now`
+            : language === "de"
+              ? "Ein anderer Admin installiert gerade ein Update"
+              : "Another admin is installing an update right now"}
+        </small>
+      )}
       <small className="muted">
         {updateStatus?.repository ? `${updateStatus.repository} (${updateStatus.branch})` : "-"}
       </small>

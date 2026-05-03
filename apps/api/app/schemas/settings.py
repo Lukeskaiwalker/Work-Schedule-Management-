@@ -143,3 +143,19 @@ class UpdateProgressOut(BaseModel):
     exit_code: int | None = None
     detail: str | None = None
     log_tail: str = ""
+
+
+class ActiveUpdateJobOut(BaseModel):
+    """v2.4.6 — cross-admin visibility snapshot for any in-flight
+    runner-mediated update. ``job_id`` is null when no job is active;
+    when set, the polling-progress endpoint above can be hit by ANY
+    admin (not just the one who clicked Install) to attach to the
+    same in-flight job. ``started_by_display_name`` lets the UI
+    render "Lukas is installing v2.4.6…" rather than just "an update
+    is in progress."
+    """
+
+    job_id: str | None = None
+    started_at: str | None = None
+    started_by_user_id: int | None = None
+    started_by_display_name: str | None = None

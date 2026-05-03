@@ -721,6 +721,19 @@ export type UpdateProgress = {
   summary_warnings?: number | null;
 };
 
+/** v2.4.6 — cross-admin visibility for any in-flight runner-mediated
+ *  update. ``job_id`` is null when no job is active; when set, every
+ *  admin's System tab can attach to the same in-flight job by polling
+ *  /admin/updates/progress/{job_id} regardless of who clicked Install.
+ *  ``started_by_display_name`` lets the UI show "Lukas is installing
+ *  v2.4.6…" instead of just "an update is in progress." */
+export type ActiveUpdateJob = {
+  job_id: string | null;
+  started_at: string | null;
+  started_by_user_id: number | null;
+  started_by_display_name: string | null;
+};
+
 /** Single encrypted-archive backup file as returned by GET /admin/backups. */
 export type BackupFile = {
   filename: string;

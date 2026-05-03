@@ -32,6 +32,7 @@ from app.core.security import get_password_hash
 from app.core.time import utcnow
 from app.models.entities import AuditLog, EmployeeGroup, EmployeeGroupMember, ProjectClassTemplate, User, UserActionToken
 from app.schemas.api import (
+    ActiveUpdateJobOut,
     CompanySettingsOut,
     CompanySettingsUpdate,
     EmployeeGroupCreate,
@@ -63,6 +64,8 @@ from app.services.emailer import send_email_detailed, send_email_message
 from app.services.project_import import import_projects_from_csv
 from app.services.runtime_settings import (
     OPENAI_DEFAULT_EXTRACTION_MODEL,
+    clear_active_update_job,
+    get_active_update_job,
     get_company_settings,
     get_openai_settings,
     get_smtp_settings,
@@ -71,6 +74,7 @@ from app.services.runtime_settings import (
     reset_user_permissions_from_db,
     save_role_permissions_to_db,
     save_user_permissions_to_db,
+    set_active_update_job,
     set_company_settings,
     set_openai_settings,
     set_smtp_settings,
@@ -2590,6 +2594,19 @@ def _delegate_real_install_to_runner(
             "latest_commit": status.latest_commit,
         },
     )
+    # v2.4.6: persist the active job snapshot so a second admin who
+    # opens the System tab in another browser sees the in-flight job
+    # (instead of a fresh "Install" button) and attaches their poller
+    # to the same job_id. Cleared when the progress endpoint detects
+    # a terminal status.
+    set_active_update_job(
+        db,
+        job_id=job_id,
+        started_at=utcnow().isoformat(),
+        started_by_user_id=admin.id,
+        started_by_display_name=admin.display_name or admin.email,
+    )
+    db.commit()
     return UpdateInstallOut(
         ok=True,
         mode="auto",
@@ -2747,6 +2764,7 @@ def install_updates(
 def get_update_progress(
     job_id: str,
     _: User = Depends(require_permission("system:manage")),
+    db: Session = Depends(get_db),
 ):
     """Proxy the runner's job-status snapshot to the admin UI.
 
@@ -2762,19 +2780,67 @@ def get_update_progress(
     except update_runner_client.UpdateRunnerUnreachable as exc:
         raise HTTPException(status_code=503, detail=f"Update runner is unreachable: {exc}")
     except KeyError:
+        # Runner forgot the job (e.g. runner restarted between dispatch
+        # and poll). Clear our cached active-job snapshot so other
+        # admins don't keep polling a ghost id forever.
+        active = get_active_update_job(db)
+        if active is not None and active.get("job_id") == job_id:
+            clear_active_update_job(db)
+            db.commit()
         raise HTTPException(status_code=404, detail="Unknown update job id")
     except update_runner_client.UpdateRunnerError as exc:
         raise HTTPException(status_code=502, detail=str(exc))
 
+    status_value = str(payload.get("status") or "unknown")
+    # Clear the active-job snapshot once the runner reports a terminal
+    # status, so the next install request starts cleanly. We don't
+    # delete on the FIRST terminal poll only — clearing repeatedly is
+    # idempotent (clear_active_update_job is no-op when nothing is
+    # stored).
+    if status_value in {"succeeded", "failed", "cancelled"}:
+        active = get_active_update_job(db)
+        if active is not None and active.get("job_id") == job_id:
+            clear_active_update_job(db)
+            db.commit()
+
     return UpdateProgressOut(
         job_id=str(payload.get("job_id") or job_id),
         kind=str(payload.get("kind") or "update"),
-        status=str(payload.get("status") or "unknown"),
+        status=status_value,
         started_at=payload.get("started_at"),
         finished_at=payload.get("finished_at"),
         exit_code=payload.get("exit_code"),
         detail=payload.get("detail"),
         log_tail=str(payload.get("log_tail") or ""),
+    )
+
+
+@router.get("/updates/active", response_model=ActiveUpdateJobOut)
+def get_active_update(
+    _: User = Depends(require_permission("system:manage")),
+    db: Session = Depends(get_db),
+):
+    """v2.4.6: cross-admin visibility for in-flight runner-mediated
+    updates.
+
+    Any admin opening the System tab polls this endpoint. When non-null,
+    the FE attaches its progress poller to the returned ``job_id`` —
+    even if a different admin started the job — and shows
+    "<display_name> is installing…" so concurrent admin sessions don't
+    fight over a fresh Install button.
+
+    Returns an all-null shape (rather than 404) when no job is active
+    so the FE can treat this as a steady-state poll without special-
+    casing transport errors as "no job."
+    """
+    snapshot = get_active_update_job(db)
+    if snapshot is None:
+        return ActiveUpdateJobOut()
+    return ActiveUpdateJobOut(
+        job_id=snapshot.get("job_id"),
+        started_at=snapshot.get("started_at"),
+        started_by_user_id=snapshot.get("started_by_user_id"),
+        started_by_display_name=snapshot.get("started_by_display_name"),
     )
 
 

@@ -60,6 +60,7 @@ import type {
   UpdateStatus,
   UpdateInstallResponse,
   UpdateProgress,
+  ActiveUpdateJob,
   BackupListResponse,
   BackupJobProgress,
   ReportWorker,
@@ -632,6 +633,11 @@ export interface AppContextValue {
    *  null when no async install is running or the last one has been dismissed. */
   updateProgress: UpdateProgress | null;
   setUpdateProgress: (progress: UpdateProgress | null) => void;
+  /** v2.4.6 — cross-admin snapshot of any in-flight update job. Polled
+   *  every 5s while on the admin view so a second admin's tab attaches
+   *  to the same job_id instead of seeing a fresh Install button. */
+  activeUpdateJob: ActiveUpdateJob | null;
+  setActiveUpdateJob: (job: ActiveUpdateJob | null) => void;
 
   // ── Backups (full encrypted-archive flow) ──────────────────────────────────
   /** Listing snapshot for the admin Backups tab; null = not yet loaded. */

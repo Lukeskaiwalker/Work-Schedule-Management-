@@ -51,6 +51,7 @@ import type {
   UpdateStatus,
   UpdateInstallResponse,
   UpdateProgress,
+  ActiveUpdateJob,
   BackupListResponse,
   BackupJobProgress,
   ReportWorker,
@@ -488,6 +489,13 @@ export function App() {
   // when the user dismisses a finished job. Lives in a ref instead of state
   // because the timer ID changes don't need to trigger re-renders.
   const updateProgressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // v2.4.6: cross-admin visibility for any in-flight update job. When
+  // non-null AND the local tab isn't the one that started the install,
+  // we attach our progress poller to the shared job_id so concurrent
+  // admin sessions see the same banner instead of fighting over a
+  // fresh Install button.
+  const [activeUpdateJob, setActiveUpdateJob] = useState<ActiveUpdateJob | null>(null);
+  const activeUpdatePollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ── Backup state (Admin → Backups tab) ───────────────────────────────────
   const [backupsList, setBackupsList] = useState<BackupListResponse | null>(null);
@@ -1819,6 +1827,10 @@ export function App() {
         clearTimeout(updateProgressTimerRef.current);
         updateProgressTimerRef.current = null;
       }
+      if (activeUpdatePollTimerRef.current !== null) {
+        clearTimeout(activeUpdatePollTimerRef.current);
+        activeUpdatePollTimerRef.current = null;
+      }
       if (backupJobTimerRef.current !== null) {
         clearTimeout(backupJobTimerRef.current);
         backupJobTimerRef.current = null;
@@ -1832,6 +1844,27 @@ export function App() {
       setThreadActionMenuOpen(false);
     }
   }, [threadActionMenuOpen, activeThread, mainView]);
+
+  // v2.4.6: poll the cross-admin "is anyone installing right now?"
+  // endpoint while the operator is on the admin view. This is what
+  // makes a second admin's tab attach to the same in-flight job
+  // instead of seeing a fresh Install button. Stops the moment they
+  // leave the admin view or lose system:manage permission, so the
+  // background load is bounded.
+  useEffect(() => {
+    if (mainView !== "admin" || !canManageSystem) {
+      clearActiveUpdatePollTimer();
+      return;
+    }
+    void pollActiveUpdateJob();
+    return () => {
+      clearActiveUpdatePollTimer();
+    };
+    // pollActiveUpdateJob is a stable closure over state setters; we
+    // intentionally exclude it from deps to avoid re-creating the
+    // poller on every render (which would clear-and-reset every tick).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mainView, canManageSystem]);
 
   useEffect(() => {
     if (mainView !== "time" && timeInfoOpen) setTimeInfoOpen(false);
@@ -3490,6 +3523,50 @@ export function App() {
         void pollUpdateProgress(jobId);
       }, 4000);
     }
+  }
+
+  /** v2.4.6 — fetch the cross-admin active-update snapshot. The
+   *  endpoint always returns 200 with an all-null shape when no job
+   *  is in flight, so callers don't need to special-case 404s. */
+  async function fetchActiveUpdateJob(): Promise<ActiveUpdateJob | null> {
+    if (!canManageSystem) return null;
+    try {
+      return await apiFetch<ActiveUpdateJob>("/admin/updates/active", token);
+    } catch {
+      // Transport hiccup — treat as "unknown" rather than crashing the
+      // poll loop; the next tick will try again.
+      return null;
+    }
+  }
+
+  function clearActiveUpdatePollTimer() {
+    if (activeUpdatePollTimerRef.current !== null) {
+      clearTimeout(activeUpdatePollTimerRef.current);
+      activeUpdatePollTimerRef.current = null;
+    }
+  }
+
+  /** Poll /admin/updates/active every 5s. When a job_id appears AND
+   *  this tab isn't already polling its progress (because the local
+   *  user clicked Install), attach the progress poller. When the
+   *  active snapshot clears, drop the polling state. */
+  async function pollActiveUpdateJob() {
+    clearActiveUpdatePollTimer();
+    const snapshot = await fetchActiveUpdateJob();
+    setActiveUpdateJob(snapshot);
+    if (snapshot && snapshot.job_id) {
+      const isLocallyDriven = updateInstallRunning && updateProgress?.job_id === snapshot.job_id;
+      if (!isLocallyDriven) {
+        // Attach this tab to the shared job. setUpdateInstallRunning(true)
+        // surfaces the in-flight banner; pollUpdateProgress mirrors the
+        // existing flow so terminal-status handling stays in one place.
+        setUpdateInstallRunning(true);
+        void pollUpdateProgress(snapshot.job_id);
+      }
+    }
+    activeUpdatePollTimerRef.current = setTimeout(() => {
+      void pollActiveUpdateJob();
+    }, 5000);
   }
 
   async function installSystemUpdate(dryRun: boolean) {
@@ -8632,6 +8709,8 @@ export function App() {
     setUpdateInstallRunning,
     updateProgress,
     setUpdateProgress,
+    activeUpdateJob,
+    setActiveUpdateJob,
     backupsList,
     setBackupsList,
     backupsListLoading,
