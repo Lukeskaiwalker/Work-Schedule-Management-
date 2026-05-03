@@ -178,25 +178,101 @@ echo "Applying real migrations..."
 docker compose run --rm api sh -lc "cd /app && alembic upgrade head"
 
 echo "Rebuilding and starting services..."
-# update_runner included so a fresh image (built above) gets recreated as a
-# container. Without this, a runner-side bug fix or new endpoint shipped in a
-# release would land on disk but not in the running container until the next
-# manual `docker compose up -d --build update_runner`.
-#
-# Why update_runner specifically gets --force-recreate: Docker Compose's
-# image-change detection sometimes doesn't recreate a container when the
-# image content changes but the tag stays the same. We hit this on the
-# v2.3.1→v2.3.2 rollout — the new image was built and tagged, but the
-# running container kept its older image. Forcing recreation on the
-# runner specifically avoids this trap without churning api/api_worker/web
-# unnecessarily (those almost always change image content per release).
 docker compose up -d --build api api_worker web
-docker compose up -d --build --force-recreate update_runner
 
-echo "Waiting for API, web, and update_runner services to become healthy..."
+# v2.4.8: deferred runner recreate to escape the self-replacement deadlock.
+#
+# Background — the v2.4.6 incident:
+#   safe_update.sh runs INSIDE the update_runner container. The previous
+#   in-script ``docker compose up -d --build --force-recreate update_runner``
+#   asked Docker Compose to stop the very container executing this script.
+#   The runner was killed mid-recreate, its name slot didn't fully release,
+#   and the next "create renamed copy" step exited 128 with
+#   "Error when allocating new name: Conflict. The container name
+#   '/smpl-all-update_runner-1' is already in use."
+#   Result: orphan ``<sha>_smpl-all-update_runner-1`` containers in
+#   ``Created`` state and the runner offline until manually restarted.
+#
+# Fix:
+#   1. Detect whether the runner's image actually changed since the
+#      previous deploy. Most releases only touch api/api_worker/web code,
+#      so the running runner is already on the latest image and a
+#      recreate is wasteful (and risky — see above).
+#   2. When the image DID change, spawn a transient "trampoline"
+#      container that waits for safe_update.sh to exit, cleans up any
+#      orphan ``<sha>_smpl-all-update_runner-1`` left by a prior failed
+#      recreate, and runs ``docker compose up -d update_runner`` from
+#      outside the runner. The trampoline lives in its own container, so
+#      the runner's stop doesn't kill it.
+#   3. The runner image itself was just rebuilt by ``docker compose
+#      build api update_runner`` higher up, so the new image is on disk
+#      regardless of whether we trigger the recreate here.
+
+RUNNER_RUNNING_IMAGE="$(docker inspect --format '{{.Image}}' smpl-all-update_runner-1 2>/dev/null || true)"
+RUNNER_LATEST_IMAGE="$(docker images --no-trunc --format '{{.ID}}' smpl-all-update_runner 2>/dev/null | head -n1 || true)"
+
+if [[ -n "$RUNNER_LATEST_IMAGE" && -n "$RUNNER_RUNNING_IMAGE" \
+      && "$RUNNER_RUNNING_IMAGE" != "$RUNNER_LATEST_IMAGE" ]]; then
+  echo "update_runner image changed; scheduling deferred recreate via trampoline container..."
+
+  # The runner has the host's repo bind-mounted at /repo. Look up the
+  # *host* path of that mount so the trampoline container can run
+  # ``docker compose`` against the same compose files.
+  REPO_HOST_PATH="$(docker inspect \
+    --format '{{range .Mounts}}{{if eq .Destination "/repo"}}{{.Source}}{{end}}{{end}}' \
+    smpl-all-update_runner-1 2>/dev/null || true)"
+
+  if [[ -z "$REPO_HOST_PATH" ]]; then
+    echo "WARNING: could not resolve host path for /repo bind mount." >&2
+    echo "         Recreate the runner manually after this script:" >&2
+    echo "           docker compose up -d --build --force-recreate update_runner" >&2
+  else
+    # Detached trampoline. ``--rm -d`` runs it in the background and cleans
+    # the container up after the recreate finishes. The 12s sleep gives
+    # safe_update.sh time to return its exit status to the runner's HTTP
+    # response (the runner reports success to the api before being stopped).
+    if docker run --rm -d \
+        --name smpl-update-runner-trampoline \
+        -v /var/run/docker.sock:/var/run/docker.sock \
+        -v "${REPO_HOST_PATH}:/repo" \
+        -w /repo \
+        -e COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-smpl-all}" \
+        docker:cli \
+        sh -c '
+          set -eu
+          sleep 12
+
+          # Drop any orphan renamed copies left by a prior failed recreate
+          # (Docker generates a "<sha>_<original-name>" stub when stop
+          # races with rename — they accumulate as zombies in Created
+          # state otherwise).
+          for orphan in $(docker ps -a --format "{{.Names}}" \
+              | grep -E "^[0-9a-f]{12}_smpl-all-update_runner-1$" || true); do
+            docker rm -f "$orphan" >/dev/null 2>&1 || true
+          done
+
+          # Recreate via compose. The image was rebuilt earlier in
+          # safe_update.sh, so this is a pure recreate (no rebuild).
+          docker compose up -d update_runner
+        ' >/dev/null 2>&1; then
+      echo "Trampoline container scheduled; runner will be recreated within ~15s of script exit."
+    else
+      echo "WARNING: trampoline container failed to start." >&2
+      echo "         Recreate the runner manually:" >&2
+      echo "           docker compose up -d --build --force-recreate update_runner" >&2
+    fi
+  fi
+else
+  echo "update_runner image unchanged; skipping recreate."
+fi
+
+echo "Waiting for API and web services to become healthy..."
 wait_for_service_health api
 wait_for_service_health web
-wait_for_service_health update_runner
+# Note: update_runner health is intentionally NOT awaited here — when
+# the trampoline path fires the recreate is asynchronous and would
+# briefly fail healthcheck while restarting. The api falls back to
+# "runner unreachable" gracefully if a request hits during the gap.
 
 disable_maintenance_mode
 
