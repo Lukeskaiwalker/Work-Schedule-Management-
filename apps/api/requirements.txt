@@ -21,3 +21,12 @@ reportlab==4.2.5
 openpyxl==3.1.5
 Pillow==11.3.0
 pillow-heif==1.2.1
+
+# v2.4.0: OpenAI Structured Outputs for line-item extraction.
+# 1.55+ has native Structured Outputs support via the chat.completions
+# `response_format={"type": "json_schema"}` shape.
+openai==1.55.0
+# pdf2image needs the system poppler-utils binary (added to the API
+# Dockerfile in the same commit). Pillow is already pulled as the
+# imaging backend.
+pdf2image==1.17.0

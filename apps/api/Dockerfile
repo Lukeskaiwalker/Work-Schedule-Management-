@@ -10,6 +10,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     postgresql-client \
     curl \
+    # poppler-utils provides pdftoppm/pdftocairo, used by pdf2image to
+    # rasterise PDF pages for OpenAI vision input (v2.4.0 line-item
+    # extraction). Without it, every PDF extraction job fails at runtime
+    # with PDFInfoNotInstalledError.
+    poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./

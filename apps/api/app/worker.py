@@ -10,6 +10,10 @@ from app.core.db import SessionLocal
 from app.main import _initialize_runtime_data
 from app.services.audit_retention import prune_audit_logs_if_due
 from app.services.daily_clock_summary import dispatch_daily_clock_summary_if_due
+from app.services.line_item_extraction import (
+    claim_next_line_item_extraction_job,
+    process_line_item_extraction_job,
+)
 from app.services.report_jobs import claim_next_construction_report_job, process_construction_report_job
 
 logger = logging.getLogger("smpl.report_worker")
@@ -85,13 +89,28 @@ def run_worker_loop() -> None:
         try:
             _maybe_run_daily_summary()
             _maybe_run_audit_retention()
+            # Drain report jobs first (existing behaviour). When none
+            # are queued, fall through to the LLM-extraction queue.
             with SessionLocal() as db:
-                job = claim_next_construction_report_job(db)
-                if not job:
-                    time.sleep(poll_seconds)
+                report_job = claim_next_construction_report_job(db)
+                if report_job:
+                    logger.info("Processing construction report job %s", report_job.id)
+                    asyncio.run(process_construction_report_job(db, report_job.id))
                     continue
-                logger.info("Processing construction report job %s", job.id)
-                asyncio.run(process_construction_report_job(db, job.id))
+                # Same session — claim and run one extraction job per
+                # tick. Two queues, one worker, simplest possible
+                # priority (reports > extraction).
+                extraction_job = claim_next_line_item_extraction_job(db)
+                if extraction_job:
+                    logger.info(
+                        "Processing line-item extraction job %s (project=%s, doc=%s)",
+                        extraction_job.id,
+                        extraction_job.project_id,
+                        extraction_job.doc_type,
+                    )
+                    process_line_item_extraction_job(db, extraction_job.id)
+                    continue
+            time.sleep(poll_seconds)
         except Exception:
             logger.exception("Unhandled exception in report worker loop")
             time.sleep(poll_seconds)

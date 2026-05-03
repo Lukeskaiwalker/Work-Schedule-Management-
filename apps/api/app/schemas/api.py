@@ -63,6 +63,10 @@ from app.schemas.project_line_item import (
     ProjectLineItemOut,
     ProjectLineItemUpdate,
 )
+from app.schemas.line_item_extraction import (
+    LineItemExtractionEnqueueOut,
+    LineItemExtractionJobOut,
+)
 from app.schemas.report import (
     ConstructionReportCreate,
     ConstructionReportExtra,
@@ -169,6 +173,8 @@ __all__ = [
     "ProjectLineItemCreate",
     "ProjectLineItemOut",
     "ProjectLineItemUpdate",
+    "LineItemExtractionEnqueueOut",
+    "LineItemExtractionJobOut",
     "NotificationOut",
     "MaterialCatalogItemOut",
     "MaterialCatalogImportStateOut",

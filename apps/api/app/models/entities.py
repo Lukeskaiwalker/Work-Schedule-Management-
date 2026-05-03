@@ -19,6 +19,7 @@ from app.models.task import Task, TaskAssignment
 from app.models.site import Site, JobTicket
 from app.models.team import EmployeeGroup, EmployeeGroupMember
 from app.models.project_line_item import ProjectLineItem
+from app.models.line_item_extraction_job import LineItemExtractionJob
 from app.models.chat import (
     ChatThread,
     ChatThreadParticipantGroup,
@@ -64,6 +65,7 @@ __all__ = [
     "EmployeeGroup",
     "EmployeeGroupMember",
     "JobTicket",
+    "LineItemExtractionJob",
     "MaterialCatalogImportState",
     "MaterialCatalogItem",
     "Message",
