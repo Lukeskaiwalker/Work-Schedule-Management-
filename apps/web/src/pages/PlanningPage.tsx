@@ -496,24 +496,43 @@ export function PlanningPage() {
                     : visibleTaskRows.map((task) => {
                         const projectLabel = taskProjectTitleParts(task);
                         const isMine = isTaskAssignedToCurrentUser(task);
+                        // In office view, managers can edit any task by
+                        // clicking its row (not just their own). The
+                        // construction view keeps the existing
+                        // my-task-navigation behaviour because crews
+                        // shouldn't be reorganising tasks assigned to
+                        // teammates from the planning grid.
+                        const canEditAnyTaskHere = showProjectRows && canManageTasks;
+                        const taskClickHandler = canEditAnyTaskHere
+                          ? () => openTaskEditModal(task)
+                          : isMine
+                            ? () => openTaskFromPlanning(task)
+                            : undefined;
+                        const isClickable = taskClickHandler !== undefined;
                         return (
                           <li
                             key={`planning-task-${day.date}-${task.id}`}
-                            className={isMine ? "planning-task planning-task-mine planning-task-clickable" : "planning-task"}
-                            data-task-type={task.task_type ?? "construction"}
-                            onClick={isMine ? () => openTaskFromPlanning(task) : undefined}
-                            onKeyDown={
+                            className={
                               isMine
+                                ? "planning-task planning-task-mine planning-task-clickable"
+                                : isClickable
+                                  ? "planning-task planning-task-clickable"
+                                  : "planning-task"
+                            }
+                            data-task-type={task.task_type ?? "construction"}
+                            onClick={taskClickHandler}
+                            onKeyDown={
+                              isClickable
                                 ? (event) => {
                                     if (event.key === "Enter" || event.key === " ") {
                                       event.preventDefault();
-                                      openTaskFromPlanning(task);
+                                      taskClickHandler!();
                                     }
                                   }
                                 : undefined
                             }
-                            role={isMine ? "button" : undefined}
-                            tabIndex={isMine ? 0 : undefined}
+                            role={isClickable ? "button" : undefined}
+                            tabIndex={isClickable ? 0 : undefined}
                           >
                             <b>{task.title}</b>
                             <small>
