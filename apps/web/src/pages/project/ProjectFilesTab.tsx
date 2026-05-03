@@ -8,7 +8,14 @@ import type { Language, ProjectFile } from "../../types";
 // the list view, but operators who use this tab to scan project
 // photos shouldn't have to flip the toggle every visit.
 const VIEW_MODE_STORAGE_KEY = "smpl_project_files_view_mode";
+const GALLERY_SIZE_STORAGE_KEY = "smpl_project_files_gallery_size";
+
 type FilesViewMode = "list" | "gallery";
+/** v2.4.7: gallery tile size, picked by the operator. Maps to the
+ *  CSS variable --gallery-tile-min on .file-gallery so the
+ *  grid-template-columns auto-fill calculation respects the choice
+ *  without recomputing JS on every resize. */
+type GallerySize = "s" | "m" | "l";
 
 function readStoredViewMode(): FilesViewMode {
   if (typeof window === "undefined") return "list";
@@ -19,6 +26,28 @@ function readStoredViewMode(): FilesViewMode {
     return "list";
   }
 }
+
+function readStoredGallerySize(): GallerySize {
+  if (typeof window === "undefined") return "m";
+  try {
+    const raw = window.localStorage.getItem(GALLERY_SIZE_STORAGE_KEY);
+    return raw === "s" || raw === "l" ? raw : "m";
+  } catch {
+    return "m";
+  }
+}
+
+/** Tile-min-width in CSS px for each size step. Drives the
+ *  grid-template-columns auto-fill so the grid reflows naturally on
+ *  narrow + wide screens. Numbers picked from finder-like spacing:
+ *  small ≈ 100px tiles (compact contact sheet),
+ *  medium ≈ 140px (current default),
+ *  large ≈ 240px (desktop-style image-first layout). */
+const GALLERY_SIZE_PX: Record<GallerySize, number> = {
+  s: 100,
+  m: 140,
+  l: 240,
+};
 
 function isReportFolder(folder: string): boolean {
   const f = folder.toLowerCase();
@@ -191,6 +220,7 @@ export function ProjectFilesTab() {
   // If a folder is in toggledFolders, its visible state is flipped from the default.
   const [toggledFolders, setToggledFolders] = useState<Set<string>>(new Set());
   const [viewMode, setViewMode] = useState<FilesViewMode>(() => readStoredViewMode());
+  const [gallerySize, setGallerySize] = useState<GallerySize>(() => readStoredGallerySize());
 
   // Persist view-mode toggles to localStorage so the user's preference
   // (list vs gallery) survives reloads. Done via useEffect rather than
@@ -204,6 +234,17 @@ export function ProjectFilesTab() {
       // ignore — the toggle still works for the current session.
     }
   }, [viewMode]);
+
+  // Persist gallery-size choice on every change. Same try/catch as
+  // viewMode — quota errors are non-fatal.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(GALLERY_SIZE_STORAGE_KEY, gallerySize);
+    } catch {
+      /* ignore */
+    }
+  }, [gallerySize]);
 
   const isSearching = fileQuery.trim().length > 0;
 
@@ -280,6 +321,49 @@ export function ProjectFilesTab() {
                 {language === "de" ? "Galerie" : "Gallery"}
               </button>
             </div>
+            {viewMode === "gallery" && (
+              /* Three-step size picker (S/M/L) for the gallery grid.
+                 Mirrors the Finder slider — operators who want a quick
+                 contact-sheet pick S, those who want a desktop-style
+                 image-first browse pick L. The toggle is hidden in list
+                 view because list rows have a fixed layout. */
+              <div
+                className="file-view-toggle"
+                role="tablist"
+                aria-label={language === "de" ? "Größe" : "Size"}
+              >
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={gallerySize === "s"}
+                  className={gallerySize === "s" ? "is-active" : undefined}
+                  onClick={() => setGallerySize("s")}
+                  title={language === "de" ? "Klein" : "Small"}
+                >
+                  S
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={gallerySize === "m"}
+                  className={gallerySize === "m" ? "is-active" : undefined}
+                  onClick={() => setGallerySize("m")}
+                  title={language === "de" ? "Mittel" : "Medium"}
+                >
+                  M
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={gallerySize === "l"}
+                  className={gallerySize === "l" ? "is-active" : undefined}
+                  onClick={() => setGallerySize("l")}
+                  title={language === "de" ? "Groß" : "Large"}
+                >
+                  L
+                </button>
+              </div>
+            )}
             <input
               value={fileQuery}
               onChange={(e) => setFileQuery(e.target.value)}
@@ -363,7 +447,16 @@ export function ProjectFilesTab() {
              Search filter still applies; folder grouping is dropped
              on purpose because the gallery's job is "see at a glance"
              not "navigate hierarchy". */
-          <div className="file-gallery">
+          <div
+            className="file-gallery"
+            style={{
+              // CSS variable consumed by the .file-gallery rule in
+              // styles.css — keeps the auto-fill grid recalculation
+              // in CSS (browser-optimised) instead of toggling a
+              // size-specific class name with three rules.
+              ["--gallery-tile-min" as string]: `${GALLERY_SIZE_PX[gallerySize]}px`,
+            }}
+          >
             {fileRows.map((file) => (
               <GalleryTile
                 key={file.id}

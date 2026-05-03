@@ -14966,7 +14966,14 @@ li {
 
 .file-gallery {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  /* --gallery-tile-min is set inline by ProjectFilesTab when the
+     operator picks a gallery size (S/M/L). Falls back to 140px
+     (the v2.4.4 default) when the variable is unset, so old
+     layouts continue working unchanged. */
+  grid-template-columns: repeat(
+    auto-fill,
+    minmax(var(--gallery-tile-min, 140px), 1fr)
+  );
   gap: 0.6rem;
   padding: 0.4rem 0;
 }
