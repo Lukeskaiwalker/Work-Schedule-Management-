@@ -51,6 +51,7 @@ import type {
   PasswordResetDispatchResponse,
   NicknameAvailability,
   WeatherSettings,
+  OpenAISettings,
   SmtpSettings,
   SmtpTestResult,
   CompanySettings,
@@ -569,6 +570,16 @@ export interface AppContextValue {
   setWeatherApiKeyInput: (key: string) => void;
   weatherSettingsSaving: boolean;
   setWeatherSettingsSaving: (saving: boolean) => void;
+  // OpenAI runtime settings (line-item extraction). Same shape as the
+  // weather settings — masked-key on read, plaintext-and-clear-flag on write.
+  openAISettings: OpenAISettings | null;
+  setOpenAISettings: (settings: OpenAISettings | null) => void;
+  openAIApiKeyInput: string;
+  setOpenAIApiKeyInput: (key: string) => void;
+  openAIModelInput: string;
+  setOpenAIModelInput: (model: string) => void;
+  openAISettingsSaving: boolean;
+  setOpenAISettingsSaving: (saving: boolean) => void;
   companySettings: CompanySettings | null;
   setCompanySettings: (settings: CompanySettings | null) => void;
   companySettingsForm: {
@@ -1020,6 +1031,7 @@ export interface AppContextValue {
   loadProjectFinance: (projectId: number) => Promise<void>;
   loadProjectTrackedMaterials: (projectId: number) => Promise<void>;
   saveWeatherSettings: (event: FormEvent<HTMLFormElement>) => Promise<void>;
+  saveOpenAISettings: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   saveCompanySettings: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   saveSmtpSettings: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   sendSmtpTest: (toEmail?: string) => Promise<SmtpTestResult | null>;

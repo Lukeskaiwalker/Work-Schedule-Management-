@@ -262,6 +262,107 @@ def test_company_settings_round_trip_and_public_endpoint(
     assert public_after.json()["company_name"] == "SMPL GmbH"
 
 
+def test_openai_settings_round_trip_and_clear_flag(client: TestClient, admin_token: str):
+    """Verify the OpenAI settings endpoint mirrors the SMTP/weather pattern:
+
+    - Default GET returns ``configured=False`` with the bundled default model.
+    - PATCH stores the key + custom model and returns a masked key.
+    - GET after PATCH echoes the masked key and updated model.
+    - PATCH with a blank ``api_key`` (and ``clear_api_key=False``) preserves
+      the existing key — the masked-placeholder UX must not wipe it.
+    - PATCH with ``clear_api_key=True`` blanks the stored key.
+    - PATCH with a blank model name snaps back to ``gpt-4o-mini``.
+    """
+    initial = client.get("/api/admin/settings/openai", headers=auth_headers(admin_token))
+    assert initial.status_code == 200
+    assert initial.json()["configured"] is False
+    assert initial.json()["masked_api_key"] == ""
+    assert initial.json()["extraction_model"] == "gpt-4o-mini"
+
+    set_key = client.patch(
+        "/api/admin/settings/openai",
+        headers=auth_headers(admin_token),
+        json={
+            "api_key": "sk-proj-fakeABCDEF1234",
+            "extraction_model": "gpt-4o",
+        },
+    )
+    assert set_key.status_code == 200
+    assert set_key.json()["configured"] is True
+    assert set_key.json()["masked_api_key"].endswith("1234")
+    assert set_key.json()["extraction_model"] == "gpt-4o"
+
+    after = client.get("/api/admin/settings/openai", headers=auth_headers(admin_token))
+    assert after.status_code == 200
+    assert after.json()["masked_api_key"].endswith("1234")
+    assert after.json()["extraction_model"] == "gpt-4o"
+
+    # Blank api_key must NOT wipe the stored key — admin only changes model.
+    keep_key = client.patch(
+        "/api/admin/settings/openai",
+        headers=auth_headers(admin_token),
+        json={"api_key": "", "extraction_model": "gpt-4.1-mini"},
+    )
+    assert keep_key.status_code == 200
+    assert keep_key.json()["configured"] is True
+    assert keep_key.json()["masked_api_key"].endswith("1234")
+    assert keep_key.json()["extraction_model"] == "gpt-4.1-mini"
+
+    # Blank model name resets to default.
+    reset_model = client.patch(
+        "/api/admin/settings/openai",
+        headers=auth_headers(admin_token),
+        json={"api_key": "", "extraction_model": ""},
+    )
+    assert reset_model.status_code == 200
+    assert reset_model.json()["extraction_model"] == "gpt-4o-mini"
+    assert reset_model.json()["configured"] is True  # key still preserved
+
+    # Explicit clear flag wipes the key.
+    cleared = client.patch(
+        "/api/admin/settings/openai",
+        headers=auth_headers(admin_token),
+        json={"api_key": "", "clear_api_key": True, "extraction_model": "gpt-4o-mini"},
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["configured"] is False
+    assert cleared.json()["masked_api_key"] == ""
+
+
+def test_openai_settings_requires_settings_manage(client: TestClient, admin_token: str):
+    """An employee user (without settings:manage) must not be able to read
+    or modify OpenAI settings."""
+    employee = _create_user(client, admin_token, "openai-employee@example.com", "employee")
+
+    # Log in as the new employee to obtain their JWT — token rides on the
+    # X-Access-Token response header (cookie-based auth flow).
+    login = client.post(
+        "/api/auth/login",
+        json={"email": employee["email"], "password": "Password123!"},
+    )
+    assert login.status_code == 200
+    employee_token = login.headers.get("X-Access-Token")
+    assert employee_token
+
+    # Clear cookies so the auth gate sees only the employee's bearer token —
+    # otherwise TestClient still has the admin cookie from earlier setup
+    # calls and the request would succeed as admin.
+    client.cookies.clear()
+
+    forbidden_get = client.get(
+        "/api/admin/settings/openai",
+        headers=auth_headers(employee_token),
+    )
+    assert forbidden_get.status_code == 403
+
+    forbidden_patch = client.patch(
+        "/api/admin/settings/openai",
+        headers=auth_headers(employee_token),
+        json={"api_key": "sk-evil"},
+    )
+    assert forbidden_patch.status_code == 403
+
+
 def test_password_reset_completion_marks_pending_invite_as_accepted(client: TestClient, admin_token: str):
     created = _create_user(client, admin_token, "invite-reset-state@example.com", "employee")
 

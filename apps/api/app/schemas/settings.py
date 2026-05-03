@@ -14,6 +14,34 @@ class WeatherSettingsUpdate(BaseModel):
     api_key: str = ""
 
 
+class OpenAISettingsOut(BaseModel):
+    """Read shape for the OpenAI runtime settings.
+
+    The api_key is masked (last 4 chars only) so the admin UI can confirm a
+    key is configured without leaking it. ``configured`` is a quick boolean
+    for the green/grey dot on the settings page.
+    """
+
+    provider: str = "openai"
+    configured: bool = False
+    masked_api_key: str = ""
+    extraction_model: str = "gpt-4o-mini"
+
+
+class OpenAISettingsUpdate(BaseModel):
+    """Write shape for the OpenAI runtime settings.
+
+    ``clear_api_key`` lets the admin explicitly blank the stored key (e.g.
+    after a leak). When False *and* ``api_key`` is empty the existing key is
+    kept — preventing accidental wipes when the form is submitted with the
+    masked placeholder still in the input.
+    """
+
+    api_key: str = ""
+    clear_api_key: bool = False
+    extraction_model: str = "gpt-4o-mini"
+
+
 class SmtpSettingsOut(BaseModel):
     host: str = ""
     port: int = 587

@@ -78,6 +78,25 @@ def reset_db() -> Generator[None, None, None]:
 
 
 @pytest.fixture(autouse=True)
+def _reset_rate_limit_bucket() -> None:
+    """Clear the per-IP rate-limit bucket before every test.
+
+    The rate-limit middleware in ``app.main`` keeps a module-level
+    ``_rate_bucket`` dict that counts requests per ``(ip, scope)`` over a
+    rolling 1-minute window. TestClient always reports the same client IP
+    (``testclient``), so once the suite hits 480 default-scope requests
+    inside a minute *every subsequent test* gets 429s — including the
+    project-line-items boundary check. Clearing the bucket between tests
+    keeps each test isolated; the explicit rate-limiter test in
+    ``test_system.py`` re-clears at its start anyway, so this fixture is
+    a no-op for it.
+    """
+    from app.main import _rate_bucket
+
+    _rate_bucket.clear()
+
+
+@pytest.fixture(autouse=True)
 def _isolate_release_env_file_reader(monkeypatch: pytest.MonkeyPatch) -> None:
     """Short-circuit the on-disk ``.release.env`` reader during tests.
 

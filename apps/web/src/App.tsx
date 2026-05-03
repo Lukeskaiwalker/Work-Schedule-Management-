@@ -43,6 +43,7 @@ import type {
   SmtpTestResult,
   NicknameAvailability,
   WeatherSettings,
+  OpenAISettings,
   SmtpSettings,
   CompanySettings,
   EmployeeGroup,
@@ -447,6 +448,15 @@ export function App() {
   const [weatherSettings, setWeatherSettings] = useState<WeatherSettings | null>(null);
   const [weatherApiKeyInput, setWeatherApiKeyInput] = useState("");
   const [weatherSettingsSaving, setWeatherSettingsSaving] = useState(false);
+  // OpenAI runtime settings (project line-item extraction). Two fields: the
+  // API key (write-only — backend returns a masked echo) and the extraction
+  // model name. The default model is mirrored from the backend constant
+  // OPENAI_DEFAULT_EXTRACTION_MODEL; if drift becomes a concern we can fetch
+  // the default from the GET response on first load.
+  const [openAISettings, setOpenAISettings] = useState<OpenAISettings | null>(null);
+  const [openAIApiKeyInput, setOpenAIApiKeyInput] = useState("");
+  const [openAIModelInput, setOpenAIModelInput] = useState("gpt-4o-mini");
+  const [openAISettingsSaving, setOpenAISettingsSaving] = useState(false);
   const [companySettings, setCompanySettings] = useState<CompanySettings | null>(null);
   const [companySettingsForm, setCompanySettingsForm] = useState({
     logo_url: "",
@@ -2624,13 +2634,17 @@ export function App() {
       }
       if (canManageSettings) {
         try {
-          const [weatherRow, companyRow, smtpRow] = await Promise.all([
+          const [weatherRow, openAIRow, companyRow, smtpRow] = await Promise.all([
             apiFetch<WeatherSettings>("/admin/settings/weather", token),
+            apiFetch<OpenAISettings>("/admin/settings/openai", token),
             apiFetch<CompanySettings>("/admin/settings/company", token),
             apiFetch<SmtpSettings>("/admin/settings/smtp", token),
           ]);
           setWeatherSettings(weatherRow);
           setWeatherApiKeyInput("");
+          setOpenAISettings(openAIRow);
+          setOpenAIApiKeyInput("");
+          setOpenAIModelInput(openAIRow.extraction_model || "gpt-4o-mini");
           setCompanySettings(companyRow);
           setCompanySettingsForm({
             logo_url: companyRow.logo_url || "",
@@ -2652,6 +2666,9 @@ export function App() {
           });
         } catch {
           setWeatherSettings(null);
+          setOpenAISettings(null);
+          setOpenAIApiKeyInput("");
+          setOpenAIModelInput("gpt-4o-mini");
           setCompanySettingsForm({
             logo_url: "",
             navigation_title: "SMPL",
@@ -2673,6 +2690,9 @@ export function App() {
         }
       } else {
         setWeatherSettings(null);
+        setOpenAISettings(null);
+        setOpenAIApiKeyInput("");
+        setOpenAIModelInput("gpt-4o-mini");
         setSmtpSettings(null);
         setSmtpSettingsForm({
           host: "",
@@ -3208,6 +3228,35 @@ export function App() {
       setError(err.message ?? "Failed to save weather settings");
     } finally {
       setWeatherSettingsSaving(false);
+    }
+  }
+
+  async function saveOpenAISettings(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!canManageSettings) return;
+    setOpenAISettingsSaving(true);
+    try {
+      // Backend keeps the existing key when api_key is blank, so an admin
+      // changing only the model never needs to retype the secret.
+      const payload = await apiFetch<OpenAISettings>("/admin/settings/openai", token, {
+        method: "PATCH",
+        body: JSON.stringify({
+          api_key: openAIApiKeyInput.trim(),
+          extraction_model: openAIModelInput.trim() || "gpt-4o-mini",
+        }),
+      });
+      setOpenAISettings(payload);
+      setOpenAIApiKeyInput("");
+      setOpenAIModelInput(payload.extraction_model || "gpt-4o-mini");
+      setNotice(
+        language === "de"
+          ? "OpenAI Einstellungen gespeichert"
+          : "OpenAI settings saved",
+      );
+    } catch (err: any) {
+      setError(err.message ?? "Failed to save OpenAI settings");
+    } finally {
+      setOpenAISettingsSaving(false);
     }
   }
 
@@ -8534,6 +8583,14 @@ export function App() {
     setWeatherApiKeyInput,
     weatherSettingsSaving,
     setWeatherSettingsSaving,
+    openAISettings,
+    setOpenAISettings,
+    openAIApiKeyInput,
+    setOpenAIApiKeyInput,
+    openAIModelInput,
+    setOpenAIModelInput,
+    openAISettingsSaving,
+    setOpenAISettingsSaving,
     companySettings,
     setCompanySettings,
     companySettingsForm,
@@ -8907,6 +8964,7 @@ export function App() {
     loadProjectFinance,
     loadProjectTrackedMaterials,
     saveWeatherSettings,
+    saveOpenAISettings,
     saveCompanySettings,
     saveSmtpSettings,
     sendSmtpTest,

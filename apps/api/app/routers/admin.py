@@ -39,6 +39,8 @@ from app.schemas.api import (
     EmployeeGroupUpdate,
     InviteCreate,
     InviteDispatchOut,
+    OpenAISettingsOut,
+    OpenAISettingsUpdate,
     PasswordResetDispatchOut,
     SmtpSettingsOut,
     SmtpSettingsUpdate,
@@ -60,7 +62,9 @@ from app.routers.workflow_helpers import _content_disposition
 from app.services.emailer import send_email_detailed, send_email_message
 from app.services.project_import import import_projects_from_csv
 from app.services.runtime_settings import (
+    OPENAI_DEFAULT_EXTRACTION_MODEL,
     get_company_settings,
+    get_openai_settings,
     get_smtp_settings,
     get_openweather_api_key,
     reset_role_to_defaults,
@@ -68,6 +72,7 @@ from app.services.runtime_settings import (
     save_role_permissions_to_db,
     save_user_permissions_to_db,
     set_company_settings,
+    set_openai_settings,
     set_smtp_settings,
     set_openweather_api_key,
 )
@@ -2232,6 +2237,71 @@ def update_weather_settings(
         provider="openweather",
         configured=bool(api_key),
         masked_api_key=_mask_secret(api_key),
+    )
+
+
+@router.get("/settings/openai", response_model=OpenAISettingsOut)
+def get_openai_runtime_settings(
+    _: User = Depends(require_permission("settings:manage")),
+    db: Session = Depends(get_db),
+):
+    """Return the masked OpenAI key + currently selected extraction model."""
+    effective = get_openai_settings(db)
+    api_key = (effective.get("api_key") or "").strip()
+    return OpenAISettingsOut(
+        provider="openai",
+        configured=bool(api_key),
+        masked_api_key=_mask_secret(api_key),
+        extraction_model=str(effective.get("extraction_model") or "").strip()
+        or OPENAI_DEFAULT_EXTRACTION_MODEL,
+    )
+
+
+@router.patch("/settings/openai", response_model=OpenAISettingsOut)
+def update_openai_runtime_settings(
+    payload: OpenAISettingsUpdate,
+    admin: User = Depends(require_permission("settings:manage")),
+    db: Session = Depends(get_db),
+):
+    """Update the OpenAI key and/or extraction model.
+
+    Behaviour mirrors the SMTP password handling: a blank ``api_key`` keeps
+    the existing key (so the masked-placeholder UX doesn't accidentally wipe
+    it), while ``clear_api_key=True`` explicitly blanks it. The model name is
+    always overwritten — a blank model snaps back to the default
+    ``gpt-4o-mini`` rather than being left empty.
+    """
+    current = get_openai_settings(db)
+    incoming_key = (payload.api_key or "").strip()
+
+    if payload.clear_api_key:
+        next_key = ""
+    elif incoming_key:
+        next_key = incoming_key
+    else:
+        next_key = (current.get("api_key") or "").strip()
+
+    next_model = (payload.extraction_model or "").strip() or OPENAI_DEFAULT_EXTRACTION_MODEL
+
+    set_openai_settings(db, api_key=next_key, extraction_model=next_model)
+    db.commit()
+    log_admin_action(
+        db,
+        admin,
+        "settings.openai.update",
+        "settings",
+        "openai",
+        {
+            "configured": bool(next_key),
+            "extraction_model": next_model,
+            "key_changed": (next_key != (current.get("api_key") or "").strip()),
+        },
+    )
+    return OpenAISettingsOut(
+        provider="openai",
+        configured=bool(next_key),
+        masked_api_key=_mask_secret(next_key),
+        extraction_model=next_model,
     )
 
 

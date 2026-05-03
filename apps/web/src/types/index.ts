@@ -629,6 +629,13 @@ export type WeatherSettings = {
   masked_api_key: string;
 };
 
+export type OpenAISettings = {
+  provider: string;
+  configured: boolean;
+  masked_api_key: string;
+  extraction_model: string;
+};
+
 export type SmtpSettings = {
   host: string;
   port: number;

@@ -74,6 +74,8 @@ from app.schemas.report import (
 from app.schemas.settings import (
     CompanySettingsOut,
     CompanySettingsUpdate,
+    OpenAISettingsOut,
+    OpenAISettingsUpdate,
     SmtpSettingsOut,
     SmtpSettingsUpdate,
     SmtpTestRequest,
@@ -228,6 +230,8 @@ __all__ = [
     "PasswordResetConfirm",
     "WeatherSettingsOut",
     "WeatherSettingsUpdate",
+    "OpenAISettingsOut",
+    "OpenAISettingsUpdate",
     "CompanySettingsOut",
     "CompanySettingsUpdate",
     "SmtpSettingsOut",

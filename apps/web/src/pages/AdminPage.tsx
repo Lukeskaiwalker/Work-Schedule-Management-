@@ -162,6 +162,13 @@ export function AdminPage() {
     setWeatherApiKeyInput,
     weatherSettingsSaving,
     saveWeatherSettings,
+    openAISettings,
+    openAIApiKeyInput,
+    setOpenAIApiKeyInput,
+    openAIModelInput,
+    setOpenAIModelInput,
+    openAISettingsSaving,
+    saveOpenAISettings,
     companySettingsForm,
     setCompanySettingsForm,
     companySettingsSaving,
@@ -1871,6 +1878,64 @@ export function AdminPage() {
                   disabled={weatherSettingsSaving || weatherApiKeyInput.trim() === ""}
                 >
                   {weatherSettingsSaving
+                    ? de ? "Speichern…" : "Saving…"
+                    : de ? "Speichern" : "Save"}
+                </button>
+              </form>
+            </div>
+
+            <div className="admin-page-card admin-settings-block">
+              <h2 className="admin-page-card-title">OpenAI</h2>
+              <p className="admin-tools-desc">
+                {de
+                  ? "OpenAI API-Schlüssel für die automatische Positions-Extraktion aus Auftragsbestätigungen. Modell jederzeit umschaltbar — Standard ist gpt-4o-mini (günstig & schnell), gpt-4o für höhere Genauigkeit."
+                  : "OpenAI API key for automatic line-item extraction from order confirmations. Model is switchable — default is gpt-4o-mini (cheap & fast), gpt-4o for higher accuracy."}
+              </p>
+              <form
+                className="admin-settings-form"
+                onSubmit={(e: FormEvent<HTMLFormElement>) => void saveOpenAISettings(e)}
+              >
+                <label className="admin-invite-field">
+                  <span className="admin-invite-field-label">API Key</span>
+                  <input
+                    type="password"
+                    className="admin-invite-input"
+                    value={openAIApiKeyInput}
+                    onChange={(e) => setOpenAIApiKeyInput(e.target.value)}
+                    placeholder={
+                      openAISettings?.masked_api_key ||
+                      (de ? "sk-… eingeben" : "Enter sk-… key")
+                    }
+                    autoComplete="new-password"
+                  />
+                </label>
+                <label className="admin-invite-field">
+                  <span className="admin-invite-field-label">
+                    {de ? "Extraktions-Modell" : "Extraction model"}
+                  </span>
+                  <input
+                    type="text"
+                    className="admin-invite-input"
+                    value={openAIModelInput}
+                    onChange={(e) => setOpenAIModelInput(e.target.value)}
+                    placeholder="gpt-4o-mini"
+                    autoComplete="off"
+                  />
+                </label>
+                {openAISettings?.configured && (
+                  <div className="admin-settings-status">
+                    <span className="admin-settings-status-dot admin-settings-status-dot--ok" />
+                    {de
+                      ? `Verbunden — aktueller Schlüssel ${openAISettings.masked_api_key}`
+                      : `Connected — current key ${openAISettings.masked_api_key}`}
+                  </div>
+                )}
+                <button
+                  type="submit"
+                  className="admin-invite-submit"
+                  disabled={openAISettingsSaving}
+                >
+                  {openAISettingsSaving
                     ? de ? "Speichern…" : "Saving…"
                     : de ? "Speichern" : "Save"}
                 </button>

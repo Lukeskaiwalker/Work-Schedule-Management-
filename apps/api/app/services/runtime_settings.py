@@ -10,10 +10,16 @@ from app.models.entities import AppSetting
 
 INITIAL_ADMIN_BOOTSTRAP_COMPLETED_KEY = "initial_admin_bootstrap_completed"
 OPENWEATHER_API_KEY = "openweather_api_key"
+OPENAI_SETTINGS_KEY = "openai_settings"
 SMTP_SETTINGS_KEY = "smtp_settings"
 COMPANY_SETTINGS_KEY = "company_settings"
 ROLE_PERMISSIONS_KEY = "role_permissions"
 USER_PERMISSIONS_KEY = "user_permissions"
+
+# Default model for ProjectLineItem extraction. Operators can switch to
+# `gpt-4o` (more accurate, more expensive) or any other OpenAI Structured-
+# Outputs-capable model from the admin UI without a code change.
+OPENAI_DEFAULT_EXTRACTION_MODEL = "gpt-4o-mini"
 
 
 def get_runtime_setting(db: Session, key: str) -> str | None:
@@ -47,6 +53,56 @@ def get_openweather_api_key(db: Session) -> str:
 
 def set_openweather_api_key(db: Session, value: str) -> None:
     set_runtime_setting(db, OPENWEATHER_API_KEY, (value or "").strip())
+
+
+def get_openai_settings(db: Session) -> dict[str, Any]:
+    """Read the OpenAI runtime settings (api_key + extraction_model).
+
+    Stored as a single JSON blob under ``OPENAI_SETTINGS_KEY`` so we can add
+    fields (org id, base url, etc.) later without an alembic migration. The
+    defaults are returned untouched whenever the row is missing or the JSON
+    is malformed — never raise from a config read.
+    """
+    defaults: dict[str, Any] = {
+        "api_key": "",
+        "extraction_model": OPENAI_DEFAULT_EXTRACTION_MODEL,
+    }
+    raw = get_runtime_setting(db, OPENAI_SETTINGS_KEY)
+    if not raw:
+        return defaults
+    try:
+        stored = json.loads(raw)
+    except Exception:
+        return defaults
+    if not isinstance(stored, dict):
+        return defaults
+
+    merged = {**defaults}
+    if "api_key" in stored:
+        merged["api_key"] = str(stored.get("api_key") or "").strip()
+    if "extraction_model" in stored:
+        model = str(stored.get("extraction_model") or "").strip()
+        merged["extraction_model"] = model or defaults["extraction_model"]
+    return merged
+
+
+def set_openai_settings(
+    db: Session,
+    *,
+    api_key: str,
+    extraction_model: str,
+) -> None:
+    set_runtime_setting(
+        db,
+        OPENAI_SETTINGS_KEY,
+        json.dumps(
+            {
+                "api_key": (api_key or "").strip(),
+                "extraction_model": (extraction_model or "").strip()
+                or OPENAI_DEFAULT_EXTRACTION_MODEL,
+            }
+        ),
+    )
 
 
 def get_smtp_settings(db: Session) -> dict[str, Any]:
