@@ -15,6 +15,10 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=${SMPL_TRAEFIK_NETWORK:-mac_default}"
+      # Default router: matches every request to this host. Carries NO
+      # buffering middleware so streaming responses (SSE on /api/events,
+      # WebDAV downloads, file previews) flow through chunk-by-chunk
+      # exactly as the api emits them.
       - "traefik.http.routers.smplall.rule=Host(`${SMPL_TRAEFIK_HOST:-smpl-office.duckdns.org}`)"
       - "traefik.http.routers.smplall.entrypoints=websecure"
       - "traefik.http.routers.smplall.tls=true"
@@ -25,23 +29,38 @@ services:
       - "traefik.http.routers.smplall-http.middlewares=smplall-https-redirect"
       - "traefik.http.middlewares.smplall-https-redirect.redirectscheme.scheme=https"
       - "traefik.http.middlewares.smplall-https-redirect.redirectscheme.permanent=true"
-      # v2.4.9: explicit body-buffering middleware so construction-report
-      # uploads (multi-photo multipart bodies, often 30-100 MB) survive
-      # traefik's HTTP/2 streaming. Without this, browser uploads were
-      # consistently dying with "Network request failed" around 30% of
-      # the way through, traced to a starlette ClientDisconnect mid-
-      # multipart-parse — traefik 2.11's HTTP/2 stream window flow-
-      # control quirk that does not appear on direct HTTP/1.1.
+      # v2.4.9 introduced an explicit body-buffering middleware to fix
+      # construction-report uploads dying around 30% with "Network
+      # request failed" (traefik 2.11 truncating HTTP/2 multipart
+      # bodies at ~10 MB on TLS, traced via starlette ClientDisconnect
+      # in the api log). v2.4.10 scopes the middleware to ONLY
+      # body-carrying methods (POST/PUT/PATCH). The original v2.4.9
+      # version applied buffering globally, which broke SSE: the
+      # browser's /api/events stream was buffered indefinitely and
+      # the connection-status indicator stayed orange (reconnecting)
+      # forever even though the api was healthy.
       #
-      # maxRequestBodyBytes: hard cap for the entire request body. 500MB
-      # is generous — covers the worst case of a report with 50+ phone
-      # photos at 10 MB each and still bounds memory/disk churn.
-      # memRequestBodyBytes: in-memory buffer limit per request. 2 MB
-      # keeps the steady-state api memory usage bounded; anything
-      # beyond this spools to /tmp on the traefik container's disk.
+      # maxRequestBodyBytes: 500 MB hard cap on the entire request
+      # body (covers worst-case reports with 50+ phone photos at
+      # 10 MB each and still bounds memory/disk churn).
+      # memRequestBodyBytes: 2 MB in-memory buffer limit per request;
+      # anything larger spools to /tmp on the traefik container's
+      # disk.
       - "traefik.http.middlewares.smplall-bigbody.buffering.maxRequestBodyBytes=524288000"
       - "traefik.http.middlewares.smplall-bigbody.buffering.memRequestBodyBytes=2097152"
-      - "traefik.http.routers.smplall.middlewares=smplall-bigbody"
+      # Upload router: matches the same host AS WELL AS POST/PUT/PATCH
+      # methods. priority=100 forces this router to win over the
+      # catch-all default (which has the auto-computed lower priority
+      # equal to its rule length). Service binding is explicit because
+      # the service-name auto-derive only fires for routers whose name
+      # matches the service name.
+      - "traefik.http.routers.smplall-uploads.rule=Host(`${SMPL_TRAEFIK_HOST:-smpl-office.duckdns.org}`) && (Method(`POST`) || Method(`PUT`) || Method(`PATCH`))"
+      - "traefik.http.routers.smplall-uploads.priority=100"
+      - "traefik.http.routers.smplall-uploads.entrypoints=websecure"
+      - "traefik.http.routers.smplall-uploads.tls=true"
+      - "traefik.http.routers.smplall-uploads.tls.certresolver=${SMPL_TRAEFIK_CERT_RESOLVER:-tmhttpchallenge}"
+      - "traefik.http.routers.smplall-uploads.service=smplall"
+      - "traefik.http.routers.smplall-uploads.middlewares=smplall-bigbody"
 
 networks:
   traefik_proxy:
