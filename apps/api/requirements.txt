@@ -25,7 +25,14 @@ pillow-heif==1.2.1
 # v2.4.0: OpenAI Structured Outputs for line-item extraction.
 # 1.55+ has native Structured Outputs support via the chat.completions
 # `response_format={"type": "json_schema"}` shape.
-openai==1.55.0
+#
+# 1.55.3 specifically: fixes "Client.__init__() got an unexpected keyword
+# argument 'proxies'" — OpenAI's HTTP client passed proxies= which
+# httpx 0.28+ removed. v1.55.3 release notes:
+#   "fix(client): respect new httpx behavior of removing default kwargs"
+# Without this pin, every line-item extraction job dies with that
+# TypeError on the v1.55.0 + httpx 0.28.1 combo we previously had.
+openai==1.55.3
 # pdf2image needs the system poppler-utils binary (added to the API
 # Dockerfile in the same commit). Pillow is already pulled as the
 # imaging backend.
