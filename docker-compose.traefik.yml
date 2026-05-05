@@ -25,6 +25,23 @@ services:
       - "traefik.http.routers.smplall-http.middlewares=smplall-https-redirect"
       - "traefik.http.middlewares.smplall-https-redirect.redirectscheme.scheme=https"
       - "traefik.http.middlewares.smplall-https-redirect.redirectscheme.permanent=true"
+      # v2.4.9: explicit body-buffering middleware so construction-report
+      # uploads (multi-photo multipart bodies, often 30-100 MB) survive
+      # traefik's HTTP/2 streaming. Without this, browser uploads were
+      # consistently dying with "Network request failed" around 30% of
+      # the way through, traced to a starlette ClientDisconnect mid-
+      # multipart-parse — traefik 2.11's HTTP/2 stream window flow-
+      # control quirk that does not appear on direct HTTP/1.1.
+      #
+      # maxRequestBodyBytes: hard cap for the entire request body. 500MB
+      # is generous — covers the worst case of a report with 50+ phone
+      # photos at 10 MB each and still bounds memory/disk churn.
+      # memRequestBodyBytes: in-memory buffer limit per request. 2 MB
+      # keeps the steady-state api memory usage bounded; anything
+      # beyond this spools to /tmp on the traefik container's disk.
+      - "traefik.http.middlewares.smplall-bigbody.buffering.maxRequestBodyBytes=524288000"
+      - "traefik.http.middlewares.smplall-bigbody.buffering.memRequestBodyBytes=2097152"
+      - "traefik.http.routers.smplall.middlewares=smplall-bigbody"
 
 networks:
   traefik_proxy:
