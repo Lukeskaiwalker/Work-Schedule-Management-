@@ -640,7 +640,13 @@ export function TaskEditModal() {
               </span>
             </div>
             <label
-              style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}
+              // v2.5.4: reuse the same CSS pattern as the storage-box
+              // checkbox so the layout matches its siblings. The
+              // v2.5.1 version used inline-flex which let the label
+              // grow past the modal column; this class is width:100%
+              // with bounded flex children so the text stays inside
+              // the section regardless of label length.
+              className="task-modal-storage-box-toggle"
             >
               <input
                 type="checkbox"
