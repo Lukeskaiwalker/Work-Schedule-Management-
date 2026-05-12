@@ -279,6 +279,7 @@ if [[ -n "$RUNNER_LATEST_IMAGE" && -n "$RUNNER_RUNNING_IMAGE" \
         -v "${REPO_HOST_PATH}:/repo" \
         -w /repo \
         -e COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-smpl-all}" \
+        -e HOST_REPO_PATH="${REPO_HOST_PATH}" \
         docker:cli \
         sh -c '
           set -eu
@@ -293,9 +294,18 @@ if [[ -n "$RUNNER_LATEST_IMAGE" && -n "$RUNNER_RUNNING_IMAGE" \
             docker rm -f "$orphan" >/dev/null 2>&1 || true
           done
 
-          # Recreate via compose. The image was rebuilt earlier in
-          # safe_update.sh, so this is a pure recreate (no rebuild).
-          docker compose up -d update_runner
+          # v2.5.3: critical detail — pass --project-directory pointing
+          # at the HOST repo path. Without this, compose resolves the
+          # ``- .:/repo`` volume binding relative to the trampoline''s
+          # filesystem (where /repo is the bind-mounted repo), producing
+          # a HOST-side bind source of "/repo". The daemon then auto-
+          # creates an empty /repo dir on the host and binds THAT to the
+          # new runner — which is how the v2.5.2 → v2.5.3 deploy broke
+          # backups: the runner saw an empty backups dir despite the
+          # host having 25+ files. --project-directory forces compose
+          # to resolve "." to the actual host path, which is what the
+          # daemon then sees.
+          docker compose --project-directory "$HOST_REPO_PATH" up -d update_runner
         ' >/dev/null 2>&1; then
       echo "Trampoline container scheduled; runner will be recreated within ~15s of script exit."
     else
