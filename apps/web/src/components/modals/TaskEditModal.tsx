@@ -1,7 +1,8 @@
 import { useState } from "react";
+import { apiFetch } from "../../api/client";
 import { useAppContext } from "../../context/AppContext";
 import { HHMM_PATTERN } from "../../constants";
-import type { TaskPriority } from "../../types";
+import type { Task, TaskPriority } from "../../types";
 import {
   taskTypeLabel,
   normalizeTaskTypeValue,
@@ -75,9 +76,72 @@ export function TaskEditModal() {
     resetTaskEditModalBackdropPointerState,
     partners,
     openPartnerModal,
+    // v2.5.1: needed for the inline manual-confirm POST against
+    // /tasks/{id}/customer-confirmation/manual. apiFetch + token live
+    // on context already; setError/setNotice surface the result.
+    token,
+    setError,
+    setNotice,
   } = useAppContext();
 
   const [partnerQuery, setPartnerQuery] = useState("");
+  // v2.5.1: notes + in-flight flag for the manual-confirm path. Local
+  // state because they only matter while the modal is open — no need
+  // to persist across reopens (the saved notes appear in the status
+  // panel afterwards via taskEditForm.customer_confirmation_notes).
+  const [manualConfirmNotes, setManualConfirmNotes] = useState("");
+  const [manualConfirmSubmitting, setManualConfirmSubmitting] = useState(false);
+
+  async function submitManualConfirmation(action: "confirm" | "decline") {
+    if (manualConfirmSubmitting) return;
+    if (taskEditForm.id == null) return;
+    setManualConfirmSubmitting(true);
+    try {
+      const updated = await apiFetch<Task>(
+        `/tasks/${taskEditForm.id}/customer-confirmation/manual`,
+        token,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            action,
+            method: "phone",
+            notes: manualConfirmNotes.trim() || null,
+          }),
+        },
+      );
+      // Mirror the new state back into the form so the status panel
+      // shows the recorded confirmation without closing the modal.
+      // The eventual save-button click still works because all the
+      // other form fields are untouched.
+      setTaskEditForm((current) => ({
+        ...current,
+        customer_confirmation_status: updated.customer_confirmation_status ?? null,
+        customer_confirmation_at: updated.customer_confirmation_at ?? null,
+        customer_confirmation_method: updated.customer_confirmation_method ?? null,
+        customer_confirmation_by_display_name:
+          updated.customer_confirmation_by_display_name ?? null,
+        customer_confirmation_notes: updated.customer_confirmation_notes ?? null,
+        customer_confirmation_email_sent_at:
+          updated.customer_confirmation_email_sent_at ?? null,
+        customer_confirmation_token_expired:
+          updated.customer_confirmation_token_expired ?? false,
+      }));
+      setManualConfirmNotes("");
+      setNotice(
+        language === "de"
+          ? action === "confirm"
+            ? "Manuell als bestätigt markiert"
+            : "Manuell als abgelehnt markiert"
+          : action === "confirm"
+            ? "Manually marked as confirmed"
+            : "Manually marked as declined",
+      );
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setManualConfirmSubmitting(false);
+    }
+  }
 
   if (!taskEditModalOpen) return null;
 
@@ -670,6 +734,93 @@ export function TaskEditModal() {
                     ? "Beim Speichern wird der Status auf 'wartet' gesetzt und (falls eine Kunden-E-Mail vorliegt) automatisch eine Bestätigungs-E-Mail verschickt."
                     : "On save: status flips to pending and a confirmation email is auto-sent if a customer address is on file."}
                 </small>
+              )}
+            {/*
+              v2.5.1: manual confirm / decline controls. Only shown when
+              the task is in a non-terminal confirmation state (pending
+              or just-saved with the checkbox on) AND the row already
+              exists (taskEditForm.id != null — manual confirm needs a
+              persisted task). The operator types optional notes
+              ("called Mr. Schmidt at 14:32 — agreed") and clicks one
+              of two buttons; the api endpoint records timestamp +
+              method=phone + by_user_id and burns the email token so a
+              stale link can't undo the manual entry.
+            */}
+            {taskEditForm.id != null &&
+              taskEditForm.request_customer_confirmation &&
+              taskEditForm.customer_confirmation_status !== "confirmed" &&
+              taskEditForm.customer_confirmation_status !== "declined" && (
+                <div style={{ marginTop: 12 }}>
+                  <label
+                    style={{
+                      display: "block",
+                      fontSize: 12,
+                      color: "#475569",
+                      marginBottom: 4,
+                    }}
+                  >
+                    {de
+                      ? "Notiz zur manuellen Bestätigung (optional)"
+                      : "Note for manual confirmation (optional)"}
+                  </label>
+                  <input
+                    type="text"
+                    value={manualConfirmNotes}
+                    onChange={(event) => setManualConfirmNotes(event.target.value)}
+                    placeholder={
+                      de
+                        ? "z.B. Telefonat um 14:32, Herr Schmidt bestätigt"
+                        : "e.g. Phone call at 14:32, Mr. Schmidt confirmed"
+                    }
+                    disabled={manualConfirmSubmitting}
+                    style={{
+                      width: "100%",
+                      padding: "6px 8px",
+                      fontSize: 13,
+                      border: "1px solid #cbd5e1",
+                      borderRadius: 4,
+                    }}
+                  />
+                  <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                    <button
+                      type="button"
+                      disabled={manualConfirmSubmitting}
+                      onClick={() => void submitManualConfirmation("confirm")}
+                      style={{
+                        flex: "1 1 auto",
+                        padding: "8px 14px",
+                        fontSize: 14,
+                        fontWeight: 600,
+                        color: "#fff",
+                        background: "#16a34a",
+                        border: "none",
+                        borderRadius: 6,
+                        cursor: manualConfirmSubmitting ? "wait" : "pointer",
+                      }}
+                    >
+                      {manualConfirmSubmitting
+                        ? de ? "Speichere…" : "Saving…"
+                        : de ? "Manuell bestätigen" : "Manually confirm"}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={manualConfirmSubmitting}
+                      onClick={() => void submitManualConfirmation("decline")}
+                      style={{
+                        flex: "0 0 auto",
+                        padding: "8px 14px",
+                        fontSize: 14,
+                        color: "#991b1b",
+                        background: "#fff",
+                        border: "1px solid #fca5a5",
+                        borderRadius: 6,
+                        cursor: manualConfirmSubmitting ? "wait" : "pointer",
+                      }}
+                    >
+                      {de ? "Manuell ablehnen" : "Manually decline"}
+                    </button>
+                  </div>
+                </div>
               )}
           </section>
 
