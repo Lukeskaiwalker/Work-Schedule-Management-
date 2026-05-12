@@ -1,5 +1,6 @@
 from __future__ import annotations
 from datetime import date, datetime, time
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -30,6 +31,11 @@ class TaskCreate(BaseModel):
     partner_ids: list[int] = Field(default_factory=list)
     week_start: date | None = None
     confirm_overlap: bool = False
+    # v2.5.0: when true, the task starts with confirmation_status="pending"
+    # and (if customer email is available) an email goes out at create
+    # time. The FE auto-checks this for task_type="construction" tasks
+    # but lets the operator opt out.
+    request_customer_confirmation: bool = False
 
     @model_validator(mode="after")
     def _require_anchor(self) -> "TaskCreate":
@@ -76,6 +82,10 @@ class TaskUpdate(BaseModel):
     partner_ids: list[int] | None = None
     week_start: date | None = None
     confirm_overlap: bool = False
+    # v2.5.0: toggle confirmation-required on/off. True flips
+    # status to "pending" + auto-sends email (if customer email
+    # available); False clears status to null (no indicator shown).
+    request_customer_confirmation: bool | None = None
 
     @field_validator("estimated_hours")
     @classmethod
@@ -116,9 +126,76 @@ class TaskOut(BaseModel):
     partner_ids: list[int] = Field(default_factory=list)
     partners: list[PartnerOut] = Field(default_factory=list)
     week_start: date | None = None
+    # v2.5.0 customer-confirmation. status is the at-a-glance signal that
+    # drives the colored dot on every task surface (null = no dot,
+    # pending = amber, confirmed = green, declined = red). The other
+    # fields populate the detailed status panel inside the task modal.
+    customer_confirmation_status: str | None = None
+    customer_confirmation_at: datetime | None = None
+    customer_confirmation_method: str | None = None
+    customer_confirmation_by_user_id: int | None = None
+    customer_confirmation_by_display_name: str | None = None
+    customer_confirmation_notes: str | None = None
+    customer_confirmation_email_sent_at: datetime | None = None
+    # Whether the task is past the email-link expiry window (today >=
+    # due_date). Surfaced as a boolean so the FE can render a different
+    # tooltip without re-implementing the date check.
+    customer_confirmation_token_expired: bool = False
     updated_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# ── v2.5.0 customer confirmation API shapes ──────────────────────────────
+
+
+class CustomerConfirmationManualRequest(BaseModel):
+    """Operator-driven manual confirmation (phone call, in-person nod, etc.).
+
+    ``action`` is required so the same endpoint handles both confirm and
+    decline. ``notes`` is optional context the operator wants to record
+    alongside the timestamp (e.g. "Sprach mit Hr. Schmidt, kommt um 8")."""
+
+    action: Literal["confirm", "decline"]
+    method: Literal["phone", "manual"] = "phone"
+    notes: str | None = None
+
+
+class CustomerConfirmationEmailResult(BaseModel):
+    """Response for the send-email / resend-email endpoint."""
+
+    sent: bool
+    sent_at: datetime | None = None
+    error_detail: str | None = None
+
+
+class PublicCustomerConfirmationOut(BaseModel):
+    """Snapshot of a task surfaced on the unauthenticated /confirm/:token
+    page. Only contains data the customer needs to make their decision;
+    no internal IDs, no other-tasks-on-the-same-project leakage."""
+
+    customer_name: str | None = None
+    task_title: str
+    task_description: str | None = None
+    due_date: date | None = None
+    start_time: time | None = None
+    estimated_hours: float | None = None
+    worker_display_names: list[str] = Field(default_factory=list)
+    language: Literal["de", "en"] = "de"
+    # Current state so the page can show "already confirmed" instead of
+    # offering the buttons again on a second visit.
+    confirmation_status: str | None = None
+    confirmation_at: datetime | None = None
+    # True when the link has expired (due_date passed). The FE shows
+    # "Bitte rufen Sie uns an" instead of action buttons.
+    expired: bool = False
+
+
+class PublicCustomerConfirmationRequest(BaseModel):
+    """Body for the unauthenticated POST. The endpoint validates the
+    token from the path; this body only carries the action."""
+
+    action: Literal["confirm", "decline"]
 
 
 class PlanningAbsenceOut(BaseModel):

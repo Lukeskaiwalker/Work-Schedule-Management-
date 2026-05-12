@@ -559,6 +559,120 @@ export function TaskEditModal() {
             />
           </section>
 
+          {/* v2.5.0 customer-confirmation section. Bound to a single
+              checkbox that controls "is confirmation status non-null?".
+              When checked + saved, the backend flips status to "pending"
+              and (if customer email exists) auto-sends the email. When
+              unchecked + saved, the backend clears the whole flow.
+              The status panel renders read-only from the snapshot
+              embedded in the form state. */}
+          <section className="task-modal-section task-modal-section--stack">
+            <div className="task-modal-section-head">
+              <span className="task-modal-section-label">
+                {de ? "KUNDENBESTÄTIGUNG" : "CUSTOMER CONFIRMATION"}
+              </span>
+              <span className="task-modal-section-hint">
+                {de ? "Optional" : "Optional"}
+              </span>
+            </div>
+            <label
+              style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}
+            >
+              <input
+                type="checkbox"
+                checked={taskEditForm.request_customer_confirmation}
+                onChange={(event) =>
+                  updateTaskEditField(
+                    "request_customer_confirmation",
+                    event.target.checked,
+                  )
+                }
+              />
+              <span>
+                {de
+                  ? "Kundenbestätigung anfordern"
+                  : "Request customer confirmation"}
+              </span>
+            </label>
+            {taskEditForm.customer_confirmation_status && (
+              <div
+                style={{
+                  marginTop: 8,
+                  padding: 10,
+                  background: "#f8fafc",
+                  border: "1px solid #e2e8f0",
+                  borderRadius: 6,
+                  fontSize: 13,
+                  lineHeight: 1.5,
+                }}
+              >
+                <div>
+                  <b>{de ? "Status: " : "Status: "}</b>
+                  {taskEditForm.customer_confirmation_status === "confirmed"
+                    ? de ? "Bestätigt ✓" : "Confirmed ✓"
+                    : taskEditForm.customer_confirmation_status === "declined"
+                      ? de ? "Abgelehnt ✕" : "Declined ✕"
+                      : de ? "Wartet auf Bestätigung…" : "Awaiting confirmation…"}
+                </div>
+                {taskEditForm.customer_confirmation_at && (
+                  <div>
+                    <b>{de ? "Erfasst am: " : "Recorded at: "}</b>
+                    {formatServerDateTime(
+                      taskEditForm.customer_confirmation_at,
+                      de ? "de" : "en",
+                    )}
+                  </div>
+                )}
+                {taskEditForm.customer_confirmation_method && (
+                  <div>
+                    <b>{de ? "Methode: " : "Method: "}</b>
+                    {taskEditForm.customer_confirmation_method === "email"
+                      ? de ? "E-Mail-Link" : "email link"
+                      : taskEditForm.customer_confirmation_method === "phone"
+                        ? de ? "Telefon" : "phone"
+                        : de ? "Manuell" : "manual"}
+                  </div>
+                )}
+                {taskEditForm.customer_confirmation_by_display_name && (
+                  <div>
+                    <b>{de ? "Durch: " : "By: "}</b>
+                    {taskEditForm.customer_confirmation_by_display_name}
+                  </div>
+                )}
+                {taskEditForm.customer_confirmation_notes && (
+                  <div style={{ marginTop: 4, fontStyle: "italic" }}>
+                    "{taskEditForm.customer_confirmation_notes}"
+                  </div>
+                )}
+                {taskEditForm.customer_confirmation_email_sent_at && (
+                  <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+                    {de ? "E-Mail zuletzt gesendet: " : "Email last sent: "}
+                    {formatServerDateTime(
+                      taskEditForm.customer_confirmation_email_sent_at,
+                      de ? "de" : "en",
+                    )}
+                  </div>
+                )}
+                {taskEditForm.customer_confirmation_token_expired &&
+                  taskEditForm.customer_confirmation_status === "pending" && (
+                    <div style={{ color: "#a16207", marginTop: 6, fontSize: 12 }}>
+                      {de
+                        ? "Link abgelaufen — bitte den Kunden anrufen oder die Aufgabe verschieben."
+                        : "Link expired — please call the customer or move the task."}
+                    </div>
+                  )}
+              </div>
+            )}
+            {taskEditForm.request_customer_confirmation &&
+              !taskEditForm.customer_confirmation_status && (
+                <small className="muted" style={{ display: "block", marginTop: 4 }}>
+                  {de
+                    ? "Beim Speichern wird der Status auf 'wartet' gesetzt und (falls eine Kunden-E-Mail vorliegt) automatisch eine Bestätigungs-E-Mail verschickt."
+                    : "On save: status flips to pending and a confirmation email is auto-sent if a customer address is on file."}
+                </small>
+              )}
+          </section>
+
           {taskEditOverlapWarning && (
             <section className="task-modal-section task-modal-overlap-warning">
               <b>

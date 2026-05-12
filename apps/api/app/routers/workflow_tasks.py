@@ -159,6 +159,9 @@ def create_task(
             "class_template_id",
             "subtasks",
             "confirm_overlap",
+            # v2.5.0: handled separately below since it triggers an
+            # email send rather than populating a Task column directly.
+            "request_customer_confirmation",
         }
     )
     task = Task(**task_data)
@@ -174,6 +177,15 @@ def create_task(
     _sync_task_assignments(db, task, assignee_ids)
     _sync_task_partners(db, task, partner_ids)
     _create_assignment_notifications(db, task, assignee_ids, current_user)
+    # v2.5.0: customer confirmation. When the operator ticks the
+    # "Kundenbestätigung anfordern" checkbox we set status=pending and
+    # auto-send the email if a customer address is available. When no
+    # email is on record, status still flips to pending so the operator
+    # can manually confirm later (phone path).
+    if payload.request_customer_confirmation:
+        dispatch_customer_confirmation_email(
+            db, task=task, assignee_ids=assignee_ids, reset_status=True
+        )
     # Project-activity is project-scoped — only record when the task
     # actually has a project anchor. Customer-only tasks live without
     # one (audit trail belongs to the customer record itself).
@@ -219,6 +231,8 @@ def update_task(
     previous_due_date = task.due_date.isoformat() if task.due_date else None
     previous_start_time = task.start_time.isoformat() if task.start_time else None
     previous_estimated_hours = task.estimated_hours
+    previous_due_date_value = task.due_date
+    previous_confirmation_status = task.customer_confirmation_status
     can_manage = has_permission_for_user(current_user.id, current_user.role, "tasks:manage")
     if not can_manage and current_user.id not in existing_assignee_ids:
         raise HTTPException(status_code=403, detail="Task access denied")
@@ -266,6 +280,31 @@ def update_task(
             task.due_date = payload.due_date
         if "start_time" in payload.model_fields_set:
             task.start_time = payload.start_time
+        # v2.5.0: explicit toggle of "request customer confirmation"
+        # via the modal checkbox. True → flip to pending + auto-email.
+        # False → clear status (no indicator shown).
+        if (
+            "request_customer_confirmation" in payload.model_fields_set
+            and payload.request_customer_confirmation is not None
+        ):
+            if payload.request_customer_confirmation:
+                # Pre-emptively reset status so the email helper sees
+                # the right starting state. The helper itself also
+                # resets when reset_status=True.
+                if task.customer_confirmation_status is None:
+                    task.customer_confirmation_status = "pending"
+                dispatch_customer_confirmation_email(
+                    db, task=task, assignee_ids=existing_assignee_ids, reset_status=True
+                )
+            else:
+                # Clear all confirmation columns — operator opted out.
+                task.customer_confirmation_status = None
+                task.customer_confirmation_at = None
+                task.customer_confirmation_method = None
+                task.customer_confirmation_by_user_id = None
+                task.customer_confirmation_notes = None
+                task.customer_confirmation_token = None
+                task.customer_confirmation_email_sent_at = None
         if "estimated_hours" in payload.model_fields_set:
             task.estimated_hours = payload.estimated_hours
         if "week_start" in payload.model_fields_set:
@@ -316,6 +355,27 @@ def update_task(
             )
 
     db.add(task)
+    # v2.5.0: auto-resend confirmation email when due_date changed AND
+    # the task was already in a confirmation flow (pending or confirmed)
+    # AND the user didn't already explicitly toggle the request flag in
+    # this same PATCH (which would have handled the email itself).
+    due_date_changed = (
+        can_manage
+        and "due_date" in payload.model_fields_set
+        and payload.due_date != previous_due_date_value
+    )
+    already_handled_via_toggle = (
+        "request_customer_confirmation" in payload.model_fields_set
+        and payload.request_customer_confirmation is not None
+    )
+    if (
+        due_date_changed
+        and not already_handled_via_toggle
+        and previous_confirmation_status in {"pending", "confirmed"}
+    ):
+        dispatch_customer_confirmation_email(
+            db, task=task, assignee_ids=existing_assignee_ids, reset_status=True
+        )
     if task.status != previous_status or (task.due_date.isoformat() if task.due_date else None) != previous_due_date or (
         task.start_time.isoformat() if task.start_time else None
     ) != previous_start_time or task.estimated_hours != previous_estimated_hours:
@@ -427,6 +487,10 @@ def planning_assign_week(
                 "class_template_id",
                 "subtasks",
                 "confirm_overlap",
+                # v2.5.0: confirmation toggle is request-time-only; the
+                # weekly-planning bulk-create path doesn't surface it
+                # in the UI today, so we just drop the kwarg.
+                "request_customer_confirmation",
             }
         )
         task = Task(
@@ -498,3 +562,177 @@ def planning_week_view(
         "week_end": week_end,
         "days": days,
     }
+
+
+# ── v2.5.0 customer confirmation endpoints ───────────────────────────────
+
+
+@router.post(
+    "/tasks/{task_id}/customer-confirmation/email",
+    response_model=CustomerConfirmationEmailResult,
+)
+def send_task_customer_confirmation_email(
+    task_id: int,
+    current_user: User = Depends(require_permission("tasks:manage")),
+    db: Session = Depends(get_db),
+):
+    """Operator-triggered (re)send of the confirmation email. Generates
+    a fresh token, resets status to ``"pending"``, and dispatches the
+    email. Surfacing the underlying SMTP error_detail to the FE so the
+    operator sees ``"SMTP not configured"`` instead of a silent
+    failure."""
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.project_id is not None:
+        assert_project_access(db, current_user, task.project_id, manage_required=True)
+    sent, error = dispatch_customer_confirmation_email(db, task=task, reset_status=True)
+    db.commit()
+    db.refresh(task)
+    return CustomerConfirmationEmailResult(
+        sent=sent,
+        sent_at=task.customer_confirmation_email_sent_at if sent else None,
+        error_detail=error,
+    )
+
+
+@router.post(
+    "/tasks/{task_id}/customer-confirmation/manual",
+    response_model=TaskOut,
+)
+def record_task_customer_confirmation_manual(
+    task_id: int,
+    payload: CustomerConfirmationManualRequest,
+    current_user: User = Depends(require_permission("tasks:manage")),
+    db: Session = Depends(get_db),
+):
+    """Operator-driven manual confirmation/decline (phone, in person).
+    Stamps the timestamp + method + which operator did it + optional
+    notes. Token-link no longer accepted after this — clears the
+    token so a stale email tab can't undo the manual entry by
+    accident."""
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.project_id is not None:
+        assert_project_access(db, current_user, task.project_id, manage_required=True)
+    task.customer_confirmation_status = (
+        "confirmed" if payload.action == "confirm" else "declined"
+    )
+    task.customer_confirmation_at = utcnow()
+    task.customer_confirmation_method = payload.method
+    task.customer_confirmation_by_user_id = current_user.id
+    if payload.notes is not None:
+        task.customer_confirmation_notes = (payload.notes or "").strip() or None
+    # Burn the email link so it can't override the manual entry.
+    task.customer_confirmation_token = None
+    db.commit()
+    db.refresh(task)
+    return _tasks_out(db, [task])[0]
+
+
+# ── v2.5.0 public (no-auth) confirmation surface ────────────────────────
+#
+# These two endpoints are reachable WITHOUT a JWT — the customer's
+# browser hits them straight from the email link. Security relies on
+# the 32-hex random token being computationally unguessable, plus an
+# explicit expiry check against the task's due_date so a forwarded
+# email can't be used months later.
+
+
+public_confirmations_router = APIRouter(
+    prefix="/public/customer-confirmations",
+    tags=["public:customer-confirmations"],
+)
+
+
+def _public_task_view(
+    db: Session, task: Task
+) -> PublicCustomerConfirmationOut:
+    customer = _resolve_task_customer_for_email(db, task)
+    customer_name = (customer.name or "").strip() if customer else None
+    raw_language = getattr(customer, "language", None) if customer else None
+    language = "en" if (raw_language or "").strip().lower().startswith("en") else "de"
+    assignee_ids = _task_assignee_map(db, [task]).get(task.id, [])
+    worker_names = _worker_display_names_for_task(db, task, assignee_ids)
+    return PublicCustomerConfirmationOut(
+        customer_name=customer_name,
+        task_title=task.title or "",
+        task_description=task.description,
+        due_date=task.due_date,
+        start_time=task.start_time,
+        estimated_hours=task.estimated_hours,
+        worker_display_names=worker_names,
+        language=language,
+        confirmation_status=task.customer_confirmation_status,
+        confirmation_at=task.customer_confirmation_at,
+        expired=_task_confirmation_expired(task),
+    )
+
+
+@public_confirmations_router.get(
+    "/{token}", response_model=PublicCustomerConfirmationOut
+)
+def get_public_customer_confirmation(
+    token: str,
+    db: Session = Depends(get_db),
+):
+    """Customer-facing GET: returns just the data the confirmation page
+    needs to display (task summary). Validation here is light — even
+    expired tokens get a response so the page can render a friendly
+    "this link has expired, please call us" message instead of a bare
+    404. Only completely unknown tokens 404."""
+    if not (token or "").strip():
+        raise HTTPException(status_code=404, detail="Confirmation not found")
+    task = db.scalars(
+        select(Task).where(Task.customer_confirmation_token == token.strip())
+    ).first()
+    if task is None:
+        raise HTTPException(status_code=404, detail="Confirmation not found")
+    return _public_task_view(db, task)
+
+
+@public_confirmations_router.post(
+    "/{token}", response_model=PublicCustomerConfirmationOut
+)
+def submit_public_customer_confirmation(
+    token: str,
+    payload: PublicCustomerConfirmationRequest,
+    db: Session = Depends(get_db),
+):
+    """Customer-facing POST: record confirm/decline via the email link.
+
+    Once accepted, the token is cleared so a second click (or a
+    forwarded link from a different device) lands on the "already
+    confirmed" steady state instead of toggling the action. Expired
+    links return 410 Gone so the FE can show the right message
+    without re-fetching the GET endpoint."""
+    if not (token or "").strip():
+        raise HTTPException(status_code=404, detail="Confirmation not found")
+    task = db.scalars(
+        select(Task).where(Task.customer_confirmation_token == token.strip())
+    ).first()
+    if task is None:
+        raise HTTPException(status_code=404, detail="Confirmation not found")
+    if _task_confirmation_expired(task):
+        raise HTTPException(
+            status_code=410,
+            detail="This confirmation link has expired. Please contact us by phone.",
+        )
+    if task.customer_confirmation_status in {"confirmed", "declined"}:
+        # Idempotent: a second click on an already-acted-on link returns
+        # the current state without flipping it. The customer's page
+        # will show "already confirmed" — exactly the right UX for the
+        # common "I clicked it twice" case.
+        return _public_task_view(db, task)
+    task.customer_confirmation_status = (
+        "confirmed" if payload.action == "confirm" else "declined"
+    )
+    task.customer_confirmation_at = utcnow()
+    task.customer_confirmation_method = "email"
+    task.customer_confirmation_by_user_id = None  # customer self-served
+    # Burn the token so the link can only be used once.
+    task.customer_confirmation_token = None
+    db.commit()
+    db.refresh(task)
+    return _public_task_view(db, task)

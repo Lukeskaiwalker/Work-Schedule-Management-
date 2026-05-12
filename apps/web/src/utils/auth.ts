@@ -34,6 +34,10 @@ export function detectPublicAuthMode() {
   const normalizedPath = window.location.pathname.replace(/\/+$/, "");
   if (normalizedPath === "/invite") return "invite" as const;
   if (normalizedPath === "/reset-password") return "reset" as const;
+  // v2.5.0: customer-confirmation public page. URL shape is
+  // /confirm/<token> (path param to match the email links the api
+  // generates in customer_confirmation_email.py).
+  if (normalizedPath.startsWith("/confirm/")) return "customer_confirmation" as const;
   return null;
 }
 
@@ -44,4 +48,15 @@ export function readPublicTokenParam() {
   } catch {
     return "";
   }
+}
+
+/** v2.5.0: extract the customer-confirmation token from the path
+ *  /confirm/<token>. Returns "" if the path doesn't match or the
+ *  token segment is missing/empty. Used by the public confirmation
+ *  page to look up its task. */
+export function readCustomerConfirmationToken(): string {
+  const normalizedPath = window.location.pathname.replace(/\/+$/, "");
+  if (!normalizedPath.startsWith("/confirm/")) return "";
+  const token = normalizedPath.slice("/confirm/".length);
+  return token.trim();
 }

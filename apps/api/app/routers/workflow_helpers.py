@@ -91,6 +91,10 @@ from app.schemas.api import (
     ProjectUpdate,
     SiteCreate,
     SiteOut,
+    CustomerConfirmationEmailResult,
+    CustomerConfirmationManualRequest,
+    PublicCustomerConfirmationOut,
+    PublicCustomerConfirmationRequest,
     TaskCreate,
     TaskOut,
     TaskUpdate,
@@ -2597,6 +2601,7 @@ def _task_out(
     assignee_ids: list[int],
     partner_ids: list[int] | None = None,
     partners: list[Partner] | None = None,
+    confirmation_by_display_name: str | None = None,
 ) -> TaskOut:
     partner_ids = partner_ids or []
     partner_rows = partners or []
@@ -2624,8 +2629,153 @@ def _task_out(
         partner_ids=partner_ids,
         partners=[PartnerOut.model_validate(p) for p in partner_rows],
         week_start=task.week_start,
+        customer_confirmation_status=task.customer_confirmation_status,
+        customer_confirmation_at=task.customer_confirmation_at,
+        customer_confirmation_method=task.customer_confirmation_method,
+        customer_confirmation_by_user_id=task.customer_confirmation_by_user_id,
+        customer_confirmation_by_display_name=confirmation_by_display_name,
+        customer_confirmation_notes=task.customer_confirmation_notes,
+        customer_confirmation_email_sent_at=task.customer_confirmation_email_sent_at,
+        customer_confirmation_token_expired=_task_confirmation_expired(task),
         updated_at=task.updated_at,
     )
+
+
+def _task_confirmation_expired(task: Task) -> bool:
+    """Computed token-expiry check. The email link is valid until the
+    DAY of the task's due_date — once today catches up, the customer
+    can no longer confirm via the link and must call. Tasks without a
+    due_date have no expiry (the token stays valid until a date is
+    actually set)."""
+    if task.due_date is None:
+        return False
+    from app.core.time import utcnow
+
+    today = utcnow().date()
+    return today >= task.due_date
+
+
+def generate_customer_confirmation_token() -> str:
+    """Mint a fresh 32-hex random token for an email link. Stored on
+    the task; the matching public endpoint resolves token → task via a
+    unique-indexed lookup. ``secrets.token_hex`` is cryptographically
+    random so guessing one valid token requires 2^128 attempts on
+    average — well past any practical attack budget."""
+    import secrets
+
+    return secrets.token_hex(16)
+
+
+def _resolve_task_customer_for_email(db: Session, task: Task) -> Customer | None:
+    """Find the customer record to email about a task. Prefers
+    ``task.customer_id`` (the v2.4.5 direct anchor), falls back to the
+    project's linked customer when the task is project-scoped without
+    a customer_id of its own. Returns None when neither resolves —
+    callers should branch to "manual-only" behaviour."""
+    if task.customer_id is not None:
+        customer = db.get(Customer, task.customer_id)
+        if customer is not None:
+            return customer
+    if task.project_id is not None:
+        project = db.get(Project, task.project_id)
+        if project is not None and project.customer_id is not None:
+            return db.get(Customer, project.customer_id)
+    return None
+
+
+def _worker_display_names_for_task(db: Session, task: Task, assignee_ids: list[int]) -> list[str]:
+    """Resolve display names for a task's assignees (for inclusion in
+    the confirmation email body). Falls back to email when display_name
+    is missing so the customer always sees *something* in the workers
+    field, never an empty list."""
+    if not assignee_ids:
+        return []
+    rows = db.scalars(select(User).where(User.id.in_(assignee_ids))).all()
+    by_id = {row.id: row for row in rows}
+    out: list[str] = []
+    for assignee_id in assignee_ids:
+        user = by_id.get(assignee_id)
+        if user is None:
+            continue
+        out.append((user.display_name or user.email or "").strip())
+    return [name for name in out if name]
+
+
+def dispatch_customer_confirmation_email(
+    db: Session,
+    *,
+    task: Task,
+    assignee_ids: list[int] | None = None,
+    reset_status: bool = True,
+) -> tuple[bool, str | None]:
+    """Generate a fresh token + send the confirmation email for a task.
+
+    Returns ``(sent, error_detail)`` so callers can surface the actual
+    SMTP/SMTP-config issue to the operator instead of a blanket failure.
+
+    When ``reset_status=True`` (default), the status is set to
+    ``"pending"`` and all prior confirmation timestamps are cleared —
+    appropriate when the task's due_date changed or this is the first
+    email round. Pass ``False`` from the "resend without resetting"
+    button (operator wants to nudge the customer with the same token).
+
+    Pre-conditions checked here:
+      - the task has a resolvable customer with a non-empty email
+      - if either is missing, returns ``(False, "no customer email")``
+        and the caller leaves status as "pending" but no email goes out.
+    """
+    from app.services.customer_confirmation_email import send_customer_confirmation_email
+    from app.services.runtime_settings import get_company_settings
+
+    customer = _resolve_task_customer_for_email(db, task)
+    customer_email = (customer.email or "").strip() if customer else ""
+
+    if assignee_ids is None:
+        assignee_ids = _task_assignee_map(db, [task]).get(task.id, [])
+    worker_names = _worker_display_names_for_task(db, task, assignee_ids)
+
+    if reset_status:
+        # Generate fresh token + clear all confirmation-related fields
+        # except notes (operator's free-text context is independent of
+        # whether the customer has clicked the link yet).
+        task.customer_confirmation_token = generate_customer_confirmation_token()
+        task.customer_confirmation_status = "pending"
+        task.customer_confirmation_at = None
+        task.customer_confirmation_method = None
+        task.customer_confirmation_by_user_id = None
+    elif not task.customer_confirmation_token:
+        # First-time send for a task that already has status set but no
+        # token (shouldn't normally happen; defensive).
+        task.customer_confirmation_token = generate_customer_confirmation_token()
+        if task.customer_confirmation_status is None:
+            task.customer_confirmation_status = "pending"
+
+    if not customer_email:
+        # Status stays "pending" but no email goes out — operator path only.
+        return False, "no customer email on record"
+
+    company = get_company_settings(db)
+    company_name = str(company.get("company_name") or "SMPL")
+    # company_address isn't quite "phone" — leave phone empty for now;
+    # operators can add it via a future settings field if needed.
+    result = send_customer_confirmation_email(
+        db=db,
+        to_email=customer_email,
+        customer_language=getattr(customer, "language", None) if customer else None,
+        customer_name=(customer.name or "").strip() if customer else None,
+        task_title=task.title or "",
+        task_description=task.description,
+        due_date=task.due_date,
+        start_time=task.start_time,
+        estimated_hours=task.estimated_hours,
+        worker_display_names=worker_names,
+        confirmation_token=task.customer_confirmation_token,
+        company_name=company_name,
+    )
+    if result.ok:
+        task.customer_confirmation_email_sent_at = utcnow()
+        return True, None
+    return False, result.error_detail or result.error_type or "send failed"
 
 
 def _tasks_out(db: Session, tasks: list[Task]) -> list[TaskOut]:
@@ -2633,6 +2783,18 @@ def _tasks_out(db: Session, tasks: list[Task]) -> list[TaskOut]:
     partners_by_task = _task_partner_map(db, tasks)
     all_partner_ids = {pid for ids in partners_by_task.values() for pid in ids}
     partner_rows = _load_partners_by_id(db, list(all_partner_ids))
+    # v2.5.0: batch-resolve confirmation-by user display names so the
+    # task list doesn't fire N round-trips when several confirmed tasks
+    # share the same operator.
+    confirmation_user_ids = {
+        task.customer_confirmation_by_user_id
+        for task in tasks
+        if task.customer_confirmation_by_user_id is not None
+    }
+    confirmation_names: dict[int, str] = {}
+    if confirmation_user_ids:
+        rows = db.scalars(select(User).where(User.id.in_(confirmation_user_ids))).all()
+        confirmation_names = {row.id: (row.display_name or row.email or "") for row in rows}
     return [
         _task_out(
             task,
@@ -2643,6 +2805,11 @@ def _tasks_out(db: Session, tasks: list[Task]) -> list[TaskOut]:
                 for pid in partners_by_task.get(task.id, [])
                 if pid in partner_rows
             ],
+            confirmation_by_display_name=confirmation_names.get(
+                task.customer_confirmation_by_user_id
+            )
+            if task.customer_confirmation_by_user_id is not None
+            else None,
         )
         for task in tasks
     ]

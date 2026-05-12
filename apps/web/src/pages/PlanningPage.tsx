@@ -3,6 +3,7 @@ import { useAppContext } from "../context/AppContext";
 import { addDaysISO, normalizeWeekStartISO, formatDayLabel, isoWeekdayMondayFirst } from "../utils/dates";
 import { sortTasksByDueTime, formatTaskTimeRange, taskEndTimeMinutes, taskStartTimeMinutes } from "../utils/tasks";
 import { PenIcon } from "../components/icons";
+import { CustomerConfirmationDot } from "../components/tasks/CustomerConfirmationDot";
 import type { Language, Task } from "../types";
 
 const EN_DAY_COLS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
@@ -539,7 +540,10 @@ export function PlanningPage() {
                             role={isClickable ? "button" : undefined}
                             tabIndex={isClickable ? 0 : undefined}
                           >
-                            <b>{task.title}</b>
+                            <b>
+                              {task.title}
+                              <CustomerConfirmationDot task={task} language={language} />
+                            </b>
                             <small>
                               <button
                                 type="button"

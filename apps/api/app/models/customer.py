@@ -42,6 +42,11 @@ class Customer(Base):
     # Format example: "SEE901234567890" — registry IDs run up to ~15 chars
     # but the column is wider for safety against future format changes.
     marktakteur_nummer: Mapped[str | None] = mapped_column(String(64))
+    # Preferred email language (v2.5.0+). Two-letter ISO code, currently
+    # "de" or "en". Null defaults to "de" — the business is German and
+    # customer-facing communications go out in German unless explicitly
+    # marked otherwise (driven by the customer-confirmation email flow).
+    language: Mapped[str | None] = mapped_column(String(8))
     archived_at: Mapped[datetime | None] = mapped_column(DateTime)
     created_by: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL")

@@ -235,6 +235,11 @@ const AdminPage = lazy(() => import("./pages/AdminPage").then((m) => ({ default:
 const CalendarPage = lazy(() => import("./pages/CalendarPage").then((m) => ({ default: m.CalendarPage })));
 const ConstructionPage = lazy(() => import("./pages/ConstructionPage").then((m) => ({ default: m.ConstructionPage })));
 const LoginPage = lazy(() => import("./pages/LoginPage").then((m) => ({ default: m.LoginPage })));
+const PublicCustomerConfirmationPage = lazy(() =>
+  import("./pages/PublicCustomerConfirmationPage").then((m) => ({
+    default: m.PublicCustomerConfirmationPage,
+  })),
+);
 const MaterialsPage = lazy(() => import("./pages/MaterialsPage").then((m) => ({ default: m.MaterialsPage })));
 const MessagesPage = lazy(() => import("./pages/MessagesPage").then((m) => ({ default: m.MessagesPage })));
 const MyTasksPage = lazy(() => import("./pages/MyTasksPage").then((m) => ({ default: m.MyTasksPage })));
@@ -290,7 +295,9 @@ export function App() {
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [publicAuthMode, setPublicAuthMode] = useState<"invite" | "reset" | null>(() => detectPublicAuthMode());
+  const [publicAuthMode, setPublicAuthMode] = useState<
+    "invite" | "reset" | "customer_confirmation" | null
+  >(() => detectPublicAuthMode());
   const [publicToken, setPublicToken] = useState(() => readPublicTokenParam());
   const [publicFullName, setPublicFullName] = useState("");
   const [publicEmail, setPublicEmail] = useState("");
@@ -5389,6 +5396,9 @@ export function App() {
           estimated_hours: estimatedHours,
           assignee_ids: projectTaskForm.assignee_ids,
           week_start: dueDate ? normalizeWeekStartISO(dueDate) : null,
+          // v2.5.0: send the confirmation-toggle state. Backend uses
+          // this to set status=pending + auto-email the customer.
+          request_customer_confirmation: projectTaskForm.request_customer_confirmation,
         }),
       });
       setProjectTaskForm(buildEmptyProjectTaskFormState());
@@ -9155,7 +9165,15 @@ export function App() {
 
   return (
     <AppContext.Provider value={contextValue}>
-    {!user ? (
+    {publicAuthMode === "customer_confirmation" ? (
+      // v2.5.0: customer hits /confirm/<token> from an email link.
+      // Renders WITHOUT the app shell — no sidebar, no header, no
+      // login. The page handles its own fetch via the unauthenticated
+      // public api endpoint.
+      <Suspense fallback={<div className="page-loading-spinner" aria-hidden="true" />}>
+        <PublicCustomerConfirmationPage />
+      </Suspense>
+    ) : !user ? (
       <Suspense fallback={<div className="page-loading-spinner" aria-hidden="true" />}>
         <LoginPage />
       </Suspense>

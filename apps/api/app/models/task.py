@@ -61,6 +61,33 @@ class Task(Base):
     estimated_hours: Mapped[float | None] = mapped_column(Float)
     assignee_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
     week_start: Mapped[date | None] = mapped_column(Date, index=True)
+
+    # ── v2.5.0 customer confirmation ────────────────────────────────────
+    # ``customer_confirmation_status`` is the SINGLE source of truth for
+    # whether confirmation is requested + its current state. Null means
+    # "not requested" (no indicator shown anywhere). Any other value means
+    # confirmation is part of this task's lifecycle:
+    #   "pending"   — requested, awaiting either email reply or manual entry
+    #   "confirmed" — customer or operator confirmed
+    #   "declined"  — customer declined (needs rescheduling)
+    customer_confirmation_status: Mapped[str | None] = mapped_column(String(16))
+    customer_confirmation_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # How the confirmation was recorded: "email" (customer clicked link),
+    # "phone" or "manual" (operator typed it in).
+    customer_confirmation_method: Mapped[str | None] = mapped_column(String(16))
+    # Operator who recorded the confirmation; null when the customer
+    # self-served by clicking the email link.
+    customer_confirmation_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    customer_confirmation_notes: Mapped[str | None] = mapped_column(Text)
+    # Opaque 32-hex random token embedded in the email link. UNIQUE index
+    # at the DB level so the public endpoint resolves a token to a single
+    # task in one row lookup. Null whenever no email has been sent (or
+    # after a due_date change clears it for a fresh round).
+    customer_confirmation_token: Mapped[str | None] = mapped_column(String(64))
+    customer_confirmation_email_sent_at: Mapped[datetime | None] = mapped_column(DateTime)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
 

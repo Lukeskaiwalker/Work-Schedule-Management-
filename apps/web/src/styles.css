@@ -409,6 +409,17 @@ button[type="submit"] {
   }
 }
 
+/* v2.5.0 customer-confirmation dot. The pending variant reuses the
+   sse-pulse keyframe to avoid a second 60fps animation — same visual
+   language as the SSE-reconnecting indicator. */
+.customer-confirmation-dot {
+  cursor: help;
+}
+
+.customer-confirmation-dot--pending {
+  animation: sse-pulse 1.5s ease-in-out infinite;
+}
+
 /* Notification bell — selectors are scoped to .sidebar-footer so they beat
    the .sidebar button rule (specificity 0,1,1) with 0,2,0 specificity. */
 .sidebar-footer .notif-bell-wrap {

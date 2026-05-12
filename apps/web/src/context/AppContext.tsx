@@ -168,8 +168,10 @@ export interface AppContextValue {
   setEmail: (email: string) => void;
   password: string;
   setPassword: (password: string) => void;
-  publicAuthMode: "invite" | "reset" | null;
-  setPublicAuthMode: (mode: "invite" | "reset" | null) => void;
+  publicAuthMode: "invite" | "reset" | "customer_confirmation" | null;
+  setPublicAuthMode: (
+    mode: "invite" | "reset" | "customer_confirmation" | null,
+  ) => void;
   publicToken: string;
   setPublicToken: (token: string) => void;
   publicFullName: string;

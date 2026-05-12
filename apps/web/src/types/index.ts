@@ -342,6 +342,19 @@ export type Task = {
    *  alongside `partner_ids`. */
   partners?: Partner[];
   week_start?: string | null;
+  // ── v2.5.0 customer-confirmation (drives the colored dot indicator) ──
+  /** Null = confirmation not requested (no dot). Otherwise one of
+   *  "pending" (amber, blinking), "confirmed" (green), or "declined" (red). */
+  customer_confirmation_status?: string | null;
+  customer_confirmation_at?: string | null;
+  customer_confirmation_method?: string | null;
+  customer_confirmation_by_user_id?: number | null;
+  customer_confirmation_by_display_name?: string | null;
+  customer_confirmation_notes?: string | null;
+  customer_confirmation_email_sent_at?: string | null;
+  /** True when ``today >= due_date`` — the email link can no longer be
+   *  used. UI hides the resend button + shows a "must call us" hint. */
+  customer_confirmation_token_expired?: boolean;
   updated_at?: string | null;
 };
 
@@ -915,6 +928,11 @@ export type ProjectTaskFormState = {
   estimated_hours: string;
   assignee_query: string;
   assignee_ids: number[];
+  /** v2.5.0: when true, the task is created with confirmation_status
+   *  ="pending" and the api auto-sends a confirmation email (if a
+   *  customer address is on file). Defaults true for construction
+   *  task_type, false otherwise — see initial state in App.tsx. */
+  request_customer_confirmation: boolean;
 };
 
 export type ProjectFinanceFormState = {
@@ -974,6 +992,22 @@ export type TaskEditFormState = {
   /** IDs of Partner rows (external firms) attached to this task. */
   partner_ids: number[];
   week_start: string;
+  /** v2.5.0: bound to the "Kundenbestätigung anfordern" checkbox. When
+   *  flipped (true → false or vice-versa) and the form is saved, the
+   *  backend either starts the confirmation flow or clears it. The
+   *  read-only confirmation status itself is read from the original
+   *  Task row (passed in alongside the form) so the operator can see
+   *  the current state without dirtying the form. */
+  request_customer_confirmation: boolean;
+  /** Snapshot of the original task's confirmation status, surfaced to
+   *  the modal so the status panel renders without a second fetch. */
+  customer_confirmation_status?: string | null;
+  customer_confirmation_at?: string | null;
+  customer_confirmation_method?: string | null;
+  customer_confirmation_by_display_name?: string | null;
+  customer_confirmation_notes?: string | null;
+  customer_confirmation_email_sent_at?: string | null;
+  customer_confirmation_token_expired?: boolean;
 };
 
 export type WorkspaceMode = "construction" | "office";

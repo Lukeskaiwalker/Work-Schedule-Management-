@@ -10,7 +10,10 @@ from app.routers.workflow_customers import router as customers_router
 from app.routers.workflow_materials import router as materials_router
 from app.routers.workflow_partners import router as partners_router
 from app.routers.workflow_projects import router as projects_router
-from app.routers.workflow_tasks import router as tasks_router
+from app.routers.workflow_tasks import (
+    router as tasks_router,
+    public_confirmations_router,
+)
 from app.routers.workflow_sites import router as sites_router
 from app.routers.workflow_files import router as files_router
 from app.routers.workflow_webdav import router as webdav_router
@@ -36,6 +39,12 @@ router.include_router(customers_router)
 router.include_router(partners_router)
 router.include_router(projects_router)
 router.include_router(tasks_router)
+# v2.5.0: customer-confirmation public endpoints (no JWT required).
+# Mounted under /api/public/customer-confirmations/<token> — token
+# uniqueness gates access. Lives in workflow_tasks.py because the
+# token resolves to a Task; the file boundary stays clean since the
+# whole feature is task-centric.
+router.include_router(public_confirmations_router)
 router.include_router(sites_router)
 router.include_router(files_router)
 router.include_router(webdav_router)

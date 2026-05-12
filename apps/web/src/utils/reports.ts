@@ -125,6 +125,10 @@ export function buildEmptyProjectTaskFormState(): ProjectTaskFormState {
     estimated_hours: "",
     assignee_query: "",
     assignee_ids: [],
+    // v2.5.0: default true for the initial state because the form
+    // defaults to task_type=construction. The task modal flips this
+    // when the user picks a non-construction task type.
+    request_customer_confirmation: true,
   };
 }
 
@@ -186,6 +190,21 @@ export function buildTaskEditFormState(task?: Task | null): TaskEditFormState {
     assignee_ids: assigneeIds,
     partner_ids: partnerIds,
     week_start: task?.week_start ?? "",
+    // v2.5.0: checkbox state mirrors "is confirmation_status non-null?"
+    // on load. The user toggling flips this; save logic on the App side
+    // sends request_customer_confirmation:true to start (or restart)
+    // the flow, false to clear it.
+    request_customer_confirmation: task?.customer_confirmation_status != null,
+    customer_confirmation_status: task?.customer_confirmation_status ?? null,
+    customer_confirmation_at: task?.customer_confirmation_at ?? null,
+    customer_confirmation_method: task?.customer_confirmation_method ?? null,
+    customer_confirmation_by_display_name:
+      task?.customer_confirmation_by_display_name ?? null,
+    customer_confirmation_notes: task?.customer_confirmation_notes ?? null,
+    customer_confirmation_email_sent_at:
+      task?.customer_confirmation_email_sent_at ?? null,
+    customer_confirmation_token_expired:
+      task?.customer_confirmation_token_expired ?? false,
   };
 }
 
@@ -215,6 +234,11 @@ export function taskEditPayloadFromForm(form: TaskEditFormState, normalizedStart
     assignee_ids: form.assignee_ids,
     partner_ids: form.partner_ids,
     week_start: weekStartValue,
+    // v2.5.0: surface the checkbox state in the PATCH payload only
+    // when it changed from the initial value (driven by the
+    // status-was-non-null heuristic). The caller decides whether to
+    // include it — sending undefined skips the toggle entirely.
+    request_customer_confirmation: form.request_customer_confirmation,
   };
 }
 

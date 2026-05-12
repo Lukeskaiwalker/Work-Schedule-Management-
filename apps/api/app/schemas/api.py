@@ -97,9 +97,13 @@ from app.schemas.settings import (
 )
 from app.schemas.site import JobTicketCreate, JobTicketOut, SiteCreate, SiteOut
 from app.schemas.task import (
+    CustomerConfirmationEmailResult,
+    CustomerConfirmationManualRequest,
     PlanningAbsenceOut,
     PlanningDayOut,
     PlanningWeekOut,
+    PublicCustomerConfirmationOut,
+    PublicCustomerConfirmationRequest,
     TaskCreate,
     TaskOut,
     TaskUpdate,
@@ -192,6 +196,10 @@ __all__ = [
     "TaskCreate",
     "TaskUpdate",
     "TaskOut",
+    "CustomerConfirmationEmailResult",
+    "CustomerConfirmationManualRequest",
+    "PublicCustomerConfirmationOut",
+    "PublicCustomerConfirmationRequest",
     "PlanningAbsenceOut",
     "PlanningDayOut",
     "PlanningWeekOut",
