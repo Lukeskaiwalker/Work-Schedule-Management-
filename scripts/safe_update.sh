@@ -131,7 +131,49 @@ if $PULL_REPO; then
   fi
   echo "Fetching latest code and pulling branch '${BRANCH}'..."
   git fetch --tags --prune origin
-  git pull --ff-only origin "$BRANCH"
+  # v2.5.2: tolerate host-side drift. In-place hotfixes (where the
+  # operator or an SSH session has modified tracked files directly on
+  # the host) used to abort the pull with "Your local changes to the
+  # following files would be overwritten by merge." The next four
+  # releases each hit this exact wall:
+  #   - v2.4.10 ↔ docker-compose.traefik.yml (scoped buffering hotfix)
+  #   - v2.4.11 ↔ apps/api/requirements.txt (openai 1.55.3 hotfix)
+  # In every case the host's working-tree change had already been
+  # mirrored to git as part of the corresponding release commit, so
+  # the safe move is: stash → pull → pop.
+  STASH_LABEL="safe-update-auto-$(date -u +%Y%m%dT%H%M%SZ)"
+  STASH_MADE=false
+  if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
+    echo "Host working tree has uncommitted changes; stashing as '${STASH_LABEL}'..."
+    if git stash push --keep-index --include-untracked=no -u --message "$STASH_LABEL" >/dev/null 2>&1 \
+        || git stash push --message "$STASH_LABEL" -- $(git status --porcelain --untracked-files=no | awk '{print $2}') >/dev/null 2>&1; then
+      STASH_MADE=true
+    else
+      echo "WARNING: stash failed. Continuing — pull may still abort with the original conflict." >&2
+    fi
+  fi
+  if ! git pull --ff-only origin "$BRANCH"; then
+    echo "git pull --ff-only failed." >&2
+    if [[ "$STASH_MADE" == "true" ]]; then
+      echo "Restoring the stashed local changes so the host returns to its pre-pull state..." >&2
+      git stash pop >/dev/null 2>&1 || true
+    fi
+    exit 1
+  fi
+  if [[ "$STASH_MADE" == "true" ]]; then
+    # Attempt to restore the stash. When the upstream version is
+    # IDENTICAL to the local mod (most common — operator hotfixed in
+    # place, then commit landed upstream with the same content), the
+    # pop is a no-op or a trivial conflict we can drop. When upstream
+    # genuinely differs, the pop conflicts — we leave the stash in
+    # place and tell the operator how to handle it.
+    if ! git stash pop >/dev/null 2>&1; then
+      echo "Stashed changes diverged from upstream; the stash is preserved." >&2
+      echo "Inspect it with 'git stash list' / 'git stash show -p ${STASH_LABEL}'." >&2
+      # We do NOT abort here — the host code is at the new upstream
+      # commit, which is what the deploy wants. The stash is informational.
+    fi
+  fi
 fi
 
 echo "Refreshing release metadata..."
