@@ -2701,6 +2701,29 @@ def _worker_display_names_for_task(db: Session, task: Task, assignee_ids: list[i
     return [name for name in out if name]
 
 
+def set_task_confirmation_pending(task: Task, *, reset_status: bool = True) -> None:
+    """v2.5.5: prepare a task for customer confirmation WITHOUT sending
+    an email. Operators trigger emails explicitly via the
+    ``/tasks/{id}/customer-confirmation/email`` endpoint, so the
+    create / patch / due-date-change paths now just set up the state.
+
+    When ``reset_status=True`` the token is regenerated and all
+    confirmation timestamps are cleared (the "fresh round" case —
+    new task, date changed). ``reset_status=False`` is the lazy
+    initialisation case: a token is minted only if one doesn't
+    already exist."""
+    if reset_status:
+        task.customer_confirmation_token = generate_customer_confirmation_token()
+        task.customer_confirmation_status = "pending"
+        task.customer_confirmation_at = None
+        task.customer_confirmation_method = None
+        task.customer_confirmation_by_user_id = None
+    elif not task.customer_confirmation_token:
+        task.customer_confirmation_token = generate_customer_confirmation_token()
+        if task.customer_confirmation_status is None:
+            task.customer_confirmation_status = "pending"
+
+
 def dispatch_customer_confirmation_email(
     db: Session,
     *,
@@ -2708,16 +2731,15 @@ def dispatch_customer_confirmation_email(
     assignee_ids: list[int] | None = None,
     reset_status: bool = True,
 ) -> tuple[bool, str | None]:
-    """Generate a fresh token + send the confirmation email for a task.
+    """Set up confirmation state + send the email. v2.5.5: this combined
+    helper is now called ONLY by the explicit "send email" endpoint
+    (operator click). The create / patch / due-date-change paths use
+    ``set_task_confirmation_pending`` instead so the state machine
+    advances without sending mail until the operator says so.
 
-    Returns ``(sent, error_detail)`` so callers can surface the actual
-    SMTP/SMTP-config issue to the operator instead of a blanket failure.
-
-    When ``reset_status=True`` (default), the status is set to
-    ``"pending"`` and all prior confirmation timestamps are cleared —
-    appropriate when the task's due_date changed or this is the first
-    email round. Pass ``False`` from the "resend without resetting"
-    button (operator wants to nudge the customer with the same token).
+    Returns ``(sent, error_detail)`` so the email endpoint can surface
+    the actual SMTP/SMTP-config issue to the operator instead of a
+    blanket failure.
 
     Pre-conditions checked here:
       - the task has a resolvable customer with a non-empty email
@@ -2734,21 +2756,9 @@ def dispatch_customer_confirmation_email(
         assignee_ids = _task_assignee_map(db, [task]).get(task.id, [])
     worker_names = _worker_display_names_for_task(db, task, assignee_ids)
 
-    if reset_status:
-        # Generate fresh token + clear all confirmation-related fields
-        # except notes (operator's free-text context is independent of
-        # whether the customer has clicked the link yet).
-        task.customer_confirmation_token = generate_customer_confirmation_token()
-        task.customer_confirmation_status = "pending"
-        task.customer_confirmation_at = None
-        task.customer_confirmation_method = None
-        task.customer_confirmation_by_user_id = None
-    elif not task.customer_confirmation_token:
-        # First-time send for a task that already has status set but no
-        # token (shouldn't normally happen; defensive).
-        task.customer_confirmation_token = generate_customer_confirmation_token()
-        if task.customer_confirmation_status is None:
-            task.customer_confirmation_status = "pending"
+    # Defer state setup to the shared helper so the combined path and
+    # the pure-state-prepare path can't drift.
+    set_task_confirmation_pending(task, reset_status=reset_status)
 
     if not customer_email:
         # Status stays "pending" but no email goes out — operator path only.

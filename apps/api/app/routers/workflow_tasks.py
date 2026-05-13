@@ -177,15 +177,12 @@ def create_task(
     _sync_task_assignments(db, task, assignee_ids)
     _sync_task_partners(db, task, partner_ids)
     _create_assignment_notifications(db, task, assignee_ids, current_user)
-    # v2.5.0: customer confirmation. When the operator ticks the
-    # "Kundenbestätigung anfordern" checkbox we set status=pending and
-    # auto-send the email if a customer address is available. When no
-    # email is on record, status still flips to pending so the operator
-    # can manually confirm later (phone path).
+    # v2.5.5: ticking "Kundenbestätigung anfordern" sets status=pending
+    # and mints a confirmation token, but does NOT send the email
+    # automatically. The operator clicks the "E-Mail senden" button
+    # inside the task modal when ready — explicit, never spam-on-save.
     if payload.request_customer_confirmation:
-        dispatch_customer_confirmation_email(
-            db, task=task, assignee_ids=assignee_ids, reset_status=True
-        )
+        set_task_confirmation_pending(task, reset_status=True)
     # Project-activity is project-scoped — only record when the task
     # actually has a project anchor. Customer-only tasks live without
     # one (audit trail belongs to the customer record itself).
@@ -288,14 +285,10 @@ def update_task(
             and payload.request_customer_confirmation is not None
         ):
             if payload.request_customer_confirmation:
-                # Pre-emptively reset status so the email helper sees
-                # the right starting state. The helper itself also
-                # resets when reset_status=True.
-                if task.customer_confirmation_status is None:
-                    task.customer_confirmation_status = "pending"
-                dispatch_customer_confirmation_email(
-                    db, task=task, assignee_ids=existing_assignee_ids, reset_status=True
-                )
+                # v2.5.5: set state to pending + mint token, but do NOT
+                # send email here. Operator pushes "E-Mail senden" in
+                # the modal to trigger the actual email.
+                set_task_confirmation_pending(task, reset_status=True)
             else:
                 # Clear all confirmation columns — operator opted out.
                 task.customer_confirmation_status = None
@@ -373,9 +366,12 @@ def update_task(
         and not already_handled_via_toggle
         and previous_confirmation_status in {"pending", "confirmed"}
     ):
-        dispatch_customer_confirmation_email(
-            db, task=task, assignee_ids=existing_assignee_ids, reset_status=True
-        )
+        # v2.5.5: when the date moves, the customer's previous "yes for
+        # date X" is no longer valid for the new date. Reset to pending
+        # so the operator knows to re-send. The actual email send is
+        # still operator-driven — they click "E-Mail senden" once the
+        # new schedule is locked.
+        set_task_confirmation_pending(task, reset_status=True)
     if task.status != previous_status or (task.due_date.isoformat() if task.due_date else None) != previous_due_date or (
         task.start_time.isoformat() if task.start_time else None
     ) != previous_start_time or task.estimated_hours != previous_estimated_hours:

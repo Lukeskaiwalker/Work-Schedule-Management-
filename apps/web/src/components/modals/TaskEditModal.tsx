@@ -91,6 +91,54 @@ export function TaskEditModal() {
   // panel afterwards via taskEditForm.customer_confirmation_notes).
   const [manualConfirmNotes, setManualConfirmNotes] = useState("");
   const [manualConfirmSubmitting, setManualConfirmSubmitting] = useState(false);
+  // v2.5.5: separate in-flight flag for the email button so the
+  // operator can't double-click + spam the customer's inbox.
+  const [emailSubmitting, setEmailSubmitting] = useState(false);
+
+  async function submitCustomerConfirmationEmail() {
+    if (emailSubmitting) return;
+    if (taskEditForm.id == null) return;
+    setEmailSubmitting(true);
+    try {
+      const result = await apiFetch<{
+        sent: boolean;
+        sent_at: string | null;
+        error_detail: string | null;
+      }>(`/tasks/${taskEditForm.id}/customer-confirmation/email`, token, {
+        method: "POST",
+      });
+      if (result.sent) {
+        setTaskEditForm((current) => ({
+          ...current,
+          customer_confirmation_status: "pending",
+          customer_confirmation_email_sent_at: result.sent_at,
+          // Token may have rotated server-side; clear stale FE-only
+          // timestamps so the panel reflects the fresh state.
+          customer_confirmation_at: null,
+          customer_confirmation_method: null,
+          customer_confirmation_by_display_name: null,
+        }));
+        setNotice(
+          language === "de"
+            ? "Bestätigungs-E-Mail gesendet"
+            : "Confirmation email sent",
+        );
+      } else {
+        // Backend surfaced a clean reason — typically "no customer
+        // email on record" or an SMTP issue. Show it verbatim so the
+        // operator knows what to fix.
+        setError(
+          (language === "de"
+            ? "E-Mail konnte nicht gesendet werden: "
+            : "Email could not be sent: ") + (result.error_detail || "?"),
+        );
+      }
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setEmailSubmitting(false);
+    }
+  }
 
   async function submitManualConfirmation(action: "confirm" | "decline") {
     if (manualConfirmSubmitting) return;
@@ -737,8 +785,8 @@ export function TaskEditModal() {
               !taskEditForm.customer_confirmation_status && (
                 <small className="muted" style={{ display: "block", marginTop: 4 }}>
                   {de
-                    ? "Beim Speichern wird der Status auf 'wartet' gesetzt und (falls eine Kunden-E-Mail vorliegt) automatisch eine Bestätigungs-E-Mail verschickt."
-                    : "On save: status flips to pending and a confirmation email is auto-sent if a customer address is on file."}
+                    ? "Beim Speichern wird der Status auf 'wartet' gesetzt. Die E-Mail an den Kunden geht erst per Klick auf 'Bestätigungs-E-Mail senden' raus — kein automatischer Versand."
+                    : "On save: status flips to pending. The email goes out only when you click 'Send confirmation email' — no auto-send."}
                 </small>
               )}
             {/*
@@ -757,6 +805,45 @@ export function TaskEditModal() {
               taskEditForm.customer_confirmation_status !== "confirmed" &&
               taskEditForm.customer_confirmation_status !== "declined" && (
                 <div style={{ marginTop: 12 }}>
+                  {/*
+                    v2.5.5: explicit email-send button. The checkbox above
+                    sets up the pending state on save; the actual email
+                    only goes out when the operator clicks here. Label
+                    flips to "erneut senden" / "Resend" once an email
+                    has been recorded so the operator knows nudging is
+                    safe.
+                  */}
+                  <button
+                    type="button"
+                    disabled={emailSubmitting || manualConfirmSubmitting}
+                    onClick={() => void submitCustomerConfirmationEmail()}
+                    style={{
+                      width: "100%",
+                      padding: "8px 14px",
+                      fontSize: 14,
+                      fontWeight: 600,
+                      color: "#fff",
+                      background: "#2563eb",
+                      border: "none",
+                      borderRadius: 6,
+                      cursor:
+                        emailSubmitting || manualConfirmSubmitting
+                          ? "wait"
+                          : "pointer",
+                      marginBottom: 8,
+                    }}
+                    title={
+                      de
+                        ? "Sendet die Bestätigungs-E-Mail an den hinterlegten Kunden."
+                        : "Sends the confirmation email to the customer on file."
+                    }
+                  >
+                    {emailSubmitting
+                      ? de ? "Sende…" : "Sending…"
+                      : taskEditForm.customer_confirmation_email_sent_at
+                        ? de ? "E-Mail erneut senden" : "Resend email"
+                        : de ? "Bestätigungs-E-Mail senden" : "Send confirmation email"}
+                  </button>
                   <label
                     style={{
                       display: "block",
