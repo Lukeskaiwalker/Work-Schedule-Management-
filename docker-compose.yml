@@ -28,6 +28,29 @@ services:
         APP_RELEASE_VERSION: ${APP_RELEASE_VERSION:-}
         APP_RELEASE_COMMIT: ${APP_RELEASE_COMMIT:-}
     restart: unless-stopped
+    # v2.5.6: cgroup memory ceiling. Without this, kernel-level OOM
+    # (from competing host processes — observed on this host around
+    # 22:20 UTC nightly when dpkg-db-backup + mintupdate-automation-
+    # upgrade timers fire) picks the largest user-space process as
+    # its victim, which on this stack is consistently the api
+    # workers. The kill happens OUTSIDE Docker's cgroup OOM tracking,
+    # so the daemon misses the OOMKilled signal AND the
+    # restart-policy doesn't fire — operator finds the api dead
+    # the next morning with no restart attempt.
+    #
+    # With mem_limit, the kernel kills inside the api cgroup ONLY
+    # when this container exceeds 1.5GB. Docker tracks that as
+    # OOMKilled=true, restart: unless-stopped fires, and the api
+    # comes back automatically. 1.5GB is well above steady-state
+    # (typically ~300-500MB for 2 uvicorn workers + uploads
+    # cache) but leaves room for occasional spikes (PDF reports,
+    # large project lookups).
+    mem_limit: 1500m
+    # Match memswap_limit to mem_limit so the container cannot
+    # spill into host swap and prolong the unhealthy state. Without
+    # this, Docker defaults to mem_limit*2 of swap, which would let
+    # the api thrash for many seconds before being killed.
+    memswap_limit: 1500m
     env_file:
       - ./apps/api/.env.example
       - path: ./apps/api/.release.env
@@ -56,6 +79,13 @@ services:
         APP_RELEASE_VERSION: ${APP_RELEASE_VERSION:-}
         APP_RELEASE_COMMIT: ${APP_RELEASE_COMMIT:-}
     restart: unless-stopped
+    # v2.5.6: see the matching block on the api service above for the
+    # full rationale. The worker is smaller (single process, no
+    # uvicorn fan-out) but handles PDF-conversion + OpenAI extraction
+    # jobs that can transiently push memory up. 1GB is plenty;
+    # observed steady-state is ~150-250MB.
+    mem_limit: 1000m
+    memswap_limit: 1000m
     command: ["python", "-m", "app.worker"]
     env_file:
       - ./apps/api/.env.example
