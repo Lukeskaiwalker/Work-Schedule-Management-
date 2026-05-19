@@ -326,19 +326,31 @@ class JobInFlightError(RuntimeError):
         super().__init__(f"A runner job is already running: {active.id}")
 
 
-def _build_update_command(branch: str, pull: bool) -> list[str]:
+def _build_update_command(branch: str, pull: bool, check_only: bool) -> list[str]:
     cmd = ["./scripts/safe_update.sh"]
     if pull:
         cmd.extend(["--pull", "--branch", branch])
+    if check_only:
+        # --check-only: build api image + alembic preflight on cloned db only.
+        # No backup, no real migration, no deploy. Backs the UI's Dry-run
+        # button via the same /jobs/update endpoint so the polling/progress
+        # flow is identical to a real install.
+        cmd.append("--check-only")
     return cmd
 
 
-def queue_update_job(*, branch: str, pull: bool) -> Job:
-    """Create and start a new safe_update.sh job. Raises if one is in flight."""
+def queue_update_job(*, branch: str, pull: bool, check_only: bool = False) -> Job:
+    """Create and start a new safe_update.sh job. Raises if one is in flight.
+
+    ``check_only=True`` runs the preflight-only variant (no backup, no real
+    migration, no deploy) by appending ``--check-only`` to safe_update.sh.
+    Job lifecycle, log capture, and polling are otherwise identical to a real
+    install so the caller's progress UI doesn't need to special-case it.
+    """
     job = _start_job("update")
     thread = threading.Thread(
         target=_run_update,
-        args=(job, branch, pull),
+        args=(job, branch, pull, check_only),
         daemon=False,
         name=f"update-runner-{job.id}",
     )
@@ -346,17 +358,18 @@ def queue_update_job(*, branch: str, pull: bool) -> Job:
     return job
 
 
-def _run_update(job: Job, branch: str, pull: bool) -> None:
-    cmd = _build_update_command(branch, pull)
+def _run_update(job: Job, branch: str, pull: bool, check_only: bool) -> None:
+    cmd = _build_update_command(branch, pull, check_only)
     env = os.environ.copy()
     env["COMPOSE_PROJECT_NAME"] = COMPOSE_PROJECT_NAME
+    kind_label = "dry-run preflight" if check_only else "real install"
     _run_subprocess(
         job,
         cmd,
         env,
-        success_detail="safe_update.sh completed successfully.",
-        failure_detail_prefix="safe_update.sh",
-        header="Starting safe_update.sh",
+        success_detail=f"safe_update.sh ({kind_label}) completed successfully.",
+        failure_detail_prefix=f"safe_update.sh ({kind_label})",
+        header=f"Starting safe_update.sh ({kind_label})",
     )
 
 

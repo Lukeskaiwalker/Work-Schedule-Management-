@@ -65,6 +65,13 @@ def _check_auth(token: str | None) -> None:
 class CreateUpdateJobRequest(BaseModel):
     branch: str = Field(default="main", min_length=1, max_length=200)
     pull: bool = True
+    # When true, runner invokes safe_update.sh with --check-only: build api
+    # image + run alembic preflight on a temporary cloned database, then stop.
+    # No backup, no real migration, no deploy. Used to back the UI's "Dry run"
+    # button, which previously failed because the api container couldn't find
+    # a local repo to operate on. Maps directly to safe_update.sh's existing
+    # --check-only flag, so no script-side changes are needed.
+    check_only: bool = False
 
 
 class CreateJobResponse(BaseModel):
@@ -150,7 +157,11 @@ def create_update_job(
 ) -> CreateJobResponse:
     _check_auth(x_update_token)
     try:
-        job = queue_update_job(branch=payload.branch, pull=payload.pull)
+        job = queue_update_job(
+            branch=payload.branch,
+            pull=payload.pull,
+            check_only=payload.check_only,
+        )
     except JobInFlightError as exc:
         raise _job_in_flight_error(exc)
     return CreateJobResponse(job_id=job.id, status=job.status)

@@ -2534,6 +2534,7 @@ def _delegate_real_install_to_runner(
     status: UpdateStatusOut,
     admin: User,
     db: Session,
+    dry_run: bool = False,
 ) -> UpdateInstallOut | None:
     """Try the runner-mediated install path.
 
@@ -2542,12 +2543,20 @@ def _delegate_real_install_to_runner(
     the runner is unavailable, signalling the caller should fall back to the
     legacy in-process path.
 
+    ``dry_run=True`` runs safe_update.sh --check-only (build api image +
+    alembic preflight only). The runner returns the same job shape; the UI
+    polls progress identically.
+
     A 409 conflict (job already in flight) is surfaced as an ``ok=False``
     response that still carries ``job_id`` so the UI can offer to resume
     polling rather than silently swallow the prior run.
     """
     try:
-        runner_response = update_runner_client.queue_update_job(branch=branch, pull=True)
+        runner_response = update_runner_client.queue_update_job(
+            branch=branch,
+            pull=True,
+            dry_run=dry_run,
+        )
     except update_runner_client.UpdateRunnerUnreachable:
         return None
     except update_runner_client.UpdateRunnerJobConflict as exc:
@@ -2576,13 +2585,13 @@ def _delegate_real_install_to_runner(
             mode="auto",
             detail="Update runner accepted the request but returned no job id.",
             ran_steps=[],
-            dry_run=False,
+            dry_run=dry_run,
         )
 
     log_admin_action(
         db,
         admin,
-        "system.update.install.dispatched",
+        "system.update.preflight.dispatched" if dry_run else "system.update.install.dispatched",
         "system",
         "updates",
         {
@@ -2590,6 +2599,7 @@ def _delegate_real_install_to_runner(
             "branch": branch,
             "job_id": job_id,
             "delegated_to": "update_runner",
+            "dry_run": dry_run,
             "latest_version": status.latest_version,
             "latest_commit": status.latest_commit,
         },
@@ -2598,7 +2608,9 @@ def _delegate_real_install_to_runner(
     # opens the System tab in another browser sees the in-flight job
     # (instead of a fresh "Install" button) and attaches their poller
     # to the same job_id. Cleared when the progress endpoint detects
-    # a terminal status.
+    # a terminal status. Dry-runs share the same slot since the runner
+    # treats them as just another job; the polling progress detail will
+    # make the distinction visible to the user.
     set_active_update_job(
         db,
         job_id=job_id,
@@ -2607,22 +2619,32 @@ def _delegate_real_install_to_runner(
         started_by_display_name=admin.display_name or admin.email,
     )
     db.commit()
+    detail = (
+        (
+            f"Dry-run preflight job {job_id} dispatched to the update runner. "
+            "It will build the api image + run alembic migrations against a "
+            "cloned database. No backup, no real migration, no deploy."
+        )
+        if dry_run
+        else (
+            f"Update job {job_id} dispatched to the update runner. "
+            "The full safety flow (encrypted backup, maintenance mode, "
+            "alembic preflight + migrate, rebuild + healthchecks) is now "
+            "running in the background."
+        )
+    )
     return UpdateInstallOut(
         ok=True,
         mode="auto",
         async_mode=True,
         job_id=job_id,
-        detail=(
-            f"Update job {job_id} dispatched to the update runner. "
-            "The full safety flow (encrypted backup, maintenance mode, "
-            "alembic preflight + migrate, rebuild + healthchecks) is now "
-            "running in the background."
-        ),
+        detail=detail,
         ran_steps=[
             "delegated to update_runner sidecar",
             f"job_id={job_id}",
+            *(["mode=dry-run (--check-only)"] if dry_run else []),
         ],
-        dry_run=False,
+        dry_run=dry_run,
     )
 
 
@@ -2648,17 +2670,26 @@ def install_updates(
             dry_run=payload.dry_run,
         )
 
-    # Real installs are preferentially delegated to the update_runner sidecar
-    # so safe_update.sh can rebuild + restart the api stack without the api
-    # process taking itself out mid-request. Returns immediately with a
-    # job_id; the UI polls /admin/updates/progress/{job_id}. Falls through
-    # to the in-process path when the runner is unreachable.
-    if not payload.dry_run:
-        delegated = _delegate_real_install_to_runner(
-            branch=branch, status=status, admin=admin, db=db
-        )
-        if delegated is not None:
-            return delegated
+    # Both real installs AND dry-run preflights are preferentially delegated
+    # to the update_runner sidecar. safe_update.sh has --check-only as a
+    # first-class flag, so the runner can preflight on the actual host repo
+    # (which the api container cannot reach in the delegated deployment
+    # style). v2.5.9 fix: previously only real installs were delegated; the
+    # dry-run path fell through to the in-process branch below, which
+    # _resolve_repo_root() rejects on this deployment style, surfacing a
+    # confusing "Could not locate a git repository" error to the operator.
+    # Returns immediately with a job_id; the UI polls
+    # /admin/updates/progress/{job_id}. Falls through to the in-process path
+    # only when the runner is unreachable (legacy deployments).
+    delegated = _delegate_real_install_to_runner(
+        branch=branch,
+        status=status,
+        admin=admin,
+        db=db,
+        dry_run=payload.dry_run,
+    )
+    if delegated is not None:
+        return delegated
 
     repo_root = _resolve_repo_root()
     if repo_root is None:

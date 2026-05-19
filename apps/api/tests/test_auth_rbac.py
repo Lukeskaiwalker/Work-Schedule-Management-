@@ -855,7 +855,7 @@ def test_admin_install_update_delegates_real_install_to_runner_when_reachable(
     monkeypatch.setattr(
         update_runner_client,
         "queue_update_job",
-        lambda branch="main", pull=True: {"job_id": "job-abc-123", "status": "queued"},
+        lambda branch="main", pull=True, dry_run=False: {"job_id": "job-abc-123", "status": "queued"},
     )
     executed_legacy: list[str] = []
     monkeypatch.setattr(
@@ -877,6 +877,68 @@ def test_admin_install_update_delegates_real_install_to_runner_when_reachable(
     assert payload["job_id"] == "job-abc-123"
     assert payload["dry_run"] is False
     # The legacy in-process flow must NOT have run when the runner accepted.
+    assert executed_legacy == []
+
+
+def test_admin_install_update_delegates_dry_run_to_runner_when_reachable(
+    client: TestClient,
+    admin_token: str,
+    monkeypatch,
+):
+    """v2.5.9 fix: dry-run preflight must also delegate to the update_runner
+    sidecar. Previously the api short-circuited dry-runs to its own
+    in-process logic, which failed with "Could not locate a git repository"
+    on deployments where /repo is only bind-mounted into the runner (the
+    default since v2.4). The runner accepts dry-runs via the same
+    /jobs/update endpoint with check_only=true, which maps to
+    safe_update.sh --check-only."""
+    monkeypatch.setattr(
+        admin_router,
+        "_fetch_update_status",
+        lambda: admin_router.UpdateStatusOut(
+            repository="example/repo",
+            branch="main",
+            install_supported=True,
+            install_mode="auto",
+            install_steps=[],
+        ),
+    )
+    captured: dict[str, object] = {}
+
+    def fake_queue(branch="main", pull=True, dry_run=False):
+        captured["branch"] = branch
+        captured["pull"] = pull
+        captured["dry_run"] = dry_run
+        return {"job_id": "job-preflight-1", "status": "queued"}
+
+    monkeypatch.setattr(update_runner_client, "queue_update_job", fake_queue)
+    # Belt-and-suspenders: the legacy in-process path must NOT run.
+    executed_legacy: list[str] = []
+    monkeypatch.setattr(
+        admin_router,
+        "_run_update_command",
+        lambda *args, **kwargs: executed_legacy.append("legacy_called"),
+    )
+
+    response = client.post(
+        "/api/admin/updates/install",
+        headers=auth_headers(admin_token),
+        json={"dry_run": True},
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["mode"] == "auto"
+    assert payload["async_mode"] is True
+    assert payload["job_id"] == "job-preflight-1"
+    assert payload["dry_run"] is True
+    # The dry-run flag must reach the runner client.
+    assert captured == {"branch": "main", "pull": True, "dry_run": True}
+    # Detail should mention preflight, not the full safety flow.
+    assert "preflight" in payload["detail"].lower()
+    # Marker in ran_steps so the UI can render the dry-run badge.
+    assert any("dry-run" in step.lower() for step in payload["ran_steps"])
+    # The legacy in-process flow must NOT have run.
     assert executed_legacy == []
 
 
@@ -966,7 +1028,7 @@ def test_admin_install_update_surfaces_runner_job_conflict(
         ),
     )
 
-    def _conflict(branch="main", pull=True):
+    def _conflict(branch="main", pull=True, dry_run=False):
         raise update_runner_client.UpdateRunnerJobConflict(
             "existing-job-456",
             "An update job is already running.",

@@ -202,3 +202,96 @@ def test_backup_job_queued_writes_log(runner_test_client, monkeypatch: pytest.Mo
     assert status["summary_warnings"] == 0
     # Marker lines are still preserved in the log_tail (operators see them)
     assert "::SMPL_STAGE: db_dump" in status["log_tail"]
+
+
+def test_update_job_check_only_appends_flag(runner_test_client, monkeypatch: pytest.MonkeyPatch):
+    """v2.5.9: POST /jobs/update with check_only=true must invoke
+    safe_update.sh with --check-only appended.
+
+    Backs the UI's Dry-run button: before this fix, the api fell through to
+    its own in-process preflight which couldn't see /repo on this deployment
+    style and surfaced "Could not locate a git repository" to the operator.
+    The runner now handles both real installs AND dry-runs through the same
+    endpoint, with check_only swapping in --check-only for the script."""
+    import subprocess
+
+    captured: dict[str, Any] = {}
+
+    class _FakePopen:
+        def __init__(self, cmd, cwd, stdout, stderr, env, text, bufsize):
+            captured["cmd"] = cmd
+            self.returncode = 0
+            self.stdout = iter([
+                "safe_update.sh (--check-only) starting\n",
+                "::SMPL_STAGE: build 50 Build\n",
+                "::SMPL_STAGE: done 100 Preflight OK\n",
+            ])
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(subprocess, "Popen", _FakePopen)
+
+    response = runner_test_client.post(
+        "/jobs/update",
+        json={"branch": "main", "pull": True, "check_only": True},
+    )
+    assert response.status_code == 202
+    job_id = response.json()["job_id"]
+
+    captured_cmd = captured.get("cmd", [])
+    # stdbuf wrapping is preserved for line-buffered progress markers.
+    assert captured_cmd[:2] == ["stdbuf", "-oL"], (
+        f"runner must prepend stdbuf -oL; got cmd={captured_cmd}"
+    )
+    cmd_str = " ".join(str(part) for part in captured_cmd[2:])
+    assert "safe_update.sh" in cmd_str
+    assert "--pull" in cmd_str
+    assert "--branch" in cmd_str
+    assert "--check-only" in cmd_str, (
+        f"check_only=true must append --check-only to safe_update.sh; "
+        f"got cmd={captured_cmd}"
+    )
+
+    # Drain the stubbed run so the job reaches a terminal state cleanly.
+    import time
+    for _ in range(20):
+        status = runner_test_client.get(f"/jobs/{job_id}").json()
+        if status["status"] in ("succeeded", "failed"):
+            break
+        time.sleep(0.05)
+    assert status["status"] == "succeeded"
+    assert status["kind"] == "update"
+
+
+def test_update_job_default_omits_check_only_flag(runner_test_client, monkeypatch: pytest.MonkeyPatch):
+    """Default behavior (no check_only in body, or check_only=false) MUST NOT
+    pass --check-only — otherwise every real install would silently become a
+    preflight. Regression guard for the v2.5.9 change."""
+    import subprocess
+
+    captured: dict[str, Any] = {}
+
+    class _FakePopen:
+        def __init__(self, cmd, cwd, stdout, stderr, env, text, bufsize):
+            captured["cmd"] = cmd
+            self.returncode = 0
+            self.stdout = iter(["safe_update.sh starting\n"])
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(subprocess, "Popen", _FakePopen)
+
+    # check_only omitted → defaults to False (Pydantic schema default).
+    response = runner_test_client.post(
+        "/jobs/update",
+        json={"branch": "main", "pull": True},
+    )
+    assert response.status_code == 202
+
+    cmd_str = " ".join(str(part) for part in captured.get("cmd", []))
+    assert "safe_update.sh" in cmd_str
+    assert "--check-only" not in cmd_str, (
+        f"default invocation MUST NOT include --check-only; got cmd={captured.get('cmd')}"
+    )

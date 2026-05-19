@@ -113,8 +113,19 @@ def is_runner_reachable() -> bool:
         return False
 
 
-def queue_update_job(*, branch: str = "main", pull: bool = True) -> dict[str, Any]:
+def queue_update_job(
+    *,
+    branch: str = "main",
+    pull: bool = True,
+    dry_run: bool = False,
+) -> dict[str, Any]:
     """Ask the runner to start a safe_update.sh run. Returns the job dict.
+
+    ``dry_run=True`` forwards to the runner as ``check_only=true``, which maps
+    to safe_update.sh's existing ``--check-only`` flag (build api image + run
+    alembic preflight only, no backup, no real migration, no deploy). The
+    runner response shape and the job-status polling are identical to a real
+    install so the caller doesn't need to special-case it.
 
     Raises:
         UpdateRunnerUnreachable: runner not configured or network failure.
@@ -125,7 +136,7 @@ def queue_update_job(*, branch: str = "main", pull: bool = True) -> dict[str, An
     if base_url is None:
         raise UpdateRunnerUnreachable("update_runner_url is empty (runner disabled)")
 
-    body = {"branch": branch, "pull": pull}
+    body = {"branch": branch, "pull": pull, "check_only": dry_run}
     try:
         with httpx.Client(timeout=_runner_timeout()) as client:
             response = client.post(

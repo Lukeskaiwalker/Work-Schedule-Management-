@@ -81,7 +81,7 @@ def test_install_persists_active_job_for_other_admins(
     monkeypatch.setattr(
         update_runner_client,
         "queue_update_job",
-        lambda branch="main", pull=True: {"job_id": "job-cross-1", "status": "queued"},
+        lambda branch="main", pull=True, dry_run=False: {"job_id": "job-cross-1", "status": "queued"},
     )
 
     install = client.post(
@@ -114,7 +114,7 @@ def test_progress_terminal_status_clears_active_job(
     monkeypatch.setattr(
         update_runner_client,
         "queue_update_job",
-        lambda branch="main", pull=True: {"job_id": "job-terminal-1", "status": "queued"},
+        lambda branch="main", pull=True, dry_run=False: {"job_id": "job-terminal-1", "status": "queued"},
     )
 
     install = client.post(
@@ -171,7 +171,7 @@ def test_progress_404_for_unknown_job_clears_stale_snapshot(
     monkeypatch.setattr(
         update_runner_client,
         "queue_update_job",
-        lambda branch="main", pull=True: {"job_id": "job-ghost-1", "status": "queued"},
+        lambda branch="main", pull=True, dry_run=False: {"job_id": "job-ghost-1", "status": "queued"},
     )
     install = client.post(
         "/api/admin/updates/install",
