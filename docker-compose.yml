@@ -52,7 +52,17 @@ services:
     # the api thrash for many seconds before being killed.
     memswap_limit: 1500m
     env_file:
+      # Layering order matters: .env.example provides defaults (committed,
+      # schema-only — every value is empty/placeholder), .env provides the
+      # real secrets and runtime config (gitignored — see .gitignore lines
+      # 49-50), .release.env is build-time metadata. Compose merges in order,
+      # so later files override earlier ones. required:true on .env means a
+      # missing file is a hard fail at compose-up time — which is what we
+      # want: silent fallback to placeholder values is how SECRET_KEY ended
+      # up as "replace-with-long-random-secret" in prod for months.
       - ./apps/api/.env.example
+      - path: ./apps/api/.env
+        required: true
       - path: ./apps/api/.release.env
         required: false
     volumes:
@@ -87,8 +97,12 @@ services:
     mem_limit: 1000m
     memswap_limit: 1000m
     command: ["python", "-m", "app.worker"]
+    # See env_file layering rationale on the api service above. Worker shares
+    # the same env layout because it runs the same Python app code paths.
     env_file:
       - ./apps/api/.env.example
+      - path: ./apps/api/.env
+        required: true
       - path: ./apps/api/.release.env
         required: false
     volumes:
