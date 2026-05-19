@@ -44,6 +44,60 @@ JobStatus = Literal["queued", "running", "succeeded", "failed"]
 JobKind = Literal["update", "backup", "restore"]
 
 
+def _restore_repo_ownership(log) -> None:
+    """Chown ``REPO_ROOT`` back to whatever uid:gid owned it before the job ran.
+
+    The runner runs as root (it needs that for the docker-socket bind mount),
+    so any file it writes to the bind-mounted ``/repo`` lands root-owned on the
+    host. That silently breaks subsequent host-side git operations from the
+    non-root operator account in two ways:
+
+      1. Git refuses to operate on a repo owned by a different user (the
+         CVE-2022-24765 "dubious ownership" guard).
+      2. Even when the repo dir matches, individual ``.git/objects/<xx>/``
+         subdirs created by root during ``git fetch`` are 0755 root:root, so
+         the operator account can't write new objects into them — the next
+         ``git fetch`` fails with "Insufficient permission to add an object".
+
+    Both failure modes have bit the SMPL ops account multiple times in 2026 —
+    enough to motivate fixing it at the source. This helper runs in the
+    ``finally`` block of every job (update / backup / restore — all three
+    touch ``/repo`` in some way) and best-effort restores the original
+    ownership. Snapshotting from ``REPO_ROOT.stat()`` rather than hardcoding
+    ``1000:1000`` keeps the fix portable across deployments where the
+    operator account might not be uid=1000.
+
+    Best-effort by design: chown failure is logged but never fails the job,
+    because by the time we reach the finally block the job's primary work is
+    already done. A permission glitch in the cleanup step should not flip a
+    successful deploy into a failed-looking one.
+    """
+    try:
+        stat_info = REPO_ROOT.stat()
+    except OSError as exc:
+        log.write(f"[ownership] could not stat {REPO_ROOT}: {exc!r}\n")
+        return
+    target = f"{stat_info.st_uid}:{stat_info.st_gid}"
+    try:
+        result = subprocess.run(
+            ["chown", "-R", target, str(REPO_ROOT)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=120,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        log.write(f"[ownership] chown crashed: {exc!r}\n")
+        return
+    if result.returncode == 0:
+        log.write(f"[ownership] restored {target} on {REPO_ROOT}\n")
+    else:
+        log.write(
+            f"[ownership] chown -R {target} exited with code {result.returncode}: "
+            f"{(result.stderr or '').strip()}\n"
+        )
+
+
 class Job:
     """A single privileged subprocess invocation tracked by the runner.
 
@@ -312,6 +366,13 @@ def _run_subprocess(
                     f"[{job.finished_at}] Finished. status={job.status} "
                     f"exit_code={job.exit_code}\n"
                 )
+                # v2.5.10: restore ownership of /repo so subsequent host-side
+                # git operations from the non-root operator account don't
+                # fail on root-owned files left behind by safe_update.sh /
+                # backup.sh / restore.sh. Runs on both success and failure
+                # paths — a partial deploy that aborted mid-run also leaves
+                # dirty files on the bind mount.
+                _restore_repo_ownership(log)
         except OSError:
             pass
         _finish_job(job)

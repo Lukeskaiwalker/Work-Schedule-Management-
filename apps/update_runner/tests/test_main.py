@@ -264,6 +264,91 @@ def test_update_job_check_only_appends_flag(runner_test_client, monkeypatch: pyt
     assert status["kind"] == "update"
 
 
+def test_update_job_restores_repo_ownership_at_end(
+    runner_test_client, runner_tmp_repo: Path, monkeypatch: pytest.MonkeyPatch
+):
+    """v2.5.10: every job (update/backup/restore) must chown -R the bind-mounted
+    /repo back to its original uid:gid after the subprocess finishes.
+
+    The runner runs as root for docker-socket access, so any file it writes
+    to /repo via safe_update.sh / backup.sh lands root-owned on the host —
+    which silently breaks subsequent host-side ``git fetch`` from the
+    non-root operator account, both via the "dubious ownership" guard and
+    via root-owned ``.git/objects/<xx>/`` subdirs. The fix runs in
+    _run_subprocess's finally block, snapshotting REPO_ROOT.stat() and
+    invoking chown -R."""
+    import subprocess
+
+    chown_calls: list[list[str]] = []
+
+    real_run = subprocess.run
+
+    def captured_run(cmd, *args, **kwargs):
+        # Only intercept the chown invocations from _restore_repo_ownership.
+        # Other subprocess.run calls (none currently in the runner, but
+        # belt-and-suspenders) fall through to the real implementation.
+        if isinstance(cmd, list) and cmd and cmd[0] == "chown":
+            chown_calls.append(list(cmd))
+
+            class _Result:
+                returncode = 0
+                stdout = ""
+                stderr = ""
+
+            return _Result()
+        return real_run(cmd, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", captured_run)
+
+    class _FakePopen:
+        def __init__(self, cmd, cwd, stdout, stderr, env, text, bufsize):
+            self.returncode = 0
+            self.stdout = iter(["safe_update.sh starting\n", "done\n"])
+
+        def wait(self):
+            return 0
+
+    monkeypatch.setattr(subprocess, "Popen", _FakePopen)
+
+    response = runner_test_client.post(
+        "/jobs/update",
+        json={"branch": "main", "pull": True},
+    )
+    assert response.status_code == 202
+    job_id = response.json()["job_id"]
+
+    import time
+    for _ in range(20):
+        status = runner_test_client.get(f"/jobs/{job_id}").json()
+        if status["status"] in ("succeeded", "failed"):
+            break
+        time.sleep(0.05)
+    assert status["status"] == "succeeded"
+
+    # Exactly one chown -R was invoked at end of job.
+    assert len(chown_calls) == 1, f"expected one chown call, got {chown_calls}"
+    chown_cmd = chown_calls[0]
+    assert chown_cmd[0] == "chown"
+    assert "-R" in chown_cmd
+    # Target is the uid:gid from REPO_ROOT.stat() — verify the chown targets
+    # the test's REPO_ROOT (the conftest tmpdir) and that uid:gid was captured
+    # from a real stat() call (digits + colon). We can't assert the literal
+    # uid/gid values because the test runner's process uid is arbitrary.
+    assert chown_cmd[-1] == str(runner_tmp_repo)
+    uid_gid = chown_cmd[-2]
+    assert ":" in uid_gid, f"expected uid:gid token, got {uid_gid!r}"
+    uid_str, gid_str = uid_gid.split(":")
+    assert uid_str.isdigit() and gid_str.isdigit()
+    # Sanity-check it matches what os.stat() reports for the tmpdir.
+    actual_stat = runner_tmp_repo.stat()
+    assert uid_gid == f"{actual_stat.st_uid}:{actual_stat.st_gid}"
+
+    # The chown step's outcome must appear in the log tail so an operator
+    # debugging "why are my files still root-owned" can confirm whether the
+    # post-job hook actually ran.
+    assert "[ownership]" in status["log_tail"]
+
+
 def test_update_job_default_omits_check_only_flag(runner_test_client, monkeypatch: pytest.MonkeyPatch):
     """Default behavior (no check_only in body, or check_only=false) MUST NOT
     pass --check-only — otherwise every real install would silently become a
