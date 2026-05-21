@@ -274,7 +274,12 @@ def build_report_pdf_bytes(
     section_4 = _section_box(
         styles,
         number=4,
-        title="OFFENE ARBEITEN / WEITERE MASSNAHMEN",
+        # v2.5.17: removed the space before the slash so the bold title
+        # stops colliding with the box's right wall at half-width. Saves
+        # exactly one character of horizontal real estate — just enough to
+        # keep the "N" of MASSNAHMEN inside the box border. The visual
+        # rhythm "ARBEITEN/ WEITERE" still reads naturally in German.
+        title="OFFENE ARBEITEN/ WEITERE MASSNAHMEN",
         body=_bullet_list(_bullets_for_open_tasks(payload), styles),
         width=half_width,
     )
@@ -510,8 +515,14 @@ def _build_styles():
     styles.add(ParagraphStyle(
         name="DocTitle",
         fontName="Helvetica-Bold",
-        fontSize=22,
-        leading=26,
+        # v2.5.17: 22pt → 19pt. The header's left column grew from 50mm
+        # to 65mm to make room for the larger logo, which left only ~63mm
+        # for the centred title. 22pt was wrapping "Baustellenbericht" to
+        # two lines; 19pt fits on one comfortably. The larger logo gives
+        # the document its visual weight now, so a slightly smaller title
+        # actually balances the header better.
+        fontSize=19,
+        leading=23,
         textColor=_COLOR_TEXT,
         alignment=1,  # centre
     ))
@@ -543,7 +554,12 @@ def _build_styles():
     styles.add(ParagraphStyle(
         name="SectionTitle",
         fontName="Helvetica-Bold",
-        fontSize=10,
+        # v2.5.17: 10pt → 9.5pt. The longer titles ("OFFENE ARBEITEN/
+        # WEITERE MASSNAHMEN", "MITARBEITER & ARBEITSZEITEN") were rubbing
+        # the right wall of their boxes at half-width. Half-point reduction
+        # buys ~3 characters of room without making titles feel meek
+        # against the body text.
+        fontSize=9.5,
         leading=12,
         textColor=_COLOR_TEXT,
     ))
@@ -589,7 +605,12 @@ def _doc_header(
     Material' wrap to 3 lines in the centre column, which looks terrible)."""
     logo_cell: Any = ""
     if logo_path:
-        logo = _scaled_image_from_path(logo_path, max_width=36 * mm, max_height=20 * mm)
+        # v2.5.17: logo bumped from 36×20mm → 60×28mm at operator request.
+        # The previous size made the brand mark too easy to overlook on a
+        # printed report; the new size matches the visual weight of the
+        # 22pt "Baustellenbericht" title. Header left column widens to
+        # 65mm below to accommodate.
+        logo = _scaled_image_from_path(logo_path, max_width=60 * mm, max_height=28 * mm)
         if logo:
             logo_cell = logo
 
@@ -624,7 +645,10 @@ def _doc_header(
         ("RIGHTPADDING", (0, 0), (-1, -1), 0),
     ]))
 
-    left_width = 50 * mm
+    # v2.5.17: left column widened 50 → 65mm to accommodate the larger logo.
+    # Right metadata column unchanged. Middle (title) column shrinks
+    # proportionally; "Baustellenbericht" still fits comfortably.
+    left_width = 65 * mm
     right_width = 54 * mm
     middle_width = width - left_width - right_width
     header_table = Table(
