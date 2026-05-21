@@ -11,16 +11,30 @@ class ConstructionReportWorker(BaseModel):
 
 
 class ConstructionReportMaterial(BaseModel):
-    """One row in the 'Verbrauchtes Material' table. Three visible columns
-    (Material / Menge / Einheit). ``article_no`` is preserved from the
-    pre-v2.5.13 schema for backward compatibility but is no longer rendered
-    in the main report — it shows up only on the overflow Materialschein
-    when present."""
+    """One row in the 'Verbrauchtes Material' table.
+
+    Visible columns on the main PDF: ``item`` / ``qty`` / ``unit`` (three
+    columns to match the mockup's section 5 layout).
+
+    The remaining fields are rendered only on the standalone Materialschein
+    that gets generated when the consumed list overflows the inline
+    threshold (see ``MATERIAL_OVERFLOW_THRESHOLD``):
+
+      - ``article_no`` → "Beschreibung / Größe" column. Carries the SKU /
+        article-number / size designation. Pre-v2.5.13 schema field kept
+        for backward compatibility.
+      - ``usage`` → "Verwendet für / Einsatzort" column (v2.5.14). What
+        the material was used for or where it was installed. Optional.
+      - ``note`` → "Bemerkung" column (v2.5.14). Additional remarks
+        distinct from the usage / location. Optional.
+    """
 
     item: str
     qty: str | None = None
     unit: str | None = None
     article_no: str | None = None
+    usage: str | None = None
+    note: str | None = None
 
 
 class ConstructionReportMaterialNeeded(BaseModel):

@@ -45,7 +45,55 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
-from reportlab.platypus import Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import Flowable, Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+
+class _Checkbox(Flowable):
+    """A small drawn checkbox flowable. Renders as either:
+
+      - An outlined empty square (``checked=False``), OR
+      - A filled green square with a thick white check stroke inside
+        (``checked=True``).
+
+    v2.5.14 replacement for the Unicode ``☑`` / ``☐`` characters used in
+    v2.5.13. Helvetica (ReportLab's default font) lacks glyphs for those
+    codepoints, so both ended up rendering as the same fallback filled
+    square — visually indistinguishable except by colour. Drawing the
+    boxes with canvas primitives sidesteps the font-glyph dependency
+    entirely.
+    """
+
+    def __init__(self, checked: bool, size: float = 8.0) -> None:
+        super().__init__()
+        self.checked = bool(checked)
+        self.size = float(size)
+        self.width = float(size)
+        self.height = float(size)
+
+    def draw(self) -> None:
+        canvas = self.canv
+        if self.checked:
+            canvas.setFillColor(_COLOR_CHECK)
+            canvas.setStrokeColor(_COLOR_CHECK)
+            canvas.setLineWidth(0.6)
+            canvas.rect(0, 0, self.size, self.size, fill=1, stroke=1)
+            # White check stroke. Three points: upper-left, lower-middle,
+            # upper-right (with Y growing upwards, so "lower" = smaller Y).
+            canvas.setStrokeColor(colors.white)
+            canvas.setLineWidth(max(1.0, self.size * 0.16))
+            canvas.line(
+                self.size * 0.20, self.size * 0.50,
+                self.size * 0.42, self.size * 0.25,
+            )
+            canvas.line(
+                self.size * 0.42, self.size * 0.25,
+                self.size * 0.82, self.size * 0.72,
+            )
+        else:
+            canvas.setFillColor(colors.white)
+            canvas.setStrokeColor(_COLOR_MUTED)
+            canvas.setLineWidth(0.7)
+            canvas.rect(0, 0, self.size, self.size, fill=1, stroke=1)
 
 
 # ── Layout constants ────────────────────────────────────────────────────────
@@ -532,14 +580,31 @@ def _doc_header(
 
     The mockup's metadata column has Bericht-Nr., Datum, Erstellt von, Projekt-Nr.
     For the Materialschein page the 'Erstellt von' row is dropped (``submitted_by
-    is None``)."""
+    is None``).
+
+    ``compact=True`` shrinks the title font (v2.5.14 — the default 22pt
+    'Baustellenbericht' size makes the longer 'Materialschein – Verbrauchtes
+    Material' wrap to 3 lines in the centre column, which looks terrible)."""
     logo_cell: Any = ""
     if logo_path:
         logo = _scaled_image_from_path(logo_path, max_width=36 * mm, max_height=20 * mm)
         if logo:
             logo_cell = logo
 
-    title_para = Paragraph(escape(title), styles["DocTitle"])
+    # Compact mode renders the title at 14pt so the longer Materialschein
+    # title fits on a single line. Main report stays at the original 22pt.
+    if compact:
+        compact_title_style = ParagraphStyle(
+            name="_DocTitleCompact",
+            fontName="Helvetica-Bold",
+            fontSize=14,
+            leading=18,
+            textColor=_COLOR_TEXT,
+            alignment=1,
+        )
+        title_para = Paragraph(escape(title), compact_title_style)
+    else:
+        title_para = Paragraph(escape(title), styles["DocTitle"])
 
     meta_rows: list[list[Any]] = []
     bericht_label = f"{int(report_date.strftime('%Y%m%d')):08d}-{int(report_number or 0):03d}" if report_number else "—"
@@ -861,7 +926,10 @@ def _needed_materials_table(rows: list[dict[str, Any]], width: float, styles) ->
         ])
     while len(data) < 5:
         data.append([_cell(""), _cell(""), _cell(""), _cell("")])
-    col_widths = [width * x for x in (0.40, 0.15, 0.18, 0.27)]
+    # v2.5.14: widen 'Menge' from 0.15 → 0.20 so the word "passend" (which
+    # operators commonly write when the quantity depends on cable length)
+    # stops wrapping to two lines. Compensates by trimming Material slightly.
+    col_widths = [width * x for x in (0.35, 0.20, 0.18, 0.27)]
     table = Table(data, colWidths=col_widths)
     table.setStyle(_compact_table_style())
     return table
@@ -957,13 +1025,33 @@ def _status_box(
     )
 
 
-def _checkbox_cell(option: tuple[bool, str], styles) -> Paragraph:
+def _checkbox_cell(option: tuple[bool, str], styles) -> Table:
+    """Render a status checkbox row: drawn box + label, side-by-side.
+
+    Returns a Table flowable so the outer 2-column status grid can place
+    it directly. The inner table is a 2-column layout: a fixed-width
+    cell for the checkbox flowable, a flexible cell for the label
+    Paragraph (so long labels like 'Mehrverbrauch an Material lt.
+    beiliegendem Materialschein' still wrap correctly inside the
+    available column width)."""
     checked, label = option
-    if checked:
-        mark = f'<font color="{_COLOR_CHECK.hexval()}"><b>☑</b></font>'
-    else:
-        mark = f'<font color="{_COLOR_MUTED.hexval()}">☐</font>'
-    return Paragraph(f'{mark} {escape(label)}', styles["Normal"])
+    box = _Checkbox(checked, size=8)
+    label_para = Paragraph(escape(label), styles["Normal"])
+    cell = Table(
+        [[box, label_para]],
+        # Fixed 12pt gutter for the checkbox + small spacing; label takes
+        # the rest. The colWidth=None tells ReportLab to use whatever is
+        # available in the parent column.
+        colWidths=[12, None],
+    )
+    cell.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
+    ]))
+    return cell
 
 
 def _pairs(items: list) -> Any:
@@ -1134,37 +1222,54 @@ def _material_sheet_table(
     *,
     kind: str,
 ) -> Table:
+    """Materialschein table: 7 columns matching the mockup's second page.
+
+    Source-field mapping (v2.5.14 — distinct ``usage`` vs ``note`` columns,
+    no longer falling back from one to the other):
+
+      ``item``       → "Material / Artikel"
+      ``article_no`` → "Beschreibung / Größe"
+      ``qty``        → "Menge"
+      ``unit``       → "Einheit"
+      ``usage``      → "Verwendet für / Einsatzort"  (or "Benötigt für" for bedarf)
+      ``note``       → "Bemerkung"
+
+    Each column reads from its own dedicated field; when the field is
+    missing on a row, the cell renders "-" rather than borrowing from
+    another column. That prevents the v2.5.13 bug where the renderer
+    fell back from ``usage`` to ``note`` and duplicated the same value
+    into two adjacent columns.
+    """
     headers = [
+        # v2.5.14: "Pos." stays (clearer than "Nr."), but "Einheit" becomes
+        # "EH" to match the abbreviation used throughout the rest of the app
+        # (line-item table, time-tracking table, etc.) and to avoid the
+        # header wrapping to "Einhei\nt" in a 13mm-wide column.
         "Pos.", "Material / Artikel", "Beschreibung / Größe",
-        "Menge", "Einheit",
+        "Menge", "EH",
         "Verwendet für / Einsatzort" if kind == "verbrauch" else "Benötigt für",
         "Bemerkung",
     ]
     data: list[list[Any]] = [[_cell(h, bold=True) for h in headers]]
     for idx, row in enumerate(rows, start=1):
-        # The Materialschein uses richer columns than the inline tables. For
-        # consumed material we map item → "Material / Artikel" and split sku/
-        # article_no into "Beschreibung / Größe" if present. Operators can
-        # extend the structured payload later; today we render whatever is
-        # there with sensible fallbacks.
-        item = str(row.get("item") or "-")
-        description = str(row.get("article_no") or row.get("note") or "-")
-        usage = str(row.get("usage") or row.get("note") or "-") if kind == "verbrauch" else str(row.get("usage") or "-")
-        note_col = str(row.get("note") or "-") if kind == "verbrauch" else str(row.get("note") or "-")
         data.append([
             _cell(str(idx), bold=True),
-            _cell(item),
-            _cell(description),
+            _cell(str(row.get("item") or "-")),
+            _cell(str(row.get("article_no") or "-")),
             _cell(str(row.get("qty") or "-")),
             _cell(str(row.get("unit") or "-")),
-            _cell(usage),
-            _cell(note_col),
+            _cell(str(row.get("usage") or "-")),
+            _cell(str(row.get("note") or "-")),
         ])
     # Pad to a minimum number of rows so the page looks structured even with
     # only a handful of entries.
     while len(data) < 8:
         data.append([_cell(""), _cell(""), _cell(""), _cell(""), _cell(""), _cell(""), _cell("")])
-    col_widths = [width * x for x in (0.05, 0.18, 0.22, 0.07, 0.07, 0.21, 0.20)]
+    # v2.5.14: rebalanced widths — Pos. 0.06 (was 0.05) so the period
+    # doesn't wrap, Menge 0.09 so longer quantities like "passend" stay on
+    # one line, EH stays narrow because the new "EH" header fits in 0.06.
+    # Description columns reabsorb the remaining space.
+    col_widths = [width * x for x in (0.06, 0.18, 0.21, 0.09, 0.06, 0.21, 0.19)]
     table = Table(data, colWidths=col_widths)
     table.setStyle(_compact_table_style())
     return table
