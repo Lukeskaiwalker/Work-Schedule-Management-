@@ -228,11 +228,10 @@ def build_report_pdf_bytes(
         title="Baustellenbericht",
     ))
 
-    # v2.5.15: sections 1+2 side-by-side, sections 3+4 side-by-side. Pairs
-    # save substantial vertical space — a typical short report now fits on
-    # a single page instead of spilling onto a mostly-empty page 2.
-    # half_width = (page_internal_width − 4mm gutter between the two boxes) / 2.
-    half_width = (width - 4) / 2
+    # v2.5.15/16: sections 1+2, 3+4 and 5+6 all sit side-by-side using the
+    # _two_column_row helper. half_width is the per-box content width,
+    # complement to the explicit gap defined by _TWO_COLUMN_GAP_PT.
+    half_width = (width - _TWO_COLUMN_GAP_PT) / 2
 
     # ── Section 1 + 2: Projekt & Kunde + Mitarbeiter & Arbeitszeiten ────────
     section_1 = _section_box(
@@ -281,9 +280,12 @@ def build_report_pdf_bytes(
     )
     elements.append(_two_column_row(section_3, section_4, total_width=width))
 
-    # ── Section 5 + 6: side-by-side Verbrauchtes Material + Materialbedarf ─
-    # Two boxes side-by-side. ReportLab doesn't have native column layout,
-    # so we put both boxes into a 2-cell outer Table with even columns.
+    # ── Section 5 + 6: Verbrauchtes Material + Materialbedarf ──────────────
+    # v2.5.16: unified with sections 1+2 and 3+4 — same _two_column_row
+    # helper, same half_width math. Previously sections 5+6 used a slightly
+    # different formula (width=width/2-4 with colWidths=[width/2, width/2])
+    # which produced ~2pt off right alignment vs sections 1+2/3+4. Now all
+    # three pairs land on the same column boundary.
     consumed_rows = _consumed_materials(payload)
     needed_rows = list(payload.get("materials_needed") or [])
     consumed_overflow = len(consumed_rows) > MATERIAL_OVERFLOW_THRESHOLD
@@ -295,8 +297,8 @@ def build_report_pdf_bytes(
         styles,
         number=5,
         title="VERBRAUCHTES MATERIAL",
-        body=_consumed_materials_table(consumed_inline, width / 2 - 6, styles),
-        width=width / 2 - 4,
+        body=_consumed_materials_table(consumed_inline, half_width - 8, styles),
+        width=half_width,
         footer=("siehe Materialschein" if consumed_overflow else None),
     )
     section_6 = _section_box(
@@ -304,22 +306,11 @@ def build_report_pdf_bytes(
         number=6,
         title="MATERIALBEDARF",
         title_suffix=" (bitte bestellen)",
-        body=_needed_materials_table(needed_inline, width / 2 - 6, styles),
-        width=width / 2 - 4,
+        body=_needed_materials_table(needed_inline, half_width - 8, styles),
+        width=half_width,
         footer=("siehe Materialschein" if needed_overflow else None),
     )
-    materials_row = Table(
-        [[section_5, section_6]],
-        colWidths=[width / 2, width / 2],
-    )
-    materials_row.setStyle(TableStyle([
-        ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("LEFTPADDING", (0, 0), (-1, -1), 0),
-        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-        ("TOPPADDING", (0, 0), (-1, -1), 0),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
-    ]))
-    elements.append(materials_row)
+    elements.append(_two_column_row(section_5, section_6, total_width=width))
 
     # ── Section 7: Hinweise / Bemerkungen ───────────────────────────────────
     elements.append(_section_box(
@@ -700,7 +691,12 @@ def _section_box(
 
     title_text = f"<b>{escape(title)}</b>"
     if title_suffix:
-        title_text += f' <font color="#6B7280" size=8>{escape(title_suffix)}</font>'
+        # v2.5.16: section title suffix in soft red to match the mockup's
+        # "(bitte bestellen)" cue. Picks up the eye when the form is being
+        # scanned for action items — "this section's contents need to be
+        # ordered". Soft red (#C0392B) rather than warning-red so it
+        # signals attention without alarm.
+        title_text += f' <font color="#C0392B" size=8><i>{escape(title_suffix)}</i></font>'
     title_para = Paragraph(title_text, styles["SectionTitle"])
 
     header_row = Table(
@@ -743,19 +739,29 @@ def _section_box(
 # ── Two-column row helper (v2.5.15 — used by sections 1+2 and 3+4) ──────────
 
 
-def _two_column_row(left: Any, right: Any, *, total_width: float) -> Table:
-    """Place two ``_section_box`` flowables side-by-side at half width each.
+_TWO_COLUMN_GAP_PT = 6.0
+"""v2.5.16: explicit visual gap between the two boxes in any two-column
+section row. Picked to be visible without being prominent — enough white
+space to separate the boxes, not so much that the document feels sparse.
+Sections 1+2, 3+4 and 5+6 all use this single constant for consistent
+alignment across the document."""
 
-    The outer table has zero padding so the inner section boxes butt up
-    against each other with just the visual gutter built into their own
-    bottom padding. Used to combine vertically-short sections (1+2 — header
-    metadata + workers table; 3+4 — short bullet lists for completed and
-    open work) into a single horizontal row.
+
+def _two_column_row(left: Any, right: Any, *, total_width: float) -> Table:
+    """Place two flowables side-by-side with ``_TWO_COLUMN_GAP_PT`` between
+    them.
+
+    Layout is a 3-column outer table: [left box][gap spacer][right box].
+    Earlier v2.5.15 code used a 2-column table with cell padding to fake the
+    gap, which produced subtle (~2pt) misalignment between section pairs
+    because sections 5+6 had been originally written with a slightly
+    different formula. Making the gap an explicit table column rather than
+    a side effect of padding keeps the geometry trivially consistent.
     """
-    column_width = (total_width - 4) / 2
+    box_width = (total_width - _TWO_COLUMN_GAP_PT) / 2
     row = Table(
-        [[left, right]],
-        colWidths=[column_width + 2, column_width + 2],
+        [[left, "", right]],
+        colWidths=[box_width, _TWO_COLUMN_GAP_PT, box_width],
     )
     row.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
@@ -778,12 +784,12 @@ def _format_contact_line(payload: dict[str, Any]) -> str:
 
 
 def _key_value_table(rows: list[tuple[str, str]], width: float) -> Table:
-    # v2.5.15: label column bumped from 28% → 38% so the longer German
-    # labels like "Projektadresse" (14ch) and "Ansprechpartner" (15ch) fit
-    # on a single line at half-width (when sections 1+2 sit side-by-side).
-    # At full width this is a slight visual change but still comfortable.
+    # v2.5.16: label column bumped to 42% (was 38% in v2.5.15) so the
+    # longer German labels stay on a single line even after the v2.5.16
+    # font reduction. Combined with the 8pt cell font, "Projektadresse"
+    # (14ch) and "Ansprechpartner" (15ch) fit comfortably.
     data = [[_cell(k, bold=True), _cell(v or "-")] for k, v in rows]
-    table = Table(data, colWidths=[(width - 8) * 0.38, (width - 8) * 0.62])
+    table = Table(data, colWidths=[(width - 8) * 0.42, (width - 8) * 0.58])
     table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (0, -1), _COLOR_HEADER_BG),
         ("TEXTCOLOR", (0, 0), (-1, -1), _COLOR_TEXT),
@@ -916,14 +922,52 @@ def _bullets_for_open_tasks(payload: dict[str, Any]) -> list[str]:
 
 
 def _bullet_list(items: list[str], styles) -> Any:
-    """Wrap a list of strings as a Paragraph stream with '•' bullets. When
-    empty, renders a single muted dash."""
+    """Render a list of bullet items with proper hanging indent.
+
+    v2.5.16: previously this rendered all items as one Paragraph joined by
+    ``<br/>``. ReportLab treats ``<br/>`` as a soft line break within a
+    paragraph, so when text wrapped to a second visual line it wrapped at
+    leftIndent — exactly where the bullet dot lived. That broke the visual
+    structure: a wrapped bullet looked indistinguishable from the start of
+    a new bullet.
+
+    The fix: render each item as its OWN ParagraphStyle with a hanging
+    indent (``leftIndent=12, firstLineIndent=-10``). The bullet dot lives
+    at position 2, the text starts at position 12, and any wrapped lines
+    stay at position 12 — properly indented under the text, not the dot.
+
+    Multiple items get wrapped in a thin Table so they live as a single
+    Flowable the caller can drop into a section_box body.
+    """
     if not items:
         return Paragraph('<font color="#9CA3AF">—</font>', styles["Normal"])
-    body_lines: list[str] = []
-    for item in items:
-        body_lines.append(f'• {escape(item)}')
-    return Paragraph("<br/>".join(body_lines), styles["ReportBullet"])
+
+    bullet_style = ParagraphStyle(
+        name="_bullet_item",
+        fontName="Helvetica",
+        fontSize=8,
+        leading=10,
+        leftIndent=12,
+        firstLineIndent=-10,
+        textColor=_COLOR_TEXT,
+        spaceBefore=0,
+        spaceAfter=1,
+    )
+
+    paragraphs = [Paragraph(f"•   {escape(item)}", bullet_style) for item in items]
+    if len(paragraphs) == 1:
+        return paragraphs[0]
+
+    rows = [[p] for p in paragraphs]
+    table = Table(rows, colWidths=[None])
+    table.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+    ]))
+    return table
 
 
 # ── Material tables (sections 5 + 6) ─────────────────────────────────────────
@@ -999,31 +1043,49 @@ def _status_box(
     width: float,
     has_material_overflow: bool,
 ) -> Table:
+    """Section 8 STATUS grid.
+
+    v2.5.16 layout (per operator feedback): Kilometer sits directly under
+    the 'An- und Abfahrt erfolgt' checkbox in the left column. The two
+    are logically related — km tracks the driving distance, which IS the
+    arrival/departure — so visually pairing them helps scanning.
+
+    Row map (5 rows × 2 cols, with the bottom 2 rows spanning):
+
+       row 0:   [ ☐ An- und Abfahrt erfolgt   ] [ ☐ Arbeiten abgeschlossen        ]
+       row 1:   [ Kilometer (gesamt): 48 km   ] [ ☐ Anlage störungsfrei übergeben ]
+       row 2:   [ (empty)                     ] [ ☐ Weitere Arbeiten notwendig    ]
+       row 3:   [ ☐ Mehrverbrauch ...                                              ]  (span)
+       row 4:   [ Bemerkung (optional): ...                                        ]  (span)
+    """
     status = dict(payload.get("status") or {})
     distance = dict(payload.get("distance") or {})
 
-    options: list[tuple[bool, str]] = [
+    cb_arrival = _checkbox_cell(
         (bool(status.get("arrival_completed")), "An- und Abfahrt erfolgt"),
+        styles,
+    )
+    cb_finished = _checkbox_cell(
         (bool(status.get("work_finished")), "Arbeiten abgeschlossen"),
+        styles,
+    )
+    cb_handed_over = _checkbox_cell(
         (bool(status.get("handed_over_clean")), "Anlage störungsfrei dem Kunden übergeben"),
+        styles,
+    )
+    cb_further_work = _checkbox_cell(
         (bool(status.get("further_work_needed")), "Weitere Arbeiten notwendig"),
+        styles,
+    )
+    cb_overflow = _checkbox_cell(
         (
             bool(status.get("extra_material_used")) or has_material_overflow,
             "Mehrverbrauch an Material lt. beiliegendem Materialschein",
         ),
-    ]
+        styles,
+    )
 
-    # Two-column grid of checkboxes plus a km row spanning both. The mockup
-    # arranges these horizontally; we approximate with a 3-row × 2-col table.
-    grid_rows: list[list[Any]] = []
-    pairs = list(_pairs(options))
-    for left, right in pairs:
-        grid_rows.append([
-            _checkbox_cell(left, styles),
-            _checkbox_cell(right, styles) if right is not None else _cell(""),
-        ])
-
-    # Kilometer row
+    # Kilometer row — paired with An-Abfahrt in the left column.
     km_value = distance.get("kilometers")
     km_source = str(distance.get("source") or "unset")
     km_text = (
@@ -1035,16 +1097,22 @@ def _status_box(
         km_text += ' <font color="#6B7280" size=7>(automatisch berechnet)</font>'
     elif km_source == "manual":
         km_text += ' <font color="#6B7280" size=7>(manuell eingegeben)</font>'
-    km_row = Paragraph(km_text, styles["Normal"])
+    km_para = Paragraph(km_text, styles["Normal"])
 
     note = str(status.get("note") or "").strip()
-    note_row = Paragraph(
+    note_para = Paragraph(
         f"<b>Bemerkung (optional):</b> {escape(note) if note else '—'}",
         styles["Normal"],
     )
 
     inner = Table(
-        grid_rows + [[km_row, ""], [note_row, ""]],
+        [
+            [cb_arrival,   cb_finished],
+            [km_para,      cb_handed_over],
+            [_cell(""),    cb_further_work],
+            [cb_overflow,  ""],
+            [note_para,    ""],
+        ],
         colWidths=[width * 0.55, width * 0.45],
     )
     inner.setStyle(TableStyle([
@@ -1053,8 +1121,9 @@ def _status_box(
         ("RIGHTPADDING", (0, 0), (-1, -1), 0),
         ("TOPPADDING", (0, 0), (-1, -1), 2),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-        ("SPAN", (0, -2), (-1, -2)),
-        ("SPAN", (0, -1), (-1, -1)),
+        # Spans for the bottom two full-width rows: Mehrverbrauch + Bemerkung.
+        ("SPAN", (0, 3), (-1, 3)),
+        ("SPAN", (0, 4), (-1, 4)),
     ]))
 
     return _section_box(
@@ -1354,8 +1423,13 @@ def _material_sheet_signatures(
 # ── Low-level helpers (shared) ──────────────────────────────────────────────
 
 
-_CELL_STYLE = ParagraphStyle(name="TableCell", fontName="Helvetica", fontSize=8.5, leading=10.5, textColor=_COLOR_TEXT)
-_CELL_BOLD_STYLE = ParagraphStyle(name="TableCellBold", fontName="Helvetica-Bold", fontSize=8.5, leading=10.5, textColor=_COLOR_TEXT)
+# v2.5.16: dropped table cell font from 8.5pt → 8pt across the board. The
+# side-by-side section pairs (introduced v2.5.15) put more content into
+# narrower columns; the smaller font keeps long German values like
+# "Schrumpfschlauch" and "+49 123 4567890 / rehr@altenzentrum.de" on a
+# single line without losing readability when printed.
+_CELL_STYLE = ParagraphStyle(name="TableCell", fontName="Helvetica", fontSize=8, leading=10, textColor=_COLOR_TEXT)
+_CELL_BOLD_STYLE = ParagraphStyle(name="TableCellBold", fontName="Helvetica-Bold", fontSize=8, leading=10, textColor=_COLOR_TEXT)
 
 
 def _cell(text: str, *, bold: bool = False) -> Paragraph:
