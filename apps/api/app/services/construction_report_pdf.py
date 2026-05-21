@@ -104,15 +104,22 @@ class _Checkbox(Flowable):
 # page 2, which looks worse than having a clean second-document Materialschein.
 MATERIAL_OVERFLOW_THRESHOLD = 6
 
-# Brand colours pulled from the mockup. Amber for section number badges,
-# muted brand blue for the logo accent. Greys for table grid lines.
-_COLOR_BADGE = colors.HexColor("#D4A933")   # amber section-number badge
+# Brand colours. v2.5.15: aligned with the SMPL website theme so the report
+# looks like part of the same product, not a separate document. The website's
+# --accent CSS variable is #2f70b7 (the medium brand blue in the SMPL logo);
+# we use it for the section-number badges and a tinted box border. Greys
+# stay for table grid lines (a coloured grid would compete with content).
+# Semantic colours (green check, red "unsigned") stay independent of the
+# brand palette because they convey meaning — switching them to blue would
+# lose the "ok / problem" signal.
+_COLOR_BADGE = colors.HexColor("#2f70b7")   # SMPL brand blue (website --accent)
+_COLOR_BADGE_DEEP = colors.HexColor("#225a96")  # darker shade for the section title underline
 _COLOR_TEXT = colors.HexColor("#222222")    # body text
 _COLOR_MUTED = colors.HexColor("#6B7280")   # secondary text (Bemerkung labels)
 _COLOR_GRID = colors.HexColor("#D8DCE0")    # table grid lines
-_COLOR_HEADER_BG = colors.HexColor("#F1F2F4")  # table header strip
+_COLOR_HEADER_BG = colors.HexColor("#EEF3FA")  # table header strip — very faint blue tint
 _COLOR_BOX_BORDER = colors.HexColor("#CBD0D6")  # outer box around each section
-_COLOR_CHECK = colors.HexColor("#16A34A")   # green check on status
+_COLOR_CHECK = colors.HexColor("#16A34A")   # green check on status (semantic, not brand)
 _COLOR_DANGER = colors.HexColor("#DC2626")  # red for "noch nicht unterschrieben"
 
 
@@ -221,8 +228,14 @@ def build_report_pdf_bytes(
         title="Baustellenbericht",
     ))
 
-    # ── Section 1: Projekt & Kunde ──────────────────────────────────────────
-    elements.append(_section_box(
+    # v2.5.15: sections 1+2 side-by-side, sections 3+4 side-by-side. Pairs
+    # save substantial vertical space — a typical short report now fits on
+    # a single page instead of spilling onto a mostly-empty page 2.
+    # half_width = (page_internal_width − 4mm gutter between the two boxes) / 2.
+    half_width = (width - 4) / 2
+
+    # ── Section 1 + 2: Projekt & Kunde + Mitarbeiter & Arbeitszeiten ────────
+    section_1 = _section_box(
         styles,
         number=1,
         title="PROJEKT & KUNDE",
@@ -234,22 +247,21 @@ def build_report_pdf_bytes(
                 ("Ansprechpartner", str(payload.get("customer_contact") or "-")),
                 ("Telefon / E-Mail", _format_contact_line(payload)),
             ],
-            width,
+            half_width,
         ),
-        width=width,
-    ))
-
-    # ── Section 2: Mitarbeiter & Arbeitszeiten ──────────────────────────────
-    elements.append(_section_box(
+        width=half_width,
+    )
+    section_2 = _section_box(
         styles,
         number=2,
         title="MITARBEITER & ARBEITSZEITEN",
-        body=_workers_table(payload.get("workers") or [], width, styles),
-        width=width,
-    ))
+        body=_workers_table(payload.get("workers") or [], half_width, styles),
+        width=half_width,
+    )
+    elements.append(_two_column_row(section_1, section_2, total_width=width))
 
-    # ── Section 3: Ausgeführte Arbeiten ─────────────────────────────────────
-    elements.append(_section_box(
+    # ── Section 3 + 4: Ausgeführte Arbeiten + Offene Arbeiten ──────────────
+    section_3 = _section_box(
         styles,
         number=3,
         title="AUSGEFÜHRTE ARBEITEN",
@@ -258,17 +270,16 @@ def build_report_pdf_bytes(
             + [str(x) for x in (payload.get("completed_subtasks") or []) if str(x).strip()],
             styles,
         ),
-        width=width,
-    ))
-
-    # ── Section 4: Offene Arbeiten / Weitere Maßnahmen ──────────────────────
-    elements.append(_section_box(
+        width=half_width,
+    )
+    section_4 = _section_box(
         styles,
         number=4,
         title="OFFENE ARBEITEN / WEITERE MASSNAHMEN",
         body=_bullet_list(_bullets_for_open_tasks(payload), styles),
-        width=width,
-    ))
+        width=half_width,
+    )
+    elements.append(_two_column_row(section_3, section_4, total_width=width))
 
     # ── Section 5 + 6: side-by-side Verbrauchtes Material + Materialbedarf ─
     # Two boxes side-by-side. ReportLab doesn't have native column layout,
@@ -729,6 +740,33 @@ def _section_box(
     return wrapper
 
 
+# ── Two-column row helper (v2.5.15 — used by sections 1+2 and 3+4) ──────────
+
+
+def _two_column_row(left: Any, right: Any, *, total_width: float) -> Table:
+    """Place two ``_section_box`` flowables side-by-side at half width each.
+
+    The outer table has zero padding so the inner section boxes butt up
+    against each other with just the visual gutter built into their own
+    bottom padding. Used to combine vertically-short sections (1+2 — header
+    metadata + workers table; 3+4 — short bullet lists for completed and
+    open work) into a single horizontal row.
+    """
+    column_width = (total_width - 4) / 2
+    row = Table(
+        [[left, right]],
+        colWidths=[column_width + 2, column_width + 2],
+    )
+    row.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+    ]))
+    return row
+
+
 # ── Section 1 helpers ───────────────────────────────────────────────────────
 
 
@@ -740,8 +778,12 @@ def _format_contact_line(payload: dict[str, Any]) -> str:
 
 
 def _key_value_table(rows: list[tuple[str, str]], width: float) -> Table:
+    # v2.5.15: label column bumped from 28% → 38% so the longer German
+    # labels like "Projektadresse" (14ch) and "Ansprechpartner" (15ch) fit
+    # on a single line at half-width (when sections 1+2 sit side-by-side).
+    # At full width this is a slight visual change but still comfortable.
     data = [[_cell(k, bold=True), _cell(v or "-")] for k, v in rows]
-    table = Table(data, colWidths=[(width - 8) * 0.28, (width - 8) * 0.72])
+    table = Table(data, colWidths=[(width - 8) * 0.38, (width - 8) * 0.62])
     table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (0, -1), _COLOR_HEADER_BG),
         ("TEXTCOLOR", (0, 0), (-1, -1), _COLOR_TEXT),
