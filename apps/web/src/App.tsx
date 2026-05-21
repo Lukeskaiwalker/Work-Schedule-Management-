@@ -58,6 +58,9 @@ import type {
   ReportDraft,
   StoredReportDraft,
   ReportMaterialRow,
+  ReportStatus,
+  ReportDistance,
+  ReportSignature,
   ConstructionReportCreateResponse,
   ConstructionReportProcessingResponse,
   RecentConstructionReport,
@@ -577,6 +580,30 @@ export function App() {
   const [reportOfficeMaterialRows, setReportOfficeMaterialRows] = useState<ReportMaterialRow[]>(() => [
     createReportMaterialRow("office_materials"),
   ]);
+  // v2.5.18: status / distance / signature state for the redesigned
+  // Baustellenbericht. Defaults match a freshly-loaded form: nothing
+  // checked, no distance yet (source="unset" — the form will try to
+  // fetch a server-side estimate when the project is set), no signatures.
+  const [reportStatus, setReportStatus] = useState<ReportStatus>({
+    arrival_completed: false,
+    work_finished: false,
+    handed_over_clean: false,
+    further_work_needed: false,
+    extra_material_used: false,
+    note: "",
+  });
+  const [reportDistance, setReportDistance] = useState<ReportDistance>({
+    kilometers: null,
+    source: "unset",
+  });
+  const [reportSignatureSmpl, setReportSignatureSmpl] = useState<ReportSignature>({
+    name: "",
+    image_base64: "",
+  });
+  const [reportSignatureCustomer, setReportSignatureCustomer] = useState<ReportSignature>({
+    name: "",
+    image_base64: "",
+  });
   const [reportImageFiles, setReportImageFiles] = useState<ReportImageSelection[]>([]);
   const [reportSubmitting, setReportSubmitting] = useState(false);
   const [reportUploadPercent, setReportUploadPercent] = useState<number | null>(null);
@@ -6708,6 +6735,34 @@ export function App() {
         unit: row.unit || null,
         article_no: row.article_no || null,
       }));
+
+    // v2.5.18: the same rows are also sent as materials_consumed for the
+    // new PDF schema. Backend renderer prefers materials_consumed when
+    // present and falls back to materials (legacy) otherwise. We send
+    // both so the field is unambiguous, even though it's redundant —
+    // saves having to migrate every existing report's payload shape.
+    const materialsConsumed = materials;
+
+    // v2.5.18: structured Materialbedarf rows from the existing
+    // "Büro-Materialbedarf" section in the form. The article_no field is
+    // repurposed as Bemerkung for the Materialbedarf table — that table
+    // doesn't carry an article-number column (the to-order list is
+    // typically free-text), so the existing input is mapped to ``note``
+    // on the backend schema for the redesigned PDF's section 6.
+    const materialsNeeded = reportOfficeMaterialRows
+      .map((row) => ({
+        item: row.item.trim(),
+        qty: row.qty.trim(),
+        unit: row.unit.trim(),
+        note: row.article_no.trim(),
+      }))
+      .filter((row) => row.item.length > 0)
+      .map((row) => ({
+        item: row.item,
+        qty: row.qty || null,
+        unit: row.unit || null,
+        note: row.note || null,
+      }));
     // Use controlled state for previously-uncontrolled fields.
     const extras = parseListLines(reportExtras).map((line) => {
       const [description, reason] = line.split("|").map((x) => x.trim());
@@ -6726,12 +6781,31 @@ export function App() {
       project_number: (targetProject?.project_number || reportDraft.project_number || "").trim() || null,
       workers,
       materials,
+      // v2.5.18: explicit structured fields for the redesigned PDF.
+      // Backend accepts the legacy "materials" + "office_material_need"
+      // fields as fallbacks too, so removing either is safe later.
+      materials_consumed: materialsConsumed,
+      materials_needed: materialsNeeded,
       extras,
       work_done: reportWorkDone,
       incidents: reportIncidents,
       office_material_need: officeMaterialNeed,
       office_rework: reportOfficeRework,
       office_next_steps: reportOfficeNextSteps,
+      // v2.5.18: status checkboxes, distance and signatures all live on
+      // AppContext and arrive here at submit time. The schema is permissive
+      // (every sub-field optional) so partial fills (e.g. customer not
+      // present to sign) still serialise without throwing.
+      status: reportStatus,
+      distance: reportDistance,
+      signature_smpl: {
+        name: reportSignatureSmpl.name.trim(),
+        image_base64: reportSignatureSmpl.image_base64,
+      },
+      signature_customer: {
+        name: reportSignatureCustomer.name.trim(),
+        image_base64: reportSignatureCustomer.image_base64,
+      },
       source_task_id: targetProjectId && reportSourceTaskId ? reportSourceTaskId : null,
       completed_subtasks: targetProjectId && reportSourceTaskId ? completedSubtasks : [],
     };
@@ -8574,6 +8648,14 @@ export function App() {
     setReportMaterialRows,
     reportOfficeMaterialRows,
     setReportOfficeMaterialRows,
+    reportStatus,
+    setReportStatus,
+    reportDistance,
+    setReportDistance,
+    reportSignatureSmpl,
+    setReportSignatureSmpl,
+    reportSignatureCustomer,
+    setReportSignatureCustomer,
     reportImageFiles,
     setReportImageFiles,
     reportSubmitting,

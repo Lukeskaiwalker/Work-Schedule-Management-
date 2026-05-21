@@ -821,6 +821,35 @@ export type ReportMaterialRow = {
   article_no: string;
 };
 
+/** v2.5.18: the 5 status checkboxes + Bemerkung field for section 8 of the
+ *  redesigned Baustellenbericht PDF. All booleans default to false. */
+export type ReportStatus = {
+  arrival_completed: boolean;
+  work_finished: boolean;
+  handed_over_clean: boolean;
+  further_work_needed: boolean;
+  extra_material_used: boolean;
+  note: string;
+};
+
+/** v2.5.18: company→site driving distance for the "Kilometer (gesamt)"
+ *  field. ``source`` is "auto" when the value came from the
+ *  /projects/{id}/construction-reports/distance endpoint, "manual" when the
+ *  operator typed it, "unset" before any value is filled in. The PDF
+ *  renderer surfaces the source as an italic badge next to the km value. */
+export type ReportDistance = {
+  kilometers: number | null;
+  source: "auto" | "manual" | "unset";
+};
+
+/** v2.5.18: signature captured client-side via react-signature-canvas.
+ *  ``image_base64`` is a data-URL PNG (or empty string when no signature).
+ *  ``name`` is the printed name shown under the signature line. */
+export type ReportSignature = {
+  name: string;
+  image_base64: string;
+};
+
 export type ConstructionReportCreateResponse = {
   id: number;
   project_id: number | null;

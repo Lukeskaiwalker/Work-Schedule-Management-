@@ -4,6 +4,8 @@ import { IMAGE_INPUT_ACCEPT } from "../constants";
 import { formatTimeInputForTyping, formatTimeInputForBlur } from "../utils/tasks";
 import { formatProjectTitle } from "../utils/projects";
 import { WorkerNameCombobox } from "../components/shared/WorkerNameCombobox";
+import { SignaturePad } from "../components/shared/SignaturePad";
+import { apiFetch } from "../api/client";
 
 export function ConstructionPage() {
   const {
@@ -62,6 +64,16 @@ export function ConstructionPage() {
     submitConstructionReport,
     files,
     filePreviewUrl,
+    // v2.5.18: status / distance / signature state for the redesigned PDF.
+    reportStatus,
+    setReportStatus,
+    reportDistance,
+    setReportDistance,
+    reportSignatureSmpl,
+    setReportSignatureSmpl,
+    reportSignatureCustomer,
+    setReportSignatureCustomer,
+    token,
   } = useAppContext();
 
   // Project search combobox state (local — ephemeral UI only)
@@ -84,6 +96,42 @@ export function ConstructionPage() {
     const label = formatProjectTitle(p.project_number, p.customer_name, p.name, p.id).toLowerCase();
     return label.includes(projectSearch.toLowerCase());
   });
+
+  // v2.5.18: auto-fetch the company→site round-trip distance whenever the
+  // selected project changes. The endpoint is fast (geocoding cache hit
+  // for repeat projects); we don't overwrite a manually-entered value
+  // because reportDistance.source flips to "manual" the moment the
+  // operator types in the field.
+  useEffect(() => {
+    if (!reportProjectId || !token) return;
+    if (reportDistance.source === "manual") return; // respect operator override
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await apiFetch<{ kilometers: number | null; one_way_km: number | null; source: string }>(
+          `/projects/${reportProjectId}/construction-reports/distance`,
+          token,
+        );
+        if (cancelled) return;
+        if (res.source === "auto" && typeof res.kilometers === "number") {
+          setReportDistance({ kilometers: res.kilometers, source: "auto" });
+        } else {
+          // Unable to auto-fill (no api key, missing addresses, etc.) — leave
+          // unset so the operator must fill it in. The form surfaces the
+          // specific reason via a badge.
+          setReportDistance({ kilometers: null, source: "unset" });
+        }
+      } catch {
+        // Network failure or 404 — fall back to unset. The operator can
+        // still type a km value manually.
+        if (!cancelled) setReportDistance({ kilometers: null, source: "unset" });
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reportProjectId, token]);
 
   function selectProject(idStr: string) {
     applyReportProjectSelection(idStr);
@@ -501,7 +549,7 @@ export function ConstructionPage() {
         <div className="construction-report-section">
           <div className="construction-report-section-head">
             <span className="construction-report-section-label">
-              {de ? "Verwendetes Material" : "Materials used"}
+              {de ? "Verbrauchtes Material" : "Materials consumed"}
             </span>
             <button
               type="button"
@@ -647,7 +695,7 @@ export function ConstructionPage() {
         <div className="construction-report-section">
           <div className="construction-report-section-head">
             <span className="construction-report-section-label">
-              {de ? "Büro-Materialbedarf" : "Office material needs"}
+              {de ? "Materialbedarf (bitte bestellen)" : "Material to order"}
             </span>
             <button
               type="button"
@@ -751,6 +799,195 @@ export function ConstructionPage() {
             placeholder={de ? "Nächste Schritte fürs Büro…" : "Next steps for office…"}
           />
         </label>
+
+        {/* ── v2.5.18: Status checkboxes ── */}
+        <div className="construction-report-field construction-report-field--full">
+          <span className="construction-report-label">
+            {de ? "Status (bitte ankreuzen)" : "Status (check applicable)"}
+          </span>
+          <div className="construction-report-status">
+            <label className="construction-report-status-row">
+              <input
+                type="checkbox"
+                checked={reportStatus.arrival_completed}
+                onChange={(e) =>
+                  setReportStatus({ ...reportStatus, arrival_completed: e.target.checked })
+                }
+              />
+              <span>{de ? "An- und Abfahrt erfolgt" : "Arrival/Departure completed"}</span>
+            </label>
+            <label className="construction-report-status-row">
+              <input
+                type="checkbox"
+                checked={reportStatus.work_finished}
+                onChange={(e) =>
+                  setReportStatus({ ...reportStatus, work_finished: e.target.checked })
+                }
+              />
+              <span>{de ? "Arbeiten abgeschlossen" : "Work finished"}</span>
+            </label>
+            <label className="construction-report-status-row">
+              <input
+                type="checkbox"
+                checked={reportStatus.handed_over_clean}
+                onChange={(e) =>
+                  setReportStatus({ ...reportStatus, handed_over_clean: e.target.checked })
+                }
+              />
+              <span>
+                {de
+                  ? "Anlage störungsfrei dem Kunden übergeben"
+                  : "System handed over to customer without issues"}
+              </span>
+            </label>
+            <label className="construction-report-status-row">
+              <input
+                type="checkbox"
+                checked={reportStatus.further_work_needed}
+                onChange={(e) =>
+                  setReportStatus({ ...reportStatus, further_work_needed: e.target.checked })
+                }
+              />
+              <span>{de ? "Weitere Arbeiten notwendig" : "Further work required"}</span>
+            </label>
+            <label className="construction-report-status-row">
+              <input
+                type="checkbox"
+                checked={reportStatus.extra_material_used}
+                onChange={(e) =>
+                  setReportStatus({ ...reportStatus, extra_material_used: e.target.checked })
+                }
+              />
+              <span>
+                {de
+                  ? "Mehrverbrauch an Material lt. beiliegendem Materialschein"
+                  : "Extra material per attached Materialschein"}
+              </span>
+            </label>
+            <label className="construction-report-status-note">
+              <span className="construction-report-label" style={{ fontSize: "0.85rem" }}>
+                {de ? "Bemerkung (optional)" : "Note (optional)"}
+              </span>
+              <textarea
+                className="construction-report-input construction-report-textarea"
+                rows={2}
+                value={reportStatus.note}
+                onChange={(e) => setReportStatus({ ...reportStatus, note: e.target.value })}
+                placeholder={de ? "Zusätzliche Anmerkungen zum Status…" : "Additional status notes…"}
+              />
+            </label>
+          </div>
+        </div>
+
+        {/* ── v2.5.18: Kilometer with auto-fill ── */}
+        <div className="construction-report-field construction-report-field--full">
+          <div className="construction-report-distance">
+            <label htmlFor="report-km-input">
+              {de ? "Kilometer (gesamt):" : "Kilometers (total):"}
+            </label>
+            <input
+              id="report-km-input"
+              type="number"
+              min={0}
+              step={1}
+              value={reportDistance.kilometers ?? ""}
+              onChange={(e) => {
+                const raw = e.target.value;
+                if (raw === "") {
+                  setReportDistance({ kilometers: null, source: "manual" });
+                } else {
+                  const parsed = Number(raw);
+                  if (Number.isFinite(parsed) && parsed >= 0) {
+                    setReportDistance({ kilometers: Math.round(parsed), source: "manual" });
+                  }
+                }
+              }}
+              placeholder="0"
+            />
+            <span>km</span>
+            {reportDistance.source === "auto" && reportDistance.kilometers !== null ? (
+              <span className="construction-report-distance-badge" title={de
+                ? "Automatisch aus der Strecke Büro → Baustelle berechnet (Hin- und Rückweg). Bei Bedarf manuell überschreiben."
+                : "Auto-calculated from the office → site route (round-trip). Override manually if needed."}>
+                {de ? "automatisch berechnet" : "auto-calculated"}
+              </span>
+            ) : null}
+            {reportDistance.source === "manual" ? (
+              <>
+                <span className="construction-report-distance-badge manual">
+                  {de ? "manuell eingegeben" : "manually entered"}
+                </span>
+                <button
+                  type="button"
+                  className="construction-report-distance-reset"
+                  onClick={() => setReportDistance({ kilometers: null, source: "unset" })}
+                  title={de ? "Wieder automatisch berechnen" : "Re-fetch auto-calculation"}
+                >
+                  ↺ {de ? "Auto" : "Auto"}
+                </button>
+              </>
+            ) : null}
+            {reportDistance.source === "unset" ? (
+              <span className="construction-report-distance-badge error" title={de
+                ? "Auto-Berechnung nicht verfügbar (Projektadresse oder Firmenadresse fehlt, oder OpenWeather-API-Key nicht gesetzt)."
+                : "Auto-calculation unavailable (project or company address missing, or OpenWeather API key not set)."}>
+                {de ? "manuell eingeben" : "enter manually"}
+              </span>
+            ) : null}
+          </div>
+        </div>
+
+        {/* ── v2.5.18: Signatures ── */}
+        <div className="construction-report-field construction-report-field--full">
+          <span className="construction-report-label">
+            {de ? "Unterschriften" : "Signatures"}
+          </span>
+          <div className="construction-report-signatures">
+            <div>
+              <SignaturePad
+                label={de ? "Für SMPL" : "For SMPL"}
+                value={reportSignatureSmpl.image_base64}
+                onChange={(dataUrl) =>
+                  setReportSignatureSmpl({ ...reportSignatureSmpl, image_base64: dataUrl })
+                }
+                placeholder={de ? "Hier unterschreiben" : "Sign here"}
+                language={de ? "de" : "en"}
+                required
+              />
+              <input
+                type="text"
+                className="construction-report-input"
+                style={{ marginTop: 6, width: "100%" }}
+                placeholder={de ? "Name (Mitarbeiter)" : "Employee name"}
+                value={reportSignatureSmpl.name}
+                onChange={(e) =>
+                  setReportSignatureSmpl({ ...reportSignatureSmpl, name: e.target.value })
+                }
+              />
+            </div>
+            <div>
+              <SignaturePad
+                label={de ? "Für den Kunden (optional)" : "For the customer (optional)"}
+                value={reportSignatureCustomer.image_base64}
+                onChange={(dataUrl) =>
+                  setReportSignatureCustomer({ ...reportSignatureCustomer, image_base64: dataUrl })
+                }
+                placeholder={de ? "Optional — Kunde unterschreibt" : "Optional — customer signs"}
+                language={de ? "de" : "en"}
+              />
+              <input
+                type="text"
+                className="construction-report-input"
+                style={{ marginTop: 6, width: "100%" }}
+                placeholder={de ? "Name (Kunde)" : "Customer name"}
+                value={reportSignatureCustomer.name}
+                onChange={(e) =>
+                  setReportSignatureCustomer({ ...reportSignatureCustomer, name: e.target.value })
+                }
+              />
+            </div>
+          </div>
+        </div>
 
         {/* ── Photos ── */}
         <div className="construction-report-field construction-report-field--full">

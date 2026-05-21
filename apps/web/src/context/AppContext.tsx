@@ -66,6 +66,9 @@ import type {
   ReportWorker,
   ReportDraft,
   ReportMaterialRow,
+  ReportStatus,
+  ReportDistance,
+  ReportSignature,
   ConstructionReportCreateResponse,
   ConstructionReportProcessingResponse,
   RecentConstructionReport,
@@ -434,6 +437,18 @@ export interface AppContextValue {
   setReportMaterialRows: (rows: ReportMaterialRow[] | ((current: ReportMaterialRow[]) => ReportMaterialRow[])) => void;
   reportOfficeMaterialRows: ReportMaterialRow[];
   setReportOfficeMaterialRows: (rows: ReportMaterialRow[] | ((current: ReportMaterialRow[]) => ReportMaterialRow[])) => void;
+  // v2.5.18: status checkboxes (section 8), driving distance (km field) and
+  // SMPL + customer signatures. All populated only by the construction
+  // report form; stored centrally on AppContext so submitConstructionReport
+  // (in App.tsx) can read them when building the payload.
+  reportStatus: ReportStatus;
+  setReportStatus: (status: ReportStatus | ((current: ReportStatus) => ReportStatus)) => void;
+  reportDistance: ReportDistance;
+  setReportDistance: (distance: ReportDistance | ((current: ReportDistance) => ReportDistance)) => void;
+  reportSignatureSmpl: ReportSignature;
+  setReportSignatureSmpl: (sig: ReportSignature | ((current: ReportSignature) => ReportSignature)) => void;
+  reportSignatureCustomer: ReportSignature;
+  setReportSignatureCustomer: (sig: ReportSignature | ((current: ReportSignature) => ReportSignature)) => void;
   reportImageFiles: ReportImageSelection[];
   setReportImageFiles: (files: ReportImageSelection[] | ((current: ReportImageSelection[]) => ReportImageSelection[])) => void;
   reportSubmitting: boolean;

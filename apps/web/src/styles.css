@@ -28006,3 +28006,178 @@ button.time-calendar-cell {
   max-width: 640px;
 }
 
+
+/* ── v2.5.18: Baustellenbericht status/distance/signature additions ─────── */
+
+/* Status checkboxes — 5 booleans + optional Bemerkung field. Rendered as
+   a vertical list of label+checkbox rows below the (rebranded) Materialbedarf
+   section in the form. */
+.construction-report-status {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 14px;
+  margin: 8px 0;
+}
+.construction-report-status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.92rem;
+  cursor: pointer;
+}
+.construction-report-status-row input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent);
+  flex-shrink: 0;
+}
+.construction-report-status-note {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+.construction-report-status-note textarea {
+  min-height: 60px;
+  resize: vertical;
+}
+
+/* Km field — pre-filled from the company-to-site distance helper, with a
+   small badge indicating auto vs manual entry. */
+.construction-report-distance {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0;
+  flex-wrap: wrap;
+}
+.construction-report-distance label {
+  font-weight: 600;
+  font-size: 0.92rem;
+}
+.construction-report-distance input[type="number"] {
+  width: 88px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.construction-report-distance-badge {
+  font-size: 0.78rem;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(47, 112, 183, 0.12);
+  color: var(--accent);
+  font-style: italic;
+}
+.construction-report-distance-badge.manual {
+  background: rgba(107, 114, 128, 0.12);
+  color: #6b7280;
+}
+.construction-report-distance-badge.error {
+  background: rgba(220, 38, 38, 0.10);
+  color: #b91c1c;
+  font-style: normal;
+}
+.construction-report-distance-reset {
+  font-size: 0.78rem;
+  background: transparent;
+  border: 1px solid rgba(107, 114, 128, 0.3);
+  border-radius: 6px;
+  padding: 3px 8px;
+  cursor: pointer;
+  color: #4b5563;
+}
+.construction-report-distance-reset:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Signature pad — used twice in the Unterschriften section (SMPL employee
+   + customer). The container is sized to fit any flex / grid layout and
+   the canvas fills it. */
+.signature-pad {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 220px;
+}
+.signature-pad-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.signature-pad-label {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+.signature-pad-required {
+  color: #b91c1c;
+}
+.signature-pad-clear-btn {
+  font-size: 0.78rem;
+  padding: 3px 10px;
+  border: 1px solid rgba(107, 114, 128, 0.3);
+  background: transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  color: #4b5563;
+}
+.signature-pad-clear-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.signature-pad-clear-btn:not(:disabled):hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.signature-pad-canvas-wrapper {
+  position: relative;
+  width: 100%;
+  height: 110px;
+  border: 1.5px dashed rgba(107, 114, 128, 0.4);
+  border-radius: 8px;
+  background: #fafbfc;
+  overflow: hidden;
+  touch-action: none;
+}
+.signature-pad-canvas-wrapper.is-required:not(.has-signature) {
+  border-color: rgba(220, 38, 38, 0.4);
+  background: #fef9f9;
+}
+.signature-pad-canvas-wrapper.has-signature {
+  border-style: solid;
+  border-color: rgba(47, 112, 183, 0.5);
+  background: #fff;
+}
+.signature-pad-placeholder {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  color: #9ca3af;
+  font-style: italic;
+  font-size: 0.92rem;
+  pointer-events: none;
+  user-select: none;
+}
+.signature-pad-canvas {
+  display: block;
+}
+
+/* Pair of signature pads side-by-side on tablet+; stacks vertically on
+   mobile where horizontal space is tight. */
+.construction-report-signatures {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 12px;
+}
+@media (max-width: 640px) {
+  .construction-report-signatures {
+    grid-template-columns: 1fr;
+  }
+  .construction-report-status {
+    grid-template-columns: 1fr;
+  }
+}

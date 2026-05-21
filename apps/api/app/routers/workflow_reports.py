@@ -138,3 +138,47 @@ def list_construction_report_files(
         stmt = stmt.where(Attachment.project_id.is_(None))
     attachments = db.scalars(stmt.order_by(Attachment.created_at.desc())).all()
     return [_attachment_out(attachment) for attachment in attachments]
+
+
+@router.get("/projects/{project_id}/construction-reports/distance")
+def get_construction_report_distance(
+    project_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """v2.5.18: returns the auto-calculated company → site round-trip
+    driving distance for the given project. Used by the Baustellenbericht
+    form to pre-fill the 'Kilometer (gesamt)' field on open.
+
+    Response shape:
+        {
+          "kilometers": int | None,     # round-trip km (None when source != "auto")
+          "one_way_km": float | None,   # for the explainer tooltip
+          "source": str,                # "auto" / "no_api_key" / "no_company_address"
+                                        # / "no_site_address" / "geocode_failed"
+        }
+
+    Frontend treats source="auto" with kilometers!=None as "pre-fill the
+    field with this value and show the badge 'automatisch berechnet'".
+    Any other source means auto-fill is unavailable and the operator must
+    enter the value manually.
+    """
+    assert_project_access(db, current_user, project_id)
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    from app.services.distance import compute_company_to_site_distance
+    from app.services.runtime_settings import get_company_settings
+
+    company_settings = get_company_settings(db)
+    result = compute_company_to_site_distance(
+        db,
+        company_address=str(company_settings.get("company_address") or "").strip() or None,
+        site_address=getattr(project, "construction_site_address", None),
+    )
+    return {
+        "kilometers": result.round_trip_km,
+        "one_way_km": result.one_way_km,
+        "source": result.source,
+    }
