@@ -17,11 +17,16 @@ from app.models.entities import (
     User,
 )
 from app.services.construction_report_pdf import (
+    build_material_sheet_filename,
+    build_material_sheet_pdf_bytes,
     build_report_filename,
     build_report_pdf_bytes,
     build_report_summary_text,
     compact_photo_for_pdf,
+    materials_overflow_kind,
+    MATERIAL_OVERFLOW_THRESHOLD,
 )
+from app.services.distance import compute_company_to_site_distance
 from app.services.files import read_encrypted_file, store_encrypted_file
 from app.services.report_feed import post_report_to_feed_thread
 from app.services.runtime_settings import get_company_settings
@@ -218,20 +223,52 @@ async def process_construction_report_job(db: Session, job_id: int) -> Construct
         if pdf_attachment:
             report_pdf = read_encrypted_file(pdf_attachment.stored_path)
         else:
+            # v2.5.13: when the operator submitted the report without
+            # filling the km field, fall back to a server-side company →
+            # site auto-calculation. The check is "missing or unset", not
+            # "is zero" — an explicit 0 from the operator is a valid value
+            # ("we walked / customer is next door"). We preserve their
+            # ``source`` flag verbatim when present.
+            distance_payload = dict(payload.get("distance") or {})
+            existing_km = distance_payload.get("kilometers")
+            if existing_km in (None, "", "—") and project is not None:
+                computed = compute_company_to_site_distance(
+                    db,
+                    company_address=str(company_settings.get("company_address") or "").strip() or None,
+                    site_address=getattr(project, "construction_site_address", None),
+                )
+                if computed.round_trip_km is not None:
+                    distance_payload = {
+                        "kilometers": computed.round_trip_km,
+                        "source": "auto",
+                    }
+                    payload["distance"] = distance_payload
+
             report_photos: list[tuple[str, bytes]] = []
             for image_attachment in _report_image_attachments(db, report.id):
                 raw_image = read_encrypted_file(image_attachment.stored_path)
                 if not raw_image:
                     continue
                 report_photos.append((image_attachment.file_name, compact_photo_for_pdf(raw_image)))
+
+            # v2.5.13: check overflow BEFORE building the main PDF so the
+            # status section can include the "Mehrverbrauch / siehe
+            # Materialschein" badge automatically when applicable.
+            overflow_kind = materials_overflow_kind(payload)
+            company_name_str = (
+                str(company_settings.get("company_name") or "").strip() or "SMPL"
+            )
+
             report_pdf = build_report_pdf_bytes(
                 payload=payload,
                 report_date=report.report_date,
                 submitted_by=submitted_by,
                 project_name=project.name if project else None,
                 logo_path=settings.report_logo_path,
-                company_name=str(company_settings.get("company_name") or "").strip() or "SMPL",
+                company_name=company_name_str,
                 photos=report_photos,
+                report_number=report.report_number,
+                has_material_overflow=overflow_kind is not None,
             )
             stored_path = store_encrypted_file(report_pdf, "pdf")
             pdf_attachment = Attachment(
@@ -253,6 +290,43 @@ async def process_construction_report_job(db: Session, job_id: int) -> Construct
                     created_by=uploaded_by_user_id,
                 )
             db.flush()
+
+            # v2.5.13: build the standalone Materialschein when either
+            # material table exceeded MATERIAL_OVERFLOW_THRESHOLD rows. The
+            # main PDF still inlines the first N rows so it stays self-
+            # contained; the Materialschein lists ALL rows for the
+            # overflowing list. We currently only generate ONE Materialschein
+            # per report (the consumed-materials list wins when both
+            # overflow — see materials_overflow_kind for rationale).
+            if overflow_kind is not None:
+                sheet_pdf = build_material_sheet_pdf_bytes(
+                    payload=payload,
+                    report_date=report.report_date,
+                    kind=overflow_kind,
+                    project_name=project.name if project else None,
+                    logo_path=settings.report_logo_path,
+                    company_name=company_name_str,
+                    report_number=report.report_number,
+                )
+                sheet_file_name = build_material_sheet_filename(
+                    payload,
+                    report.report_date,
+                    report_number=report.report_number,
+                    kind=overflow_kind,
+                )
+                sheet_stored_path = store_encrypted_file(sheet_pdf, "pdf")
+                sheet_attachment = Attachment(
+                    project_id=report.project_id,
+                    construction_report_id=report.id,
+                    uploaded_by=uploaded_by_user_id,
+                    folder_path="Berichte",
+                    file_name=sheet_file_name,
+                    content_type="application/pdf",
+                    stored_path=sheet_stored_path,
+                    is_encrypted=True,
+                )
+                db.add(sheet_attachment)
+                db.flush()
 
         report_summary = build_report_summary_text(
             project_id=report.project_id,

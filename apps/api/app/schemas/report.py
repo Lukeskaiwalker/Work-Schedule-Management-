@@ -1,6 +1,6 @@
 from __future__ import annotations
 from datetime import date, datetime, time
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
@@ -11,15 +11,91 @@ class ConstructionReportWorker(BaseModel):
 
 
 class ConstructionReportMaterial(BaseModel):
+    """One row in the 'Verbrauchtes Material' table. Three visible columns
+    (Material / Menge / Einheit). ``article_no`` is preserved from the
+    pre-v2.5.13 schema for backward compatibility but is no longer rendered
+    in the main report — it shows up only on the overflow Materialschein
+    when present."""
+
     item: str
     qty: str | None = None
     unit: str | None = None
     article_no: str | None = None
 
 
+class ConstructionReportMaterialNeeded(BaseModel):
+    """One row in the 'Materialbedarf' table. Four visible columns
+    (Material / Menge / Einheit / Bemerkung). v2.5.13: replaces the
+    free-text ``office_material_need`` field with structured rows so the
+    operations team can act on them directly (e.g. each row becomes a
+    candidate purchase-order line item)."""
+
+    item: str
+    qty: str | None = None
+    unit: str | None = None
+    note: str | None = None
+
+
 class ConstructionReportExtra(BaseModel):
+    """Legacy 'Zusatzarbeiten' rows. v2.5.13 PDF folds these into the new
+    'Offene Arbeiten / Weitere Maßnahmen' bullet list alongside the parsed
+    text from ``office_rework`` + ``office_next_steps``. Kept here so old
+    reports continue to round-trip through the schema unchanged."""
+
     description: str
     reason: str | None = None
+
+
+class ConstructionReportStatus(BaseModel):
+    """The five checkboxes from section 8 of the redesigned Baustellenbericht.
+
+    v2.5.13: all five booleans default to False so legacy reports (no status
+    block in payload) render with empty checkboxes — same as if the operator
+    submitted without checking anything. ``note`` is the optional free-text
+    'Bemerkung' field next to the checkboxes.
+    """
+
+    arrival_completed: bool = False
+    """An- und Abfahrt erfolgt."""
+    work_finished: bool = False
+    """Arbeiten abgeschlossen."""
+    handed_over_clean: bool = False
+    """Anlage störungsfrei dem Kunden übergeben."""
+    further_work_needed: bool = False
+    """Weitere Arbeiten notwendig."""
+    extra_material_used: bool = False
+    """Mehrverbrauch an Material lt. beiliegendem Materialschein."""
+    note: str | None = None
+
+
+class ConstructionReportDistance(BaseModel):
+    """Section 8's 'Kilometer (gesamt)' field. v2.5.13: pre-filled from
+    company-address ↔ site-address driving distance (round-trip estimate
+    via the OpenWeather geocode + haversine helper) when ``source='auto'``;
+    operator-supplied number when ``source='manual'``. The PDF renders the
+    same way either way; the source flag is purely for the audit trail."""
+
+    kilometers: int | None = None
+    source: Literal["auto", "manual", "unset"] = "unset"
+
+
+class ConstructionReportSignature(BaseModel):
+    """A handwritten signature captured client-side via react-signature-canvas.
+
+    Stored inline in the report payload as a base64-encoded PNG (typically
+    10-30 KB per signature). v2.5.13 design choice: keep signatures in the
+    same JSON blob as the rest of the form data so encryption + backup +
+    versioning are one story, not two. The PDF renderer base64-decodes and
+    embeds via ReportLab's Image at render time.
+
+    ``name`` is the printed name shown below the signature line; ``signed_at``
+    is an ISO timestamp captured at the moment the pad's stroke ends.
+    """
+
+    name: str | None = None
+    signed_at: datetime | None = None
+    image_base64: str | None = None
+    """Data URL or raw base64 of a PNG. Renderer accepts both shapes."""
 
 
 class ConstructionReportPayload(BaseModel):
@@ -31,7 +107,13 @@ class ConstructionReportPayload(BaseModel):
     project_name: str | None = None
     project_number: str | None = None
     workers: list[ConstructionReportWorker] = Field(default_factory=list)
+    # v2.5.13: materials split into two structurally-distinct lists.
+    # ``materials`` (legacy) is still accepted on incoming payloads and
+    # treated as a synonym for ``materials_consumed`` at render time, so
+    # old form submissions and old DB rows still produce the new PDF.
     materials: list[ConstructionReportMaterial] = Field(default_factory=list)
+    materials_consumed: list[ConstructionReportMaterial] = Field(default_factory=list)
+    materials_needed: list[ConstructionReportMaterialNeeded] = Field(default_factory=list)
     extras: list[ConstructionReportExtra] = Field(default_factory=list)
     work_done: str | None = None
     incidents: str | None = None
@@ -40,6 +122,18 @@ class ConstructionReportPayload(BaseModel):
     office_next_steps: str | None = None
     source_task_id: int | None = None
     completed_subtasks: list[str] = Field(default_factory=list)
+
+    # v2.5.13: structured status, distance and signatures. All optional so
+    # legacy reports continue to validate; the PDF renders empty
+    # placeholders when these are unset.
+    status: ConstructionReportStatus = Field(default_factory=ConstructionReportStatus)
+    distance: ConstructionReportDistance = Field(default_factory=ConstructionReportDistance)
+    signature_smpl: ConstructionReportSignature = Field(
+        default_factory=ConstructionReportSignature
+    )
+    signature_customer: ConstructionReportSignature = Field(
+        default_factory=ConstructionReportSignature
+    )
 
 
 class ConstructionReportCreate(BaseModel):
