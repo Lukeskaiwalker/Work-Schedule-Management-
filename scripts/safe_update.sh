@@ -141,12 +141,30 @@ if $PULL_REPO; then
   # In every case the host's working-tree change had already been
   # mirrored to git as part of the corresponding release commit, so
   # the safe move is: stash → pull → pop.
+  #
+  # v2.5.12: extend to UNTRACKED files too. v2.5.11 hit a different
+  # variant of the same wall: a new file (scripts/smpl-api-watchdog.sh)
+  # was scp'd to the host before the commit landed upstream, so it
+  # existed as untracked locally. The next pull tried to add the same
+  # file from upstream and aborted with "The following untracked
+  # working tree files would be overwritten by merge". v2.5.2's stash
+  # logic explicitly excluded untracked files (--untracked-files=no);
+  # this extension uses `git stash -u` so both classes of drift are
+  # tolerated by the same code path.
   STASH_LABEL="safe-update-auto-$(date -u +%Y%m%dT%H%M%SZ)"
   STASH_MADE=false
-  if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
+  # --untracked-files=normal includes untracked files in the dirty-tree
+  # check, so we stash them too when present. The previous --untracked-
+  # files=no caused untracked-only drift to skip the stash step entirely
+  # and abort the pull.
+  if [[ -n "$(git status --porcelain --untracked-files=normal)" ]]; then
     echo "Host working tree has uncommitted changes; stashing as '${STASH_LABEL}'..."
-    if git stash push --keep-index --include-untracked=no -u --message "$STASH_LABEL" >/dev/null 2>&1 \
-        || git stash push --message "$STASH_LABEL" -- $(git status --porcelain --untracked-files=no | awk '{print $2}') >/dev/null 2>&1; then
+    # `git stash push -u` includes untracked files (but not ignored ones).
+    # The fallback path is kept for older git versions that handle
+    # explicit-pathspec stash differently. Both branches now include
+    # untracked files via the -u flag.
+    if git stash push -u --message "$STASH_LABEL" >/dev/null 2>&1 \
+        || git stash push -u --message "$STASH_LABEL" -- $(git status --porcelain --untracked-files=normal | awk '{print $2}') >/dev/null 2>&1; then
       STASH_MADE=true
     else
       echo "WARNING: stash failed. Continuing — pull may still abort with the original conflict." >&2
@@ -167,6 +185,13 @@ if $PULL_REPO; then
     # pop is a no-op or a trivial conflict we can drop. When upstream
     # genuinely differs, the pop conflicts — we leave the stash in
     # place and tell the operator how to handle it.
+    #
+    # v2.5.12 note: when the stash contained an untracked file whose
+    # name matches a file the pull just added as tracked, `git stash
+    # pop` will refuse with "already exists, no checkout". That's the
+    # expected case — upstream's version is what we want; the stash
+    # is informational. We surface the stash label so the operator
+    # can inspect / drop it manually.
     if ! git stash pop >/dev/null 2>&1; then
       echo "Stashed changes diverged from upstream; the stash is preserved." >&2
       echo "Inspect it with 'git stash list' / 'git stash show -p ${STASH_LABEL}'." >&2
