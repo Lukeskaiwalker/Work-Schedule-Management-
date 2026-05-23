@@ -345,15 +345,18 @@ def build_report_pdf_bytes(
 
     # Photos (legacy) — render on overflow pages if present. Not part of the
     # mockup, but we still want to preserve images uploaded with reports.
+    #
+    # v2.5.19: previously we wrapped photos in a _section_box (an outer
+    # bordered Table). ReportLab can't split a Table cell across pages, so
+    # for reports with many photos (≥10) the rendered Table grew taller
+    # than the page frame and the entire job failed with "Flowable too
+    # large for frame". Now we emit the section as a flat sequence of
+    # standalone flowables — a header line, then each pair of photos as
+    # its own small Table — which Platypus can page-break between
+    # naturally.
     if photos:
         elements.append(Spacer(0, 8))
-        elements.append(_section_box(
-            styles,
-            number=10,
-            title="FOTOS",
-            body=_photos_table(photos, width - 8 * mm, styles),
-            width=width,
-        ))
+        elements.extend(_photos_section_flowables(styles, photos, width))
 
     doc.build(elements)
     return buffer.getvalue()
@@ -1528,28 +1531,90 @@ def _scaled_image_from_base64(data: str, max_width: float, max_height: float) ->
     return _scaled_image_from_bytes(raw, max_width=max_width, max_height=max_height)
 
 
-def _photos_table(photos: list[tuple[str, bytes]], width: float, styles) -> Table:
-    max_width = (width - 12) / 2
+def _photos_section_flowables(styles, photos: list[tuple[str, bytes]], width: float) -> list[Any]:
+    """v2.5.19: render the photos section as a flat sequence of flowables.
+
+    The pre-v2.5.19 implementation returned a single Table containing every
+    photo as a row, then wrapped it in a section_box. Two nested Tables —
+    and ReportLab cannot split nested Tables across pages. With ≥10 photos
+    at ~60mm per row, the inner Table grew beyond a single A4 frame and
+    the entire render failed with "Flowable too large for frame".
+
+    The fix:
+      1. The section header (numbered badge + title) renders as a borderless
+         standalone block — visually consistent with the other sections'
+         badges but not wrapping its content in a Table cell.
+      2. Each pair of photos is its own small Table flowable. The doc-level
+         element list contains these as standalone siblings, so Platypus
+         can place a page break between any two pairs naturally.
+
+    Returns a list of Flowables ready for ``elements.extend(...)``.
+    """
+    flowables: list[Any] = []
+
+    # Section header: same amber badge + bold title as the other sections,
+    # but rendered standalone (no outer bordered box).
+    badge = Table(
+        [[Paragraph("<b>10</b>", styles["SectionBadge"])]],
+        colWidths=[8 * mm],
+        rowHeights=[6 * mm],
+    )
+    badge.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), _COLOR_BADGE),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("TEXTCOLOR", (0, 0), (-1, -1), colors.white),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 0),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
+    ]))
+    title_para = Paragraph("<b>FOTOS</b>", styles["SectionTitle"])
+    header = Table(
+        [[badge, title_para]],
+        colWidths=[10 * mm, width - 10 * mm],
+    )
+    header.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 1),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]))
+    flowables.append(header)
+
+    # Pairs of photos. 2-column grid of images, each row is a fresh Table.
+    inner_width = width - 8 * mm
+    cell_width = (inner_width - 12) / 2
     max_height = 60 * mm
-    rows: list[list[Any]] = []
-    row: list[Any] = []
+
+    pair: list[Any] = []
     for filename, photo_bytes in photos:
-        preview = _scaled_image_from_bytes(photo_bytes, max_width=max_width, max_height=max_height)
+        preview = _scaled_image_from_bytes(photo_bytes, max_width=cell_width, max_height=max_height)
         if preview is None:
-            row.append(Paragraph(f"{filename}: kein Vorschauformat", styles["Normal"]))
+            pair.append(Paragraph(f"{filename}: kein Vorschauformat", styles["Normal"]))
         else:
-            row.append(preview)
-        if len(row) == 2:
-            rows.append(row)
-            row = []
-    if row:
-        row.append(Spacer(1, 1))
-        rows.append(row)
-    table = Table(rows, colWidths=[max_width, max_width], hAlign="LEFT")
-    table.setStyle(TableStyle([
+            pair.append(preview)
+        if len(pair) == 2:
+            flowables.append(_photo_row_table(pair, cell_width))
+            flowables.append(Spacer(0, 4))
+            pair = []
+    if pair:
+        # Odd photo count: pad the second cell with an empty Spacer so the
+        # row table has the right number of columns.
+        pair.append(Spacer(1, 1))
+        flowables.append(_photo_row_table(pair, cell_width))
+
+    return flowables
+
+
+def _photo_row_table(cells: list[Any], cell_width: float) -> Table:
+    """One row of 2 photos, rendered as a small standalone Table."""
+    row_table = Table([cells], colWidths=[cell_width, cell_width], hAlign="LEFT")
+    row_table.setStyle(TableStyle([
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
         ("LEFTPADDING", (0, 0), (-1, -1), 0),
         ("RIGHTPADDING", (0, 0), (-1, -1), 0),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 0),
     ]))
-    return table
+    return row_table
