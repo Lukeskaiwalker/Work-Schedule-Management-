@@ -3260,6 +3260,46 @@ async def _create_construction_report_impl(
 
 
 def _latest_report_pdf_attachment_for_report(db: Session, report_id: int) -> Attachment | None:
+    """Return the *main* report PDF for a construction report.
+
+    A report can have up to two PDF attachments since v2.5.13: the main
+    Baustellenbericht and an optional Materialschein when the material
+    list overflows the inline threshold. The Materialschein is created
+    immediately after the main PDF in process_construction_report_job,
+    so it has a higher attachment id.
+
+    Pre-v2.5.20, this function used ``order_by(id.desc()).limit(1)`` which
+    consequently returned the Materialschein for any overflow report —
+    making the recent-reports list on the construction dashboard link to
+    the supplementary sheet (just the materials table) instead of the
+    main report (everything). The user opens the link expecting the full
+    report and sees only the materials list.
+
+    Fix: filter to attachments whose ``file_name`` matches the report's
+    canonical ``pdf_file_name`` field. That value is set by the worker
+    at render time and always corresponds to the main PDF. Falls back to
+    the legacy latest-by-id behaviour when ``pdf_file_name`` isn't set
+    (defensive for old rows that pre-date the field).
+    """
+    main_filename = ""
+    report = db.get(ConstructionReport, report_id)
+    if report is not None:
+        main_filename = (report.pdf_file_name or "").strip()
+
+    if main_filename:
+        primary = db.scalars(
+            select(Attachment)
+            .where(
+                Attachment.construction_report_id == report_id,
+                Attachment.content_type == "application/pdf",
+                Attachment.file_name == main_filename,
+            )
+            .order_by(Attachment.id.desc())
+            .limit(1)
+        ).first()
+        if primary:
+            return primary
+
     return db.scalars(
         select(Attachment)
         .where(

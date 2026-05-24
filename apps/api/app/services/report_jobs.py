@@ -172,6 +172,39 @@ def _report_image_attachments(db: Session, report_id: int) -> list[Attachment]:
 
 
 def _latest_report_pdf_attachment(db: Session, report_id: int) -> Attachment | None:
+    """Return the main report PDF (not the overflow Materialschein).
+
+    Used by the worker's process_construction_report_job to short-circuit
+    re-rendering when a PDF already exists. Mirrors the same fix that
+    landed in workflow_helpers._latest_report_pdf_attachment_for_report
+    in v2.5.20: filter to the canonical main PDF via
+    ``ConstructionReport.pdf_file_name`` rather than relying on
+    "highest id wins", which would otherwise let the Materialschein
+    (created after the main PDF, higher id) hide the main report from
+    the short-circuit check.
+
+    The fallback to a plain latest-by-id query keeps legacy reports
+    that pre-date the Materialschein feature working unchanged.
+    """
+    main_filename = ""
+    report = db.get(ConstructionReport, report_id)
+    if report is not None:
+        main_filename = (report.pdf_file_name or "").strip()
+
+    if main_filename:
+        primary = db.scalars(
+            select(Attachment)
+            .where(
+                Attachment.construction_report_id == report_id,
+                Attachment.content_type == "application/pdf",
+                Attachment.file_name == main_filename,
+            )
+            .order_by(Attachment.id.desc())
+            .limit(1)
+        ).first()
+        if primary:
+            return primary
+
     return db.scalars(
         select(Attachment)
         .where(
