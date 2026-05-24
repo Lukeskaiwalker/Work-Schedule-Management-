@@ -1,5 +1,6 @@
 import { useAppContext } from "../context/AppContext";
 import { AvatarBadge } from "../components/shared/AvatarBadge";
+import { ApiTokensSection } from "../components/profile/ApiTokensSection";
 
 export function ProfilePage() {
   const {
@@ -343,6 +344,13 @@ export function ProfilePage() {
             </div>
           )}
         </div>
+
+        {/*
+          v2.5.23 — Personal Access Token management. Renders nothing
+          unless the admin has flipped api_access_enabled for this user,
+          so non-API users never see noise they can't act on.
+        */}
+        <ApiTokensSection />
       </div>
     </section>
   );

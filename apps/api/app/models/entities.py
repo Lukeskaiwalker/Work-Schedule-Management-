@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 from app.models.user import User, UserActionToken
+from app.models.api_token import ApiToken
 from app.models.customer import Customer
 from app.models.partner import Partner, TaskPartner
 from app.models.project import (
@@ -49,6 +50,7 @@ from app.models.time_models import ClockEntry, BreakEntry, VacationRequest, Scho
 from app.models.settings_models import AppSetting, AuditLog
 
 __all__ = [
+    "ApiToken",
     "AppSetting",
     "AuditLog",
     "Attachment",

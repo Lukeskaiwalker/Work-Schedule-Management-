@@ -17,7 +17,7 @@ from app.core.permissions import ROLE_ADMIN
 from app.core.security import get_password_hash, verify_password
 from app.core.time import utcnow
 from app.models.entities import User
-from app.routers import admin, auth, events, time_tracking, workflow, workflow_notifications
+from app.routers import admin, api_tokens, auth, events, time_tracking, workflow, workflow_notifications
 from app.services.material_catalog import sync_pending_material_catalog_images
 from app.services.runtime_settings import (
     is_initial_admin_bootstrap_completed,
@@ -182,7 +182,48 @@ async def lifespan(_: FastAPI):
             pass
 
 
-app = FastAPI(title=settings.app_name, lifespan=lifespan)
+# v2.5.23 — populate the OpenAPI metadata so the auto-generated /docs
+# page is a usable agent-facing reference, not just a list of routes.
+# The description renders verbatim at the top of Swagger UI.
+_OPENAPI_DESCRIPTION = """
+SMPL is the internal workflow-management API for projects, tasks,
+construction reports, files, materials, time tracking and chat.
+
+## Authentication
+
+Two channels are supported:
+
+* **Session cookie** — used by the web UI. After `POST /api/auth/login`
+  the response sets an httpOnly `access_token` cookie (HS256 JWT,
+  8-hour expiry) plus a CSRF cookie that must be echoed in the
+  `X-Csrf-Token` header on mutating requests.
+
+* **Personal Access Token (PAT)** — for programmatic / agent use.
+  Pass `Authorization: Bearer smpl_pat_…` on every request. PATs do
+  **not** require CSRF, but require an administrator to have flipped
+  `api_access_enabled = true` on the user; PATs are minted via
+  `POST /api/auth/api-tokens`.
+
+## Rate limiting
+
+Per-IP, 1-minute sliding window. Default 480 req/min; the
+`/api/dav/`, `/api/time/` and PAT-authenticated scopes get higher
+ceilings (2400, 900, and 1200 respectively). 429 responses include
+`Retry-After: 60`.
+
+## Response shapes
+
+Endpoints return JSON. Errors are `{"detail": "…"}` with conventional
+HTTP status codes (400 validation, 401 unauthenticated, 403 forbidden,
+404 not found, 409 conflict, 429 rate-limited).
+""".strip()
+
+app = FastAPI(
+    title=settings.app_name,
+    description=_OPENAPI_DESCRIPTION,
+    version=settings.app_release_version or "dev",
+    lifespan=lifespan,
+)
 
 origins = [origin.strip() for origin in settings.cors_origins.split(",") if origin.strip()]
 app.add_middleware(
@@ -196,7 +237,14 @@ app.add_middleware(
 _rate_bucket: dict[str, deque[datetime]] = defaultdict(deque)
 
 
-def _rate_scope(path: str) -> tuple[str, int]:
+def _rate_scope(path: str, auth_header: str | None) -> tuple[str, int]:
+    # v2.5.23 — PAT-authenticated requests get a separate, higher
+    # bucket. Agents typically burst (e.g. listing projects, fetching
+    # tasks, then mutating) more aggressively than a human clicking
+    # through the UI. We key off the Authorization header prefix
+    # because the request hasn't run the auth dep yet at this layer.
+    if auth_header and auth_header.lower().startswith("bearer smpl_pat_"):
+        return ("api_pat", 1200)
     if path.startswith("/api/dav/"):
         return ("dav", 2400)
     if path.startswith("/api/time/"):
@@ -213,7 +261,7 @@ async def basic_rate_limit(request: Request, call_next):
     if request.url.path.startswith("/api/events"):
         return await call_next(request)
     ip = request.client.host if request.client else "unknown"
-    scope, limit = _rate_scope(request.url.path)
+    scope, limit = _rate_scope(request.url.path, request.headers.get("authorization"))
     bucket_key = f"{ip}:{scope}"
     now = utcnow()
     window = timedelta(minutes=1)
@@ -227,6 +275,7 @@ async def basic_rate_limit(request: Request, call_next):
 
 
 app.include_router(auth.router, prefix="/api")
+app.include_router(api_tokens.router, prefix="/api")
 app.include_router(admin.router, prefix="/api")
 app.include_router(events.router, prefix="/api")
 app.include_router(workflow.router, prefix="/api")

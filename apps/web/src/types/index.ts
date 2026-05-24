@@ -56,6 +56,33 @@ export type User = {
   can_update_recent_own_time_entries?: boolean;
   /** When set, locks the user to a single workspace mode and hides the toggle. */
   workspace_lock?: "construction" | "office" | null;
+  /**
+   * v2.5.23 — opt-in flag for programmatic API access (PATs).
+   * Default false. Admins toggle this in the user-edit modal; the
+   * user-facing "API tokens" settings page is only rendered when this
+   * is true.
+   */
+  api_access_enabled?: boolean;
+};
+
+/**
+ * v2.5.23 — Personal Access Token surface.
+ * The raw `token` field is only populated on the create response — list
+ * and revoke responses omit it (the server never persists the plaintext).
+ */
+export type ApiToken = {
+  id: number;
+  name: string;
+  prefix: string;
+  created_at: string;
+  last_used_at?: string | null;
+  expires_at?: string | null;
+  revoked_at?: string | null;
+};
+
+export type ApiTokenCreated = ApiToken & {
+  /** Plaintext token — shown exactly once. Persist it now or revoke + re-mint. */
+  token: string;
 };
 
 export type Project = {

@@ -35,6 +35,14 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     preferences: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict, server_default="{}")
     workspace_lock: Mapped[str | None] = mapped_column(String(32), nullable=True, default=None)
+    # v2.5.23 — opt-in gate for programmatic API access (PATs). Off by
+    # default; an admin flips this on per user from the admin centre.
+    # Disabling it does NOT delete the user's tokens — it just causes
+    # auth to reject them at request time, so re-enabling restores
+    # access without forcing a re-mint.
+    api_access_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
 
     @property
     def display_name(self) -> str:

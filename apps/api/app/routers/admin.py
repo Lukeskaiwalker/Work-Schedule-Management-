@@ -1867,6 +1867,12 @@ def update_user(
         "vacation_days_per_year",
         "vacation_days_available",
         "vacation_days_carryover",
+        # v2.5.23 — admin-controlled per-user gate for programmatic
+        # API access. Disabling immediately invalidates the user's
+        # PATs (the auth dep rechecks this flag on every request);
+        # enabling it makes any previously-minted-but-suspended
+        # tokens active again without re-mint.
+        "api_access_enabled",
     ]:
         value = getattr(payload, field)
         if value is not None:

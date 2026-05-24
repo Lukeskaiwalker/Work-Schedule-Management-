@@ -1146,6 +1146,14 @@ export interface AppContextValue {
   applyTemplate: (userId: number) => Promise<void>;
   updateRole: (userId: number, role: User["role"]) => Promise<void>;
   updateWorkspaceLock: (userId: number, lock: "construction" | "office" | null) => Promise<void>;
+  /**
+   * v2.5.23 — admin toggle for the per-user PAT gate. Live in the
+   * admin user-edit form; flipping false → true makes the user able to
+   * see the "API tokens" section in their own settings page. Flipping
+   * back to false immediately rejects any PATs the user already minted
+   * (the rows aren't deleted, just temporarily refused).
+   */
+  updateApiAccessEnabled: (userId: number, enabled: boolean) => Promise<void>;
   updateRequiredDailyHours: (targetUserId: number) => Promise<void>;
   saveProfileSettings: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   sendInviteToUser: (targetUserId: number) => Promise<void>;

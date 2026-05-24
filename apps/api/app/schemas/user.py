@@ -28,6 +28,8 @@ class UserUpdate(BaseModel):
     vacation_days_available: float | None = Field(default=None, ge=0, le=366)
     vacation_days_carryover: float | None = Field(default=None, ge=0, le=366)
     workspace_lock: str | None = None  # "construction" | "office" | null (null clears the lock)
+    # v2.5.23 — admin-only toggle for per-user programmatic API access.
+    api_access_enabled: bool | None = None
 
 
 class UserOut(BaseModel):
@@ -50,6 +52,10 @@ class UserOut(BaseModel):
     password_reset_sent_at: datetime | None = None
     preferences: dict[str, Any] = {}
     workspace_lock: str | None = None
+    # v2.5.23 — exposed so the admin UI can render the per-user gate,
+    # and so the user's own /me response can decide whether to show the
+    # "API tokens" page in settings.
+    api_access_enabled: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 

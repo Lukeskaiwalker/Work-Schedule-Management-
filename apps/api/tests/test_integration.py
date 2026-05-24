@@ -347,7 +347,9 @@ def test_project_task_planning_ticket_file_and_report_flow(client: TestClient, a
         files={"file": ("Screenshot 2025-12-02 at 8.40.04\u202fAM.png", b"fake-image-content", "image/png")},
     )
     assert unicode_upload.status_code == 200
-    unicode_file_id = unicode_upload.json()["id"]
+    # v2.5.22 — upload endpoint now always returns a list (it accepts
+    # multi-file uploads); single-file callers get a 1-element list.
+    unicode_file_id = unicode_upload.json()[0]["id"]
 
     unicode_download = client.get(f"/api/files/{unicode_file_id}/download", headers=auth_headers(employee_token))
     assert unicode_download.status_code == 200

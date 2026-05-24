@@ -117,6 +117,7 @@ export function AdminPage() {
     adminUsersById,
     updateRole,
     updateWorkspaceLock,
+    updateApiAccessEnabled,
     requiredHoursDrafts,
     setRequiredHoursDrafts,
     updateRequiredDailyHours,
@@ -658,6 +659,30 @@ export function AdminPage() {
                                   <option value="construction">{de ? "Nur Baustelle" : "Construction only"}</option>
                                   <option value="office">{de ? "Nur Büro" : "Office only"}</option>
                                 </select>
+                              </label>
+
+                              {/*
+                                v2.5.23 — per-user API access gate. Off by default; enabling lets
+                                the user mint Personal Access Tokens for AI agents / integrations.
+                                Flipping back to off invalidates any existing tokens immediately
+                                (they are kept in the DB so re-enabling restores them).
+                              */}
+                              <label className="admin-users-field">
+                                <span className="admin-users-field-label">
+                                  {de ? "API-Zugang" : "API access"}
+                                </span>
+                                <label className="admin-users-toggle">
+                                  <input
+                                    type="checkbox"
+                                    checked={Boolean(u.api_access_enabled)}
+                                    onChange={(e) => void updateApiAccessEnabled(u.id, e.target.checked)}
+                                  />
+                                  <span>
+                                    {u.api_access_enabled
+                                      ? de ? "Aktiviert (PATs erlaubt)" : "Enabled (PATs allowed)"
+                                      : de ? "Deaktiviert (nur Browser)" : "Disabled (browser only)"}
+                                  </span>
+                                </label>
                               </label>
 
                               <div className="admin-users-field admin-users-field--span-2">

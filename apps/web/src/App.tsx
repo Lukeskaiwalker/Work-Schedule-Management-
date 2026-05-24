@@ -7036,6 +7036,38 @@ export function App() {
     }
   }
 
+  async function updateApiAccessEnabled(targetUserId: number, enabled: boolean) {
+    // v2.5.23 — admin-only per-user toggle for programmatic API access.
+    // Mirror the local user state so the row re-renders without a full
+    // /admin/users refetch, then revalidate by re-fetching the list to
+    // pick up the canonical server view (audit timestamps, etc.).
+    try {
+      await apiFetch(`/admin/users/${targetUserId}`, token, {
+        method: "PATCH",
+        body: JSON.stringify({ api_access_enabled: enabled }),
+      });
+      setUsers((current) =>
+        current.map((entry) =>
+          entry.id === targetUserId ? { ...entry, api_access_enabled: enabled } : entry,
+        ),
+      );
+      if (user && user.id === targetUserId) {
+        setUser({ ...user, api_access_enabled: enabled });
+      }
+      setNotice(
+        language === "de"
+          ? enabled
+            ? "API-Zugang aktiviert"
+            : "API-Zugang deaktiviert"
+          : enabled
+            ? "API access enabled"
+            : "API access disabled",
+      );
+    } catch (err: any) {
+      setError(err.message ?? "Failed to update API access");
+    }
+  }
+
   async function updateRequiredDailyHours(targetUserId: number) {
     const targetHours = Number(requiredHoursDrafts[targetUserId]);
     if (!targetUserId || !Number.isFinite(targetHours) || targetHours < 1 || targetHours > 24) {
@@ -9250,6 +9282,7 @@ export function App() {
     applyTemplate,
     updateRole,
     updateWorkspaceLock,
+    updateApiAccessEnabled,
     updateRequiredDailyHours,
     updateVacationBalance,
     saveProfileSettings,
