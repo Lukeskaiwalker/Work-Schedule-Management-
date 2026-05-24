@@ -42,6 +42,7 @@ export function MessagesPage() {
     messageBody,
     setMessageBody,
     messageAttachments,
+    setMessageAttachments,
     removeMessageAttachment,
     messageAttachmentInputRef,
     messageListRef,
@@ -68,6 +69,54 @@ export function MessagesPage() {
   } = useAppContext();
 
   const [mobileThreadListOpen, setMobileThreadListOpen] = React.useState(true);
+
+  // v2.5.22: drag-and-drop file attachment for the chat composer. Mirror
+  // of the project files drag-drop handler — only respond when the drag
+  // actually carries files (DataTransfer.types contains "Files"), append
+  // to existing attachments with dedupe by name|size|lastModified.
+  const [isComposerDragHover, setIsComposerDragHover] = React.useState(false);
+
+  function composerIsFileDrag(event: React.DragEvent<HTMLElement>): boolean {
+    const types = event.dataTransfer?.types;
+    if (!types) return false;
+    for (let i = 0; i < types.length; i++) {
+      if (types[i] === "Files") return true;
+    }
+    return false;
+  }
+
+  function handleComposerDragOver(event: React.DragEvent<HTMLFormElement>) {
+    if (!canSendMessage) return;
+    if (!composerIsFileDrag(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    if (!isComposerDragHover) setIsComposerDragHover(true);
+  }
+
+  function handleComposerDragLeave(event: React.DragEvent<HTMLFormElement>) {
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+    setIsComposerDragHover(false);
+  }
+
+  function handleComposerDrop(event: React.DragEvent<HTMLFormElement>) {
+    if (!canSendMessage) return;
+    if (!composerIsFileDrag(event)) return;
+    event.preventDefault();
+    setIsComposerDragHover(false);
+    const dropped = Array.from(event.dataTransfer.files || []);
+    if (dropped.length === 0) return;
+    setMessageAttachments((current) => {
+      const seen = new Set(current.map((f) => `${f.name}|${f.size}|${f.lastModified}`));
+      const next = [...current];
+      for (const file of dropped) {
+        const key = `${file.name}|${file.size}|${file.lastModified}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        next.push(file);
+      }
+      return next;
+    });
+  }
 
   // Lightbox state. Holds the list of images from the message bubble that
   // was clicked plus the index of the specific image inside that list, so
@@ -421,7 +470,13 @@ export function MessagesPage() {
               })}
             </ul>
 
-            <form onSubmit={sendMessage} className="messages-page-composer">
+            <form
+              onSubmit={sendMessage}
+              className={`messages-page-composer${isComposerDragHover ? " messages-page-composer--drag-over" : ""}`}
+              onDragOver={handleComposerDragOver}
+              onDragLeave={handleComposerDragLeave}
+              onDrop={handleComposerDrop}
+            >
               <label
                 className="messages-page-composer-attach"
                 aria-label={de ? "Datei anhängen" : "Attach file"}

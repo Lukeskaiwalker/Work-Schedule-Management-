@@ -622,6 +622,18 @@ export function App() {
   const [activeDraftId, setActiveDraftId] = useState<string | null>(null);
   const [constructionBackView, setConstructionBackView] = useState<MainView | null>(null);
   const [fileUploadModalOpen, setFileUploadModalOpen] = useState(false);
+  // v2.5.22: drag-and-drop / pre-fill support for the file upload modal.
+  // The drop handler on ProjectFilesTab sets these and opens the modal,
+  // which reads + clears them on mount.
+  const [fileUploadPendingFiles, setFileUploadPendingFiles] = useState<File[]>([]);
+  const requestFileUploadWithFiles = useCallback(
+    (files: File[]) => {
+      if (!files.length) return;
+      setFileUploadPendingFiles(files);
+      setFileUploadModalOpen(true);
+    },
+    [setFileUploadPendingFiles, setFileUploadModalOpen],
+  );
   const [avatarModalOpen, setAvatarModalOpen] = useState(false);
   const [avatarSourceUrl, setAvatarSourceUrl] = useState("");
   const [avatarZoom, setAvatarZoom] = useState(1);
@@ -8627,6 +8639,9 @@ export function App() {
     setFileUploadFolder,
     newProjectFolderPath,
     setNewProjectFolderPath,
+    fileUploadPendingFiles,
+    setFileUploadPendingFiles,
+    requestFileUploadWithFiles,
 
     // ── Construction reports ──────────────────────────────────────────────────
     recentConstructionReports,

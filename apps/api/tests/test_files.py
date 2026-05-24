@@ -170,7 +170,13 @@ def test_corrupted_chunked_attachment_returns_http_error_instead_of_stream_abort
         files={"file": ("corrupt-me.txt", b"original payload", "text/plain")},
     )
     assert upload.status_code == 200
-    attachment_id = int(upload.json()["id"])
+    # v2.5.22: project-files upload now always returns a list of created
+    # attachments (the endpoint supports multi-file). Legacy single-file
+    # callers using ``file=`` still work — the response just wraps the
+    # one created attachment in a 1-element list.
+    upload_payload = upload.json()
+    assert isinstance(upload_payload, list) and len(upload_payload) == 1
+    attachment_id = int(upload_payload[0]["id"])
 
     with SessionLocal() as db:
         attachment = db.get(Attachment, attachment_id)
@@ -203,7 +209,11 @@ def test_project_file_upload_rejects_empty_payload(client: TestClient, admin_tok
         files={"file": ("empty.txt", b"", "text/plain")},
     )
     assert upload.status_code == 400
-    assert upload.json().get("detail") == "File body is required"
+    # v2.5.22: the empty-body rejection message was generalised when the
+    # endpoint started accepting list[UploadFile] — the same error path
+    # now fires for both "the one file you sent is empty" and "all the
+    # files in a multi-file batch are empty".
+    assert upload.json().get("detail") == "No valid file bodies in the request"
 
 def test_project_files_folder_visibility_and_webdav_structure(client: TestClient, admin_token: str):
     employee = _create_user(client, admin_token, "employee-folders@example.com", "employee")
@@ -245,8 +255,9 @@ def test_project_files_folder_visibility_and_webdav_structure(client: TestClient
         files={"file": ("public-note.txt", b"public", "text/plain")},
     )
     assert public_upload.status_code == 200
-    assert public_upload.json()["folder"] == "Bilder/Tag1"
-    assert public_upload.json()["path"] == "Bilder/Tag1/public-note.txt"
+    # v2.5.22: response is now always a list of created attachments.
+    assert public_upload.json()[0]["folder"] == "Bilder/Tag1"
+    assert public_upload.json()[0]["path"] == "Bilder/Tag1/public-note.txt"
 
     auto_image_upload = client.post(
         f"/api/projects/{project_id}/files",
@@ -254,7 +265,7 @@ def test_project_files_folder_visibility_and_webdav_structure(client: TestClient
         files={"file": ("photo-auto.jpg", b"photo-bytes", "image/jpeg")},
     )
     assert auto_image_upload.status_code == 200
-    assert auto_image_upload.json()["folder"] == "Bilder"
+    assert auto_image_upload.json()[0]["folder"] == "Bilder"
 
     auto_pdf_upload = client.post(
         f"/api/projects/{project_id}/files",
@@ -262,7 +273,7 @@ def test_project_files_folder_visibility_and_webdav_structure(client: TestClient
         files={"file": ("report-auto.pdf", b"%PDF-sample", "application/pdf")},
     )
     assert auto_pdf_upload.status_code == 200
-    assert auto_pdf_upload.json()["folder"] == "Berichte"
+    assert auto_pdf_upload.json()[0]["folder"] == "Berichte"
 
     root_upload = client.post(
         f"/api/projects/{project_id}/files",
@@ -271,8 +282,8 @@ def test_project_files_folder_visibility_and_webdav_structure(client: TestClient
         files={"file": ("root-note.txt", b"root", "text/plain")},
     )
     assert root_upload.status_code == 200
-    assert root_upload.json()["folder"] == ""
-    assert root_upload.json()["path"] == "root-note.txt"
+    assert root_upload.json()[0]["folder"] == ""
+    assert root_upload.json()[0]["path"] == "root-note.txt"
 
     protected_upload = client.post(
         f"/api/projects/{project_id}/files",
@@ -330,3 +341,90 @@ def test_project_files_folder_visibility_and_webdav_structure(client: TestClient
     assert dav_root.status_code == 207
     assert "Bilder" in dav_root.text
     assert "Verwaltung" in dav_root.text
+
+
+def test_project_files_multi_upload_creates_one_attachment_per_file(
+    client: TestClient, admin_token: str
+):
+    """v2.5.22 regression: posting multiple ``files`` parts in a single
+    multipart request should create one Attachment row per file. The
+    response is always a list ordered by upload order. Backs the new
+    drag-and-drop / multi-select UI introduced in the same release."""
+    project = client.post(
+        "/api/projects",
+        headers=auth_headers(admin_token),
+        json={"project_number": "2026-MULTI", "name": "Multi Upload", "status": "active"},
+    )
+    assert project.status_code == 200
+    project_id = project.json()["id"]
+
+    response = client.post(
+        f"/api/projects/{project_id}/files",
+        headers=auth_headers(admin_token),
+        files=[
+            ("files", ("a.txt", b"alpha", "text/plain")),
+            ("files", ("b.txt", b"bravo", "text/plain")),
+            ("files", ("c.txt", b"charlie", "text/plain")),
+        ],
+    )
+    assert response.status_code == 200, response.text
+    created = response.json()
+    assert isinstance(created, list)
+    assert len(created) == 3
+    names = [item["file_name"] for item in created]
+    assert names == ["a.txt", "b.txt", "c.txt"]
+
+
+def test_project_files_multi_upload_skips_empty_files_in_batch(
+    client: TestClient, admin_token: str
+):
+    """Empty file bodies in a multi-file batch are silently skipped so a
+    single zero-byte placeholder doesn't abort the whole upload. The
+    surviving files still land and the response only contains them."""
+    project = client.post(
+        "/api/projects",
+        headers=auth_headers(admin_token),
+        json={"project_number": "2026-MULTI-EMPTY", "name": "Multi w/ empty", "status": "active"},
+    )
+    assert project.status_code == 200
+    project_id = project.json()["id"]
+
+    response = client.post(
+        f"/api/projects/{project_id}/files",
+        headers=auth_headers(admin_token),
+        files=[
+            ("files", ("real.txt", b"hello", "text/plain")),
+            ("files", ("empty.txt", b"", "text/plain")),
+            ("files", ("also-real.txt", b"world", "text/plain")),
+        ],
+    )
+    assert response.status_code == 200, response.text
+    created = response.json()
+    assert isinstance(created, list)
+    assert len(created) == 2
+    assert {item["file_name"] for item in created} == {"real.txt", "also-real.txt"}
+
+
+def test_project_files_multi_upload_all_empty_rejects(
+    client: TestClient, admin_token: str
+):
+    """If every file in a multi-file batch is empty, the entire request
+    fails with 400 (no valid bodies) rather than silently succeeding
+    with zero created attachments."""
+    project = client.post(
+        "/api/projects",
+        headers=auth_headers(admin_token),
+        json={"project_number": "2026-MULTI-ALL-EMPTY", "name": "All empty", "status": "active"},
+    )
+    assert project.status_code == 200
+    project_id = project.json()["id"]
+
+    response = client.post(
+        f"/api/projects/{project_id}/files",
+        headers=auth_headers(admin_token),
+        files=[
+            ("files", ("empty1.txt", b"", "text/plain")),
+            ("files", ("empty2.txt", b"", "text/plain")),
+        ],
+    )
+    assert response.status_code == 400, response.text

@@ -28181,3 +28181,99 @@ button.time-calendar-cell {
     grid-template-columns: 1fr;
   }
 }
+
+/* ── v2.5.22: drag-and-drop file upload ──────────────────────────────────── */
+
+/* Inside the FileUploadModal: a click-or-drop zone for selecting files.
+   Reuses the same visual language as .werkstatt-dropzone but scoped to
+   the modal so unrelated tweaks to one don't bleed into the other. */
+.file-upload-dropzone {
+  border: 2px dashed #c9d9ea;
+  border-radius: 12px;
+  padding: 24px 18px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  background: #f8fbff;
+  cursor: pointer;
+  color: #14293d;
+  text-align: center;
+  transition: background-color 80ms ease, border-color 80ms ease;
+}
+.file-upload-dropzone:hover,
+.file-upload-dropzone--drag {
+  border-color: #2f70b7;
+  background: #eaf4ff;
+}
+.file-upload-dropzone strong {
+  font-weight: 600;
+}
+
+/* List of selected files inside the modal. Each row has the filename
+   and a × remove button — operator can prune the batch before submit. */
+.file-upload-list {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.file-upload-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px;
+  background: #f4f7fb;
+  border-radius: 6px;
+  font-size: 0.9rem;
+}
+.file-upload-list-remove {
+  border: none;
+  background: transparent;
+  color: #6b7280;
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 6px;
+}
+.file-upload-list-remove:hover {
+  color: #b91c1c;
+}
+
+/* ProjectFilesTab card — when files are being dragged over it, the
+   highlight ring + a centered "Drop here" overlay tells the operator
+   exactly where the files will land. */
+.card--file-drop-active {
+  position: relative;
+  outline: 2px dashed #2f70b7;
+  outline-offset: -4px;
+}
+.file-drop-overlay {
+  position: absolute;
+  inset: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(47, 112, 183, 0.08);
+  border-radius: 8px;
+  pointer-events: none;
+  z-index: 5;
+  color: #2f70b7;
+  font-size: 1.05rem;
+}
+.file-drop-overlay strong {
+  background: white;
+  padding: 8px 16px;
+  border-radius: 6px;
+  box-shadow: 0 2px 6px rgba(20, 41, 61, 0.12);
+}
+
+/* Chat composer — same visual cue when files are dragged over it. */
+.messages-page-composer--drag-over {
+  outline: 2px dashed #2f70b7;
+  outline-offset: -2px;
+  background: rgba(47, 112, 183, 0.04);
+}

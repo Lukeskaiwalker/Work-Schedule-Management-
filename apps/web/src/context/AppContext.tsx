@@ -402,6 +402,15 @@ export interface AppContextValue {
   setFileUploadFolder: (folder: string) => void;
   newProjectFolderPath: string;
   setNewProjectFolderPath: (path: string) => void;
+  // v2.5.22: files dropped onto the project's file area or pre-selected
+  // by some other surface, queued up for the FileUploadModal to display
+  // when it opens. Empty array = no files pre-selected (normal click-
+  // through path). The modal clears this back to [] on submit / cancel.
+  fileUploadPendingFiles: File[];
+  setFileUploadPendingFiles: (files: File[] | ((current: File[]) => File[])) => void;
+  /** Convenience: drop one or more files and open the upload modal pre-
+   *  filled. Used by ProjectFilesTab's drag-and-drop handler. */
+  requestFileUploadWithFiles: (files: File[]) => void;
 
   // ── Construction reports ──────────────────────────────────────────────────────
   recentConstructionReports: RecentConstructionReport[];
@@ -498,7 +507,9 @@ export interface AppContextValue {
    *  multipart `attachments` field which the backend folds into one
    *  message with N Attachment rows. */
   messageAttachments: File[];
-  setMessageAttachments: (files: File[]) => void;
+  // v2.5.22: widened so callers (e.g. the chat drag-drop handler) can
+  // pass a setter callback for dedupe-aware appending.
+  setMessageAttachments: (files: File[] | ((current: File[]) => File[])) => void;
   removeMessageAttachment: (index: number) => void;
   activeThreadId: number | null;
   setActiveThreadId: (id: number | null) => void;

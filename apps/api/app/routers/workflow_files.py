@@ -53,52 +53,88 @@ def create_project_folder(
     return ProjectFolderOut(path=normalized, is_protected=protected)
 
 @router.post("/projects/{project_id}/files")
-async def upload_project_file(
+async def upload_project_files(
     project_id: int,
     folder: str = Form(default=""),
-    file: UploadFile = File(...),
+    files: list[UploadFile] | None = File(default=None),
+    file: UploadFile | None = File(default=None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    assert_project_access(db, current_user, project_id)
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="File name is required")
-    normalized_folder = _resolve_project_upload_folder(folder, file.filename, file.content_type)
-    if _folder_path_is_protected(normalized_folder) and not _can_access_project_protected_folder(current_user):
-        raise HTTPException(status_code=403, detail="Folder access denied")
-    _register_project_folder(
-        db,
-        project_id=project_id,
-        folder_path=normalized_folder,
-        created_by=current_user.id,
-    )
-    raw = await file.read()
-    if not raw:
-        raise HTTPException(status_code=400, detail="File body is required")
-    extension = file.filename.rsplit(".", 1)[-1] if "." in file.filename else "bin"
-    stored_path = store_encrypted_file(raw, extension)
+    """Upload one or more files to a project's folder.
 
-    attachment = Attachment(
-        project_id=project_id,
-        uploaded_by=current_user.id,
-        folder_path=normalized_folder,
-        file_name=file.filename,
-        content_type=file.content_type or "application/octet-stream",
-        stored_path=stored_path,
-        is_encrypted=True,
-    )
-    db.add(attachment)
-    _record_project_activity(
-        db,
-        project_id=project_id,
-        actor_user_id=current_user.id,
-        event_type="file.uploaded",
-        message=f"File uploaded: {file.filename}",
-        details={"file_name": file.filename, "folder": normalized_folder},
-    )
+    v2.5.22: extended to accept ``files: list[UploadFile]`` so the
+    frontend can submit multi-file uploads in a single request (used by
+    the new drag-and-drop UI and the multi-select file picker). The
+    legacy singular ``file`` parameter is still accepted for backward
+    compatibility with any frontend build that hasn't been reloaded yet
+    after the v2.5.22 deploy — without that fallback we'd return 422
+    for every upload between "backend deployed" and "every browser
+    refreshed".
+
+    Always returns a list, even for single-file uploads. Old callers
+    that only inspected status code keep working; callers that read
+    the response body need to handle the new shape.
+    """
+    assert_project_access(db, current_user, project_id)
+    incoming: list[UploadFile] = []
+    if files:
+        incoming.extend(f for f in files if f and f.filename)
+    if file and file.filename:
+        incoming.append(file)
+    if not incoming:
+        raise HTTPException(status_code=400, detail="At least one file is required")
+
+    created: list[Attachment] = []
+    for upload in incoming:
+        if not upload.filename:
+            raise HTTPException(status_code=400, detail="File name is required")
+        normalized_folder = _resolve_project_upload_folder(folder, upload.filename, upload.content_type)
+        if _folder_path_is_protected(normalized_folder) and not _can_access_project_protected_folder(current_user):
+            raise HTTPException(status_code=403, detail="Folder access denied")
+        _register_project_folder(
+            db,
+            project_id=project_id,
+            folder_path=normalized_folder,
+            created_by=current_user.id,
+        )
+        raw = await upload.read()
+        if not raw:
+            # Skip empty files in a multi-upload rather than failing the
+            # whole batch — operators sometimes select a partially
+            # uploaded directory and we don't want one zero-byte placeholder
+            # to abort 14 real files.
+            continue
+        extension = upload.filename.rsplit(".", 1)[-1] if "." in upload.filename else "bin"
+        stored_path = store_encrypted_file(raw, extension)
+
+        attachment = Attachment(
+            project_id=project_id,
+            uploaded_by=current_user.id,
+            folder_path=normalized_folder,
+            file_name=upload.filename,
+            content_type=upload.content_type or "application/octet-stream",
+            stored_path=stored_path,
+            is_encrypted=True,
+        )
+        db.add(attachment)
+        _record_project_activity(
+            db,
+            project_id=project_id,
+            actor_user_id=current_user.id,
+            event_type="file.uploaded",
+            message=f"File uploaded: {upload.filename}",
+            details={"file_name": upload.filename, "folder": normalized_folder},
+        )
+        created.append(attachment)
+
+    if not created:
+        raise HTTPException(status_code=400, detail="No valid file bodies in the request")
+
     db.commit()
-    db.refresh(attachment)
-    return _attachment_out(attachment)
+    for attachment in created:
+        db.refresh(attachment)
+    return [_attachment_out(a) for a in created]
 
 @router.get("/projects/{project_id}/files")
 def list_project_files(

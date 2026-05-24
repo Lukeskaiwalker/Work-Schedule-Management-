@@ -213,7 +213,48 @@ export function ProjectFilesTab() {
     filePreviewUrl,
     isPreviewable,
     deleteFile,
+    // v2.5.22: drag-and-drop file upload — drop files anywhere on the
+    // files tab to open the upload modal pre-filled.
+    requestFileUploadWithFiles,
   } = useAppContext();
+
+  // v2.5.22: tracks whether the user is currently dragging a file over
+  // the file-explorer card. We only set this when the drag actually
+  // carries files (DataTransfer.types includes "Files"), so dragging
+  // text or links across the page doesn't flicker the highlight.
+  const [isFileDragHover, setIsFileDragHover] = useState(false);
+
+  function isFileDrag(event: React.DragEvent<HTMLElement>): boolean {
+    const types = event.dataTransfer?.types;
+    if (!types) return false;
+    for (let i = 0; i < types.length; i++) {
+      if (types[i] === "Files") return true;
+    }
+    return false;
+  }
+
+  function handleDragOver(event: React.DragEvent<HTMLDivElement>) {
+    if (!canManageFiles) return;
+    if (!isFileDrag(event)) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    if (!isFileDragHover) setIsFileDragHover(true);
+  }
+
+  function handleDragLeave(event: React.DragEvent<HTMLDivElement>) {
+    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+    setIsFileDragHover(false);
+  }
+
+  function handleDrop(event: React.DragEvent<HTMLDivElement>) {
+    if (!canManageFiles) return;
+    if (!isFileDrag(event)) return;
+    event.preventDefault();
+    setIsFileDragHover(false);
+    const dropped = Array.from(event.dataTransfer.files || []);
+    if (dropped.length === 0) return;
+    requestFileUploadWithFiles(dropped);
+  }
 
   // Single set tracks which folders have been manually toggled from their default state.
   // Report-like folders default to collapsed; others default to expanded.
@@ -291,7 +332,19 @@ export function ProjectFilesTab() {
 
   return (
     <section className="grid files-grid">
-      <div className="card">
+      <div
+        className={`card${isFileDragHover ? " card--file-drop-active" : ""}`}
+        onDragOver={handleDragOver}
+        onDragLeave={handleDragLeave}
+        onDrop={handleDrop}
+      >
+        {isFileDragHover ? (
+          <div className="file-drop-overlay" aria-hidden="true">
+            <strong>
+              {language === "de" ? "Dateien hier ablegen zum Hochladen" : "Drop files here to upload"}
+            </strong>
+          </div>
+        ) : null}
         <div className="file-explorer-head">
           <h3>{language === "de" ? "Online Datei-Explorer" : "Online file explorer"}</h3>
           <div className="row">
