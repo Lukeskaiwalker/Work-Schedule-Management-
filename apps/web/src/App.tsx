@@ -6890,9 +6890,23 @@ export function App() {
               ? "Aufgabe als erledigt markiert"
               : "Task marked as complete",
           );
-        } catch {
-          // Non-critical — report was saved, silently skip task mark.
+        } catch (err: any) {
+          // v2.5.21: previously this catch silently swallowed every error
+          // — including the 403 that bit employees pre-fix. Now we surface
+          // the failure as a non-fatal notice so the operator sees that
+          // the report was saved BUT the task is still open and they can
+          // mark it manually. The report itself is already persisted so
+          // we don't want to raise an outright error and confuse the user
+          // about whether their submission was accepted.
           void task;
+          const message = err?.message
+            ? (language === "de"
+                ? `Bericht gespeichert, aber Aufgabe konnte nicht als erledigt markiert werden: ${err.message}`
+                : `Report saved, but task could not be marked complete: ${err.message}`)
+            : (language === "de"
+                ? "Bericht gespeichert, aber Aufgabe konnte nicht automatisch als erledigt markiert werden."
+                : "Report saved, but task could not be marked complete automatically.");
+          setNotice(message);
         }
       }
 

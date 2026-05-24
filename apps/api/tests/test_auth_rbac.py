@@ -1116,3 +1116,144 @@ def test_admin_get_update_progress_returns_503_when_runner_unreachable(
         headers=auth_headers(admin_token),
     )
     assert response.status_code == 503
+
+
+def test_employee_can_mark_assigned_task_done_with_meta_fields(
+    client: TestClient, admin_token: str
+) -> None:
+    """v2.5.21 regression: an assigned employee submitting a PATCH that
+    includes the optimistic-locking ``expected_updated_at`` and
+    ``confirm_overlap`` meta-fields alongside ``status='done'`` must NOT
+    be rejected as a 403.
+
+    Pre-v2.5.21 the backend treated any field other than ``status`` as
+    "illegal" for non-managers. Both ``saveTaskEdit()`` and
+    ``markTaskDone()`` on the frontend always include ``expected_updated_at``
+    for optimistic locking, so every employee who tried to mark a task
+    done via the row-action button OR the TaskEditModal got a misleading
+    403 ("Assigned employees can only mark tasks complete"). This test
+    locks in that the meta-fields pass through cleanly.
+    """
+    # Create a project for the task.
+    project = client.post(
+        "/api/projects",
+        headers=auth_headers(admin_token),
+        json={"project_number": "TST-EMP-DONE", "name": "Employee done test", "status": "active"},
+    )
+    assert project.status_code == 200, project.text
+    project_id = project.json()["id"]
+
+    # Create an employee user.
+    create_employee = client.post(
+        "/api/admin/users",
+        headers=auth_headers(admin_token),
+        json={
+            "email": "task-done-employee@example.com",
+            "password": "Password123!",
+            "full_name": "Task Done Employee",
+            "role": "employee",
+        },
+    )
+    assert create_employee.status_code == 200, create_employee.text
+    employee_id = create_employee.json()["id"]
+
+    employee_login = client.post(
+        "/api/auth/login",
+        json={"email": "task-done-employee@example.com", "password": "Password123!"},
+    )
+    assert employee_login.status_code == 200
+    employee_token = employee_login.headers["X-Access-Token"]
+
+    # Create a task assigned to the employee.
+    created_task = client.post(
+        "/api/tasks",
+        headers=auth_headers(admin_token),
+        json={
+            "project_id": project_id,
+            "title": "Wallbox montieren",
+            "status": "open",
+            "assignee_ids": [employee_id],
+        },
+    )
+    assert created_task.status_code == 200, created_task.text
+    task_id = created_task.json()["id"]
+    expected_updated_at = created_task.json()["updated_at"]
+
+    # Now the employee PATCHes the task with the meta-fields the frontend
+    # always sends. Pre-v2.5.21 this returned 403 because the request body
+    # contained fields other than "status". The fix allows the
+    # ``expected_updated_at`` + ``confirm_overlap`` meta-fields through.
+    update = client.patch(
+        f"/api/tasks/{task_id}",
+        headers=auth_headers(employee_token),
+        json={
+            "status": "done",
+            "expected_updated_at": expected_updated_at,
+            "confirm_overlap": False,
+        },
+    )
+    assert update.status_code == 200, update.text
+    assert update.json()["status"] == "done"
+
+    # Negative check: a genuinely illegal field (e.g. title edit) is
+    # still rejected for the employee.
+    bad_update = client.patch(
+        f"/api/tasks/{task_id}",
+        headers=auth_headers(employee_token),
+        json={"status": "done", "title": "Sneaky rename"},
+    )
+    assert bad_update.status_code == 403, bad_update.text
+
+
+def test_employee_cannot_mark_unassigned_task_done(
+    client: TestClient, admin_token: str
+) -> None:
+    """An employee who is NOT in the task's assignee list cannot mark it
+    done — the v2.5.21 fix relaxed the "extra meta-fields" check but did
+    NOT widen the assignment check.
+
+    This guards against accidental over-permissioning: future refactors
+    to the employee-path logic must keep the "only your own tasks" rule
+    intact.
+    """
+    project = client.post(
+        "/api/projects",
+        headers=auth_headers(admin_token),
+        json={"project_number": "TST-EMP-NOACCESS", "name": "Not assigned test", "status": "active"},
+    )
+    assert project.status_code == 200
+    project_id = project.json()["id"]
+
+    create_employee = client.post(
+        "/api/admin/users",
+        headers=auth_headers(admin_token),
+        json={
+            "email": "no-access-employee@example.com",
+            "password": "Password123!",
+            "full_name": "No Access Employee",
+            "role": "employee",
+        },
+    )
+    assert create_employee.status_code == 200
+    employee_login = client.post(
+        "/api/auth/login",
+        json={"email": "no-access-employee@example.com", "password": "Password123!"},
+    )
+    employee_token = employee_login.headers["X-Access-Token"]
+
+    # Task with no assignees (or assigned to someone else — same effect
+    # for this employee).
+    created_task = client.post(
+        "/api/tasks",
+        headers=auth_headers(admin_token),
+        json={"project_id": project_id, "title": "Not your task", "status": "open"},
+    )
+    assert created_task.status_code == 200
+    task_id = created_task.json()["id"]
+
+    denied = client.patch(
+        f"/api/tasks/{task_id}",
+        headers=auth_headers(employee_token),
+        json={"status": "done", "confirm_overlap": False},
+    )
+    assert denied.status_code == 403, denied.text

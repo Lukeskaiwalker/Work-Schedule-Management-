@@ -241,7 +241,22 @@ def update_task(
         )
 
     if not can_manage:
-        illegal_fields = payload.model_fields_set.difference({"status"})
+        # v2.5.21: allow harmless meta-fields through the employee path.
+        # ``expected_updated_at`` (optimistic-locking timestamp) and
+        # ``confirm_overlap`` (overlap-check acknowledgement) are sent by
+        # the frontend on every task update, including the simple
+        # "mark this task as done" flow from the row-action button and the
+        # status dropdown in TaskEditModal. Pre-v2.5.21 the check rejected
+        # the request as a 403 because those fields counted as "illegal".
+        # Result: employees would see the misleading error message
+        # "Assigned employees can only mark tasks complete" while trying
+        # to do exactly that. 20+ overdue tasks were stuck in this state.
+        # ``expected_updated_at`` was validated above; ``confirm_overlap``
+        # is consumed downstream by the overlap-detection logic, so both
+        # are safe to include without granting any new data-mutation power
+        # to non-managers.
+        ALLOWED_EMPLOYEE_FIELDS = {"status", "expected_updated_at", "confirm_overlap"}
+        illegal_fields = payload.model_fields_set.difference(ALLOWED_EMPLOYEE_FIELDS)
         if illegal_fields:
             raise HTTPException(status_code=403, detail="Assigned employees can only mark tasks complete")
         normalized_status = _normalize_task_status(payload.status, default="")
