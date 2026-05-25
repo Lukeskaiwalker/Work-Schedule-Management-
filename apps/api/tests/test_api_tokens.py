@@ -335,6 +335,29 @@ def test_me_endpoint_exposes_api_access_enabled_flag(client: TestClient, admin_t
     assert me_after["api_access_enabled"] is True
 
 
+def test_openapi_docs_hosted_under_api_prefix(client: TestClient):
+    """The reverse proxy forwards /api/* without stripping the prefix,
+    so FastAPI's docs must live at /api/docs (not the default /docs).
+
+    Regression guard: v2.5.23 shipped without these settings and users
+    got a 404 from /api/docs. v2.5.24 set ``docs_url="/api/docs"`` etc.
+    on the FastAPI() constructor.
+    """
+    spec = client.get("/api/openapi.json")
+    assert spec.status_code == 200
+    body = spec.json()
+    assert body["info"]["title"]
+    # Routers register with prefix="/api" so the spec's paths must too.
+    assert any(path.startswith("/api/") for path in body["paths"].keys())
+
+    swagger = client.get("/api/docs")
+    assert swagger.status_code == 200
+    # Default-mounted /docs and /openapi.json must NOT also be exposed —
+    # the rewrite would cause two ways in and a confusing audit trail.
+    assert client.get("/docs").status_code == 404
+    assert client.get("/openapi.json").status_code == 404
+
+
 def test_inactive_user_cannot_use_pat(client: TestClient, admin_token: str):
     """is_active=False is the broader account-disable. A PAT issued
     before deactivation must stop working immediately."""

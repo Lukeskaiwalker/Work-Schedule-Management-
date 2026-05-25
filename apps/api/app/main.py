@@ -223,6 +223,14 @@ app = FastAPI(
     description=_OPENAPI_DESCRIPTION,
     version=settings.app_release_version or "dev",
     lifespan=lifespan,
+    # v2.5.24 — host the auto-generated docs under /api/ so the Caddy
+    # reverse-proxy rule that forwards /api/* to this container (without
+    # stripping the prefix) actually delivers them. Default FastAPI
+    # exposes /docs and /openapi.json at the root, which never reach
+    # the container in our deployment and the user gets 404 instead.
+    docs_url="/api/docs",
+    redoc_url="/api/redoc",
+    openapi_url="/api/openapi.json",
 )
 
 origins = [origin.strip() for origin in settings.cors_origins.split(",") if origin.strip()]
