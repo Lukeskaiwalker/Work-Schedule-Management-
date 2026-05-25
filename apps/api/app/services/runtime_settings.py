@@ -307,8 +307,23 @@ def set_company_settings(
 def load_role_permissions_from_db(db: Session) -> None:
     """Read the stored role-permissions override from the DB and push it into
     the in-process cache in permissions.py.  Call once at startup and after
-    every admin save."""
-    from app.core.permissions import ALL_ROLES, PERMISSIONS_BY_ROLE, set_permissions_override
+    every admin save.
+
+    v2.5.25 — filters out any permission strings that are no longer in
+    ``ALL_PERMISSIONS`` (e.g. permissions that were renamed or removed
+    in a later code version). Without this, a stale entry in the saved
+    override poisons the PUT validation path and makes the admin
+    role-permissions UI uneditable. If any stale entries are detected,
+    the cleaned-up version is also persisted back to the DB so the
+    self-heal is permanent — the next process restart starts from a
+    valid override.
+    """
+    from app.core.permissions import (
+        ALL_PERMISSIONS,
+        ALL_ROLES,
+        PERMISSIONS_BY_ROLE,
+        set_permissions_override,
+    )
 
     raw = get_runtime_setting(db, ROLE_PERMISSIONS_KEY)
     if not raw:
@@ -319,27 +334,57 @@ def load_role_permissions_from_db(db: Session) -> None:
     except Exception:
         set_permissions_override(None)
         return
+
     # Build a full map — start from defaults so roles not in the stored JSON
     # are still populated correctly.
     merged: dict[str, list[str]] = {role: sorted(PERMISSIONS_BY_ROLE.get(role, set())) for role in ALL_ROLES}
+    stale_total = 0
     for role, perms in data.items():
-        if role in merged and isinstance(perms, list):
-            merged[role] = sorted(set(perms))
+        if role not in merged or not isinstance(perms, list):
+            continue
+        # Drop unknown permission strings silently. Track total so we
+        # can decide whether to persist the cleaned version back.
+        clean_perms = [p for p in perms if isinstance(p, str) and p in ALL_PERMISSIONS]
+        stale_total += len(perms) - len(clean_perms)
+        merged[role] = sorted(set(clean_perms))
+
     set_permissions_override(merged)
+
+    # Self-heal: write the cleaned version back so a future PUT (which
+    # validates against ALL_PERMISSIONS) won't trip on the stale entry
+    # the caller never even knew about. Only writes when something was
+    # actually dropped so steady-state startups don't churn the DB.
+    if stale_total > 0:
+        set_runtime_setting(db, ROLE_PERMISSIONS_KEY, json.dumps(merged))
+        db.commit()
 
 
 def save_role_permissions_to_db(
     db: Session, updated: dict[str, list[str]]
 ) -> dict[str, list[str]]:
     """Persist the full role-permissions map, reload the in-process cache,
-    and return the effective map."""
-    from app.core.permissions import ALL_ROLES, PERMISSIONS_BY_ROLE, set_permissions_override
+    and return the effective map.
 
-    # Normalise: keep only known roles, deduplicate and sort each perm list.
+    v2.5.25 — additionally filters unknown permission strings before
+    persisting. This is defence in depth for the load-time self-heal:
+    even if a future caller bypasses the PUT validation (e.g. a script
+    that writes directly through this helper), stale entries cannot
+    make it back into the DB.
+    """
+    from app.core.permissions import (
+        ALL_PERMISSIONS,
+        ALL_ROLES,
+        PERMISSIONS_BY_ROLE,
+        set_permissions_override,
+    )
+
+    # Normalise: keep only known roles, drop unknown permissions,
+    # deduplicate and sort each perm list.
     clean: dict[str, list[str]] = {}
     for role in ALL_ROLES:
         raw_perms = updated.get(role, sorted(PERMISSIONS_BY_ROLE.get(role, set())))
-        clean[role] = sorted(set(raw_perms))
+        valid = [p for p in raw_perms if isinstance(p, str) and p in ALL_PERMISSIONS]
+        clean[role] = sorted(set(valid))
 
     set_runtime_setting(db, ROLE_PERMISSIONS_KEY, json.dumps(clean))
     db.commit()

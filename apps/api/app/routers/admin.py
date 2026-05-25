@@ -2922,13 +2922,20 @@ def update_role_permissions(
     if not isinstance(permissions, list):
         raise HTTPException(status_code=400, detail="'permissions' must be a list")
 
-    invalid = [p for p in permissions if p not in ALL_PERMISSIONS]
-    if invalid:
-        raise HTTPException(status_code=400, detail=f"Unknown permissions: {invalid}")
+    # v2.5.25 — tolerant filtering instead of an all-or-nothing 400.
+    # A stale permission string in the saved override (carried over
+    # from an earlier code version where the permission still
+    # existed) was poisoning every admin click: the frontend echoes
+    # the full current list plus the toggled permission, and the
+    # whole request used to fail because that stale string is no
+    # longer in ALL_PERMISSIONS. Now unknowns are dropped silently;
+    # the response carries the canonical state so the UI converges.
+    valid = [p for p in permissions if p in ALL_PERMISSIONS]
+    dropped = sorted({p for p in permissions if p not in ALL_PERMISSIONS})
 
     # Load current map, apply update for this role, save.
     current = get_effective_permissions()  # returns dict[str, list[str]]
-    current[role] = sorted(set(permissions))
+    current[role] = sorted(set(valid))
     updated = save_role_permissions_to_db(db, current)
 
     log_admin_action(
@@ -2937,7 +2944,13 @@ def update_role_permissions(
         "role_permissions.update",
         "role",
         role,
-        {"permissions": sorted(permissions)},
+        {
+            "permissions": sorted(valid),
+            # Surface dropped entries to the audit log so we can spot
+            # systematic stale data (e.g. a renamed permission still
+            # lingering in many overrides).
+            "dropped_unknown": dropped,
+        },
     )
     return {"permissions": updated}
 
