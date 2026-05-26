@@ -36,6 +36,35 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 
+def resolve_project_site_address(project: Any) -> str | None:
+    """v2.5.26 — pick the best available "site" address for distance calc.
+
+    Most SMPL projects in the wild have an address only in the
+    ``customer_address`` field (the customer's main address — which for
+    small-contractor work is often *also* where the construction
+    happens). The dedicated ``construction_site_address`` column is a
+    later addition and is frequently left blank.
+
+    Prior to v2.5.26 the km auto-calc only looked at
+    ``construction_site_address`` and silently produced a "—" in the
+    PDF for every project that didn't fill that field explicitly. This
+    helper centralises the "prefer dedicated, fall back to customer"
+    rule so every call-site (GET pre-fill, POST save-time recompute,
+    future report regeneration) treats addresses the same way.
+
+    Returns ``None`` when neither field is populated — that's a
+    legitimate "no usable address" state that callers should surface
+    as a friendly hint to the operator instead of silently failing.
+    """
+    if project is None:
+        return None
+    site = (getattr(project, "construction_site_address", None) or "").strip()
+    if site:
+        return site
+    customer = (getattr(project, "customer_address", None) or "").strip()
+    return customer or None
+
+
 @dataclass(frozen=True)
 class CompanySiteDistance:
     """Result of a company → site distance calculation.

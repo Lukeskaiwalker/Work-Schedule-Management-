@@ -2999,6 +2999,69 @@ def _hydrate_report_payload_with_project_defaults(payload: dict, project: Projec
     return hydrated
 
 
+def _ensure_distance_in_payload(
+    db: Session,
+    payload: dict,
+    project: Project | None,
+) -> dict:
+    """v2.5.26 — server-side safety net for km auto-calc.
+
+    The v2.5.18 design relied on the frontend GET-ing the distance
+    after project selection and putting it in the form before submit.
+    That has three failure modes:
+
+      1. The form is submitted before the async GET resolves.
+      2. The project only has ``customer_address`` (not the dedicated
+         site-address column), so v2.5.18's GET refused to compute.
+      3. The frontend pre-fill state gets clobbered by some other
+         project change (race-condition territory).
+
+    All three produce a "Kilometer (gesamt): —" in the final PDF even
+    though the data needed to compute the number exists on the server.
+    The fix is to recompute at save time when the incoming payload has
+    no km AND the operator hasn't marked it as ``"manual"`` (which
+    means they explicitly want it left blank or have typed their own
+    value). The manual-override flag is preserved so an operator who
+    types a value the geocoder disagrees with is never overwritten.
+    """
+    if project is None:
+        return payload
+    distance = dict(payload.get("distance") or {})
+    if distance.get("source") == "manual":
+        # Operator explicitly set or cleared — respect their value.
+        return payload
+    existing_km = distance.get("kilometers")
+    if isinstance(existing_km, (int, float)) and existing_km > 0:
+        return payload  # frontend pre-fill already populated it
+
+    from app.services.distance import (
+        compute_company_to_site_distance,
+        resolve_project_site_address,
+    )
+    from app.services.runtime_settings import get_company_settings
+
+    site_address = resolve_project_site_address(project)
+    if not site_address:
+        return payload  # nothing to geocode
+
+    company_settings = get_company_settings(db)
+    company_address = str(company_settings.get("company_address") or "").strip() or None
+    result = compute_company_to_site_distance(
+        db,
+        company_address=company_address,
+        site_address=site_address,
+    )
+    if result.round_trip_km is None:
+        return payload  # geocode failed; PDF will still show "—" but at
+                        # least we didn't overwrite a future manual value
+    hydrated = dict(payload)
+    hydrated["distance"] = {
+        "kilometers": result.round_trip_km,
+        "source": "auto",
+    }
+    return hydrated
+
+
 def _next_project_report_number(db: Session, project_id: int) -> int:
     current_max = db.scalar(
         select(func.max(ConstructionReport.report_number)).where(ConstructionReport.project_id == project_id)
@@ -3149,6 +3212,10 @@ async def _create_construction_report_impl(
         _assert_report_access(current_user, write=True)
 
     report_payload = _hydrate_report_payload_with_project_defaults(report_payload, project)
+    # v2.5.26 — recompute km server-side if the frontend didn't manage
+    # to pre-fill it (race, missing site_address, etc.). See the
+    # function's docstring for the failure modes this covers.
+    report_payload = _ensure_distance_in_payload(db, report_payload, project)
     report_number = _next_project_report_number(db, target_project_id) if target_project_id is not None else None
 
     report_file_name = build_report_filename(report_payload, report_date, report_number=report_number)

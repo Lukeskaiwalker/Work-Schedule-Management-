@@ -168,14 +168,21 @@ def get_construction_report_distance(
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    from app.services.distance import compute_company_to_site_distance
+    from app.services.distance import compute_company_to_site_distance, resolve_project_site_address
     from app.services.runtime_settings import get_company_settings
 
     company_settings = get_company_settings(db)
+    # v2.5.26 — fall back to ``customer_address`` when the dedicated
+    # ``construction_site_address`` is empty. Many real projects only
+    # have customer_address populated (the customer's billing/home
+    # address, which is often where the work happens for small
+    # contractors), and v2.5.18 was silently giving up on those —
+    # producing a "—" in the PDF's km row even though we *had* a
+    # perfectly usable address to geocode.
     result = compute_company_to_site_distance(
         db,
         company_address=str(company_settings.get("company_address") or "").strip() or None,
-        site_address=getattr(project, "construction_site_address", None),
+        site_address=resolve_project_site_address(project),
     )
     return {
         "kilometers": result.round_trip_km,
