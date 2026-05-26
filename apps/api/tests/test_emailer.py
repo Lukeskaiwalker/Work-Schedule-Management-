@@ -52,3 +52,50 @@ def test_email_sender_is_enforced(monkeypatch):
     assert sent is True
     assert _FakeSMTP.last_message is not None
     assert _FakeSMTP.last_message["From"] == "technik@smpl-energy.de"
+
+
+# ──────────────────── v2.5.30: host-aware auth-error hints ────────────────────
+
+
+def test_auth_error_godaddy_legacy_host_hints_at_microsoft365_migration():
+    msg = emailer._format_smtp_auth_error(535, "smtpout.secureserver.net")
+    assert "code 535" in msg
+    assert "GoDaddy" in msg
+    assert "Microsoft 365" in msg
+    assert "smtp.office365.com" in msg
+    assert "app-specific password" in msg
+
+
+def test_auth_error_microsoft365_hints_at_auth_smtp_flag_and_app_password():
+    msg = emailer._format_smtp_auth_error(535, "smtp.office365.com")
+    assert "Microsoft 365" in msg
+    assert "Authenticated SMTP" in msg
+    assert "app password" in msg
+
+
+def test_auth_error_outlook_subdomain_still_matches_microsoft365_branch():
+    msg = emailer._format_smtp_auth_error(535, "eur.smtp.office365.com")
+    assert "Microsoft 365" in msg
+
+
+def test_auth_error_gmail_hints_at_app_password_only():
+    msg = emailer._format_smtp_auth_error(535, "smtp.gmail.com")
+    assert "Gmail" in msg
+    assert "app password" in msg
+    assert "2-Step" in msg
+
+
+def test_auth_error_unknown_host_falls_back_to_generic_message():
+    msg = emailer._format_smtp_auth_error(535, "smtp.example.com")
+    assert "code 535" in msg
+    assert "Check username and password" in msg
+    # No provider-specific hints in the generic path.
+    assert "GoDaddy" not in msg
+    assert "Microsoft" not in msg
+    assert "Gmail" not in msg
+
+
+def test_auth_error_empty_host_is_safe():
+    msg = emailer._format_smtp_auth_error(535, "")
+    assert "code 535" in msg
+    assert "Check username and password" in msg

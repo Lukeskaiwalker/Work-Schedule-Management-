@@ -32,6 +32,79 @@ class EmailSendResult:
         return self.ok
 
 
+def _format_smtp_auth_error(code: int | None, host: str) -> str:
+    """Build a host-aware 535-style error message.
+
+    Recognises the SMTP hosts of the providers SMPL operators
+    typically hit (GoDaddy legacy + Microsoft 365, Gmail, generic
+    Outlook, Zoho) and appends a targeted hint. Unknown hosts get
+    the generic message — better than nothing, and the same as what
+    the v2.5.18 emailer surfaced.
+
+    Hostname comparison is case-insensitive and substring-based so
+    that subdomains and country-specific endpoints all match (e.g.
+    smtp.office365.com, eur.smtp.office365.com).
+    """
+    host_lc = (host or "").lower()
+    base = f"SMTP authentication failed (code {code})."
+
+    # GoDaddy legacy Workspace Email host — the most common "used to
+    # work" complaint. GoDaddy has been migrating these mailboxes to
+    # Microsoft 365 for a couple of years now; once migrated, the
+    # mailbox stops accepting auth on the old host.
+    if "secureserver.net" in host_lc:
+        return (
+            f"{base} GoDaddy may have migrated this mailbox to "
+            "Microsoft 365. Try host smtp.office365.com on port 587 "
+            "with STARTTLS and an app-specific password (Account → "
+            "Security → App passwords). If the account still uses "
+            "the legacy Workspace Email, double-check the password "
+            "at email.godaddy.com."
+        )
+
+    # Microsoft 365 / Outlook / Office 365 family. SMTP AUTH was
+    # disabled by default for new tenants in 2022 and Basic Auth
+    # has been deprecated company-wide — both an app password AND a
+    # per-mailbox SMTP-enabled flag are required.
+    if (
+        "office365.com" in host_lc
+        or "outlook.com" in host_lc
+        or "outlook.office" in host_lc
+    ):
+        return (
+            f"{base} For Microsoft 365: (1) the mailbox needs "
+            "'Authenticated SMTP' enabled (Exchange admin → mailbox "
+            "→ Manage email apps); (2) if MFA is on, use an app "
+            "password (Account → Security → App passwords), not the "
+            "regular account password. The username must be the "
+            "full email address."
+        )
+
+    # Gmail / Google Workspace. Google blocked "less secure apps"
+    # entirely in 2022; only OAuth2 or app passwords work now, and
+    # app passwords require 2-Step Verification to be enabled.
+    if "gmail.com" in host_lc or "googlemail.com" in host_lc:
+        return (
+            f"{base} For Gmail: account passwords no longer work for "
+            "SMTP. Enable 2-Step Verification at "
+            "myaccount.google.com/security, then generate an app "
+            "password at myaccount.google.com/apppasswords and use "
+            "that here."
+        )
+
+    # Zoho — also requires app-specific passwords when 2FA is on.
+    if "zoho.com" in host_lc or "zoho.eu" in host_lc:
+        return (
+            f"{base} For Zoho: if 2FA is enabled, generate an "
+            "application-specific password at "
+            "accounts.zoho.com/home#security/app_password and use "
+            "that instead of the account password."
+        )
+
+    # Generic catch-all — same as the v2.5.18 wording.
+    return f"{base} Check username and password."
+
+
 def _resolve_smtp_config(db: Session | None) -> dict:
     settings = get_settings()
     if db is not None:
@@ -113,10 +186,30 @@ def send_email_detailed(
 
     except smtplib.SMTPAuthenticationError as exc:
         code = getattr(exc, "smtp_code", None)
+        # v2.5.30 — host-aware hint. The generic "check username and
+        # password" message is unhelpful when the actual cause is one
+        # of three common scenarios:
+        #
+        #   (a) The provider migrated the mailbox to a new auth
+        #       system (GoDaddy → Microsoft 365 has been the big one).
+        #       The username/password didn't change, but the SMTP
+        #       *server* did. Old config still points at the legacy
+        #       host that no longer accepts the credentials.
+        #   (b) MFA was enabled on the account. Most providers then
+        #       refuse plain-password SMTP and require an "app
+        #       password" (a 16-char string generated specifically
+        #       for non-browser clients).
+        #   (c) Authenticated SMTP is disabled per-mailbox. This is
+        #       the Microsoft 365 default for new tenants since 2022
+        #       — the admin has to enable it explicitly in
+        #       Exchange admin → mailbox settings.
+        #
+        # The SMTP host is a strong predictor of which one bit the
+        # caller, so we inspect it and append a targeted hint.
         return EmailSendResult(
             ok=False,
             error_type="auth",
-            error_detail=f"SMTP authentication failed (code {code}). Check username and password.",
+            error_detail=_format_smtp_auth_error(code, cfg.get("host", "")),
         )
     except smtplib.SMTPRecipientsRefused as exc:
         rejected = ", ".join((exc.recipients or {}).keys())
