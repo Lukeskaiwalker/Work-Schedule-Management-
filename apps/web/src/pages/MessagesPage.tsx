@@ -94,11 +94,22 @@ export function MessagesPage() {
   }
 
   function handleChatDragOver(event: React.DragEvent<HTMLDivElement>) {
-    // Gate on an active thread — dropping files when no conversation
-    // is selected would have nowhere to send them.
-    if (!activeThread || !canSendMessage) return;
+    // Critical: preventDefault must run for EVERY file dragover event,
+    // or the browser interprets the eventual drop as "navigate to
+    // file://" and opens the file in a new tab. This is HTML5 drag-
+    // drop spec behaviour and bites anyone who gates preventDefault
+    // behind a conditional.
+    //
+    // v2.5.27 had ``if (!activeThread || !canSendMessage) return;``
+    // *before* preventDefault — and ``canSendMessage`` is derived
+    // from "user has typed text OR already has attachments", not
+    // "user is allowed to chat". Dragging a file in *before* typing
+    // anything (the obvious workflow!) bypassed preventDefault and
+    // the browser opened the file. v2.5.28: prevent first, gate the
+    // UI feedback second.
     if (!chatIsFileDrag(event)) return;
     event.preventDefault();
+    if (!activeThread) return;  // no thread → don't show the overlay
     event.dataTransfer.dropEffect = "copy";
     if (!isChatDragHover) setIsChatDragHover(true);
   }
@@ -111,10 +122,13 @@ export function MessagesPage() {
   }
 
   function handleChatDrop(event: React.DragEvent<HTMLDivElement>) {
-    if (!activeThread || !canSendMessage) return;
+    // Same prevent-first-then-gate rule as handleChatDragOver. If we
+    // early-return before preventDefault and the user is dropping a
+    // file, the browser opens it.
     if (!chatIsFileDrag(event)) return;
     event.preventDefault();
     setIsChatDragHover(false);
+    if (!activeThread) return;  // no target conversation; swallow the drop silently
     const dropped = Array.from(event.dataTransfer.files || []);
     if (dropped.length === 0) return;
     setMessageAttachments((current) => {
