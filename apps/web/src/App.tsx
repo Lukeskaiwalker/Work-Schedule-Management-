@@ -6599,6 +6599,11 @@ export function App() {
     setReportOfficeMaterialRows([createReportMaterialRow("office_materials")]);
     setReportSourceTaskId(null);
     setReportTaskChecklist([]);
+    // v2.5.29 — clear signatures so they don't bleed from one
+    // draft to the next. SignaturePad's value-sync effect picks up
+    // the empty-string change and clears the canvas.
+    setReportSignatureSmpl({ name: "", image_base64: "" });
+    setReportSignatureCustomer({ name: "", image_base64: "" });
   }
 
   function updateReportMaterialRow(

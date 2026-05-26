@@ -59,23 +59,40 @@ export function SignaturePad({
   const padRef = useRef<SignatureCanvas | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
-  // When ``value`` changes externally (e.g. draft restore or programmatic
-  // reset), push it back into the canvas. The library doesn't have a
-  // controlled-component API, so we manually sync via fromDataURL/clear.
+  // v2.5.29 — track the most recent data URL we emitted via onChange.
+  // The fix to the "signature disappears right after signing" bug:
+  //
+  // Old logic (v2.5.18): after every stroke we'd toDataURL → onChange →
+  // parent re-render → our value-sync effect runs → compares
+  // pad.toDataURL() against the incoming value → bytes often differ
+  // (PNG encoding isn't deterministic — same pixels can produce
+  // different byte sequences across calls) → fromDataURL fires →
+  // *clears the canvas and async-loads the image*. During the clear-
+  // and-redraw a fast follow-up stroke gets discarded, and on slow
+  // devices the canvas appears blank for a moment which is what the
+  // user sees as "removes the signature after signing."
+  //
+  // New logic: if the incoming value matches what we ourselves sent
+  // up last (which is the *normal* case after every stroke), skip
+  // the re-paint entirely — the canvas already shows the right
+  // thing. External value changes (draft restore, programmatic
+  // reset) will not match this ref and still trigger a re-paint.
+  const lastEmittedRef = useRef<string>(value);
+
+  // When ``value`` changes *externally* (e.g. draft restore or
+  // programmatic reset), push it back into the canvas. We detect
+  // "external" by comparing against ``lastEmittedRef``: if the new
+  // value is what we just emitted, the canvas already shows it.
   useEffect(() => {
     const pad = padRef.current;
     if (!pad) return;
+    if (value === lastEmittedRef.current) return;
+    lastEmittedRef.current = value;
     if (!value) {
       pad.clear();
       return;
     }
-    // fromDataURL replaces whatever is currently drawn — only call it
-    // when the value differs from what the canvas already shows, to
-    // avoid flicker during stroke capture.
-    const currentDataUrl = pad.isEmpty() ? "" : pad.toDataURL("image/png");
-    if (currentDataUrl !== value) {
-      pad.fromDataURL(value);
-    }
+    pad.fromDataURL(value);
   }, [value]);
 
   // The canvas needs an explicit pixel size; ResizeObserver keeps it
@@ -121,16 +138,22 @@ export function SignaturePad({
     const pad = padRef.current;
     if (!pad) return;
     if (pad.isEmpty()) {
+      lastEmittedRef.current = "";
       onChange("");
       return;
     }
-    onChange(pad.toDataURL("image/png"));
+    const dataUrl = pad.toDataURL("image/png");
+    // Remember this exact byte string so the value-sync effect can
+    // recognise its own echo and skip the destructive fromDataURL call.
+    lastEmittedRef.current = dataUrl;
+    onChange(dataUrl);
   }
 
   function handleClear() {
     const pad = padRef.current;
     if (!pad) return;
     pad.clear();
+    lastEmittedRef.current = "";
     onChange("");
   }
 

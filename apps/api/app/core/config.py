@@ -39,6 +39,12 @@ class Settings(BaseSettings):
     app_timezone: str = "Europe/Berlin"
     app_public_url: str = "https://localhost"
     openweather_api_key: str = ""
+    # v2.5.29 — base URL of an OSRM routing service. The public demo
+    # at router.project-osrm.org is sufficient for small-team usage
+    # and requires no API key; admins running heavier loads can point
+    # this at a self-hosted OSRM instance. Empty string disables the
+    # OSRM lookup and falls back to the haversine × 1.3 heuristic.
+    osrm_base_url: str = "https://router.project-osrm.org"
     app_release_version: str = ""
     app_release_commit: str = ""
     update_repo_owner: str = "Lukeskaiwalker"

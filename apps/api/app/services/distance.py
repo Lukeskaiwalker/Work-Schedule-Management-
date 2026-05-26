@@ -6,34 +6,44 @@ when the operator opens the form. Reuses the OpenWeather geocoding
 cache that ``workflow_helpers.py`` already wires up for the per-project
 weather widget, so geocoding the same addresses repeatedly is free.
 
-Distance algorithm (matches the heuristic already used for travel-time
-estimates between back-to-back project visits in workflow_helpers.py):
+Distance algorithm (v2.5.29):
 
   1. Geocode both addresses → lat/lon pairs via OpenWeather.
-  2. Crow-flies distance via the haversine formula.
-  3. Road-distance estimate: ``max(crow * 1.3, crow + 1.5)`` km. The 1.3
-     multiplier is the typical urban detour factor; the +1.5 minimum
-     guards against the degenerate "same building" case where both
-     addresses geocode to the same coords but the operator still has to
-     drive some real distance.
-  4. Round trip = road_distance × 2 (operator goes there and comes back).
+  2. **Real driving distance via OSRM** — call the public OSRM routing
+     service at ``settings.osrm_base_url`` to get the actual one-way
+     driving distance in metres. OSRM is open-source, requires no API
+     key, and the public demo endpoint
+     (https://router.project-osrm.org) is fair-use for small teams.
+     Admins running heavier loads can point ``OSRM_BASE_URL`` at a
+     self-hosted OSRM instance.
+  3. **Haversine fallback** — if OSRM is unreachable (network blip,
+     instance down, address not on the routable road network), fall
+     back to the v2.5.18 heuristic: ``max(crow_km × 1.3, crow_km +
+     1.5)``. The fallback only fires when the real-routing path
+     fails, so under normal operation the user gets the exact driving
+     distance the routing engine would compute — not an estimate.
+  4. Round trip = one_way × 2 (operator goes there and comes back).
 
-Why heuristic, not a real routing API: a routing service (Google Maps
-Distance Matrix, Mapbox Directions) would give exact driving distance
-but adds (a) cost, (b) another API key + secrets to manage, (c) a network
-dependency the report-PDF flow can't easily fall back from. The heuristic
-is accurate to within ~10-15% for typical SMPL job sites in southern
-Germany, which is good enough for an "approximate auto-fill the operator
-can override" UX. The actual driving distance from the operator's odometer
-is what should land in the manual-override path.
+Why the change from heuristic-only to OSRM (with fallback):
+heuristic × 1.3 was 30–50% off for long-distance routes (highway-
+dominated) where the actual road is nearly straight. The user
+reported 29 km estimated vs 20 km actual — that overshoots by 45%.
+A real routing API solves that. OSRM is the right choice because
+(a) free, (b) no API key, (c) no commercial restrictions for an
+internal workflow tool. The haversine path stays in place so the
+feature degrades gracefully — never a hard failure.
 """
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 
 def resolve_project_site_address(project: Any) -> str | None:
@@ -126,9 +136,86 @@ def compute_company_to_site_distance(
     if company_coords is None or site_coords is None:
         return CompanySiteDistance(None, None, "geocode_failed")
 
-    one_way_km = _haversine_road_km(company_coords, site_coords)
+    # v2.5.29 — try OSRM first for a real driving distance; fall back
+    # to the haversine × 1.3 heuristic only if the routing call fails.
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    osrm_base = (settings.osrm_base_url or "").strip()
+    one_way_km: float | None = None
+    if osrm_base:
+        one_way_km = _fetch_osrm_driving_km(company_coords, site_coords, base_url=osrm_base)
+
+    if one_way_km is None:
+        # Fallback: better an over-estimate than no estimate. Logged
+        # at INFO so prod admins can correlate "the km looks too high"
+        # with "OSRM was down at the time of the report".
+        logger.info(
+            "OSRM routing unavailable, falling back to haversine heuristic "
+            "(from=%s to=%s)",
+            company_norm,
+            site_norm,
+        )
+        one_way_km = _haversine_road_km(company_coords, site_coords)
+
     round_trip_km = int(round(one_way_km * 2))
     return CompanySiteDistance(round_trip_km, one_way_km, "auto")
+
+
+def _fetch_osrm_driving_km(
+    a: tuple[float, float],
+    b: tuple[float, float],
+    *,
+    base_url: str,
+) -> float | None:
+    """Query OSRM's route-service for the real driving distance.
+
+    Returns one-way driving distance in km, or None on any failure
+    (network error, OSRM-side error, malformed response, no route
+    found). The caller decides what to do with None — currently we
+    fall back to the haversine heuristic so the feature degrades
+    gracefully.
+
+    OSRM API reference:
+      https://project-osrm.org/docs/v5.24.0/api/#route-service
+
+    URL shape: ``/route/v1/driving/{lon},{lat};{lon},{lat}?overview=false``
+    (note: OSRM takes lon,lat — the opposite order of most other APIs;
+    that's the spec, not a bug).
+    """
+    url_base = base_url.rstrip("/")
+    # OSRM coordinates are lon,lat (not lat,lon). Pre-compute so the URL
+    # construction is unambiguous to read.
+    lon_a, lat_a = a[1], a[0]
+    lon_b, lat_b = b[1], b[0]
+    url = (
+        f"{url_base}/route/v1/driving/"
+        f"{lon_a},{lat_a};{lon_b},{lat_b}"
+        f"?overview=false"
+    )
+
+    try:
+        timeout = httpx.Timeout(8.0, connect=3.0)
+        with httpx.Client(timeout=timeout) as client:
+            # OSRM's public demo asks consumers to identify themselves
+            # in the User-Agent so they can contact in case of abuse.
+            response = client.get(url, headers={"User-Agent": "SMPL/2.5.x (+workflow)"})
+            response.raise_for_status()
+            payload: dict[str, Any] = response.json()
+    except Exception as exc:  # noqa: BLE001 — anything failing → fallback
+        logger.debug("OSRM request failed: %r", exc)
+        return None
+
+    if payload.get("code") != "Ok":
+        logger.debug("OSRM non-Ok response: %s", payload.get("code"))
+        return None
+    routes = payload.get("routes") or []
+    if not routes:
+        return None
+    distance_m = routes[0].get("distance")
+    if not isinstance(distance_m, (int, float)) or distance_m <= 0:
+        return None
+    return float(distance_m) / 1000.0
 
 
 def _haversine_road_km(a: tuple[float, float], b: tuple[float, float]) -> float:

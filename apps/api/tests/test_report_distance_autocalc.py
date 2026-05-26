@@ -53,6 +53,10 @@ def mock_geocoder(monkeypatch: pytest.MonkeyPatch):
     Two real-feeling Berlin addresses ~10 km apart so the haversine
     + road-factor math produces a plausible non-zero round-trip number
     we can assert on without being brittle about the exact value.
+
+    Also disables the OSRM HTTP call by default — tests get the
+    deterministic haversine path. Tests that need to exercise the
+    OSRM happy path enable it explicitly via the ``mock_osrm`` fixture.
     """
     fake_coords: dict[str, tuple[float, float]] = {
         # Berlin Mitte
@@ -79,7 +83,32 @@ def mock_geocoder(monkeypatch: pytest.MonkeyPatch):
         "app.routers.workflow_helpers._effective_openweather_api_key",
         lambda db: "test-api-key",
     )
+    # v2.5.29 — default: OSRM is unreachable so tests exercise the
+    # haversine fallback (deterministic, no network). Override per-test
+    # via mock_osrm fixture below.
+    monkeypatch.setattr(
+        "app.services.distance._fetch_osrm_driving_km",
+        lambda *args, **kwargs: None,
+    )
     return fake_coords
+
+
+@pytest.fixture
+def mock_osrm(monkeypatch: pytest.MonkeyPatch):
+    """Make the OSRM helper return a deterministic one-way driving km.
+
+    Use after ``mock_geocoder`` to override the default "OSRM
+    unreachable" stub. The value (7.5 km one-way) is deliberately
+    different from the haversine result for the same coords so tests
+    can prove they're hitting the OSRM path, not the fallback.
+    """
+    def fake_osrm(a, b, *, base_url):
+        return 7.5
+
+    monkeypatch.setattr(
+        "app.services.distance._fetch_osrm_driving_km",
+        fake_osrm,
+    )
 
 
 def _create_project(
@@ -329,3 +358,138 @@ def test_post_leaves_em_dash_when_no_addresses_at_all(
     # Either no distance key, or distance with no kilometers — both
     # produce the em-dash in the PDF, both are acceptable.
     assert not isinstance(persisted.get("kilometers"), int) or not persisted.get("kilometers")
+
+
+# ──────────────────── v2.5.29: OSRM real routing ────────────────────
+
+
+def test_osrm_real_distance_is_used_when_available(
+    client: TestClient, admin_token: str, mock_geocoder, mock_osrm
+):
+    """When OSRM responds, the round-trip is exactly ``osrm_one_way × 2``
+    rounded — no 1.3× detour multiplier applied on top. This proves the
+    user gets the real driving distance, not a heuristic estimate."""
+    _set_company_address("Alexanderplatz 1, 10178 Berlin")
+    pid = _create_project(
+        client,
+        admin_token,
+        customer_address="Kurfuerstendamm 50, 10707 Berlin",
+    )
+    r = client.get(
+        f"/api/projects/{pid}/construction-reports/distance",
+        headers=_auth(admin_token),
+    )
+    assert r.status_code == 200
+    body = r.json()
+    # mock_osrm returns 7.5 km one-way → 15 km round-trip.
+    assert body["source"] == "auto"
+    assert body["kilometers"] == 15
+
+
+def test_osrm_failure_falls_back_to_haversine(
+    client: TestClient, admin_token: str, mock_geocoder
+):
+    """OSRM unreachable → haversine × 1.3 heuristic kicks in so the
+    feature degrades gracefully instead of returning null.
+
+    mock_geocoder defaults to OSRM=unreachable so this test needs no
+    extra override — just verify a positive km comes back."""
+    _set_company_address("Alexanderplatz 1, 10178 Berlin")
+    pid = _create_project(
+        client,
+        admin_token,
+        customer_address="Kurfuerstendamm 50, 10707 Berlin",
+    )
+    r = client.get(
+        f"/api/projects/{pid}/construction-reports/distance",
+        headers=_auth(admin_token),
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["source"] == "auto"
+    assert isinstance(body["kilometers"], int)
+    assert body["kilometers"] > 0
+
+
+def test_osrm_disabled_by_empty_base_url_falls_back(
+    client: TestClient, admin_token: str, mock_geocoder, monkeypatch
+):
+    """Setting OSRM_BASE_URL="" in env disables the real-routing call
+    entirely without modifying code — useful escape hatch if OSRM's
+    public endpoint goes down or starts rate-limiting us. The
+    heuristic still produces a usable number."""
+    from app.core import config as config_module
+
+    cached = config_module.get_settings()
+    monkeypatch.setattr(cached, "osrm_base_url", "")
+
+    _set_company_address("Alexanderplatz 1, 10178 Berlin")
+    pid = _create_project(
+        client,
+        admin_token,
+        customer_address="Kurfuerstendamm 50, 10707 Berlin",
+    )
+    r = client.get(
+        f"/api/projects/{pid}/construction-reports/distance",
+        headers=_auth(admin_token),
+    )
+    assert r.status_code == 200
+    assert r.json()["source"] == "auto"
+    assert r.json()["kilometers"] > 0
+
+
+def test_fetch_osrm_returns_none_on_http_error(monkeypatch):
+    """Direct unit test of the OSRM helper: any HTTP error / malformed
+    response / no-route condition must return None so the caller can
+    fall back. No network — we replace httpx.Client with a stub that
+    raises."""
+    from app.services.distance import _fetch_osrm_driving_km
+
+    class _ExplodingClient:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def get(self, *args, **kwargs):
+            raise RuntimeError("simulated network failure")
+
+    monkeypatch.setattr("app.services.distance.httpx.Client", _ExplodingClient)
+    result = _fetch_osrm_driving_km(
+        (52.5, 13.4),
+        (52.5, 13.3),
+        base_url="https://example.invalid",
+    )
+    assert result is None
+
+
+def test_fetch_osrm_parses_real_response_shape(monkeypatch):
+    """The OSRM /route/v1/driving/* endpoint returns:
+
+        {"code": "Ok", "routes": [{"distance": 12345.6, ...}]}
+
+    We extract routes[0].distance (metres) and convert to km. This
+    test pins that shape so a future OSRM upgrade can't silently
+    break the call-site."""
+    from app.services.distance import _fetch_osrm_driving_km
+
+    class _FakeResponse:
+        def raise_for_status(self): pass
+        def json(self):
+            return {
+                "code": "Ok",
+                "routes": [{"distance": 9876.0, "duration": 600.0}],
+            }
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): return False
+        def get(self, *args, **kwargs):
+            return _FakeResponse()
+
+    monkeypatch.setattr("app.services.distance.httpx.Client", _FakeClient)
+    result = _fetch_osrm_driving_km(
+        (52.5, 13.4),
+        (52.4, 13.3),
+        base_url="https://router.project-osrm.org",
+    )
+    assert result == 9.876
