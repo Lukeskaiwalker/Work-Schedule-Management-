@@ -28271,10 +28271,18 @@ button.time-calendar-cell {
   box-shadow: 0 2px 6px rgba(20, 41, 61, 0.12);
 }
 
-/* Chat composer — same visual cue when files are dragged over it. */
-.messages-page-composer--drag-over {
+/* v2.5.27 — the WHOLE chat panel is the drop target, not just the
+   tiny composer at the bottom. The user's natural drop instinct is
+   the big message-list area; lifting the handlers up to
+   .messages-page-chat means every pixel of the active conversation
+   accepts files. Position: relative is needed so the .file-drop-overlay
+   absolutely-positioned hint anchors to the chat panel, not the page. */
+.messages-page-chat {
+  position: relative;
+}
+.messages-page-chat--drag-over {
   outline: 2px dashed #2f70b7;
-  outline-offset: -2px;
+  outline-offset: -4px;
   background: rgba(47, 112, 183, 0.04);
 }
 

@@ -212,6 +212,7 @@ import type {
   PartnerModalDraft,
   PartnerModalOpenOptions,
 } from "./context/AppContext";
+import { useDynamicFavicon } from "./hooks/useDynamicFavicon";
 import { SidebarNavIcon, PenIcon, BackIcon, SearchIcon, CopyIcon } from "./components/icons";
 import { WorkHoursGauge, ProjectHoursGauge, WeeklyHoursGauge, MonthlyHoursGauge } from "./components/gauges";
 import { ThreadIconBadge, threadInitials } from "./components/shared/ThreadIconBadge";
@@ -476,6 +477,12 @@ export function App() {
     company_address: "",
   });
   const [companySettingsSaving, setCompanySettingsSaving] = useState(false);
+
+  // v2.5.27 — swap the browser tab icon to the configured company
+  // logo. The public /admin/settings/company/public endpoint returns
+  // logo_url on app mount (no auth required), so the favicon reflects
+  // company branding even before login.
+  useDynamicFavicon(companySettings?.logo_url);
   const [smtpSettings, setSmtpSettings] = useState<SmtpSettings | null>(null);
   const [smtpSettingsForm, setSmtpSettingsForm] = useState({
     host: "",

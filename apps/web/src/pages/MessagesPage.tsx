@@ -70,13 +70,21 @@ export function MessagesPage() {
 
   const [mobileThreadListOpen, setMobileThreadListOpen] = React.useState(true);
 
-  // v2.5.22: drag-and-drop file attachment for the chat composer. Mirror
-  // of the project files drag-drop handler — only respond when the drag
-  // actually carries files (DataTransfer.types contains "Files"), append
-  // to existing attachments with dedupe by name|size|lastModified.
-  const [isComposerDragHover, setIsComposerDragHover] = React.useState(false);
+  // v2.5.22 → v2.5.27: drag-and-drop file attachment for chat threads.
+  // Mirror of the project files drag-drop handler — only respond when
+  // the drag actually carries files (DataTransfer.types contains
+  // "Files"), append to existing attachments with dedupe by
+  // name|size|lastModified.
+  //
+  // v2.5.27 fix: lifted from the small <form> composer at the bottom
+  // of the panel to the whole .messages-page-chat wrapper. The
+  // composer is ~60px tall; the natural place a user drops a file
+  // into a conversation is the big message list area (~600px tall).
+  // With the handlers on the parent, every pixel of the active chat
+  // panel accepts drops and shows the same visual cue.
+  const [isChatDragHover, setIsChatDragHover] = React.useState(false);
 
-  function composerIsFileDrag(event: React.DragEvent<HTMLElement>): boolean {
+  function chatIsFileDrag(event: React.DragEvent<HTMLElement>): boolean {
     const types = event.dataTransfer?.types;
     if (!types) return false;
     for (let i = 0; i < types.length; i++) {
@@ -85,24 +93,28 @@ export function MessagesPage() {
     return false;
   }
 
-  function handleComposerDragOver(event: React.DragEvent<HTMLFormElement>) {
-    if (!canSendMessage) return;
-    if (!composerIsFileDrag(event)) return;
+  function handleChatDragOver(event: React.DragEvent<HTMLDivElement>) {
+    // Gate on an active thread — dropping files when no conversation
+    // is selected would have nowhere to send them.
+    if (!activeThread || !canSendMessage) return;
+    if (!chatIsFileDrag(event)) return;
     event.preventDefault();
     event.dataTransfer.dropEffect = "copy";
-    if (!isComposerDragHover) setIsComposerDragHover(true);
+    if (!isChatDragHover) setIsChatDragHover(true);
   }
 
-  function handleComposerDragLeave(event: React.DragEvent<HTMLFormElement>) {
+  function handleChatDragLeave(event: React.DragEvent<HTMLDivElement>) {
+    // Don't flicker off when moving between child elements inside the
+    // panel — only clear when we actually leave the panel's outer box.
     if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
-    setIsComposerDragHover(false);
+    setIsChatDragHover(false);
   }
 
-  function handleComposerDrop(event: React.DragEvent<HTMLFormElement>) {
-    if (!canSendMessage) return;
-    if (!composerIsFileDrag(event)) return;
+  function handleChatDrop(event: React.DragEvent<HTMLDivElement>) {
+    if (!activeThread || !canSendMessage) return;
+    if (!chatIsFileDrag(event)) return;
     event.preventDefault();
-    setIsComposerDragHover(false);
+    setIsChatDragHover(false);
     const dropped = Array.from(event.dataTransfer.files || []);
     if (dropped.length === 0) return;
     setMessageAttachments((current) => {
@@ -233,7 +245,27 @@ export function MessagesPage() {
       </aside>
 
       {/* ── Right: Message pane ─────────────────────────────────── */}
-      <div className="messages-page-chat">
+      <div
+        className={`messages-page-chat${isChatDragHover ? " messages-page-chat--drag-over" : ""}`}
+        onDragOver={handleChatDragOver}
+        onDragLeave={handleChatDragLeave}
+        onDrop={handleChatDrop}
+      >
+        {/*
+          v2.5.27 — full-panel drop overlay. Shown only while a file
+          drag is over the chat area AND a thread is selected (the
+          drag-hover state already gates on activeThread, so we don't
+          need a second check here). The overlay is pointer-events:none
+          via CSS so the drop event still fires on the underlying
+          .messages-page-chat div.
+        */}
+        {isChatDragHover && (
+          <div className="file-drop-overlay" aria-hidden="true">
+            <strong>
+              {de ? "Dateien hier ablegen" : "Drop files here"}
+            </strong>
+          </div>
+        )}
         {!activeThread && (
           <div className="messages-page-empty">
             <div className="messages-page-empty-icon" aria-hidden="true">
@@ -472,10 +504,7 @@ export function MessagesPage() {
 
             <form
               onSubmit={sendMessage}
-              className={`messages-page-composer${isComposerDragHover ? " messages-page-composer--drag-over" : ""}`}
-              onDragOver={handleComposerDragOver}
-              onDragLeave={handleComposerDragLeave}
-              onDrop={handleComposerDrop}
+              className="messages-page-composer"
             >
               <label
                 className="messages-page-composer-attach"
