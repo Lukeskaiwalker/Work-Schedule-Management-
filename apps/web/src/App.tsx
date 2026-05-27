@@ -7705,19 +7705,72 @@ export function App() {
           headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
           body: JSON.stringify({ permissions: latestPermissions }),
         });
+
+        // v2.5.32 — surface backend errors via the in-app error toast
+        // instead of silently reloading and producing the "click then
+        // disappear" UX. Parse the detail field if present; fall back
+        // to a generic status code if not. The reload still runs so
+        // the displayed state matches server truth.
         if (!res.ok) {
+          let detail = `HTTP ${res.status}`;
+          try {
+            const errBody = await res.json();
+            if (errBody && typeof errBody.detail === "string") detail = errBody.detail;
+          } catch {
+            /* response may not be JSON */
+          }
+          console.error("[role-perm] PUT failed", { role, permission, enabled, status: res.status, detail });
+          setError(
+            language === "de"
+              ? `Berechtigung konnte nicht gespeichert werden: ${detail}`
+              : `Could not save permission: ${detail}`,
+          );
           await loadRolePermissions();
           return;
         }
+
         const data = await res.json();
+        // Defensive: server's response should contain the new state. If
+        // the toggle didn't actually take effect server-side (e.g. the
+        // permission got silently dropped as unknown), warn the user
+        // instead of leaving them puzzled by the flash-off.
+        const serverPerms: string[] = data?.permissions?.[role] ?? [];
+        const actuallyHas = serverPerms.includes(permission);
+        if (actuallyHas !== enabled) {
+          console.error(
+            "[role-perm] server state disagrees with click",
+            { role, permission, enabled, serverPerms },
+          );
+          setError(
+            language === "de"
+              ? `Server hat die Änderung nicht akzeptiert (${permission}). Prüfe die Konsole für Details.`
+              : `Server did not accept the change (${permission}). Check console for details.`,
+          );
+        }
+
         setRolePermissionsMeta((prev) => {
           const merged = prev ? { ...prev, permissions: data.permissions } : prev;
           rolePermissionsMetaRef.current = merged;
           return merged;
         });
-        await refreshCurrentUser();
+        // v2.5.32 — wrap refreshCurrentUser so a transient /me failure
+        // doesn't bubble up to the outer .catch and trigger a state
+        // reload that would visually revert the just-saved permission.
+        // The user object is only used for derived booleans; missing
+        // a single refresh has no functional impact on this flow.
+        try {
+          await refreshCurrentUser();
+        } catch (refreshErr) {
+          console.warn("[role-perm] refreshCurrentUser failed (non-fatal)", refreshErr);
+        }
       })
-      .catch(async () => {
+      .catch(async (err) => {
+        console.error("[role-perm] unexpected error in save chain", err);
+        setError(
+          language === "de"
+            ? `Unerwarteter Fehler beim Speichern: ${err?.message ?? "Unbekannt"}`
+            : `Unexpected error while saving: ${err?.message ?? "Unknown"}`,
+        );
         await loadRolePermissions();
       });
 
