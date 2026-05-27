@@ -89,13 +89,23 @@ services:
         APP_RELEASE_VERSION: ${APP_RELEASE_VERSION:-}
         APP_RELEASE_COMMIT: ${APP_RELEASE_COMMIT:-}
     restart: unless-stopped
-    # v2.5.6: see the matching block on the api service above for the
-    # full rationale. The worker is smaller (single process, no
-    # uvicorn fan-out) but handles PDF-conversion + OpenAI extraction
-    # jobs that can transiently push memory up. 1GB is plenty;
-    # observed steady-state is ~150-250MB.
-    mem_limit: 1000m
-    memswap_limit: 1000m
+    # v2.5.31 — bumped from 1000m to 2000m. ReportLab holds every
+    # photo's decoded buffer in memory through the entire PDF-build
+    # phase to support page-break recalculation. A 65-photo
+    # construction report (real prod load — Martin Wiemann project
+    # 65 / report 8) repeatedly OOM-killed the worker at the old
+    # 1 GB limit ~45 seconds into the render. Steady-state is still
+    # ~150-250 MB so the higher limit only kicks in on the rare
+    # photo-heavy renders. Host has 7.7 GB total / 5+ GB free —
+    # plenty of headroom.
+    #
+    # Companion in-code fix lives in services/construction_report_pdf.py
+    # (streaming photos via tempfiles, bounding peak heap to one
+    # photo at a time). When that lands and is validated in prod,
+    # this limit can come back down — but the bump alone is the
+    # immediate unblock for already-submitted heavy reports.
+    mem_limit: 2000m
+    memswap_limit: 2000m
     command: ["python", "-m", "app.worker"]
     # See env_file layering rationale on the api service above. Worker shares
     # the same env layout because it runs the same Python app code paths.

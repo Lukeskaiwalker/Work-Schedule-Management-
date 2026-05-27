@@ -261,3 +261,84 @@ def test_build_report_filename_includes_report_number_when_present() -> None:
     assert "266" in name
     assert "report-0177" in name
     assert name.endswith("2026-05-19.pdf")
+
+
+# ─────────────────────── v2.5.31: memory-streaming photos ───────────────────────
+
+
+def test_photo_tempfile_pool_cleans_up_files_on_normal_exit(tmp_path) -> None:
+    """The context manager must delete every spooled photo file when
+    the with-block exits normally — no leaks into /tmp on every PDF
+    build."""
+    from app.services.construction_report_pdf import _photo_tempfile_pool, _spool_photo_to_tempfile
+
+    paths_seen: list[str] = []
+    with _photo_tempfile_pool() as pool:
+        for _ in range(3):
+            p = _spool_photo_to_tempfile(b"fake-jpeg-bytes-" + str(_).encode(), pool)
+            assert p is not None
+            assert os.path.exists(p)
+            paths_seen.append(p)
+        assert len(pool) == 3
+
+    # After exit, every spooled file should be gone.
+    for p in paths_seen:
+        assert not os.path.exists(p), f"tempfile leaked: {p}"
+
+
+def test_photo_tempfile_pool_cleans_up_files_on_exception() -> None:
+    """If the PDF build raises mid-flight, the tempfiles must still be
+    cleaned up — otherwise a noisy report failure would litter /tmp on
+    every retry."""
+    from app.services.construction_report_pdf import _photo_tempfile_pool, _spool_photo_to_tempfile
+
+    paths_seen: list[str] = []
+    try:
+        with _photo_tempfile_pool() as pool:
+            p = _spool_photo_to_tempfile(b"fake-jpeg-bytes", pool)
+            assert p is not None
+            paths_seen.append(p)
+            assert os.path.exists(p)
+            raise RuntimeError("simulated build failure")
+    except RuntimeError:
+        pass
+
+    for p in paths_seen:
+        assert not os.path.exists(p)
+
+
+def test_build_report_pdf_handles_many_photos_without_oom() -> None:
+    """Smoke test for the streaming-photos path. Renders a PDF with
+    30 small in-memory photos and asserts it completes and produces a
+    non-empty byte string. The actual memory savings can't be
+    asserted here (we'd need /proc/self/status or psutil) but the
+    fact that a 30-photo render completes within the test process's
+    memory budget is itself a useful guard against regressing the
+    streaming path."""
+    from PIL import Image as PILImage
+    from app.services.construction_report_pdf import build_report_pdf_bytes
+    from io import BytesIO
+    import datetime as _dt
+
+    # Tiny 100×100 photos — we only need ReportLab to think there's
+    # an image, not to test the image content.
+    photos: list[tuple[str, bytes]] = []
+    for i in range(30):
+        bio = BytesIO()
+        img = PILImage.new("RGB", (100, 100), color=(i * 8 % 256, 100, 200))
+        img.save(bio, format="JPEG", quality=72)
+        photos.append((f"photo-{i:03d}.jpg", bio.getvalue()))
+
+    pdf_bytes = build_report_pdf_bytes(
+        payload={"customer": "Test", "project_name": "P", "work_done": "x"},
+        report_date=_dt.date(2026, 5, 27),
+        submitted_by="Tester",
+        photos=photos,
+    )
+    assert pdf_bytes.startswith(b"%PDF-")
+    assert len(pdf_bytes) > 10_000
+
+
+# `os` import needed for the cleanup tests above. Added here so the
+# file's top of imports doesn't drift away from the rest of the suite.
+import os  # noqa: E402
