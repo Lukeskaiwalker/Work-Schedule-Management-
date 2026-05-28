@@ -353,6 +353,36 @@ wait_for_service_health web
 
 disable_maintenance_mode
 
+# v2.5.33 — post-deploy housekeeping to stop the disk filling up.
+#
+# Root cause of the 2026-05-28 outage: every deploy rebuilds the api,
+# api_worker and web images, which leaves the previous image layers
+# DANGLING and grows the build cache. After ~12 releases the 219 GB
+# disk hit 100%, which wedged Postgres (couldn't fsync WAL → unhealthy)
+# and the web container (runtime couldn't write its exec FIFO → "procReady
+# not received") and took the whole site down with a 404. Manual cleanup
+# reclaimed ~101 GB (61 GB build cache + 40 GB unused images).
+#
+# Runs AFTER disable_maintenance_mode so the site is already back online
+# before we spend time on cleanup. Uses the NON-destructive variants:
+#   - ``docker image prune -f`` removes only DANGLING images (the
+#     untagged predecessors of the images we just rebuilt). It never
+#     touches tagged or in-use images, so the other stacks on this
+#     host (garage, tesla-proxy, jellyfin, …) are unaffected.
+#   - ``docker builder prune -f --keep-storage 10GB`` caps the build
+#     cache at ~10 GB — recent layers stay for fast rebuilds, the long
+#     tail is trimmed. Falls back to a plain prune if the installed
+#     Docker doesn't accept --keep-storage.
+# Both are wrapped with `|| true` so a cleanup hiccup can never fail a
+# deploy that has already succeeded.
+echo "Post-deploy cleanup: pruning dangling images + capping build cache..."
+docker image prune -f 2>&1 | tail -1 || echo "  (image prune skipped)"
+docker builder prune -f --keep-storage 10GB 2>&1 | tail -1 \
+  || docker builder prune -f 2>&1 | tail -1 \
+  || echo "  (builder prune skipped)"
+echo "Disk after cleanup:"
+df -h / | tail -1 || true
+
 if [[ -n "$LATEST_BACKUP" ]]; then
   echo "Safe update completed. Latest backup: $LATEST_BACKUP"
 else

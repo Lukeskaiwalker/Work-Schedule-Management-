@@ -1,7 +1,20 @@
+# v2.5.33 — bound container log growth. The 2026-05-28 disk-full outage
+# was caused by image/build-cache buildup (fixed in safe_update.sh), but
+# unbounded json-file container logs are the other classic way a
+# long-lived Docker host fills its disk. Cap every service at 3 × 10 MB
+# = 30 MB of logs so a chatty container (or a crash loop) can never eat
+# the disk. Applied to each service via the *default-logging anchor.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
+    logging: *default-logging
     environment:
       POSTGRES_DB: smpl
       POSTGRES_USER: smpl
@@ -28,6 +41,7 @@ services:
         APP_RELEASE_VERSION: ${APP_RELEASE_VERSION:-}
         APP_RELEASE_COMMIT: ${APP_RELEASE_COMMIT:-}
     restart: unless-stopped
+    logging: *default-logging
     # v2.5.6: cgroup memory ceiling. Without this, kernel-level OOM
     # (from competing host processes — observed on this host around
     # 22:20 UTC nightly when dpkg-db-backup + mintupdate-automation-
@@ -89,6 +103,7 @@ services:
         APP_RELEASE_VERSION: ${APP_RELEASE_VERSION:-}
         APP_RELEASE_COMMIT: ${APP_RELEASE_COMMIT:-}
     restart: unless-stopped
+    logging: *default-logging
     # v2.5.31 — bumped from 1000m to 2000m. ReportLab holds every
     # photo's decoded buffer in memory through the entire PDF-build
     # phase to support page-break recalculation. A 65-photo
@@ -131,6 +146,7 @@ services:
     build:
       context: ./apps/web
     restart: unless-stopped
+    logging: *default-logging
     ports:
       # SMPL_CADDY_* names preserved for backward compatibility with prod's
       # existing .env. In production these usually map to 8080/8443 because
@@ -163,6 +179,7 @@ services:
     build:
       context: ./apps/update_runner
     restart: unless-stopped
+    logging: *default-logging
     environment:
       UPDATE_RUNNER_REPO_ROOT: /repo
       UPDATE_RUNNER_LOG_DIR: /var/log/update_runner
