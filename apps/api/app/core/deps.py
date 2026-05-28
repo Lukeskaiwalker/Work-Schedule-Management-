@@ -211,6 +211,30 @@ def _user_has_task_in_project(db: Session, user_id: int, project_id: int) -> boo
     return assigned_via_legacy is not None
 
 
+def task_assigned_project_ids(db: Session, user_id: int) -> set[int]:
+    """Return every project ID where the user has at least one task
+    assigned — across both the modern ``task_assignments`` join table
+    and the legacy ``tasks.assignee_id`` column.
+
+    v2.5.35 — single source of truth for the "task assignment implies
+    project visibility" rule. ``assert_project_access`` uses the cheaper
+    single-project ``_user_has_task_in_project`` check; the project
+    *list* / *map* / *materials* / *events* scoping sites use this set
+    so "shows up in my list" stays consistent with "I can open it".
+    Without this, v2.5.34 fixed direct access but the project still
+    wouldn't appear in the employee's project list (membership-scoped).
+    """
+    via_join = db.scalars(
+        select(Task.project_id)
+        .join(TaskAssignment, TaskAssignment.task_id == Task.id)
+        .where(TaskAssignment.user_id == user_id, Task.project_id.is_not(None))
+    ).all()
+    via_legacy = db.scalars(
+        select(Task.project_id).where(Task.assignee_id == user_id, Task.project_id.is_not(None))
+    ).all()
+    return {pid for pid in (*via_join, *via_legacy) if pid is not None}
+
+
 def db_session() -> Generator[Session, None, None]:
     yield from get_db()
 

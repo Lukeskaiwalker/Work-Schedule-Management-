@@ -14,7 +14,18 @@ def projects_overview(
 ):
     project_stmt = select(Project)
     if not has_global_project_access(current_user.id, current_user.role):
-        project_ids = db.scalars(select(ProjectMember.project_id).where(ProjectMember.user_id == current_user.id)).all()
+        # v2.5.35 — membership UNION task-assigned projects, so an
+        # employee assigned a task in a non-member project (e.g. an
+        # imported one) still sees it in the overview list. Keeps this
+        # list consistent with assert_project_access.
+        from app.core.deps import task_assigned_project_ids
+
+        project_ids = set(
+            db.scalars(
+                select(ProjectMember.project_id).where(ProjectMember.user_id == current_user.id)
+            ).all()
+        )
+        project_ids |= task_assigned_project_ids(db, current_user.id)
         if not project_ids:
             return []
         project_stmt = project_stmt.where(Project.id.in_(project_ids))

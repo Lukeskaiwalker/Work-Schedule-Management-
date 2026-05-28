@@ -49,6 +49,11 @@ async def sse_events(
             if has_global_project_access(user.id, user.role):
                 project_ids = set(db.execute(select(Project.id)).scalars().all())
             else:
+                # v2.5.35 — membership UNION task-assigned projects so an
+                # employee receives live events for projects they have a
+                # task in, consistent with what they can open + see listed.
+                from app.core.deps import task_assigned_project_ids
+
                 project_ids = set(
                     db.execute(
                         select(ProjectMember.project_id).where(ProjectMember.user_id == user_id)
@@ -56,6 +61,7 @@ async def sse_events(
                     .scalars()
                     .all()
                 )
+                project_ids |= task_assigned_project_ids(db, user_id)
 
             # Thread visibility scope.
             threads = db.execute(select(ChatThread)).scalars().all()

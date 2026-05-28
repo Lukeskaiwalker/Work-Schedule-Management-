@@ -38,12 +38,16 @@ def list_projects(
     if has_global_project_access(current_user.id, current_user.role):
         return list(db.scalars(select(Project).order_by(Project.id.desc())).all())
 
-    member_project_ids = db.scalars(
-        select(ProjectMember.project_id).where(ProjectMember.user_id == current_user.id)
-    ).all()
-    if not member_project_ids:
+    # v2.5.35 — membership UNION task-assigned projects (see deps.py).
+    from app.core.deps import task_assigned_project_ids
+
+    visible_ids = set(
+        db.scalars(select(ProjectMember.project_id).where(ProjectMember.user_id == current_user.id)).all()
+    )
+    visible_ids |= task_assigned_project_ids(db, current_user.id)
+    if not visible_ids:
         return []
-    return list(db.scalars(select(Project).where(Project.id.in_(member_project_ids))).all())
+    return list(db.scalars(select(Project).where(Project.id.in_(visible_ids))).all())
 
 @router.get("/materials", response_model=list[ProjectMaterialNeedOut])
 def list_project_material_needs(

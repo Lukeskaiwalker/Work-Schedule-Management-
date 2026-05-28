@@ -1248,14 +1248,22 @@ def _projects_visible_to_user(db: Session, user: User) -> list[Project]:
     if has_global_project_access(user.id, user.role):
         return list(db.scalars(select(Project).order_by(Project.id.asc())).all())
 
-    member_project_ids = db.scalars(
-        select(ProjectMember.project_id).where(ProjectMember.user_id == user.id)
-    ).all()
-    if not member_project_ids:
+    # v2.5.35 — visible projects = explicit membership UNION any project
+    # the user has a task assigned in. Mirrors assert_project_access so
+    # an employee assigned a task in a project they aren't a member of
+    # (e.g. an imported project with no members) still sees it in their
+    # list, not just when navigating to it directly via the task.
+    from app.core.deps import task_assigned_project_ids
+
+    visible_ids = set(
+        db.scalars(select(ProjectMember.project_id).where(ProjectMember.user_id == user.id)).all()
+    )
+    visible_ids |= task_assigned_project_ids(db, user.id)
+    if not visible_ids:
         return []
 
     return list(
-        db.scalars(select(Project).where(Project.id.in_(member_project_ids)).order_by(Project.id.asc())).all()
+        db.scalars(select(Project).where(Project.id.in_(visible_ids)).order_by(Project.id.asc())).all()
     )
 
 

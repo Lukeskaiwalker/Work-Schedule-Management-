@@ -142,3 +142,79 @@ def test_admin_keeps_global_access_without_membership():
 
         assert_project_access(db, admin, project.id)
         assert_project_access(db, admin, project.id, manage_required=True)
+
+
+# ──────────────── v2.5.35: list/overview visibility parity ────────────────
+
+
+def test_task_assigned_project_ids_unions_both_models():
+    """The shared helper returns project IDs from both the join table
+    and the legacy assignee_id column."""
+    from app.core.deps import task_assigned_project_ids
+
+    with SessionLocal() as db:
+        emp = _make_user(db, "emp-ids@example.com", ROLE_EMPLOYEE)
+        p_join = _make_project(db, "T-IDS-1")
+        p_legacy = _make_project(db, "T-IDS-2")
+        p_none = _make_project(db, "T-IDS-3")
+
+        t_join = Task(project_id=p_join.id, title="join", status="open")
+        db.add(t_join)
+        db.flush()
+        db.add(TaskAssignment(task_id=t_join.id, user_id=emp.id))
+        db.add(Task(project_id=p_legacy.id, title="legacy", status="open", assignee_id=emp.id))
+        # p_none has a task but assigned to nobody → must not appear.
+        db.add(Task(project_id=p_none.id, title="unassigned", status="open"))
+        db.commit()
+
+        ids = task_assigned_project_ids(db, emp.id)
+        assert p_join.id in ids
+        assert p_legacy.id in ids
+        assert p_none.id not in ids
+
+
+def test_projects_overview_lists_task_assigned_project(client, admin_token):
+    """End-to-end: an employee assigned a task in a project they aren't
+    a member of sees that project in /projects-overview — not just when
+    opening it directly. This is the gap v2.5.34 left and v2.5.35
+    closes."""
+    # Create an employee through the admin API so the login flow works.
+    create = client.post(
+        "/api/admin/users",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "email": "overview-emp@example.com",
+            "password": "Password123!",
+            "full_name": "Overview Emp",
+            "role": "employee",
+        },
+    )
+    assert create.status_code == 200, create.text
+    emp_id = create.json()["id"]
+
+    login = client.post(
+        "/api/auth/login",
+        json={"email": "overview-emp@example.com", "password": "Password123!"},
+    )
+    emp_token = login.headers["X-Access-Token"]
+
+    # Before any assignment: the employee sees no projects.
+    before = client.get("/api/projects-overview", headers={"Authorization": f"Bearer {emp_token}"})
+    assert before.status_code == 200
+    assert before.json() == []
+
+    # Create a project + task assigned to the employee directly in the DB
+    # (mirrors the imported-project-with-no-members scenario).
+    with SessionLocal() as db:
+        project = _make_project(db, "T-OVERVIEW-1")
+        task = Task(project_id=project.id, title="assigned", status="open")
+        db.add(task)
+        db.flush()
+        db.add(TaskAssignment(task_id=task.id, user_id=emp_id))
+        db.commit()
+        project_id = project.id
+
+    after = client.get("/api/projects-overview", headers={"Authorization": f"Bearer {emp_token}"})
+    assert after.status_code == 200
+    listed_ids = {row["project_id"] for row in after.json()}
+    assert project_id in listed_ids, "task-assigned project must appear in the overview list"
