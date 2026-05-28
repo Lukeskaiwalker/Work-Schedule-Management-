@@ -11,7 +11,7 @@ from app.core.db import get_db
 from app.core.permissions import ROLE_ADMIN, has_global_project_access, has_permission_for_user  # noqa: F401 – also used by re-exports
 from app.core.security import decode_token
 from app.core.time import utcnow
-from app.models.entities import ApiToken, ProjectMember, User
+from app.models.entities import ApiToken, ProjectMember, Task, TaskAssignment, User
 
 # Personal Access Tokens are emitted with this prefix so we can route
 # the auth path cheaply (skip JWT decode, do DB lookup instead) without
@@ -156,10 +156,59 @@ def assert_project_access(db: Session, user: User, project_id: int, manage_requi
     # No broad project permission — check direct ProjectMember entry.
     stmt = select(ProjectMember).where(ProjectMember.project_id == project_id, ProjectMember.user_id == user.id)
     membership = db.scalars(stmt).first()
-    if not membership:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Project access denied")
-    if manage_required and not membership.can_manage:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Project manage access denied")
+    if membership:
+        if manage_required and not membership.can_manage:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Project manage access denied")
+        return
+
+    # v2.5.34 — task-assignment fallback for READ access.
+    #
+    # An employee assigned a task in a project must be able to open that
+    # project, even without an explicit ProjectMember row. Before this,
+    # the two notions of "connected to a project" were unlinked:
+    # ProjectMember drove access control while TaskAssignment only drove
+    # the My-Tasks list. The result was employees handed work they
+    # literally could not open the project to do (observed on project
+    # #155 / id 113: 5 employees with task assignments, zero members).
+    #
+    # This grants READ access only. Manage access still requires an
+    # explicit membership with can_manage, so "doing work" never implies
+    # "administering the project". Scoped to the read path; a
+    # manage_required call with no membership still denies.
+    if not manage_required and _user_has_task_in_project(db, user.id, project_id):
+        return
+
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Project access denied")
+
+
+def _user_has_task_in_project(db: Session, user_id: int, project_id: int) -> bool:
+    """True when the user is assigned at least one task in the project.
+
+    Checks both assignment models the codebase carries:
+      * ``task_assignments`` — the modern multi-assignee join table
+      * ``tasks.assignee_id`` — the legacy single-assignee column, still
+        populated on older rows and some import paths
+
+    Each query is LIMIT 1 against an indexed column, so the fallback
+    only costs a cheap existence check and only runs for users who
+    failed both the global-permission and membership checks (i.e.
+    employees).
+    """
+    assigned_via_join = db.scalars(
+        select(TaskAssignment.id)
+        .join(Task, Task.id == TaskAssignment.task_id)
+        .where(Task.project_id == project_id, TaskAssignment.user_id == user_id)
+        .limit(1)
+    ).first()
+    if assigned_via_join is not None:
+        return True
+
+    assigned_via_legacy = db.scalars(
+        select(Task.id)
+        .where(Task.project_id == project_id, Task.assignee_id == user_id)
+        .limit(1)
+    ).first()
+    return assigned_via_legacy is not None
 
 
 def db_session() -> Generator[Session, None, None]:
