@@ -75,6 +75,36 @@ class ProjectCriticalUpdate(BaseModel):
     is_critical: bool
 
 
+# ── Project members (v2.5.36) ─────────────────────────────────────────────────
+# The member system existed in the DB + a single Form-based POST endpoint
+# since the start, but no list/delete endpoints and no UI — so projects
+# only ever had members when created through the UI (creator auto-added).
+# Imported projects had none, which is why task-assigned employees got
+# locked out (fixed via the task-assignment access fallback in v2.5.34/35).
+# These schemas back the new project Team tab.
+
+
+class ProjectMemberOut(BaseModel):
+    """A member row enriched with the user's display fields so the Team
+    tab can render names + roles without a second lookup."""
+
+    user_id: int
+    full_name: str
+    display_name: str
+    role: str
+    can_manage: bool
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ProjectMemberUpsert(BaseModel):
+    """Add a member or update their can_manage flag. JSON body — the
+    legacy Form-based shape is dropped (nothing in the UI ever sent it)."""
+
+    user_id: int
+    can_manage: bool = False
+
+
 class ProjectFinanceUpdate(BaseModel):
     expected_updated_at: datetime | None = None
     order_value_net: float | None = None

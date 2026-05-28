@@ -57,6 +57,7 @@ export const TAB_LABELS: Record<Language, Record<ProjectTab, string>> = {
     line_items: "Items",
     tickets: "Job Tickets",
     files: "Files",
+    team: "Team",
     finances: "Finances",
   },
   de: {
@@ -68,6 +69,7 @@ export const TAB_LABELS: Record<Language, Record<ProjectTab, string>> = {
     line_items: "Positionen",
     tickets: "Job Tickets",
     files: "Dateien",
+    team: "Team",
     finances: "Finanzen",
   },
 };

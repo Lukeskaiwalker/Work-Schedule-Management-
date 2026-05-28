@@ -1137,7 +1137,23 @@ export type ProjectTab =
   | "line_items"
   | "tickets"
   | "files"
+  | "team"
   | "finances";
+
+/**
+ * v2.5.36 — a project's explicit member. `can_manage` grants
+ * project-level management (the project counterpart of an admin).
+ * Note: employees with a task assigned in a project get *read* access
+ * automatically (v2.5.34) without appearing here — this list is only
+ * the explicitly-added members.
+ */
+export type ProjectMember = {
+  user_id: number;
+  full_name: string;
+  display_name: string;
+  role: string;
+  can_manage: boolean;
+};
 
 // ── Project line items (v2.4.0) ─────────────────────────────────────────
 // Captures what was sold/ordered/delivered per project, sourced manually

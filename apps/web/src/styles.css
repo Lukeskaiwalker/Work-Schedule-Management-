@@ -28501,3 +28501,149 @@ button.time-calendar-cell {
     justify-self: start;
   }
 }
+
+/* ─────────────────────────────────────────────────────────────────
+ * v2.5.36 — Project Team tab (member management)
+ * ──────────────────────────────────────────────────────────────── */
+.project-team-tab {
+  padding: 16px 20px;
+  max-width: 760px;
+}
+.project-team-head {
+  margin-bottom: 16px;
+}
+.project-team-title {
+  font-size: 1.15rem;
+  color: #14293d;
+  margin: 0 0 4px 0;
+}
+.project-team-hint {
+  font-size: 0.9rem;
+  line-height: 1.5;
+  margin: 0;
+}
+.project-team-add {
+  display: flex;
+  align-items: flex-end;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 14px 16px;
+  background: #f7f9fc;
+  border: 1px solid #e3e8ee;
+  border-radius: 10px;
+  margin-bottom: 18px;
+}
+.project-team-add-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 260px;
+  font-size: 0.85rem;
+  color: #4a5b6e;
+}
+.project-team-add-field select {
+  padding: 8px 10px;
+  border: 1px solid #c8d3df;
+  border-radius: 6px;
+  font-size: 0.95rem;
+}
+.project-team-add-manage {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.9rem;
+  padding-bottom: 8px;
+  cursor: pointer;
+}
+.project-team-add button[type="submit"] {
+  padding: 9px 18px;
+  background: #2f70b7;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: 500;
+}
+.project-team-add button[type="submit"]:disabled {
+  background: #a8bcd4;
+  cursor: not-allowed;
+}
+.project-team-empty {
+  font-size: 0.92rem;
+  padding: 12px 0;
+}
+.project-team-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.project-team-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 14px;
+  background: #ffffff;
+  border: 1px solid #e3e8ee;
+  border-radius: 8px;
+}
+.project-team-row-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.project-team-row-name {
+  font-size: 0.98rem;
+  color: #2c3e50;
+}
+.project-team-role-badge {
+  font-size: 0.78rem;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #eef2f7;
+  color: #4a5b6e;
+}
+.project-team-manage-badge {
+  font-size: 0.78rem;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #d8e8f7;
+  color: #225a93;
+  font-weight: 500;
+}
+.project-team-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.project-team-row-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+  color: #4a5b6e;
+  cursor: pointer;
+}
+.project-team-remove-btn {
+  padding: 6px 12px;
+  background: transparent;
+  color: #b03030;
+  border: 1px solid #d6b3b3;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+.project-team-remove-btn:hover {
+  background: #f7e8e8;
+}
+@media (max-width: 640px) {
+  .project-team-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}

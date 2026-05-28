@@ -76,6 +76,8 @@ from app.schemas.api import (
     ProjectCriticalUpdate,
     ProjectFinanceOut,
     ProjectFinanceUpdate,
+    ProjectMemberOut,
+    ProjectMemberUpsert,
     ProjectWeatherDayOut,
     ProjectWeatherOut,
     ProjectClassTemplateOut,

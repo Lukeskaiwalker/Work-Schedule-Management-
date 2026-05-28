@@ -7,6 +7,7 @@ import { ProjectMaterialsTab } from "./project/ProjectMaterialsTab";
 import { ProjectLineItemsTab } from "./project/ProjectLineItemsTab";
 import { ProjectTicketsTab } from "./project/ProjectTicketsTab";
 import { ProjectFilesTab } from "./project/ProjectFilesTab";
+import { ProjectTeamTab } from "./project/ProjectTeamTab";
 import { ProjectFinancesTab } from "./project/ProjectFinancesTab";
 
 export function ProjectPage() {
@@ -24,6 +25,7 @@ export function ProjectPage() {
       <ProjectLineItemsTab />
       <ProjectTicketsTab />
       <ProjectFilesTab />
+      <ProjectTeamTab />
       <ProjectFinancesTab />
     </>
   );

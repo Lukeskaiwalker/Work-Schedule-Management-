@@ -36,6 +36,7 @@ import type {
   PlanningWeek,
   ProjectFolder,
   ProjectFile,
+  ProjectMember,
   VacationRequest,
   SchoolAbsence,
   InviteDispatchResponse,
@@ -373,6 +374,8 @@ export function App() {
 
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [files, setFiles] = useState<ProjectFile[]>([]);
+  // v2.5.36 — explicit project members for the Team tab.
+  const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
   const [recentConstructionReports, setRecentConstructionReports] = useState<RecentConstructionReport[]>([]);
   const [projectFolders, setProjectFolders] = useState<ProjectFolder[]>([]);
   const [projectOverviewDetails, setProjectOverviewDetails] = useState<ProjectOverviewDetails | null>(null);
@@ -1431,6 +1434,12 @@ export function App() {
     const tabs: ProjectTab[] = ["overview"];
     if (workspaceMode === "office") tabs.push("gantt");
     tabs.push("tasks", "hours", "materials", "line_items", "tickets", "files");
+    // v2.5.36 — Team (project members) tab, office mode only. Managing
+    // who is on a project is an office/admin activity; field workers in
+    // construction view don't need it. The list is read-only for
+    // non-managers; add/remove controls render only when canCreateProject
+    // (projects:manage) is true — enforced inside the tab + on the API.
+    if (workspaceMode === "office") tabs.push("team");
     // Finances only visible in office mode — field workers in construction
     // view don't need access to financial data.
     if (canViewFinance && workspaceMode === "office") tabs.push("finances");
@@ -2108,6 +2117,7 @@ export function App() {
     }
     if (projectTab === "finances" || projectTab === "hours") void loadProjectFinance(activeProjectId);
     if (projectTab === "materials") void loadProjectTrackedMaterials(activeProjectId);
+    if (projectTab === "team") void loadProjectMembers(activeProjectId);
   }, [mainView, projectTab, activeProjectId, token, user, activeProjectTaskView, canViewFinance]);
 
   useEffect(() => {
@@ -3287,6 +3297,59 @@ export function App() {
       setProjectFinance(null);
       setProjectHoursPlannedInput("");
       setError(err.message ?? "Failed to load project finance");
+    }
+  }
+
+  async function loadProjectMembers(projectId: number) {
+    try {
+      const rows = await apiFetch<ProjectMember[]>(`/projects/${projectId}/members`, token);
+      setProjectMembers(rows);
+    } catch (err: any) {
+      setProjectMembers([]);
+      setError(err.message ?? "Failed to load project members");
+    }
+  }
+
+  async function addProjectMember(userId: number, canManage: boolean) {
+    if (!activeProjectId) return;
+    try {
+      await apiFetch(`/projects/${activeProjectId}/members`, token, {
+        method: "POST",
+        body: JSON.stringify({ user_id: userId, can_manage: canManage }),
+      });
+      await loadProjectMembers(activeProjectId);
+      setNotice(language === "de" ? "Mitglied hinzugefügt" : "Member added");
+    } catch (err: any) {
+      setError(err.message ?? "Failed to add member");
+    }
+  }
+
+  async function updateProjectMemberCanManage(userId: number, canManage: boolean) {
+    if (!activeProjectId) return;
+    // Optimistic toggle, then re-sync from the upsert response.
+    setProjectMembers((current) =>
+      current.map((m) => (m.user_id === userId ? { ...m, can_manage: canManage } : m)),
+    );
+    try {
+      await apiFetch(`/projects/${activeProjectId}/members`, token, {
+        method: "POST",
+        body: JSON.stringify({ user_id: userId, can_manage: canManage }),
+      });
+      await loadProjectMembers(activeProjectId);
+    } catch (err: any) {
+      setError(err.message ?? "Failed to update member");
+      await loadProjectMembers(activeProjectId);
+    }
+  }
+
+  async function removeProjectMember(userId: number) {
+    if (!activeProjectId) return;
+    try {
+      await apiFetch(`/projects/${activeProjectId}/members/${userId}`, token, { method: "DELETE" });
+      await loadProjectMembers(activeProjectId);
+      setNotice(language === "de" ? "Mitglied entfernt" : "Member removed");
+    } catch (err: any) {
+      setError(err.message ?? "Failed to remove member");
     }
   }
 
@@ -9280,6 +9343,11 @@ export function App() {
     loadProjectOverview,
     loadProjectWeather,
     loadProjectFinance,
+    projectMembers,
+    loadProjectMembers,
+    addProjectMember,
+    updateProjectMemberCanManage,
+    removeProjectMember,
     loadProjectTrackedMaterials,
     saveWeatherSettings,
     saveOpenAISettings,

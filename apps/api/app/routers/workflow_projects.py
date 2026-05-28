@@ -763,31 +763,121 @@ def delete_project(
     )
     return {"ok": True}
 
-@router.post("/projects/{project_id}/members")
+def _project_member_out(db: Session, membership: ProjectMember) -> ProjectMemberOut:
+    """Enrich a ProjectMember row with the user's display fields."""
+    user = db.get(User, membership.user_id)
+    return ProjectMemberOut(
+        user_id=membership.user_id,
+        full_name=(user.full_name if user else f"User #{membership.user_id}"),
+        display_name=(user.display_name if user else f"User #{membership.user_id}"),
+        role=(user.role if user else "unknown"),
+        can_manage=membership.can_manage,
+    )
+
+
+@router.get("/projects/{project_id}/members", response_model=list[ProjectMemberOut])
+def list_project_members(
+    project_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """List a project's explicit members. Visible to anyone who can
+    access the project (read) — the Team tab shows the roster to every
+    viewer; only managers get the add/remove controls (enforced on the
+    write endpoints below)."""
+    assert_project_access(db, current_user, project_id)
+    project = db.get(Project, project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    memberships = db.scalars(
+        select(ProjectMember).where(ProjectMember.project_id == project_id)
+    ).all()
+    members = [_project_member_out(db, m) for m in memberships]
+    # Stable, human-friendly ordering: managers first, then by name.
+    members.sort(key=lambda m: (not m.can_manage, m.display_name.lower()))
+    return members
+
+
+@router.post("/projects/{project_id}/members", response_model=ProjectMemberOut)
 def add_project_member(
     project_id: int,
-    user_id: int = Form(...),
-    can_manage: bool = Form(False),
+    payload: ProjectMemberUpsert,
     current_user: User = Depends(require_permission("projects:manage")),
     db: Session = Depends(get_db),
 ):
+    """Add a member or update their can_manage flag (idempotent upsert).
+
+    v2.5.36 — converted from the legacy Form-based body to JSON. Nothing
+    in the UI ever called the old shape (the whole feature had no UI),
+    so this is a safe break. Requires global projects:manage AND
+    project-manage access, matching the prior guard.
+    """
     assert_project_access(db, current_user, project_id, manage_required=True)
     project = db.get(Project, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
-    user = db.get(User, user_id)
+    user = db.get(User, payload.user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
     membership = db.scalars(
-        select(ProjectMember).where(ProjectMember.project_id == project_id, ProjectMember.user_id == user_id)
+        select(ProjectMember).where(
+            ProjectMember.project_id == project_id, ProjectMember.user_id == payload.user_id
+        )
     ).first()
     if membership:
-        membership.can_manage = can_manage
+        membership.can_manage = payload.can_manage
     else:
-        db.add(ProjectMember(project_id=project_id, user_id=user_id, can_manage=can_manage))
+        membership = ProjectMember(
+            project_id=project_id, user_id=payload.user_id, can_manage=payload.can_manage
+        )
+        db.add(membership)
     db.commit()
-    return {"ok": True}
+    db.refresh(membership)
+    log_admin_action(
+        db,
+        current_user,
+        "project.member_upsert",
+        "project",
+        str(project_id),
+        {"user_id": payload.user_id, "can_manage": payload.can_manage},
+    )
+    return _project_member_out(db, membership)
+
+
+@router.delete("/projects/{project_id}/members/{user_id}", status_code=204)
+def remove_project_member(
+    project_id: int,
+    user_id: int,
+    current_user: User = Depends(require_permission("projects:manage")),
+    db: Session = Depends(get_db),
+):
+    """Remove a member from a project. Requires project-manage access.
+
+    Idempotent: removing a non-member is a no-op 204. Note this only
+    removes the explicit ProjectMember row — a user who still has a task
+    assigned in the project retains *read* access via the
+    task-assignment fallback (v2.5.34). To fully cut access, unassign
+    their tasks as well.
+    """
+    assert_project_access(db, current_user, project_id, manage_required=True)
+    membership = db.scalars(
+        select(ProjectMember).where(
+            ProjectMember.project_id == project_id, ProjectMember.user_id == user_id
+        )
+    ).first()
+    if membership is not None:
+        db.delete(membership)
+        db.commit()
+        log_admin_action(
+            db,
+            current_user,
+            "project.member_remove",
+            "project",
+            str(project_id),
+            {"user_id": user_id},
+        )
+    return None
 
 @router.get("/users/assignable", response_model=list[AssignableUserOut])
 def list_assignable_users(

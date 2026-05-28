@@ -45,6 +45,7 @@ import type {
   PlanningAbsence,
   ProjectFolder,
   ProjectFile,
+  ProjectMember,
   VacationRequest,
   SchoolAbsence,
   InviteDispatchResponse,
@@ -1063,6 +1064,12 @@ export interface AppContextValue {
   loadProjectOverview: (projectId: number) => Promise<void>;
   loadProjectWeather: (projectId: number, refresh: boolean) => Promise<void>;
   loadProjectFinance: (projectId: number) => Promise<void>;
+  // v2.5.36 — project members (Team tab).
+  projectMembers: ProjectMember[];
+  loadProjectMembers: (projectId: number) => Promise<void>;
+  addProjectMember: (userId: number, canManage: boolean) => Promise<void>;
+  updateProjectMemberCanManage: (userId: number, canManage: boolean) => Promise<void>;
+  removeProjectMember: (userId: number) => Promise<void>;
   loadProjectTrackedMaterials: (projectId: number) => Promise<void>;
   saveWeatherSettings: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   saveOpenAISettings: (event: FormEvent<HTMLFormElement>) => Promise<void>;
