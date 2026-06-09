@@ -5559,6 +5559,13 @@ export function App() {
     const subtasks = parseTaskSubtasks(taskModalForm.subtasks_raw);
 
     let projectId = Number(taskModalForm.project_id);
+    // v2.5.37 — track whether *we* just created the project, so that
+    // if the subsequent task-creation step fails we can delete the
+    // orphan instead of leaving debris. Without this, a retried submit
+    // generated a fresh project on each attempt and the user's prod
+    // DB filled with empty "T20260528-…" placeholder projects.
+    let createdProjectIdForCleanup: number | null = null;
+    let currentStep: "project" | "task" = "task";
     try {
       if (!projectId && taskModalForm.create_project_from_task) {
         if (!canCreateProject) {
@@ -5572,6 +5579,8 @@ export function App() {
         }
         const numberInput = taskModalForm.new_project_number.trim();
         const generatedProjectNumber = numberInput || `T${new Date().toISOString().slice(0, 10).replace(/-/g, "")}-${Date.now().toString().slice(-5)}`;
+        currentStep = "project";
+        console.info("[task-create] creating new project", { project_number: generatedProjectNumber, name: projectName });
         const createdProject = await apiFetch<Project>("/projects", token, {
           method: "POST",
           body: JSON.stringify({
@@ -5590,6 +5599,8 @@ export function App() {
           }),
         });
         projectId = createdProject.id;
+        createdProjectIdForCleanup = createdProject.id;
+        console.info("[task-create] project created", { id: projectId });
       }
 
       if (!projectId) {
@@ -5597,6 +5608,8 @@ export function App() {
         return;
       }
 
+      currentStep = "task";
+      console.info("[task-create] creating task", { project_id: projectId, title: taskModalForm.title.trim() });
       await apiFetch("/tasks", token, {
         method: "POST",
         body: JSON.stringify({
@@ -5618,6 +5631,7 @@ export function App() {
           confirm_overlap: confirmOverlap,
         }),
       });
+      console.info("[task-create] task created successfully");
       closeTaskModal();
       await loadBaseData();
       if (targetWeekStart) {
@@ -5631,7 +5645,34 @@ export function App() {
         setTaskModalOverlapWarning(overlapDetail);
         return;
       }
-      setError(err.message ?? "Failed to create task");
+      console.error("[task-create] failed", { step: currentStep, error: err, message: err?.message, status: err?.status });
+
+      // v2.5.37 — clean up the orphan project if task creation failed
+      // *after* we just created the project. The DELETE is best-effort:
+      // if it fails (e.g. the user lost permission between calls), we
+      // log and continue — better to leave one orphan than swallow the
+      // original failure cause.
+      if (currentStep === "task" && createdProjectIdForCleanup !== null) {
+        try {
+          await apiFetch(`/projects/${createdProjectIdForCleanup}`, token, { method: "DELETE" });
+          console.info("[task-create] cleaned up orphan project", { id: createdProjectIdForCleanup });
+        } catch (cleanupErr: any) {
+          console.warn("[task-create] orphan-project cleanup failed (non-fatal)", cleanupErr);
+        }
+      }
+
+      // Name which step failed so the user sees a useful message
+      // instead of a generic "Failed to create task".
+      const stepLabel =
+        currentStep === "project"
+          ? language === "de" ? "Projekt-Erstellung" : "Project creation"
+          : language === "de" ? "Aufgaben-Erstellung" : "Task creation";
+      const detail = err?.message ?? (language === "de" ? "Unbekannter Fehler" : "Unknown error");
+      setError(
+        language === "de"
+          ? `${stepLabel} fehlgeschlagen: ${detail}`
+          : `${stepLabel} failed: ${detail}`,
+      );
     }
   }
 
