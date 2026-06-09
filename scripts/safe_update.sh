@@ -4,6 +4,42 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
+# v2.5.38 — when this script runs inside the update_runner container,
+# our cwd is /repo (a bind mount of the actual host repo path), but the
+# docker daemon resolves bind-mount sources against the HOST filesystem.
+# Without an explicit --project-directory, Compose resolves relative
+# paths like ``./local wiki`` against /repo and asks the daemon to
+# bind-mount the HOST path /repo/local wiki — which doesn't exist on
+# the host, so Docker silently creates an empty stub there. Result:
+# the wiki tab loads with no content, the Datanorm imports vanish, and
+# the maintenance page goes blank, all silently.
+#
+# Detect the actual host path of our /repo bind-mount via docker
+# inspect on ourselves, then pass it as ``--project-directory`` to
+# every ``docker compose`` invocation below. Falls back to no override
+# when we can't resolve the path (e.g. running outside a container) —
+# the script then behaves exactly as before.
+COMPOSE_PROJECT_DIR_ARGS=()
+if [ -f /.dockerenv ] && command -v docker >/dev/null 2>&1; then
+  _self_id="$(cat /etc/hostname 2>/dev/null || true)"
+  if [ -n "$_self_id" ]; then
+    _host_repo_path="$(docker inspect "$_self_id" \
+      --format '{{range .Mounts}}{{if eq .Destination "/repo"}}{{.Source}}{{end}}{{end}}' \
+      2>/dev/null || true)"
+    if [ -n "$_host_repo_path" ] && [ "$_host_repo_path" != "/repo" ]; then
+      echo "Compose project dir: $_host_repo_path (resolved from /repo bind-mount)"
+      COMPOSE_PROJECT_DIR_ARGS=(--project-directory "$_host_repo_path")
+    fi
+  fi
+fi
+
+# Thin wrapper so every compose call in this script automatically gets
+# the project-directory override. Keeps the call-sites uncluttered and
+# makes future additions consistent by construction.
+compose() {
+  docker compose "${COMPOSE_PROJECT_DIR_ARGS[@]}" "$@"
+}
+
 # Maintenance mode is now driven by a single sentinel file inside
 # infra/maintenance/. The web container has that directory mounted read-only
 # and Caddy's `file` matcher checks for the flag at *request time*, so
@@ -72,7 +108,7 @@ wait_for_service_health() {
   local status=""
 
   while (( waited < timeout_seconds )); do
-    container_id="$(docker compose ps -q "$service" 2>/dev/null || true)"
+    container_id="$(compose ps -q "$service" 2>/dev/null || true)"
     if [[ -n "$container_id" ]]; then
       status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container_id" 2>/dev/null || true)"
       if [[ "$status" == "healthy" || "$status" == "running" ]]; then
@@ -222,7 +258,7 @@ echo "Building API + update_runner images..."
 # the cached image when no build is requested. Including update_runner in the
 # explicit build step here means every safe_update run produces a fresh image
 # matching the pulled source, never a stale one.
-docker compose build api update_runner
+compose build api update_runner
 
 LATEST_BACKUP=""
 if ! $CHECK_ONLY; then
@@ -242,10 +278,10 @@ fi
 enable_maintenance_mode
 
 echo "Applying real migrations..."
-docker compose run --rm api sh -lc "cd /app && alembic upgrade head"
+compose run --rm api sh -lc "cd /app && alembic upgrade head"
 
 echo "Rebuilding and starting services..."
-docker compose up -d --build api api_worker web
+compose up -d --build api api_worker web
 
 # v2.4.8: deferred runner recreate to escape the self-replacement deadlock.
 #
