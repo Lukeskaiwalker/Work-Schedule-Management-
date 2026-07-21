@@ -1486,6 +1486,17 @@ button.project-item.active:focus-visible {
   display: grid;
 }
 
+/* Dedicated "Berichte" (reports history) view */
+.reports-page {
+  padding: 18px;
+  max-width: 920px;
+  margin: 0 auto;
+}
+.reports-page-subtitle {
+  margin: 0 0 12px;
+  font-size: 13px;
+}
+
 .overview-report-item {
   display: grid;
   gap: 3px;
@@ -5972,6 +5983,9 @@ li {
 /* Input + textarea shell */
 .construction-report-input {
   width: 100%;
+  /* Allow the input to shrink inside a grid/flex track instead of forcing its
+     intrinsic min-content width, which otherwise overflows narrow mobile rows. */
+  min-width: 0;
   height: 42px;
   padding: 0 14px;
   border: 1px solid #c9d9ea;
@@ -6185,11 +6199,11 @@ li {
 @media (max-width: 720px) {
   .construction-report-table--workers .construction-report-table-head,
   .construction-report-table--workers .construction-report-table-row {
-    grid-template-columns: minmax(0, 1fr) 1fr 1fr 34px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) 34px;
   }
   .construction-report-table--materials .construction-report-table-head,
   .construction-report-table--materials .construction-report-table-row {
-    grid-template-columns: minmax(0, 1fr) 1fr 34px;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 34px;
   }
   .construction-report-table--materials .construction-report-table-row input:nth-of-type(3),
   .construction-report-table--materials .construction-report-table-row input:nth-of-type(4) {

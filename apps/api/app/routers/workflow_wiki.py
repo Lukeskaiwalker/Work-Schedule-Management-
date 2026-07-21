@@ -45,6 +45,14 @@ def serve_wiki_library_file(
         "Content-Disposition": _content_disposition(file_path.name, inline=inline),
         "Content-Length": str(stat.st_size),
         "X-Wiki-Path": normalized_path,
+        # Never let the browser sniff a served wiki file into a more dangerous
+        # type than the one we declared.
+        "X-Content-Type-Options": "nosniff",
+        # HTML/SVG wiki files remain previewable in the same-origin iframe, but
+        # this CSP stops any embedded script/plugin from executing, so a planted
+        # active-content file cannot become stored XSS. Non-script content
+        # (markup, styles, images) still renders normally.
+        "Content-Security-Policy": "script-src 'none'; object-src 'none'",
     }
     if request.method == "HEAD":
         return Response(status_code=200, media_type=media_type, headers=headers)

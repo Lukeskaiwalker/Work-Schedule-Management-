@@ -218,6 +218,18 @@ HTTP status codes (400 validation, 401 unauthenticated, 403 forbidden,
 404 not found, 409 conflict, 429 rate-limited).
 """.strip()
 
+# Only expose the interactive docs / OpenAPI schema in dev-like environments.
+# In production the full schema is an unnecessary reconnaissance aid — every
+# endpoint is individually authenticated regardless, so this is defense in depth.
+_docs_enabled = settings.environment.strip().lower() in {
+    "dev",
+    "development",
+    "test",
+    "testing",
+    "ci",
+    "local",
+}
+
 app = FastAPI(
     title=settings.app_name,
     description=_OPENAPI_DESCRIPTION,
@@ -228,9 +240,9 @@ app = FastAPI(
     # stripping the prefix) actually delivers them. Default FastAPI
     # exposes /docs and /openapi.json at the root, which never reach
     # the container in our deployment and the user gets 404 instead.
-    docs_url="/api/docs",
-    redoc_url="/api/redoc",
-    openapi_url="/api/openapi.json",
+    docs_url="/api/docs" if _docs_enabled else None,
+    redoc_url="/api/redoc" if _docs_enabled else None,
+    openapi_url="/api/openapi.json" if _docs_enabled else None,
 )
 
 origins = [origin.strip() for origin in settings.cors_origins.split(",") if origin.strip()]
@@ -245,6 +257,29 @@ app.add_middleware(
 _rate_bucket: dict[str, deque[datetime]] = defaultdict(deque)
 
 
+def _rate_limit_client_ip(request: Request) -> str:
+    """Best-effort real client IP for rate-limit bucketing.
+
+    Behind the Traefik/Caddy reverse proxies the direct peer is the proxy, so
+    ``request.client.host`` would collapse every user into a single global
+    bucket. Prefer the proxy-set ``X-Real-Ip`` (the client the edge actually
+    connected to), then the left-most ``X-Forwarded-For`` hop, then the direct
+    peer. This assumes a trusted edge proxy overwrites these headers (Traefik and
+    Caddy do); the non-spoofable per-account login lockout — not this limiter — is
+    the real brute-force control, and Traefik's edge rate-limit is the real
+    volumetric-DoS boundary, so header spoofing here can't unlock an account.
+    """
+    real_ip = (request.headers.get("x-real-ip") or "").strip()
+    if real_ip:
+        return real_ip
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        first = forwarded.split(",", 1)[0].strip()
+        if first:
+            return first
+    return request.client.host if request.client else "unknown"
+
+
 def _rate_scope(path: str, auth_header: str | None) -> tuple[str, int]:
     # v2.5.23 — PAT-authenticated requests get a separate, higher
     # bucket. Agents typically burst (e.g. listing projects, fetching
@@ -253,6 +288,13 @@ def _rate_scope(path: str, auth_header: str | None) -> tuple[str, int]:
     # because the request hasn't run the auth dep yet at this layer.
     if auth_header and auth_header.lower().startswith("bearer smpl_pat_"):
         return ("api_pat", 1200)
+    if path == "/api/auth/login":
+        # Tight, source-scoped ceiling on the login endpoint as a credential-
+        # stuffing backstop (many accounts, few tries each — which the per-
+        # account lockout alone can't see). Kept well above real human use so a
+        # NAT'd office never trips it; a bot doing hundreds/min from one source
+        # does.
+        return ("login", 60)
     if path.startswith("/api/dav/"):
         return ("dav", 2400)
     if path.startswith("/api/time/"):
@@ -268,7 +310,7 @@ async def basic_rate_limit(request: Request, call_next):
         return await call_next(request)
     if request.url.path.startswith("/api/events"):
         return await call_next(request)
-    ip = request.client.host if request.client else "unknown"
+    ip = _rate_limit_client_ip(request)
     scope, limit = _rate_scope(request.url.path, request.headers.get("authorization"))
     bucket_key = f"{ip}:{scope}"
     now = utcnow()

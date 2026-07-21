@@ -61,7 +61,7 @@ def test_material_catalog_search_and_add_to_material_needs(client: TestClient, a
     add_member = client.post(
         f"/api/projects/{project_id}/members",
         headers=auth_headers(admin_token),
-        data={"user_id": employee["id"], "can_manage": "false"},
+        json={"user_id": employee["id"], "can_manage": False},
     )
     assert add_member.status_code == 200
 
@@ -187,7 +187,7 @@ def test_material_catalog_enriches_image_for_selected_item(
     add_member = client.post(
         f"/api/projects/{project_id}/members",
         headers=auth_headers(admin_token),
-        data={"user_id": employee["id"], "can_manage": "false"},
+        json={"user_id": employee["id"], "can_manage": False},
     )
     assert add_member.status_code == 200
 

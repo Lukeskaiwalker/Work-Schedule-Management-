@@ -251,6 +251,7 @@ const MyTasksPage = lazy(() => import("./pages/MyTasksPage").then((m) => ({ defa
 const OfficeTasksPage = lazy(() => import("./pages/OfficeTasksPage").then((m) => ({ default: m.OfficeTasksPage })));
 const OverviewPage = lazy(() => import("./pages/OverviewPage").then((m) => ({ default: m.OverviewPage })));
 const PlanningPage = lazy(() => import("./pages/PlanningPage").then((m) => ({ default: m.PlanningPage })));
+const ReportsPage = lazy(() => import("./pages/ReportsPage").then((m) => ({ default: m.ReportsPage })));
 const ProfilePage = lazy(() => import("./pages/ProfilePage").then((m) => ({ default: m.ProfilePage })));
 const MapPage = lazy(() => import("./pages/MapPage").then((m) => ({ default: m.MapPage })));
 const ProjectPage = lazy(() => import("./pages/ProjectPage").then((m) => ({ default: m.ProjectPage })));
@@ -300,6 +301,10 @@ export function App() {
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  // Two-factor login: set when step 1 (password) succeeds but the account has
+  // MFA enabled, so LoginPage shows the 6-digit code step instead of the app.
+  const [mfaLoginPending, setMfaLoginPending] = useState(false);
+  const [mfaCode, setMfaCode] = useState("");
   const [publicAuthMode, setPublicAuthMode] = useState<
     "invite" | "reset" | "customer_confirmation" | null
   >(() => detectPublicAuthMode());
@@ -377,6 +382,11 @@ export function App() {
   // v2.5.36 — explicit project members for the Team tab.
   const [projectMembers, setProjectMembers] = useState<ProjectMember[]>([]);
   const [recentConstructionReports, setRecentConstructionReports] = useState<RecentConstructionReport[]>([]);
+  // Windowed report history (last N days) for the dedicated "Berichte" view —
+  // kept separate from the Overview card's latest-few list so they don't clobber
+  // each other.
+  const [reportsWindow, setReportsWindow] = useState<RecentConstructionReport[]>([]);
+  const [reportsWindowLoading, setReportsWindowLoading] = useState(false);
   const [projectFolders, setProjectFolders] = useState<ProjectFolder[]>([]);
   const [projectOverviewDetails, setProjectOverviewDetails] = useState<ProjectOverviewDetails | null>(null);
   const [projectOverviewOpenTasks, setProjectOverviewOpenTasks] = useState<Task[]>([]);
@@ -1410,6 +1420,7 @@ export function App() {
       "calendar",
       "planning",
       "construction",
+      "reports",
       "materials",
       "werkstatt",
       "wiki",
@@ -2542,6 +2553,11 @@ export function App() {
 
       if (mainView === "calendar") {
         await loadPlanningWindow(null, calendarWeekStart, 4);
+        return;
+      }
+
+      if (mainView === "reports") {
+        await loadReportsWindow(28);
         return;
       }
 
@@ -4053,6 +4069,28 @@ export function App() {
     }
   }
 
+  // Load all reports within the last `days` (the dedicated Berichte history
+  // view). Passing `since` puts the backend on the date-range path (sorted by
+  // report_date). 403 is swallowed to an empty list, matching the pattern above.
+  async function loadReportsWindow(days = 28) {
+    const since = addDaysISO(formatDateISOLocal(new Date()), -Math.max(1, Number(days)));
+    setReportsWindowLoading(true);
+    try {
+      const rows = await apiFetch<RecentConstructionReport[]>(
+        `/construction-reports/recent?since=${since}&limit=500`,
+        token,
+      );
+      setReportsWindow(rows);
+    } catch (err: any) {
+      setReportsWindow([]);
+      if (err?.status !== 403) {
+        setError(err.message ?? "Failed to load reports");
+      }
+    } finally {
+      setReportsWindowLoading(false);
+    }
+  }
+
   async function loadWikiLibraryFiles(search?: string) {
     try {
       const query = search && search.trim() ? `?q=${encodeURIComponent(search.trim())}` : "";
@@ -4281,6 +4319,16 @@ export function App() {
         const data = await response.json();
         throw new Error(data.detail ?? "Login failed");
       }
+      // The body is readable only once; read it before touching headers so we
+      // can branch on the MFA challenge (which carries no X-Access-Token).
+      const data = (await response.json()) as User | { mfa_required?: boolean };
+      if (data && (data as { mfa_required?: boolean }).mfa_required) {
+        // Password accepted; a second factor is required. The server set a
+        // short-lived httpOnly challenge cookie — show the code step.
+        setMfaCode("");
+        setMfaLoginPending(true);
+        return;
+      }
       const newToken = response.headers.get("X-Access-Token");
       if (!newToken) throw new Error("No access token returned");
       const cleanToken = newToken.trim();
@@ -4291,8 +4339,7 @@ export function App() {
       }
       setToken(cleanToken);
       localStorage.setItem("smpl_token", cleanToken);
-      const me = (await response.json()) as User;
-      setUser(me);
+      setUser(data as User);
     } catch (err: any) {
       const message = String(err?.message ?? "");
       if (message.toLowerCase().includes("expected pattern")) {
@@ -4305,6 +4352,53 @@ export function App() {
         setError(message || "Login failed");
       }
     }
+  }
+
+  // Step 2 of MFA login: exchange the challenge cookie + code for a session.
+  async function submitMfaLogin(event: FormEvent) {
+    event.preventDefault();
+    setError("");
+    setNotice("");
+    try {
+      const response = await fetch("/api/auth/login/mfa", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: mfaCode.trim() }),
+        credentials: "include",
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw new Error(
+          (data as { detail?: string }).detail ??
+            (language === "de" ? "Ungültiger Code" : "Invalid code"),
+        );
+      }
+      const newToken = response.headers.get("X-Access-Token");
+      if (!newToken) throw new Error("No access token returned");
+      const cleanToken = newToken.trim();
+      if (!isLikelyJwtToken(cleanToken)) {
+        throw new Error(
+          language === "de" ? "Ungültiges Token vom Server empfangen" : "Received invalid token from server",
+        );
+      }
+      setToken(cleanToken);
+      localStorage.setItem("smpl_token", cleanToken);
+      const me = (await response.json()) as User;
+      setUser(me);
+      setMfaLoginPending(false);
+      setMfaCode("");
+      setPassword("");
+    } catch (err: any) {
+      setError(String(err?.message ?? "") || (language === "de" ? "Ungültiger Code" : "Invalid code"));
+    }
+  }
+
+  function cancelMfaLogin() {
+    setMfaLoginPending(false);
+    setMfaCode("");
+    setPassword("");
+    setError("");
+    setNotice("");
   }
 
   function resetPublicAuthRoute() {
@@ -6708,6 +6802,15 @@ export function App() {
     // the empty-string change and clears the canvas.
     setReportSignatureSmpl({ name: "", image_base64: "" });
     setReportSignatureCustomer({ name: "", image_base64: "" });
+    setReportStatus({
+      arrival_completed: false,
+      work_finished: false,
+      handed_over_clean: false,
+      further_work_needed: false,
+      extra_material_used: false,
+      note: "",
+    });
+    setReportDistance({ kilometers: null, source: "unset" });
   }
 
   function updateReportMaterialRow(
@@ -6990,6 +7093,20 @@ export function App() {
       setReportSourceTaskId(null);
       setReportShouldMarkSourceTaskDone(false);
       setReportTaskChecklist([]);
+      // Full clean slate after submit: previously the signatures, status
+      // checkboxes and distance persisted into the next report (reported bug —
+      // "the signature stays in the template"). Reset them like the text fields.
+      setReportSignatureSmpl({ name: "", image_base64: "" });
+      setReportSignatureCustomer({ name: "", image_base64: "" });
+      setReportStatus({
+        arrival_completed: false,
+        work_finished: false,
+        handed_over_clean: false,
+        further_work_needed: false,
+        extra_material_used: false,
+        note: "",
+      });
+      setReportDistance({ kilometers: null, source: "unset" });
       clearReportImages();
       // Remove the submitted draft from the array so it doesn't linger in
       // the drafts list. Other drafts (for the same or different projects)
@@ -8627,6 +8744,11 @@ export function App() {
     setEmail,
     password,
     setPassword,
+    mfaLoginPending,
+    mfaCode,
+    setMfaCode,
+    submitMfaLogin,
+    cancelMfaLogin,
     publicAuthMode,
     setPublicAuthMode,
     publicToken,
@@ -8846,6 +8968,8 @@ export function App() {
 
     // ── Construction reports ──────────────────────────────────────────────────
     recentConstructionReports,
+    reportsWindow,
+    reportsWindowLoading,
     setRecentConstructionReports,
     reportProjectId,
     setReportProjectId,
@@ -9413,6 +9537,7 @@ export function App() {
     loadProjectFolders,
     loadConstructionReportFiles,
     loadRecentConstructionReports,
+    loadReportsWindow,
     loadWikiLibraryFiles,
     loadThreads,
     loadArchivedThreads,
@@ -9611,6 +9736,7 @@ export function App() {
           {mainView === "calendar" && <CalendarPage />}
           {mainView === "planning" && <PlanningPage />}
           {mainView === "construction" && <ConstructionPage />}
+          {mainView === "reports" && <ReportsPage />}
           {mainView === "wiki" && <WikiPage />}
           {mainView === "messages" && <MessagesPage />}
           {mainView === "time" && <TimePage />}

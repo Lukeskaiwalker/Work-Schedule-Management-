@@ -115,9 +115,15 @@ export function SignaturePad({
       if (ctx) ctx.scale(ratio, ratio);
       canvas.style.width = `${rect.width}px`;
       canvas.style.height = `${rect.height}px`;
-      // After resize, anything previously drawn is lost — restore from value.
-      if (value) {
-        pad.fromDataURL(value);
+      // After resize, anything previously drawn is lost — restore the CURRENT
+      // signature. Read it from lastEmittedRef (kept current by drawing and by
+      // the value-sync effect), NOT from the mount-time `value` closure, which
+      // is stale (empty on a fresh form) and would wrongly wipe an in-progress
+      // signature on every mobile resize (scroll/address-bar, keyboard,
+      // orientation) — the "have to sign several times" bug.
+      const current = lastEmittedRef.current;
+      if (current) {
+        pad.fromDataURL(current);
       } else {
         pad.clear();
       }

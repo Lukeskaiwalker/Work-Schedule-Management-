@@ -52,7 +52,7 @@ def test_project_files_webdav_mount_flow(client: TestClient, admin_token: str):
     member = client.post(
         f"/api/projects/{project_id}/members",
         headers=auth_headers(admin_token),
-        data={"user_id": employee["id"], "can_manage": "false"},
+        json={"user_id": employee["id"], "can_manage": False},
     )
     assert member.status_code == 200
 
@@ -236,7 +236,7 @@ def test_project_files_folder_visibility_and_webdav_structure(client: TestClient
     member = client.post(
         f"/api/projects/{project_id}/members",
         headers=auth_headers(admin_token),
-        data={"user_id": employee["id"], "can_manage": "false"},
+        json={"user_id": employee["id"], "can_manage": False},
     )
     assert member.status_code == 200
 

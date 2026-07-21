@@ -172,6 +172,12 @@ export interface AppContextValue {
   setEmail: (email: string) => void;
   password: string;
   setPassword: (password: string) => void;
+  // Two-factor login step (set after a correct password when MFA is enabled).
+  mfaLoginPending: boolean;
+  mfaCode: string;
+  setMfaCode: (code: string) => void;
+  submitMfaLogin: (event: FormEvent) => Promise<void>;
+  cancelMfaLogin: () => void;
   publicAuthMode: "invite" | "reset" | "customer_confirmation" | null;
   setPublicAuthMode: (
     mode: "invite" | "reset" | "customer_confirmation" | null,
@@ -415,6 +421,8 @@ export interface AppContextValue {
 
   // ── Construction reports ──────────────────────────────────────────────────────
   recentConstructionReports: RecentConstructionReport[];
+  reportsWindow: RecentConstructionReport[];
+  reportsWindowLoading: boolean;
   setRecentConstructionReports: (reports: RecentConstructionReport[]) => void;
   reportProjectId: string;
   setReportProjectId: (id: string | ((current: string) => string)) => void;
@@ -1107,6 +1115,7 @@ export interface AppContextValue {
   loadProjectFolders: (projectId: number) => Promise<void>;
   loadConstructionReportFiles: (projectId: number | null) => Promise<void>;
   loadRecentConstructionReports: (limit?: number) => Promise<void>;
+  loadReportsWindow: (days?: number) => Promise<void>;
   loadWikiLibraryFiles: (search?: string) => Promise<void>;
   loadThreads: () => Promise<void>;
   loadArchivedThreads: () => Promise<void>;

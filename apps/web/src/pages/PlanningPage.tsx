@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { useAppContext } from "../context/AppContext";
 import { addDaysISO, normalizeWeekStartISO, formatDayLabel, isoWeekdayMondayFirst } from "../utils/dates";
-import { sortTasksByDueTime, formatTaskTimeRange, taskEndTimeMinutes, taskStartTimeMinutes } from "../utils/tasks";
+import { sortTasksByDueTime, formatTaskTimeRange } from "../utils/tasks";
 import { PenIcon } from "../components/icons";
 import { CustomerConfirmationDot } from "../components/tasks/CustomerConfirmationDot";
-import type { Language, Task } from "../types";
+import type { Language } from "../types";
 
 const EN_DAY_COLS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
 const DE_DAY_COLS = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"] as const;
@@ -34,22 +34,6 @@ function monthAbbr(month: number, language: Language): string {
   return ((language === "de" ? DE_MONTHS : EN_MONTHS)[month - 1]) ?? "";
 }
 
-function minutesToHHMM(totalMinutes: number | null) {
-  if (totalMinutes == null || !Number.isFinite(totalMinutes)) return "";
-  const hours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
-}
-
-function summarizeProjectWindow(tasks: Task[]) {
-  const starts = tasks.map((task) => taskStartTimeMinutes(task)).filter((value): value is number => value != null);
-  const ends = tasks.map((task) => taskEndTimeMinutes(task)).filter((value): value is number => value != null);
-  if (starts.length === 0) return "";
-  const start = Math.min(...starts);
-  const end = ends.length > 0 ? Math.max(...ends) : null;
-  return end != null && end > start ? `${minutesToHHMM(start)}-${minutesToHHMM(end)}` : minutesToHHMM(start);
-}
-
 export function PlanningPage() {
   const {
     mainView,
@@ -74,7 +58,6 @@ export function PlanningPage() {
     openTaskEditModal,
     exportTaskCalendar,
     markTaskDone,
-    openProjectGanttById,
     menuUserNameById,
     absenceTypes,
     publicHolidays,
@@ -359,43 +342,6 @@ export function PlanningPage() {
             const dayTasks = sortTasksByDueTime(day.tasks);
             const visibleTaskRows = showProjectRows ? dayTasks : dayTasks.filter((task) => isTaskAssignedToCurrentUser(task));
             const absences = day.absences ?? [];
-            const projectRows = Array.from(
-              visibleTaskRows.reduce((map, task) => {
-                // v2.4.5: customer-only tasks (project_id == null) are
-                // managed from the customer-detail page, not the
-                // planning grid. They're skipped here so the office-
-                // view layout stays project-centric and uncluttered.
-                if (task.project_id == null) return map;
-                const current = map.get(task.project_id) ?? [];
-                current.push(task);
-                map.set(task.project_id, current);
-                return map;
-              }, new Map<number, Task[]>()),
-            )
-              .map(([projectId, rows]) => {
-                const sortedRows = sortTasksByDueTime(rows);
-                const leadTask = sortedRows[0];
-                const assigneeLabels = Array.from(new Set(sortedRows.map((task) => getTaskAssigneeLabel(task)).filter(Boolean)));
-                const assigneeSummary =
-                  assigneeLabels.length <= 2
-                    ? assigneeLabels.join(", ")
-                    : `${assigneeLabels.slice(0, 2).join(", ")} +${assigneeLabels.length - 2}`;
-                return {
-                  projectId,
-                  tasks: sortedRows,
-                  leadTask,
-                  label: taskProjectTitleParts(leadTask),
-                  taskCount: sortedRows.length,
-                  assigneeSummary,
-                  windowLabel: summarizeProjectWindow(sortedRows),
-                };
-              })
-              .sort((left, right) => {
-                const leftMinutes = taskStartTimeMinutes(left.leadTask) ?? Number.MAX_SAFE_INTEGER;
-                const rightMinutes = taskStartTimeMinutes(right.leadTask) ?? Number.MAX_SAFE_INTEGER;
-                if (leftMinutes !== rightMinutes) return leftMinutes - rightMinutes;
-                return left.label.title.localeCompare(right.label.title, language === "de" ? "de" : "en");
-              });
 
             // Hide/show logic: only in "single" mobile mode
             const mobileVisClass =
@@ -461,55 +407,19 @@ export function PlanningPage() {
                       </small>
                     </li>
                   ))}
-                  {showProjectRows
-                    ? projectRows.map((projectRow) => {
-                        const primaryTask = projectRow.leadTask;
-                        return (
-                          <li
-                            key={`planning-project-${day.date}-${projectRow.projectId}`}
-                            className="planning-project planning-task-clickable"
-                            onClick={() => openProjectGanttById(projectRow.projectId, "planning")}
-                            onKeyDown={(event) => {
-                              if (event.key === "Enter" || event.key === " ") {
-                                event.preventDefault();
-                                openProjectGanttById(projectRow.projectId, "planning");
-                              }
-                            }}
-                            role="button"
-                            tabIndex={0}
-                          >
-                            <div className="planning-project-head">
-                              <b>{projectRow.label.title}</b>
-                              <span className="planning-project-count">
-                                {projectRow.taskCount} {de ? (projectRow.taskCount === 1 ? "Aufgabe" : "Aufgaben") : projectRow.taskCount === 1 ? "task" : "tasks"}
-                              </span>
-                            </div>
-                            {projectRow.label.subtitle && <small className="project-name-subtle">{projectRow.label.subtitle}</small>}
-                            <small>
-                              {projectRow.windowLabel
-                                ? `${de ? "Zeitraum" : "Window"}: ${projectRow.windowLabel}`
-                                : de
-                                  ? "Ohne feste Uhrzeit"
-                                  : "No fixed time"}
-                              {projectRow.assigneeSummary ? ` · ${projectRow.assigneeSummary}` : ""}
-                            </small>
-                            <small>
-                              {de ? "Nächste Aufgabe" : "Next task"}: {primaryTask.title}
-                            </small>
-                          </li>
-                        );
-                      })
-                    : visibleTaskRows.map((task) => {
+                  {/* Every task renders as an individual row so it can be
+                      clicked to edit directly — in office mode too. The old
+                      office view collapsed tasks into project cards that only
+                      navigated to the Gantt tab (the "detour" users complained
+                      about). */}
+                  {visibleTaskRows.map((task) => {
                         const projectLabel = taskProjectTitleParts(task);
                         const isMine = isTaskAssignedToCurrentUser(task);
-                        // In office view, managers can edit any task by
-                        // clicking its row (not just their own). The
-                        // construction view keeps the existing
-                        // my-task-navigation behaviour because crews
-                        // shouldn't be reorganising tasks assigned to
-                        // teammates from the planning grid.
-                        const canEditAnyTaskHere = showProjectRows && canManageTasks;
-                        const taskClickHandler = canEditAnyTaskHere
+                        // Managers edit any task by clicking its row directly
+                        // (opens the shared TaskEditModal — no detour). Non-
+                        // manager assignees navigate to their task; everyone
+                        // else is non-clickable.
+                        const taskClickHandler = canManageTasks
                           ? () => openTaskEditModal(task)
                           : isMine
                             ? () => openTaskFromPlanning(task)

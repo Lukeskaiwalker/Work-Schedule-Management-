@@ -45,7 +45,7 @@ def test_webdav_projects_root_respects_project_access(client: TestClient, admin_
     member_response = client.post(
         f"/api/projects/{visible_project_id}/members",
         headers=auth_headers(admin_token),
-        data={"user_id": employee["id"], "can_manage": "false"},
+        json={"user_id": employee["id"], "can_manage": False},
     )
     assert member_response.status_code == 200
 
@@ -178,7 +178,7 @@ def test_webdav_protected_folder_blocks_employee_write_and_direct_access(client:
     member = client.post(
         f"/api/projects/{project_id}/members",
         headers=auth_headers(admin_token),
-        data={"user_id": employee["id"], "can_manage": "false"},
+        json={"user_id": employee["id"], "can_manage": False},
     )
     assert member.status_code == 200
 

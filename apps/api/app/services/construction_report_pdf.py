@@ -1686,7 +1686,7 @@ def _photos_section_flowables(
                 photo_bytes, max_width=cell_width, max_height=max_height
             )
         if preview is None:
-            pair.append(Paragraph(f"{filename}: kein Vorschauformat", styles["Normal"]))
+            pair.append(Paragraph(f"{escape(filename)}: kein Vorschauformat", styles["Normal"]))
         else:
             pair.append(preview)
         if len(pair) == 2:

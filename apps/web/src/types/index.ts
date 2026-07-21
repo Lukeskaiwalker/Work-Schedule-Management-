@@ -63,6 +63,8 @@ export type User = {
    * is true.
    */
   api_access_enabled?: boolean;
+  /** TOTP two-factor auth enabled for this account. */
+  mfa_enabled?: boolean;
 };
 
 /**
@@ -1100,6 +1102,7 @@ export type MainView =
   | "calendar"
   | "planning"
   | "construction"
+  | "reports"
   | "wiki"
   | "messages"
   | "time"

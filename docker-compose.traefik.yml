@@ -24,6 +24,27 @@ services:
       - "traefik.http.routers.smplall.tls=true"
       - "traefik.http.routers.smplall.tls.certresolver=${SMPL_TRAEFIK_CERT_RESOLVER:-tmhttpchallenge}"
       - "traefik.http.services.smplall.loadbalancer.server.port=80"
+      # HSTS lives here, at the TLS terminator — Caddy behind Traefik only sees
+      # plain HTTP, so an HSTS header set there is ignored by browsers. One year,
+      # subdomains included. (Not preloaded — enabling stsPreload commits the
+      # domain to the browser preload list, which is hard to undo.)
+      - "traefik.http.routers.smplall.middlewares=smplall-secheaders"
+      - "traefik.http.middlewares.smplall-secheaders.headers.stsSeconds=31536000"
+      - "traefik.http.middlewares.smplall-secheaders.headers.stsIncludeSubdomains=true"
+      # ── Optional edge hardening (commented — enable per your setup) ──────────
+      # Non-spoofable per-source-IP rate limit at the proxy (Traefik sees the
+      # real client IP). Tune to your office's peak: a NAT'd office shares ONE
+      # public IP, so keep `average` well above real concurrent usage or you'll
+      # throttle everyone. This is a volumetric-flood backstop; the app's
+      # per-account login lockout is the brute-force control.
+      #   - "traefik.http.middlewares.smplall-ratelimit.ratelimit.average=100"
+      #   - "traefik.http.middlewares.smplall-ratelimit.ratelimit.burst=200"
+      # Restrict access to known office/VPN IPs. WARNING: this blocks remote
+      # staff who aren't on an allowlisted network — only enable if every user
+      # reaches the app from a fixed IP or through your VPN.
+      #   - "traefik.http.middlewares.smplall-allow.ipallowlist.sourcerange=203.0.113.0/24,198.51.100.7/32"
+      # Then append the ones you enabled to the router's middlewares list, e.g.:
+      #   ...middlewares=smplall-secheaders,smplall-ratelimit,smplall-allow
       - "traefik.http.routers.smplall-http.rule=Host(`${SMPL_TRAEFIK_HOST:-smpl-office.duckdns.org}`)"
       - "traefik.http.routers.smplall-http.entrypoints=web"
       - "traefik.http.routers.smplall-http.middlewares=smplall-https-redirect"
@@ -60,7 +81,7 @@ services:
       - "traefik.http.routers.smplall-uploads.tls=true"
       - "traefik.http.routers.smplall-uploads.tls.certresolver=${SMPL_TRAEFIK_CERT_RESOLVER:-tmhttpchallenge}"
       - "traefik.http.routers.smplall-uploads.service=smplall"
-      - "traefik.http.routers.smplall-uploads.middlewares=smplall-bigbody"
+      - "traefik.http.routers.smplall-uploads.middlewares=smplall-bigbody,smplall-secheaders"
 
 networks:
   traefik_proxy:

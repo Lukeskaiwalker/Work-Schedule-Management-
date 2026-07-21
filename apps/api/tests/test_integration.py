@@ -76,13 +76,13 @@ def test_project_task_planning_ticket_file_and_report_flow(client: TestClient, a
     member = client.post(
         f"/api/projects/{project_id}/members",
         headers=auth_headers(admin_token),
-        data={"user_id": employee["id"], "can_manage": "false"},
+        json={"user_id": employee["id"], "can_manage": False},
     )
     assert member.status_code == 200
     member_b = client.post(
         f"/api/projects/{project_id}/members",
         headers=auth_headers(admin_token),
-        data={"user_id": employee_b["id"], "can_manage": "false"},
+        json={"user_id": employee_b["id"], "can_manage": False},
     )
     assert member_b.status_code == 200
 

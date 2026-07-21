@@ -1,6 +1,7 @@
 import { useAppContext } from "../context/AppContext";
 import { AvatarBadge } from "../components/shared/AvatarBadge";
 import { ApiTokensSection } from "../components/profile/ApiTokensSection";
+import { TwoFactorSection } from "../components/profile/TwoFactorSection";
 
 export function ProfilePage() {
   const {
@@ -344,6 +345,9 @@ export function ProfilePage() {
             </div>
           )}
         </div>
+
+        {/* TOTP two-factor authentication — enroll, view recovery codes, disable. */}
+        <TwoFactorSection />
 
         {/*
           v2.5.23 — Personal Access Token management. Renders nothing

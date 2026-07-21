@@ -50,6 +50,8 @@ export function CalendarPage() {
     isTaskAssignedToCurrentUser,
     taskProjectTitleParts,
     openTaskFromPlanning,
+    openTaskEditModal,
+    canManageTasks,
     menuUserNameById,
     assignableUsers,
     absenceTypes,
@@ -380,11 +382,19 @@ export function CalendarPage() {
                                 const taskProjectLabel = taskProjectTitleParts(task);
                                 const taskType = normalizeTaskTypeValue(task.task_type);
                                 const isDone = task.status === "done";
+                                // Managers click to edit directly; assigned
+                                // non-managers navigate to their task.
+                                const taskClickHandler = canManageTasks
+                                  ? () => openTaskEditModal(task)
+                                  : isMine
+                                    ? () => openTaskFromPlanning(task)
+                                    : undefined;
+                                const isClickable = taskClickHandler !== undefined;
                                 const classes = [
                                   "calendar-page-event",
                                   `calendar-page-event--${taskType}`,
                                   isMine ? "calendar-page-event--mine" : "",
-                                  isMine ? "calendar-page-event--clickable" : "",
+                                  isClickable ? "calendar-page-event--clickable" : "",
                                   isDone ? "calendar-page-event--done" : "",
                                 ]
                                   .filter(Boolean)
@@ -396,19 +406,19 @@ export function CalendarPage() {
                                   <li
                                     key={`task-${day.date}-${task.id}`}
                                     className={classes}
-                                    onClick={isMine ? () => openTaskFromPlanning(task) : undefined}
+                                    onClick={taskClickHandler}
                                     onKeyDown={
-                                      isMine
+                                      isClickable
                                         ? (event) => {
                                             if (event.key === "Enter" || event.key === " ") {
                                               event.preventDefault();
-                                              openTaskFromPlanning(task);
+                                              taskClickHandler!();
                                             }
                                           }
                                         : undefined
                                     }
-                                    role={isMine ? "button" : undefined}
-                                    tabIndex={isMine ? 0 : undefined}
+                                    role={isClickable ? "button" : undefined}
+                                    tabIndex={isClickable ? 0 : undefined}
                                     title={
                                       taskProjectLabel.title
                                         ? `${task.title} — ${taskProjectLabel.title}`

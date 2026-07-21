@@ -440,6 +440,15 @@ async def webdav_project_file(
     if request.method == "DELETE":
         if not latest:
             raise HTTPException(status_code=404, detail="File not found")
+        # Mirror the REST delete gate (workflow_files.delete_file): a WebDAV
+        # client must clear the same protected-folder and files:manage checks,
+        # otherwise a task-assigned employee with mere project-read access could
+        # delete files here that the REST API would forbid.
+        delete_folder = _normalize_project_folder_path(latest.folder_path, allow_empty=True)
+        if _folder_path_is_protected(delete_folder) and not _can_access_project_protected_folder(user):
+            raise HTTPException(status_code=403, detail="File access denied")
+        if not has_permission_for_user(user.id, user.role, "files:manage"):
+            raise HTTPException(status_code=403, detail="File management permission required")
         _record_project_activity(
             db,
             project_id=project.id,

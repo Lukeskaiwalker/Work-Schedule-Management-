@@ -1,0 +1,10 @@
+# Real sample documents for v2.4.0 line-item extraction prompt engineering.
+# These contain real customer data, prices, supplier identifiers — NEVER commit.
+# Track only this .gitignore + the per-folder README.md files (whitelisted below).
+*
+!.gitignore
+!README.md
+!*/README.md
+# macOS finder metadata — never useful, never tracked.
+.DS_Store
+*/.DS_Store

@@ -31,7 +31,9 @@ def runner_tmp_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator
     monkeypatch.setenv("UPDATE_RUNNER_REPO_ROOT", str(repo_root))
     monkeypatch.setenv("UPDATE_RUNNER_LOG_DIR", str(log_dir))
     monkeypatch.setenv("UPDATE_RUNNER_TOKEN", "")
-    # Token-empty mode: no auth required, mirroring the dev stack.
+    # Token-empty mode. The runner now fails closed without a token, so the test
+    # suite opts into the local-dev escape hatch explicitly.
+    monkeypatch.setenv("UPDATE_RUNNER_ALLOW_INSECURE", "1")
 
     # Force re-import so the patched env vars are picked up.
     import app.config  # type: ignore  # noqa: F401  (loaded for side effect)

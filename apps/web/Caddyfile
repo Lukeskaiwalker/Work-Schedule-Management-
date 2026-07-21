@@ -51,6 +51,26 @@
 		# a new filename, so no risk of stale references).
 		root * /srv/web
 
+		# Security response headers for the served app. The CSP is the main
+		# XSS backstop: script-src 'self' is safe because the built index.html
+		# has no inline scripts (Vite emits an external module bundle).
+		#   - style-src allows 'unsafe-inline' for React/Leaflet inline styles.
+		#   - img-src allows https: so OSM tiles and the manufacturer-CDN
+		#     catalog-image redirects keep loading.
+		#   - frame-src allows 'self' (wiki/file preview) + Google Maps embeds.
+		#   - frame-ancestors 'none' + X-Frame-Options block clickjacking.
+		# HSTS is intentionally NOT set here: in prod Traefik terminates TLS and
+		# forwards plain HTTP to this container, so add Strict-Transport-Security
+		# as a Traefik headers middleware at the TLS edge instead.
+		header {
+			Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https://nominatim.openstreetmap.org; frame-src 'self' https://maps.google.com https://www.google.com; worker-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'"
+			X-Content-Type-Options "nosniff"
+			X-Frame-Options "DENY"
+			Referrer-Policy "strict-origin-when-cross-origin"
+			Permissions-Policy "geolocation=(self), camera=(), microphone=(), payment=()"
+			-Server
+		}
+
 		@hashed path /assets/* /chunks/*
 		header @hashed Cache-Control "public, max-age=31536000, immutable"
 

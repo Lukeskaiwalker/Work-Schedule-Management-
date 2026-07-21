@@ -43,6 +43,18 @@ class User(Base):
     api_access_enabled: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False, server_default="false"
     )
+    # ── TOTP two-factor auth ───────────────────────────────────────────────
+    # mfa_secret holds the base32 TOTP seed ENCRYPTED at rest (see
+    # services/mfa.py). It may be set while mfa_enabled is still False — that
+    # is the "enrolled but not yet verified" pending state. mfa_enabled only
+    # flips True after the user proves possession by entering a valid code.
+    # mfa_recovery_codes is a JSON list of sha256-hashed single-use codes.
+    mfa_enabled: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+    mfa_secret: Mapped[str | None] = mapped_column(String(255))
+    mfa_enrolled_at: Mapped[datetime | None] = mapped_column(DateTime)
+    mfa_recovery_codes: Mapped[list | None] = mapped_column(JSON)
 
     @property
     def display_name(self) -> str:

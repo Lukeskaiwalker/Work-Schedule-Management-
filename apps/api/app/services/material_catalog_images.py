@@ -5,6 +5,7 @@ import ipaddress
 import json
 import mimetypes
 import re
+import socket
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote_plus, urljoin, urlparse
@@ -107,7 +108,7 @@ def resolve_material_catalog_image_unielektro(
     timeout = httpx.Timeout(connect=2.0, read=4.0, write=4.0, pool=2.0)
     headers = {"User-Agent": USER_AGENT, "Accept": "text/html,application/json;q=0.9,*/*;q=0.8"}
     try:
-        with httpx.Client(timeout=timeout, follow_redirects=True, headers=headers) as client:
+        with httpx.Client(timeout=timeout, follow_redirects=False, headers=headers) as client:
             return _lookup_on_unielektro(
                 client,
                 ean=normalized_ean,
@@ -140,7 +141,7 @@ def resolve_material_catalog_image_unielektro_by_article_no(
     timeout = httpx.Timeout(connect=2.0, read=5.0, write=5.0, pool=2.0)
     headers = {"User-Agent": USER_AGENT, "Accept": "text/html,*/*;q=0.8"}
     try:
-        with httpx.Client(timeout=timeout, follow_redirects=True, headers=headers) as client:
+        with httpx.Client(timeout=timeout, follow_redirects=False, headers=headers) as client:
             img_url = _first_product_img_src(client, url)
             if img_url:
                 return MaterialImageLookupResult(image_url=img_url, source="unielektro_article_no")
@@ -162,7 +163,7 @@ def resolve_material_catalog_image_fallback(
     timeout = httpx.Timeout(connect=2.0, read=4.0, write=4.0, pool=2.0)
     headers = {"User-Agent": USER_AGENT, "Accept": "text/html,application/json;q=0.9,*/*;q=0.8"}
     try:
-        with httpx.Client(timeout=timeout, follow_redirects=True, headers=headers) as client:
+        with httpx.Client(timeout=timeout, follow_redirects=False, headers=headers) as client:
             manufacturer_hit = _lookup_on_manufacturer_site(
                 client,
                 ean=normalized_ean,
@@ -198,7 +199,7 @@ def cache_material_catalog_image(
     timeout = httpx.Timeout(connect=2.0, read=6.0, write=6.0, pool=2.0)
     headers = {"User-Agent": USER_AGENT, "Accept": "image/*;q=0.9,*/*;q=0.1"}
     try:
-        with httpx.Client(timeout=timeout, follow_redirects=True, headers=headers) as client:
+        with httpx.Client(timeout=timeout, follow_redirects=False, headers=headers) as client:
             with client.stream("GET", candidate_url) as response:
                 if response.status_code != 200:
                     return None
@@ -676,20 +677,55 @@ def _url_host_matches_domain(url: str, domain: str) -> bool:
     return host == candidate or host.endswith(f".{candidate}")
 
 
+def _ip_is_public(ip: ipaddress._BaseAddress) -> bool:
+    return not (
+        ip.is_loopback
+        or ip.is_private
+        or ip.is_link_local
+        or ip.is_reserved
+        or ip.is_multicast
+        or ip.is_unspecified
+    )
+
+
 def _is_public_http_url(url: str) -> bool:
+    """SSRF guard: only allow http(s) URLs whose host is a *public* address.
+
+    A guard that checks IP literals alone is trivially bypassed by a DNS name
+    that resolves to an internal address (127.0.0.1, the 169.254.169.254 cloud
+    metadata endpoint, RFC1918 ranges, or a docker-network service like
+    ``update_runner``). We therefore resolve the hostname and require EVERY
+    resolved address to be public; unresolvable hosts are denied (fail closed).
+    Callers must also disable auto-redirects so a public URL cannot 30x-bounce
+    to an internal one after this check has passed.
+    """
     parsed = urlparse(url)
     if parsed.scheme.lower() not in {"http", "https"}:
         return False
     host = (parsed.hostname or "").strip().lower()
     if not host:
         return False
-    if host in {"localhost"} or host.endswith(".local"):
+    if host == "localhost" or host.endswith(".local") or host.endswith(".internal"):
         return False
+
+    candidates: list[ipaddress._BaseAddress] = []
     try:
-        ip = ipaddress.ip_address(host)
+        candidates.append(ipaddress.ip_address(host))
     except ValueError:
-        return True
-    return not (ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved or ip.is_multicast)
+        try:
+            infos = socket.getaddrinfo(host, None)
+        except (socket.gaierror, UnicodeError, OSError):
+            return False
+        for info in infos:
+            raw_addr = str(info[4][0]).split("%", 1)[0]  # drop IPv6 zone id
+            try:
+                candidates.append(ipaddress.ip_address(raw_addr))
+            except ValueError:
+                continue
+        if not candidates:
+            return False
+
+    return all(_ip_is_public(ip) for ip in candidates)
 
 
 def _normalize_ean(value: str | None) -> str | None:

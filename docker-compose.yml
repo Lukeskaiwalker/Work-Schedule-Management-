@@ -184,6 +184,10 @@ services:
       UPDATE_RUNNER_REPO_ROOT: /repo
       UPDATE_RUNNER_LOG_DIR: /var/log/update_runner
       UPDATE_RUNNER_TOKEN: ${UPDATE_RUNNER_TOKEN:-}
+      # The runner fails closed without a token (it can drive host-level docker
+      # operations). Production MUST set UPDATE_RUNNER_TOKEN. For a token-less
+      # local dev stack, set UPDATE_RUNNER_ALLOW_INSECURE=1 in your shell/.env.
+      UPDATE_RUNNER_ALLOW_INSECURE: ${UPDATE_RUNNER_ALLOW_INSECURE:-0}
       # Force the project name so docker compose targets the running stack
       # instead of deriving a separate project from the /repo bind mount path.
       COMPOSE_PROJECT_NAME: ${COMPOSE_PROJECT_NAME:-smplall}

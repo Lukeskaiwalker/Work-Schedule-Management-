@@ -91,6 +91,14 @@ export function SidebarNavIcon({ view }: { view: MainView }) {
       </svg>
     );
   }
+  if (view === "reports") {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true" className="nav-icon">
+        <path d="M8 3.5h7l4 4V17a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V5.5a2 2 0 0 1 2-2Z" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round" />
+        <path d="M14.5 3.6V8h4.2M9.5 12h6M9.5 15.2h4" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      </svg>
+    );
+  }
   if (view === "wiki") {
     return (
       <svg viewBox="0 0 24 24" aria-hidden="true" className="nav-icon">

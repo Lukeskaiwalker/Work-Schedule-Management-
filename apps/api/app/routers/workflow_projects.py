@@ -487,7 +487,16 @@ def update_project_finance(
     current_user: User = Depends(require_permission("finance:manage")),
     db: Session = Depends(get_db),
 ):
-    assert_project_access(db, current_user, project_id)
+    # Editing finances requires genuine project authority, not merely the
+    # v2.5.34 task-assignment read fallback: a user who is only assigned a
+    # task in the project (but is not a member/manager) must not be able
+    # to mutate its finance row just because they also hold the global
+    # finance:manage permission. Global finance roles (accountant/ceo via
+    # projects:view, admin via projects:manage) and explicit project
+    # members still qualify — allow_task_fallback=False excludes only the
+    # read-only task path. The GET endpoint above intentionally keeps the
+    # fallback so assigned employees can still *view* finances.
+    assert_project_access(db, current_user, project_id, allow_task_fallback=False)
     project = db.get(Project, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")

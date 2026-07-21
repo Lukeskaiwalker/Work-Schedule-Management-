@@ -9,6 +9,7 @@ from app.routers.workflow_helpers import *  # noqa: F401,F403
 from app.services.material_catalog_images import (
     CATALOG_IMAGE_MAX_BYTES,
     CATALOG_IMAGE_PUBLIC_URL_PREFIX,
+    _is_public_http_url,
     normalize_material_catalog_image_external_key,
     remove_cached_material_catalog_image,
     resolve_cached_material_catalog_image_file,
@@ -129,8 +130,10 @@ def get_material_catalog_image_asset(
             },
         )
 
+    # Only ever bounce the browser to a validated *public* URL — never redirect
+    # to an attacker-influenced internal/arbitrary host (open-redirect / SSRF).
     fallback_url = str(catalog_row.image_url or "").strip()
-    if fallback_url.startswith("http://") or fallback_url.startswith("https://"):
+    if _is_public_http_url(fallback_url):
         return RedirectResponse(url=fallback_url, status_code=307)
     raise HTTPException(status_code=404, detail="Catalog image not found")
 

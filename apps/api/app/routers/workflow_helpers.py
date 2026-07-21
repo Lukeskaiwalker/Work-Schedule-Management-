@@ -477,6 +477,25 @@ def _attachment_content_length_for_listing(attachment: Attachment) -> str:
     return str(max(0, int(encrypted_size)))
 
 
+# Media types we are willing to render inline in the app's own origin. Anything
+# else — most importantly text/html, XHTML and SVG, which can execute script and
+# turn an uploaded file into stored XSS — is forced to a download with a neutral
+# type instead of honouring the attacker-controlled stored Content-Type.
+_INLINE_SAFE_MEDIA_TYPES = frozenset(
+    {
+        "image/png",
+        "image/jpeg",
+        "image/jpg",
+        "image/gif",
+        "image/webp",
+        "image/bmp",
+        "image/avif",
+        "application/pdf",
+        "text/plain",
+    }
+)
+
+
 def _attachment_http_response(
     attachment: Attachment,
     *,
@@ -485,9 +504,21 @@ def _attachment_http_response(
     head_only: bool = False,
 ) -> Response:
     media_type = _safe_media_type(attachment.content_type)
+    # Stored-XSS guard: an uploaded file must never be rendered as active content
+    # in our origin. If inline (preview) rendering was requested but the type is
+    # not on the safe allowlist, downgrade to an attachment download with a
+    # neutral type rather than trusting the stored Content-Type.
+    if inline and media_type not in _INLINE_SAFE_MEDIA_TYPES:
+        inline = False
+        media_type = "application/octet-stream"
     headers = {
         "Content-Disposition": _content_disposition(attachment.file_name, inline=inline),
         "X-Content-Type-Options": "nosniff",
+        # Belt-and-suspenders: even if a client ignores the disposition/type,
+        # forbid the file body from loading subresources, running script, or
+        # being framed by a hostile page.
+        "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
+        "Referrer-Policy": "no-referrer",
     }
     if include_dav_headers:
         headers.update(_dav_headers())
@@ -570,6 +601,9 @@ def _wiki_root_dir() -> Path:
 
 
 def _wiki_previewable_mime(media_type: str) -> bool:
+    # HTML/SVG stay previewable (an intended wiki feature), but the serving
+    # endpoint sends a `script-src 'none'` CSP so any script inside a previewed
+    # file cannot execute in our origin — rendering without XSS.
     return (
         media_type.startswith("image/")
         or media_type.startswith("text/")

@@ -27,10 +27,17 @@ REPO_ROOT: Path = _env_path("UPDATE_RUNNER_REPO_ROOT", "/repo")
 # restarts and remain greppable for forensic debugging.
 JOB_LOG_DIR: Path = _env_path("UPDATE_RUNNER_LOG_DIR", "/var/log/update_runner")
 
-# Shared secret between api and runner. Optional but recommended: even though
-# the runner only listens on the docker-internal network, defense-in-depth
-# protects against future co-located services and accidental host exposure.
+# Shared secret between api and runner. The runner can execute privileged host
+# operations (docker socket + repo bind mount), so an unauthenticated runner is
+# a host-takeover primitive for anything that can reach it on the docker network
+# (e.g. an SSRF in the api). It is therefore REQUIRED in production.
 EXPECTED_TOKEN: str = _env_str("UPDATE_RUNNER_TOKEN", "")
+
+# Explicit escape hatch for local development, where the runner sits on a private
+# docker network with no token. When no token is configured the runner refuses
+# every privileged request UNLESS this flag is set, so a token-less deployment
+# fails closed by default instead of silently accepting anonymous callers.
+ALLOW_INSECURE: bool = _env_str("UPDATE_RUNNER_ALLOW_INSECURE", "").strip().lower() in {"1", "true", "yes", "on"}
 
 # Forced project name for ``docker compose`` invocations. Without this the
 # runner would derive the project name from its bind-mount directory (/repo)

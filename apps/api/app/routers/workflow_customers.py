@@ -123,14 +123,22 @@ def list_customers(
     else:
         stmt = stmt.where(Customer.archived_at.is_(None))
     if q and q.strip():
-        needle = f"%{q.strip()}%"
-        stmt = stmt.where(
-            or_(
-                Customer.name.ilike(needle),
-                Customer.contact_person.ilike(needle),
-                Customer.email.ilike(needle),
+        # Token-normalized AND-match: split the query into whitespace tokens and
+        # require each token to appear (case-insensitively) in at least one of the
+        # searched fields. Word order becomes irrelevant ("Beta AG" finds
+        # "AG Beta") and partial multi-field matches work, while staying pure
+        # ilike so behaviour is identical on Postgres and the SQLite test DB.
+        # (A single token reduces to the previous substring search.)
+        for token in q.strip().split():
+            needle = f"%{token}%"
+            stmt = stmt.where(
+                or_(
+                    Customer.name.ilike(needle),
+                    Customer.contact_person.ilike(needle),
+                    Customer.email.ilike(needle),
+                    Customer.address.ilike(needle),
+                )
             )
-        )
     stmt = stmt.order_by(Customer.name.asc(), Customer.id.asc()).limit(limit).offset(offset)
     customers = list(db.scalars(stmt).all())
     stats = _aggregate_project_stats(db, [c.id for c in customers])
@@ -160,7 +168,7 @@ def get_customer(
 @router.get("/customers/{customer_id}/projects", response_model=list[ProjectOut])
 def list_customer_projects(
     customer_id: int,
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     customer = db.get(Customer, customer_id)
@@ -171,7 +179,14 @@ def list_customer_projects(
         .where(Project.customer_id == customer_id)
         .order_by(Project.last_updated_at.desc().nullslast(), Project.id.desc())
     ).all()
-    return list(rows)
+    # Object-level scoping: an employee must only see the customer's projects
+    # they can actually access (global project authority, membership, or a task
+    # assignment) — never the customer's entire project list. Global-access users
+    # get the full set, so this is a no-op for admins/office.
+    from app.routers.workflow_helpers import _project_ids_visible_to_user
+
+    visible_ids = _project_ids_visible_to_user(db, current_user)
+    return [project for project in rows if project.id in visible_ids]
 
 
 @router.post("/customers", response_model=CustomerOut)

@@ -1,8 +1,19 @@
 from __future__ import annotations
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Environments where placeholder/short secrets are tolerated (local dev, CI,
+# the pytest suite). Anything else is treated as production-like and must ship
+# real secrets — see ``_enforce_production_secrets`` below.
+_DEV_LIKE_ENVIRONMENTS = {"dev", "development", "test", "testing", "ci", "local"}
+
+# Known-default / placeholder values that must never sign real JWTs. Compared
+# case-insensitively. The empty string is included so a blank value also fails.
+_WEAK_SECRET_KEYS = {"", "change-me", "dev-secret-change-me", "replace-with-long-random-secret"}
+_WEAK_ADMIN_PASSWORDS = {"", "admin123", "changeme123!", "password", "admin"}
+_MIN_SECRET_KEY_LENGTH = 32
 
 
 class Settings(BaseSettings):
@@ -77,6 +88,15 @@ class Settings(BaseSettings):
 
     secure_cookies: bool = True
 
+    # ── Login brute-force lockout ──────────────────────────────────────────
+    # Independent of the (alert-only, off-by-default) audit_alerts feature: this
+    # actually BLOCKS further login attempts for an email once too many recent
+    # failures accumulate. Keyed on the target account (not the client IP) so it
+    # cannot be bypassed by IP rotation. Reuses the auth.login_failed audit rows.
+    login_lockout_enabled: bool = True
+    login_lockout_threshold: int = 10
+    login_lockout_window_seconds: int = 900
+
     # ── Daily clocked-in summary ───────────────────────────────────────────
     # When enabled, the worker dispatches a once-per-day summary listing
     # every active clock entry plus today's worked hours per user. Used
@@ -107,6 +127,10 @@ class Settings(BaseSettings):
     # Dedup is anchored in the audit_logs table itself (a `auth.alert_brute_force`
     # row) so multiple api workers can't double-fire and so restarts don't
     # reset the dedup state.
+    # Opt-in (deliberately off by default — it sends external Telegram/email).
+    # Set AUDIT_ALERTS_ENABLED=true in the server .env to turn repeated failed
+    # logins into an alert + an ``auth.alert_brute_force`` audit trail. The
+    # per-account lockout in the login handler protects the account regardless.
     audit_alerts_enabled: bool = False
     audit_alerts_failures_per_email_threshold: int = 5
     audit_alerts_failures_per_email_window_seconds: int = 300
@@ -115,6 +139,41 @@ class Settings(BaseSettings):
     audit_alerts_send_telegram: bool = True
     audit_alerts_send_email: bool = False
     audit_alerts_email_recipient: str = ""
+
+    @model_validator(mode="after")
+    def _enforce_production_secrets(self) -> "Settings":
+        """Fail closed when a production-like deployment ships insecure secrets.
+
+        ``required: true`` on the .env file only guarantees the file exists — it
+        never checked the *values*, which is how a placeholder SECRET_KEY once
+        reached prod. In any non-dev environment we refuse to boot with a weak,
+        default, or too-short signing key (which would make every JWT forgeable),
+        a missing file-encryption key, or a default initial-admin password.
+        Dev/test/CI keep using their short placeholder secrets untouched.
+        """
+        if self.environment.strip().lower() in _DEV_LIKE_ENVIRONMENTS:
+            return self
+
+        problems: list[str] = []
+        secret = (self.secret_key or "").strip()
+        if secret.lower() in _WEAK_SECRET_KEYS or len(secret) < _MIN_SECRET_KEY_LENGTH:
+            problems.append(
+                f"SECRET_KEY must be a strong random value of at least {_MIN_SECRET_KEY_LENGTH} characters"
+            )
+        if not (self.file_encryption_key or "").strip():
+            problems.append("FILE_ENCRYPTION_KEY must be set")
+        if (
+            self.initial_admin_bootstrap
+            and (self.initial_admin_password or "").strip().lower() in _WEAK_ADMIN_PASSWORDS
+        ):
+            problems.append("INITIAL_ADMIN_PASSWORD must not be empty or a known default")
+
+        if problems:
+            raise ValueError(
+                "Refusing to start with insecure configuration in environment "
+                f"'{self.environment}': " + "; ".join(problems)
+            )
+        return self
 
 
 @lru_cache

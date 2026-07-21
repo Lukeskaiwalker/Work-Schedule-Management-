@@ -1859,6 +1859,8 @@ def update_user(
     if payload.workspace_lock is not None and payload.workspace_lock not in VALID_WORKSPACE_LOCKS:
         raise HTTPException(status_code=400, detail="workspace_lock must be 'construction', 'office', or null")
 
+    was_active = bool(user.is_active)
+
     for field in [
         "full_name",
         "role",
@@ -1882,11 +1884,46 @@ def update_user(
     if "workspace_lock" in payload.model_fields_set:
         user.workspace_lock = payload.workspace_lock
 
+    # Deactivating a user must also burn any outstanding invite / password-reset
+    # tokens, mirroring soft_delete_user — otherwise a previously-issued reset
+    # link could be used to set a password (and, for pending invites, re-activate
+    # the account) after the admin disabled it.
+    if was_active and not user.is_active:
+        db.execute(
+            update(UserActionToken)
+            .where(
+                UserActionToken.user_id == user.id,
+                UserActionToken.used_at.is_(None),
+            )
+            .values(used_at=utcnow())
+        )
+
     db.add(user)
     db.commit()
     db.refresh(user)
     log_admin_action(db, admin, "user.update", "user", str(user.id), payload.model_dump(exclude_none=True))
     return user
+
+
+@router.post("/users/{user_id}/reset-mfa")
+def reset_user_mfa(
+    user_id: int,
+    admin: User = Depends(require_permission("users:manage")),
+    db: Session = Depends(get_db),
+):
+    """Clear a user's TOTP two-factor state so they can re-enroll — the recovery
+    path when someone loses their authenticator device. Audited."""
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    user.mfa_enabled = False
+    user.mfa_secret = None
+    user.mfa_enrolled_at = None
+    user.mfa_recovery_codes = None
+    db.add(user)
+    db.commit()
+    log_admin_action(db, admin, "user.mfa_reset", "user", str(user.id), {"email": user.email})
+    return {"ok": True, "user_id": user.id}
 
 
 @router.post("/users/{user_id}/apply-template")

@@ -123,6 +123,28 @@ def test_customer_search_by_q(client: TestClient, admin_token: str):
     assert "Alpha GmbH" not in names
 
 
+def test_customer_search_is_word_order_and_field_tolerant(client: TestClient, admin_token: str):
+    _create_customer(
+        client, admin_token, name="Beta AG", contact_person="Herr Meier", address="Berlin"
+    )
+    _create_customer(client, admin_token, name="Alpha GmbH", address="Hamburg")
+
+    # Tokens match across fields in any order: "AG Beta" (reversed) still finds "Beta AG".
+    reversed_words = client.get("/api/customers?q=AG%20Beta", headers=auth_headers(admin_token))
+    assert reversed_words.status_code == 200
+    assert {row["name"] for row in reversed_words.json()} == {"Beta AG"}
+
+    # Each token may match a different field (name token + address token).
+    cross_field = client.get("/api/customers?q=Beta%20Berlin", headers=auth_headers(admin_token))
+    assert cross_field.status_code == 200
+    assert {row["name"] for row in cross_field.json()} == {"Beta AG"}
+
+    # A token that matches nothing narrows the result to empty (AND semantics).
+    narrowed = client.get("/api/customers?q=Beta%20Hamburg", headers=auth_headers(admin_token))
+    assert narrowed.status_code == 200
+    assert narrowed.json() == []
+
+
 def test_create_project_with_customer_id_mirrors_legacy_fields(
     client: TestClient, admin_token: str
 ):

@@ -15,9 +15,10 @@ from fastapi import HTTPException
 
 from app.core.db import SessionLocal
 from app.core.deps import assert_project_access
-from app.core.permissions import ROLE_ADMIN, ROLE_EMPLOYEE
+from app.core.permissions import ROLE_ADMIN, ROLE_EMPLOYEE, set_user_permissions_override
 from app.core.security import get_password_hash
 from app.models.entities import Project, ProjectMember, Task, TaskAssignment, User
+from tests.conftest import auth_headers
 
 
 def _make_user(db, email: str, role: str) -> User:
@@ -132,6 +133,42 @@ def test_task_assignment_does_not_grant_manage_access():
         assert exc.value.status_code == 403
 
 
+def test_task_fallback_can_be_excluded_for_sensitive_writes():
+    """allow_task_fallback=False (used by the finance-edit path) must deny
+    a task-assigned-only employee, even though the same user passes the
+    default read check. A task assignment grants read, not the right to
+    mutate sensitive rows like project finances."""
+    with SessionLocal() as db:
+        emp = _make_user(db, "emp-fin-fallback@example.com", ROLE_EMPLOYEE)
+        project = _make_project(db, "T-ACCESS-8")
+        task = Task(project_id=project.id, title="Task", status="open")
+        db.add(task)
+        db.flush()
+        db.add(TaskAssignment(task_id=task.id, user_id=emp.id))
+        db.commit()
+
+        # Default read access (with fallback) still works.
+        assert_project_access(db, emp, project.id)
+
+        # The finance-edit path excludes the fallback → denied.
+        with pytest.raises(HTTPException) as exc:
+            assert_project_access(db, emp, project.id, allow_task_fallback=False)
+        assert exc.value.status_code == 403
+
+
+def test_excluding_task_fallback_still_allows_explicit_members():
+    """Regression guard: excluding the task fallback must not affect
+    explicit project members — a read-only member still passes the
+    finance-style access check."""
+    with SessionLocal() as db:
+        emp = _make_user(db, "emp-fin-member@example.com", ROLE_EMPLOYEE)
+        project = _make_project(db, "T-ACCESS-9")
+        db.add(ProjectMember(project_id=project.id, user_id=emp.id, can_manage=False))
+        db.commit()
+
+        assert_project_access(db, emp, project.id, allow_task_fallback=False)
+
+
 def test_admin_keeps_global_access_without_membership():
     """Regression guard: admins (projects:manage) bypass membership +
     task checks entirely."""
@@ -218,3 +255,109 @@ def test_projects_overview_lists_task_assigned_project(client, admin_token):
     assert after.status_code == 200
     listed_ids = {row["project_id"] for row in after.json()}
     assert project_id in listed_ids, "task-assigned project must appear in the overview list"
+
+
+# ──────────── finance-edit must not be unlocked by the task fallback ────────────
+
+
+def test_finance_manage_via_task_assignment_cannot_edit_finance(client, admin_token):
+    """Security: holding finance:manage but only task-assignment (read)
+    access to a project must NOT allow editing that project's finances.
+    The v2.5.34 task fallback grants read only; PATCH /finance excludes it
+    (allow_task_fallback=False). The user can still GET finances.
+    """
+    create = client.post(
+        "/api/admin/users",
+        headers=auth_headers(admin_token),
+        json={
+            "email": "fin-emp@example.com",
+            "password": "Password123!",
+            "full_name": "Finance Emp",
+            "role": "employee",
+        },
+    )
+    assert create.status_code == 200, create.text
+    emp_id = create.json()["id"]
+
+    try:
+        # Grant finance:manage as a per-user override (employees don't have
+        # it by default) — this is the only way a task-assigned-only user
+        # can even reach the finance:manage-gated endpoint.
+        grant = client.put(
+            f"/api/admin/user-permissions/{emp_id}",
+            headers=auth_headers(admin_token),
+            json={"extra": ["finance:manage"], "denied": []},
+        )
+        assert grant.status_code == 200, grant.text
+
+        login = client.post(
+            "/api/auth/login",
+            json={"email": "fin-emp@example.com", "password": "Password123!"},
+        )
+        emp_token = login.headers["X-Access-Token"]
+
+        # Project + task assigned to the employee, but NO membership.
+        with SessionLocal() as db:
+            project = _make_project(db, "T-FIN-1")
+            task = Task(project_id=project.id, title="assigned", status="open")
+            db.add(task)
+            db.flush()
+            db.add(TaskAssignment(task_id=task.id, user_id=emp_id))
+            db.commit()
+            project_id = project.id
+
+        # They CAN view finances (read fallback + finance:view baseline).
+        read = client.get(
+            f"/api/projects/{project_id}/finance", headers=auth_headers(emp_token)
+        )
+        assert read.status_code == 200, read.text
+
+        # But they must NOT be able to edit finances.
+        patch = client.patch(
+            f"/api/projects/{project_id}/finance",
+            headers=auth_headers(emp_token),
+            json={"order_value_net": 50000.0},
+        )
+        assert patch.status_code == 403, patch.text
+    finally:
+        # The user-override map is process-global and not reset between
+        # tests — clear it so this grant can't leak onto a reused user id.
+        set_user_permissions_override({})
+
+
+def test_accountant_can_edit_finance_without_membership(client, admin_token):
+    """Regression guard proving the fix isn't over-tightened: the accountant
+    role (finance:manage + projects:view, but NOT projects:manage) must
+    still edit finances on any project without being an explicit member.
+    A blunt manage_required=True would wrongly 403 here.
+    """
+    create = client.post(
+        "/api/admin/users",
+        headers=auth_headers(admin_token),
+        json={
+            "email": "acct-fin@example.com",
+            "password": "Password123!",
+            "full_name": "Acct Fin",
+            "role": "accountant",
+        },
+    )
+    assert create.status_code == 200, create.text
+
+    login = client.post(
+        "/api/auth/login",
+        json={"email": "acct-fin@example.com", "password": "Password123!"},
+    )
+    acct_token = login.headers["X-Access-Token"]
+
+    with SessionLocal() as db:
+        project = _make_project(db, "T-FIN-2")
+        db.commit()
+        project_id = project.id
+
+    patch = client.patch(
+        f"/api/projects/{project_id}/finance",
+        headers=auth_headers(acct_token),
+        json={"order_value_net": 75000.0},
+    )
+    assert patch.status_code == 200, patch.text
+    assert patch.json()["order_value_net"] == 75000.0

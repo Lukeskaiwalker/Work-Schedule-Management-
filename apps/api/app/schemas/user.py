@@ -56,6 +56,9 @@ class UserOut(BaseModel):
     # and so the user's own /me response can decide whether to show the
     # "API tokens" page in settings.
     api_access_enabled: bool = False
+    # TOTP two-factor state — drives the profile "2FA enabled" card and lets
+    # the client know an account requires the second login step.
+    mfa_enabled: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -95,3 +98,40 @@ class NicknameAvailabilityOut(BaseModel):
     available: bool
     locked: bool = False
     reason: str | None = None
+
+
+# ── Two-factor authentication ─────────────────────────────────────────────────
+
+
+class MfaEnrollIn(BaseModel):
+    """Enrolling a second factor is credential-sensitive, so it re-checks the
+    password — a hijacked session alone must not be able to plant a factor."""
+
+    current_password: str
+
+
+class MfaEnrollOut(BaseModel):
+    """Returned by enroll — the secret is pending until a code is verified."""
+
+    secret: str
+    otpauth_uri: str
+    qr_data_uri: str
+
+
+class MfaCodeIn(BaseModel):
+    code: str = Field(min_length=6, max_length=32)
+
+
+class MfaVerifyOut(BaseModel):
+    ok: bool = True
+    mfa_enabled: bool = True
+    recovery_codes: list[str]
+
+
+class MfaDisableIn(BaseModel):
+    current_password: str
+    code: str = Field(min_length=6, max_length=32)
+
+
+class MfaLoginIn(BaseModel):
+    code: str = Field(min_length=6, max_length=32)

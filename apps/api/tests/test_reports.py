@@ -65,6 +65,58 @@ def test_construction_report_uses_nickname_for_submitted_by(client: TestClient, 
     assert captured["pdf_submitted_by"] == "ReportAlias"
     assert captured["summary_submitted_by"] == "ReportAlias"
 
+def test_recent_reports_date_range_filter(client: TestClient, admin_token: str):
+    project = client.post(
+        "/api/projects",
+        headers=auth_headers(admin_token),
+        json={"project_number": "2026-HIST", "name": "History Project", "status": "active"},
+    )
+    assert project.status_code == 200
+    project_id = project.json()["id"]
+
+    def _make(report_date: str) -> None:
+        r = client.post(
+            f"/api/projects/{project_id}/construction-reports",
+            headers=auth_headers(admin_token),
+            json={
+                "report_date": report_date,
+                "payload": {
+                    "customer": "History Customer",
+                    "project_name": "History Project",
+                    "project_number": "2026-HIST",
+                    "workers": [{"name": "Worker"}],
+                },
+            },
+        )
+        assert r.status_code == 200, r.text
+
+    _make("2026-01-01")  # old
+    _make("2026-07-10")  # recent
+
+    # No date params → unchanged behaviour (newest-N by submission returns both).
+    all_recent = client.get("/api/construction-reports/recent", headers=auth_headers(admin_token))
+    assert all_recent.status_code == 200
+    assert {"2026-01-01", "2026-07-10"} <= {row["report_date"] for row in all_recent.json()}
+
+    # since= filters by report_date.
+    windowed = client.get(
+        "/api/construction-reports/recent?since=2026-06-01", headers=auth_headers(admin_token)
+    )
+    assert windowed.status_code == 200
+    windowed_dates = [row["report_date"] for row in windowed.json()]
+    assert "2026-07-10" in windowed_dates
+    assert "2026-01-01" not in windowed_dates
+
+    # until= upper-bounds the window.
+    until_q = client.get(
+        "/api/construction-reports/recent?until=2026-06-01", headers=auth_headers(admin_token)
+    )
+    assert until_q.status_code == 200
+    until_dates = [row["report_date"] for row in until_q.json()]
+    assert "2026-01-01" in until_dates
+    assert "2026-07-10" not in until_dates
+
+
 def test_construction_report_office_material_need_keeps_commas_in_single_item(client: TestClient, admin_token: str):
     project = client.post(
         "/api/projects",

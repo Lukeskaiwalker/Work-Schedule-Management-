@@ -309,8 +309,10 @@ export function ProjectFilesTab() {
   }, [fileRows, isSearching]);
 
   function isFolderCollapsed(folder: string): boolean {
-    const defaultCollapsed = isReportFolder(folder);
-    return toggledFolders.has(folder) ? !defaultCollapsed : defaultCollapsed;
+    // Every folder group is collapsed by default (the reported issue: images
+    // were always expanded and flooded the list). A folder present in
+    // `toggledFolders` is one the user explicitly opened.
+    return !toggledFolders.has(folder);
   }
 
   function toggleFolder(folder: string) {

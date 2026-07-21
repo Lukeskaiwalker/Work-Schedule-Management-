@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date
+
 from fastapi import APIRouter
 
 from app.routers.workflow_helpers import *  # noqa: F401,F403
@@ -98,14 +100,43 @@ def list_global_or_project_reports(
 @router.get("/construction-reports/recent", response_model=list[RecentConstructionReportOut])
 def list_recent_construction_reports(
     limit: int = 10,
+    since: date | None = None,
+    until: date | None = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    """Recent construction reports.
+
+    Default (no date params): the newest-N reports by submission time — this is
+    what the Overview "latest reports" card uses, and it stays unchanged.
+
+    With ``since`` / ``until``: a date-range history window (the "reports from the
+    last N weeks" view), filtered and sorted by the site-visit ``report_date`` to
+    match how the site calendar frames a window, with a larger result cap since a
+    4-week window can hold more than the card's handful.
+    """
     _assert_report_access(current_user, write=False)
-    safe_limit = max(1, min(int(limit or 10), 50))
-    reports = db.scalars(
-        select(ConstructionReport).order_by(ConstructionReport.created_at.desc(), ConstructionReport.id.desc()).limit(safe_limit)
-    ).all()
+    date_filtered = since is not None or until is not None
+    if date_filtered:
+        safe_limit = max(1, min(int(limit or 500), 500))
+        stmt = select(ConstructionReport)
+        if since is not None:
+            stmt = stmt.where(ConstructionReport.report_date >= since)
+        if until is not None:
+            stmt = stmt.where(ConstructionReport.report_date <= until)
+        stmt = stmt.order_by(
+            ConstructionReport.report_date.desc(),
+            ConstructionReport.created_at.desc(),
+            ConstructionReport.id.desc(),
+        ).limit(safe_limit)
+    else:
+        safe_limit = max(1, min(int(limit or 10), 50))
+        stmt = (
+            select(ConstructionReport)
+            .order_by(ConstructionReport.created_at.desc(), ConstructionReport.id.desc())
+            .limit(safe_limit)
+        )
+    reports = db.scalars(stmt).all()
     return [_recent_construction_report_out(db, report) for report in reports]
 
 @router.get("/construction-reports/{report_id}/processing")

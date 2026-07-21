@@ -82,6 +82,11 @@ export function LoginPage() {
     error,
     notice,
     onLogin,
+    mfaLoginPending,
+    mfaCode,
+    setMfaCode,
+    submitMfaLogin,
+    cancelMfaLogin,
     submitPublicInviteAccept,
     submitPublicPasswordReset,
     resetPublicAuthRoute,
@@ -168,6 +173,36 @@ export function LoginPage() {
             </button>
             <button type="button" onClick={() => setLanguage(language === "de" ? "en" : "de")}>
               {language === "de" ? "EN" : "DE"}
+            </button>
+          </div>
+          {error && <div className="error">{error}</div>}
+          {notice && <div className="notice">{notice}</div>}
+        </form>
+      ) : mfaLoginPending ? (
+        <form className="card auth-card" onSubmit={submitMfaLogin}>
+          <img src={brandLogoUrl} alt="Company logo" className="brand-logo large" />
+          <h1>{brandTitle}</h1>
+          <p>{language === "de" ? "Zwei-Faktor-Authentifizierung" : "Two-factor authentication"}</p>
+          <label>
+            {language === "de" ? "6-stelliger Code" : "6-digit code"}
+            <input
+              value={mfaCode}
+              onChange={(e) => setMfaCode(e.target.value)}
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              autoFocus
+              placeholder="123456"
+            />
+          </label>
+          <small className="muted">
+            {language === "de"
+              ? "Code aus deiner Authenticator-App oder ein Wiederherstellungscode."
+              : "Code from your authenticator app, or a recovery code."}
+          </small>
+          <div className="row">
+            <button type="submit">{language === "de" ? "Bestätigen" : "Verify"}</button>
+            <button type="button" onClick={cancelMfaLogin}>
+              {language === "de" ? "Abbrechen" : "Cancel"}
             </button>
           </div>
           {error && <div className="error">{error}</div>}

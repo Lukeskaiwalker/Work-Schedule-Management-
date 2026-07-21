@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core.db import get_db
 from app.core.permissions import ROLE_ADMIN, has_global_project_access, has_permission_for_user  # noqa: F401 – also used by re-exports
-from app.core.security import decode_token
+from app.core.security import MFA_CHALLENGE_PURPOSE, decode_token
 from app.core.time import utcnow
 from app.models.entities import ApiToken, ProjectMember, Task, TaskAssignment, User
 
@@ -125,6 +125,9 @@ def get_current_user(
     payload = decode_token(token)
     if not payload or "sub" not in payload:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
+    # A half-authenticated MFA challenge token must never act as a session.
+    if payload.get("purpose") == MFA_CHALLENGE_PURPOSE:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
 
     user = db.get(User, int(payload["sub"]))
     if not user or not user.is_active:
@@ -148,7 +151,21 @@ def require_admin(current_user: User = Depends(get_current_user)) -> User:
     return current_user
 
 
-def assert_project_access(db: Session, user: User, project_id: int, manage_required: bool = False) -> None:
+def assert_project_access(
+    db: Session,
+    user: User,
+    project_id: int,
+    manage_required: bool = False,
+    *,
+    allow_task_fallback: bool = True,
+) -> None:
+    # ``allow_task_fallback`` toggles the v2.5.34 task-assignment read
+    # fallback (see below). It defaults to True — most read paths want a
+    # task-assigned employee to reach the project. Callers guarding
+    # sensitive *writes* that must not be unlocked by a mere task
+    # assignment (e.g. editing project finances) pass False so that only
+    # global project authority or an explicit membership qualifies.
+    #
     # Use the live permission map so admin-UI role/user-level edits take effect immediately.
     if has_global_project_access(user.id, user.role, manage_required=manage_required):
         return
@@ -174,8 +191,10 @@ def assert_project_access(db: Session, user: User, project_id: int, manage_requi
     # This grants READ access only. Manage access still requires an
     # explicit membership with can_manage, so "doing work" never implies
     # "administering the project". Scoped to the read path; a
-    # manage_required call with no membership still denies.
-    if not manage_required and _user_has_task_in_project(db, user.id, project_id):
+    # manage_required call with no membership still denies. Callers that
+    # pass allow_task_fallback=False opt out of this branch entirely, so
+    # a task assignment never grants access on those paths.
+    if allow_task_fallback and not manage_required and _user_has_task_in_project(db, user.id, project_id):
         return
 
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Project access denied")
@@ -247,7 +266,7 @@ def get_current_user_from_token(token: str, db: Session) -> User:
     (EventSource does not support custom authorization headers).
     """
     payload = decode_token(token)
-    if not payload:
+    if not payload or payload.get("purpose") == MFA_CHALLENGE_PURPOSE:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication token")
 
     raw_sub = payload.get("sub")

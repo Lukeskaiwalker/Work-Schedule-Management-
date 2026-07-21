@@ -17,6 +17,7 @@ auth model uniform.
 """
 from __future__ import annotations
 
+import hmac
 from typing import Iterator
 
 from fastapi import FastAPI, File, Header, HTTPException, UploadFile
@@ -24,7 +25,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from . import backups as backup_files
-from .config import EXPECTED_TOKEN, ensure_directories
+from .config import ALLOW_INSECURE, EXPECTED_TOKEN, ensure_directories
 from .jobs import (
     JobInFlightError,
     JobStatus,
@@ -47,15 +48,22 @@ def _startup() -> None:
 
 
 def _check_auth(token: str | None) -> None:
-    """Validate the shared-secret header. No-op when no token is configured.
+    """Validate the shared-secret header, failing closed when unconfigured.
 
-    The "no token configured" path is for the local dev stack, where the
-    runner sits on a private docker network with no host port exposure.
-    Production deployments should always set ``UPDATE_RUNNER_TOKEN``.
+    The runner can drive privileged host operations, so a missing token is a
+    misconfiguration, not a convenience. When ``UPDATE_RUNNER_TOKEN`` is empty we
+    refuse every request with 503 UNLESS ``UPDATE_RUNNER_ALLOW_INSECURE`` is set
+    (the local-dev escape hatch). When a token IS configured, compare it in
+    constant time to avoid leaking it through timing.
     """
     if not EXPECTED_TOKEN:
-        return
-    if token != EXPECTED_TOKEN:
+        if ALLOW_INSECURE:
+            return
+        raise HTTPException(
+            status_code=503,
+            detail="Update runner has no UPDATE_RUNNER_TOKEN configured; refusing privileged request",
+        )
+    if not hmac.compare_digest(token or "", EXPECTED_TOKEN):
         raise HTTPException(status_code=401, detail="Invalid update runner token")
 
 

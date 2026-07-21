@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CustomerListItem } from "../../types";
+import { fuzzyFilterCustomers } from "../../utils/fuzzyMatch";
 
 export type CustomerComboboxValue = {
   customerId: number | null;
@@ -83,19 +84,19 @@ export function CustomerCombobox({
 
   const trimmed = query.trim();
   const lowerQuery = trimmed.toLowerCase();
+  // Typo-tolerant, word-order-independent ranking so a slightly-misspelled or
+  // partial query still surfaces the customer (e.g. "Schmit" → "Schmidt").
   const matches = useMemo(() => {
-    if (!lowerQuery) return customers.slice(0, 8);
-    return customers
-      .filter((row) => {
-        const hay = `${row.name} ${row.address ?? ""} ${row.email ?? ""} ${row.contact_person ?? ""}`.toLowerCase();
-        return hay.includes(lowerQuery);
-      })
-      .slice(0, 8);
-  }, [customers, lowerQuery]);
+    if (!trimmed) return customers.slice(0, 8);
+    return fuzzyFilterCustomers(customers, trimmed, 8);
+  }, [customers, trimmed]);
 
+  // Kept strict (exact name equality against the FULL list, not the fuzzy
+  // matches) so the "+ create new customer" action still appears for a
+  // near-but-not-exact name and is suppressed only for a true exact match.
   const exactMatch = useMemo(
-    () => matches.find((row) => row.name.toLowerCase() === lowerQuery),
-    [matches, lowerQuery],
+    () => customers.find((row) => row.name.trim().toLowerCase() === lowerQuery),
+    [customers, lowerQuery],
   );
   const showCreateAction = trimmed.length > 0 && !exactMatch;
   // Final dropdown rows = matches + optional create action. We track the

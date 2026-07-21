@@ -12,11 +12,18 @@ cryptography==45.0.7
 python-dotenv==1.1.1
 pytest==8.4.2
 pytest-cov==6.2.1
-sse-starlette>=1.6.1
-asyncpg>=0.29.0
+# Pinned to exact versions (were floating >=) so prod builds are reproducible
+# and can't silently pull an untested release. These are the versions the test
+# suite runs against.
+sse-starlette==3.0.3
+asyncpg==0.31.0
 
 email-validator==2.2.0
 bcrypt==3.2.2
+# TOTP two-factor auth: pyotp generates/verifies codes; qrcode renders the
+# enrollment QR server-side as an SVG data URI (no frontend QR dependency).
+pyotp==2.9.0
+qrcode==7.4.2
 reportlab==4.2.5
 openpyxl==3.1.5
 Pillow==11.3.0

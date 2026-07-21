@@ -10,11 +10,18 @@ import {
 } from "../../utils/tasks";
 import { formatDurationLabel } from "../../utils/gantt";
 
+// The guard only bounds the loop against a malformed end date; it must be large
+// enough to span the real first→last task range. At 120 it truncated the axis
+// ~120 days after the first task (~30.06.2026 for tasks starting in spring),
+// dropping every later task's bar. 1000 (≈2.7 years) covers realistic project
+// spans while still preventing a runaway loop.
+const MAX_TIMELINE_DAYS = 1000;
+
 function buildTimelineDays(startIso: string, endIso: string) {
   const days: string[] = [];
   let cursor = startIso;
   let guard = 0;
-  while (cursor <= endIso && guard < 120) {
+  while (cursor <= endIso && guard < MAX_TIMELINE_DAYS) {
     days.push(cursor);
     cursor = addDaysISO(cursor, 1);
     guard += 1;

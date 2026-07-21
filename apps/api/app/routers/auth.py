@@ -3,7 +3,7 @@ import hashlib
 import re
 import secrets
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -11,7 +11,14 @@ from app.core.config import get_settings
 from app.core.db import get_db
 from app.core.deps import get_current_user
 from app.core.permissions import ALL_ROLES, get_user_effective_permissions, has_permission_for_user
-from app.core.security import create_access_token, get_password_hash, verify_password
+from app.core.security import (
+    MFA_CHALLENGE_PURPOSE,
+    create_access_token,
+    create_mfa_challenge_token,
+    decode_token,
+    get_password_hash,
+    verify_password,
+)
 from app.core.time import utcnow
 from app.models.entities import EmployeeGroup, EmployeeGroupMember, User, UserActionToken
 from app.schemas.api import (
@@ -22,9 +29,22 @@ from app.schemas.api import (
     ProfileUpdate,
     UserOut,
 )
-from app.schemas.user import UserMeOut
+from app.schemas.user import (
+    MfaCodeIn,
+    MfaDisableIn,
+    MfaEnrollIn,
+    MfaEnrollOut,
+    MfaLoginIn,
+    MfaVerifyOut,
+    UserMeOut,
+)
+from app.services import mfa
 from app.services.audit import log_admin_action
 from app.services.runtime_settings import mark_initial_admin_bootstrap_completed
+
+# httpOnly cookie carrying the short-lived MFA challenge token between the two
+# login steps. Never JS-readable; cleared once the session is issued.
+_MFA_COOKIE = "mfa_challenge"
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 settings = get_settings()
@@ -79,7 +99,77 @@ def _client_ip(request: Request | None) -> str | None:
     return request.client.host if request.client else None
 
 
-@router.post("/login", response_model=UserOut)
+# A fixed bcrypt hash used to equalize login response timing: even when the
+# submitted email doesn't exist we run one verification against this so an
+# attacker can't distinguish "no such account" from "wrong password" by latency.
+_DUMMY_PASSWORD_HASH = get_password_hash("smpl-login-timing-equalization-not-a-real-password")
+
+
+def _login_locked_out(db: Session, email_normalized: str) -> bool:
+    """True when this email has accumulated too many recent failed logins.
+
+    Keyed on the target account so IP rotation can't bypass it. Reuses the
+    ``auth.login_failed`` audit rows already written on every failure.
+    """
+    if not settings.login_lockout_enabled or not email_normalized:
+        return False
+    from app.services.auth_alerts import _recent_failed_login_count_for_email
+
+    count = _recent_failed_login_count_for_email(
+        db, email=email_normalized, window_seconds=settings.login_lockout_window_seconds
+    )
+    return count >= settings.login_lockout_threshold
+
+
+def _issue_session(
+    response: Response,
+    db: Session,
+    user: User,
+    *,
+    client_ip: str | None,
+    user_agent: str,
+) -> None:
+    """Set the session + CSRF cookies (and the X-Access-Token header) and audit
+    the login. Shared by the direct login path and the post-MFA login step."""
+    token = create_access_token(str(user.id), extra={"role": user.role})
+    response.set_cookie(
+        "access_token",
+        token,
+        httponly=True,
+        secure=settings.secure_cookies,
+        samesite="strict",
+        max_age=settings.access_token_expire_minutes * 60,
+    )
+    response.set_cookie(
+        "csrf_token",
+        secrets.token_urlsafe(24),
+        httponly=False,
+        secure=settings.secure_cookies,
+        samesite="strict",
+        max_age=settings.access_token_expire_minutes * 60,
+    )
+    response.headers["X-Access-Token"] = token
+    # Drop any lingering MFA challenge cookie now that a real session exists.
+    response.delete_cookie(_MFA_COOKIE)
+    # Successful login — captured last so a commit failure earlier never
+    # leaves a dangling "logged in" row with no actual session.
+    log_admin_action(
+        db,
+        user,
+        "auth.login",
+        "user",
+        str(user.id),
+        details={
+            "email": user.email,
+            "role": user.role,
+            "ip": client_ip,
+            "user_agent": user_agent,
+        },
+        category="auth",
+    )
+
+
+@router.post("/login")
 def login(
     payload: LoginRequest,
     response: Response,
@@ -90,9 +180,39 @@ def login(
     client_ip = _client_ip(request)
     user_agent = request.headers.get("user-agent", "")[:255] if request else ""
 
+    # Account lockout: block sustained password guessing against a single email
+    # once too many recent failures have accumulated.
+    if _login_locked_out(db, email_normalized):
+        log_admin_action(
+            db,
+            None,
+            "auth.login_locked",
+            "user",
+            email_normalized or "(unknown)",
+            details={"email": email_normalized, "ip": client_ip, "user_agent": user_agent},
+            category="auth",
+        )
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many failed attempts. Please try again later.",
+            headers={"Retry-After": str(settings.login_lockout_window_seconds)},
+        )
+
     stmt = select(User).where(User.email == email_normalized)
     user = db.scalars(stmt).first()
-    if not user or not verify_password(payload.password, user.password_hash):
+
+    # Always run one bcrypt verification (a dummy hash when the email is unknown)
+    # so response timing does not reveal whether the account exists.
+    if user is not None:
+        password_ok = verify_password(payload.password, user.password_hash)
+    else:
+        verify_password(payload.password, _DUMMY_PASSWORD_HASH)
+        password_ok = False
+
+    if user is None or not password_ok or not user.is_active:
+        # Distinguish the reason for the audit trail only; the client always sees
+        # an identical generic 401 so login can't be used to enumerate accounts.
+        reason = "inactive" if (user is not None and password_ok and not user.is_active) else "invalid_credentials"
         # Record the attempt without an actor — email is preserved in details
         # so admins can correlate brute-force patterns without exposing
         # actor_user_id to a user that might not exist.
@@ -104,7 +224,7 @@ def login(
             email_normalized or "(unknown)",
             details={
                 "email": email_normalized,
-                "reason": "invalid_credentials",
+                "reason": reason,
                 "ip": client_ip,
                 "user_agent": user_agent,
             },
@@ -126,59 +246,95 @@ def login(
                 "brute-force evaluator raised; ignored to keep login responsive"
             )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-    if not user.is_active:
+
+    if user.mfa_enabled:
+        # Password verified, but a second factor is required. Issue a short-lived
+        # httpOnly challenge cookie (not a session) and stop; the client must
+        # complete POST /auth/login/mfa with a valid code.
+        challenge = create_mfa_challenge_token(str(user.id))
+        response.set_cookie(
+            _MFA_COOKIE,
+            challenge,
+            httponly=True,
+            secure=settings.secure_cookies,
+            samesite="strict",
+            max_age=5 * 60,
+        )
+        log_admin_action(
+            db,
+            user,
+            "auth.mfa_challenge",
+            "user",
+            str(user.id),
+            details={"email": user.email, "ip": client_ip, "user_agent": user_agent},
+            category="auth",
+        )
+        return {"mfa_required": True}
+
+    _issue_session(response, db, user, client_ip=client_ip, user_agent=user_agent)
+    return UserOut.model_validate(user)
+
+
+@router.post("/login/mfa")
+def login_mfa(
+    payload: MfaLoginIn,
+    response: Response,
+    request: Request,
+    db: Session = Depends(get_db),
+    mfa_challenge: str | None = Cookie(default=None),
+):
+    """Second login step: exchange the MFA challenge cookie + a valid TOTP (or
+    recovery) code for a real session."""
+    client_ip = _client_ip(request)
+    user_agent = request.headers.get("user-agent", "")[:255] if request else ""
+
+    token_payload = decode_token(mfa_challenge or "")
+    if not token_payload or token_payload.get("purpose") != MFA_CHALLENGE_PURPOSE:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="MFA challenge expired")
+    try:
+        user_id = int(token_payload.get("sub"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="MFA challenge expired")
+
+    user = db.get(User, user_id)
+    if not user or not user.is_active or not user.mfa_enabled:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="MFA challenge expired")
+
+    # Reuse the per-account lockout so the (small) 6-digit code space can't be
+    # brute-forced under the cover of a valid challenge cookie.
+    if _login_locked_out(db, user.email):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many failed attempts. Please try again later.",
+            headers={"Retry-After": str(settings.login_lockout_window_seconds)},
+        )
+
+    secret = mfa.decrypt_secret(user.mfa_secret)
+    code_ok = bool(secret) and mfa.verify_totp(secret, payload.code)
+    recovery_remaining: list[str] | None = None
+    if not code_ok:
+        recovery_remaining = mfa.consume_recovery_code(user.mfa_recovery_codes, payload.code)
+        code_ok = recovery_remaining is not None
+
+    if not code_ok:
         log_admin_action(
             db,
             None,
-            "auth.login_blocked",
+            "auth.login_failed",
             "user",
-            str(user.id),
-            details={
-                "email": email_normalized,
-                "reason": "inactive",
-                "ip": client_ip,
-                "user_agent": user_agent,
-            },
+            user.email,
+            details={"email": user.email, "reason": "mfa_invalid", "ip": client_ip, "user_agent": user_agent},
             category="auth",
         )
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive user")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid code")
 
-    token = create_access_token(str(user.id), extra={"role": user.role})
-    response.set_cookie(
-        "access_token",
-        token,
-        httponly=True,
-        secure=settings.secure_cookies,
-        samesite="strict",
-        max_age=settings.access_token_expire_minutes * 60,
-    )
-    response.set_cookie(
-        "csrf_token",
-        secrets.token_urlsafe(24),
-        httponly=False,
-        secure=settings.secure_cookies,
-        samesite="strict",
-        max_age=settings.access_token_expire_minutes * 60,
-    )
-    response.headers["X-Access-Token"] = token
+    if recovery_remaining is not None:
+        # A recovery code was spent — persist the shortened list.
+        user.mfa_recovery_codes = recovery_remaining
+        db.add(user)
 
-    # Successful login — captured last so a commit failure earlier never
-    # leaves a dangling "logged in" row with no actual session.
-    log_admin_action(
-        db,
-        user,
-        "auth.login",
-        "user",
-        str(user.id),
-        details={
-            "email": user.email,
-            "role": user.role,
-            "ip": client_ip,
-            "user_agent": user_agent,
-        },
-        category="auth",
-    )
-    return user
+    _issue_session(response, db, user, client_ip=client_ip, user_agent=user_agent)
+    return UserOut.model_validate(user)
 
 
 @router.post("/logout")
@@ -459,12 +615,108 @@ def accept_invite(payload: InviteAccept, db: Session = Depends(get_db)):
 def confirm_password_reset(payload: PasswordResetConfirm, db: Session = Depends(get_db)):
     user, _ = _consume_action_token(db, raw_token=payload.token, purpose="password_reset")
     user.password_hash = get_password_hash(payload.new_password)
-    if user.invite_sent_at is not None and user.invite_accepted_at is None:
+    # A password reset must reset the password, not silently reactivate a
+    # deliberately deactivated account. Only flip is_active for a genuinely
+    # pending-invite user (invite sent but never accepted) — that is the invite
+    # flow reusing the reset endpoint. Otherwise leave the account status alone.
+    is_pending_invite = user.invite_sent_at is not None and user.invite_accepted_at is None
+    if is_pending_invite:
         user.invite_accepted_at = utcnow()
-    user.is_active = True
+        user.is_active = True
     db.add(user)
     db.commit()
     return {"ok": True, "user_id": user.id}
+
+
+# ── Two-factor authentication management (self-service) ───────────────────────
+
+
+@router.post("/me/mfa/enroll", response_model=MfaEnrollOut)
+def mfa_enroll(
+    payload: MfaEnrollIn,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Begin TOTP enrollment: mint a fresh secret (pending until a code is
+    verified) and return the provisioning URI + QR."""
+    # Re-check the password: enrolling a factor is credential-sensitive, so a
+    # session alone (e.g. a stolen cookie) must not be able to plant an
+    # attacker-controlled second factor on an account that has none yet.
+    if not verify_password(payload.current_password, current_user.password_hash):
+        raise HTTPException(status_code=403, detail="Current password is required")
+    # Never overwrite an active secret — that would silently break the user's
+    # working authenticator. Rotating requires an explicit disable (password +
+    # code) first, so a hijacked session can't quietly swap the second factor.
+    if current_user.mfa_enabled:
+        raise HTTPException(status_code=400, detail="Disable two-factor authentication before re-enrolling")
+    secret = mfa.generate_secret()
+    current_user.mfa_secret = mfa.encrypt_secret(secret)
+    current_user.mfa_enabled = False  # stays off until proven via /verify
+    current_user.mfa_enrolled_at = None
+    current_user.mfa_recovery_codes = None
+    db.add(current_user)
+    db.commit()
+    uri = mfa.provisioning_uri(current_user.email, secret)
+    return MfaEnrollOut(secret=secret, otpauth_uri=uri, qr_data_uri=mfa.qr_data_uri(uri))
+
+
+@router.post("/me/mfa/verify", response_model=MfaVerifyOut)
+def mfa_verify(
+    payload: MfaCodeIn,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Confirm enrollment by proving a valid code; enables MFA and returns the
+    one-time recovery codes (shown to the user exactly once)."""
+    secret = mfa.decrypt_secret(current_user.mfa_secret)
+    if not secret:
+        raise HTTPException(status_code=400, detail="Start enrollment first")
+    if not mfa.verify_totp(secret, payload.code):
+        raise HTTPException(status_code=400, detail="Invalid code")
+    plaintext, hashed = mfa.generate_recovery_codes()
+    current_user.mfa_enabled = True
+    current_user.mfa_enrolled_at = utcnow()
+    current_user.mfa_recovery_codes = hashed
+    db.add(current_user)
+    db.commit()
+    log_admin_action(
+        db, current_user, "auth.mfa_enabled", "user", str(current_user.id),
+        details={"email": current_user.email}, category="auth",
+    )
+    return MfaVerifyOut(ok=True, mfa_enabled=True, recovery_codes=plaintext)
+
+
+@router.post("/me/mfa/disable", response_model=UserOut)
+def mfa_disable(
+    payload: MfaDisableIn,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Turn MFA off. Requires the current password AND a valid TOTP/recovery code
+    so a hijacked session alone can't strip the second factor. A user who has
+    lost their device uses the admin MFA-reset instead."""
+    if not verify_password(payload.current_password, current_user.password_hash):
+        raise HTTPException(status_code=403, detail="Current password is required")
+    if not current_user.mfa_enabled:
+        raise HTTPException(status_code=400, detail="MFA is not enabled")
+    secret = mfa.decrypt_secret(current_user.mfa_secret)
+    code_ok = bool(secret) and mfa.verify_totp(secret, payload.code)
+    if not code_ok:
+        code_ok = mfa.consume_recovery_code(current_user.mfa_recovery_codes, payload.code) is not None
+    if not code_ok:
+        raise HTTPException(status_code=400, detail="Invalid code")
+    current_user.mfa_enabled = False
+    current_user.mfa_secret = None
+    current_user.mfa_enrolled_at = None
+    current_user.mfa_recovery_codes = None
+    db.add(current_user)
+    db.commit()
+    db.refresh(current_user)
+    log_admin_action(
+        db, current_user, "auth.mfa_disabled", "user", str(current_user.id),
+        details={"email": current_user.email}, category="auth",
+    )
+    return UserOut.model_validate(current_user)
 
 
 @router.get("/roles")

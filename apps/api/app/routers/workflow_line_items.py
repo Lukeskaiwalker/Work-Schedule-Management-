@@ -22,7 +22,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
-from app.core.deps import get_current_user, require_permission
+from app.core.deps import assert_project_access, get_current_user, require_permission
 from app.core.time import utcnow
 from app.models.entities import Project, ProjectLineItem, User
 from app.schemas.project_line_item import (
@@ -86,11 +86,15 @@ def _get_project_or_404(db: Session, project_id: int) -> Project:
 def list_line_items(
     project_id: int,
     include_inactive: bool = False,
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[ProjectLineItemOut]:
     """List line items for a project. Defaults to active-only;
     pass ``include_inactive=true`` to see soft-deleted rows."""
+    # Object-level authorization: line items carry pricing/supplier data, so a
+    # bare authenticated user must not read another project's items. Mirrors the
+    # finance/materials read paths (task-assignment fallback allowed for reads).
+    assert_project_access(db, current_user, project_id)
     _get_project_or_404(db, project_id)
     stmt = select(ProjectLineItem).where(ProjectLineItem.project_id == project_id)
     if not include_inactive:
@@ -173,9 +177,10 @@ def create_line_item(
 def get_line_item(
     project_id: int,
     item_id: int,
-    _: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> ProjectLineItemOut:
+    assert_project_access(db, current_user, project_id)
     item = db.get(ProjectLineItem, item_id)
     if item is None or item.project_id != project_id:
         raise HTTPException(status_code=404, detail="Line item not found")
