@@ -90,22 +90,41 @@ def test_recent_reports_date_range_filter(client: TestClient, admin_token: str):
         )
         assert r.status_code == 200, r.text
 
-    _make("2026-01-01")  # old
-    _make("2026-07-10")  # recent
+    _make("2026-01-01")  # old visit, and (below) backdated submission → fully outside
+    _make("2026-07-10")  # recent visit
+    _make("2026-01-15")  # OLD visit but submitted "now" → must still surface
 
-    # No date params → unchanged behaviour (newest-N by submission returns both).
+    # Backdate the first report's submission time so it is old by BOTH measures.
+    # The other two keep their real (just-now) created_at.
+    from datetime import date as _date, datetime as _datetime
+
+    from sqlalchemy import select as _select
+
+    from app.core.db import SessionLocal
+    from app.models.entities import ConstructionReport
+
+    with SessionLocal() as db:
+        row = db.scalars(
+            _select(ConstructionReport).where(ConstructionReport.report_date == _date(2026, 1, 1))
+        ).first()
+        assert row is not None
+        row.created_at = _datetime(2026, 1, 1, 12, 0, 0)
+        db.commit()
+
+    # No date params → unchanged behaviour (newest-N by submission returns all).
     all_recent = client.get("/api/construction-reports/recent", headers=auth_headers(admin_token))
     assert all_recent.status_code == 200
     assert {"2026-01-01", "2026-07-10"} <= {row["report_date"] for row in all_recent.json()}
 
-    # since= filters by report_date.
+    # since= keeps anything recent by EITHER visit date or submission time.
     windowed = client.get(
         "/api/construction-reports/recent?since=2026-06-01", headers=auth_headers(admin_token)
     )
     assert windowed.status_code == 200
     windowed_dates = [row["report_date"] for row in windowed.json()]
-    assert "2026-07-10" in windowed_dates
-    assert "2026-01-01" not in windowed_dates
+    assert "2026-07-10" in windowed_dates            # recent visit
+    assert "2026-01-15" in windowed_dates            # old visit, filed just now
+    assert "2026-01-01" not in windowed_dates        # old by both measures
 
     # until= upper-bounds the window.
     until_q = client.get(

@@ -2212,6 +2212,12 @@ export function App() {
 
   useEffect(() => {
     if (!token || !user) return;
+    if (mainView !== "reports") return;
+    void loadReportsWindow(28);
+  }, [mainView, token, user]);
+
+  useEffect(() => {
+    if (!token || !user) return;
     if (mainView !== "construction") return;
     const targetProjectId = Number(reportProjectId);
     void loadConstructionReportFiles(targetProjectId > 0 ? targetProjectId : null);

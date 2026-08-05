@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, time
 
 from fastapi import APIRouter
+from sqlalchemy import and_, or_
 
 from app.routers.workflow_helpers import *  # noqa: F401,F403
 
@@ -120,10 +121,20 @@ def list_recent_construction_reports(
     if date_filtered:
         safe_limit = max(1, min(int(limit or 500), 500))
         stmt = select(ConstructionReport)
+        # A report counts as "in the window" when EITHER its site-visit date
+        # (report_date) OR its submission time (created_at) falls in the range.
+        # Filtering on report_date alone hid reports that were filed recently but
+        # carry an older visit date — from the operator's view the report simply
+        # vanished after submitting it. Recent activity of either kind shows up.
+        report_window = []
+        created_window = []
         if since is not None:
-            stmt = stmt.where(ConstructionReport.report_date >= since)
+            report_window.append(ConstructionReport.report_date >= since)
+            created_window.append(ConstructionReport.created_at >= datetime.combine(since, time.min))
         if until is not None:
-            stmt = stmt.where(ConstructionReport.report_date <= until)
+            report_window.append(ConstructionReport.report_date <= until)
+            created_window.append(ConstructionReport.created_at <= datetime.combine(until, time.max))
+        stmt = stmt.where(or_(and_(*report_window), and_(*created_window)))
         stmt = stmt.order_by(
             ConstructionReport.report_date.desc(),
             ConstructionReport.created_at.desc(),

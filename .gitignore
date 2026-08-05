@@ -81,3 +81,6 @@ local wiki/*
 # maintenance mode, removed when the update finishes. Must never be committed
 # (a stale committed flag would put fresh clones into perma-maintenance).
 infra/maintenance/.flag
+
+# graphify knowledge-graph output (generated; rebuild with /graphify)
+graphify-out/
