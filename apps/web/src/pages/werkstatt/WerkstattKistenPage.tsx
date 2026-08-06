@@ -26,7 +26,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { apiFetch } from "../../api/client";
+import { ApiError, apiFetch } from "../../api/client";
 import { useAppContext } from "../../context/AppContext";
 import { useBarcodeScanner } from "../../hooks/useBarcodeScanner";
 import { CustomerCombobox } from "../../components/customers/CustomerCombobox";
@@ -144,7 +144,7 @@ function CameraIcon() {
 }
 
 export function WerkstattKistenPage() {
-  const { mainView, werkstattTab, language, token, setError, setNotice, customers } =
+  const { mainView, werkstattTab, language, token, setError, setNotice, customers, loadCustomers } =
     useAppContext();
   const de = language === "de";
 
@@ -157,6 +157,12 @@ export function WerkstattKistenPage() {
   const [hits, setHits] = useState<SearchHit[]>([]);
   const [assignCustomerId, setAssignCustomerId] = useState<number | null>(null);
   const [cameraOpen, setCameraOpen] = useState(false);
+  /** Optimistic per-item quantities while their PATCH/DELETE is pending. */
+  const [qtyOverrides, setQtyOverrides] = useState<Record<number, number>>({});
+  const qtyOverridesRef = useRef<Record<number, number>>({});
+  qtyOverridesRef.current = qtyOverrides;
+  const qtyTimers = useRef<Record<number, number>>({});
+  const qtyQueue = useRef<Promise<unknown>>(Promise.resolve());
   /** Serialises scan handling — see runScan. */
   const scanQueueRef = useRef<Promise<unknown>>(Promise.resolve());
 
@@ -192,7 +198,11 @@ export function WerkstattKistenPage() {
   useEffect(() => {
     if (!isActiveTab) return;
     void loadBoxes();
-  }, [isActiveTab, loadBoxes]);
+    // Refresh the customer list too: it is otherwise loaded only once at login,
+    // so a customer created since then — or a load that failed quietly — left
+    // the assign picker unable to find people who plainly exist.
+    void loadCustomers("", false);
+  }, [isActiveTab, loadBoxes, loadCustomers]);
 
   // Debounced unified search across stocked articles + Datanorm catalog.
   useEffect(() => {
@@ -371,24 +381,59 @@ export function WerkstattKistenPage() {
     }
   }
 
-  async function changeQty(item: BoxItem, delta: number) {
+  function changeQty(item: BoxItem, delta: number) {
     if (!activeBox) return;
-    const next = item.quantity + delta;
-    try {
-      if (next <= 0) {
-        await apiFetch(`/werkstatt/boxes/${activeBox.id}/items/${item.id}`, token, {
-          method: "DELETE",
+    const boxId = activeBox.id;
+    // Read from the optimistic overlay, never from the last-rendered list, so
+    // rapid taps compound instead of each re-reading the same stale value.
+    const current = qtyOverrides[item.id] ?? item.quantity;
+    const next = Math.max(0, current + delta);
+    setQtyOverrides((prev) => ({ ...prev, [item.id]: next }));
+
+    // One in-flight mutation per item, always sending the LATEST value.
+    if (qtyTimers.current[item.id]) window.clearTimeout(qtyTimers.current[item.id]);
+    qtyTimers.current[item.id] = window.setTimeout(() => {
+      delete qtyTimers.current[item.id];
+      const target = qtyOverridesRef.current[item.id];
+      if (target == null) return;
+      qtyQueue.current = qtyQueue.current
+        .then(async () => {
+          if (target <= 0) {
+            try {
+              await apiFetch(`/werkstatt/boxes/${boxId}/items/${item.id}`, token, {
+                method: "DELETE",
+              });
+            } catch (err: unknown) {
+              // Already gone is the outcome we wanted — only a real failure
+              // deserves a banner.
+              if (!(err instanceof ApiError && err.status === 404)) throw err;
+            }
+          } else {
+            await apiFetch(`/werkstatt/boxes/${boxId}/items/${item.id}`, token, {
+              method: "PATCH",
+              body: JSON.stringify({ quantity: target }),
+            });
+          }
+        })
+        .then(async () => {
+          await openBox(boxId);
+          setQtyOverrides((prev) => {
+            const rest = { ...prev };
+            delete rest[item.id];
+            return rest;
+          });
+        })
+        .catch((err: unknown) => {
+          setError(err instanceof Error ? err.message : String(err));
+          // Drop the optimistic value so the UI snaps back to the truth.
+          setQtyOverrides((prev) => {
+            const rest = { ...prev };
+            delete rest[item.id];
+            return rest;
+          });
+          void openBox(boxId);
         });
-      } else {
-        await apiFetch(`/werkstatt/boxes/${activeBox.id}/items/${item.id}`, token, {
-          method: "PATCH",
-          body: JSON.stringify({ quantity: next }),
-        });
-      }
-      await openBox(activeBox.id);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
+    }, 350);
   }
 
   async function clearBox() {
@@ -863,18 +908,18 @@ export function WerkstattKistenPage() {
                       <div className="kisten-qty">
                         <button
                           type="button"
-                          onClick={() => void changeQty(item, -1)}
+                          onClick={() => changeQty(item, -1)}
                           aria-label={de ? "Menge verringern" : "Decrease quantity"}
                         >
                           −
                         </button>
                         <span className="kisten-qty-value">
-                          {item.quantity}
+                          {qtyOverrides[item.id] ?? item.quantity}
                           {item.unit ? <small>{item.unit}</small> : null}
                         </span>
                         <button
                           type="button"
-                          onClick={() => void changeQty(item, +1)}
+                          onClick={() => changeQty(item, +1)}
                           aria-label={de ? "Menge erhöhen" : "Increase quantity"}
                         >
                           +
@@ -889,7 +934,7 @@ export function WerkstattKistenPage() {
         </div>
 
         <div className="werkstatt-column">
-          <article className="werkstatt-card">
+          <article className="werkstatt-card kisten-assign-card">
             <header className="werkstatt-card-head">
               <div className="werkstatt-card-title-block">
                 <h3 className="werkstatt-card-title">

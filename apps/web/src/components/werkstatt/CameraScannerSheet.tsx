@@ -77,6 +77,7 @@ export function CameraScannerSheet({ open, language, onClose, onScan }: Props) {
   const de = language === "de";
   const [scanCount, setScanCount] = useState(0);
   const [outcome, setOutcome] = useState<ScanOutcome | null>(null);
+  const [busy, setBusy] = useState(false);
 
   // The component is never unmounted, so both have to be reset per session —
   // otherwise reopening shows the previous run's total and last result.
@@ -84,18 +85,22 @@ export function CameraScannerSheet({ open, language, onClose, onScan }: Props) {
     if (open) {
       setScanCount(0);
       setOutcome(null);
+      setBusy(false);
     }
   }, [open]);
 
-  const { status, error, videoRef, retry } = useCameraScanner({
+  const { status, error, sighted, videoRef, retry } = useCameraScanner({
     active: open,
     onScan: (code) => {
       // Count only what actually landed in the crate. Incrementing on decode
       // would report a success for an item the server rejected.
-      void onScan(code).then((result) => {
-        setOutcome(result);
-        if (result.ok) setScanCount((value) => value + 1);
-      });
+      setBusy(true);
+      void onScan(code)
+        .then((result) => {
+          setOutcome(result);
+          if (result.ok) setScanCount((value) => value + 1);
+        })
+        .finally(() => setBusy(false));
     },
   });
 
@@ -124,7 +129,12 @@ export function CameraScannerSheet({ open, language, onClose, onScan }: Props) {
           muted
           autoPlay
         />
-        {!failure && <div className="camera-scanner-reticle" aria-hidden="true" />}
+        {!failure && (
+          <div
+            className={`camera-scanner-reticle${sighted ? " camera-scanner-reticle--sighted" : ""}`}
+            aria-hidden="true"
+          />
+        )}
 
         {status === "starting" && !failure && (
           <p className="camera-scanner-status">
@@ -147,11 +157,38 @@ export function CameraScannerSheet({ open, language, onClose, onScan }: Props) {
 
       <div className="camera-scanner-foot">
         {status === "scanning" && (
-          <p className="camera-scanner-hint">
-            {de
-              ? "Barcode ins Feld halten. Für ein weiteres Stück kurz wegschwenken und erneut scannen."
-              : "Hold a barcode in the frame. For another unit, pan away briefly and scan again."}
-          </p>
+          <>
+            {/* Live state, so the packer can tell "the camera cannot read
+                this" from "it read it and is working on it". Without this the
+                only signal was an item eventually appearing. */}
+            <p
+              className={`camera-scanner-live${
+                busy
+                  ? " camera-scanner-live--busy"
+                  : sighted
+                    ? " camera-scanner-live--sighted"
+                    : ""
+              }`}
+            >
+              <span className="camera-scanner-dot" aria-hidden="true" />
+              {busy
+                ? de
+                  ? "Artikel wird gesucht…"
+                  : "Looking up item…"
+                : sighted
+                  ? de
+                    ? "Barcode erkannt"
+                    : "Barcode detected"
+                  : de
+                    ? "Suche Barcode…"
+                    : "Searching for a barcode…"}
+            </p>
+            <p className="camera-scanner-hint">
+              {de
+                ? "Für ein weiteres Stück kurz wegschwenken und erneut scannen."
+                : "For another unit, pan away briefly and scan again."}
+            </p>
+          </>
         )}
         {(scanCount > 0 || outcome) && (
           <p

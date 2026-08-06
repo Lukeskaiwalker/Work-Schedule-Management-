@@ -30960,6 +30960,53 @@ button.time-calendar-cell {
   }
 }
 
+/* ── App-level toasts ──────────────────────────────────────────────────────
+   Previously these were in-flow at the top of <main>, and the error banner
+   additionally called scrollIntoView on every render — so on a phone a new
+   message would drag the page back to the top while the user was reading
+   further down. Out of flow means no reflow, and no scrolling of any kind. */
+.app-toasts {
+  position: fixed;
+  top: calc(12px + env(safe-area-inset-top, 0px));
+  left: 12px;
+  right: 12px;
+  z-index: 500;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+.app-toast {
+  pointer-events: auto;
+  margin: 0;
+  box-shadow: 0 8px 24px rgba(20, 41, 61, 0.18);
+  overflow-wrap: break-word;
+}
+@media (min-width: 768px) {
+  .app-toasts {
+    left: auto;
+    right: 20px;
+    max-width: 420px;
+  }
+}
+
+/* .werkstatt-card sets overflow:hidden (to clip its own rounded corners), which
+   also clipped the absolutely-positioned customer dropdown inside the assign
+   panel — the list appeared cut off behind the card edge. Let this one card
+   overflow, and lift the dropdown above its siblings. */
+.kisten-assign-card {
+  overflow: visible;
+}
+.kisten-assign-card .customer-combobox {
+  position: relative;
+  z-index: 5;
+}
+.kisten-assign-card .customer-combobox-dropdown {
+  z-index: 210;
+  max-height: min(320px, 50dvh);
+  overflow-y: auto;
+}
+
 /* ── Camera barcode scanner (Baustellenkisten) ─────────────────────────────
    Fullscreen sheet. z-index sits above .modal-backdrop (300) and the mobile
    bottom nav (150) — a half-covered viewfinder is useless. */
@@ -31080,6 +31127,34 @@ button.time-calendar-cell {
   padding: 12px 16px 18px;
   text-align: center;
 }
+.camera-scanner-live {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.72);
+}
+.camera-scanner-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.45);
+  flex: 0 0 auto;
+}
+.camera-scanner-live--sighted { color: #86efac; }
+.camera-scanner-live--sighted .camera-scanner-dot { background: #22c55e; }
+.camera-scanner-live--busy { color: #fcd34d; }
+.camera-scanner-live--busy .camera-scanner-dot { background: #f59e0b; }
+
+/* The frame turns green the moment anything is decodable, so the packer can
+   see the camera is working before an item appears. */
+.camera-scanner-reticle--sighted {
+  border-color: #22c55e;
+}
+
 .camera-scanner-hint {
   margin: 0;
   font-size: 13px;

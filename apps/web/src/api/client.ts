@@ -98,13 +98,22 @@ export async function apiFetch<T>(
   // the caller's refetch, the deleted row also stayed on screen until some
   // later action refreshed it.
   //
-  // 205 and 304 are likewise defined as bodiless, so they get the same guard.
-  if (response.status === 204 || response.status === 205 || response.status === 304) {
+  // 205 and 304 are likewise defined as bodiless, so they get the same guard,
+  // plus any response that explicitly declares an empty body.
+  if (
+    response.status === 204 ||
+    response.status === 205 ||
+    response.status === 304 ||
+    response.headers.get("content-length") === "0"
+  ) {
     return {} as T;
   }
+
   const contentType = response.headers.get("content-type") ?? "";
   if (contentType.includes("application/json")) {
-    return response.json() as Promise<T>;
+    // Defensive: an otherwise-OK response with an empty body must not throw.
+    const text = await response.text();
+    return (text ? JSON.parse(text) : {}) as T;
   }
   return {} as T;
 }

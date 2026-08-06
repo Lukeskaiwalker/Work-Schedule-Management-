@@ -2370,6 +2370,15 @@ export function App() {
   // successful submit, which are the two moments they should be.
 
 
+  // Notices are transient confirmations; leaving them on screen indefinitely
+  // is what made them feel like they were "lagging behind" the user's actions.
+  // Errors stay until dismissed.
+  useEffect(() => {
+    if (!notice) return;
+    const timer = window.setTimeout(() => setNotice(""), 4000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
   // Flush the debounced autosave when the tab goes away. A ref holds the
   // latest flusher so the listener can stay mounted once instead of being
   // torn down and re-added on every keystroke.
@@ -10050,25 +10059,18 @@ export function App() {
         <Header />
 
         <ProjectBanner />
-        {error && (
-          <div
-            className="error"
-            role="alert"
-            ref={(node) => {
-              // The banner lives above a lazily-rendered page, so on a phone a
-              // submit failure could render entirely off-screen while the
-              // submit button silently re-enabled — a duplicate-submission
-              // generator. Bring it into view when it appears.
-              node?.scrollIntoView({ block: "center", behavior: "smooth" });
-            }}
-            onClick={() => setError("")}
-          >
-            {error}
-          </div>
-        )}
-        {notice && (
-          <div className="notice" onClick={() => setNotice("")}>
-            {notice}
+        {(error || notice) && (
+          <div className="app-toasts" role="region" aria-live="polite">
+            {error && (
+              <div className="error app-toast" role="alert" onClick={() => setError("")}>
+                {error}
+              </div>
+            )}
+            {notice && (
+              <div className="notice app-toast" onClick={() => setNotice("")}>
+                {notice}
+              </div>
+            )}
           </div>
         )}
         {actionLinkDialog && (

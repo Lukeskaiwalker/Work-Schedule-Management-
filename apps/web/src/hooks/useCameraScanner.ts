@@ -61,25 +61,24 @@ type Options = {
   /** Start the camera when true; release it when false. */
   active: boolean;
   onScan: (code: string) => void;
-  /**
-   * Anti-flicker floor only. A code that briefly drops out and comes back
-   * within this window is treated as never having left, so a wobbling hand
-   * cannot double-add. Real repeats are gated by absence, not by this.
-   */
-  minRepeatMs?: number;
 };
 
-/** Consecutive "no code in this frame" callbacks that count as "it left". At
- *  `delayBetweenScanAttempts: 120` this is roughly a third of a second. */
-const ABSENCE_FRAMES = 3;
+/** How long after a decode the viewfinder still reports "I can see a code". */
+const SIGHTED_HOLD_MS = 700;
+
+/**
+ * How long a code must go completely UNSEEN before the same code counts as a
+ * new item. Long enough that intermittent decode failures (motion blur, focus
+ * hunting — routine while a label is held in view) cannot be mistaken for the
+ * label having been taken away.
+ */
+const AWAY_MS = 1200;
 
 export type ScanGateState = {
-  /** The last code that was accepted. */
+  /** The last code decoded, accepted or not. */
   code: string;
-  /** When it was accepted, epoch ms. */
-  at: number;
-  /** Consecutive empty frames since the last decode. */
-  misses: number;
+  /** When that code was LAST SEEN, epoch ms — refreshed on every decode. */
+  lastSeenAt: number;
 };
 
 /**
@@ -90,16 +89,18 @@ export type ScanGateState = {
  * whole correctness of camera scanning rests on it: ZXing re-fires for as long
  * as a code stays decodable, so treating every decode as an item would add the
  * same article several times a second.
+ *
+ * The rule is "has it been GONE", not "has it been N frames since a hit". An
+ * earlier version counted consecutive empty frames, which looked right against
+ * a clean synthetic timeline but failed in the field: real decoding interleaves
+ * hits with misses, so a label held steady would accumulate enough misses to
+ * look absent and get added two or three times. Because `lastSeenAt` is
+ * refreshed by EVERY decode — including suppressed ones — a label in view keeps
+ * the away-timer permanently reset, however noisy the decoding is.
  */
-export function shouldAcceptScan(
-  state: ScanGateState,
-  code: string,
-  now: number,
-  minRepeatMs: number,
-): boolean {
+export function shouldAcceptScan(state: ScanGateState, code: string, now: number): boolean {
   if (state.code !== code) return true; // a different label is always new
-  if (state.misses < ABSENCE_FRAMES) return false; // never left the frame
-  return now - state.at >= minRepeatMs; // left, but guard against flicker
+  return now - state.lastSeenAt >= AWAY_MS; // same label: only after it was gone
 }
 
 type ScannerControls = { stop: () => void };
@@ -112,13 +113,13 @@ function classifyError(err: unknown): CameraScannerError {
   return "unknown";
 }
 
-export function useCameraScanner({ active, onScan, minRepeatMs = 400 }: Options) {
+export function useCameraScanner({ active, onScan }: Options) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const controlsRef = useRef<ScannerControls | null>(null);
   const generationRef = useRef(0);
-  const lastHitRef = useRef<{ code: string; at: number }>({ code: "", at: 0 });
-  /** Consecutive frames in which nothing decoded — how we know a code left. */
-  const missRef = useRef(0);
+  const lastSeenRef = useRef<ScanGateState>({ code: "", lastSeenAt: 0 });
+  /** Cleared by a timer so the UI can say "searching" vs "code in view". */
+  const sightedTimerRef = useRef<number | null>(null);
   // Kept in a ref so restarting the camera is not coupled to render identity
   // of the callback — the packing screen re-renders on every added line.
   const onScanRef = useRef(onScan);
@@ -127,6 +128,9 @@ export function useCameraScanner({ active, onScan, minRepeatMs = 400 }: Options)
   const [status, setStatus] = useState<CameraScannerStatus>("idle");
   const [error, setError] = useState<CameraScannerError | null>(null);
   const [attempt, setAttempt] = useState(0);
+  /** True while a barcode is actually decodable — drives the live viewfinder
+   *  feedback, so the packer can tell "aiming" from "nothing readable". */
+  const [sighted, setSighted] = useState(false);
 
   const retry = useCallback(() => {
     setError(null);
@@ -151,8 +155,7 @@ export function useCameraScanner({ active, onScan, minRepeatMs = 400 }: Options)
       setError(null);
       // Per-session reset: without this, closing and reopening the sheet within
       // the flicker window would swallow the first scan of the new session.
-      lastHitRef.current = { code: "", at: 0 };
-      missRef.current = ABSENCE_FRAMES;
+      lastSeenRef.current = { code: "", lastSeenAt: 0 };
 
       if (typeof window !== "undefined" && window.isSecureContext === false) {
         setError("insecure_context");
@@ -199,26 +202,29 @@ export function useCameraScanner({ active, onScan, minRepeatMs = 400 }: Options)
           { video: { facingMode: { ideal: "environment" } } },
           video,
           (result) => {
-            if (!result) {
-              // A frame with nothing decodable. Enough of these in a row and
-              // the previous code has genuinely left the viewfinder.
-              missRef.current += 1;
-              return;
-            }
+            // A frame with nothing decodable is completely normal and carries
+            // no information about whether the label has been taken away —
+            // that is decided purely by elapsed time since the last decode.
+            if (!result) return;
             const code = result.getText().trim();
             if (!code) return;
 
             const now = Date.now();
-            const accept = shouldAcceptScan(
-              { ...lastHitRef.current, misses: missRef.current },
-              code,
-              now,
-              minRepeatMs,
-            );
-            missRef.current = 0;
-            if (!accept) return;
+            const accept = shouldAcceptScan(lastSeenRef.current, code, now);
+            // Refresh on EVERY decode, accepted or not: this is what keeps a
+            // label that is merely being held in view from ever looking absent.
+            lastSeenRef.current = { code, lastSeenAt: now };
 
-            lastHitRef.current = { code, at: now };
+            // Live feedback — the packer needs to know the camera can read
+            // something even when the code is a repeat we are suppressing.
+            setSighted(true);
+            if (sightedTimerRef.current) window.clearTimeout(sightedTimerRef.current);
+            sightedTimerRef.current = window.setTimeout(
+              () => setSighted(false),
+              SIGHTED_HOLD_MS,
+            );
+
+            if (!accept) return;
             // Android gives haptic confirmation; a no-op on iOS, which has no
             // Vibration API — the sheet's own feedback line is what iOS gets.
             navigator.vibrate?.(40);
@@ -276,12 +282,14 @@ export function useCameraScanner({ active, onScan, minRepeatMs = 400 }: Options)
         video.srcObject = null;
       }
       setStatus("idle");
+      setSighted(false);
+      if (sightedTimerRef.current) window.clearTimeout(sightedTimerRef.current);
       // Clear the failure too: the hook outlives a closed sheet, so a denied
       // permission would otherwise paint a stale error over the next session's
       // viewfinder even after the user granted access.
       setError(null);
     };
-  }, [active, attempt, minRepeatMs]);
+  }, [active, attempt]);
 
-  return { status, error, videoRef, retry };
+  return { status, error, sighted, videoRef, retry };
 }
