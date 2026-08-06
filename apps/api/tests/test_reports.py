@@ -168,3 +168,122 @@ def test_construction_report_office_material_need_keeps_commas_in_single_item(cl
     project_entries = [entry for entry in material_needs.json() if entry["project_id"] == project_id]
     assert len(project_entries) == 1
     assert project_entries[0]["item"] == "NYM-J 5x6, 25m ring"
+
+
+# ── Customer-owned reports (customer first, project optional) ─────────────────
+
+
+def _make_customer(client: TestClient, admin_token: str, name: str) -> int:
+    resp = client.post(
+        "/api/customers",
+        headers=auth_headers(admin_token),
+        json={"name": name, "address": "Hauptstr. 1, 12345 Musterstadt"},
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()["id"]
+
+
+def _make_project(client: TestClient, admin_token: str, number: str, customer_id: int | None) -> int:
+    body: dict = {"project_number": number, "name": f"Project {number}", "status": "active"}
+    if customer_id is not None:
+        body["customer_id"] = customer_id
+    resp = client.post("/api/projects", headers=auth_headers(admin_token), json=body)
+    assert resp.status_code == 200, resp.text
+    return resp.json()["id"]
+
+
+def _report_payload() -> dict:
+    return {"customer": "", "workers": [{"name": "Worker"}]}
+
+
+def test_report_on_project_derives_customer(client: TestClient, admin_token: str):
+    customer_id = _make_customer(client, admin_token, "Derive GmbH")
+    project_id = _make_project(client, admin_token, "2026-DERIVE", customer_id)
+
+    created = client.post(
+        f"/api/projects/{project_id}/construction-reports",
+        headers=auth_headers(admin_token),
+        json={"report_date": "2026-08-01", "payload": _report_payload()},
+    )
+    assert created.status_code == 200, created.text
+    # Customer is inherited from the project even though the client never sent it.
+    assert created.json()["customer_id"] == customer_id
+
+
+def test_report_without_project_stores_customer(client: TestClient, admin_token: str):
+    customer_id = _make_customer(client, admin_token, "Direct AG")
+
+    created = client.post(
+        "/api/construction-reports",
+        headers=auth_headers(admin_token),
+        json={
+            "customer_id": customer_id,
+            "report_date": "2026-08-02",
+            "payload": _report_payload(),
+        },
+    )
+    assert created.status_code == 200, created.text
+    body = created.json()
+    assert body["customer_id"] == customer_id
+    assert body["project_id"] is None
+    # No project => no per-project sequence number.
+    assert body["report_number"] is None
+
+
+def test_report_customer_project_mismatch_rejected(client: TestClient, admin_token: str):
+    customer_a = _make_customer(client, admin_token, "Kunde A")
+    customer_b = _make_customer(client, admin_token, "Kunde B")
+    project_b = _make_project(client, admin_token, "2026-MISMATCH", customer_b)
+
+    resp = client.post(
+        f"/api/projects/{project_b}/construction-reports",
+        headers=auth_headers(admin_token),
+        json={
+            "customer_id": customer_a,
+            "report_date": "2026-08-03",
+            "payload": _report_payload(),
+        },
+    )
+    assert resp.status_code == 400
+    assert "does not match" in resp.json()["detail"]
+
+
+def test_customer_reports_endpoint_unions_direct_and_project_reports(
+    client: TestClient, admin_token: str
+):
+    customer_id = _make_customer(client, admin_token, "Union GmbH")
+    project_id = _make_project(client, admin_token, "2026-UNION", customer_id)
+
+    # One report via the project, one filed directly against the customer.
+    assert client.post(
+        f"/api/projects/{project_id}/construction-reports",
+        headers=auth_headers(admin_token),
+        json={"report_date": "2026-08-04", "payload": _report_payload()},
+    ).status_code == 200
+    assert client.post(
+        "/api/construction-reports",
+        headers=auth_headers(admin_token),
+        json={
+            "customer_id": customer_id,
+            "report_date": "2026-08-05",
+            "payload": _report_payload(),
+        },
+    ).status_code == 200
+
+    listing = client.get(
+        f"/api/customers/{customer_id}/construction-reports", headers=auth_headers(admin_token)
+    )
+    assert listing.status_code == 200, listing.text
+    rows = listing.json()
+    assert len(rows) == 2
+    assert {row["report_date"] for row in rows} == {"2026-08-04", "2026-08-05"}
+    # Both carry the customer, one carries the project.
+    assert all(row["customer_id"] == customer_id for row in rows)
+    assert {row["project_id"] for row in rows} == {project_id, None}
+    # Newest report_date first.
+    assert rows[0]["report_date"] == "2026-08-05"
+
+
+def test_customer_reports_endpoint_404_for_unknown_customer(client: TestClient, admin_token: str):
+    resp = client.get("/api/customers/999999/construction-reports", headers=auth_headers(admin_token))
+    assert resp.status_code == 404

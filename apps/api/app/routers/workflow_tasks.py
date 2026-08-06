@@ -165,6 +165,19 @@ def create_task(
         }
     )
     task = Task(**task_data)
+    # Validated AFTER the anchor checks above, because the mismatch rule needs
+    # the task's resolved customer. Linking never drives the box FSM, so no
+    # stock moves here.
+    if payload.construction_box_id is not None:
+        _apply_task_construction_box(
+            task,
+            _validate_task_construction_box(
+                db,
+                box_id=payload.construction_box_id,
+                customer_id=payload.customer_id,
+                project_id=payload.project_id,
+            ),
+        )
     task.subtasks = _normalize_task_subtasks(payload.subtasks)
     task.task_type = _normalize_task_type(payload.task_type, default="construction")
     task.class_template_id = class_template.id if class_template else None
@@ -203,6 +216,7 @@ def create_task(
         assignee_ids,
         partner_ids=partner_ids,
         partners=[partner_rows[pid] for pid in partner_ids if pid in partner_rows],
+        box=_task_box_map(db, [task]).get(task.construction_box_id),
     )
     notify(db, "task.created", created.model_dump(mode="json"))
     for uid in assignee_ids:
@@ -274,6 +288,21 @@ def update_task(
             task.materials_required = payload.materials_required
         if "storage_box_number" in payload.model_fields_set:
             task.storage_box_number = payload.storage_box_number
+        # Placed AFTER the legacy field on purpose: when a client sends both,
+        # the real link wins and overwrites the mirror.
+        if "construction_box_id" in payload.model_fields_set:
+            if payload.construction_box_id is None:
+                _apply_task_construction_box(task, None)
+            else:
+                _apply_task_construction_box(
+                    task,
+                    _validate_task_construction_box(
+                        db,
+                        box_id=payload.construction_box_id,
+                        customer_id=task.customer_id,
+                        project_id=task.project_id,
+                    ),
+                )
         if "task_type" in payload.model_fields_set:
             task.task_type = _normalize_task_type(payload.task_type, default=task.task_type)
         if "class_template_id" in payload.model_fields_set:
@@ -412,6 +441,7 @@ def update_task(
         existing_assignee_ids,
         partner_ids=existing_partner_ids,
         partners=[partner_rows[pid] for pid in existing_partner_ids if pid in partner_rows],
+        box=_task_box_map(db, [task]).get(task.construction_box_id),
     )
     notify(db, "task.updated", updated.model_dump(mode="json"))
     for uid in added_assignee_ids:
@@ -515,6 +545,18 @@ def planning_assign_week(
         )
         if class_template and not (task.materials_required or "").strip():
             task.materials_required = _class_template_materials_text(class_template) or None
+        # Same rule as create_task — this is the second path that builds a Task
+        # from TaskCreate, so without it the mismatch check is bypassable.
+        if assignment.construction_box_id is not None:
+            _apply_task_construction_box(
+                task,
+                _validate_task_construction_box(
+                    db,
+                    box_id=assignment.construction_box_id,
+                    customer_id=assignment.customer_id,
+                    project_id=assignment.project_id,
+                ),
+            )
         db.add(task)
         db.flush()
         _sync_task_assignments(db, task, assignee_ids)

@@ -73,8 +73,35 @@ export function WorkerNameCombobox({
       if (containerRef.current.contains(event.target as Node)) return;
       setOpen(false);
     }
-    document.addEventListener("mousedown", onDocClick);
-    return () => document.removeEventListener("mousedown", onDocClick);
+    // pointerdown, not mousedown: iOS synthesises mouse events only for
+    // elements it classifies as clickable, so a touch on blank page area never
+    // closed this panel and it stuck open over the rows below. pointerdown
+    // covers mouse, touch and pen in one listener.
+    document.addEventListener("pointerdown", onDocClick);
+    return () => document.removeEventListener("pointerdown", onDocClick);
+  }, [open]);
+
+  // Decide flip direction whenever the panel opens or the visual viewport
+  // changes (keyboard show/hide, URL-bar collapse).
+  const [dropUp, setDropUp] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    function measure() {
+      const input = containerRef.current?.querySelector("input");
+      if (!input) return;
+      const rect = input.getBoundingClientRect();
+      const viewportHeight = window.visualViewport?.height ?? window.innerHeight;
+      const spaceBelow = viewportHeight - rect.bottom;
+      const spaceAbove = rect.top;
+      setDropUp(spaceBelow < 180 && spaceAbove > spaceBelow);
+    }
+    measure();
+    window.visualViewport?.addEventListener("resize", measure);
+    window.addEventListener("scroll", measure, true);
+    return () => {
+      window.visualViewport?.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, true);
+    };
   }, [open]);
 
   // Keep activeIndex in range when the matches list shrinks.
@@ -143,10 +170,15 @@ export function WorkerNameCombobox({
           role="listbox"
           style={{
             position: "absolute",
-            top: "calc(100% + 4px)",
+            // Opened on focus, i.e. exactly when the keyboard slides up, so a
+            // downward list lands behind it. Flip above the field when the
+            // visual viewport has less room below than the list needs.
+            ...(dropUp ? { bottom: "calc(100% + 4px)" } : { top: "calc(100% + 4px)" }),
             left: 0,
             right: 0,
-            zIndex: 40,
+            // Above the fixed mobile bottom nav (z-index 150), which
+            // otherwise swallowed taps aimed at the options below it.
+            zIndex: 200,
             listStyle: "none",
             margin: 0,
             padding: 4,
@@ -154,7 +186,7 @@ export function WorkerNameCombobox({
             border: "1px solid #c9d9ea",
             borderRadius: 8,
             boxShadow: "0 8px 24px rgba(20, 41, 61, 0.10)",
-            maxHeight: 220,
+            maxHeight: "min(220px, 40dvh)",
             overflowY: "auto",
           }}
         >

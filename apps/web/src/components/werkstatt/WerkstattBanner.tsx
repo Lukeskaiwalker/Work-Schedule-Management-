@@ -22,6 +22,7 @@ type TabDef = {
 const TAB_DEFS: ReadonlyArray<TabDef> = [
   { key: "dashboard", label_de: "Dashboard", label_en: "Dashboard" },
   { key: "inventar", label_de: "Bestand", label_en: "Stock" },
+  { key: "kisten", label_de: "Baustellenkisten", label_en: "Construction boxes" },
   { key: "on_site", label_de: "Auf Baustelle", label_en: "On site" },
   { key: "nachbestellen", label_de: "Nachbestellen", label_en: "Reorder" },
   { key: "bedarfe", label_de: "Projekt-Bedarfe", label_en: "Project needs" },

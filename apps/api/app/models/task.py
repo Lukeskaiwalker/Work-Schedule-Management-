@@ -50,7 +50,19 @@ class Task(Base):
     description: Mapped[str | None] = mapped_column(Text)
     subtasks: Mapped[list[str]] = mapped_column(JSON, default=list, nullable=False)
     materials_required: Mapped[str | None] = mapped_column(Text)
+    # Legacy free-typed crate number, kept as-is: existing tasks hold arbitrary
+    # values (the integration tests use 7 and 9), so it must never gain
+    # validation. Once a task links a real box the server MIRRORS that box's
+    # rack slot into this column, which keeps the ICS export and the
+    # construction-report prefill correct with no changes at those call sites.
     storage_box_number: Mapped[int | None] = mapped_column(Integer)
+    # The real link, new in v2.7. SET NULL rather than CASCADE — deleting a
+    # crate must never delete the job that referenced it.
+    construction_box_id: Mapped[int | None] = mapped_column(
+        ForeignKey("werkstatt_construction_boxes.id", ondelete="SET NULL"),
+        index=True,
+        nullable=True,
+    )
     task_type: Mapped[str] = mapped_column(String(32), default="construction", nullable=False)
     class_template_id: Mapped[int | None] = mapped_column(
         ForeignKey("project_class_templates.id", ondelete="SET NULL"), index=True

@@ -6,6 +6,7 @@ import { estimateTravelMinutesFromAddresses, projectLocationAddress } from "../u
 import { BackIcon, PenIcon } from "../components/icons";
 import { PartnerTaskChip } from "../components/partners/PartnerTaskChip";
 import { CustomerConfirmationDot } from "../components/tasks/CustomerConfirmationDot";
+import { taskBoxDisplay } from "../utils/boxes";
 
 export function MyTasksPage() {
   const {
@@ -260,8 +261,8 @@ export function MyTasksPage() {
                         {de ? "Material" : "Materials"}: {taskMaterials || "-"}
                       </span>
                       <span>
-                        {de ? "Lagerbox" : "Storage box"}:{" "}
-                        {task.storage_box_number ?? "-"}
+                        {de ? "Baustellenkiste" : "Construction box"}:{" "}
+                        {taskBoxDisplay(task) ?? "-"}
                       </span>
                       <span>
                         {de ? "Unteraufgaben" : "Sub-tasks"}:{" "}

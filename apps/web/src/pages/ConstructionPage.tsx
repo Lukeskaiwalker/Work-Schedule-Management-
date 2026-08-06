@@ -1,10 +1,11 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { useAppContext } from "../context/AppContext";
 import { IMAGE_INPUT_ACCEPT } from "../constants";
 import { formatTimeInputForTyping, formatTimeInputForBlur } from "../utils/tasks";
 import { formatProjectTitle } from "../utils/projects";
 import { WorkerNameCombobox } from "../components/shared/WorkerNameCombobox";
 import { SignaturePad } from "../components/shared/SignaturePad";
+import { CustomerCombobox } from "../components/customers/CustomerCombobox";
 import { apiFetch } from "../api/client";
 
 export function ConstructionPage() {
@@ -19,6 +20,9 @@ export function ConstructionPage() {
     toggleReportTaskChecklistItem,
     reportProjectId,
     applyReportProjectSelection,
+    reportCustomerId,
+    applyReportCustomerSelection,
+    customers,
     projects,
     reportDraft,
     updateReportDraftField,
@@ -73,11 +77,18 @@ export function ConstructionPage() {
     setReportSignatureSmpl,
     reportSignatureCustomer,
     setReportSignatureCustomer,
+    flushReportDraft,
+    setNotice,
+    setError,
     token,
   } = useAppContext();
 
   // Project search combobox state (local — ephemeral UI only)
   const [projectSearch, setProjectSearch] = useState("");
+  /** Bumped by the "↺ Auto" button to re-run the distance auto-fetch effect. */
+  const [distanceRefreshNonce, setDistanceRefreshNonce] = useState(0);
+  /** Ref-tracked so a re-focus cannot be closed by the previous blur's timer. */
+  const projectBlurTimer = useRef<number | null>(null);
   const [projectDropdownOpen, setProjectDropdownOpen] = useState(false);
 
   const selectedProject = projects.find((p) => String(p.id) === reportProjectId) ?? null;
@@ -91,7 +102,24 @@ export function ConstructionPage() {
     }
   }, [reportProjectId, selectedProject]);
 
-  const filteredProjects = projects.filter((p) => {
+  // Reports are customer-first: once a customer is picked, only that customer's
+  // projects are offered. Legacy projects that carry only the free-text
+  // customer_name (no customer_id yet) are matched by name so they stay
+  // reachable until every project is linked.
+  const customerScopedProjects = (() => {
+    if (reportCustomerId == null) return projects;
+    const picked = customers.find((c) => c.id === reportCustomerId) ?? null;
+    const pickedName = (picked?.name ?? "").trim().toLowerCase();
+    return projects.filter(
+      (p) =>
+        p.customer_id === reportCustomerId ||
+        (p.customer_id == null &&
+          pickedName.length > 0 &&
+          (p.customer_name ?? "").trim().toLowerCase() === pickedName),
+    );
+  })();
+
+  const filteredProjects = customerScopedProjects.filter((p) => {
     if (!projectSearch.trim()) return true;
     const label = formatProjectTitle(p.project_number, p.customer_name, p.name, p.id).toLowerCase();
     return label.includes(projectSearch.toLowerCase());
@@ -105,6 +133,7 @@ export function ConstructionPage() {
   useEffect(() => {
     if (!reportProjectId || !token) return;
     if (reportDistance.source === "manual") return; // respect operator override
+    if (reportDistance.kilometers != null) return; // already have a value; don't churn
     let cancelled = false;
     void (async () => {
       try {
@@ -122,18 +151,24 @@ export function ConstructionPage() {
           setReportDistance({ kilometers: null, source: "unset" });
         }
       } catch {
-        // Network failure or 404 — fall back to unset. The operator can
-        // still type a km value manually.
-        if (!cancelled) setReportDistance({ kilometers: null, source: "unset" });
+        // Network failure or 404. Do NOT blank a value that is already on
+        // screen — a blip on a rural link would otherwise erase a correct
+        // auto-filled figure. Only fall back to "unset" when there is nothing
+        // to lose, so the badge can prompt for manual entry.
+        if (!cancelled && reportDistance.kilometers == null) {
+          setReportDistance({ kilometers: null, source: "unset" });
+        }
       }
     })();
     return () => {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reportProjectId, token]);
+  }, [reportProjectId, token, distanceRefreshNonce]);
 
   function selectProject(idStr: string) {
+    // Selection is complete — get the keyboard out of the way.
+    (document.activeElement as HTMLElement | null)?.blur();
     applyReportProjectSelection(idStr);
     const p = projects.find((proj) => String(proj.id) === idStr);
     setProjectSearch(p ? formatProjectTitle(p.project_number, p.customer_name, p.name, p.id) : "");
@@ -237,14 +272,23 @@ export function ConstructionPage() {
         className="construction-report-form"
         onSubmit={submitConstructionReport}
         onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            const target = e.target as HTMLElement;
-            const isSubmitButton =
-              target.tagName === "BUTTON" && (target as HTMLButtonElement).type === "submit";
-            if (!isSubmitButton) e.preventDefault();
-          }
+          if (e.key !== "Enter") return;
+          const target = e.target as HTMLElement;
+          // The ONLY purpose of this handler is to suppress implicit form
+          // submission, which single-line <input>s trigger on Enter. A
+          // <textarea> needs Enter for line breaks and a <button> needs it to
+          // activate — cancelling there is what made the Return key dead in all
+          // five textareas on this page, including "Heute geleistete Arbeit".
+          if (target.tagName !== "INPUT") return;
+          e.preventDefault();
         }}
       >
+        {/* Locks every control for the duration of the upload. Without this a
+            worker could keep typing into a form whose draft is about to be
+            deleted on success, silently losing the edit. <fieldset> is used
+            rather than per-input disabled props so nothing can be missed —
+            it carries no styling of its own (see .construction-report-fieldset). */}
+        <fieldset className="construction-report-fieldset" disabled={reportSubmitting}>
         {reportTaskPrefill && (
           <div className="construction-report-task-prefill muted">
             {de
@@ -278,9 +322,33 @@ export function ConstructionPage() {
             </div>
           </div>
         )}
-        {/* ── Project selector ── */}
+        {/* ── Customer selector (first field — reports are customer-owned) ── */}
         <label className="construction-report-field construction-report-field--full">
-          <span className="construction-report-label">{de ? "Projekt" : "Project"}</span>
+          <span className="construction-report-label">
+            {de ? "Kunde" : "Customer"} *
+          </span>
+          <CustomerCombobox
+            language={de ? "de" : "en"}
+            customers={customers}
+            value={{ customerId: reportCustomerId, customerName: reportDraft.customer }}
+            onChange={(next) => applyReportCustomerSelection(next.customerId, next.customerName)}
+            onRequestCreate={() => undefined}
+            placeholder={de ? "Kunde suchen oder eintippen…" : "Search or type a customer…"}
+          />
+          {reportCustomerId == null && reportDraft.customer.trim().length > 0 && (
+            <small className="construction-report-hint">
+              {de
+                ? "Nicht verknüpft — Bericht wird ohne Kundenakte gespeichert."
+                : "Not linked — the report is saved without a customer record."}
+            </small>
+          )}
+        </label>
+
+        {/* ── Project selector (optional, scoped to the customer) ── */}
+        <label className="construction-report-field construction-report-field--full">
+          <span className="construction-report-label">
+            {de ? "Projekt (optional)" : "Project (optional)"}
+          </span>
           <div className="construction-report-project-picker">
             <div className="construction-report-input-wrap">
               <svg
@@ -305,7 +373,16 @@ export function ConstructionPage() {
                 placeholder={de ? "Projekt suchen…" : "Search project…"}
                 value={projectSearch}
                 onFocus={() => setProjectDropdownOpen(true)}
-                onBlur={() => setTimeout(() => setProjectDropdownOpen(false), 150)}
+                onBlur={() => {
+                  if (projectBlurTimer.current) window.clearTimeout(projectBlurTimer.current);
+                  projectBlurTimer.current = window.setTimeout(
+                    () => setProjectDropdownOpen(false),
+                    150,
+                  );
+                }}
+                onFocusCapture={() => {
+                  if (projectBlurTimer.current) window.clearTimeout(projectBlurTimer.current);
+                }}
                 onChange={(e) => {
                   setProjectSearch(e.target.value);
                   setProjectDropdownOpen(true);
@@ -328,28 +405,33 @@ export function ConstructionPage() {
             </div>
             {projectDropdownOpen && (
               <div className="construction-report-project-dropdown">
-                <div
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={!selectedProject}
                   className="construction-report-project-option"
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    selectProject("");
-                  }}
+                  // onMouseDown only suppresses the blur that would close the
+                  // list; the actual selection is onClick, which touch fires
+                  // reliably even after a little finger drift.
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => selectProject("")}
                 >
                   <em>
                     {de ? "Allgemeiner Bericht (ohne Projekt)" : "General report (no project)"}
                   </em>
-                </div>
+                </button>
                 {filteredProjects.map((p) => (
-                  <div
+                  <button
                     key={p.id}
+                    type="button"
+                    role="option"
+                    aria-selected={selectedProject?.id === p.id}
                     className="construction-report-project-option"
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      selectProject(String(p.id));
-                    }}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => selectProject(String(p.id))}
                   >
                     {formatProjectTitle(p.project_number, p.customer_name, p.name, p.id)}
-                  </div>
+                  </button>
                 ))}
                 {filteredProjects.length === 0 && (
                   <div className="construction-report-project-option construction-report-project-option--empty">
@@ -384,23 +466,18 @@ export function ConstructionPage() {
               value={selectedReportProject?.project_number ?? reportDraft.project_number}
               onChange={(event) => updateReportDraftField("project_number", event.target.value)}
               readOnly={Boolean(selectedReportProject)}
+              tabIndex={selectedReportProject ? -1 : undefined}
+              aria-readonly={Boolean(selectedReportProject)}
               placeholder={de ? "Optional" : "Optional"}
             />
           </label>
         </div>
 
-        {/* ── Customer / Project name ── */}
+        {/* ── Project name ──
+            The customer name lives in the customer picker at the top of the
+            form (it writes the same reportDraft.customer the PDF renders), so
+            it is not duplicated here. */}
         <div className="construction-report-grid construction-report-grid--2col">
-          <label className="construction-report-field">
-            <span className="construction-report-label">{de ? "Kunde" : "Customer"}</span>
-            <input
-              className="construction-report-input"
-              name="customer"
-              value={reportDraft.customer}
-              onChange={(event) => updateReportDraftField("customer", event.target.value)}
-              placeholder={de ? "Kundenname" : "Customer name"}
-            />
-          </label>
           <label className="construction-report-field">
             <span className="construction-report-label">{de ? "Projektname" : "Project name"}</span>
             <input
@@ -409,6 +486,8 @@ export function ConstructionPage() {
               value={selectedReportProject?.name ?? reportDraft.project_name}
               onChange={(event) => updateReportDraftField("project_name", event.target.value)}
               readOnly={Boolean(selectedReportProject)}
+              tabIndex={selectedReportProject ? -1 : undefined}
+              aria-readonly={Boolean(selectedReportProject)}
               placeholder={de ? "Optional bei allgemeinem Bericht" : "Optional for general report"}
             />
           </label>
@@ -423,6 +502,10 @@ export function ConstructionPage() {
             <input
               className="construction-report-input"
               name="customer_contact"
+              autoComplete="off"
+              autoCapitalize="words"
+              autoCorrect="off"
+              spellCheck={false}
               value={reportDraft.customer_contact}
               onChange={(event) => updateReportDraftField("customer_contact", event.target.value)}
               placeholder={de ? "Name" : "Name…"}
@@ -434,6 +517,8 @@ export function ConstructionPage() {
               type="email"
               className="construction-report-input"
               name="customer_email"
+              autoComplete="off"
+              inputMode="email"
               value={reportDraft.customer_email}
               onChange={(event) => updateReportDraftField("customer_email", event.target.value)}
               placeholder="email@…"
@@ -450,6 +535,9 @@ export function ConstructionPage() {
             <input
               className="construction-report-input"
               name="customer_phone"
+              type="tel"
+              inputMode="tel"
+              autoComplete="off"
               value={reportDraft.customer_phone}
               onChange={(event) => updateReportDraftField("customer_phone", event.target.value)}
               placeholder={de ? "+49 …" : "+1 …"}
@@ -508,6 +596,7 @@ export function ConstructionPage() {
                 <input
                   className="construction-report-input"
                   value={worker.start_time}
+                  aria-label={de ? "Startzeit" : "Start time"}
                   placeholder="0730"
                   inputMode="numeric"
                   maxLength={5}
@@ -521,6 +610,7 @@ export function ConstructionPage() {
                 <input
                   className="construction-report-input"
                   value={worker.end_time}
+                  aria-label={de ? "Endzeit" : "End time"}
                   placeholder="1600"
                   inputMode="numeric"
                   maxLength={5}
@@ -591,6 +681,7 @@ export function ConstructionPage() {
                   <input
                     className="construction-report-input"
                     value={row.item}
+                    aria-label={de ? "Artikel" : "Item"}
                     placeholder={de ? "Artikel" : "Item"}
                     onChange={(event) => updateReportMaterialRow(index, "item", event.target.value)}
                     onKeyDown={handleMaterialRowKeyDown}
@@ -601,6 +692,8 @@ export function ConstructionPage() {
                   <input
                     className="construction-report-input"
                     value={row.qty}
+                    aria-label={de ? "Menge" : "Quantity"}
+                    inputMode="decimal"
                     placeholder={de ? "Menge" : "Qty"}
                     onChange={(event) => updateReportMaterialRow(index, "qty", event.target.value)}
                     onKeyDown={handleMaterialRowKeyDown}
@@ -609,6 +702,10 @@ export function ConstructionPage() {
                     className="construction-report-input"
                     value={row.unit}
                     list="material-unit-options"
+                    aria-label={de ? "Einheit" : "Unit"}
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    spellCheck={false}
                     placeholder={de ? "Einheit" : "Unit"}
                     onChange={(event) => updateReportMaterialRow(index, "unit", event.target.value)}
                     onKeyDown={handleMaterialRowKeyDown}
@@ -616,6 +713,10 @@ export function ConstructionPage() {
                   <input
                     className="construction-report-input"
                     value={row.article_no}
+                    aria-label={de ? "Artikelnummer" : "Article no."}
+                    autoCapitalize="off"
+                    autoCorrect="off"
+                    spellCheck={false}
                     placeholder={de ? "ArtNr" : "Art.Nr"}
                     onChange={(event) =>
                       updateReportMaterialRow(index, "article_no", event.target.value)
@@ -719,6 +820,7 @@ export function ConstructionPage() {
                 <input
                   className="construction-report-input"
                   value={row.item}
+                  aria-label={de ? "Artikel" : "Item"}
                   placeholder={de ? "Artikel" : "Item"}
                   onChange={(event) =>
                     updateReportOfficeMaterialRow(index, "item", event.target.value)
@@ -730,6 +832,8 @@ export function ConstructionPage() {
                 <input
                   className="construction-report-input"
                   value={row.qty}
+                  aria-label={de ? "Menge" : "Quantity"}
+                  inputMode="decimal"
                   placeholder={de ? "Menge" : "Qty"}
                   onChange={(event) =>
                     updateReportOfficeMaterialRow(index, "qty", event.target.value)
@@ -739,6 +843,10 @@ export function ConstructionPage() {
                   className="construction-report-input"
                   value={row.unit}
                   list="material-unit-options"
+                  aria-label={de ? "Einheit" : "Unit"}
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck={false}
                   placeholder={de ? "Einheit" : "Unit"}
                   onChange={(event) =>
                     updateReportOfficeMaterialRow(index, "unit", event.target.value)
@@ -747,6 +855,10 @@ export function ConstructionPage() {
                 <input
                   className="construction-report-input"
                   value={row.article_no}
+                  aria-label={de ? "Artikelnummer" : "Article no."}
+                  autoCapitalize="off"
+                  autoCorrect="off"
+                  spellCheck={false}
                   placeholder={de ? "ArtNr" : "Art.Nr"}
                   onChange={(event) =>
                     updateReportOfficeMaterialRow(index, "article_no", event.target.value)
@@ -887,20 +999,32 @@ export function ConstructionPage() {
             </label>
             <input
               id="report-km-input"
-              type="number"
-              min={0}
-              step={1}
+              // type="text", not "number": on a German keyboard "12,5" makes a
+              // number input report an EMPTY value, which used to null the
+              // kilometres AND latch source:"manual" — and the auto-fetch
+              // effect returns early forever once the source is "manual".
+              type="text"
+              inputMode="numeric"
+              enterKeyHint="done"
               value={reportDistance.kilometers ?? ""}
               onChange={(e) => {
-                const raw = e.target.value;
+                const raw = e.target.value.replace(",", ".").trim();
                 if (raw === "") {
-                  setReportDistance({ kilometers: null, source: "manual" });
-                } else {
-                  const parsed = Number(raw);
-                  if (Number.isFinite(parsed) && parsed >= 0) {
-                    setReportDistance({ kilometers: Math.round(parsed), source: "manual" });
-                  }
+                  // Only latch to "manual" when the operator cleared a value
+                  // that was actually there; an empty field they never filled
+                  // must stay eligible for auto-fill.
+                  setReportDistance({
+                    kilometers: null,
+                    source: reportDistance.kilometers != null ? "manual" : "unset",
+                  });
+                  return;
                 }
+                const parsed = Number(raw);
+                if (Number.isFinite(parsed) && parsed >= 0) {
+                  setReportDistance({ kilometers: Math.round(parsed), source: "manual" });
+                }
+                // Transient garbage ("12,"): keep the previous state rather
+                // than nulling the value out from under the typist.
               }}
               placeholder="0"
             />
@@ -920,7 +1044,12 @@ export function ConstructionPage() {
                 <button
                   type="button"
                   className="construction-report-distance-reset"
-                  onClick={() => setReportDistance({ kilometers: null, source: "unset" })}
+                  onClick={() => {
+                    setReportDistance({ kilometers: null, source: "unset" });
+                    // Without bumping this, the auto-fetch effect never re-ran
+                    // and the button did nothing but change a badge.
+                    setDistanceRefreshNonce((n) => n + 1);
+                  }}
                   title={de ? "Wieder automatisch berechnen" : "Re-fetch auto-calculation"}
                 >
                   ↺ {de ? "Auto" : "Auto"}
@@ -945,6 +1074,7 @@ export function ConstructionPage() {
           <div className="construction-report-signatures">
             <div>
               <SignaturePad
+                id="report-signature-smpl"
                 label={de ? "Für SMPL" : "For SMPL"}
                 value={reportSignatureSmpl.image_base64}
                 onChange={(dataUrl) =>
@@ -1078,13 +1208,24 @@ export function ConstructionPage() {
             type="button"
             className="construction-report-btn construction-report-btn--secondary"
             onClick={() => {
-              // Draft is auto-persisted via the existing reportHasStoredDraft flow.
-              // This button gives users an explicit "I'm done for now" affordance.
-              window.alert(
-                de
-                  ? "Der Entwurf wird automatisch gespeichert."
-                  : "Draft is saved automatically.",
-              );
+              // Was an alert asserting a save that may not have happened: the
+              // 800ms autosave debounce might not have fired, and its
+              // hasContent gate rejects a photos/signature-only report
+              // outright. Actually write it, and report what really happened.
+              const savedAt = flushReportDraft();
+              if (savedAt) {
+                setNotice(
+                  de
+                    ? `Entwurf gespeichert um ${new Date(savedAt).toLocaleTimeString("de-DE")}`
+                    : `Draft saved at ${new Date(savedAt).toLocaleTimeString("en-GB")}`,
+                );
+              } else {
+                setNotice(
+                  de
+                    ? "Nichts zu speichern — das Formular ist noch leer."
+                    : "Nothing to save — the form is still empty.",
+                );
+              }
             }}
             disabled={reportSubmitting}
           >
@@ -1104,6 +1245,7 @@ export function ConstructionPage() {
                 : "Submit report"}
           </button>
         </footer>
+        </fieldset>
       </form>
 
       <div className="construction-report-files">

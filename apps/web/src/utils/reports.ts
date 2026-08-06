@@ -118,6 +118,7 @@ export function buildEmptyProjectTaskFormState(): ProjectTaskFormState {
     materials_required: "",
     has_storage_box: false,
     storage_box_number: "",
+    construction_box_id: "",
     task_type: "construction",
     class_template_id: "",
     due_date: "",
@@ -145,6 +146,7 @@ export function buildTaskModalFormState(defaults?: {
     materials_required: "",
     has_storage_box: false,
     storage_box_number: "",
+    construction_box_id: "",
     task_type: defaults?.taskType ?? "construction",
     class_template_id: "",
     project_id: defaults?.projectId ? String(defaults.projectId) : "",
@@ -173,12 +175,18 @@ export function buildTaskEditFormState(task?: Task | null): TaskEditFormState {
   return {
     id: task?.id ?? null,
     project_id: task?.project_id ?? null,
+    // Carried through so the box picker can scope a customer-anchored task
+    // that has no project to derive the customer from.
+    customer_id: task?.customer_id ?? null,
     title: task?.title ?? "",
     description: task?.description ?? "",
     subtasks_raw: subtasksToTextareaValue(task?.subtasks),
     materials_required: task?.materials_required ?? "",
     has_storage_box: task?.storage_box_number != null,
     storage_box_number: task?.storage_box_number != null ? String(task.storage_box_number) : "",
+    construction_box_id:
+      task?.construction_box_id != null ? String(task.construction_box_id) : "",
+    construction_box_number: task?.construction_box_number ?? null,
     task_type: normalizeTaskTypeValue(task?.task_type),
     class_template_id: task?.class_template_id != null ? String(task.class_template_id) : "",
     status: task?.status ?? "open",
@@ -225,6 +233,7 @@ export function taskEditPayloadFromForm(form: TaskEditFormState, normalizedStart
     subtasks: parseTaskSubtasks(form.subtasks_raw),
     materials_required: form.materials_required.trim() || null,
     storage_box_number: storageBoxNumber,
+    construction_box_id: form.construction_box_id ? Number(form.construction_box_id) : null,
     task_type: form.task_type,
     class_template_id: classTemplateId,
     status: form.status.trim() || "open",

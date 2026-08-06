@@ -12,6 +12,7 @@ import type {
   Project,
   ProjectClassTaskTemplate,
   ProjectClassTemplate,
+  SelectableConstructionBox,
   ProjectFinance,
   ProjectActivity,
   ProjectOfficeNote,
@@ -843,6 +844,14 @@ export interface AppContextValue {
   activeProjectClassTemplates: ProjectClassTemplate[];
   taskModalProjectClassTemplates: ProjectClassTemplate[];
   taskEditProjectClassTemplates: ProjectClassTemplate[];
+  /** Persists the report draft immediately; null means the write failed. */
+  flushReportDraft: () => string | null;
+  taskModalSelectableBoxes: SelectableConstructionBox[];
+  taskEditSelectableBoxes: SelectableConstructionBox[];
+  taskModalBoxesLoading: boolean;
+  taskEditBoxesLoading: boolean;
+  taskModalCustomerId: number | null;
+  taskEditCustomerId: number | null;
   projectStatusOptions: string[];
   projectStatusSelectOptions: string[];
   overviewStatusOptions: string[];
@@ -1025,6 +1034,10 @@ export interface AppContextValue {
   addReportWorkerRow: () => void;
   removeReportWorkerRow: (index: number) => void;
   applyReportProjectSelection: (nextProjectId: string) => void;
+  /** Customer the report is filed against (null = free-text only, no link). */
+  reportCustomerId: number | null;
+  setReportCustomerId: (customerId: number | null) => void;
+  applyReportCustomerSelection: (nextCustomerId: number | null, typedName: string) => void;
   toggleReportTaskChecklistItem: (itemId: string, checked: boolean) => void;
   updateReportDraftField: (field: keyof ReportDraft, value: string) => void;
   updateReportMaterialRow: (index: number, field: keyof Omit<ReportMaterialRow, "id">, value: string) => void;

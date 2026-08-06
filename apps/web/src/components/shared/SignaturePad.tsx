@@ -140,6 +140,21 @@ export function SignaturePad({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // signature_pad@2.3.2 binds touchstart/touchmove/touchend only — verified in
+  // node_modules, there is no touchcancel listener. iOS fires touchcancel
+  // INSTEAD of touchend whenever the OS reclaims the gesture (notification
+  // banner, Control Centre, home-indicator swipe). Without this the ink is
+  // drawn but onEnd never fires, so onChange is never called and `value` stays
+  // empty while a signature is visibly on screen.
+  useEffect(() => {
+    const canvas = padRef.current?.getCanvas();
+    if (!canvas) return;
+    const onCancel = () => handleEnd();
+    canvas.addEventListener("touchcancel", onCancel);
+    return () => canvas.removeEventListener("touchcancel", onCancel);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   function handleEnd() {
     const pad = padRef.current;
     if (!pad) return;
@@ -173,11 +188,15 @@ export function SignaturePad({
           {label}
           {required ? <span className="signature-pad-required" aria-hidden="true"> *</span> : null}
         </span>
+        {/* Deliberately NOT disabled on an empty `value`. That value is derived
+            state and desyncs from the canvas pixels in both directions (the
+            touchcancel and multi-touch cases leave visible ink with an empty
+            value), so disabling Clear removes the user's only escape.
+            handleClear is idempotent, so clearing a blank pad is harmless. */}
         <button
           type="button"
           className="signature-pad-clear-btn"
           onClick={handleClear}
-          disabled={!value}
         >
           {clearLabel}
         </button>
@@ -194,6 +213,15 @@ export function SignaturePad({
           ref={padRef}
           penColor="#0b2547"
           onEnd={handleEnd}
+          // react-signature-canvas defaults clearOnResize={true} (verified in
+          // node_modules: defaultProps clearOnResize:true, and its handler
+          // calls _resizeCanvas() which ends in clear()). That registers a
+          // window 'resize' listener that ERASES the canvas. On iOS it fires
+          // whenever the URL bar collapses or the keyboard opens — i.e. exactly
+          // when the worker taps the name field directly beneath the pad they
+          // just signed. Our own sync() (above) is the sole owner of sizing and
+          // restores the current signature; the library's must stay off.
+          clearOnResize={false}
           canvasProps={{
             className: "signature-pad-canvas",
             style: { width: "100%", height: "100%", display: "block", touchAction: "none" },

@@ -3,6 +3,8 @@ import { useAppContext } from "../context/AppContext";
 import { CustomerContactCard } from "../components/customers/CustomerContactCard";
 import { CustomerProjectRow } from "../components/customers/CustomerProjectRow";
 import { CustomerTasksCard } from "../components/customers/CustomerTasksCard";
+import { CustomerReportsCard } from "../components/customers/CustomerReportsCard";
+import { CustomerBoxesCard } from "../components/customers/CustomerBoxesCard";
 import {
   getCustomer,
   listCustomerProjects,
@@ -230,6 +232,8 @@ export function CustomerDetailPage() {
               specific project. Lives on the left column to keep the
               project list (right column) uncluttered. */}
           <CustomerTasksCard customerId={customer.id} />
+          <CustomerReportsCard customerId={customer.id} />
+          <CustomerBoxesCard customerId={customer.id} />
         </div>
 
         <div className="customer-detail-col customer-detail-col--right">

@@ -5,6 +5,7 @@ import { taskMaterialsDisplay } from "../../utils/reports";
 import { PenIcon } from "../../components/icons";
 import { PartnerTaskChip } from "../../components/partners/PartnerTaskChip";
 import { CustomerConfirmationDot } from "../../components/tasks/CustomerConfirmationDot";
+import { taskBoxDisplay } from "../../utils/boxes";
 
 export function ProjectTasksTab() {
   const {
@@ -194,15 +195,15 @@ export function ProjectTasksTab() {
                     </small>
                   )}
                   {taskProjectLabel.subtitle && <small className="project-name-subtle">{taskProjectLabel.subtitle}</small>}
-                  {(task.description || taskMaterials || task.storage_box_number) && (
+                  {(task.description || taskMaterials || taskBoxDisplay(task)) && (
                     <small>
                       {task.description ? `${language === "de" ? "Info" : "Info"}: ${task.description}` : ""}
-                      {task.description && (taskMaterials || task.storage_box_number) ? " | " : ""}
+                      {task.description && (taskMaterials || taskBoxDisplay(task)) ? " | " : ""}
                       {taskMaterials
                         ? `${language === "de" ? "Material" : "Materials"}: ${taskMaterials}`
                         : ""}
-                      {task.storage_box_number
-                        ? ` | ${language === "de" ? "Lagerbox" : "Storage box"}: ${task.storage_box_number}`
+                      {taskBoxDisplay(task)
+                        ? ` | ${language === "de" ? "Baustellenkiste" : "Construction box"}: ${taskBoxDisplay(task)}`
                         : ""}
                     </small>
                   )}

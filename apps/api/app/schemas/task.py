@@ -20,6 +20,9 @@ class TaskCreate(BaseModel):
     subtasks: list[str] = Field(default_factory=list)
     materials_required: str | None = None
     storage_box_number: int | None = Field(default=None, ge=1)
+    # The real box link. `storage_box_number` stays free-typed legacy data;
+    # when both arrive, this one wins and overwrites the mirror.
+    construction_box_id: int | None = None
     task_type: str = "construction"
     class_template_id: int | None = None
     status: str = "open"
@@ -71,6 +74,9 @@ class TaskUpdate(BaseModel):
     subtasks: list[str] | None = None
     materials_required: str | None = None
     storage_box_number: int | None = Field(default=None, ge=1)
+    # The real box link. `storage_box_number` stays free-typed legacy data;
+    # when both arrive, this one wins and overwrites the mirror.
+    construction_box_id: int | None = None
     task_type: str | None = None
     class_template_id: int | None = None
     status: str | None = None
@@ -113,6 +119,11 @@ class TaskOut(BaseModel):
     subtasks: list[str] = Field(default_factory=list)
     materials_required: str | None = None
     storage_box_number: int | None = None
+    # Denormalised so task lists can label the crate without a second call.
+    construction_box_id: int | None = None
+    construction_box_number: str | None = None
+    construction_box_label: str | None = None
+    construction_box_status: str | None = None
     task_type: str = "construction"
     class_template_id: int | None = None
     status: str

@@ -353,7 +353,12 @@ export type Task = {
   description?: string | null;
   subtasks?: string[];
   materials_required?: string | null;
+  /** Legacy free-typed crate number. Mirrors the linked box's rack slot. */
   storage_box_number?: number | null;
+  construction_box_id?: number | null;
+  construction_box_number?: string | null;
+  construction_box_label?: string | null;
+  construction_box_status?: string | null;
   task_type?: string | null;
   class_template_id?: number | null;
   status: string;
@@ -825,7 +830,19 @@ export type ReportDraft = {
  *  to an array (smpl_report_drafts_v3), enabling multiple drafts per user.
  *  The legacy v2 shape is auto-migrated on first read. */
 export type StoredReportDraft = {
-  v: 3;
+  /**
+   * v4 adds the fields a v3 draft silently dropped: status ticks, kilometres,
+   * both signatures and the task checklist. An iOS tab discard used to return
+   * the text and lose everything else. Signatures are base64 PNG data URLs
+   * (~5-15 KB each) and serialise directly.
+   *
+   * Photos are deliberately NOT here — File blobs cannot go in localStorage and
+   * would blow the quota. They remain the one thing a discard still loses.
+   *
+   * v3 drafts are read as-is; the added fields are optional so an old entry
+   * simply restores without them.
+   */
+  v: 3 | 4;
   id: string;
   projectId: string;
   draft: ReportDraft;
@@ -840,6 +857,11 @@ export type StoredReportDraft = {
   officeMaterialRows: Pick<ReportMaterialRow, "item" | "qty" | "unit" | "article_no">[];
   sourceTaskId: number | null;
   savedAt: string;
+  status?: ReportStatus;
+  distance?: ReportDistance;
+  signatureSmpl?: ReportSignature;
+  signatureCustomer?: ReportSignature;
+  taskChecklist?: ReportTaskChecklistItem[];
 };
 
 export type ReportMaterialRow = {
@@ -907,6 +929,9 @@ export type ConstructionReportProcessingResponse = {
 
 export type RecentConstructionReport = {
   id: number;
+  /** Owning customer. Null on legacy rows the backfill could not resolve. */
+  customer_id?: number | null;
+  customer_name?: string | null;
   project_id: number | null;
   report_number?: number | null;
   user_id?: number | null;
@@ -979,6 +1004,7 @@ export type ProjectTaskFormState = {
   materials_required: string;
   has_storage_box: boolean;
   storage_box_number: string;
+  construction_box_id: string;
   task_type: TaskType;
   class_template_id: string;
   due_date: string;
@@ -1012,6 +1038,7 @@ export type TaskModalState = {
   materials_required: string;
   has_storage_box: boolean;
   storage_box_number: string;
+  construction_box_id: string;
   task_type: TaskType;
   class_template_id: string;
   project_id: string;
@@ -1032,12 +1059,16 @@ export type TaskModalState = {
 export type TaskEditFormState = {
   id: number | null;
   project_id: number | null;
+  /** Carried so the box picker can scope customer-anchored (project-less) tasks. */
+  customer_id: number | null;
   title: string;
   description: string;
   subtasks_raw: string;
   materials_required: string;
   has_storage_box: boolean;
   storage_box_number: string;
+  construction_box_id: string;
+  construction_box_number: string | null;
   task_type: TaskType;
   class_template_id: string;
   status: string;
@@ -1122,6 +1153,7 @@ export type WerkstattTab =
   | "inventar"
   | "artikel"            // article detail — selected via activeWerkstattArticleId
   | "nachbestellen"
+  | "kisten"             // Baustellenkisten — packed boxes assigned to customers
   | "on_site"            // "Auf Baustelle" — all checked-out items grouped by project
   | "bedarfe"            // Projekt-Bedarfe (absorbed from legacy Materials view)
   | "katalog"            // Datanorm pool browse (absorbed from legacy Materials view)
@@ -1405,4 +1437,25 @@ export type UserPermissionOverride = {
   user_id: number;
   extra: string[];
   denied: string[];
+};
+
+/** Construction-box (Baustellenkiste) lifecycle. */
+export type ConstructionBoxStatus = "offen" | "gepackt" | "zugewiesen" | "zurueck";
+
+/**
+ * A box as offered by the task form's picker. `group` is computed server-side
+ * so all three task forms sort and label identically.
+ */
+export type SelectableConstructionBox = {
+  id: number;
+  box_number: string;
+  label: string;
+  slot: number | null;
+  status: ConstructionBoxStatus;
+  item_count: number;
+  customer_id: number | null;
+  customer_name: string | null;
+  project_id: number | null;
+  project_name: string | null;
+  group: "customer" | "free" | "other";
 };

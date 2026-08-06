@@ -1,4 +1,5 @@
 from __future__ import annotations
+from collections.abc import Sequence
 from functools import lru_cache
 import json
 import math
@@ -12,6 +13,7 @@ from email.utils import format_datetime
 from html import escape
 from io import BytesIO
 from pathlib import Path, PurePosixPath
+from typing import NamedTuple
 from urllib.parse import quote
 
 import httpx
@@ -60,6 +62,7 @@ from app.models.entities import (
     TaskPartner,
     User,
     VacationRequest,
+    WerkstattConstructionBox,
     WikiPage,
 )
 from app.schemas.api import (
@@ -127,7 +130,6 @@ from app.services.report_jobs import (
     queue_construction_report_job,
     report_processing_payload,
 )
-from app.services.report_feed import is_report_feed_thread, sync_report_feed_thread
 from app.services.runtime_settings import get_openweather_api_key
 from app.services.material_catalog import (
     ensure_material_catalog_item_image,
@@ -2388,6 +2390,74 @@ def _validate_customer_id(db: Session, customer_id: int) -> None:
         raise HTTPException(status_code=400, detail=f"Unknown customer id: {customer_id}")
 
 
+def _resolve_report_customer(
+    db: Session,
+    *,
+    requested_customer_id: int | None,
+    project: Project | None,
+) -> Customer | None:
+    """Decide which Customer a construction report belongs to.
+
+    Reports are customer-owned with an optional project, so the customer can
+    arrive two ways:
+
+      * explicitly (the customer-first form sends ``customer_id``), or
+      * implicitly, derived from the chosen project's customer — which is what
+        keeps every pre-existing client working unchanged.
+
+    When both are present they must agree: filing a report under customer A
+    against a project owned by customer B would silently file it on the wrong
+    customer's record, and reports are write-once (there is no edit endpoint to
+    repair it), so this fails loudly instead.
+
+    A project whose own ``customer_id`` is NULL (legacy, free-text customer only)
+    does not veto an explicit customer — the report links, and the project is
+    left alone rather than being silently rewritten as a side effect.
+    """
+    if requested_customer_id is not None:
+        _validate_customer_id(db, requested_customer_id)
+        if (
+            project is not None
+            and project.customer_id is not None
+            and project.customer_id != requested_customer_id
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="customer_id does not match the selected project's customer",
+            )
+        return db.get(Customer, requested_customer_id)
+
+    if project is not None and project.customer_id is not None:
+        return db.get(Customer, project.customer_id)
+
+    return None
+
+
+def _hydrate_report_payload_with_customer_defaults(
+    report_payload: dict, customer: Customer | None
+) -> dict:
+    """Fill still-empty customer_* payload fields from the linked Customer.
+
+    Only blanks are filled: the crew regularly overrides the contact or address
+    per site, and the PDF renders whatever ends up here. Runs after the
+    project-defaults hydration so an explicitly chosen customer can still supply
+    values a customer-less project left empty.
+    """
+    if customer is None:
+        return report_payload
+    updated = dict(report_payload)
+    for payload_key, customer_value in (
+        ("customer", customer.name),
+        ("customer_address", customer.address),
+        ("customer_contact", customer.contact_person),
+        ("customer_email", customer.email),
+        ("customer_phone", customer.phone),
+    ):
+        if not str(updated.get(payload_key) or "").strip():
+            updated[payload_key] = (customer_value or "").strip()
+    return updated
+
+
 def _task_assignee_map(db: Session, tasks: list[Task]) -> dict[int, list[int]]:
     if not tasks:
         return {}
@@ -2640,12 +2710,105 @@ def _find_task_overlaps(
     return overlaps
 
 
+class ConstructionBoxRef(NamedTuple):
+    """The slice of a construction box that a task response needs."""
+
+    id: int
+    box_number: str
+    label: str
+    status: str
+    slot: int | None
+
+
+def _task_box_map(db: Session, tasks: list[Task]) -> dict[int, ConstructionBoxRef]:
+    """Batch-resolve the boxes linked by ``tasks``, keyed by box id."""
+    box_ids = {task.construction_box_id for task in tasks if task.construction_box_id is not None}
+    if not box_ids:
+        return {}
+    rows = db.scalars(
+        select(WerkstattConstructionBox).where(WerkstattConstructionBox.id.in_(box_ids))
+    ).all()
+    return {
+        row.id: ConstructionBoxRef(
+            id=row.id,
+            box_number=row.box_number,
+            label=row.label,
+            status=row.status,
+            slot=row.slot,
+        )
+        for row in rows
+    }
+
+
+def _resolve_anchor_customer_id(
+    db: Session, *, customer_id: int | None, project_id: int | None
+) -> int | None:
+    """The customer a task belongs to, working at the id level.
+
+    Id-level twin of ``_resolve_task_customer_for_email`` so it can be used at
+    create time, before a Task row exists. A task is anchored to a project, a
+    customer, or both (the ``ck_tasks_project_or_customer`` CHECK), and a
+    project's own customer may legitimately be null — legacy projects carry a
+    free-text ``customer_name`` instead — so None is a normal answer.
+    """
+    if customer_id is not None:
+        return customer_id
+    if project_id is not None:
+        project = db.get(Project, project_id)
+        if project is not None:
+            return project.customer_id
+    return None
+
+
+def _validate_task_construction_box(
+    db: Session, *, box_id: int, customer_id: int | None, project_id: int | None
+) -> WerkstattConstructionBox:
+    """Check a task may link ``box_id``. Never mutates the box.
+
+    Linking is a pure association: it does NOT drive the box FSM and so does
+    NOT move stock. Stock moves only on the box's own assign/return, which
+    stays a deliberate Werkstatt action — see services/werkstatt_boxes.py.
+
+    A box already owned by another customer is refused, because that crate is
+    physically at someone else's site. A free box (customer_id None) is fair
+    game for anyone, and a task with no resolvable customer can link anything.
+    """
+    box = db.get(WerkstattConstructionBox, box_id)
+    if box is None:
+        raise HTTPException(status_code=400, detail=f"Unknown construction box id: {box_id}")
+    anchor_customer_id = _resolve_anchor_customer_id(
+        db, customer_id=customer_id, project_id=project_id
+    )
+    if (
+        box.customer_id is not None
+        and anchor_customer_id is not None
+        and box.customer_id != anchor_customer_id
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Construction box {box.box_number} belongs to a different customer",
+        )
+    return box
+
+
+def _apply_task_construction_box(task: Task, box: WerkstattConstructionBox | None) -> None:
+    """Set the box link and mirror the rack slot into the legacy column.
+
+    The single writer of that mirror, in one direction only, so the two columns
+    cannot drift. An ad-hoc box has no slot, so it clears the legacy number
+    rather than leaving a stale one behind.
+    """
+    task.construction_box_id = box.id if box is not None else None
+    task.storage_box_number = box.slot if box is not None else None
+
+
 def _task_out(
     task: Task,
     assignee_ids: list[int],
     partner_ids: list[int] | None = None,
     partners: list[Partner] | None = None,
     confirmation_by_display_name: str | None = None,
+    box: ConstructionBoxRef | None = None,
 ) -> TaskOut:
     partner_ids = partner_ids or []
     partner_rows = partners or []
@@ -2658,6 +2821,10 @@ def _task_out(
         subtasks=_normalize_task_subtasks(task.subtasks),
         materials_required=task.materials_required,
         storage_box_number=task.storage_box_number,
+        construction_box_id=task.construction_box_id,
+        construction_box_number=box.box_number if box else None,
+        construction_box_label=box.label if box else None,
+        construction_box_status=box.status if box else None,
         task_type=task.task_type,
         class_template_id=task.class_template_id,
         status=task.status,
@@ -2849,10 +3016,14 @@ def _tasks_out(db: Session, tasks: list[Task]) -> list[TaskOut]:
     if confirmation_user_ids:
         rows = db.scalars(select(User).where(User.id.in_(confirmation_user_ids))).all()
         confirmation_names = {row.id: (row.display_name or row.email or "") for row in rows}
+    boxes_by_id = _task_box_map(db, tasks)
     return [
         _task_out(
             task,
             assignees_by_task.get(task.id, []),
+            box=boxes_by_id.get(task.construction_box_id)
+            if task.construction_box_id is not None
+            else None,
             partner_ids=partners_by_task.get(task.id, []),
             partners=[
                 partner_rows[pid]
@@ -3006,19 +3177,56 @@ def _assert_report_access(user: User, *, write: bool) -> None:
     raise HTTPException(status_code=403, detail=detail)
 
 
-def _optional_project_id(raw_value: object) -> int | None:
+def _reports_visible_to_user(
+    db: Session, user: User, reports: Sequence[ConstructionReport]
+) -> list[ConstructionReport]:
+    """Filter reports down to the ones this user may actually read.
+
+    Report-read permission alone is not enough to see *every* report in the
+    system. A report is visible when the caller:
+
+      * submitted it themselves, or
+      * it has no project (customer-only / global report), or
+      * its project is one they can open (membership, task assignment, or
+        global project authority).
+
+    Users with global project access keep seeing everything, so office/admin
+    workflows are unchanged. This mirrors the project scoping applied to
+    ``list_customer_projects`` so the same report isn't visible in one view and
+    hidden in another.
+    """
+    if not reports:
+        return []
+    if has_global_project_access(user.id, user.role):
+        return list(reports)
+    visible_project_ids = _project_ids_visible_to_user(db, user)
+    return [
+        report
+        for report in reports
+        if report.user_id == user.id
+        or report.project_id is None
+        or report.project_id in visible_project_ids
+    ]
+
+
+def _optional_positive_int(raw_value: object, field_name: str) -> int | None:
+    """Parse an optional positive integer form field, naming itself in errors."""
     if raw_value is None:
         return None
     raw_text = str(raw_value).strip()
     if not raw_text:
         return None
     try:
-        project_id = int(raw_text)
+        value = int(raw_text)
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail="project_id must be an integer") from exc
-    if project_id <= 0:
-        raise HTTPException(status_code=400, detail="project_id must be positive")
-    return project_id
+        raise HTTPException(status_code=400, detail=f"{field_name} must be an integer") from exc
+    if value <= 0:
+        raise HTTPException(status_code=400, detail=f"{field_name} must be positive")
+    return value
+
+
+def _optional_project_id(raw_value: object) -> int | None:
+    return _optional_positive_int(raw_value, "project_id")
 
 
 def _hydrate_report_payload_with_project_defaults(payload: dict, project: Project | None) -> dict:
@@ -3164,6 +3372,9 @@ def _create_follow_up_task_for_open_subtasks(
         description="\n\n".join(follow_up_description_parts),
         subtasks=remaining_subtasks,
         materials_required=source_task.materials_required,
+        # The legacy note is copied, but construction_box_id deliberately is
+        # NOT: a physical crate should never be claimed by a machine-generated
+        # follow-up. Whoever picks the work up links a box themselves.
         storage_box_number=source_task.storage_box_number,
         task_type=source_task.task_type,
         class_template_id=source_task.class_template_id,
@@ -3199,14 +3410,17 @@ async def _create_construction_report_impl(
     db: Session,
     *,
     forced_project_id: int | None,
+    forced_customer_id: int | None = None,
 ) -> dict:
     content_type = request.headers.get("content-type", "")
     report_images: list[UploadFile] = []
     requested_project_id: int | None = None
+    requested_customer_id: int | None = None
 
     if "multipart/form-data" in content_type:
         form = await request.form()
         requested_project_id = _optional_project_id(form.get("project_id"))
+        requested_customer_id = _optional_positive_int(form.get("customer_id"), "customer_id")
         raw_report_date = str(form.get("report_date") or "").strip()
         if not raw_report_date:
             raise HTTPException(status_code=400, detail="report_date is required")
@@ -3238,12 +3452,17 @@ async def _create_construction_report_impl(
     else:
         payload = ConstructionReportCreate(**(await request.json()))
         requested_project_id = payload.project_id
+        requested_customer_id = payload.customer_id
         report_date = payload.report_date
         send_telegram = payload.send_telegram
         report_payload = payload.payload.model_dump()
 
     if forced_project_id is not None and requested_project_id not in {None, forced_project_id}:
         raise HTTPException(status_code=400, detail="project_id mismatch")
+    if forced_customer_id is not None and requested_customer_id not in {None, forced_customer_id}:
+        raise HTTPException(status_code=400, detail="customer_id mismatch")
+    if forced_customer_id is not None:
+        requested_customer_id = forced_customer_id
 
     target_project_id = forced_project_id if forced_project_id is not None else requested_project_id
     project: Project | None = None
@@ -3255,7 +3474,14 @@ async def _create_construction_report_impl(
     else:
         _assert_report_access(current_user, write=True)
 
+    # Resolved only AFTER the project access check, so this endpoint can never be
+    # used to probe which customer owns a project the caller cannot open.
+    customer = _resolve_report_customer(
+        db, requested_customer_id=requested_customer_id, project=project
+    )
+
     report_payload = _hydrate_report_payload_with_project_defaults(report_payload, project)
+    report_payload = _hydrate_report_payload_with_customer_defaults(report_payload, customer)
     # v2.5.26 — recompute km server-side if the frontend didn't manage
     # to pre-fill it (race, missing site_address, etc.). See the
     # function's docstring for the failure modes this covers.
@@ -3265,6 +3491,7 @@ async def _create_construction_report_impl(
     report_file_name = build_report_filename(report_payload, report_date, report_number=report_number)
     telegram_configured = bool(settings.telegram_bot_token and settings.telegram_chat_id)
     report = ConstructionReport(
+        customer_id=customer.id if customer is not None else None,
         project_id=target_project_id,
         report_number=report_number,
         user_id=current_user.id,
@@ -3359,6 +3586,7 @@ async def _create_construction_report_impl(
         "id": report.id,
         "project_id": report.project_id,
         "report_number": report.report_number,
+        "customer_id": report.customer_id,
         "telegram_sent": report.telegram_sent,
         "telegram_mode": report.telegram_mode,
         "attachment_file_name": report.pdf_file_name,
@@ -3427,10 +3655,20 @@ def _recent_construction_report_out(db: Session, report: ConstructionReport) -> 
     project = db.get(Project, report.project_id) if report.project_id is not None else None
     project_number = (project.project_number if project else payload.get("project_number")) or None
     project_name = (project.name if project else payload.get("project_name")) or None
+    # Fall back to the project's customer for rows written before customer_id
+    # existed (the backfill covers most, but a project-less legacy report only
+    # has the free-text payload name).
+    customer_id = report.customer_id if report.customer_id is not None else (
+        project.customer_id if project is not None else None
+    )
+    customer = db.get(Customer, customer_id) if customer_id is not None else None
+    customer_name = (customer.name if customer else payload.get("customer")) or None
     sender = db.get(User, report.user_id) if report.user_id is not None else None
     pdf_attachment = _latest_report_pdf_attachment_for_report(db, report.id)
     return RecentConstructionReportOut(
         id=report.id,
+        customer_id=customer_id,
+        customer_name=str(customer_name).strip() if customer_name is not None else None,
         project_id=report.project_id,
         report_number=report.report_number,
         user_id=report.user_id,

@@ -4,7 +4,23 @@ import { addDaysISO, normalizeWeekStartISO, formatDayLabel, isoWeekdayMondayFirs
 import { sortTasksByDueTime, formatTaskTimeRange } from "../utils/tasks";
 import { PenIcon } from "../components/icons";
 import { CustomerConfirmationDot } from "../components/tasks/CustomerConfirmationDot";
-import type { Language } from "../types";
+import type { Language, Task } from "../types";
+
+/** Weekly board rendering mode. */
+type BoardMode = "einsaetze" | "tasks";
+
+/**
+ * One customer's deployment on one day — the unit field crews think in
+ * ("mein Einsatz"): who the customer is, which Monteure are there, and the
+ * tasks behind it.
+ */
+type Einsatz = {
+  key: string;
+  date: string;
+  customerId: number | null;
+  label: string;
+  tasks: Task[];
+};
 
 const EN_DAY_COLS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"] as const;
 const DE_DAY_COLS = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"] as const;
@@ -52,6 +68,8 @@ export function PlanningPage() {
     isTaskAssignedToCurrentUser,
     getTaskAssigneeLabel,
     taskProjectTitleParts,
+    customers,
+    projects,
     openTaskFromPlanning,
     openProjectFromTask,
     openTaskModal,
@@ -71,6 +89,127 @@ export function PlanningPage() {
     for (const h of publicHolidays) map.set(h.date, h);
     return map;
   }, [publicHolidays]);
+
+  // ── Einsatz (deployment) board ─────────────────────────────────────────
+  // Field crews read the week as "which customer am I at, with whom" — not as
+  // a list of individual tasks. In Einsatz mode each day column shows one row
+  // per CUSTOMER with the Monteure deployed there; clicking it opens that day's
+  // tasks in a sheet. Task mode keeps the flat per-task list (office planners
+  // rely on it), so the two audiences aren't traded off against each other.
+  const [boardMode, setBoardMode] = useState<BoardMode>(
+    workspaceMode === "office" ? "tasks" : "einsaetze",
+  );
+  const [openEinsatz, setOpenEinsatz] = useState<Einsatz | null>(null);
+
+  // Follow the workspace when the user flips Baustelle/Büro, so each mode lands
+  // on the view its audience expects.
+  useEffect(() => {
+    setBoardMode(workspaceMode === "office" ? "tasks" : "einsaetze");
+    setOpenEinsatz(null);
+  }, [workspaceMode]);
+
+  const customerNameById = useMemo(() => {
+    const map = new Map<number, string>();
+    for (const c of customers) map.set(c.id, c.name);
+    return map;
+  }, [customers]);
+
+  const projectById = useMemo(() => {
+    const map = new Map<number, (typeof projects)[number]>();
+    for (const p of projects) map.set(p.id, p);
+    return map;
+  }, [projects]);
+
+  /** Customer a task belongs to: its own link, else its project's. */
+  function resolveTaskCustomerId(task: Task): number | null {
+    if (task.customer_id != null) return task.customer_id;
+    if (task.project_id != null) return projectById.get(task.project_id)?.customer_id ?? null;
+    return null;
+  }
+
+  /** Assignees (Monteure) on a task, tolerating the legacy single-assignee column. */
+  function taskAssigneeIds(task: Task): number[] {
+    if (task.assignee_ids && task.assignee_ids.length > 0) return task.assignee_ids;
+    return task.assignee_id != null ? [task.assignee_id] : [];
+  }
+
+  /**
+   * Collapse a day's tasks into one Einsatz per customer.
+   *
+   * Tasks with no resolvable customer (legacy project-only rows whose project
+   * has no customer) fall back to grouping by project so nothing disappears
+   * from the board; anything with neither lands in a single "Ohne Kunde" row.
+   */
+  function buildEinsaetze(dayDate: string, dayTasks: Task[]): Einsatz[] {
+    const groups = new Map<string, Einsatz>();
+    for (const task of dayTasks) {
+      const customerId = resolveTaskCustomerId(task);
+      const projectLabel = taskProjectTitleParts(task);
+      let key: string;
+      let label: string;
+      if (customerId != null) {
+        key = `customer:${customerId}`;
+        label =
+          customerNameById.get(customerId) ||
+          (task.project_id != null ? projectById.get(task.project_id)?.customer_name : null) ||
+          projectLabel.title ||
+          (de ? "Unbekannter Kunde" : "Unknown customer");
+      } else if (task.project_id != null) {
+        key = `project:${task.project_id}`;
+        label = projectLabel.title || `#${task.project_id}`;
+      } else {
+        key = "none";
+        label = de ? "Ohne Kunde" : "No customer";
+      }
+
+      const existing = groups.get(key);
+      if (existing) {
+        existing.tasks.push(task);
+      } else {
+        groups.set(key, {
+          key: `${dayDate}-${key}`,
+          date: dayDate,
+          customerId,
+          label,
+          tasks: [task],
+        });
+      }
+    }
+
+    // Stable ordering: earliest start time first, then alphabetically.
+    return Array.from(groups.values()).sort((a, b) => {
+      const aStart = a.tasks.find((t) => t.start_time)?.start_time ?? "99:99";
+      const bStart = b.tasks.find((t) => t.start_time)?.start_time ?? "99:99";
+      if (aStart !== bStart) return aStart.localeCompare(bStart);
+      return a.label.localeCompare(b.label, de ? "de" : "en");
+    });
+  }
+
+  /** Distinct Monteure across an Einsatz, in stable order. */
+  function einsatzAssigneeNames(einsatz: Einsatz): string[] {
+    const seen = new Set<number>();
+    const names: string[] = [];
+    for (const task of einsatz.tasks) {
+      for (const id of taskAssigneeIds(task)) {
+        if (seen.has(id)) continue;
+        seen.add(id);
+        names.push(menuUserNameById(id, `#${id}`));
+      }
+    }
+    return names;
+  }
+
+  /** "07:30 – 16:00" across an Einsatz, or "" when nothing is timed.
+   *  The API sends "HH:MM:SS"; the board only ever wants HH:MM. */
+  function einsatzTimeLabel(einsatz: Einsatz): string {
+    const hhmm = (value: string) => value.slice(0, 5);
+    const starts = einsatz.tasks.map((t) => t.start_time).filter(Boolean) as string[];
+    const ends = einsatz.tasks.map((t) => t.end_time).filter(Boolean) as string[];
+    if (starts.length === 0) return "";
+    const start = starts.slice().sort()[0];
+    const end = ends.length > 0 ? ends.slice().sort().reverse()[0] : null;
+    return end && end > start ? `${hhmm(start)} – ${hhmm(end)}` : hhmm(start);
+  }
 
   const [isPhoneViewport, setIsPhoneViewport] = useState(() => {
     if (typeof window === "undefined") return false;
@@ -190,6 +329,32 @@ export function PlanningPage() {
             onClick={() => setPlanningTaskTypeView("customer_appointment")}
           >
             {de ? "Termin" : "Appointment"}
+          </button>
+        </div>
+
+        {/* Einsätze (customer roster) ↔ Aufgaben (flat task list) */}
+        <div
+          className="planning-filter-pills planning-board-mode-pills"
+          role="tablist"
+          aria-label={de ? "Ansicht" : "View"}
+        >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={boardMode === "einsaetze"}
+            className={`planning-filter-pill${boardMode === "einsaetze" ? " planning-filter-pill--active" : ""}`}
+            onClick={() => setBoardMode("einsaetze")}
+          >
+            {de ? "Einsätze" : "Deployments"}
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={boardMode === "tasks"}
+            className={`planning-filter-pill${boardMode === "tasks" ? " planning-filter-pill--active" : ""}`}
+            onClick={() => setBoardMode("tasks")}
+          >
+            {de ? "Aufgaben" : "Tasks"}
           </button>
         </div>
 
@@ -407,12 +572,54 @@ export function PlanningPage() {
                       </small>
                     </li>
                   ))}
-                  {/* Every task renders as an individual row so it can be
-                      clicked to edit directly — in office mode too. The old
-                      office view collapsed tasks into project cards that only
-                      navigated to the Gantt tab (the "detour" users complained
-                      about). */}
-                  {visibleTaskRows.map((task) => {
+                  {/* Einsatz mode: one row per CUSTOMER with the Monteure on
+                      site. Clicking opens that day's tasks in a sheet — the
+                      overview stays compact and tasks stay one click away. */}
+                  {boardMode === "einsaetze" &&
+                    buildEinsaetze(day.date, visibleTaskRows).map((einsatz) => {
+                      const names = einsatzAssigneeNames(einsatz);
+                      const timeLabel = einsatzTimeLabel(einsatz);
+                      const taskCount = einsatz.tasks.length;
+                      return (
+                        <li
+                          key={einsatz.key}
+                          className="planning-einsatz planning-task-clickable"
+                          onClick={() => setOpenEinsatz(einsatz)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              setOpenEinsatz(einsatz);
+                            }
+                          }}
+                          role="button"
+                          tabIndex={0}
+                        >
+                          <b className="planning-einsatz-customer">{einsatz.label}</b>
+                          <span className="planning-einsatz-crew">
+                            {names.length > 0
+                              ? names.join(", ")
+                              : de
+                                ? "Niemand zugewiesen"
+                                : "Nobody assigned"}
+                          </span>
+                          <span className="planning-einsatz-meta">
+                            {timeLabel ? `${timeLabel} · ` : ""}
+                            {taskCount}{" "}
+                            {de
+                              ? taskCount === 1
+                                ? "Aufgabe"
+                                : "Aufgaben"
+                              : taskCount === 1
+                                ? "task"
+                                : "tasks"}
+                          </span>
+                        </li>
+                      );
+                    })}
+
+                  {/* Task mode: every task as its own click-to-edit row. */}
+                  {boardMode === "tasks" &&
+                    visibleTaskRows.map((task) => {
                         const projectLabel = taskProjectTitleParts(task);
                         const isMine = isTaskAssignedToCurrentUser(task);
                         // Managers edit any task by clicking its row directly
@@ -522,6 +729,123 @@ export function PlanningPage() {
           })}
         </div>
       </div>
+
+      {/* ── Einsatz sheet: that day's tasks for one customer ────────────── */}
+      {openEinsatz && (
+        <div className="modal-backdrop" onClick={() => setOpenEinsatz(null)}>
+          <div
+            className="card modal-card planning-einsatz-sheet"
+            onClick={(event) => event.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+          >
+            <header className="planning-einsatz-sheet-head">
+              <div>
+                <h2>{openEinsatz.label}</h2>
+                <small className="muted">
+                  {formatDayLabel(openEinsatz.date, language)}
+                  {einsatzAssigneeNames(openEinsatz).length > 0
+                    ? ` · ${einsatzAssigneeNames(openEinsatz).join(", ")}`
+                    : ""}
+                </small>
+              </div>
+              <button
+                type="button"
+                className="icon-btn"
+                onClick={() => setOpenEinsatz(null)}
+                aria-label={de ? "Schließen" : "Close"}
+              >
+                ×
+              </button>
+            </header>
+
+            <ul className="planning-einsatz-sheet-list">
+              {sortTasksByDueTime(openEinsatz.tasks).map((task) => {
+                const isMine = isTaskAssignedToCurrentUser(task);
+                const projectLabel = taskProjectTitleParts(task);
+                // Same click rule as the task board: managers edit, assignees
+                // open their task. No detour.
+                const onOpen = canManageTasks
+                  ? () => {
+                      setOpenEinsatz(null);
+                      openTaskEditModal(task);
+                    }
+                  : isMine
+                    ? () => {
+                        setOpenEinsatz(null);
+                        openTaskFromPlanning(task);
+                      }
+                    : undefined;
+                return (
+                  <li
+                    key={`einsatz-task-${task.id}`}
+                    className={
+                      onOpen
+                        ? "planning-einsatz-task planning-task-clickable"
+                        : "planning-einsatz-task"
+                    }
+                    data-task-type={task.task_type ?? "construction"}
+                    onClick={onOpen}
+                    role={onOpen ? "button" : undefined}
+                    tabIndex={onOpen ? 0 : undefined}
+                    onKeyDown={
+                      onOpen
+                        ? (event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              onOpen();
+                            }
+                          }
+                        : undefined
+                    }
+                  >
+                    <b>
+                      {task.title}
+                      <CustomerConfirmationDot task={task} language={language} />
+                    </b>
+                    <small>
+                      {/* A customer can run several projects in one day — the
+                          project is shown per task rather than in the header. */}
+                      {projectLabel.title}
+                      {task.start_time ? ` · ${formatTaskTimeRange(task)}` : ""}
+                      {" · "}
+                      {getTaskAssigneeLabel(task)}
+                    </small>
+                    <div className="row wrap task-actions task-actions-left">
+                      {canManageTasks && (
+                        <button
+                          type="button"
+                          className="icon-btn task-edit-icon-btn"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            setOpenEinsatz(null);
+                            openTaskEditModal(task);
+                          }}
+                          aria-label={de ? "Aufgabe bearbeiten" : "Edit task"}
+                          title={de ? "Aufgabe bearbeiten" : "Edit task"}
+                        >
+                          <PenIcon />
+                        </button>
+                      )}
+                      {isMine && task.status !== "done" && (
+                        <button
+                          type="button"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            void markTaskDone(task);
+                          }}
+                        >
+                          {de ? "Erledigt" : "Complete"}
+                        </button>
+                      )}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        </div>
+      )}
     </section>
   );
 }

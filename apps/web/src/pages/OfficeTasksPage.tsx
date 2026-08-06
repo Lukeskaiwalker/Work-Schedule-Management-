@@ -4,6 +4,7 @@ import { taskDisplayStatus, isTaskOverdue, taskStatusLabel, taskTypeLabel, norma
 import { taskMaterialsDisplay } from "../utils/reports";
 import { PenIcon } from "../components/icons";
 import { PartnerTaskChip } from "../components/partners/PartnerTaskChip";
+import { taskBoxDisplay } from "../utils/boxes";
 
 export function OfficeTasksPage() {
   const {
@@ -303,12 +304,12 @@ export function OfficeTasksPage() {
                 {taskProjectLabel.subtitle && (
                   <span className="tasks-page-row-subtitle">{taskProjectLabel.subtitle}</span>
                 )}
-                {(task.description || taskMaterials || task.storage_box_number) && (
+                {(task.description || taskMaterials || taskBoxDisplay(task)) && (
                   <span className="tasks-page-row-meta">
                     {de ? "Typ" : "Type"}:{" "}
                     {taskTypeLabel(normalizeTaskTypeValue(task.task_type), language)}
-                    {task.storage_box_number
-                      ? `  ·  ${de ? "Lagerbox" : "Storage box"}: ${task.storage_box_number}`
+                    {taskBoxDisplay(task)
+                      ? `  ·  ${de ? "Baustellenkiste" : "Construction box"}: ${taskBoxDisplay(task)}`
                       : ""}
                     {task.description ? `  ·  ${de ? "Info" : "Info"}: ${task.description}` : ""}
                     {taskMaterials ? `  ·  ${de ? "Material" : "Materials"}: ${taskMaterials}` : ""}

@@ -88,6 +88,7 @@ def apply_movement(
     to_location_id: int | None = None,
     expected_return_at: datetime | None = None,
     related_order_line_id: int | None = None,
+    construction_box_id: int | None = None,
     notes: str | None = None,
 ) -> WerkstattMovement:
     """Append a movement to the ledger and recompute the article's snapshot
@@ -133,6 +134,7 @@ def apply_movement(
         article_id=article.id,
         movement_type=movement_type,
         quantity=int(quantity),
+        construction_box_id=construction_box_id,
         from_location_id=from_location_id,
         to_location_id=to_location_id,
         project_id=project_id,

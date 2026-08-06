@@ -10,6 +10,7 @@ import {
   addMinutesToHHMM,
 } from "../../utils/tasks";
 import { PartnerMultiSelect } from "../partners/PartnerMultiSelect";
+import { ConstructionBoxPicker } from "../tasks/ConstructionBoxPicker";
 
 function priorityLabel(value: TaskPriority, language: "de" | "en"): string {
   if (value === "low") return language === "de" ? "Niedrig" : "Low";
@@ -49,6 +50,9 @@ export function TaskModal() {
     taskModalProjectSuggestions,
     selectedTaskModalProject,
     taskModalProjectClassTemplates,
+    taskModalSelectableBoxes,
+    taskModalBoxesLoading,
+    taskModalCustomerId,
     taskModalAssigneeSuggestions,
     assignableUsers,
     projects,
@@ -170,35 +174,17 @@ export function TaskModal() {
               </select>
             </label>
             <label className="task-modal-field">
-              <span className="task-modal-field-label">{de ? "Lagerbox" : "Storage box"}</span>
-              <div className="task-modal-storage-box">
-                <label className="task-modal-storage-box-toggle">
-                  <input
-                    type="checkbox"
-                    checked={taskModalForm.has_storage_box}
-                    onChange={(event) =>
-                      setTaskModalForm((current) => ({
-                        ...current,
-                        has_storage_box: event.target.checked,
-                        storage_box_number: event.target.checked ? current.storage_box_number : "",
-                      }))
-                    }
-                  />
-                  <span>{de ? "Box verwenden" : "Use box"}</span>
-                </label>
-                {taskModalForm.has_storage_box && (
-                  <input
-                    className="task-modal-input task-modal-storage-box-input"
-                    type="number"
-                    min={1}
-                    step={1}
-                    value={taskModalForm.storage_box_number}
-                    onChange={(event) => updateTaskModalField("storage_box_number", event.target.value)}
-                    placeholder="Box 7-A"
-                    required
-                  />
-                )}
-              </div>
+              <span className="task-modal-field-label">
+                {de ? "Baustellenkiste" : "Construction box"}
+              </span>
+              <ConstructionBoxPicker
+                language={language}
+                boxes={taskModalSelectableBoxes}
+                loading={taskModalBoxesLoading}
+                customerResolved={taskModalCustomerId != null}
+                value={taskModalForm.construction_box_id}
+                onChange={(next) => updateTaskModalField("construction_box_id", next)}
+              />
             </label>
           </section>
 

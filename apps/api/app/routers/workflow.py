@@ -26,6 +26,10 @@ from app.routers.workflow_system import router as system_router
 from app.routers.workflow_werkstatt_desktop import router as werkstatt_desktop_router
 from app.routers.workflow_werkstatt_tablet import router as werkstatt_tablet_router
 from app.routers.workflow_werkstatt_mobile import router as werkstatt_mobile_router
+from app.routers.workflow_werkstatt_boxes import (
+    customer_boxes_router as werkstatt_customer_boxes_router,
+    router as werkstatt_boxes_router,
+)
 from app.routers.workflow_helpers import (
     _fetch_openweather_forecast,
     _weather_address_candidates,
@@ -65,3 +69,7 @@ router.include_router(system_router)
 router.include_router(werkstatt_desktop_router)
 router.include_router(werkstatt_tablet_router)
 router.include_router(werkstatt_mobile_router)
+# Boxes are cross-persona (phone packs, desktop assigns) so they mount beside
+# the persona routers rather than inside the desktop composite.
+router.include_router(werkstatt_boxes_router)
+router.include_router(werkstatt_customer_boxes_router)

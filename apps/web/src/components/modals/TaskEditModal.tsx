@@ -13,6 +13,7 @@ import {
 } from "../../utils/tasks";
 import { formatServerDateTime } from "../../utils/dates";
 import { PartnerMultiSelect } from "../partners/PartnerMultiSelect";
+import { ConstructionBoxPicker } from "../tasks/ConstructionBoxPicker";
 
 function priorityLabel(value: TaskPriority, language: "de" | "en"): string {
   if (value === "low") return language === "de" ? "Niedrig" : "Low";
@@ -50,6 +51,9 @@ export function TaskEditModal() {
     setTaskEditForm,
     taskEditMaterialRows,
     taskEditProjectClassTemplates,
+    taskEditSelectableBoxes,
+    taskEditBoxesLoading,
+    taskEditCustomerId,
     taskEditAssigneeSuggestions,
     taskEditExpectedUpdatedAt,
     assignableUsers,
@@ -304,37 +308,42 @@ export function TaskEditModal() {
               </select>
             </label>
             <label className="task-modal-field">
-              <span className="task-modal-field-label">{de ? "Lagerbox" : "Storage box"}</span>
-              <div className="task-modal-storage-box">
-                <label className="task-modal-storage-box-toggle">
-                  <input
-                    type="checkbox"
-                    checked={taskEditForm.has_storage_box}
-                    onChange={(event) =>
+              <span className="task-modal-field-label">
+                {de ? "Baustellenkiste" : "Construction box"}
+              </span>
+              <ConstructionBoxPicker
+                language={language}
+                boxes={taskEditSelectableBoxes}
+                loading={taskEditBoxesLoading}
+                customerResolved={taskEditCustomerId != null}
+                value={taskEditForm.construction_box_id}
+                onChange={(next) => updateTaskEditField("construction_box_id", next)}
+              />
+              {/* Tasks written before the picker existed carry a hand-typed
+                  number with no box behind it. Show it so nothing silently
+                  disappears, and let the user retire it once a real crate is
+                  linked. */}
+              {taskEditForm.storage_box_number && !taskEditForm.construction_box_id && (
+                <div className="task-modal-box-legacy">
+                  <span>
+                    {de ? "Alte Lagerbox-Nr." : "Legacy box no."}:{" "}
+                    {taskEditForm.storage_box_number}
+                  </span>
+                  <button
+                    type="button"
+                    className="linklike"
+                    onClick={() =>
                       setTaskEditForm((current) => ({
                         ...current,
-                        has_storage_box: event.target.checked,
-                        storage_box_number: event.target.checked ? current.storage_box_number : "",
+                        has_storage_box: false,
+                        storage_box_number: "",
                       }))
                     }
-                  />
-                  <span>{de ? "Box verwenden" : "Use box"}</span>
-                </label>
-                {taskEditForm.has_storage_box && (
-                  <input
-                    className="task-modal-input task-modal-storage-box-input"
-                    type="number"
-                    min={1}
-                    step={1}
-                    value={taskEditForm.storage_box_number}
-                    onChange={(event) =>
-                      updateTaskEditField("storage_box_number", event.target.value)
-                    }
-                    placeholder="Box 7-A"
-                    required
-                  />
-                )}
-              </div>
+                  >
+                    {de ? "Entfernen" : "Clear"}
+                  </button>
+                </div>
+              )}
             </label>
           </section>
 

@@ -1,4 +1,8 @@
 :root {
+  /* Opt out of Chromium's Auto Dark Theme. It force-inverted a layout that was
+     never designed for it, and turned the #0b2547 signature ink on a
+     transparent canvas nearly invisible. A real dark theme is separate work. */
+  color-scheme: light;
   --bg: #eaf4ff;
   --surface: #f8fbff;
   --surface-2: #edf4ff;
@@ -36,6 +40,21 @@
 
 * {
   box-sizing: border-box;
+}
+
+html {
+  /* Android Chrome/Samsung text autosizing otherwise scales body copy by the
+     user's Accessibility text-scaling factor on top of our own type scale. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+html,
+body {
+  /* `clip`, never `hidden`: overflow:hidden on a root element creates a scroll
+     container and silently breaks every position:sticky descendant (there are
+     six in this sheet). */
+  overflow-x: clip;
 }
 
 body {
@@ -753,7 +772,8 @@ button.project-item.active:focus-visible {
 }
 
 .content {
-  padding: 1.25rem 1.4rem;
+  --content-pad-x: 1.4rem;
+  padding: 1.25rem var(--content-pad-x);
 }
 
 /* Workspace header — minimal on desktop (just page title, no box).
@@ -5999,7 +6019,7 @@ li {
 }
 
 .construction-report-input::placeholder {
-  color: #9aaec4;
+  color: #6b8199;
 }
 
 .construction-report-input:hover:not(:disabled):not(:read-only) {
@@ -6104,6 +6124,15 @@ li {
 }
 
 .construction-report-project-option {
+  /* Now a real <button> (touch fires onClick reliably where onMouseDown did
+     not), so the button chrome has to be reset back to the old <div> look. */
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  font-family: inherit;
+  min-height: 0;
   padding: 8px 12px;
   border-radius: 6px;
   font-size: 13px;
@@ -6205,10 +6234,6 @@ li {
   .construction-report-table--materials .construction-report-table-row {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 34px;
   }
-  .construction-report-table--materials .construction-report-table-row input:nth-of-type(3),
-  .construction-report-table--materials .construction-report-table-row input:nth-of-type(4) {
-    grid-column: span 1;
-  }
 }
 
 .construction-report-table-head span {
@@ -6217,7 +6242,7 @@ li {
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: #8fa2ba;
+  color: #4f657c;
   padding: 0 6px;
 }
 
@@ -6500,6 +6525,143 @@ li {
 .construction-report-files-list a:hover {
   text-decoration: underline;
 }
+
+/* A <fieldset> is used purely to disable the whole form during an upload, so
+   it must contribute no box of its own. */
+.construction-report-fieldset {
+  display: contents;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-inline-size: auto;
+}
+
+/* ── Mobile touch corrections for the Baustellenbericht ────────────────────
+   Appended AFTER the base construction-report rules so equal-specificity
+   declarations win on source order. Everything here is inside a mobile media
+   query: desktop and landscape tablet render byte-for-byte as before.
+
+   Two breakpoints on purpose:
+     <=767px  typography, padding, tap targets  (all touch devices)
+     <=720px  the table restructure             (matches the existing table
+              breakpoint at styles.css:6199, so the 721-767px band — iPad mini
+              portrait is 744px — keeps its denser desktop table layout)
+   ───────────────────────────────────────────────────────────────────────── */
+@media (max-width: 767px) {
+  /* iOS Safari auto-zooms the page on focus of any control computing < 16px.
+     BOTH tiers must be listed: the 2-class table selector beats a 1-class
+     override regardless of source order. */
+  .construction-report-input,
+  .construction-report-table .construction-report-input,
+  /* The customer picker is a shared component that landed on this form after
+     the audit was written; it is the last control still below the iOS
+     auto-zoom threshold. Scoped here so other pages are untouched. */
+  .construction-report-form .customer-combobox-input {
+    font-size: 16px;
+  }
+  .construction-report-form .customer-combobox-input { height: 44px; }
+
+  /* 16px text needs the width back. Take it from chrome, never from the field
+     — horizontal padding does not affect the zoom trigger, only computed
+     font-size does. Net: ~116px of chrome at 375px becomes ~60px. */
+  .construction-report-form { padding: 16px 12px 14px; }
+  .construction-report-table { padding: 8px; }
+
+  /* 42px -> 44px also reaches the Apple HIG minimum. */
+  .construction-report-input { height: 44px; padding: 0 10px; }
+  .construction-report-table .construction-report-input { height: 40px; padding: 0 8px; }
+
+  /* MUST stay after the .construction-report-input rule above: the textareas
+     carry BOTH classes, and the base .construction-report-textarea{height:auto}
+     is earlier in the file, so without this the 44px height would win and
+     collapse every textarea to a single line. */
+  .construction-report-textarea {
+    height: auto;
+    min-height: 120px;   /* was 72px = 2.3 visible lines; now ~4.5 */
+    padding: 10px;
+    line-height: 22px;
+  }
+  .construction-report-status-note textarea { min-height: 88px; }
+
+  /* The fixed bottom nav (z-index 150) painted over both dropdowns (30 / 40),
+     so taps meant for an option hit the nav and unmounted the whole form.
+     Neither .app-shell nor .content creates a stacking context, so all three
+     compete in the root context. */
+  .construction-report-project-dropdown { z-index: 200; }
+  .construction-report-project-option { min-height: 44px; font-size: 15px; }
+
+  /* Touch targets. Several of these carry an explicit min-height:0 in the base
+     rules to defeat a global floor, so the floor has to be restored here. */
+  .construction-report-btn,
+  .construction-report-photos-btn,
+  .construction-report-add-link { min-height: 44px; height: auto; padding: 0 16px; }
+  .construction-report-add-link { font-size: 13px; border-radius: 22px; }
+  .construction-report-row-remove { width: 44px; height: 44px; }
+  /* Keep the photo × visually small but give it a real hit area. */
+  .construction-report-photo-remove { width: 28px; height: 28px; }
+  .construction-report-photo-remove::before { content: ""; position: absolute; inset: -8px; }
+  .construction-report-input-clear { width: 40px; height: 40px; }
+  /* column-reverse keeps "Bericht senden" nearest the thumb. */
+  .construction-report-footer { flex-direction: column-reverse; align-items: stretch; }
+  .construction-report-btn { width: 100%; }
+}
+
+@media (max-width: 720px) {
+  /* Materials: five children were auto-placing into three tracks, dumping the
+     unit input into the 34px button track (about 4px of usable text) and
+     wrapping the delete button under the wrong column. Place explicitly.
+     (The old corrective rule was `grid-column: span 1`, which is the initial
+     value and therefore moved nothing.) */
+  .construction-report-table--materials .construction-report-table-head { display: none; }
+  .construction-report-table--materials .construction-report-table-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 44px;
+    grid-template-areas:
+      "item item btn"
+      "qty  unit btn"
+      "art  art  btn";
+    padding-bottom: 8px;
+    border-bottom: 1px solid #e2ecf7;
+  }
+  .construction-report-table--materials .construction-report-table-row > input:nth-of-type(1) { grid-area: item; }
+  .construction-report-table--materials .construction-report-table-row > input:nth-of-type(2) { grid-area: qty; }
+  .construction-report-table--materials .construction-report-table-row > input:nth-of-type(3) { grid-area: unit; }
+  .construction-report-table--materials .construction-report-table-row > input:nth-of-type(4) { grid-area: art; }
+  .construction-report-table--materials .construction-report-table-row > button {
+    grid-area: btn;
+    align-self: stretch;
+    height: auto;
+  }
+
+  /* Workers: the name field was about 67px — four characters of a 33-character
+     placeholder. Give it the whole row. NOTE the first child is the combobox
+     <div>, not an <input>, so the time fields are nth-of-type(1) and (2). */
+  .construction-report-table--workers .construction-report-table-head { display: none; }
+  .construction-report-table--workers .construction-report-table-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 44px;
+    grid-template-areas:
+      "name  name btn"
+      "start end  btn";
+  }
+  .construction-report-table--workers .construction-report-table-row > .worker-name-combobox { grid-area: name; }
+  .construction-report-table--workers .construction-report-table-row > input:nth-of-type(1) { grid-area: start; }
+  .construction-report-table--workers .construction-report-table-row > input:nth-of-type(2) { grid-area: end; }
+  .construction-report-table--workers .construction-report-table-row > button {
+    grid-area: btn;
+    align-self: stretch;
+    height: auto;
+  }
+}
+
+/* Sticky :hover after a tap is why these buttons look latched — there were no
+   hover-capability guards anywhere in this stylesheet. */
+@media (hover: none) {
+  .construction-report-add-link:hover:not(:disabled) { background-color: #dbeafe; color: #2f70b7; }
+  .construction-report-row-remove:hover:not(:disabled) { background-color: #fef5f5; border-color: #f3c0c0; }
+}
+.construction-report-btn:active,
+.construction-report-add-link:active,
+.construction-report-row-remove:active,
+.construction-report-project-option:active { filter: brightness(0.94); }
 
 /* ───────────────────────────────────────────────────────────
    Tasks page (My Tasks + Office Tasks) — matches Paper SO-0
@@ -16858,9 +17020,11 @@ td {
     background: linear-gradient(135deg, #2B4C6F 0%, #1a3654 100%);
     padding: 12px 16px;
     border-radius: 0;
-    margin: -1.25rem -1.4rem 1rem -1.4rem;
+    /* Derived from the real content padding — hard-coding 1.4rem here bled
+       past the viewport once mobile reduced that padding to 1rem. */
+    margin: -1.25rem calc(-1 * var(--content-pad-x)) 1rem calc(-1 * var(--content-pad-x));
     /* Stretch beyond content padding to hit viewport edges */
-    width: calc(100% + 2.8rem);
+    width: calc(100% + 2 * var(--content-pad-x));
   }
 
   /* White text/icons for the blue bar */
@@ -17244,8 +17408,14 @@ td {
   /* Content padding — slightly tighter on project views */
   .workspace-header-project ~ .content,
   .app-shell .content {
-    padding-left: 1rem;
-    padding-right: 1rem;
+    /* A grid item defaults to min-width:auto (= min-content), so ANY wide
+       descendant stretches the whole column past the viewport — .content was
+       measuring 423px inside a 375px shell. Its grid siblings already set this;
+       .content was the one that did not. */
+    min-width: 0;
+    --content-pad-x: 1rem;
+    padding-left: var(--content-pad-x);
+    padding-right: var(--content-pad-x);
   }
 }
 
@@ -18625,46 +18795,39 @@ td {
   cursor: pointer;
 }
 
-.task-modal-storage-box {
+/* Construction-box picker. Replaces the old free-typed "Lagerbox" number —
+   the checkbox + number input it used are gone from both task modals. */
+.task-modal-box-picker {
   display: flex;
   flex-direction: column;
   gap: 6px;
 }
 
-.task-modal-storage-box-toggle {
+.task-modal-box-picker select {
+  height: 42px;
+  min-height: 0;
+  box-sizing: border-box;
+}
+
+.task-modal-box-hint {
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 12px;
+  line-height: 16px;
+  color: #5c7895;
+}
+
+/* Only rendered for tasks that predate the picker and still carry a
+   hand-typed number with no box behind it. */
+.task-modal-box-legacy {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
-  height: 42px;
-  padding: 0 14px;
-  border: 1px solid #c9d9ea;
-  border-radius: 8px;
-  background-color: #f8fbff;
+  margin-top: 6px;
   font-family: "Source Sans 3", system-ui, sans-serif;
-  font-size: 13px;
-  line-height: 1;
-  color: #14293d;
-  cursor: pointer;
-  min-height: 0;
-  box-sizing: border-box;
-  width: 100%;
-}
-
-.task-modal-storage-box-toggle input {
-  margin: 0;
-  flex-shrink: 0;
-  width: 16px;
-  height: 16px;
-}
-
-.task-modal-storage-box-toggle span {
-  line-height: 42px;
-}
-
-.task-modal-storage-box-input {
-  height: 42px;
-  min-height: 0;
-  box-sizing: border-box;
+  font-size: 12px;
+  line-height: 16px;
+  color: #5c7895;
 }
 
 .task-modal-priority-wrap {
@@ -28169,7 +28332,7 @@ button.time-calendar-cell {
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
-  color: #9ca3af;
+  color: #4f657c;
   font-style: italic;
   font-size: 0.92rem;
   pointer-events: none;
@@ -28183,17 +28346,34 @@ button.time-calendar-cell {
    mobile where horizontal space is tight. */
 .construction-report-signatures {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  /* minmax(0, 1fr), not 1fr: a bare 1fr is minmax(AUTO, 1fr), so the track's
+     minimum is the child's min-content. The signature pad header (label +
+     "Löschen" button on one flex line) has a 365px min-content, which pushed
+     the track — and the whole page — 19px past a 375px viewport. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 16px;
   margin-top: 12px;
 }
 @media (max-width: 640px) {
   .construction-report-signatures {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
   .construction-report-status {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
+}
+
+/* Let the pad header wrap instead of demanding its min-content width. */
+.signature-pad,
+.signature-pad-header {
+  min-width: 0;
+}
+.signature-pad-header {
+  flex-wrap: wrap;
+}
+.signature-pad-label {
+  min-width: 0;
+  overflow-wrap: break-word;
 }
 
 /* ── v2.5.22: drag-and-drop file upload ──────────────────────────────────── */
@@ -28660,4 +28840,722 @@ button.time-calendar-cell {
     flex-direction: column;
     align-items: flex-start;
   }
+}
+
+/* ── Einsatz board (weekly plan grouped by customer) ────────────────────────
+   Field crews read the week as "which customer, with whom" rather than as a
+   task list. One row per customer per day; the tasks live in a sheet behind a
+   click. Visually related to .planning-task but calmer, since a day column now
+   holds a handful of rows instead of every task. */
+.planning-einsatz {
+  margin: 0;
+  display: grid;
+  gap: 0.16rem;
+  border: 1px solid #cbd9ea;
+  border-left: 3px solid #2f70b7;
+  border-radius: 0 8px 8px 0;
+  padding: 0.5rem 0.55rem;
+  background: #f4f8fd;
+}
+
+.planning-einsatz-customer {
+  font-size: 0.82rem;
+  line-height: 1.25;
+  color: #14293d;
+}
+
+.planning-einsatz-crew {
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: #2f70b7;
+}
+
+.planning-einsatz-meta {
+  font-size: 0.7rem;
+  color: #64748b;
+}
+
+/* Board-mode switch sits next to the task-type filter pills. */
+.planning-board-mode-pills {
+  margin-left: auto;
+}
+
+/* ── Einsatz sheet ───────────────────────────────────────────────────────── */
+.planning-einsatz-sheet {
+  width: min(560px, 94vw);
+  max-height: 86vh;
+  overflow-y: auto;
+}
+
+.planning-einsatz-sheet-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.planning-einsatz-sheet-head h2 {
+  margin: 0 0 0.15rem;
+  font-size: 1.05rem;
+}
+
+.planning-einsatz-sheet-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.planning-einsatz-task {
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.55rem 0.6rem;
+  border: 1px solid #e2e8f0;
+  border-left: 3px solid #d97706;
+  border-radius: 0 8px 8px 0;
+  background: #fffdf6;
+}
+
+.planning-einsatz-task[data-task-type="office"] {
+  border-left-color: #2f70b7;
+  background: #f6faff;
+}
+
+@media (max-width: 767px) {
+  /* On a phone the sheet reads better anchored to the bottom. */
+  .planning-einsatz-sheet {
+    width: 100vw;
+    max-width: 100vw;
+    max-height: 88vh;
+    border-radius: 14px 14px 0 0;
+  }
+}
+
+/* ── Baustellenkisten (construction boxes) ─────────────────────────────────
+   Phone-first: rows and controls are sized for a thumb in a warehouse, not a
+   mouse. Quantity uses tap targets rather than a numeric input because the
+   common action is "one more of these".
+
+   NOTE: `.werkstatt-card` carries no padding of its own (it expects a
+   `.werkstatt-card-head` plus a padded body), so every block on this page sits
+   in `.kisten-card-body` or supplies its own padding. Skipping that is what
+   made an earlier version look like it was bleeding past its card edges. */
+.kisten-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 20px 18px;
+  min-width: 0;
+}
+/* Children must never be flex-shrunk. The results list sets `overflow-y: auto`,
+   which zeroes its automatic min-height, so without this the card clipped the
+   first search hit in half instead of growing to fit it. */
+.kisten-card-body > * {
+  flex: 0 0 auto;
+}
+
+/* ── The rack ──────────────────────────────────────────────────────────────
+   Mirrors the physical shelf: 1 and 2 are the two full-height crates on the
+   left, 3 and 4 the deep ones, 5–8 the small ones stacked on the right. The
+   slot number is what is painted on the crate, so the map has to stay
+   recognisable — re-arranging the shelf means editing these grid-areas and
+   RACK_SIZES in WerkstattKistenPage.tsx, nothing else. */
+.kisten-rack {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-rows: repeat(4, minmax(74px, auto));
+  grid-template-areas:
+    "s1 s2 s5 s6"
+    "s1 s2 s7 s8"
+    "s1 s2 s3 s4"
+    "s1 s2 s3 s4";
+  gap: 10px;
+  padding: 16px 20px 20px;
+}
+.kisten-slot--pos1 { grid-area: s1; }
+.kisten-slot--pos2 { grid-area: s2; }
+.kisten-slot--pos3 { grid-area: s3; }
+.kisten-slot--pos4 { grid-area: s4; }
+.kisten-slot--pos5 { grid-area: s5; }
+.kisten-slot--pos6 { grid-area: s6; }
+.kisten-slot--pos7 { grid-area: s7; }
+.kisten-slot--pos8 { grid-area: s8; }
+
+.kisten-slot {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+  min-height: 0;
+  padding: 12px;
+  text-align: left;
+  border: 1px solid #d9e4f2;
+  border-radius: 12px;
+  background: #f8fbff;
+  cursor: pointer;
+}
+.kisten-slot:hover:not(:disabled) {
+  border-color: #9dc0e8;
+}
+.kisten-slot:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+/* Status reads as a soft tint over the whole tile — the shelf map is meant to
+   be scannable from a couple of metres away, where a pill alone is too small. */
+.kisten-slot--offen { background: #f8fbff; border-color: #d9e4f2; }
+.kisten-slot--gepackt { background: #eff6ff; border-color: #bfd8f5; }
+.kisten-slot--zugewiesen { background: #f1fdf4; border-color: #bfe6ca; }
+.kisten-slot--zurueck { background: #fffbeb; border-color: #f0dcae; }
+
+.kisten-slot-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+}
+.kisten-slot-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  background: #14293d;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 700;
+}
+.kisten-slot-size {
+  font-size: 11px;
+  line-height: 14px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #5c7895;
+}
+/* Long labels get clamped rather than pushing the tile out of the grid. */
+.kisten-slot-label {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 18px;
+  color: #14293d;
+  overflow-wrap: break-word;
+}
+.kisten-slot-meta,
+.kisten-slot-customer {
+  font-size: 12px;
+  line-height: 16px;
+  color: #5c7895;
+  overflow-wrap: break-word;
+}
+.kisten-slot-customer {
+  font-weight: 600;
+  color: #2f70b7;
+}
+/* Deliberately NOT pushed to the bottom with margin-top:auto — the tiles are
+   different heights by design, and a bottom-anchored pill would put the status
+   on a different line in every column. */
+.kisten-slot .kisten-status {
+  margin-top: 2px;
+}
+
+/* ── Ad-hoc box list ── */
+.kisten-list {
+  list-style: none;
+  margin: 0;
+  padding: 12px 20px 18px;
+  display: grid;
+  gap: 8px;
+}
+.kisten-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 0;
+  padding: 12px 14px;
+  text-align: left;
+  border: 1px solid #e3ebf5;
+  border-radius: 10px;
+  background: #ffffff;
+  cursor: pointer;
+}
+.kisten-row:hover {
+  background: #f6faff;
+  border-color: #c7dbf2;
+}
+.kisten-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.kisten-row-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: #14293d;
+  overflow-wrap: break-word;
+}
+.kisten-row-meta {
+  font-size: 12px;
+  line-height: 16px;
+  color: #5c7895;
+  overflow-wrap: break-word;
+}
+
+.kisten-status {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  align-self: flex-start;
+  padding: 3px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+.kisten-status--offen { background: #e8eef6; color: #46617f; }
+.kisten-status--gepackt { background: #dbeafe; color: #1d4ed8; }
+.kisten-status--zugewiesen { background: #dcfce7; color: #15803d; }
+.kisten-status--zurueck { background: #fef3c7; color: #b45309; }
+
+/* ── Packing ── */
+.kisten-search {
+  flex: 1 1 100%;
+}
+/* 16px is the threshold below which iOS zooms the page on focus — this field
+   is the one a packer keeps focused all day, so it must not trigger that. */
+.kisten-search input {
+  font-size: 16px;
+}
+
+.kisten-hits {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+  max-height: 340px;
+  overflow-y: auto;
+}
+.kisten-hit {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 0;
+  padding: 10px 12px;
+  text-align: left;
+  border: 1px solid #cbd9ea;
+  border-radius: 10px;
+  background: #f4f8fd;
+  cursor: pointer;
+}
+.kisten-hit:hover {
+  background: #e9f2fd;
+}
+.kisten-hit-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.kisten-hit-name {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 18px;
+  color: #14293d;
+  overflow-wrap: break-word;
+}
+.kisten-hit-meta {
+  font-size: 12px;
+  color: #5c7895;
+  overflow-wrap: break-word;
+}
+.kisten-hit-stock {
+  flex: 0 0 auto;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: #dcfce7;
+  color: #15803d;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.kisten-hit-stock--catalog {
+  background: #e8eef6;
+  color: #46617f;
+}
+.kisten-manual-add {
+  align-self: flex-start;
+}
+
+/* ── Contents ── */
+.kisten-items {
+  list-style: none;
+  margin: 0;
+  padding: 12px 20px 18px;
+  display: grid;
+  gap: 8px;
+}
+.kisten-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid #e3ebf5;
+  border-radius: 10px;
+  background: #ffffff;
+}
+.kisten-item-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+/* Datanorm names run long; wrap them instead of squeezing the tap targets.
+   `break-word` rather than `anywhere` on purpose — `anywhere` also shrinks the
+   column's min-content width, which chopped "Verbindungsklemme" mid-word on a
+   phone instead of just wrapping at the space. */
+.kisten-item-name {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 19px;
+  color: #14293d;
+  overflow-wrap: break-word;
+}
+.kisten-item-meta {
+  font-size: 12px;
+  line-height: 16px;
+  color: #5c7895;
+  overflow-wrap: break-word;
+}
+
+.kisten-qty {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.kisten-qty button {
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+  min-height: 0;
+  padding: 0;
+  border: 1px solid #cbd9ea;
+  border-radius: 10px;
+  background: #f8fbff;
+  color: #14293d;
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1;
+}
+.kisten-qty button:hover {
+  background: #e9f2fd;
+}
+.kisten-qty-value {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 56px;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.15;
+  color: #14293d;
+}
+.kisten-qty-value small {
+  font-size: 11px;
+  font-weight: 600;
+  color: #5c7895;
+}
+.kisten-qty-static {
+  flex: 0 0 auto;
+  font-size: 15px;
+  font-weight: 700;
+  color: #46617f;
+  white-space: nowrap;
+}
+
+/* ── Detail chrome ── */
+.kisten-back {
+  align-self: flex-start;
+  margin-bottom: -8px;
+}
+.kisten-slot-badge {
+  display: inline-block;
+  margin-left: 10px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: #eef4fb;
+  color: #2f70b7;
+  font-size: 12px;
+  font-weight: 700;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+.kisten-empty,
+.kisten-note {
+  margin: 0;
+  font-size: 13px;
+  line-height: 18px;
+  color: #5c7895;
+}
+.kisten-note--muted {
+  font-size: 12px;
+}
+.kisten-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.kisten-timeline {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 12px;
+  margin: 0;
+  font-size: 13px;
+}
+.kisten-timeline dt {
+  color: #5c7895;
+}
+.kisten-timeline dd {
+  margin: 0;
+  font-weight: 600;
+  color: #14293d;
+}
+
+/* Phones: the shelf map stops being readable at four columns, so fall back to
+   a plain 2-up grid in slot order (the DOM is already 1..8). */
+@media (max-width: 860px) {
+  .kisten-rack {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-rows: none;
+    grid-template-areas: none;
+    padding: 14px;
+    gap: 8px;
+  }
+  .kisten-rack .kisten-slot[class*="kisten-slot--pos"] {
+    grid-area: auto;
+  }
+  .kisten-list,
+  .kisten-items {
+    padding: 12px 14px 16px;
+  }
+  .kisten-card-body {
+    padding: 14px;
+  }
+}
+
+/* On a phone the −/+ control eats ~150px of a 375px row, squeezing the article
+   name into a column too narrow for a word like "Verbindungsklemme" — it broke
+   mid-word. Give the name the full width and put the stepper on its own row,
+   which also turns it into a proper two-thumb target in a warehouse. */
+@media (max-width: 480px) {
+  .kisten-item {
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 10px;
+  }
+  .kisten-qty {
+    justify-self: stretch;
+  }
+  .kisten-qty button {
+    flex: 1 1 auto;
+    width: auto;
+  }
+  .kisten-qty-value {
+    flex: 0 0 auto;
+    min-width: 72px;
+  }
+  .kisten-qty-static {
+    justify-self: start;
+  }
+}
+
+/* The shared KPI strip drops to one column below 640px, which buries the rack
+   under four full-width cards on a phone. Keep them 2-up and compact here — the
+   crew opens this tab to find a crate, not to read counters. */
+@media (max-width: 640px) {
+  .kisten-page .werkstatt-kpi-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .kisten-page .werkstatt-kpi {
+    padding: 12px 14px;
+    gap: 4px;
+  }
+  .kisten-page .werkstatt-kpi-value {
+    font-size: 24px;
+    line-height: 28px;
+  }
+}
+
+/* ── Camera barcode scanner (Baustellenkisten) ─────────────────────────────
+   Fullscreen sheet. z-index sits above .modal-backdrop (300) and the mobile
+   bottom nav (150) — a half-covered viewfinder is useless. */
+.camera-scanner {
+  position: fixed;
+  inset: 0;
+  z-index: 400;
+  display: flex;
+  flex-direction: column;
+  background: #08111c;
+  color: #ffffff;
+  /* Notch + home indicator on iPhones. */
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.camera-scanner-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  flex: 0 0 auto;
+}
+.camera-scanner-title {
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 15px;
+  font-weight: 700;
+}
+.camera-scanner-close {
+  min-height: 0;
+  height: 40px;
+  padding: 0 18px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.camera-scanner-stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  background: #000000;
+}
+.camera-scanner-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* Aiming frame. Purely visual — ZXing reads the whole frame, so a barcode
+   slightly outside it still decodes rather than mysteriously failing. */
+.camera-scanner-reticle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: min(74vw, 320px);
+  height: min(46vw, 200px);
+  border: 2px solid rgba(255, 255, 255, 0.85);
+  border-radius: 14px;
+  box-shadow: 0 0 0 9999px rgba(8, 17, 28, 0.45);
+  pointer-events: none;
+}
+
+.camera-scanner-status {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 24px;
+  margin: 0;
+  text-align: center;
+  font-size: 14px;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.camera-scanner-error {
+  position: absolute;
+  inset: 16px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 10px;
+  padding: 20px;
+  border-radius: 14px;
+  background: rgba(8, 17, 28, 0.92);
+  text-align: center;
+}
+.camera-scanner-error strong {
+  font-size: 16px;
+}
+.camera-scanner-error p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 20px;
+  color: rgba(255, 255, 255, 0.82);
+}
+.camera-scanner-retry {
+  align-self: center;
+  min-height: 0;
+  height: 42px;
+  padding: 0 20px;
+  border: 0;
+  border-radius: 10px;
+  background: #2f70b7;
+  color: #ffffff;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.camera-scanner-foot {
+  flex: 0 0 auto;
+  padding: 12px 16px 18px;
+  text-align: center;
+}
+.camera-scanner-hint {
+  margin: 0;
+  font-size: 13px;
+  line-height: 18px;
+  color: rgba(255, 255, 255, 0.72);
+}
+.camera-scanner-count {
+  margin: 6px 0 0;
+  font-size: 17px;
+  font-weight: 700;
+  overflow-wrap: break-word;
+}
+/* A rejected scan has to look different at a glance — this line is the only
+   feedback reaching the packer while the sheet covers the error banner. */
+.camera-scanner-count--failed {
+  color: #fca5a5;
+}
+
+/* Search + camera button share one row on the packing screen. */
+.kisten-search-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+/* min-width:0 is load-bearing: .werkstatt-search sets min-width:240px, and
+   with the button at flex:0 0 auto neither child could shrink — at 375px the
+   row overflowed and clipped the camera button off the card. */
+.kisten-search-row .kisten-search {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.kisten-camera-btn {
+  flex: 0 0 auto;
+  height: auto;
+  min-height: 42px;
 }

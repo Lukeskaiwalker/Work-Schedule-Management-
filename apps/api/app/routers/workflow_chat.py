@@ -53,8 +53,6 @@ def list_global_threads(
 ):
     if not _chat_permission_allowed(current_user):
         raise HTTPException(status_code=403, detail="Chat access denied")
-    sync_report_feed_thread(db)
-    db.commit()
     threads = db.scalars(
         select(ChatThread).order_by(
             func.coalesce(ChatThread.updated_at, datetime(1970, 1, 1)).desc(),
@@ -226,8 +224,6 @@ def delete_thread(
     _assert_thread_access(db, current_user, thread)
     if not _can_edit_thread(current_user, thread):
         raise HTTPException(status_code=403, detail="Only the creator or chat managers can delete this thread")
-    if is_report_feed_thread(thread):
-        raise HTTPException(status_code=403, detail="System report feed thread cannot be deleted")
     icon_path = (thread.icon_stored_path or "").strip()
     db.delete(thread)
     db.commit()

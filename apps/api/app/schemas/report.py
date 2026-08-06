@@ -151,6 +151,12 @@ class ConstructionReportPayload(BaseModel):
 
 
 class ConstructionReportCreate(BaseModel):
+    # customer first, project optional — mirrors the form's field order and the
+    # ownership model (a report belongs to a customer; the project refines it).
+    # Both stay optional here for backwards compatibility: older clients post to
+    # /projects/{id}/construction-reports with neither, and the customer is then
+    # derived from the project.
+    customer_id: int | None = None
     project_id: int | None = None
     report_date: date
     payload: ConstructionReportPayload
@@ -159,6 +165,8 @@ class ConstructionReportCreate(BaseModel):
 
 class RecentConstructionReportOut(BaseModel):
     id: int
+    customer_id: int | None = None
+    customer_name: str | None = None
     project_id: int | None = None
     report_number: int | None = None
     user_id: int | None = None

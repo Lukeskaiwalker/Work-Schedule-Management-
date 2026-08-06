@@ -66,6 +66,56 @@ def list_construction_reports(
         for report in reports
     ]
 
+@router.get(
+    "/customers/{customer_id}/construction-reports",
+    response_model=list[RecentConstructionReportOut],
+)
+def list_customer_construction_reports(
+    customer_id: int,
+    include_project_reports: bool = True,
+    limit: int = 200,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Every construction report belonging to a customer.
+
+    Reports are customer-owned, so this returns rows linked directly via
+    ``customer_id`` plus (by default) rows belonging to that customer's projects.
+    The union matters for reports written before customer_id existed whose
+    backfill could not resolve a customer.
+
+    Results are scoped by ``_reports_visible_to_user``: report-read permission
+    alone does not expose a customer's entire history to someone who can only
+    reach one of their projects.
+    """
+    _assert_report_access(current_user, write=False)
+    customer = db.get(Customer, customer_id)
+    if customer is None:
+        raise HTTPException(status_code=404, detail="Customer not found")
+
+    safe_limit = max(1, min(int(limit or 200), 500))
+    conditions = [ConstructionReport.customer_id == customer_id]
+    if include_project_reports:
+        project_ids = list(
+            db.scalars(select(Project.id).where(Project.customer_id == customer_id)).all()
+        )
+        if project_ids:
+            conditions.append(ConstructionReport.project_id.in_(project_ids))
+
+    reports = db.scalars(
+        select(ConstructionReport)
+        .where(or_(*conditions))
+        .order_by(
+            ConstructionReport.report_date.desc(),
+            ConstructionReport.created_at.desc(),
+            ConstructionReport.id.desc(),
+        )
+        .limit(safe_limit)
+    ).all()
+    visible = _reports_visible_to_user(db, current_user, reports)
+    return [_recent_construction_report_out(db, report) for report in visible]
+
+
 @router.get("/construction-reports")
 def list_global_or_project_reports(
     project_id: int | None = None,
@@ -148,7 +198,11 @@ def list_recent_construction_reports(
             .limit(safe_limit)
         )
     reports = db.scalars(stmt).all()
-    return [_recent_construction_report_out(db, report) for report in reports]
+    # Scope to what the caller may actually read — report permission alone does
+    # not expose every project's reports (consistent with the customer list and
+    # the project scoping used elsewhere).
+    visible = _reports_visible_to_user(db, current_user, reports)
+    return [_recent_construction_report_out(db, report) for report in visible]
 
 @router.get("/construction-reports/{report_id}/processing")
 def get_construction_report_processing_status(

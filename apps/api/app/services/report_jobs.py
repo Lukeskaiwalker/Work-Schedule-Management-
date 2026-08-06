@@ -28,7 +28,6 @@ from app.services.construction_report_pdf import (
 )
 from app.services.distance import compute_company_to_site_distance
 from app.services.files import read_encrypted_file, store_encrypted_file
-from app.services.report_feed import post_report_to_feed_thread
 from app.services.runtime_settings import get_company_settings
 from app.services.telegram import send_telegram_report, telegram_enabled
 
@@ -383,14 +382,8 @@ async def process_construction_report_job(db: Session, job_id: int) -> Construct
         report.processing_error = None
         report.processed_at = now
         report.pdf_file_name = report_file_name
-        try:
-            post_report_to_feed_thread(
-                db,
-                report=report,
-                pdf_attachment=pdf_attachment,
-            )
-        except Exception:  # pragma: no cover - report creation must not fail on feed-post issues
-            logger.exception("Failed to post report %s into feed thread", report.id)
+        # Reports are no longer mirrored into a chat thread — the Berichte view
+        # is the place to read them. Existing feed messages are left alone.
         job.status = REPORT_JOB_STATUS_COMPLETED
         job.error_message = None
         job.completed_at = now

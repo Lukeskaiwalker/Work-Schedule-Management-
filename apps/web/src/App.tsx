@@ -3,6 +3,8 @@ import { AppContext } from "./context/AppContext";
 import type { AppContextValue } from "./context/AppContext";
 
 import { ApiError, apiFetch, apiUploadWithProgress } from "./api/client";
+import { taskBoxDisplay } from "./utils/boxes";
+import { compressReportImages } from "./utils/imageCompression";
 import type {
   Language,
   TaskView,
@@ -21,6 +23,7 @@ import type {
   CustomerListItem,
   Partner,
   PartnerListItem,
+  SelectableConstructionBox,
   Task,
   TaskOverlapConflictDetail,
   AssignableUser,
@@ -345,6 +348,14 @@ export function App() {
   const [projectClassTemplatesByProjectId, setProjectClassTemplatesByProjectId] = useState<
     Record<number, ProjectClassTemplate[]>
   >({});
+  // Selectable construction boxes, keyed by the customer they were fetched for
+  // ("none" when the task has no resolvable customer). Mirrors the
+  // projectClassTemplatesByProjectId cache above.
+  const [selectableBoxesByCustomerKey, setSelectableBoxesByCustomerKey] = useState<
+    Record<string, SelectableConstructionBox[]>
+  >({});
+  const [taskModalBoxesLoading, setTaskModalBoxesLoading] = useState(false);
+  const [taskEditBoxesLoading, setTaskEditBoxesLoading] = useState(false);
   const [projectSidebarSearchOpen, setProjectSidebarSearchOpen] = useState(false);
   const [projectSidebarSearchQuery, setProjectSidebarSearchQuery] = useState("");
   const [overview, setOverview] = useState<any[]>([]);
@@ -590,6 +601,11 @@ export function App() {
   const [taskEditExpectedUpdatedAt, setTaskEditExpectedUpdatedAt] = useState<string | null>(null);
   const [projectBackView, setProjectBackView] = useState<MainView | null>(null);
   const [reportProjectId, setReportProjectId] = useState<string>("");
+  // Reports are customer-owned with an optional project, so the customer is the
+  // primary selection on the report form. Null means "not linked to a customer
+  // record" — the free-text payload.customer still carries the typed name, which
+  // is what field workers use for a customer that doesn't exist yet.
+  const [reportCustomerId, setReportCustomerId] = useState<number | null>(null);
   const [reportDraft, setReportDraft] = useState<ReportDraft>(EMPTY_REPORT_DRAFT);
   const [reportTaskPrefill, setReportTaskPrefill] = useState<TaskReportPrefill | null>(null);
   const [reportSourceTaskId, setReportSourceTaskId] = useState<number | null>(null);
@@ -1156,6 +1172,27 @@ export function App() {
     if (!projectId) return [];
     return projectClassTemplatesByProjectId[projectId] ?? [];
   }, [taskEditForm.project_id, projectClassTemplatesByProjectId]);
+  // The customer a task's box picker is scoped to. Same rule as the server's
+  // _resolve_anchor_customer_id: the task's own customer, else the project's.
+  // Null is normal — the create modal before a project is picked, or a legacy
+  // project that carries only a free-text customer name.
+  const taskModalCustomerId = useMemo(
+    () => selectedTaskModalProject?.customer_id ?? null,
+    [selectedTaskModalProject],
+  );
+  const taskEditCustomerId = useMemo(() => {
+    if (taskEditForm.customer_id != null) return taskEditForm.customer_id;
+    const project = projects.find((entry) => entry.id === taskEditForm.project_id);
+    return project?.customer_id ?? null;
+  }, [taskEditForm.customer_id, taskEditForm.project_id, projects]);
+  const taskModalSelectableBoxes = useMemo(
+    () => selectableBoxesByCustomerKey[String(taskModalCustomerId ?? "none")] ?? [],
+    [selectableBoxesByCustomerKey, taskModalCustomerId],
+  );
+  const taskEditSelectableBoxes = useMemo(
+    () => selectableBoxesByCustomerKey[String(taskEditCustomerId ?? "none")] ?? [],
+    [selectableBoxesByCustomerKey, taskEditCustomerId],
+  );
   const activeThread = useMemo(
     () => threads.find((thread) => thread.id === activeThreadId) ?? null,
     [threads, activeThreadId],
@@ -2243,11 +2280,38 @@ export function App() {
     setReportTaskPrefill(null);
   }, [mainView, reportTaskPrefill]);
 
+  // Deliberately no longer clears reportSourceTaskId / reportTaskChecklist on
+  // view change. It used to, which meant leaving the page and coming back left
+  // the task link intact via the draft but the checklist empty — the report
+  // then claimed a source task with zero completed sub-tasks and generated a
+  // spurious follow-up. Both are cleared by resetReportFormFields and after a
+  // successful submit, which are the two moments they should be.
+
+
+  // Flush the debounced autosave when the tab goes away. A ref holds the
+  // latest flusher so the listener can stay mounted once instead of being
+  // torn down and re-added on every keystroke.
+  const flushReportDraftRef = useRef<() => string | null>(() => null);
+  flushReportDraftRef.current = flushReportDraft;
   useEffect(() => {
-    if (mainView === "construction") return;
-    setReportSourceTaskId(null);
-    setReportTaskChecklist([]);
-  }, [mainView]);
+    function flushNow() {
+      try {
+        flushReportDraftRef.current();
+      } catch {
+        // Never let a save attempt block the page from unloading.
+      }
+    }
+    function onVisibility() {
+      if (document.visibilityState === "hidden") flushNow();
+    }
+    // pagehide fires on iOS where beforeunload does not.
+    window.addEventListener("pagehide", flushNow);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("pagehide", flushNow);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, []);
 
   // ── On mount: load all drafts, migrating the legacy single-slot v2 key ────
   // Runs exactly once. The v2 slot (if present) is folded into the v3 array
@@ -2301,7 +2365,7 @@ export function App() {
       if (!hasContent) return; // Don't create or overwrite a draft with empty state.
 
       const snapshot: Omit<StoredReportDraft, "id"> = {
-        v: 3,
+        v: 4,
         projectId: reportProjectId,
         draft: reportDraft,
         workDone: reportWorkDone,
@@ -2315,6 +2379,13 @@ export function App() {
         officeMaterialRows: reportOfficeMaterialRows.map(({ item, qty, unit, article_no }) => ({ item, qty, unit, article_no })),
         sourceTaskId: reportSourceTaskId,
         savedAt: new Date().toISOString(),
+        // v4 — previously dropped, so an iOS tab discard returned the text and
+        // lost the signatures, ticks and kilometres.
+        status: reportStatus,
+        distance: reportDistance,
+        signatureSmpl: reportSignatureSmpl,
+        signatureCustomer: reportSignatureCustomer,
+        taskChecklist: reportTaskChecklist,
       };
 
       setReportDrafts((prev) => {
@@ -2329,7 +2400,18 @@ export function App() {
           setTimeout(() => setActiveDraftId(newId), 0);
           next = [{ ...snapshot, id: newId }, ...prev];
         }
-        try { localStorage.setItem(REPORT_DRAFTS_LS_KEY, JSON.stringify(next)); } catch {}
+        try {
+          localStorage.setItem(REPORT_DRAFTS_LS_KEY, JSON.stringify(next));
+        } catch {
+          // Quota or Private Browsing. The in-memory list still updated, so
+          // without this the drafts panel would show a fresh timestamp for
+          // something that never reached disk.
+          setNotice(
+            language === "de"
+              ? "Achtung: Entwurf konnte nicht dauerhaft gespeichert werden."
+              : "Warning: the draft could not be stored persistently.",
+          );
+        }
         return next;
       });
     }, 800);
@@ -2338,7 +2420,84 @@ export function App() {
     activeDraftId, reportProjectId, reportDraft, reportWorkDone, reportIncidents,
     reportExtras, reportOfficeRework, reportOfficeNextSteps, reportDate, reportWorkers,
     reportMaterialRows, reportOfficeMaterialRows, reportSourceTaskId,
+    reportStatus, reportDistance, reportSignatureSmpl, reportSignatureCustomer,
+    reportTaskChecklist,
   ]);
+
+  /**
+   * Write the current report form to the draft store immediately.
+   *
+   * Bypasses the 800ms autosave debounce AND its `hasContent` gate, so the
+   * explicit "Entwurf speichern" button can no longer claim a save that never
+   * happened. Returns the timestamp actually persisted, or null if the write
+   * to localStorage failed (quota, Private Browsing) — the caller must not
+   * report success in that case.
+   */
+  function flushReportDraft(): string | null {
+    // The autosave gate only counts text fields, which is why a report holding
+    // just photos or a signature was silently never saved. Widen it rather than
+    // drop it — an explicit save on a completely blank form should still not
+    // create an empty draft.
+    const hasAnything =
+      reportWorkDone.trim().length > 0 ||
+      reportIncidents.trim().length > 0 ||
+      reportExtras.trim().length > 0 ||
+      reportOfficeRework.trim().length > 0 ||
+      reportOfficeNextSteps.trim().length > 0 ||
+      reportDraft.customer.trim().length > 0 ||
+      reportProjectId !== "" ||
+      reportWorkers.some((w) => w.name.trim().length > 0) ||
+      reportMaterialRows.some((r) => r.item.trim().length > 0) ||
+      reportOfficeMaterialRows.some((r) => r.item.trim().length > 0) ||
+      reportImageFiles.length > 0 ||
+      reportSignatureSmpl.image_base64.length > 0 ||
+      reportSignatureCustomer.image_base64.length > 0 ||
+      reportStatus.note.trim().length > 0;
+    if (!hasAnything) return null;
+
+    const savedAt = new Date().toISOString();
+    const snapshot: Omit<StoredReportDraft, "id"> = {
+      v: 4,
+      projectId: reportProjectId,
+      draft: reportDraft,
+      workDone: reportWorkDone,
+      incidents: reportIncidents,
+      extras: reportExtras,
+      officeRework: reportOfficeRework,
+      officeNextSteps: reportOfficeNextSteps,
+      date: reportDate,
+      workers: reportWorkers,
+      materialRows: reportMaterialRows.map(({ item, qty, unit, article_no }) => ({ item, qty, unit, article_no })),
+      officeMaterialRows: reportOfficeMaterialRows.map(({ item, qty, unit, article_no }) => ({ item, qty, unit, article_no })),
+      sourceTaskId: reportSourceTaskId,
+      savedAt,
+      status: reportStatus,
+      distance: reportDistance,
+      signatureSmpl: reportSignatureSmpl,
+      signatureCustomer: reportSignatureCustomer,
+      taskChecklist: reportTaskChecklist,
+    };
+    let persisted = true;
+    setReportDrafts((prev) => {
+      const targetId = activeDraftId;
+      let next: StoredReportDraft[];
+      if (targetId && prev.some((d) => d.id === targetId)) {
+        next = prev.map((d) => (d.id === targetId ? { ...snapshot, id: targetId } : d));
+      } else {
+        const newId = generateDraftId();
+        setTimeout(() => setActiveDraftId(newId), 0);
+        next = [{ ...snapshot, id: newId }, ...prev];
+      }
+      try {
+        localStorage.setItem(REPORT_DRAFTS_LS_KEY, JSON.stringify(next));
+      } catch {
+        // Surfaced to the user by the caller instead of being swallowed.
+        persisted = false;
+      }
+      return next;
+    });
+    return persisted ? savedAt : null;
+  }
 
   useEffect(() => {
     setProjectTaskForm(buildEmptyProjectTaskFormState());
@@ -2395,6 +2554,42 @@ export function App() {
     if (availableIds.has(taskEditForm.class_template_id)) return;
     setTaskEditForm((current) => ({ ...current, class_template_id: "" }));
   }, [taskEditProjectClassTemplates, taskEditForm.class_template_id]);
+
+  useEffect(() => {
+    if (!token || !user || !taskModalOpen) return;
+    setTaskModalBoxesLoading(true);
+    void loadSelectableConstructionBoxes(taskModalCustomerId).finally(() =>
+      setTaskModalBoxesLoading(false),
+    );
+  }, [token, user, taskModalOpen, taskModalCustomerId]);
+
+  useEffect(() => {
+    if (!token || !user || !taskEditModalOpen) return;
+    setTaskEditBoxesLoading(true);
+    // include_box_id keeps the already-linked crate in the list even after it
+    // was handed over or returned — without it the guard below would silently
+    // drop a real saved link the moment the modal opened.
+    void loadSelectableConstructionBoxes(
+      taskEditCustomerId,
+      Number(taskEditForm.construction_box_id) || null,
+    ).finally(() => setTaskEditBoxesLoading(false));
+  }, [token, user, taskEditModalOpen, taskEditCustomerId, taskEditForm.construction_box_id]);
+
+  useEffect(() => {
+    if (!taskModalForm.construction_box_id) return;
+    if (taskModalBoxesLoading) return;
+    const availableIds = new Set(taskModalSelectableBoxes.map((row) => String(row.id)));
+    if (availableIds.has(taskModalForm.construction_box_id)) return;
+    setTaskModalForm((current) => ({ ...current, construction_box_id: "" }));
+  }, [taskModalSelectableBoxes, taskModalBoxesLoading, taskModalForm.construction_box_id]);
+
+  useEffect(() => {
+    if (!taskEditForm.construction_box_id) return;
+    if (taskEditBoxesLoading) return;
+    const availableIds = new Set(taskEditSelectableBoxes.map((row) => String(row.id)));
+    if (availableIds.has(taskEditForm.construction_box_id)) return;
+    setTaskEditForm((current) => ({ ...current, construction_box_id: "" }));
+  }, [taskEditSelectableBoxes, taskEditBoxesLoading, taskEditForm.construction_box_id]);
 
   useEffect(() => {
     if (projectNoteEditing) return;
@@ -2869,6 +3064,37 @@ export function App() {
     } catch (err: any) {
       setProjectClassTemplatesByProjectId((current) => ({ ...current, [projectId]: [] }));
       setError(err.message ?? "Failed to load project classes");
+      return [];
+    }
+  }
+
+  /**
+   * Load the boxes offered by a task's box picker.
+   *
+   * A 403 is swallowed: not having Werkstatt access is a normal state for an
+   * office user opening a task form, and a red banner there would be wrong.
+   * Same deliberate swallow as CustomerBoxesCard.
+   */
+  async function loadSelectableConstructionBoxes(
+    customerId: number | null,
+    includeBoxId?: number | null,
+  ) {
+    const key = String(customerId ?? "none");
+    const params = new URLSearchParams();
+    if (customerId != null) params.set("customer_id", String(customerId));
+    if (includeBoxId) params.set("include_box_id", String(includeBoxId));
+    const query = params.toString();
+    try {
+      const rows = await apiFetch<SelectableConstructionBox[]>(
+        `/werkstatt/boxes/selectable${query ? `?${query}` : ""}`,
+        token,
+      );
+      setSelectableBoxesByCustomerKey((current) => ({ ...current, [key]: rows }));
+      return rows;
+    } catch (err: unknown) {
+      setSelectableBoxesByCustomerKey((current) => ({ ...current, [key]: [] }));
+      if (err instanceof ApiError && err.status === 403) return [];
+      setError(err instanceof Error ? err.message : "Failed to load construction boxes");
       return [];
     }
   }
@@ -4728,7 +4954,7 @@ export function App() {
       startTime ? `Time: ${formatTaskTimeRange(task)}` : "",
       task.description ? `Info: ${task.description}` : "",
       materialsSummary ? `Materials: ${materialsSummary}` : "",
-      task.storage_box_number ? `Storage box: ${task.storage_box_number}` : "",
+      taskBoxDisplay(task) ? `Construction box: ${taskBoxDisplay(task)}` : "",
       `Assignees: ${getTaskAssigneeLabel(task)}`,
     ].filter((line) => line.length > 0);
 
@@ -5035,6 +5261,9 @@ export function App() {
       project_id: String(project.id),
       project_query: projectSearchLabel(project),
       class_template_id: "",
+      // Switching project switches customer, so a box picked for the previous
+      // one must not survive.
+      construction_box_id: "",
       create_project_from_task: false,
       new_project_name: "",
       new_project_number: "",
@@ -5561,17 +5790,11 @@ export function App() {
       return;
     }
     const dueDate = projectTaskForm.due_date.trim() || null;
-    const storageBoxNumber =
-      projectTaskForm.has_storage_box && projectTaskForm.storage_box_number.trim()
-        ? Number(projectTaskForm.storage_box_number)
-        : null;
-    if (
-      storageBoxNumber !== null &&
-      (!Number.isFinite(storageBoxNumber) || !Number.isInteger(storageBoxNumber) || storageBoxNumber <= 0)
-    ) {
-      setError(language === "de" ? "Bitte eine gültige Lagerbox-Nummer angeben" : "Please enter a valid storage box number");
-      return;
-    }
+    // The crate is picked, not typed: send the real link and let the server
+    // mirror the rack slot back into the legacy storage_box_number column.
+    const constructionBoxId = projectTaskForm.construction_box_id
+      ? Number(projectTaskForm.construction_box_id)
+      : null;
     const startTime =
       projectTaskForm.start_time.trim().length > 0
         ? validateTimeInputOrSetError(projectTaskForm.start_time, false)
@@ -5596,7 +5819,7 @@ export function App() {
           description: projectTaskForm.description.trim() || null,
           subtasks,
           materials_required: materialsRequired,
-          storage_box_number: storageBoxNumber,
+          construction_box_id: constructionBoxId,
           task_type: projectTaskForm.task_type,
           class_template_id: classTemplateId,
           status: "open",
@@ -5630,17 +5853,11 @@ export function App() {
       return;
     }
     const dueDate = taskModalForm.due_date.trim() || null;
-    const storageBoxNumber =
-      taskModalForm.has_storage_box && taskModalForm.storage_box_number.trim()
-        ? Number(taskModalForm.storage_box_number)
-        : null;
-    if (
-      storageBoxNumber !== null &&
-      (!Number.isFinite(storageBoxNumber) || !Number.isInteger(storageBoxNumber) || storageBoxNumber <= 0)
-    ) {
-      setError(language === "de" ? "Bitte eine gültige Lagerbox-Nummer angeben" : "Please enter a valid storage box number");
-      return;
-    }
+    // The crate is picked, not typed: send the real link and let the server
+    // mirror the rack slot back into the legacy storage_box_number column.
+    const constructionBoxId = taskModalForm.construction_box_id
+      ? Number(taskModalForm.construction_box_id)
+      : null;
     const startTime =
       taskModalForm.start_time.trim().length > 0
         ? validateTimeInputOrSetError(taskModalForm.start_time, false)
@@ -5718,7 +5935,7 @@ export function App() {
           description: taskModalForm.description.trim() || null,
           subtasks,
           materials_required: materialsRequired,
-          storage_box_number: storageBoxNumber,
+          construction_box_id: constructionBoxId,
           task_type: taskModalForm.task_type,
           class_template_id: classTemplateId,
           status: "open",
@@ -5782,18 +5999,6 @@ export function App() {
       setError(language === "de" ? "Aufgabentitel ist erforderlich" : "Task title is required");
       return;
     }
-    const storageBoxNumber =
-      taskEditForm.has_storage_box && taskEditForm.storage_box_number.trim()
-        ? Number(taskEditForm.storage_box_number)
-        : null;
-    if (
-      storageBoxNumber !== null &&
-      (!Number.isFinite(storageBoxNumber) || !Number.isInteger(storageBoxNumber) || storageBoxNumber <= 0)
-    ) {
-      setError(language === "de" ? "Bitte eine gültige Lagerbox-Nummer angeben" : "Please enter a valid storage box number");
-      return;
-    }
-
     const startTime =
       taskEditForm.start_time.trim().length > 0
         ? validateTimeInputOrSetError(taskEditForm.start_time, false)
@@ -5823,6 +6028,7 @@ export function App() {
         "subtasks",
         "materials_required",
         "storage_box_number",
+        "construction_box_id",
         "task_type",
         "class_template_id",
         "status",
@@ -5929,10 +6135,9 @@ export function App() {
       ]
         .filter((line) => line.length > 0)
         .join("\n"),
-      incidents:
-        task.storage_box_number != null
-          ? `${language === "de" ? "Lagerbox" : "Storage box"}: ${task.storage_box_number}`
-          : "",
+      incidents: taskBoxDisplay(task)
+        ? `${language === "de" ? "Baustellenkiste" : "Construction box"}: ${taskBoxDisplay(task)}`
+        : "",
       materials: task.materials_required ?? "",
       subtasks: task.subtasks ?? [],
     });
@@ -6724,8 +6929,52 @@ export function App() {
     setReportProjectId(nextProjectId);
     const selected = projects.find((project) => String(project.id) === nextProjectId) ?? null;
     setReportDraft(reportDraftFromProject(selected));
+    // Picking a project adopts its customer, so choosing project-first still
+    // produces a correctly-owned report (and keeps the two fields consistent).
+    if (selected?.customer_id != null) {
+      setReportCustomerId(selected.customer_id);
+    }
     setReportSourceTaskId(null);
     setReportTaskChecklist([]);
+    // Deliberately NOT a full resetReportFormFields() here: re-targeting a
+    // report keeps the narrative the worker has already typed. What must not
+    // survive is anything bound to the OLD customer or site — a signature is
+    // consent from a specific customer, photos are of a specific site, and the
+    // kilometres are auto-derived per project (clearing the source back to
+    // "unset" also re-arms that auto-fetch).
+    setReportSignatureSmpl({ name: "", image_base64: "" });
+    setReportSignatureCustomer({ name: "", image_base64: "" });
+    setReportDistance({ kilometers: null, source: "unset" });
+    clearReportImages();
+  }
+
+  /** Customer picked in the report form's first field. */
+  function applyReportCustomerSelection(nextCustomerId: number | null, typedName: string) {
+    setReportCustomerId(nextCustomerId);
+    const picked = nextCustomerId == null
+      ? null
+      : customers.find((entry) => entry.id === nextCustomerId) ?? null;
+    setReportDraft((current) => ({
+      ...current,
+      // A linked customer fills the master data; free text only sets the name so
+      // a manually-typed address is never silently overwritten.
+      customer: picked?.name ?? typedName,
+      ...(picked
+        ? {
+            customer_address: picked.address ?? current.customer_address,
+            customer_contact: picked.contact_person ?? current.customer_contact,
+            customer_email: picked.email ?? current.customer_email,
+            customer_phone: picked.phone ?? current.customer_phone,
+          }
+        : {}),
+    }));
+    // Drop a project that belongs to a different customer.
+    if (nextCustomerId != null && reportProjectId) {
+      const current = projects.find((project) => String(project.id) === reportProjectId) ?? null;
+      if (current && current.customer_id != null && current.customer_id !== nextCustomerId) {
+        setReportProjectId("");
+      }
+    }
   }
 
   function toggleReportTaskChecklistItem(itemId: string, checked: boolean) {
@@ -6742,6 +6991,12 @@ export function App() {
   function openReportDraft(id: string) {
     const stored = reportDrafts.find((d) => d.id === id);
     if (!stored) return;
+    // MUST be the first statement. The stored draft carries only text fields,
+    // so without a reset the signatures, status ticks, kilometres and photos of
+    // whatever was on screen before survive into the opened draft — customer
+    // A's signature on customer B's report. Everything below re-applies the
+    // stored values, so the reset cannot clobber them.
+    resetReportFormFields();
     setActiveDraftId(stored.id);
     setReportProjectId(stored.projectId);
     const restoredProject = projects.find((p) => String(p.id) === stored.projectId) ?? null;
@@ -6766,6 +7021,13 @@ export function App() {
         : [createReportMaterialRow("office_materials")],
     );
     setReportSourceTaskId(stored.sourceTaskId);
+    // v4 fields — absent on a v3 draft, in which case the reset above already
+    // left these empty, which is the correct restore for an older entry.
+    if (stored.status) setReportStatus(stored.status);
+    if (stored.distance) setReportDistance(stored.distance);
+    if (stored.signatureSmpl) setReportSignatureSmpl(stored.signatureSmpl);
+    if (stored.signatureCustomer) setReportSignatureCustomer(stored.signatureCustomer);
+    if (stored.taskChecklist) setReportTaskChecklist(stored.taskChecklist);
   }
 
   /** Remove a draft permanently. If it was the active one, also reset the
@@ -6808,6 +7070,8 @@ export function App() {
     // the empty-string change and clears the canvas.
     setReportSignatureSmpl({ name: "", image_base64: "" });
     setReportSignatureCustomer({ name: "", image_base64: "" });
+    setReportCustomerId(null);
+    setReportProjectId("");
     setReportStatus({
       arrival_completed: false,
       work_finished: false,
@@ -6817,6 +7081,9 @@ export function App() {
       note: "",
     });
     setReportDistance({ kilometers: null, source: "unset" });
+    // Photos were the one thing this reset missed, so the previous draft's
+    // images rode onto the next report. Also revokes the object URLs.
+    clearReportImages();
   }
 
   function updateReportMaterialRow(
@@ -6865,7 +7132,7 @@ export function App() {
     );
   }
 
-  function onReportImagesChange(event: ChangeEvent<HTMLInputElement>) {
+  async function onReportImagesChange(event: ChangeEvent<HTMLInputElement>) {
     const selectedFiles = event.target.files ? Array.from(event.target.files) : [];
     if (selectedFiles.length === 0) return;
     const invalidFile = selectedFiles.find((file) => !isImageUploadFile(file));
@@ -6874,22 +7141,37 @@ export function App() {
       event.target.value = "";
       return;
     }
+    // Keyed off the ORIGINAL file so the dedupe below still recognises the
+    // same photo picked twice, and so the key does not depend on the
+    // compression result.
+    const keyed = selectedFiles.map((file) => ({ key: buildClientFileKey(file), file }));
+    event.target.value = "";
+
+    // Downscale before anything touches the network. Six 12MP photos are
+    // ~25MB raw; this brings a report under a few MB and transcodes iPhone
+    // HEIC to JPEG. Every failure path returns the original file.
+    let prepared = keyed;
+    try {
+      const compressed = await compressReportImages(keyed.map((entry) => entry.file));
+      prepared = keyed.map((entry, index) => ({ key: entry.key, file: compressed[index] ?? entry.file }));
+    } catch {
+      // Keep the originals — a large upload beats no upload.
+    }
+
     setReportImageFiles((current) => {
       const seen = new Set(current.map((entry) => entry.key));
       const next = [...current];
-      for (const file of selectedFiles) {
-        const fileKey = buildClientFileKey(file);
-        if (seen.has(fileKey)) continue;
-        seen.add(fileKey);
+      for (const entry of prepared) {
+        if (seen.has(entry.key)) continue;
+        seen.add(entry.key);
         next.push({
-          key: fileKey,
-          file,
-          preview_url: URL.createObjectURL(file),
+          key: entry.key,
+          file: entry.file,
+          preview_url: URL.createObjectURL(entry.file),
         });
       }
       return next;
     });
-    event.target.value = "";
   }
 
   function removeReportImage(fileKey: string) {
@@ -6936,6 +7218,22 @@ export function App() {
       targetProjectId = parsedProjectId;
     }
     const targetProject = targetProjectId ? projects.find((project) => project.id === targetProjectId) : null;
+
+    // The SMPL signature is marked required, but nothing enforced it — every
+    // silent signature-loss path turned into a filed report with an empty
+    // image. Block here, and put the pad on screen rather than reporting it
+    // from a banner ~2000px above the submit button.
+    if (!reportSignatureSmpl.image_base64) {
+      setError(
+        language === "de"
+          ? "Bitte die Unterschrift für SMPL erfassen."
+          : "Please capture the SMPL signature.",
+      );
+      document
+        .getElementById("report-signature-smpl")
+        ?.scrollIntoView({ block: "center", behavior: "smooth" });
+      return;
+    }
 
     const workers = reportWorkers
       .map((worker) => ({
@@ -7052,6 +7350,10 @@ export function App() {
     multipart.set("send_telegram", "false");
     multipart.set("payload", JSON.stringify(payload));
     if (targetProjectId) multipart.set("project_id", String(targetProjectId));
+    // Customer-owned reports: send the linked customer when there is one. When
+    // the field holds only free text the backend derives the customer from the
+    // project (if any) and otherwise files the report without a customer link.
+    if (reportCustomerId != null) multipart.set("customer_id", String(reportCustomerId));
 
     for (const [index, selection] of reportImageFiles.entries()) {
       const fallbackName = selection.file.name.trim() || `report-photo-${index + 1}.jpg`;
@@ -7104,6 +7406,7 @@ export function App() {
       // "the signature stays in the template"). Reset them like the text fields.
       setReportSignatureSmpl({ name: "", image_base64: "" });
       setReportSignatureCustomer({ name: "", image_base64: "" });
+      setReportCustomerId(null);
       setReportStatus({
         arrival_completed: false,
         work_finished: false,
@@ -7220,12 +7523,24 @@ export function App() {
         }
       }
 
-      await loadConstructionReportFiles(targetProjectId);
-      if (targetProjectId) {
-        await loadProjectOverview(targetProjectId);
+      // The report is saved from here on. These are refresh calls only, so a
+      // failure must NEVER be reported as a submit failure — the form is
+      // already cleared and the draft deleted, so an error banner here reads
+      // as "your report was lost" and invites a duplicate submission.
+      try {
+        await loadConstructionReportFiles(targetProjectId);
+        if (targetProjectId) {
+          await loadProjectOverview(targetProjectId);
+        }
+        setOverview(await apiFetch<any[]>("/projects-overview", token));
+        await loadRecentConstructionReports(10);
+      } catch {
+        setNotice(
+          language === "de"
+            ? "Bericht gespeichert — die Liste konnte nicht aktualisiert werden."
+            : "Report saved — the list could not be refreshed.",
+        );
       }
-      setOverview(await apiFetch<any[]>("/projects-overview", token));
-      await loadRecentConstructionReports(10);
     } catch (err: any) {
       setError(err.message ?? "Failed to submit report");
     } finally {
@@ -9292,6 +9607,13 @@ export function App() {
     activeProjectClassTemplates,
     taskModalProjectClassTemplates,
     taskEditProjectClassTemplates,
+    flushReportDraft,
+    taskModalSelectableBoxes,
+    taskEditSelectableBoxes,
+    taskModalBoxesLoading,
+    taskEditBoxesLoading,
+    taskModalCustomerId,
+    taskEditCustomerId,
     projectStatusOptions,
     projectStatusSelectOptions,
     overviewStatusOptions,
@@ -9471,6 +9793,9 @@ export function App() {
     addReportWorkerRow,
     removeReportWorkerRow,
     applyReportProjectSelection,
+    reportCustomerId,
+    setReportCustomerId,
+    applyReportCustomerSelection,
     toggleReportTaskChecklistItem,
     updateReportDraftField,
     updateReportMaterialRow,
@@ -9634,7 +9959,18 @@ export function App() {
 
         <ProjectBanner />
         {error && (
-          <div className="error" onClick={() => setError("")}>
+          <div
+            className="error"
+            role="alert"
+            ref={(node) => {
+              // The banner lives above a lazily-rendered page, so on a phone a
+              // submit failure could render entirely off-screen while the
+              // submit button silently re-enabled — a duplicate-submission
+              // generator. Bring it into view when it appears.
+              node?.scrollIntoView({ block: "center", behavior: "smooth" });
+            }}
+            onClick={() => setError("")}
+          >
             {error}
           </div>
         )}

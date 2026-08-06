@@ -10,6 +10,7 @@ import { WerkstattDatanormImportPage } from "./werkstatt/WerkstattDatanormImport
 import { WerkstattOrdersPage } from "./werkstatt/WerkstattOrdersPage";
 import { WerkstattNachbestellenPage } from "./werkstatt/WerkstattNachbestellenPage";
 import { WerkstattAufBaustellePage } from "./werkstatt/WerkstattAufBaustellePage";
+import { WerkstattKistenPage } from "./werkstatt/WerkstattKistenPage";
 import { WerkstattMobileHomePage } from "./werkstatt/WerkstattMobileHomePage";
 import { WerkstattMobileArtikelPage } from "./werkstatt/WerkstattMobileArtikelPage";
 import { WerkstattMobileNachbestellenPage } from "./werkstatt/WerkstattMobileNachbestellenPage";
@@ -62,6 +63,10 @@ export function WerkstattPage() {
       <WerkstattOrdersPage />
       <WerkstattNachbestellenPage />
       <WerkstattAufBaustellePage />
+      {/* One responsive page — packing is phone-first, assignment desktop-first,
+          but both need the same list, so this is deliberately NOT split into a
+          desktop/mobile pair. */}
+      <WerkstattKistenPage />
 
       {/* Mobile variants (each self-gates on isMobile + tab). */}
       <WerkstattMobileHomePage />

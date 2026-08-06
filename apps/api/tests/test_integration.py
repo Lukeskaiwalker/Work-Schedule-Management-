@@ -787,6 +787,11 @@ def test_project_task_planning_ticket_file_and_report_flow(client: TestClient, a
     assert follow_up_task["title"].startswith("Install inverter + meter")
     assert follow_up_task["subtasks"] == ["Connect inverter"]
     assert follow_up_task["assignee_ids"] == []
+    # The legacy free-typed note is carried over, but a machine-generated
+    # follow-up must never claim the source task's physical crate — whoever
+    # picks the work up links a box themselves.
+    assert follow_up_task["storage_box_number"] == 9
+    assert follow_up_task["construction_box_id"] is None
 
     materials_queue = client.get("/api/materials", headers=auth_headers(employee_token))
     assert materials_queue.status_code == 200
@@ -861,37 +866,21 @@ def test_project_task_planning_ticket_file_and_report_flow(client: TestClient, a
     assert report_download.status_code == 200
     assert report_download.content.startswith(b"%PDF")
 
+    # Reports are no longer mirrored into a chat thread; the Berichte view is
+    # where they are read. No system feed thread is created.
     report_feed_threads = client.get("/api/threads", headers=auth_headers(employee_token))
     assert report_feed_threads.status_code == 200
-    report_feed = next((entry for entry in report_feed_threads.json() if entry["name"] == "Latest Construction Reports"), None)
-    assert report_feed is not None
-    assert report_feed["project_id"] is None
-
-    report_feed_messages = client.get(
-        f"/api/threads/{report_feed['id']}/messages",
-        headers=auth_headers(employee_token),
+    assert all(
+        entry["name"] != "Latest Construction Reports" for entry in report_feed_threads.json()
     )
-    assert report_feed_messages.status_code == 200
-    feed_message_for_report = next(
-        (
-            entry
-            for entry in report_feed_messages.json()
-            if str(entry.get("body") or "").find(f"#{data['report_number']}") >= 0
-        ),
-        None,
+
+    # Consequence worth pinning: the report PDF used to inherit access from the
+    # PUBLIC feed thread, so anyone with chat access could open it. Without that
+    # message link, access falls back to the report permission.
+    outsider_report_preview = client.get(
+        f"/api/files/{report_file['id']}/preview", headers=auth_headers(outsider_token)
     )
-    assert feed_message_for_report is not None
-    assert "Project 2026-1001A - Project A" in str(feed_message_for_report.get("body") or "")
-    assert len(feed_message_for_report["attachments"]) >= 1
-    feed_attachment_id = int(feed_message_for_report["attachments"][0]["id"])
-    assert feed_attachment_id == report_file["id"]
-
-    outsider_feed_preview = client.get(f"/api/files/{feed_attachment_id}/preview", headers=auth_headers(outsider_token))
-    assert outsider_feed_preview.status_code == 200
-    assert outsider_feed_preview.content.startswith(b"%PDF")
-
-    delete_report_feed = client.delete(f"/api/threads/{report_feed['id']}", headers=auth_headers(admin_token))
-    assert delete_report_feed.status_code == 403
+    assert outsider_report_preview.status_code == 403
 
     multipart_report = client.post(
         f"/api/projects/{project_id}/construction-reports",
@@ -995,8 +984,11 @@ def test_project_task_planning_ticket_file_and_report_flow(client: TestClient, a
 
     threads_after_global_report = client.get("/api/threads", headers=auth_headers(employee_token))
     assert threads_after_global_report.status_code == 200
-    assert len(threads_after_global_report.json()) >= 1
-    assert threads_after_global_report.json()[0]["name"] == "Latest Construction Reports"
+    # Filing a report must not conjure a chat thread any more.
+    assert all(
+        entry["name"] != "Latest Construction Reports"
+        for entry in threads_after_global_report.json()
+    )
 
     recent_reports = client.get("/api/construction-reports/recent?limit=10", headers=auth_headers(employee_token))
     assert recent_reports.status_code == 200

@@ -238,6 +238,11 @@ class WerkstattMovement(Base):
     related_order_line_id: Mapped[int | None] = mapped_column(
         ForeignKey("werkstatt_order_lines.id", ondelete="SET NULL"), index=True
     )
+    # Links a checkout/return movement back to the construction box that caused
+    # it, so a box handover is auditable from the ledger side too.
+    construction_box_id: Mapped[int | None] = mapped_column(
+        ForeignKey("werkstatt_construction_boxes.id", ondelete="SET NULL"), index=True
+    )
 
     notes: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False, index=True)
@@ -340,3 +345,109 @@ class WerkstattDatanormImport(Base):
     created_by: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), index=True
     )
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Construction boxes (Baustellenkisten)
+# ──────────────────────────────────────────────────────────────────────────
+#
+# A construction box is a physical crate packed in the workshop and handed to
+# a customer / taken to a site. Lifecycle:
+#
+#   offen  →  gepackt  →  zugewiesen  →  zurueck
+#   (packing)  (sealed)   (with customer)  (back in the workshop)
+#
+# STOCK SEMANTICS (deliberate): packing does NOT move stock — a half-packed box
+# is a picking list, and per-item ledger writes during packing would be pure
+# churn. Stock moves once, at ASSIGNMENT (`checkout` movements for the contents)
+# and unwinds on RETURN (`return` movements). That keeps stock_available and the
+# "auf Baustelle" KPIs honest without a noisy ledger.
+
+
+class WerkstattConstructionBox(Base):
+    __tablename__ = "werkstatt_construction_boxes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # "BK-2026-0001" — auto-generated, counter resets per year (mirrors orders).
+    box_number: Mapped[str] = mapped_column(String(32), nullable=False, unique=True, index=True)
+    label: Mapped[str] = mapped_column(String(160), nullable=False)
+
+    # Rack position 1..8 for the fixed boxes that physically live in the
+    # workshop and are re-used job after job (see STANDARD_BOX_SLOTS in
+    # services/werkstatt_boxes.py). NULL = an ad-hoc box created for one job.
+    # Standard boxes are seeded on demand and cannot be deleted, only emptied.
+    slot: Mapped[int | None] = mapped_column(Integer, unique=True, index=True)
+
+    # offen | gepackt | zugewiesen | zurueck
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="offen", index=True)
+
+    # Ownership mirrors ConstructionReport: customer-first, project optional.
+    # Both SET NULL — deleting a project must never destroy the box record.
+    customer_id: Mapped[int | None] = mapped_column(
+        ForeignKey("customers.id", ondelete="SET NULL"), index=True
+    )
+    project_id: Mapped[int | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="SET NULL"), index=True
+    )
+
+    packed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    assigned_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    returned_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    notes: Mapped[str | None] = mapped_column(Text)
+    # Nullable because the standard rack boxes are seeded by the system rather
+    # than created by a person — there is no honest user to attribute them to.
+    created_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+
+class WerkstattConstructionBoxItem(Base):
+    """One packed line in a construction box.
+
+    An item can originate from three places, hence the nullable links:
+
+      * ``article``  — a stocked WerkstattArticle (``article_id`` set). Only
+        these can move stock on assignment.
+      * ``catalog``  — a Datanorm catalog row that is orderable but not stocked.
+        We store ``catalog_external_key`` rather than a catalog FK **because
+        material_catalog_items.id is not stable across Datanorm re-imports** —
+        a re-import deletes and recreates rows, which would silently repoint or
+        orphan an id-based link.
+      * ``manual``   — typed on site, no system record at all.
+
+    In every case the identity fields (name / article_no / ean / unit) are
+    SNAPSHOTTED at pack time, so a box always shows what was actually packed
+    even after a catalog re-import or an article rename.
+    """
+
+    __tablename__ = "werkstatt_construction_box_items"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    box_id: Mapped[int] = mapped_column(
+        ForeignKey("werkstatt_construction_boxes.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+
+    # article | catalog | manual
+    source: Mapped[str] = mapped_column(String(16), nullable=False, default="manual", index=True)
+    article_id: Mapped[int | None] = mapped_column(
+        ForeignKey("werkstatt_articles.id", ondelete="SET NULL"), index=True
+    )
+    catalog_external_key: Mapped[str | None] = mapped_column(String(64), index=True)
+
+    # Snapshotted identity — always populated regardless of source.
+    item_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    article_no: Mapped[str | None] = mapped_column(String(64))
+    ean: Mapped[str | None] = mapped_column(String(32), index=True)
+    unit: Mapped[str | None] = mapped_column(String(32))
+
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+
+    notes: Mapped[str | None] = mapped_column(Text)
+    added_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)

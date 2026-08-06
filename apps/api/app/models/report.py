@@ -9,11 +9,34 @@ from app.core.time import utcnow
 
 
 class ConstructionReport(Base):
+    """A construction site report.
+
+    Ownership is CUSTOMER-first: a report belongs to a customer, and optionally
+    also to one of that customer's projects. ``project_id`` therefore stays
+    nullable — a report filed against a customer with no project is a first-class
+    case, not a degenerate one.
+
+    Two consequences of that ownership model are encoded here:
+
+    * ``project_id`` is ON DELETE **SET NULL**, not CASCADE. Projects are hard
+      deleted (``db.delete(project)``) and there is no ORM cascade in between, so
+      CASCADE meant deleting a project silently destroyed its reports — i.e. the
+      customer's signed field documents. Detaching is the correct behaviour;
+      the report survives on the customer record.
+    * ``report_number`` remains a PER-PROJECT sequence and stays NULL when there
+      is no project. It is deliberately NOT re-scoped to the customer: issued
+      numbers are already baked into rendered PDFs, PDF filenames and dispatched
+      Telegram messages, so renumbering would invalidate existing artefacts.
+    """
+
     __tablename__ = "construction_reports"
     __table_args__ = (UniqueConstraint("project_id", "report_number", name="uq_construction_report_project_number"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    customer_id: Mapped[int | None] = mapped_column(
+        ForeignKey("customers.id", ondelete="SET NULL"), index=True
+    )
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), index=True)
     report_number: Mapped[int | None] = mapped_column(Integer)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
     report_date: Mapped[date] = mapped_column(Date, nullable=False)

@@ -46,10 +46,18 @@ export function ReportsPage() {
                   {report.report_number != null ? `#${report.report_number}` : `#${report.id}`}
                 </div>
                 <div className="overview-report-meta">
-                  {de ? "Projekt" : "Project"}: {projectLabel.title}
+                  {de ? "Kunde" : "Customer"}: {report.customer_name || (de ? "—" : "—")}
                 </div>
-                {projectLabel.subtitle ? (
-                  <div className="overview-report-meta">{projectLabel.subtitle}</div>
+                {/* Project is optional now that reports are customer-owned. */}
+                {report.project_id != null ? (
+                  <>
+                    <div className="overview-report-meta">
+                      {de ? "Projekt" : "Project"}: {projectLabel.title}
+                    </div>
+                    {projectLabel.subtitle ? (
+                      <div className="overview-report-meta">{projectLabel.subtitle}</div>
+                    ) : null}
+                  </>
                 ) : null}
                 <div className="overview-report-meta">
                   {de ? "Berichtsdatum" : "Report date"}: {report.report_date}
