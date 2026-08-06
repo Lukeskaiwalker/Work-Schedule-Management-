@@ -21,6 +21,7 @@
   /* ── Z-index scale (never assign raw numbers outside this block) ──────
      99  — dropdowns, tooltips anchored to static elements
      100 — sticky table headers / floating action buttons
+     101 — outermost sticky tier (a toolbar above sticky group headers)
      199 — sidebar backdrop overlay
      200 — sidebar drawer (mobile off-canvas)
      201 — notification panel (must clear sidebar + overlay)
@@ -30,6 +31,7 @@
   ─────────────────────────────────────────────────────────────────────── */
   --z-dropdown:     99;
   --z-sticky:      100;
+  --z-sticky-2:    101;
   --z-overlay:     199;
   --z-sidebar:     200;
   --z-notif-panel: 201;
@@ -548,6 +550,16 @@ button[type="submit"] {
   text-align: center;
 }
 
+.notification-panel-error {
+  margin: 0;
+  padding: 10px 16px;
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.4;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
 .notification-list {
   list-style: none;
   margin: 0;
@@ -807,7 +819,11 @@ button.project-item.active:focus-visible {
   display: none;
 }
 
-.mobile-header-avatar {
+/* Scoped to .workspace-header on purpose: the header avatar is an AvatarBadge,
+   which also carries .sidebar-user-avatar (display: flex) declared later in this
+   file. A bare .mobile-header-avatar rule would lose to it at equal specificity,
+   leaking the avatar onto tablet/desktop, so this rule wins on specificity. */
+.workspace-header .mobile-header-avatar {
   display: none;
 }
 
@@ -1506,15 +1522,927 @@ button.project-item.active:focus-visible {
   display: grid;
 }
 
-/* Dedicated "Berichte" (reports history) view */
+/* ══════════════════════════════════════════════════════════════════════════
+   "Berichte" — the construction-report filing ledger (pages/ReportsPage.tsx)
+
+   A full-width record list in the shape of `.customers-table-wrap` (the app's
+   only other full-page record list): one borderless white card on the pale-blue
+   canvas, a sticky toolbar, a non-sticky column-header strip, and sticky
+   day-group headers over 5-lane rows.
+
+   No `max-width` cap and no gutter of its own — `.content` already applies
+   `--content-pad-x`, and the cap is what made this page read as a widget
+   marooned in a canvas. `.customers-page` has no cap either.
+
+   Lane geometry (84 / flex-1 / 190 / 128 / 190, gap 12px) is declared once and
+   shared by `.reports-colhead` and `.reports-row`, which is what makes the
+   columns register vertically down the page. Every fixed slot is
+   `flex-shrink: 0` so a long customer name can never push a lane out of true.
+
+   Responsive collapse lives at the bottom of this block, scoped under
+   `.reports-page` so it wins on SPECIFICITY, not on source order — there are
+   ~90 later `@media` blocks in this file and several use the `padding`
+   shorthand.
+   ══════════════════════════════════════════════════════════════════════════ */
+
 .reports-page {
-  padding: 18px;
-  max-width: 920px;
-  margin: 0 auto;
+  margin-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  font-family: "Source Sans 3", system-ui, sans-serif;
 }
-.reports-page-subtitle {
-  margin: 0 0 12px;
+
+/* Keyboard affordance for every control on the page. The search input is
+   excluded: it already draws its own focus ring via `:focus`. */
+.reports-page :is(a, button):focus-visible {
+  outline: 2px solid #2f70b7;
+  outline-offset: 2px;
+}
+
+/* ── Page head — 60px, not sticky, sits directly on --bg ─────────────────── */
+.reports-page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 4px 2px 8px;
+  flex-wrap: wrap;
+}
+
+.reports-page-title-block {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.reports-page-eyebrow {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  line-height: 14px;
+  color: #5c7895;
+  text-transform: uppercase;
+}
+
+.reports-page-title {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  line-height: 34px;
+  color: #14293d;
+}
+
+/* ── Ledger card — the only card on the page ─────────────────────────────── */
+.reports-ledger {
+  background-color: #ffffff;
+  border-radius: 14px;
+  box-shadow: 0 1px 4px rgba(20, 41, 61, 0.06);
+  /* `clip`, never `hidden`: overflow:hidden would make this a scroll container
+     and silently break the sticky toolbar and day headers inside it. */
+  overflow: clip;
+}
+
+/* ── Toolbar — 56px, sticky, opaque (never frosted) ──────────────────────── */
+.reports-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky-2);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 56px;
+  padding: 9px 20px;
+  background-color: #f8fbff;
+  border-bottom: 1px solid #e3ecf5;
+}
+
+/* Loading / empty window: present so the page does not reflow, but inert. */
+.reports-toolbar--inert {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.reports-search {
+  position: relative;
+  flex: 1 1 260px;
+  max-width: 340px;
+  min-width: 160px;
+}
+
+.reports-search-icon {
+  position: absolute;
+  left: 12px;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.reports-search-input {
+  width: 100%;
+  height: 38px;
+  padding: 0 12px 0 34px;
+  background-color: #ffffff;
+  border: 1px solid #c9d9ea;
+  border-radius: 8px;
   font-size: 13px;
+  font-weight: 400;
+  line-height: 16px;
+  color: #14293d;
+}
+
+.reports-search-input:focus {
+  outline: none;
+  border-color: #2f70b7;
+  box-shadow: 0 0 0 3px rgba(47, 112, 183, 0.15);
+}
+
+/* Axis control: switches the GROUPING axis, not a sort order. */
+.reports-segmented {
+  display: inline-flex;
+  flex-shrink: 0;
+  background-color: #f3f7fc;
+  border: 1px solid #c9d9ea;
+  border-radius: 8px;
+  padding: 3px;
+  gap: 2px;
+}
+
+.reports-segmented-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  height: 30px;
+  padding: 0 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 16px;
+  color: #5c7895;
+  cursor: pointer;
+  min-height: 0;
+  white-space: nowrap;
+}
+
+.reports-segmented-btn--active {
+  background-color: #ffffff;
+  color: #14293d;
+  box-shadow: 0 1px 2px rgba(20, 41, 61, 0.08);
+}
+
+/* Alert chips — toggle filters, absent entirely from a healthy page. */
+.reports-alert-chip {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 16px;
+  cursor: pointer;
+  min-height: 0;
+  white-space: nowrap;
+}
+
+.reports-alert-chip--pending {
+  background-color: #fff6ec;
+  border: 1px solid #ead6bf;
+  color: #8a5a10;
+}
+
+.reports-alert-chip--failed {
+  background-color: #fef5f5;
+  border: 1px solid #f3c0c0;
+  color: #9a1c1c;
+}
+
+.reports-alert-chip--active {
+  box-shadow: inset 0 0 0 1px currentColor;
+}
+
+.reports-alert-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  background-color: currentColor;
+}
+
+.reports-alert-chip--pending .reports-alert-dot {
+  background-color: #d97706;
+}
+
+.reports-alert-chip--failed .reports-alert-dot {
+  background-color: #9a1c1c;
+}
+
+.reports-chip-clear {
+  flex-shrink: 0;
+}
+
+/* Appears only once polling has given up (15 × 20s). */
+.reports-refresh-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  padding: 0;
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 16px;
+  color: #2f70b7;
+  cursor: pointer;
+  min-height: 0;
+  white-space: nowrap;
+}
+
+.reports-toolbar-spacer {
+  flex: 1 1 auto;
+}
+
+/* The one element that never scrolls away, so the period is stated here only. */
+.reports-toolbar-count {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 15px;
+  color: #5c7895;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* ── Lane geometry, shared by the column-header strip and every row ──────── */
+.reports-colhead,
+.reports-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.reports-colhead-label--date,
+.reports-lane--date {
+  flex: 0 0 84px;
+  width: 84px;
+}
+
+.reports-colhead-label--customer,
+.reports-lane--customer {
+  /* min-width:0 rather than the nominal 210px: the collapse breakpoints below
+     do the real work, and a hard minimum here would overflow the card. */
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.reports-colhead-label--project,
+.reports-lane--project {
+  flex: 0 0 190px;
+  width: 190px;
+}
+
+.reports-colhead-label--filer,
+.reports-lane--filer {
+  flex: 0 0 128px;
+  width: 128px;
+}
+
+.reports-colhead-label--doc,
+.reports-lane--doc {
+  flex: 0 0 190px;
+  width: 190px;
+}
+
+/* ── Column header strip — 40px, deliberately NOT sticky ─────────────────── */
+.reports-colhead {
+  height: 40px;
+  padding: 12px 20px;
+  background-color: #f8fbff;
+  border-bottom: 1px solid #e3ecf5;
+}
+
+.reports-colhead-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  line-height: 14px;
+  color: #5c7895;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ── Day groups ──────────────────────────────────────────────────────────── */
+.reports-group {
+  display: block;
+}
+
+.reports-day-head {
+  position: sticky;
+  top: 56px;
+  z-index: var(--z-sticky);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 36px;
+  padding: 0 20px;
+  background-color: #edf4ff;
+  border-top: 1px solid #e3ecf5;
+  border-bottom: 1px solid #e3ecf5;
+}
+
+/* The column-header strip's own bottom rule already separates the first group. */
+.reports-colhead + .reports-group > .reports-day-head {
+  border-top: 0;
+}
+
+.reports-day-label {
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 20px;
+  color: #14293d;
+  white-space: nowrap;
+}
+
+.reports-day-head--muted .reports-day-label {
+  color: #5c7895;
+}
+
+/* THE one deliberate colour moment: today's band, and nothing else in the
+   table body. The bar is absolutely positioned, so lane registration is
+   untouched; -1px insets let it cover the header's own hairlines. */
+.reports-day-head--today .reports-day-label {
+  color: #2f70b7;
+}
+
+.reports-day-head--today::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: -1px;
+  bottom: -1px;
+  width: 3px;
+  background-color: #2f70b7;
+}
+
+.reports-day-echo {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 17px;
+  color: #5c7895;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.reports-day-count {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 15px;
+  color: #5c7895;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* An honest zero for "what came in today" beats silence. */
+.reports-day-empty {
+  display: flex;
+  align-items: center;
+  height: 36px;
+  padding-left: 20px;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 17px;
+  color: #8fa2ba;
+}
+
+/* ── Row — 64px, five lanes, exactly one dominant field ──────────────────── */
+.reports-row {
+  min-height: 64px;
+  padding: 12px 20px;
+  border-bottom: 1px solid #f0f4f9;
+  /* Not clickable: the two real destinations are explicit controls. */
+  cursor: default;
+}
+
+.reports-row:hover {
+  background-color: #f8fbff;
+}
+
+/* The next day header's border-top serves as the group's closing rule. */
+.reports-group > .reports-row:last-child {
+  border-bottom: 0;
+}
+
+.reports-lane {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+}
+
+/* Lane 1 — the counterpart date, always the one the grouping is NOT using. */
+.reports-lane--date {
+  gap: 3px;
+  align-items: flex-start;
+}
+
+.reports-date-value {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 17px;
+  color: #8fa2ba;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Einsatztag mode: lane 1 also carries the filing clock, so it steps down one
+   size to fit "Mi 08.08. 16:42" in 84px without wrapping. */
+.reports-date-value--withtime {
+  font-size: 12px;
+}
+
+/* A late filing, visible from a scroll distance at zero colour cost. */
+.reports-date-value--diverged {
+  color: #14293d;
+  font-weight: 700;
+}
+
+.reports-nachtrag,
+.reports-day-chip {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  flex-shrink: 0;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background-color: #f3f7fc;
+  border: 1px solid #d9e4f2;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  line-height: 14px;
+  color: #5c7895;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* Lane 2 — Kunde, the field people actually scan by. */
+.reports-lane--customer {
+  gap: 2px;
+}
+
+.reports-customer {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 20px;
+  color: #14293d;
+  overflow-wrap: anywhere;
+}
+
+/* Words, never a dash and never a blank cell, so the lane still reads as one. */
+.reports-customer--empty {
+  font-weight: 600;
+  color: #8fa2ba;
+}
+
+/* Shown only in the 1101–1251px band, where lane 4 collapses in here. */
+.reports-row-compact-filer {
+  display: none;
+}
+
+/* Shown only in the ≤1100px stacked layout. */
+.reports-row-meta {
+  display: none;
+}
+
+/* Lane 3 — Projekt, built from project_name + project_number directly. */
+.reports-lane--project {
+  gap: 2px;
+}
+
+.reports-project-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  padding: 0;
+  margin: 0;
+  display: block;
+  width: 100%;
+  min-width: 0;
+  text-align: left;
+  cursor: pointer;
+  min-height: 0;
+}
+
+.reports-project-name {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 17px;
+  color: #14293d;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Verbatim `.customer-list-name-btn:hover` — the app's established treatment
+   for a record row's clickable name. */
+.reports-project-btn:hover .reports-project-name {
+  color: #2f70b7;
+  text-decoration: underline;
+}
+
+.reports-project-number {
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 15px;
+  color: #5c7895;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* "Ohne Projekt" / "Projekt #4471" — a normal state, never decorated as error. */
+.reports-project-plain {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 17px;
+  color: #8fa2ba;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Lane 4 — Erfasst von. */
+.reports-lane--filer {
+  gap: 2px;
+}
+
+.reports-filer-name {
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 17px;
+  color: #14293d;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.reports-filer-name--unknown {
+  color: #8fa2ba;
+}
+
+.reports-filer-time {
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 14px;
+  color: #5c7895;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Lane 5 — Dokument, right-aligned. */
+.reports-lane--doc {
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+/* `Nr. 12` and `ID 4471` are two different number spaces, so they carry two
+   explicit prefixes and get no column, no header and no sort. */
+.reports-doc-number {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 14px;
+  color: #8fa2ba;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Deliberately neutral, not blue: it repeats once per row. */
+.reports-open-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 8px;
+  background-color: #ffffff;
+  border: 1px solid #c9d9ea;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 16px;
+  color: #14293d;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.reports-open-btn:hover {
+  background-color: #f8fbff;
+}
+
+.reports-open-icon {
+  flex-shrink: 0;
+}
+
+.reports-status-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  flex-shrink: 0;
+}
+
+.reports-status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  line-height: 14px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.reports-status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  flex-shrink: 0;
+  background-color: currentColor;
+}
+
+.reports-status-chip--pending {
+  background-color: #fff6ec;
+  border: 1px solid #ead6bf;
+  color: #8a5a10;
+}
+
+.reports-status-chip--pending .reports-status-dot {
+  background-color: #d97706;
+}
+
+.reports-status-chip--failed {
+  background-color: #fef5f5;
+  border: 1px solid #f3c0c0;
+  color: #9a1c1c;
+}
+
+.reports-status-chip--failed .reports-status-dot {
+  background-color: #9a1c1c;
+}
+
+.reports-status-chip--missing {
+  background-color: #f3f7fc;
+  border: 1px solid #d9e4f2;
+  color: #5c7895;
+}
+
+.reports-status-chip--missing .reports-status-dot {
+  background-color: #8fa2ba;
+}
+
+/* Tells the operator how long it has been — the actionable half of a state the
+   wire cannot fully disambiguate (a retried crash re-enters `queued`). */
+.reports-status-age {
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 14px;
+  color: #8a5a10;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ── Card foot — present only while rows are being withheld ──────────────── */
+.reports-foot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 44px;
+  padding: 0 20px;
+  background-color: #f8fbff;
+  border-top: 1px solid #e3ecf5;
+}
+
+.reports-foot-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  padding: 0;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 17px;
+  color: #2f70b7;
+  cursor: pointer;
+  min-height: 0;
+}
+
+/* ── Body-replacement states (no skeleton: zero precedent in this sheet) ──── */
+.reports-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 24px 20px;
+}
+
+.reports-state--loading {
+  min-height: 200px;
+}
+
+.reports-state--empty {
+  min-height: 240px;
+}
+
+.reports-state-icon {
+  display: block;
+  margin-bottom: 16px;
+}
+
+.reports-state-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 20px;
+  color: #14293d;
+}
+
+.reports-state-body {
+  margin: 6px 0 0;
+  max-width: 380px;
+  font-size: 13px;
+  font-weight: 400;
+  line-height: 18px;
+  color: #4f657c;
+}
+
+.reports-state--loading .reports-state-body {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+  color: #5c7895;
+}
+
+.reports-state-reset {
+  appearance: none;
+  border: none;
+  background: transparent;
+  padding: 0;
+  margin-top: 12px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 17px;
+  color: #2f70b7;
+  cursor: pointer;
+  min-height: 0;
+}
+
+/* ── 1101–1251px: lane 4 folds into lane 2 ───────────────────────────────
+   Every selector below carries the `.reports-page` ancestor so it wins on
+   specificity (0,2,0) over the base rules above, never on source order. */
+@media (max-width: 1251px) {
+  .reports-page .reports-lane--filer,
+  .reports-page .reports-colhead-label--filer {
+    display: none;
+  }
+
+  .reports-page .reports-row-compact-filer {
+    display: block;
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 15px;
+    color: #5c7895;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  /* One clamp line, so the taller row stays bounded. */
+  .reports-page .reports-customer {
+    -webkit-line-clamp: 1;
+  }
+
+  .reports-page .reports-row {
+    min-height: 72px;
+  }
+}
+
+/* ── ≤1100px: the row stops being a table and becomes a stacked block ─────
+   The toolbar gives up stickiness here rather than wrapping to two rows and
+   burying the day headers underneath itself; the day headers take over the
+   top-of-scrollport slot instead. Below 900px `.content` is no longer the
+   scroll container either, so `top: 0` is correct in both bands. */
+@media (max-width: 1100px) {
+  .reports-page .reports-toolbar {
+    position: static;
+    height: auto;
+    min-height: 56px;
+    flex-wrap: wrap;
+    padding-top: 9px;
+    padding-bottom: 9px;
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .reports-page .reports-colhead {
+    display: none;
+  }
+
+  .reports-page .reports-day-head {
+    top: 0;
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .reports-page .reports-day-empty {
+    padding-left: 16px;
+  }
+
+  .reports-page .reports-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+    min-height: 0;
+    padding-top: 14px;
+    padding-bottom: 14px;
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .reports-page .reports-lane--date,
+  .reports-page .reports-row-compact-filer,
+  .reports-page .reports-doc-number {
+    display: none;
+  }
+
+  .reports-page .reports-lane--customer,
+  .reports-page .reports-lane--project,
+  .reports-page .reports-lane--doc {
+    flex: 0 0 auto;
+    width: auto;
+    min-width: 0;
+  }
+
+  .reports-page .reports-customer {
+    -webkit-line-clamp: 2;
+  }
+
+  /* Project name and number share one wrapping line. */
+  .reports-page .reports-lane--project {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px;
+  }
+
+  .reports-page .reports-project-btn {
+    width: auto;
+    max-width: 100%;
+  }
+
+  .reports-page .reports-project-name {
+    white-space: normal;
+    overflow: visible;
+  }
+
+  .reports-page .reports-row-meta {
+    display: block;
+    font-size: 12px;
+    font-weight: 500;
+    line-height: 16px;
+    color: #5c7895;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .reports-page .reports-lane--doc {
+    justify-content: flex-start;
+    margin-top: 2px;
+  }
+
+  .reports-page .reports-status-stack {
+    align-items: flex-start;
+  }
 }
 
 .overview-report-item {
@@ -5117,6 +6045,23 @@ li {
   color: #1f4e2d;
 }
 
+/* A session that ended on its own is not good news, so it must not wear the
+   green success colours `.notice` supplies. Amber says "read this" without the
+   alarm of `.error`, which is reserved for a failed sign-in attempt right
+   below it. Scoped through `.auth-card` for specificity (0,2,0) so the base
+   `.notice` colours above cannot win on source order.
+   Not a click-to-dismiss surface either: `.notice` sets `cursor: pointer`
+   because notices elsewhere are dismissible, and this one is not. */
+.auth-card .auth-session-expired {
+  border: 1px solid #ead6bf;
+  background: #fff6ec;
+  color: #8a5a10;
+  cursor: default;
+  text-align: left;
+  font-size: 13px;
+  line-height: 18px;
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;
@@ -6039,6 +6984,51 @@ li {
   cursor: not-allowed;
 }
 
+/* Date field — WebKit ships `input[type="date"]` as an *inline-flex* control
+   with its own intrinsic, content-derived width, so on mobile Safari/Chrome the
+   "Datum" box renders narrower (and with a top-aligned, extra-inset value) than
+   the sibling text inputs it shares a row/stack with. Neutralising the native
+   appearance and re-declaring the box makes it resolve to exactly the same
+   42px × 100% shell as every other `.construction-report-input`. */
+.construction-report-input[type="date"] {
+  -webkit-appearance: none;
+  appearance: none;
+  /* Block-level flex (instead of the UA `inline-flex`) is what makes
+     `width: 100%` stick on iOS and keeps the value vertically centred. */
+  display: flex;
+  align-items: center;
+  width: 100%;
+  max-width: 100%;
+  line-height: normal;
+}
+
+/* Safari's value box defaults to `margin: 1px 24px 1px 4px`, which throws the
+   text off the shared 14px inset and lets WebKit size the field to the date
+   string instead of to the container. */
+.construction-report-input[type="date"]::-webkit-date-and-time-value {
+  margin: 0;
+  padding: 0;
+  text-align: left;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Blink's equivalent of the value box (kept in its own rule — an unknown
+   pseudo-element would invalidate a shared selector list). */
+.construction-report-input[type="date"]::-webkit-datetime-edit {
+  padding: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.construction-report-input[type="date"]::-webkit-calendar-picker-indicator {
+  margin: 0;
+  padding: 0;
+  flex: 0 0 auto;
+  opacity: 0.55;
+  cursor: pointer;
+}
+
 .construction-report-textarea {
   height: auto;
   min-height: 72px;
@@ -6082,8 +7072,29 @@ li {
   pointer-events: none;
 }
 
-.construction-report-input--has-icon {
+/* Scoped to the wrap on purpose, for specificity (0,2,0).
+   A bare `.construction-report-input--has-icon` is (0,1,0) — the same as the
+   mobile rule `.construction-report-input { padding: 0 10px }` further down the
+   file, which uses the PADDING SHORTHAND and therefore resets padding-left.
+   Later-wins-at-equal-specificity meant the icon offset silently vanished below
+   767px and the folder glyph ended up underneath the project name. Winning on
+   specificity instead of source order keeps this correct wherever the mobile
+   block moves to. */
+.construction-report-input-wrap .construction-report-input--has-icon {
   padding-left: 38px;
+}
+
+/* The clear (×) button is absolutely positioned *over* the right edge of the
+   search input and has a transparent background, but the input only reserved
+   the shared 14px of right padding. A project label longer than the field
+   therefore ran on underneath the ×, painting the two on top of each other —
+   which is what makes the control unreadable once the box gets narrow (mobile).
+   Reserving the button's footprint keeps the value clear of it, and the
+   ellipsis makes the unavoidable truncation legible instead of a clipped glyph.
+   Button geometry: right: 6px + width: 24px -> 30px, +1px border, +5px gap. */
+.construction-report-input-wrap .construction-report-input {
+  padding-right: 36px;
+  text-overflow: ellipsis;
 }
 
 .construction-report-input-clear {
@@ -6712,13 +7723,17 @@ li {
   flex-direction: column;
 }
 
-/* Header row inside the card — title on left, count pill/add btn on right */
+/* Header row inside the card — title on left, count pill/add btn on right.
+   Side padding MUST stay at 24px: every block below it inside the card
+   (.office-task-filter-hint, .office-task-filter-row, .tasks-page-row-header,
+   .tasks-page-row--office, .tasks-page-row-expanded) is inset 24px, so any
+   other value staggers the card's left/right text edge. */
 .tasks-page-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 22px 28px 16px 28px;
+  padding: 22px 24px 16px 24px;
 }
 
 .tasks-page-head--office {
@@ -6976,6 +7991,19 @@ li {
   padding-top: 0;
   gap: 8px;
   align-items: center;
+}
+
+/* Phone: the action cluster is flex-shrink:0, so it keeps its max-content
+   width (edit icon + "Kalender" + "Erledigt" ≈ 215px). Inside a 375px
+   viewport the row only has ~293px of content box, which left the text
+   column ~60px wide and shredded every title into a vertical ribbon.
+   Stack the row so the actions get their own full-width line instead. */
+@media (max-width: 767px) {
+  .tasks-page-row--office {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
 }
 
 /* ───────────────────────────────────────────────────────────
@@ -10653,38 +11681,45 @@ li {
 
    This is the pattern jQuery-era dashboards used for lists with
    trailing action clusters; it's boring and bulletproof. */
+/* The toggle cluster is a normal flex item pushed right with `margin-left:auto`.
+   It used to be absolutely positioned inside a row carrying `padding-right:
+   220px` to reserve space for it. Measured, that cluster is ~138px wide with
+   the German labels — so 220px left ~82px of dead space, the permission name
+   was truncated far earlier than necessary, and the controls sat detached from
+   the row they belong to. The reservation was also a magic number that could
+   only ever be right for one language: "Grant"/"Deny" are much narrower than
+   "Gewähren"/"Sperren", and any translation or font change silently re-breaks
+   it. Laying the row out properly means the space reserved is exactly the space
+   used, in any language, with no number to maintain. */
 .admin-users-perm-row {
-  position: relative;
-  padding: 6px 220px 6px 10px;
+  padding: 6px 16px 6px 10px;
   min-height: 32px;
   border-radius: 6px;
   box-sizing: border-box;
   display: flex;
   align-items: center;
+  gap: 12px;
 }
 
 .admin-users-perm-row .admin-users-perm-toggles {
-  position: absolute;
-  top: 50%;
-  right: 16px;
-  transform: translateY(-50%);
+  margin-left: auto;
+  flex-shrink: 0;
   display: flex;
+  align-items: center;
   gap: 10px;
 }
 
 /* On very narrow panels (e.g. admin view with the right-side invite card
-   open on a small laptop), drop the toggle cluster to the bottom of the
-   row instead of the right — then the label isn't forced to squeeze
-   into a sliver at the left. */
+   open on a small laptop), drop the toggle cluster onto its own line rather
+   than squeezing the label into a sliver. Wrapping does this without the row
+   having to reserve any space up front. */
 @media (max-width: 560px) {
   .admin-users-perm-row {
-    padding: 6px 10px 32px;
+    flex-wrap: wrap;
+    row-gap: 4px;
   }
   .admin-users-perm-row .admin-users-perm-toggles {
-    top: auto;
-    bottom: 6px;
-    right: 10px;
-    transform: none;
+    margin-left: 0;
   }
 }
 
@@ -10702,8 +11737,10 @@ li {
   gap: 8px;
   font-size: 12px;
   color: #14293D;
-  /* Sits in the left portion of the row; the row's 220px right padding
-     guarantees it never overlaps the absolutely-positioned toggles. */
+  /* Takes the leftover width and truncates rather than pushing the toggles
+     out of the row. `min-width: 0` is load-bearing: without it a flex item
+     refuses to shrink below its content, and a long permission name would
+     force the cluster past the row's right edge. */
   flex: 1 1 auto;
   min-width: 0;
 }
@@ -10741,6 +11778,31 @@ li {
   gap: 4px;
   font-size: 11px;
   color: #5c7895;
+}
+
+/* Checkbox sizing, matching `.admin-settings-checkbox input[type="checkbox"]`
+   (:12707) on this same page.
+
+   Note what this is NOT fixing: the global `input, textarea, select` rule
+   (:3379) sets `width: 100%` and `padding: 0.58rem`, but measurement shows
+   neither reaches these boxes — Blink forces `padding: 0` on an auto-appearance
+   checkbox, and `width: 100%` inside a content-sized `inline-flex` label
+   resolves against an indefinite containing block and falls back to the
+   intrinsic 13px. So no reset is needed for those.
+
+   What this DOES fix is the UA default margin (~3px per side), which stacked
+   with the label's `gap: 4px` and made the space between box and caption
+   uneven — measured 7px instead of the intended 4px. The explicit 16px also
+   brings these in line with every other checkbox in the admin area. */
+.admin-users-perm-toggles label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  margin: 0;
+  padding: 0;
+  border-radius: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
 }
 
 .admin-users-perm-actions {
@@ -12870,8 +13932,14 @@ li {
   color: #9aaec4;
 }
 
+/* Fixed slot, not a content-sized one: the glyph swaps between ▸ and ▾ and
+   those two characters are not guaranteed the same advance width in the
+   fallback font, so a content-derived width lets the chevron column drift
+   between collapsed and expanded rows. */
 .tasks-page-row-chevron {
   flex-shrink: 0;
+  width: 16px;
+  text-align: center;
   color: #8fa2ba;
   font-size: 13px;
   line-height: 1;
@@ -15123,6 +16191,59 @@ li {
   margin: 0;
 }
 
+/* ── File-explorer toolbar ────────────────────────────────────────────
+ * The segmented pickers, the search field and the icon actions share
+ * one control height so the strip reads as a single toolbar.
+ *
+ * The toolbar wraps (`.row.wrap`) instead of squeezing: `.row` is
+ * nowrap by default and the search input carries the global
+ * `input { width: 100% }`, so it claimed the whole line and pushed
+ * everything else into shrinking. The segmented groups collapsed the
+ * hardest because a flex item whose `overflow` is not `visible` has an
+ * automatic minimum size of 0 — their labels ended up clipped outside
+ * the group border, which is exactly the reported "S/M/L outside their
+ * boundaries" symptom. Pinning the groups/actions to `flex: 0 0 auto`
+ * and letting only the search field flex fixes it at the source.
+ */
+.file-explorer-controls {
+  --files-control-height: 38px;
+}
+
+.file-explorer-controls .file-view-toggle,
+.file-explorer-controls .icon-btn,
+.file-explorer-controls .webdav-help {
+  flex: 0 0 auto;
+}
+
+.file-explorer-controls .file-view-toggle {
+  min-height: var(--files-control-height, 38px);
+}
+
+/* The tooltip anchor wraps its icon button; as a block it would add
+   baseline leading under the inline-flex child and sit a few px off
+   the rest of the strip. */
+.file-explorer-controls .webdav-help {
+  display: flex;
+  align-items: center;
+}
+
+.file-explorer-controls .icon-btn {
+  height: var(--files-control-height, 38px);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 0.6rem;
+}
+
+.file-explorer-search {
+  flex: 1 1 12rem;
+  width: auto;
+  min-width: 9rem;
+  height: var(--files-control-height, 38px);
+  padding: 0 0.7rem;
+  font-size: 0.9rem;
+}
+
 /* ── v2.4.4 gallery view ──────────────────────────────────────────────
  * Flat grid contact-sheet for "see all images at a glance". Images
  * render as actual thumbnails; non-image attachments (PDFs, docs, etc.)
@@ -15130,25 +16251,58 @@ li {
  * (loading="lazy" on <img>) keeps a 50-image project from blowing up
  * the network on first paint.
  */
+/* Segmented picker — same shape as the tickets-tab filter group so the
+   project tabs share one control language. The inner buttons carry their
+   own radius (the global `button` rule gives them 10px, which used to
+   poke past the 8px group border) and the group no longer clips with
+   `overflow: hidden`, which is what allowed it to collapse to zero
+   width inside the flex toolbar. */
 .file-view-toggle {
   display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
   border: 1px solid var(--line);
-  border-radius: 8px;
-  overflow: hidden;
+  border-radius: 10px;
+  background-color: #ffffff;
 }
 
 .file-view-toggle button {
-  padding: 0.3rem 0.7rem;
-  background: #fff;
+  appearance: none;
   border: none;
+  border-radius: 7px;
+  padding: 6px 14px;
+  background-color: transparent;
+  color: var(--ink);
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 16px;
+  white-space: nowrap;
   cursor: pointer;
-  font-size: 0.85rem;
-  color: var(--muted);
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.file-view-toggle button:hover:not(.is-active) {
+  background-color: var(--surface-2);
+}
+
+.file-view-toggle button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .file-view-toggle button.is-active {
-  background: var(--accent);
+  background-color: var(--accent);
   color: #fff;
+}
+
+/* Size picker: single-character labels, so equal-width segments keep
+   the S/M/L group from looking ragged next to the word-width group. */
+.file-view-toggle--sizes button {
+  min-width: 32px;
+  padding-inline: 0;
+  text-align: center;
 }
 
 .file-gallery {
@@ -18433,8 +19587,18 @@ td {
   flex-shrink: 0;
 }
 
+/* Align on the TOP of each field, not the bottom. Every field is
+   "one-line label + 34px control", but two of them carry extra content
+   underneath (the no-due-date checkbox, and the project chip list, which
+   renders even when empty). With align-items:flex-end those two fields were
+   taller, so their inputs were shoved ~20-24px ABOVE the Status/Assignee
+   selects — the toolbar had no single control line. Top alignment puts every
+   control on the same line and lets the extras hang below. */
 .office-task-filter-row {
-  align-items: flex-end;
+  /* 14px label line box + the 4px .office-task-filter-field gap: the offset
+     a control needs when it has no label above it. */
+  --filter-label-offset: 18px;
+  align-items: flex-start;
   gap: 12px;
   padding: 14px 20px 18px 20px;
   margin: 0;
@@ -18449,6 +19613,9 @@ td {
   font-family: "Source Sans 3", system-ui, sans-serif;
   font-size: 11px;
   font-weight: 600;
+  /* Pinned so the label line box — and therefore the y of every control
+     below it — is the same in all fields and matches --filter-label-offset. */
+  line-height: 14px;
   color: #5c7895;
   text-transform: uppercase;
   letter-spacing: 0.4px;
@@ -18458,8 +19625,14 @@ td {
   padding-left: 2px;
 }
 
+/* The task-name box is an input[type="search"] (OfficeTasksPage.tsx). An
+   attribute selector only matches the literal type, so leaving it out meant
+   it fell back to the global `input` rule (10px radius, 0.58rem padding) and
+   — via `font: inherit` — rendered its text and placeholder in the parent
+   label's 11px uppercase letter-spaced style. It has to be listed here. */
 .office-task-filter-field select,
 .office-task-filter-field input[type="date"],
+.office-task-filter-field input[type="search"],
 .office-task-filter-field input[type="text"] {
   height: 34px;
   padding: 0 12px;
@@ -18485,6 +19658,43 @@ td {
   padding-right: 28px;
 }
 
+/* Same WebKit trap already documented for .construction-report-input above:
+   the UA ships input[type="date"] as an inline-flex control with a
+   content-derived width and a top-inset value box, so on mobile Safari/Chrome
+   the "Fälligkeitsdatum" field renders narrower than the sibling selects with
+   its text riding high. Re-declare the box exactly as that fix does. */
+.office-task-filter-field input[type="date"] {
+  -webkit-appearance: none;
+  appearance: none;
+  display: flex;
+  align-items: center;
+  line-height: normal;
+}
+
+.office-task-filter-field input[type="date"]::-webkit-date-and-time-value {
+  margin: 0;
+  padding: 0;
+  text-align: left;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Blink's equivalent of the value box — kept separate because an unknown
+   pseudo-element would invalidate a shared selector list. */
+.office-task-filter-field input[type="date"]::-webkit-datetime-edit {
+  padding: 0;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.office-task-filter-field input[type="date"]::-webkit-calendar-picker-indicator {
+  margin: 0;
+  padding: 0;
+  flex: 0 0 auto;
+  opacity: 0.55;
+  cursor: pointer;
+}
+
 .office-task-no-date-toggle {
   display: inline-flex;
   align-items: center;
@@ -18500,13 +19710,19 @@ td {
 
 .office-task-filter-field-project {
   flex-grow: 1;
-  min-width: 260px;
+  /* Clamped: a bare 260px cannot shrink, and below a ~342px viewport the
+     field is wider than the row's content box, so it was overflowing a card
+     that has overflow:hidden and getting silently clipped. */
+  min-width: min(260px, 100%);
   position: relative;
 }
 
+/* height, not min-height, and no vertical padding — same as the selects and
+   the date input above, so all four controls share one box and one text
+   baseline instead of the project input riding a couple of px high. */
 .office-task-filter-field-project > input {
-  min-height: 34px;
-  padding: 6px 12px;
+  height: 34px;
+  padding: 0 12px;
   border: 1px solid #c9d9ea;
   border-radius: 8px;
   background-color: #ffffff;
@@ -18559,7 +19775,10 @@ td {
   appearance: none;
   height: 34px;
   padding: 0 16px;
-  align-self: flex-end;
+  /* No label above it, so it needs the label offset to land on the row's
+     control line (the row now aligns on flex-start). */
+  align-self: flex-start;
+  margin-top: var(--filter-label-offset, 18px);
   border: 1px solid #c9d9ea;
   border-radius: 8px;
   background-color: #ffffff;
@@ -18573,6 +19792,17 @@ td {
 
 .office-task-filter-reset:hover {
   background-color: #edf4ff;
+}
+
+/* The partner toggle is a chip dropped straight into the filter toolbar, so
+   it needs the same 34px control height as the selects (it is 30px on its
+   own) and the same label offset — otherwise it is both short and high.
+   Child selector because the base .tasks-page-filter-chip rule lives further
+   down the sheet and would otherwise win on source order. */
+.office-task-filter-row > .tasks-page-filter-chip {
+  height: 34px;
+  padding: 0 14px;
+  margin-top: var(--filter-label-offset, 18px);
 }
 
 /* ───────────────────────────────────────────────────────────
@@ -20407,6 +21637,79 @@ button.time-calendar-cell {
   font-size: 13px;
 }
 
+/* Vacation-day removal panel inside the Edit Day modal. Only rendered for
+   vacation reviewers on a day that is booked as approved vacation. Amber
+   rather than blue so it reads as "this day is special", not as another
+   shift form. Selectors are scoped under .edit-day-modal to keep them ahead
+   of any single-class rule (incl. inside later @media blocks) on specificity
+   rather than on source order. */
+.edit-day-modal .edit-day-vacation-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 16px;
+  background-color: #fffaf2;
+  border: 1px solid #f0dcbd;
+  border-radius: 12px;
+}
+
+.edit-day-modal .edit-day-vacation-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.edit-day-modal .edit-day-vacation-title {
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 700;
+  color: #14293d;
+}
+
+.edit-day-modal .edit-day-vacation-range {
+  margin-left: auto;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  color: #8a6b3d;
+  font-variant-numeric: tabular-nums;
+}
+
+.edit-day-modal .edit-day-vacation-hint {
+  margin: 0;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #6f7f92;
+}
+
+.edit-day-modal .edit-day-vacation-remove-btn {
+  appearance: none;
+  align-self: flex-start;
+  height: 32px;
+  padding: 0 16px;
+  border: 1px solid #f3c0c0;
+  border-radius: 8px;
+  background-color: #ffffff;
+  color: #c43a3a;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.edit-day-modal .edit-day-vacation-remove-btn:hover:not(:disabled) {
+  background-color: #fef5f5;
+  border-color: #e34b4b;
+}
+
+.edit-day-modal .edit-day-vacation-remove-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .edit-day-entry-form {
   display: flex;
   flex-direction: column;
@@ -20531,6 +21834,144 @@ button.time-calendar-cell {
 }
 
 .edit-day-entry-save-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* "Add a time entry" — the create counterpart to the per-shift editors above,
+   for a day that was never clocked. Sits last in the modal body, so its rules
+   sit last among the body's rules too. Everything is scoped under
+   .edit-day-modal so it wins on specificity rather than on source order: a
+   later @media block using the padding/margin shorthand on a bare class would
+   otherwise silently clobber these at that breakpoint. */
+.edit-day-modal .edit-day-add-trigger {
+  appearance: none;
+  width: 100%;
+  height: 40px;
+  padding: 0 16px;
+  border: 1px dashed #c9d9ea;
+  border-radius: 10px;
+  background-color: #ffffff;
+  color: #2f70b7;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.edit-day-modal .edit-day-add-trigger:hover {
+  background-color: #f4f9ff;
+  border-color: #2f70b7;
+}
+
+/* An unclocked day is the case the feature exists for, so there the trigger is
+   the primary affordance rather than a quiet secondary one. Doubled class so it
+   outranks the base rule on specificity, not just on order. */
+.edit-day-modal .edit-day-add-trigger.edit-day-add-trigger--primary {
+  border-style: solid;
+  border-color: #2f70b7;
+  background-color: #2f70b7;
+  color: #ffffff;
+}
+
+.edit-day-modal .edit-day-add-trigger.edit-day-add-trigger--primary:hover {
+  background-color: #2861a2;
+  border-color: #2861a2;
+}
+
+.edit-day-modal .edit-day-add-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  background-color: #f4f9ff;
+  border: 1px solid #b7d2ec;
+  border-radius: 12px;
+}
+
+.edit-day-modal .edit-day-add-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.edit-day-modal .edit-day-add-title {
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 700;
+  color: #14293d;
+}
+
+.edit-day-modal .edit-day-add-subject {
+  margin-left: auto;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 600;
+  color: #2f70b7;
+}
+
+.edit-day-modal .edit-day-add-hint {
+  margin: 0;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #6f7f92;
+}
+
+.edit-day-modal .edit-day-add-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.edit-day-modal .edit-day-add-cancel {
+  appearance: none;
+  height: 32px;
+  padding: 0 16px;
+  border: 1px solid #c9d9ea;
+  border-radius: 8px;
+  background-color: #ffffff;
+  color: #5c7895;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.edit-day-modal .edit-day-add-cancel:hover:not(:disabled) {
+  background-color: #edf4ff;
+  border-color: #b7d2ec;
+}
+
+.edit-day-modal .edit-day-add-cancel:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.edit-day-modal .edit-day-add-submit {
+  appearance: none;
+  height: 32px;
+  padding: 0 16px;
+  border: 1px solid #2f70b7;
+  border-radius: 8px;
+  background-color: #2f70b7;
+  color: #ffffff;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.edit-day-modal .edit-day-add-submit:hover:not(:disabled) {
+  background-color: #2861a2;
+  border-color: #2861a2;
+}
+
+.edit-day-modal .edit-day-add-submit:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
@@ -27718,6 +29159,14 @@ button.time-calendar-cell {
   margin: 6px 0 10px;
 }
 
+/* On the tasks page this row is a direct child of the (unpadded) card, so
+   without an inset the chip sits flush on the card border — 24px to the left
+   of the header title and of every list row under it. ProjectTasksTab uses
+   the same row inside an already-padded container, hence the child selector. */
+.tasks-page-card > .tasks-page-filter-row {
+  padding: 0 24px;
+}
+
 .tasks-page-filter-chip {
   appearance: none;
   border: 1px solid #c9d9ea;
@@ -28698,73 +30147,153 @@ button.time-calendar-cell {
 
 /* ─────────────────────────────────────────────────────────────────
  * v2.5.36 — Project Team tab (member management)
+ *
+ * Aligned with the tickets-tab / project-hours card language: the tab
+ * is a stack of surfaces on the page background (no extra inset — the
+ * workspace already pads the tab area, so the old `padding: 16px 20px`
+ * made this the only tab whose content didn't line up with its
+ * siblings), one 14px-radius card per block, and one bordered list
+ * container instead of a ladder of detached rounded rows. Colours come
+ * from the design tokens; the previous rules hand-rolled ~10 one-off
+ * hexes (#e3e8ee, #c8d3df, #4a5b6e, #2c3e50 …) that were near-misses
+ * of --line / --muted / --ink.
  * ──────────────────────────────────────────────────────────────── */
 .project-team-tab {
-  padding: 16px 20px;
-  max-width: 760px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 1rem;
+  max-width: 820px;
 }
 .project-team-head {
-  margin-bottom: 16px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.project-team-head-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1 1 280px;
 }
 .project-team-title {
-  font-size: 1.15rem;
-  color: #14293d;
-  margin: 0 0 4px 0;
+  margin: 0;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--ink);
 }
 .project-team-hint {
+  margin: 0;
   font-size: 0.9rem;
   line-height: 1.5;
-  margin: 0;
+  color: var(--muted);
+  max-width: 62ch;
 }
+.project-team-count {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 24px;
+}
+
+/* ── Add-member card ──────────────────────────────────────────────── */
 .project-team-add {
   display: flex;
   align-items: flex-end;
   gap: 12px;
   flex-wrap: wrap;
-  padding: 14px 16px;
-  background: #f7f9fc;
-  border: 1px solid #e3e8ee;
-  border-radius: 10px;
-  margin-bottom: 18px;
+  padding: 18px 20px;
+  background-color: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 1px 4px rgba(20, 41, 61, 0.06);
 }
 .project-team-add-field {
   display: flex;
   flex-direction: column;
   gap: 4px;
   flex: 1 1 260px;
-  font-size: 0.85rem;
-  color: #4a5b6e;
+  min-width: 0;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--muted);
 }
 .project-team-add-field select {
-  padding: 8px 10px;
-  border: 1px solid #c8d3df;
-  border-radius: 6px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
   font-size: 0.95rem;
+  font-weight: 400;
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--ink);
 }
-.project-team-add-manage {
+.project-team-add-manage,
+.project-team-row-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  font-size: 0.9rem;
-  padding-bottom: 8px;
+  gap: 8px;
+  font-size: 0.88rem;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+.project-team-add-manage {
+  /* keeps the checkbox baseline level with the 38px-tall select/button
+     that sit beside it in the `align-items: flex-end` row */
+  min-height: 38px;
+}
+/* Inline checkboxes must opt out of the global `input { width: 100% }`,
+   the way .checkbox-inline / .admin-users-toggle already do — without
+   this they stretch to the label width. */
+.project-team-add-manage input[type="checkbox"],
+.project-team-row-toggle input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--accent);
   cursor: pointer;
 }
-.project-team-add button[type="submit"] {
-  padding: 9px 18px;
-  background: #2f70b7;
-  color: white;
-  border: none;
-  border-radius: 6px;
+.project-team-add-submit {
+  padding: 8px 18px;
+  min-height: 38px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background-color: var(--accent);
+  color: #ffffff;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 600;
   cursor: pointer;
-  font-weight: 500;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
 }
-.project-team-add button[type="submit"]:disabled {
-  background: #a8bcd4;
+.project-team-add-submit:hover:not(:disabled) {
+  background-color: #275f9c;
+  border-color: #275f9c;
+}
+.project-team-add-submit:disabled {
+  background-color: #a8bcd4;
+  border-color: #a8bcd4;
   cursor: not-allowed;
 }
+
+/* ── Member list ──────────────────────────────────────────────────── */
 .project-team-empty {
+  margin: 0;
+  padding: 32px 20px;
+  text-align: center;
   font-size: 0.92rem;
-  padding: 12px 0;
+  background-color: #ffffff;
+  border: 1px solid var(--line);
+  border-radius: 14px;
 }
 .project-team-list {
   list-style: none;
@@ -28772,73 +30301,101 @@ button.time-calendar-cell {
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  overflow: hidden;
+  background-color: var(--surface);
 }
 .project-team-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 14px;
   flex-wrap: wrap;
-  padding: 12px 14px;
-  background: #ffffff;
-  border: 1px solid #e3e8ee;
-  border-radius: 8px;
+  padding: 14px 20px;
+  background-color: #ffffff;
+  border-bottom: 1px solid var(--surface-2);
+  transition: background-color 0.15s ease;
+}
+.project-team-row:last-child {
+  border-bottom: none;
+}
+.project-team-row:hover {
+  background-color: var(--surface);
+}
+.project-team-avatar {
+  width: 36px;
+  height: 36px;
+  font-size: 12px;
 }
 .project-team-row-main {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1 1 200px;
+  min-width: 0;
 }
 .project-team-row-name {
-  font-size: 0.98rem;
-  color: #2c3e50;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+  overflow-wrap: anywhere;
 }
+.project-team-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+/* Neutral fallback pill for a role the app has no colour for. */
 .project-team-role-badge {
-  font-size: 0.78rem;
-  padding: 2px 8px;
-  border-radius: 999px;
-  background: #eef2f7;
-  color: #4a5b6e;
+  background-color: var(--surface-2);
+  color: var(--muted);
 }
 .project-team-manage-badge {
-  font-size: 0.78rem;
-  padding: 2px 8px;
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 12px;
   border-radius: 999px;
-  background: #d8e8f7;
-  color: #225a93;
-  font-weight: 500;
+  background-color: #e8f1fc;
+  color: var(--accent);
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
 }
 .project-team-row-actions {
   display: flex;
   align-items: center;
   gap: 14px;
-}
-.project-team-row-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 0.85rem;
-  color: #4a5b6e;
-  cursor: pointer;
+  margin-left: auto;
+  flex-shrink: 0;
 }
 .project-team-remove-btn {
-  padding: 6px 12px;
-  background: transparent;
-  color: #b03030;
-  border: 1px solid #d6b3b3;
-  border-radius: 6px;
+  padding: 6px 14px;
+  border: 1px solid #d08484;
+  border-radius: 8px;
+  background-color: #fff6f6;
+  color: #872323;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 600;
   cursor: pointer;
-  font-size: 0.85rem;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
 }
-.project-team-remove-btn:hover {
-  background: #f7e8e8;
+.project-team-remove-btn:hover,
+.project-team-remove-btn:focus-visible {
+  background-color: #ffeaea;
+  border-color: #b75f5f;
 }
 @media (max-width: 640px) {
   .project-team-row {
-    flex-direction: column;
     align-items: flex-start;
+  }
+  .project-team-row-actions {
+    margin-left: 0;
+    width: 100%;
+    justify-content: space-between;
   }
 }
 

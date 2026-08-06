@@ -143,7 +143,7 @@ export function WerkstattNachbestellenPage() {
           <span className="werkstatt-kpi-label">
             {de ? "VORGESCHLAGENER BESTELLWERT" : "SUGGESTED ORDER VALUE"}
           </span>
-          <div className="werkstatt-kpi-row">
+          <div className="werkstatt-kpi-value-row">
             <span className="werkstatt-kpi-value">
               {formatEuro(pageTotals.totalCents, language)}
             </span>
@@ -154,7 +154,7 @@ export function WerkstattNachbestellenPage() {
           <span className="werkstatt-kpi-label">
             {de ? `BEI ${supplierCount} LIEFERANTEN` : `AT ${supplierCount} SUPPLIERS`}
           </span>
-          <div className="werkstatt-kpi-row">
+          <div className="werkstatt-kpi-value-row">
             <span className="werkstatt-kpi-value">{pageTotals.totalLines}</span>
             <span className="werkstatt-kpi-subtitle">
               {de ? "Artikel nachzubestellen" : "items to reorder"}
@@ -165,7 +165,7 @@ export function WerkstattNachbestellenPage() {
           <span className="werkstatt-kpi-label">
             {de ? "BEREITS BESTELLT" : "ALREADY ON ORDER"}
           </span>
-          <div className="werkstatt-kpi-row">
+          <div className="werkstatt-kpi-value-row">
             <span className="werkstatt-kpi-value">3</span>
             <span className="werkstatt-kpi-subtitle">
               {de ? "Lieferung erwartet" : "deliveries pending"}
@@ -174,7 +174,7 @@ export function WerkstattNachbestellenPage() {
         </div>
         <div className="werkstatt-kpi werkstatt-kpi--danger">
           <span className="werkstatt-kpi-label">{de ? "KRITISCH" : "CRITICAL"}</span>
-          <div className="werkstatt-kpi-row">
+          <div className="werkstatt-kpi-value-row">
             <span className="werkstatt-kpi-value">{pageTotals.criticalLines}</span>
             <span className="werkstatt-kpi-subtitle">{de ? "völlig leer" : "completely out"}</span>
           </div>

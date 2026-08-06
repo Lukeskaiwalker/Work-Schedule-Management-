@@ -91,6 +91,7 @@ export function LoginPage() {
     submitPublicPasswordReset,
     resetPublicAuthRoute,
     companySettings,
+    sessionExpired,
   } = useAppContext();
 
   if (user) return null;
@@ -231,6 +232,13 @@ export function LoginPage() {
               {language === "de" ? "EN" : "DE"}
             </button>
           </div>
+          {sessionExpired && !error && (
+            <div className="notice auth-session-expired" role="status">
+              {language === "de"
+                ? "Deine Sitzung ist abgelaufen. Bitte melde dich erneut an — nicht gespeicherte Eingaben gehen verloren."
+                : "Your session has expired. Please sign in again — anything unsaved was not submitted."}
+            </div>
+          )}
           {error && <div className="error">{error}</div>}
           {notice && <div className="notice">{notice}</div>}
         </form>

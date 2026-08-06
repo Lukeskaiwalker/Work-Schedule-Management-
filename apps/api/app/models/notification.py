@@ -38,8 +38,17 @@ class Notification(Base):
     # Human-readable message, e.g. "Luca assigned you to 'Install scaffolding'"
     message: Mapped[str] = mapped_column(String(255), nullable=False)
 
-    # Null = unread; set when the user dismisses the notification
+    # Null = unread; set when the panel is opened (mark-all-read).
+    # "Read" only controls the unread styling and the bell badge — a read
+    # notification is still listed.
     read_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+
+    # Null = still in the list. Set when the entry leaves the panel for good:
+    # either the user clicked it (explicit dismissal) or the server resolved
+    # it because its subject is gone (task completed or deleted).
+    # Kept as a soft delete rather than a row delete so the notification
+    # history stays auditable and a dismissal can be reasoned about later.
+    dismissed_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow, nullable=False, index=True

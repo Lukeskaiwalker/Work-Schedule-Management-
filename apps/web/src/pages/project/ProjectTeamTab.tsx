@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { useAppContext } from "../../context/AppContext";
+import { AvatarBadge } from "../../components/shared/AvatarBadge";
 
 /**
  * v2.5.36 — Project Team tab.
@@ -23,6 +24,30 @@ import { useAppContext } from "../../context/AppContext";
  *     manage projects (projects:manage). Everyone else sees a
  *     read-only roster. The API enforces the same.
  */
+
+/** Role display names. Module-level so the map isn't rebuilt on every
+ *  render, and so the chip helper can check membership against it. */
+const ROLE_LABELS: Record<string, { de: string; en: string }> = {
+  admin: { de: "Admin", en: "Admin" },
+  ceo: { de: "Geschäftsführung", en: "CEO" },
+  accountant: { de: "Buchhaltung", en: "Accountant" },
+  planning: { de: "Planung", en: "Planning" },
+  employee: { de: "Mitarbeiter", en: "Employee" },
+};
+
+function isKnownRole(role: string): boolean {
+  return Object.prototype.hasOwnProperty.call(ROLE_LABELS, role);
+}
+
+/** Colour-coded role chip — reuses the same chip the Admin users list
+ *  uses so one role reads identically everywhere in the app. Unknown
+ *  roles fall back to a neutral pill instead of an unstyled one. */
+function roleChipClass(role: string): string {
+  return isKnownRole(role)
+    ? `admin-role-chip admin-role-chip--${role}`
+    : "admin-role-chip project-team-role-badge";
+}
+
 export function ProjectTeamTab() {
   const {
     mainView,
@@ -35,6 +60,9 @@ export function ProjectTeamTab() {
     removeProjectMember,
     assignableUsers,
     canCreateProject,
+    userInitialsById,
+    userHasAvatar,
+    userAvatarVersionById,
   } = useAppContext();
 
   const [selectedUserId, setSelectedUserId] = useState<string>("");
@@ -55,15 +83,13 @@ export function ProjectTeamTab() {
   if (mainView !== "project" || !activeProject || projectTab !== "team") return null;
 
   function roleLabel(role: string): string {
-    const labels: Record<string, { de: string; en: string }> = {
-      admin: { de: "Admin", en: "Admin" },
-      ceo: { de: "Geschäftsführung", en: "CEO" },
-      accountant: { de: "Buchhaltung", en: "Accountant" },
-      planning: { de: "Planung", en: "Planning" },
-      employee: { de: "Mitarbeiter", en: "Employee" },
-    };
-    const entry = labels[role];
+    const entry = ROLE_LABELS[role];
     return entry ? (de ? entry.de : entry.en) : role;
+  }
+
+  function memberCountLabel(count: number): string {
+    if (de) return count === 1 ? "1 Mitglied" : `${count} Mitglieder`;
+    return count === 1 ? "1 member" : `${count} members`;
   }
 
   async function handleAdd(event: React.FormEvent<HTMLFormElement>) {
@@ -88,12 +114,15 @@ export function ProjectTeamTab() {
   return (
     <section className="project-team-tab">
       <header className="project-team-head">
-        <h2 className="project-team-title">{de ? "Projektteam" : "Project team"}</h2>
-        <p className="project-team-hint muted">
-          {de
-            ? "Mitglieder haben Zugriff auf dieses Projekt. Mitarbeiter mit einer hier zugewiesenen Aufgabe erhalten automatisch Lesezugriff – sie müssen nicht zusätzlich hinzugefügt werden."
-            : "Members have access to this project. Employees with a task assigned here automatically get read access — they don't need to be added separately."}
-        </p>
+        <div className="project-team-head-text">
+          <h2 className="project-team-title">{de ? "Projektteam" : "Project team"}</h2>
+          <p className="project-team-hint">
+            {de
+              ? "Mitglieder haben Zugriff auf dieses Projekt. Mitarbeiter mit einer hier zugewiesenen Aufgabe erhalten automatisch Lesezugriff – sie müssen nicht zusätzlich hinzugefügt werden."
+              : "Members have access to this project. Employees with a task assigned here automatically get read access — they don't need to be added separately."}
+          </p>
+        </div>
+        <span className="project-team-count">{memberCountLabel(projectMembers.length)}</span>
       </header>
 
       {/* ── Add member (managers only) ─────────────────────────────── */}
@@ -118,7 +147,7 @@ export function ProjectTeamTab() {
             />
             <span>{de ? "Darf verwalten" : "Can manage"}</span>
           </label>
-          <button type="submit" disabled={!selectedUserId}>
+          <button type="submit" className="project-team-add-submit" disabled={!selectedUserId}>
             {de ? "Hinzufügen" : "Add"}
           </button>
         </form>
@@ -135,14 +164,23 @@ export function ProjectTeamTab() {
         <ul className="project-team-list">
           {projectMembers.map((m) => (
             <li key={m.user_id} className="project-team-row">
+              <AvatarBadge
+                userId={m.user_id}
+                initials={userInitialsById(m.user_id)}
+                hasAvatar={userHasAvatar(m.user_id)}
+                versionKey={userAvatarVersionById(m.user_id)}
+                className="project-team-avatar"
+              />
               <div className="project-team-row-main">
-                <strong className="project-team-row-name">{m.display_name}</strong>
-                <span className="project-team-role-badge">{roleLabel(m.role)}</span>
-                {m.can_manage && (
-                  <span className="project-team-manage-badge">
-                    {de ? "Verwalter" : "Manager"}
-                  </span>
-                )}
+                <span className="project-team-row-name">{m.display_name}</span>
+                <span className="project-team-row-meta">
+                  <span className={roleChipClass(m.role)}>{roleLabel(m.role)}</span>
+                  {m.can_manage && (
+                    <span className="project-team-manage-badge">
+                      {de ? "Verwalter" : "Manager"}
+                    </span>
+                  )}
+                </span>
               </div>
               {canCreateProject && (
                 <div className="project-team-row-actions">

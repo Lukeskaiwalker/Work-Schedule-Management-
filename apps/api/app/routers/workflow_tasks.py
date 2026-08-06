@@ -38,6 +38,34 @@ def _create_assignment_notifications(
         )
 
 
+def _resolve_task_notifications(db: Session, task_id: int) -> list[int]:
+    """
+    Dismiss every open notification pointing at a task that is no longer
+    actionable (completed or deleted) and report whose panels changed.
+
+    Call this BEFORE db.commit() so the dismissal commits atomically with the
+    task change, then fire ``notification.resolved`` for each returned user id
+    so their open panel drops the entry without a reload.
+    """
+    now = utcnow()
+    stale = (
+        db.execute(
+            select(Notification).where(
+                Notification.entity_type == "task",
+                Notification.entity_id == task_id,
+                Notification.dismissed_at.is_(None),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for notif in stale:
+        notif.dismissed_at = now
+        if notif.read_at is None:
+            notif.read_at = now
+    return sorted({notif.user_id for notif in stale})
+
+
 @router.get("/tasks", response_model=list[TaskOut])
 def list_tasks(
     view: str = "all_open",
@@ -416,6 +444,14 @@ def update_task(
         # still operator-driven — they click "E-Mail senden" once the
         # new schedule is locked.
         set_task_confirmation_pending(task, reset_status=True)
+    # A completed task is no longer actionable, so the "X assigned you to …"
+    # entries pointing at it must leave the assignees' panels. Resolving at
+    # write time (rather than only filtering at read time) means the row stops
+    # being fetched, and gives us an event to push so an open panel updates
+    # live instead of showing a task the user just ticked off.
+    resolved_notification_user_ids: list[int] = []
+    if task.status != previous_status and task.status == "done":
+        resolved_notification_user_ids = _resolve_task_notifications(db, task.id)
     if task.status != previous_status or (task.due_date.isoformat() if task.due_date else None) != previous_due_date or (
         task.start_time.isoformat() if task.start_time else None
     ) != previous_start_time or task.estimated_hours != previous_estimated_hours:
@@ -447,6 +483,8 @@ def update_task(
     for uid in added_assignee_ids:
         if uid != current_user.id:
             notify(db, "notification.created", {"user_id": uid})
+    for uid in resolved_notification_user_ids:
+        notify(db, "notification.resolved", {"user_id": uid})
     return updated
 
 @router.delete("/tasks/{task_id}")
@@ -468,9 +506,15 @@ def delete_task(
         details={"task_id": task.id},
     )
     project_id = task.project_id
+    # Notifications carry a plain ``entity_id``, not a foreign key, so nothing
+    # cleans them up when the task row goes away. Resolve them here or they
+    # stay queryable forever and point at a task that no longer exists.
+    resolved_notification_user_ids = _resolve_task_notifications(db, task.id)
     db.delete(task)
     db.commit()
     notify(db, "task.deleted", {"id": task_id, "project_id": project_id})
+    for uid in resolved_notification_user_ids:
+        notify(db, "notification.resolved", {"user_id": uid})
     return {"ok": True}
 
 @router.post("/planning/week/{week_start}")

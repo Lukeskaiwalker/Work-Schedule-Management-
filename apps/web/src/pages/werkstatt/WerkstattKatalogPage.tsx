@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useAppContext } from "../../context/AppContext";
 import { NeuerArtikelModal } from "../../components/werkstatt/NeuerArtikelModal";
 import {
-  MOCK_CATALOG_ENTRIES,
   MOCK_SUPPLIERS,
   type MockCatalogEntry,
 } from "../../components/werkstatt/mockData";
@@ -21,9 +20,10 @@ import type { MaterialCatalogItem } from "../../types";
  * When no EAN is present the row renders as a compact card; an amber warning
  * explains that scan-match will fall back to the internal SP-number.
  *
- * TODO(werkstatt): wire to /api/werkstatt/catalog/search once the BE lands.
- * For now the page falls back to MOCK_CATALOG_ENTRIES when the real catalog
- * rows haven't been requested yet so the hero-card layout is visible.
+ * Search is server-side and debounced against /api/materials/catalog. Results
+ * are never filtered on the client: the Datanorm pool is far larger than any
+ * page we fetch, so client-side filtering would only ever search the rows that
+ * happened to be on screen.
  */
 export function WerkstattKatalogPage() {
   const {
@@ -83,18 +83,33 @@ export function WerkstattKatalogPage() {
     }
   }
 
-  // Kick a search on first mount so the panel isn't empty.
+  // Debounced server-side search, re-run whenever the query changes.
+  //
+  // This previously fired only on mount, so typing in the search box updated
+  // `materialCatalogQuery` but never asked the server anything — the list was
+  // whatever single page had been fetched when the tab opened, and nothing
+  // filtered it by the typed text at all. On a Datanorm pool of hundreds of
+  // thousands of rows that made most articles unfindable, which is exactly the
+  // "search doesn't really work" report.
+  //
+  // `loadMaterialCatalog` already guards against out-of-order responses with a
+  // request-sequence ref, so a fast typist cannot get a stale result rendered.
+  // 220ms matches the debounce the materials page uses.
   useEffect(() => {
     if (mainView !== "werkstatt" || werkstattTab !== "katalog") return;
-    if (materialCatalogRows.length > 0 || materialCatalogLoading) return;
-    void loadMaterialCatalog(materialCatalogQuery);
+    const timeout = window.setTimeout(() => {
+      void loadMaterialCatalog(materialCatalogQuery);
+    }, 220);
+    return () => window.clearTimeout(timeout);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mainView, werkstattTab]);
+  }, [mainView, werkstattTab, materialCatalogQuery]);
 
-  // Prefer server rows when present; fall back to mocks so the layout shows
-  // while the BE is still being built (replacement blocked on §3.3 endpoint).
+  // Server rows only. The mock fallback that used to kick in on an empty
+  // result set had to go: now that the query actually reaches the server, "no
+  // rows" means the search genuinely found nothing, and rendering sample
+  // products there would show articles that do not exist in the catalog. The
+  // empty state below says so instead.
   const sourceEntries = useMemo<ReadonlyArray<MockCatalogEntry>>(() => {
-    if (materialCatalogRows.length === 0) return MOCK_CATALOG_ENTRIES;
     // Fold the flat MaterialCatalogItem rows into the MockCatalogEntry shape
     // so the hero-card grouping works identically for both sources.
     const byEan = new Map<string, MockCatalogEntry>();

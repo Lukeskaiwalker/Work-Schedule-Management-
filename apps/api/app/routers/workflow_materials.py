@@ -95,11 +95,15 @@ def list_project_material_needs(
 @router.get("/materials/catalog", response_model=list[MaterialCatalogItemOut])
 def list_material_catalog_items(
     q: str = "",
-    limit: int = Query(default=10, ge=1),
+    limit: int = Query(default=40, ge=1, le=120),
     _: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    rows = search_material_catalog(db, query=q, limit=min(limit, 10))
+    # Was hard-capped at 10 regardless of what the client asked for, which
+    # silently truncated the result set: a matching article ranked 11th simply
+    # never reached the UI, so it read as "the article isn't in our pool".
+    # The 120 ceiling matches what search_material_catalog already enforces.
+    rows = search_material_catalog(db, query=q, limit=limit)
     return [_material_catalog_item_out(row) for row in rows]
 
 

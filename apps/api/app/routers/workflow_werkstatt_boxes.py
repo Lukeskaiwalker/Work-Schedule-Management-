@@ -21,8 +21,16 @@ checkout/return endpoints are: the people packing crates are not admins.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
+
+from app.services.search_matching import (
+    identifier_key,
+    similarity_score,
+    supports_trigram,
+    token_matches_any,
+    tokenize,
+)
 
 from app.core.db import get_db
 from app.core.deps import get_current_user, require_permission
@@ -649,40 +657,77 @@ def search_items(
     imports.
     """
     term = q.strip()
-    needle = f"%{term}%"
     folded = term.casefold()
+    folded_key = identifier_key(term)
+    tokens = tokenize(term)
+    trigram = supports_trigram(db)
     hits: list[WerkstattItemSearchHit] = []
 
+    # ``min_length=1`` still admits a query of pure whitespace, which tokenises
+    # to nothing. Matching everything in that case would drop an arbitrary
+    # article at position 0 — and the scanner reads position 0.
+    if not tokens:
+        return hits
+
+    # Ranking happens in Python below, across both sources. Truncating each
+    # query to `limit` first would let the best row fall out of the candidate
+    # set before it was ever ranked — so fetch wider here and cut to `limit`
+    # only after sorting.
+    candidate_limit = min(max(limit * 5, limit), 200)
+
     def exact(value: str | None) -> bool:
-        return value is not None and value.casefold() == folded
+        """Identifier equality, tolerant of punctuation drift.
+
+        A wholesaler prints ``1234-567`` where our Datanorm row stores
+        ``1234567``; both name the same article, so a scan of either must still
+        count as an exact hit. Falls back to plain casefolded equality when the
+        term has no alphanumerics to normalise.
+        """
+        if value is None:
+            return False
+        if value.casefold() == folded:
+            return True
+        return bool(folded_key) and identifier_key(value) == folded_key
 
     # Articles reachable through a supplier's own article number.
-    supplier_links = db.execute(
+    supplier_stmt = (
         select(
             WerkstattArticleSupplier.article_id,
             WerkstattArticleSupplier.supplier_article_no,
             WerkstattSupplier.name,
         )
         .join(WerkstattSupplier, WerkstattSupplier.id == WerkstattArticleSupplier.supplier_id)
-        .where(WerkstattArticleSupplier.supplier_article_no.ilike(needle))
-        .limit(limit)
-    ).all()
+    )
+    for token in tokens:
+        supplier_stmt = supplier_stmt.where(
+            token_matches_any([WerkstattArticleSupplier.supplier_article_no], token)
+        )
+    supplier_links = db.execute(supplier_stmt.limit(candidate_limit)).all()
     supplier_by_article: dict[int, tuple[str | None, str | None]] = {
         row[0]: (row[2], row[1]) for row in supplier_links
     }
 
+    # Every token must appear in at least one of the article's own fields.
+    # Previously the whole query string was one contiguous ILIKE, so
+    # "NYM 3x1,5" could not match a stored "NYM-J 3x1,5".
+    article_columns = [
+        WerkstattArticle.item_name,
+        WerkstattArticle.article_number,
+        WerkstattArticle.ean,
+    ]
+    token_clauses = [token_matches_any(article_columns, token) for token in tokens]
+    article_stmt = select(WerkstattArticle).where(
+        WerkstattArticle.is_archived.is_(False),
+        or_(
+            and_(*token_clauses),
+            WerkstattArticle.id.in_(list(supplier_by_article.keys()) or [-1]),
+        ),
+    )
     articles = db.scalars(
-        select(WerkstattArticle)
-        .where(
-            WerkstattArticle.is_archived.is_(False),
-            or_(
-                WerkstattArticle.item_name.ilike(needle),
-                WerkstattArticle.article_number.ilike(needle),
-                WerkstattArticle.ean.ilike(needle),
-                WerkstattArticle.id.in_(list(supplier_by_article.keys()) or [-1]),
-            ),
-        )
-        .limit(limit)
+        article_stmt.order_by(
+            similarity_score(WerkstattArticle.item_name, term, enabled=trigram).desc(),
+            WerkstattArticle.item_name.asc(),
+        ).limit(candidate_limit)
     ).all()
     for article in articles:
         supplier_name, supplier_article_no = supplier_by_article.get(article.id, (None, None))
@@ -713,17 +758,19 @@ def search_items(
         from app.models.entities import MaterialCatalogItem
 
         seen_eans = {h.ean for h in hits if h.ean}
+        catalog_columns = [
+            MaterialCatalogItem.item_name,
+            MaterialCatalogItem.article_no,
+            MaterialCatalogItem.ean,
+        ]
+        catalog_stmt = select(MaterialCatalogItem)
+        for token in tokens:
+            catalog_stmt = catalog_stmt.where(token_matches_any(catalog_columns, token))
         catalog_rows = db.scalars(
-            select(MaterialCatalogItem)
-            .where(
-                or_(
-                    MaterialCatalogItem.item_name.ilike(needle),
-                    MaterialCatalogItem.article_no.ilike(needle),
-                    MaterialCatalogItem.ean.ilike(needle),
-                )
-            )
-            .order_by(MaterialCatalogItem.item_name.asc())
-            .limit(limit - len(hits))
+            catalog_stmt.order_by(
+                similarity_score(MaterialCatalogItem.item_name, term, enabled=trigram).desc(),
+                MaterialCatalogItem.item_name.asc(),
+            ).limit(candidate_limit)
         ).all()
         for row in catalog_rows:
             # A catalog row already stocked as an article would be a confusing

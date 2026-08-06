@@ -30,6 +30,7 @@ export function ProjectOverviewTab() {
     copyToClipboard,
     getTaskAssigneeLabel,
     setProjectTab,
+    openCustomer,
   } = useAppContext();
 
   if (mainView !== "project" || !activeProject || projectTab !== "overview") return null;
@@ -42,6 +43,14 @@ export function ProjectOverviewTab() {
   const projectClasses = activeProjectClassTemplates.length > 0
     ? activeProjectClassTemplates.map((entry) => entry.name).join(", ")
     : "-";
+  // Only projects with a canonical `customer_id` have a customer page to open.
+  // Legacy/imported projects carry the denormalised `customer_*` free-text
+  // fields without a linked row, so the shortcut stays hidden for them rather
+  // than navigating into an empty detail view.
+  const linkedCustomerId =
+    typeof activeProject.customer_id === "number" && activeProject.customer_id > 0
+      ? activeProject.customer_id
+      : null;
 
   return (
     <section className="project-overview-shell">
@@ -240,7 +249,19 @@ export function ProjectOverviewTab() {
           </div>
 
           <div className="card project-overview-contact">
-            <h3 className="project-overview-title">{language === "de" ? "Kontakt" : "Contact"}</h3>
+            <div className="project-overview-card-head">
+              <h3 className="project-overview-title">{language === "de" ? "Kontakt" : "Contact"}</h3>
+              {linkedCustomerId !== null && (
+                <button
+                  type="button"
+                  className="linklike project-overview-view-all"
+                  onClick={() => openCustomer(linkedCustomerId)}
+                  title={language === "de" ? "Kundenseite öffnen" : "Open customer page"}
+                >
+                  {language === "de" ? "Zum Kunden →" : "View customer →"}
+                </button>
+              )}
+            </div>
             <small>
               {language === "de" ? "Firma" : "Company"}: <b>{customerName}</b>
             </small>

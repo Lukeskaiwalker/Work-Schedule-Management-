@@ -153,7 +153,58 @@ def test_material_catalog_parses_datanorm_a_and_b_records(client: TestClient, ad
     assert selected["price_text"] == "604.00 EUR"
 
 
-def test_material_catalog_search_caps_results_to_ten_items(client: TestClient, admin_token: str):
+def test_material_catalog_search_finds_article_despite_typing_differences(
+    client: TestClient, admin_token: str
+):
+    """The reported failure: the article is in the pool but search misses it.
+
+    Every query below names the same cable. They differ only in the ways a
+    tradesperson actually types: dropping the ``-J`` suffix, reordering the
+    words, and writing the cross-section with a point instead of a comma.
+    Before tokenisation the whole query string was one contiguous LIKE, so any
+    of these returned nothing at all.
+    """
+    employee = _create_user(client, admin_token, "catalog-recall@example.com", "employee")
+    employee_token = _login(client, employee["email"])
+
+    catalog_dir = _reset_catalog_dir()
+    catalog_file = catalog_dir / "materials.csv"
+    catalog_file.write_text(
+        "\n".join(
+            [
+                "Artikelnummer;Bezeichnung;Einheit;Hersteller;Preis",
+                "01000130;NYM-J 3x1,5 Mantelleitung grau;m;Lapp;1,20",
+                "01000131;Schuko Steckdose weiss;ST;Gira;3,40",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    def article_numbers(query: str) -> set[str]:
+        response = client.get(
+            f"/api/materials/catalog?q={query}&limit=40", headers=auth_headers(employee_token)
+        )
+        assert response.status_code == 200
+        return {row["article_no"] for row in response.json()}
+
+    # Partial first token: "NYM" must still reach the "NYM-J" row.
+    assert "01000130" in article_numbers("NYM%203x1,5")
+    # Reversed word order - tokens match independently of position.
+    assert "01000130" in article_numbers("3x1,5%20Mantelleitung")
+    # Point instead of comma for the cross-section.
+    assert "01000130" in article_numbers("NYM%203x1.5")
+    # A term that genuinely is not there still returns nothing for that row.
+    assert "01000130" not in article_numbers("Steckdose")
+
+
+def test_material_catalog_search_honours_requested_limit(client: TestClient, admin_token: str):
+    """The endpoint returns what the caller asked for, up to the 120 ceiling.
+
+    Replaces an earlier test that asserted a hard cap of 10. That cap silently
+    truncated the result set server-side: an article ranked 11th never reached
+    the UI, which is indistinguishable from the article not being in the
+    catalog at all. Truncation is now the caller's decision.
+    """
     employee = _create_user(client, admin_token, "catalog-limit@example.com", "employee")
     employee_token = _login(client, employee["email"])
 
@@ -164,9 +215,19 @@ def test_material_catalog_search_caps_results_to_ten_items(client: TestClient, a
         lines.append(f"C-{index:04d};Cable Variant {index};m;SMPL;10,00")
     catalog_file.write_text("\n".join(lines), encoding="utf-8")
 
-    search_catalog = client.get("/api/materials/catalog?q=Cable&limit=60", headers=auth_headers(employee_token))
-    assert search_catalog.status_code == 200
-    assert len(search_catalog.json()) == 10
+    # 20 rows match and 60 were asked for: all 20 come back, none dropped.
+    generous = client.get("/api/materials/catalog?q=Cable&limit=60", headers=auth_headers(employee_token))
+    assert generous.status_code == 200
+    assert len(generous.json()) == 20
+
+    # A smaller explicit limit is still respected.
+    narrow = client.get("/api/materials/catalog?q=Cable&limit=5", headers=auth_headers(employee_token))
+    assert narrow.status_code == 200
+    assert len(narrow.json()) == 5
+
+    # Above the ceiling is a validation error, not a silent clamp.
+    too_many = client.get("/api/materials/catalog?q=Cable&limit=500", headers=auth_headers(employee_token))
+    assert too_many.status_code == 422
 
 
 def test_material_catalog_enriches_image_for_selected_item(
@@ -384,9 +445,13 @@ def test_material_catalog_import_inserts_in_bounded_batches(
 
     monkeypatch.setattr(material_catalog_service, "_insert_catalog_batch", tracked_insert_batch)
 
-    search_catalog = client.get("/api/materials/catalog?q=Batch", headers=auth_headers(employee_token))
+    # Explicit limit: this test is about import batching, so it should not
+    # depend on whatever the endpoint's default page size happens to be.
+    search_catalog = client.get(
+        "/api/materials/catalog?q=Batch&limit=25", headers=auth_headers(employee_token)
+    )
     assert search_catalog.status_code == 200
-    assert len(search_catalog.json()) == 10
+    assert len(search_catalog.json()) == 25
 
     assert observed_batch_sizes
     assert max(observed_batch_sizes) <= 25

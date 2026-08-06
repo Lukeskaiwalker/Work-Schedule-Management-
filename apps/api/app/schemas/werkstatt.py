@@ -755,3 +755,66 @@ class WerkstattDashboardOut(BaseModel):
     recent_movements: list[WerkstattMovementOut]
     on_site_groups: list[WerkstattCheckoutGroupPreviewOut]
     maintenance_entries: list[WerkstattInspectionDueOut]
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Deduplication — folding multi-Datanorm duplicates into one article
+# ──────────────────────────────────────────────────────────────────────────
+
+
+class WerkstattSupplierLinkAddedOut(BaseModel):
+    """A supplier link created by folding same-EAN catalog rows together."""
+
+    supplier_id: int
+    supplier_name: str | None
+    supplier_article_no: str | None
+
+
+class WerkstattCatalogFoldOut(BaseModel):
+    article_id: int
+    ean: str | None
+    linked: list[WerkstattSupplierLinkAddedOut]
+    already_linked: int
+
+
+class WerkstattDuplicateCandidateOut(BaseModel):
+    """A pair a human should confirm before merging."""
+
+    article_id: int
+    article_name: str
+    article_number: str
+    duplicate_id: int
+    duplicate_name: str
+    duplicate_number: str
+    score: float
+    reason: str
+
+
+class WerkstattArticleMergePayload(BaseModel):
+    survivor_id: int
+    duplicate_id: int
+
+
+class WerkstattArticleMergeOut(BaseModel):
+    survivor_id: int
+    merged_id: int
+    supplier_links_moved: int
+    supplier_links_skipped: int
+    movements_moved: int
+    order_lines_moved: int
+    box_items_moved: int
+    fields_filled: list[str]
+
+
+class WerkstattSimilarArticleOut(BaseModel):
+    """A comparable article, ordered by what we actually have on the shelf."""
+
+    article_id: int
+    article_number: str
+    item_name: str
+    ean: str | None
+    unit: str | None
+    stock_available: int
+    stock_total: int
+    similarity: float
+    supplier_names: list[str]

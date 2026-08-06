@@ -606,3 +606,39 @@ def test_item_search_still_matches_our_own_article_number_and_free_text(
     ).json()
     assert any(row["article_id"] == article["id"] for row in by_text)
     assert all(row["match"] == "partial" for row in by_text)
+
+
+def test_item_search_tokenises_multi_word_queries(client: TestClient, admin_token: str):
+    """The reported failure: an article we stock is not found when searched.
+
+    ``item-search`` used to wrap the ENTIRE query in one ``ILIKE '%…%'``, so it
+    only ever matched a contiguous substring. Every query below names the
+    article that is actually in stock, but differs in the ways people type:
+    a dropped suffix, reordered words, and a point instead of a comma.
+    """
+    article = _article(client, admin_token, "NYM-J 3x1,5 Mantelleitung grau", 10)
+
+    def found(query: str) -> bool:
+        response = client.get(
+            f"/api/werkstatt/item-search?q={query}", headers=auth_headers(admin_token)
+        )
+        assert response.status_code == 200, response.text
+        return any(row["article_id"] == article["id"] for row in response.json())
+
+    assert found("NYM%203x1,5")            # partial first token
+    assert found("Mantelleitung%20NYM")    # reversed order
+    assert found("NYM%203x1.5")            # point instead of comma
+    assert not found("Schuko")             # unrelated term still misses
+
+
+def test_item_search_ignores_whitespace_only_query(client: TestClient, admin_token: str):
+    """A blank query must not drop an arbitrary article at position 0.
+
+    The scanner auto-adds the first hit when it is unambiguous, so returning
+    "everything" for a query that tokenises to nothing could put the wrong
+    article into a crate.
+    """
+    _article(client, admin_token, "Kabelbinder schwarz", 5)
+    response = client.get("/api/werkstatt/item-search?q=%20", headers=auth_headers(admin_token))
+    assert response.status_code == 200
+    assert response.json() == []

@@ -1,4 +1,5 @@
 import { useAppContext } from "../../context/AppContext";
+import { AvatarBadge } from "../shared/AvatarBadge";
 import { BackIcon } from "../icons";
 import type { MainView } from "../../types";
 
@@ -19,15 +20,8 @@ const PAGES_WITH_OWN_TITLE: ReadonlySet<MainView> = new Set<MainView>([
   "planning",
   "customers",
   "customer_detail",
+  "reports",
 ]);
-
-function userInitials(displayName: string | undefined, fullName: string | undefined): string {
-  const name = (displayName || fullName || "").trim();
-  if (!name) return "?";
-  const parts = name.split(/\s+/).filter(Boolean);
-  if (parts.length === 1) return (parts[0] ?? "").slice(0, 2).toUpperCase();
-  return `${(parts[0] ?? "").charAt(0)}${(parts[parts.length - 1] ?? "").charAt(0)}`.toUpperCase();
-}
 
 export function Header() {
   const {
@@ -51,6 +45,8 @@ export function Header() {
     openTaskModal,
     now,
     companySettings,
+    userInitials,
+    avatarVersionKey,
   } = useAppContext();
 
   const isProject = mainView === "project" && !!activeProject;
@@ -89,7 +85,6 @@ export function Header() {
             : language === "de" ? "← Alle Projekte" : "← All Projects";
 
   const brandTitle = companySettings?.navigation_title?.trim() || "SMPL";
-  const avatarText = userInitials(user?.display_name, user?.full_name);
 
   return (
     <header className={`workspace-header${isProject ? " workspace-header-project" : ""}`}>
@@ -184,10 +179,16 @@ export function Header() {
           </span>
         )}
 
-        {/* User avatar — visible only on mobile (<768px), hidden on tablet/desktop */}
-        <div className="mobile-header-avatar" aria-hidden="true">
-          {avatarText}
-        </div>
+        {/* User avatar — visible only on mobile (<768px), hidden on tablet/desktop.
+            AvatarBadge renders the uploaded profile picture when there is one and
+            falls back to the initials otherwise (also on image load errors). */}
+        <AvatarBadge
+          userId={user?.id ?? 0}
+          initials={userInitials}
+          hasAvatar={Boolean(user?.avatar_updated_at)}
+          versionKey={avatarVersionKey}
+          className="mobile-header-avatar"
+        />
       </div>
     </header>
   );

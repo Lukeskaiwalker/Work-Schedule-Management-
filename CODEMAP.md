@@ -110,7 +110,7 @@ All registered in `main.py` under the `/api` prefix.
 | `workflow_chat.py` | Threads, messages, attachments, read state |
 | `workflow_files.py` | File upload, download, preview, folders |
 | `workflow_materials.py` | Material catalog, project material needs |
-| `workflow_notifications.py` | `GET /notifications`, `PATCH /notifications/read-all`, `PATCH /notifications/{id}/read` |
+| `workflow_notifications.py` | `GET /notifications`, `PATCH /notifications/read-all`, `PATCH /notifications/{id}/read`, `PATCH /notifications/{id}/dismiss` |
 | `workflow_reports.py` | Construction reports |
 | `workflow_sites.py` | Sites, job tickets |
 | `workflow_wiki.py` | Wiki pages, library files |
@@ -137,7 +137,7 @@ All use `conftest.py` fixtures: `client` (TestClient), `admin_token` (str), `res
 | `test_files.py` | File upload, preview, WebDAV mount flow, folder visibility |
 | `test_files_service.py` | File service unit tests |
 | `test_material_catalog.py` | Material catalog operations |
-| `test_notifications.py` | Notification creation, mark-read, self-assignment guard |
+| `test_notifications.py` | Notification creation, mark-read, dismiss, task-completion resolution, self-assignment guard |
 | `test_optimistic_locking.py` | Conflict detection on concurrent edits |
 | `test_planning.py` | Planning week view, task overdue flags |
 | `test_project_import.py` | CSV project import |

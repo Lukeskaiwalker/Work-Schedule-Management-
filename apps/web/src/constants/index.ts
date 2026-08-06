@@ -108,7 +108,11 @@ export const DEFAULT_THREAD_PARTICIPANT_ROLES = ["admin", "ceo", "accountant", "
 
 export const MATERIAL_UNIT_EXAMPLES = ["pcs", "m", "cm", "mm", "m2", "m3", "kg", "g", "l", "ml", "set", "pack", "box", "roll"];
 
-export const MATERIAL_CATALOG_SEARCH_LIMIT = 10;
+// Was 10, which combined with a server-side hard cap of 10 meant a matching
+// article ranked 11th never reached the UI — it read as "not in our pool".
+// The API accepts up to 120; 40 keeps the payload small while giving the
+// ranking room to surface the right row.
+export const MATERIAL_CATALOG_SEARCH_LIMIT = 40;
 
 export const WORKSPACE_MODE_STORAGE_KEY = "smpl_workspace_mode";
 /** @deprecated single-slot draft storage. Kept for one-time migration to

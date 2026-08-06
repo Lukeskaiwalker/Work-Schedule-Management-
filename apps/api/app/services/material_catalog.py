@@ -19,6 +19,16 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.time import utcnow
 from app.models.entities import MaterialCatalogImportState, MaterialCatalogItem
+from app.services.search_matching import (
+    TRIGRAM_SIMILARITY_THRESHOLD,
+    escape_like,
+    identifier_key,
+    normalize_query,
+    similarity_score,
+    supports_trigram,
+    token_matches_any,
+    tokenize,
+)
 from app.services.material_catalog_images import (
     cache_material_catalog_image,
     has_cached_material_catalog_image,
@@ -229,31 +239,88 @@ def ensure_material_catalog_up_to_date(db: Session) -> None:
     db.commit()
 
 
+def _catalog_rank_expression(query: str, tokens: list[str]):
+    """Match-quality tiers, best first. Ordering happens in SQL, before LIMIT.
+
+    Tier 3 ("every token appears somewhere") is by far the most common result,
+    and it used to be tie-broken alphabetically — which is why searching a
+    common word returned the ten alphabetically-first articles rather than the
+    ten most relevant. Callers pair this with a similarity score so tier 3 is
+    ordered by closeness instead of by name.
+    """
+    identifier = identifier_key(query)
+    exact_candidates = {query, identifier} - {""}
+    return case(
+        (func.lower(MaterialCatalogItem.ean).in_(list(exact_candidates)), 0),
+        (func.lower(MaterialCatalogItem.article_no).in_(list(exact_candidates)), 1),
+        (
+            func.lower(MaterialCatalogItem.article_no).like(
+                f"{escape_like(query)}%", escape="\\"
+            ),
+            2,
+        ),
+        (
+            func.lower(MaterialCatalogItem.item_name).like(
+                f"{escape_like(query)}%", escape="\\"
+            ),
+            3,
+        ),
+        else_=4,
+    )
+
+
 def search_material_catalog(
     db: Session,
     *,
     query: str,
     limit: int,
 ) -> list[MaterialCatalogItem]:
+    """Search the Datanorm catalog, ranked by match quality then closeness.
+
+    Each whitespace-separated token must appear in ``search_text``, in any
+    order and in any of its decimal spellings — so ``NYM 3x1,5`` finds a stored
+    ``NYM-J 3x1.5``. When trigram support is present the result is additionally
+    ordered by ``similarity()``, and a query that matches nothing exactly falls
+    back to a fuzzy pass so a typo still returns candidates instead of a blank
+    screen.
+    """
     ensure_material_catalog_up_to_date(db)
-    q = query.strip().lower()
+    q = normalize_query(query)
     capped_limit = max(1, min(limit, 120))
-    query_stmt = select(MaterialCatalogItem)
-    if q:
-        terms = [term for term in re.split(r"\s+", q) if term]
-        for term in terms:
-            escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            query_stmt = query_stmt.where(func.lower(MaterialCatalogItem.search_text).like(f"%{escaped}%", escape="\\"))
-        rank = case(
-            (func.lower(MaterialCatalogItem.article_no) == q, 0),
-            (func.lower(MaterialCatalogItem.article_no).like(f"{q}%", escape="\\"), 1),
-            (func.lower(MaterialCatalogItem.item_name).like(f"{q}%", escape="\\"), 2),
-            else_=3,
+    if not q:
+        stmt = select(MaterialCatalogItem).order_by(
+            MaterialCatalogItem.item_name.asc(), MaterialCatalogItem.id.asc()
         )
-        query_stmt = query_stmt.order_by(rank.asc(), MaterialCatalogItem.item_name.asc(), MaterialCatalogItem.id.asc())
-    else:
-        query_stmt = query_stmt.order_by(MaterialCatalogItem.item_name.asc(), MaterialCatalogItem.id.asc())
-    rows = list(db.scalars(query_stmt.limit(capped_limit)).all())
+        rows = list(db.scalars(stmt.limit(capped_limit)).all())
+        record_searched_item_ids([r.id for r in rows])
+        return rows
+
+    tokens = tokenize(q)
+    trigram = supports_trigram(db)
+    score = similarity_score(MaterialCatalogItem.search_text, q, enabled=trigram)
+    rank = _catalog_rank_expression(q, tokens)
+
+    stmt = select(MaterialCatalogItem)
+    for token in tokens:
+        stmt = stmt.where(token_matches_any([MaterialCatalogItem.search_text], token))
+    stmt = stmt.order_by(
+        rank.asc(), score.desc(), MaterialCatalogItem.item_name.asc(), MaterialCatalogItem.id.asc()
+    )
+    rows = list(db.scalars(stmt.limit(capped_limit)).all())
+
+    # Fuzzy fallback: every token had to be present above, so a single
+    # mistyped character yields nothing. Trigram similarity still finds the
+    # article. Only runs when the strict pass came back empty, so the common
+    # case pays nothing for it.
+    if not rows and trigram:
+        fuzzy = (
+            select(MaterialCatalogItem)
+            .where(score > TRIGRAM_SIMILARITY_THRESHOLD)
+            .order_by(score.desc(), MaterialCatalogItem.item_name.asc())
+            .limit(capped_limit)
+        )
+        rows = list(db.scalars(fuzzy).all())
+
     # Tell the background image loop which items the user is actively browsing
     # so it can prioritise their image resolution.
     record_searched_item_ids([r.id for r in rows])

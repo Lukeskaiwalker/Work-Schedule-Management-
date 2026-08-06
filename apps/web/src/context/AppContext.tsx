@@ -1059,6 +1059,9 @@ export interface AppContextValue {
   openAdminViewFromMenu: () => void;
   openProfileViewFromMenu: () => void;
   signOut: () => void;
+  /** True when the previous session ended on its own (8h token, no refresh
+   *  endpoint) rather than the user signing out. Lets the login screen say so. */
+  sessionExpired: boolean;
   selectMaterialCatalogProject: (project: Project) => void;
   normalizeMaterialCatalogLookupKey: (value: string) => string;
   isLikelyMaterialCatalogIdentifier: (value: string) => boolean;

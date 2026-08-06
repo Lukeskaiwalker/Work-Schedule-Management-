@@ -214,7 +214,7 @@ export function WerkstattAufBaustellePage() {
           <span className="werkstatt-kpi-label">
             {de ? "AUSGEGEBEN" : "CHECKED OUT"}
           </span>
-          <div className="werkstatt-kpi-row">
+          <div className="werkstatt-kpi-value-row">
             <span className="werkstatt-kpi-value">{totals.totalItems}</span>
             <span className="werkstatt-kpi-subtitle">
               {de ? "Positionen" : "line items"}
@@ -225,7 +225,7 @@ export function WerkstattAufBaustellePage() {
           <span className="werkstatt-kpi-label">
             {de ? "AUF PROJEKTEN" : "AT PROJECTS"}
           </span>
-          <div className="werkstatt-kpi-row">
+          <div className="werkstatt-kpi-value-row">
             <span className="werkstatt-kpi-value">{totals.projectCount}</span>
             <span className="werkstatt-kpi-subtitle">
               {de ? "Baustellen aktiv" : "sites active"}
@@ -236,7 +236,7 @@ export function WerkstattAufBaustellePage() {
           <span className="werkstatt-kpi-label">
             {de ? "HEUTE ZURÜCK" : "DUE TODAY"}
           </span>
-          <div className="werkstatt-kpi-row">
+          <div className="werkstatt-kpi-value-row">
             <span className="werkstatt-kpi-value">{totals.dueToday}</span>
             <span className="werkstatt-kpi-subtitle">
               {de ? "Positionen" : "line items"}
@@ -245,7 +245,7 @@ export function WerkstattAufBaustellePage() {
         </div>
         <div className="werkstatt-kpi werkstatt-kpi--danger">
           <span className="werkstatt-kpi-label">{de ? "ÜBERFÄLLIG" : "OVERDUE"}</span>
-          <div className="werkstatt-kpi-row">
+          <div className="werkstatt-kpi-value-row">
             <span className="werkstatt-kpi-value">{totals.overdue}</span>
             <span className="werkstatt-kpi-subtitle">
               {de ? "nachfragen" : "to chase"}

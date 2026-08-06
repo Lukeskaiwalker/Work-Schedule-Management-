@@ -1,9 +1,35 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAppContext } from "../context/AppContext";
-import { isoToLocalDateTimeInput } from "../utils/dates";
+import { ApiError, apiFetch } from "../api/client";
+import { isoToLocalDateTimeInput, localDateTimeInputToIso } from "../utils/dates";
 import { shiftMonthStart, schoolWeekdayLabel } from "../utils/dates";
 import { formatHours, clamp } from "../utils/misc";
 import { formatServerDateTime, parseServerDateTime } from "../utils/dates";
+import { AddDayEntryForm, type AddDayEntryValues } from "../components/time/AddDayEntryForm";
+import type { VacationRequest } from "../types";
+
+// Response of POST /time/vacation-days/remove. Kept local to this page: it is
+// the only caller, and the shared types module is edited by other work.
+type VacationDayRemoveResult = {
+  user_id: number;
+  day: string;
+  refunded_days: number;
+  refunded_available_days: number;
+  refunded_carryover_days: number;
+  was_deductible: boolean;
+  request_deleted: boolean;
+  split_into_second_request: boolean;
+};
+
+// Response of GET /time/entries/backfill-window — what the caller may fill in.
+// Kept local for the same reason as the type above.
+type TimeBackfillWindow = {
+  user_id: number;
+  can_backfill_any_day: boolean;
+  can_backfill_self: boolean;
+  earliest_self_day: string | null;
+  latest_self_day: string | null;
+};
 
 // ── Paper-style KPI donut ────────────────────────────────────────────────────
 function TimeKpiDonut({
@@ -62,6 +88,10 @@ export function TimePage() {
     language,
     now,
     user,
+    token,
+    setError,
+    setNotice,
+    refreshTimeData,
     timeCurrent,
     gaugeNetHours,
     requiredDailyHours,
@@ -119,6 +149,9 @@ export function TimePage() {
 
   const de = language === "de";
   const [editEntriesDate, setEditEntriesDate] = useState<string | null>(null);
+  const [removingVacationDay, setRemovingVacationDay] = useState(false);
+  const [backfillWindow, setBackfillWindow] = useState<TimeBackfillWindow | null>(null);
+  const [backfillWindowReloads, setBackfillWindowReloads] = useState(0);
   const employeeSearchRef = useRef<HTMLDivElement | null>(null);
 
   // Keep the entries date range synced to the currently displayed month so the
@@ -128,6 +161,29 @@ export function TimePage() {
     setTimeEntriesStartDate(`${monthCursorISO}-01`);
     setTimeEntriesEndDate(`${monthCursorISO}-${String(monthEnd.getDate()).padStart(2, "0")}`);
   }, [timeMonthCursor, monthCursorISO, setTimeEntriesStartDate, setTimeEntriesEndDate]);
+
+  // Which days this user may fill in. Read from the server rather than derived
+  // client-side: the self-service span depends on the local dates of the three
+  // most recent entries, which only the backend can resolve. Re-read after each
+  // successful create, because writing an entry moves that span.
+  useEffect(() => {
+    if (mainView !== "time" || !token) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const result = await apiFetch<TimeBackfillWindow>("/time/entries/backfill-window", token);
+        if (!cancelled) setBackfillWindow(result);
+      } catch {
+        // Gating data only. If it cannot be read we render no add-entry control
+        // at all (fail closed) — raising a banner for a capability probe the
+        // user never asked for would be noise on an otherwise working page.
+        if (!cancelled) setBackfillWindow(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [token, mainView, backfillWindowReloads]);
 
   if (mainView !== "time") return null;
 
@@ -143,6 +199,215 @@ export function TimePage() {
   const exportUrl = `/api/time/timesheet/export.xlsx?month=${monthCursorISO}${
     exportTargetUserId != null ? `&user_id=${exportTargetUserId}` : ""
   }`;
+
+  // ── Removing a booked vacation day the person actually worked ──────────
+  // Whose time-tracking the page is currently showing: the manager's picked
+  // employee, else the logged-in user. Same derivation the calendar and the
+  // XLSX export use, so the day we act on is the day that is on screen.
+  const viewedTimeUserId: number | null =
+    isTimeManager && timeTargetUserId.trim() !== ""
+      ? Number(timeTargetUserId)
+      : user?.id ?? null;
+
+  // The approved vacation request covering `iso` for the viewed user, if any.
+  // Mirrors the backend lookup (approved only, start <= day <= end) so the
+  // button appears exactly when the endpoint would find something to remove.
+  function approvedVacationForDay(iso: string): VacationRequest | null {
+    if (viewedTimeUserId == null) return null;
+    return (
+      approvedVacationRequests.find(
+        (row) =>
+          row.user_id === viewedTimeUserId &&
+          row.start_date <= iso &&
+          row.end_date >= iso,
+      ) ?? null
+    );
+  }
+
+  function vacationRemovalNotice(result: VacationDayRemoveResult, dayLabel: string): string {
+    // A weekend or public holiday inside a vacation range never cost an
+    // entitlement day, so nothing can be paid back — say that instead of
+    // claiming a refund the balance will not show.
+    if (!result.was_deductible) {
+      return de
+        ? `Urlaub am ${dayLabel} entfernt. Kein Urlaubstag gutgeschrieben – dieser Tag (Wochenende oder Feiertag) hat nie einen Urlaubstag gekostet.`
+        : `Vacation on ${dayLabel} removed. No vacation day credited back — that day (weekend or public holiday) never cost one.`;
+    }
+    // A working day whose request has no deduction left on record (older
+    // bookings). The day still leaves the range, but there is nothing to
+    // refund — do not announce a credit the balance card will not show.
+    if (result.refunded_days <= 0) {
+      return de
+        ? `Urlaub am ${dayLabel} entfernt. Für diesen Antrag ist kein abgezogener Urlaubstag hinterlegt, daher wurde nichts gutgeschrieben.`
+        : `Vacation on ${dayLabel} removed. This request has no deducted vacation day on record, so nothing was credited back.`;
+    }
+    return de
+      ? `Urlaub am ${dayLabel} entfernt. Ein Urlaubstag wurde dem Resturlaub wieder gutgeschrieben.`
+      : `Vacation on ${dayLabel} removed. One vacation day was credited back to the remaining balance.`;
+  }
+
+  async function removeVacationDay(iso: string) {
+    const request = approvedVacationForDay(iso);
+    if (viewedTimeUserId == null || request === null) return;
+    const dayLabel = formatDayHeading(iso);
+    const personName = menuUserNameById(viewedTimeUserId, request.user_name);
+    const confirmed = window.confirm(
+      de
+        ? `Urlaubstag am ${dayLabel} für ${personName} entfernen? Der Tag wird aus dem genehmigten Urlaub gestrichen und – sofern er einen Urlaubstag gekostet hat – dem Resturlaub wieder gutgeschrieben.`
+        : `Remove the vacation day on ${dayLabel} for ${personName}? The day is taken out of the approved vacation and — if it cost a vacation day — credited back to their remaining balance.`,
+    );
+    if (!confirmed) return;
+    setRemovingVacationDay(true);
+    try {
+      const result = await apiFetch<VacationDayRemoveResult>(
+        "/time/vacation-days/remove",
+        token,
+        {
+          method: "POST",
+          body: JSON.stringify({ user_id: viewedTimeUserId, day: iso }),
+        },
+      );
+      // Reload from the server rather than patching local state: the balance
+      // card, the calendar pills and the request list all have to agree with
+      // what the backend actually booked (it may have split the request).
+      await refreshTimeData();
+      setNotice(vacationRemovalNotice(result, dayLabel));
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        setError(
+          de
+            ? `Kein genehmigter Urlaub am ${dayLabel} gefunden.`
+            : `No approved vacation found on ${dayLabel}.`,
+        );
+      } else if (err instanceof ApiError && err.status === 403) {
+        setError(
+          de
+            ? "Keine Berechtigung, Urlaubstage zu entfernen."
+            : "Not permitted to remove vacation days.",
+        );
+      } else {
+        setError(
+          err instanceof Error
+            ? err.message
+            : de
+              ? "Urlaubstag konnte nicht entfernt werden."
+              : "Could not remove the vacation day.",
+        );
+      }
+    } finally {
+      setRemovingVacationDay(false);
+    }
+  }
+
+  // ── Filling in a day that was never clocked ────────────────────────────
+  // May the caller write an entry on `iso` for the user currently on screen?
+  // Mirrors the backend's two rules exactly (routers/time_tracking.py
+  // create_entry): `time:manage` writes any user on any day; everyone else
+  // writes only their own days, only with the group flag, and only inside the
+  // window the server computed. Rendering the control on anything else would
+  // hand the user a button that 403s.
+  function canBackfillDay(iso: string): boolean {
+    if (backfillWindow === null) return false;
+    if (backfillWindow.can_backfill_any_day) return true;
+    if (!backfillWindow.can_backfill_self) return false;
+    // The self path can only ever write the caller's own days, so a manager-less
+    // view of somebody else (not reachable today, but cheap to hold) is out.
+    if (viewedTimeUserId == null || viewedTimeUserId !== user?.id) return false;
+    const { earliest_self_day: earliest, latest_self_day: latest } = backfillWindow;
+    if (!earliest || !latest) return false;
+    // ISO dates compare correctly as strings.
+    return iso >= earliest && iso <= latest;
+  }
+
+  function formatShortDay(iso: string): string {
+    const d = new Date(`${iso}T00:00:00`);
+    if (Number.isNaN(d.getTime())) return iso;
+    return d.toLocaleDateString(de ? "de-DE" : "en-US", { day: "2-digit", month: "short" });
+  }
+
+  // The self-service span, spelled out. Deliberately quotes the server's own
+  // dates instead of restating a "three days" rule: the window widens with the
+  // person's three most recent entries and is frequently longer than that.
+  const selfBackfillWindowLabel: string | null = (() => {
+    if (backfillWindow === null || backfillWindow.can_backfill_any_day) return null;
+    const { earliest_self_day: earliest, latest_self_day: latest } = backfillWindow;
+    if (!earliest || !latest) return null;
+    return de
+      ? `Nachtragen ist möglich von ${formatShortDay(earliest)} bis ${formatShortDay(latest)}.`
+      : `Entries can be added from ${formatShortDay(earliest)} to ${formatShortDay(latest)}.`;
+  })();
+
+  async function createDayEntry(iso: string, values: AddDayEntryValues): Promise<boolean> {
+    // Re-check rather than trust the caller: the window can go stale while the
+    // modal sits open (midnight, or a manager switching target).
+    if (!canBackfillDay(iso) || viewedTimeUserId == null) return false;
+    // Compose on the clicked day so the entry can never claim a date the user
+    // is not permitted to write. Same local-wall-clock → UTC conversion the
+    // per-shift editor uses, so both paths agree on what "08:00" means.
+    const clockInIso = localDateTimeInputToIso(`${iso}T${values.startTime}`);
+    const clockOutIso = localDateTimeInputToIso(`${iso}T${values.endTime}`);
+    if (!clockInIso || !clockOutIso) {
+      setError(
+        de ? "Bitte Beginn und Ende angeben." : "Please enter a start and an end time.",
+      );
+      return false;
+    }
+
+    const dayLabel = formatDayHeading(iso);
+    const isSelf = viewedTimeUserId === user?.id;
+    const personName = menuUserNameById(viewedTimeUserId);
+    const timeRange = `${values.startTime}–${values.endTime}`;
+    const confirmed = window.confirm(
+      isSelf
+        ? de
+          ? `Zeiteintrag für ${dayLabel} nachtragen? ${timeRange}, ${values.breakMinutes} Min Pause.`
+          : `Add a time entry for ${dayLabel}? ${timeRange}, ${values.breakMinutes} min break.`
+        : de
+          ? `Zeiteintrag für ${personName} am ${dayLabel} nachtragen? ${timeRange}, ${values.breakMinutes} Min Pause. Die Buchung wird im Prüfprotokoll festgehalten.`
+          : `Add a time entry for ${personName} on ${dayLabel}? ${timeRange}, ${values.breakMinutes} min break. The booking is recorded in the audit log.`,
+    );
+    if (!confirmed) return false;
+
+    try {
+      await apiFetch<unknown>("/time/entries", token, {
+        method: "POST",
+        body: JSON.stringify({
+          user_id: viewedTimeUserId,
+          clock_in: clockInIso,
+          clock_out: clockOutIso,
+          break_minutes: values.breakMinutes,
+        }),
+      });
+      // Reload from the server rather than patching local state: the day cell,
+      // the week and month donuts and the timesheet rows all have to agree with
+      // what the backend actually booked (breaks may be trimmed).
+      await refreshTimeData();
+      // Writing an entry moves the self-service window, so re-read the gate too.
+      setBackfillWindowReloads((count) => count + 1);
+      setNotice(
+        isSelf
+          ? de
+            ? `Zeiteintrag für ${dayLabel} nachgetragen (${timeRange}).`
+            : `Time entry added for ${dayLabel} (${timeRange}).`
+          : de
+            ? `Zeiteintrag für ${personName} am ${dayLabel} nachgetragen (${timeRange}).`
+            : `Time entry added for ${personName} on ${dayLabel} (${timeRange}).`,
+      );
+      return true;
+    } catch (err) {
+      // The backend's message is the useful one — it names the overlap, the
+      // permitted window or the clock order. Pass it through untouched rather
+      // than replacing it with a generic sentence.
+      setError(
+        err instanceof Error
+          ? err.message
+          : de
+            ? "Zeiteintrag konnte nicht angelegt werden."
+            : "Could not create the time entry.",
+      );
+      return false;
+    }
+  }
 
   // Manager employee picker helpers
   const filteredEmployees = assignableUsers.filter((u) => {
@@ -855,8 +1120,11 @@ export function TimePage() {
               }
               // Managers can click any day in the calendar to edit. Regular users can
               // only edit days that have at least one editable entry (handled via
-              // recent-entries hours click below).
-              const isClickable = isTimeManager;
+              // recent-entries hours click below). Vacation reviewers are let in as
+              // well even without time:view_all / time:manage — the day dialog is
+              // where a wrongly booked vacation day gets taken back, and the entry
+              // fields there stay read-only unless the entry says can_edit.
+              const isClickable = isTimeManager || canApproveVacation;
               const hasAbsence = cell.absences.length > 0;
               const primaryAbsenceType = hasAbsence ? cell.absences[0].type : null;
               // Stable hover/aria summary: comma-joined absence labels.
@@ -1462,6 +1730,10 @@ export function TimePage() {
       {editEntriesDate &&
         (() => {
           const dayEntries = entriesForDate(editEntriesDate);
+          const modalDayIso = editEntriesDate;
+          // Manager-only, and only when this exact day really is booked as
+          // approved vacation — otherwise the endpoint would 403 or 404.
+          const vacationOnDay = canApproveVacation ? approvedVacationForDay(modalDayIso) : null;
           return (
             <div
               className="modal-backdrop"
@@ -1490,6 +1762,37 @@ export function TimePage() {
                   </button>
                 </div>
                 <div className="edit-day-modal-body">
+                  {vacationOnDay && (
+                    <div className="edit-day-vacation-card">
+                      <div className="edit-day-vacation-head">
+                        <span className="edit-day-vacation-title">
+                          {de ? "Als Urlaub gebucht" : "Booked as vacation"}
+                        </span>
+                        <span className="edit-day-vacation-range">
+                          {vacationOnDay.start_date} – {vacationOnDay.end_date}
+                        </span>
+                      </div>
+                      <p className="edit-day-vacation-hint">
+                        {de
+                          ? "Wenn an diesem Tag doch gearbeitet wurde, kann der Urlaubstag entfernt werden. Er wird dem Resturlaub wieder gutgeschrieben."
+                          : "If this day was actually worked, the vacation day can be removed. It is credited back to the remaining vacation balance."}
+                      </p>
+                      <button
+                        type="button"
+                        className="edit-day-vacation-remove-btn"
+                        disabled={removingVacationDay}
+                        onClick={() => void removeVacationDay(modalDayIso)}
+                      >
+                        {removingVacationDay
+                          ? de
+                            ? "Wird entfernt …"
+                            : "Removing …"
+                          : de
+                            ? "Urlaubstag entfernen"
+                            : "Remove vacation day"}
+                      </button>
+                    </div>
+                  )}
                   {dayEntries.length === 0 && (
                     <p className="muted edit-day-modal-empty">
                       {de
@@ -1573,6 +1876,24 @@ export function TimePage() {
                       </div>
                     </form>
                   ))}
+                  {/* Last in the body so it reads the same either way: directly
+                      under the "no entries" line on an unclocked day (the case
+                      this exists for), and under the existing shifts when a
+                      second one is being added. */}
+                  {canBackfillDay(modalDayIso) && (
+                    <AddDayEntryForm
+                      key={`${modalDayIso}-${viewedTimeUserId ?? "self"}`}
+                      de={de}
+                      hasEntries={dayEntries.length > 0}
+                      otherPersonName={
+                        viewedTimeUserId != null && viewedTimeUserId !== user?.id
+                          ? menuUserNameById(viewedTimeUserId)
+                          : null
+                      }
+                      windowLabel={selfBackfillWindowLabel}
+                      onSubmit={(values) => createDayEntry(modalDayIso, values)}
+                    />
+                  )}
                 </div>
                 <div className="edit-day-modal-foot">
                   <a

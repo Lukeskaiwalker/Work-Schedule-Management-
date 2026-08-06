@@ -136,8 +136,11 @@ def _should_deliver(
     thread_ids: set[int],
     is_admin: bool,
 ) -> bool:
-    # Personal notifications are always filtered to one recipient.
-    if event_type == "notification.created":
+    # Personal notifications are always filtered to one recipient — including
+    # ``notification.resolved``, which tells that one user their panel lost an
+    # entry (task completed or deleted). Checked before the admin short-circuit
+    # on purpose: an admin must not receive other people's personal events.
+    if event_type in {"notification.created", "notification.resolved"}:
         return data.get("user_id") == user_id
 
     if is_admin:

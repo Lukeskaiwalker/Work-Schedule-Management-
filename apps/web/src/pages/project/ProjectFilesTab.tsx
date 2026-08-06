@@ -81,6 +81,34 @@ function iconForContentType(contentType: string): string {
   return "📎";
 }
 
+/** One segment of a `.file-view-toggle` group. Extracted so the view
+ *  picker and the gallery-size picker share exactly one button shape —
+ *  they used to be five near-identical inline blocks that drifted apart. */
+function SegmentedButton({
+  active,
+  label,
+  title,
+  onClick,
+}: {
+  active: boolean;
+  label: string;
+  title: string;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={active}
+      className={active ? "is-active" : undefined}
+      onClick={onClick}
+      title={title}
+    >
+      {label}
+    </button>
+  );
+}
+
 function GalleryTile({
   file,
   isPreviewable,
@@ -349,32 +377,24 @@ export function ProjectFilesTab() {
         ) : null}
         <div className="file-explorer-head">
           <h3>{language === "de" ? "Online Datei-Explorer" : "Online file explorer"}</h3>
-          <div className="row">
+          <div className="row wrap file-explorer-controls">
             <div
               className="file-view-toggle"
               role="tablist"
               aria-label={language === "de" ? "Ansicht" : "View"}
             >
-              <button
-                type="button"
-                role="tab"
-                aria-selected={viewMode === "list"}
-                className={viewMode === "list" ? "is-active" : undefined}
-                onClick={() => setViewMode("list")}
+              <SegmentedButton
+                active={viewMode === "list"}
+                label={language === "de" ? "Liste" : "List"}
                 title={language === "de" ? "Listenansicht" : "List view"}
-              >
-                {language === "de" ? "Liste" : "List"}
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={viewMode === "gallery"}
-                className={viewMode === "gallery" ? "is-active" : undefined}
-                onClick={() => setViewMode("gallery")}
+                onClick={() => setViewMode("list")}
+              />
+              <SegmentedButton
+                active={viewMode === "gallery"}
+                label={language === "de" ? "Galerie" : "Gallery"}
                 title={language === "de" ? "Galerieansicht" : "Gallery view"}
-              >
-                {language === "de" ? "Galerie" : "Gallery"}
-              </button>
+                onClick={() => setViewMode("gallery")}
+              />
             </div>
             {viewMode === "gallery" && (
               /* Three-step size picker (S/M/L) for the gallery grid.
@@ -383,43 +403,32 @@ export function ProjectFilesTab() {
                  image-first browse pick L. The toggle is hidden in list
                  view because list rows have a fixed layout. */
               <div
-                className="file-view-toggle"
+                className="file-view-toggle file-view-toggle--sizes"
                 role="tablist"
                 aria-label={language === "de" ? "Größe" : "Size"}
               >
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={gallerySize === "s"}
-                  className={gallerySize === "s" ? "is-active" : undefined}
-                  onClick={() => setGallerySize("s")}
+                <SegmentedButton
+                  active={gallerySize === "s"}
+                  label="S"
                   title={language === "de" ? "Klein" : "Small"}
-                >
-                  S
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={gallerySize === "m"}
-                  className={gallerySize === "m" ? "is-active" : undefined}
-                  onClick={() => setGallerySize("m")}
+                  onClick={() => setGallerySize("s")}
+                />
+                <SegmentedButton
+                  active={gallerySize === "m"}
+                  label="M"
                   title={language === "de" ? "Mittel" : "Medium"}
-                >
-                  M
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={gallerySize === "l"}
-                  className={gallerySize === "l" ? "is-active" : undefined}
-                  onClick={() => setGallerySize("l")}
+                  onClick={() => setGallerySize("m")}
+                />
+                <SegmentedButton
+                  active={gallerySize === "l"}
+                  label="L"
                   title={language === "de" ? "Groß" : "Large"}
-                >
-                  L
-                </button>
+                  onClick={() => setGallerySize("l")}
+                />
               </div>
             )}
             <input
+              className="file-explorer-search"
               value={fileQuery}
               onChange={(e) => setFileQuery(e.target.value)}
               placeholder={language === "de" ? "Datei suchen" : "Search file"}

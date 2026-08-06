@@ -29,11 +29,17 @@ from app.schemas.api import (
     TimesheetOut,
     VacationBalanceOut,
     VacationBalanceUpdate,
+    TimeBackfillWindowOut,
+    TimeEntryCreate,
+    VacationDayRemoveOut,
+    VacationDayRemovePayload,
     VacationRequestCreate,
     VacationRequestOut,
     VacationRequestReview,
 )
 from app.services.audit import log_admin_action
+from app.services.time_entry_backfill import BackfillWindow, self_backfill_window
+from app.services.vacation_day_removal import remove_vacation_day
 
 router = APIRouter(prefix="/time", tags=["time-tracking"])
 
@@ -1857,3 +1863,214 @@ def trigger_clock_summary_dispatch(
         "email_sent": outcome.email_sent,
         "error": outcome.error,
     }
+
+
+@router.post("/vacation-days/remove", response_model=VacationDayRemoveOut)
+def remove_vacation_day_endpoint(
+    payload: VacationDayRemovePayload,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Take one booked day back out of someone's vacation and refund it.
+
+    For when a person worked on a day they were booked off. The day leaves the
+    vacation range — splitting the request in two if it sat in the middle of a
+    booked week — and the entitlement it consumed returns to their balance, so
+    the worked hours stand on their own.
+
+    Reviewer-only, and only against an already-approved request: a pending
+    request has not deducted anything yet, so there would be nothing to refund
+    and editing it behind the requester's back would be surprising.
+    """
+    if not _is_vacation_reviewer(current_user):
+        raise HTTPException(status_code=403, detail="Not allowed")
+
+    target_user = db.get(User, payload.user_id)
+    if target_user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    _ensure_vacation_balance_year(db, target_user)
+
+    row = db.scalars(
+        select(VacationRequest)
+        .where(
+            VacationRequest.user_id == payload.user_id,
+            VacationRequest.status == "approved",
+            VacationRequest.start_date <= payload.day,
+            VacationRequest.end_date >= payload.day,
+        )
+        .order_by(VacationRequest.start_date.asc())
+    ).first()
+    if row is None:
+        raise HTTPException(
+            status_code=404, detail="No approved vacation found for this day"
+        )
+
+    result = remove_vacation_day(
+        db,
+        request=row,
+        target_user=target_user,
+        day=payload.day,
+        working_days_between=_vacation_days_requested,
+        sanitize_balance=_sanitized_vacation_balance,
+    )
+    db.commit()
+    db.refresh(target_user)
+
+    return VacationDayRemoveOut(
+        user_id=target_user.id,
+        day=result.removed_date,
+        refunded_days=result.refunded_days,
+        refunded_available_days=result.refunded_available_days,
+        refunded_carryover_days=result.refunded_carryover_days,
+        was_deductible=result.was_deductible,
+        request_deleted=result.request_deleted,
+        split_into_second_request=result.split_into_second_request,
+        balance=_vacation_balance_out(db, target_user),
+    )
+
+
+# ── Filling in a day that was never clocked ──────────────────────────────
+
+
+def _self_backfill_window(db: Session, user_id: int) -> BackfillWindow:
+    return self_backfill_window(
+        db,
+        user_id=user_id,
+        today=_local_date_from_utc(utcnow()),
+        local_date_of=_local_date_from_utc,
+    )
+
+
+@router.get("/entries/backfill-window", response_model=TimeBackfillWindowOut)
+def get_backfill_window(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """What the caller may fill in, so the UI never offers a control that 403s.
+
+    Reachable despite sitting below `/entries/{clock_entry_id}` in the file:
+    that route is PATCH-only, and routing matches on method as well as path, so
+    this literal GET path is never shadowed. Adding a `GET /entries/{id}` later
+    WOULD shadow it — that route would have to be declared after this one.
+    """
+    can_manage = _can_manage_time_entries(current_user)
+    can_self = _can_update_recent_own_time_entries(db, current_user.id)
+    window = _self_backfill_window(db, current_user.id) if can_self else None
+    return TimeBackfillWindowOut(
+        user_id=current_user.id,
+        can_backfill_any_day=can_manage,
+        can_backfill_self=can_self,
+        earliest_self_day=window.earliest if window else None,
+        latest_self_day=window.latest if window else None,
+    )
+
+
+@router.post("/entries", response_model=TimeEntryOut)
+def create_entry(
+    payload: TimeEntryCreate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Create a time entry for a day that was never clocked.
+
+    Managers (`time:manage`) may do this for any user on any day. Everyone else
+    may only fill their own gaps, only if their employee group carries
+    `can_update_recent_own_time_entries`, and only inside the window that same
+    rule already lets them edit (see services/time_entry_backfill.py).
+
+    Both paths are written to the audit log: a working-time record created after
+    the fact should always be traceable to who wrote it and when.
+    """
+    can_manage = _can_manage_time_entries(current_user)
+    target_user_id = payload.user_id if payload.user_id is not None else current_user.id
+
+    if target_user_id != current_user.id and not can_manage:
+        raise HTTPException(status_code=403, detail="Not allowed")
+
+    target_user = db.get(User, target_user_id)
+    if target_user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    entry_day = _local_date_from_utc(payload.clock_in)
+    scope = "manage"
+
+    if not can_manage:
+        if not _can_update_recent_own_time_entries(db, current_user.id):
+            raise HTTPException(
+                status_code=403,
+                detail="Your group is not allowed to add time entries",
+            )
+        window = _self_backfill_window(db, current_user.id)
+        if not window.allows(entry_day):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"You can only add entries between {window.earliest.isoformat()} "
+                    f"and {window.latest.isoformat()}"
+                ),
+            )
+        scope = "self"
+
+    if payload.clock_out and payload.clock_out < payload.clock_in:
+        raise HTTPException(status_code=400, detail="clock_out must be after clock_in")
+
+    worked_minutes = (
+        _hours_between(payload.clock_in, payload.clock_out) * 60 if payload.clock_out else None
+    )
+    if worked_minutes is not None and payload.break_minutes > worked_minutes:
+        raise HTTPException(status_code=400, detail="break_minutes exceeds worked duration")
+
+    # An overlapping entry would double-count the same hours in the timesheet.
+    day_start, day_end = _local_period_bounds_utc(entry_day, entry_day)
+    clashes = db.scalars(
+        select(ClockEntry).where(
+            ClockEntry.user_id == target_user_id,
+            ClockEntry.clock_in <= day_end,
+            or_(ClockEntry.clock_out.is_(None), ClockEntry.clock_out >= day_start),
+        )
+    ).all()
+    for existing in clashes:
+        existing_end = existing.clock_out or existing.clock_in
+        new_end = payload.clock_out or payload.clock_in
+        if payload.clock_in <= existing_end and new_end >= existing.clock_in:
+            raise HTTPException(
+                status_code=400,
+                detail="An entry already overlaps this time on that day",
+            )
+
+    entry = ClockEntry(
+        user_id=target_user_id,
+        clock_in=payload.clock_in,
+        clock_out=payload.clock_out,
+    )
+    db.add(entry)
+    db.flush()
+
+    if payload.break_minutes > 0:
+        break_end = payload.clock_out or (
+            payload.clock_in + timedelta(minutes=payload.break_minutes)
+        )
+        break_start = break_end - timedelta(minutes=payload.break_minutes)
+        if break_start < payload.clock_in:
+            break_start = payload.clock_in
+        db.add(BreakEntry(clock_entry_id=entry.id, break_start=break_start, break_end=break_end))
+
+    db.commit()
+    db.refresh(entry)
+
+    log_admin_action(
+        db,
+        current_user,
+        f"time_entry.{scope}_create",
+        "clock_entry",
+        str(entry.id),
+        {
+            "user_id": entry.user_id,
+            "day": entry_day.isoformat(),
+            "clock_in": entry.clock_in.isoformat(),
+            "clock_out": entry.clock_out.isoformat() if entry.clock_out else None,
+            "break_minutes": payload.break_minutes,
+        },
+        category="time",
+    )
+    return _entry_out(db, entry, can_edit=True)

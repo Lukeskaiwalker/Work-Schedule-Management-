@@ -2,7 +2,7 @@ import { ChangeEvent, FormEvent, lazy, MouseEvent, PointerEvent, Suspense, useCa
 import { AppContext } from "./context/AppContext";
 import type { AppContextValue } from "./context/AppContext";
 
-import { ApiError, apiFetch, apiUploadWithProgress } from "./api/client";
+import { ApiError, apiFetch, apiUploadWithProgress, setUnauthorizedHandler } from "./api/client";
 import { taskBoxDisplay } from "./utils/boxes";
 import { compressReportImages } from "./utils/imageCompression";
 import type {
@@ -185,6 +185,7 @@ import {
   detectPublicAuthMode,
   readPublicTokenParam,
 } from "./utils/auth";
+import { isSessionExpired, millisUntilSessionExpiry } from "./utils/session";
 import { toIcsUtcDateTime, toIcsDate, escapeIcs } from "./utils/ics";
 import {
   clamp,
@@ -287,6 +288,9 @@ export function App() {
   } | null;
 
   const [token, setToken] = useState<string | null>(() => readStoredToken());
+  // Set when a live session ended by itself (8h token, no refresh endpoint), so
+  // the login screen can say why instead of looking like a random logout.
+  const [sessionExpired, setSessionExpired] = useState(false);
   const [language, setLanguage] = useState<Language>("de");
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>(() => readStoredWorkspaceMode());
   const [now, setNow] = useState<Date>(new Date());
@@ -2133,6 +2137,84 @@ export function App() {
       });
   }, [token]);
 
+  /* ── Session expiry ───────────────────────────────────────────────────
+   * The API mints one 8-hour token at login and offers no refresh endpoint,
+   * so an expired session can only be recovered by signing in again. A page
+   * reload was already handled (the /auth/me effect above clears the token),
+   * but a session that died while the app stayed OPEN was not: the workspace
+   * kept rendering, the next request 401'd, and each call site showed the raw
+   * "Invalid token" detail as a dismissible banner. Field staff reported
+   * tapping "Einstempeln", missing that banner, and working a whole day
+   * unclocked — the write never reached the server.
+   *
+   * So an ended session now signs out immediately and lands on the login
+   * screen with a reason, rather than leaving someone typing into a page that
+   * cannot save. Three triggers, because any one alone leaves a hole:
+   *   1. a 401 on any authenticated request (the backstop — always correct,
+   *      but only fires after the user has already lost an action),
+   *   2. the tab/PWA being brought back to the foreground (the reported
+   *      case: a phone left open overnight, checked in the morning),
+   *   3. a timer at the token's own expiry (covers a session that dies while
+   *      the app sits open and visible).
+   */
+  // Mirrors `token` so endExpiredSession can read it without being rebuilt on
+  // every token change — it is registered as a module-level handler, and a
+  // changing identity there would churn the registration effect.
+  const tokenRef = useRef<string | null>(token);
+  useEffect(() => {
+    tokenRef.current = token;
+  }, [token]);
+
+  const endExpiredSession = useCallback(() => {
+    // Guard, not an optimisation: several in-flight requests can 401 together,
+    // and the timer can race the visibility check. Only the first should act.
+    if (tokenRef.current === null) return;
+    tokenRef.current = null;
+    try {
+      localStorage.removeItem("smpl_token");
+    } catch {
+      /* private mode / storage disabled — React state still clears below */
+    }
+    setToken(null);
+    setSessionExpired(true);
+  }, []);
+
+  useEffect(() => {
+    setUnauthorizedHandler(endExpiredSession);
+    return () => setUnauthorizedHandler(null);
+  }, [endExpiredSession]);
+
+  useEffect(() => {
+    if (!token) return;
+    // Foregrounding is the moment that matters: it is when someone picks the
+    // phone up and acts, and it is the only signal we get after the device
+    // has been asleep (timers do not fire reliably in a backgrounded tab).
+    function checkOnForeground() {
+      if (document.visibilityState !== "visible") return;
+      if (isSessionExpired(token)) endExpiredSession();
+    }
+    checkOnForeground();
+    document.addEventListener("visibilitychange", checkOnForeground);
+    window.addEventListener("focus", checkOnForeground);
+    return () => {
+      document.removeEventListener("visibilitychange", checkOnForeground);
+      window.removeEventListener("focus", checkOnForeground);
+    };
+  }, [token, endExpiredSession]);
+
+  useEffect(() => {
+    if (!token) return;
+    const remaining = millisUntilSessionExpiry(token);
+    // null => the token carries no readable `exp`. Never sign out on that
+    // guess; the 401 handler still covers it.
+    if (remaining === null) return;
+    // setTimeout clamps above ~24.8 days; a session is never that long, but
+    // guard anyway so a bad token cannot schedule an immediate fire loop.
+    if (remaining > 2_147_483_647) return;
+    const timer = window.setTimeout(endExpiredSession, remaining);
+    return () => window.clearTimeout(timer);
+  }, [token, endExpiredSession]);
+
   useEffect(() => {
     if (!token || !user) return;
     void loadBaseData();
@@ -2841,7 +2923,12 @@ export function App() {
       }
     }
 
-    if (eventType === "notification.created") {
+    // `notification.resolved` fires when a task is completed or deleted and its
+    // notifications are retired server-side. Without it here the event would
+    // fall through to the generic view refresh, so a panel that is *already
+    // open* would keep showing an entry for a task somebody else just finished
+    // — the "task is done but the notification is still there" report.
+    if (eventType === "notification.created" || eventType === "notification.resolved") {
       void loadNotifications();
       return;
     }
@@ -4571,6 +4658,8 @@ export function App() {
       }
       setToken(cleanToken);
       localStorage.setItem("smpl_token", cleanToken);
+      // A fresh session supersedes any "your session ended" notice.
+      setSessionExpired(false);
       setUser(data as User);
     } catch (err: any) {
       const message = String(err?.message ?? "");
@@ -4615,6 +4704,8 @@ export function App() {
       }
       setToken(cleanToken);
       localStorage.setItem("smpl_token", cleanToken);
+      // A fresh session supersedes any "your session ended" notice.
+      setSessionExpired(false);
       const me = (await response.json()) as User;
       setUser(me);
       setMfaLoginPending(false);
@@ -9813,6 +9904,7 @@ export function App() {
     openAdminViewFromMenu,
     openProfileViewFromMenu,
     signOut,
+    sessionExpired,
     selectMaterialCatalogProject,
     normalizeMaterialCatalogLookupKey,
     isLikelyMaterialCatalogIdentifier,

@@ -146,3 +146,52 @@ class SchoolAbsenceOut(BaseModel):
     reviewed_by: int | None = None
     reviewed_at: datetime | None = None
     created_at: datetime
+
+
+class VacationDayRemovePayload(BaseModel):
+    """Take one booked day back out of a person's vacation.
+
+    Used when someone worked despite being booked off: the day leaves the
+    vacation range and its entitlement returns to their balance.
+    """
+
+    user_id: int
+    day: date
+
+
+class VacationDayRemoveOut(BaseModel):
+    user_id: int
+    day: date
+    refunded_days: int
+    refunded_available_days: int
+    refunded_carryover_days: int
+    # False for a weekend or public holiday, which never cost entitlement.
+    was_deductible: bool
+    request_deleted: bool
+    split_into_second_request: bool
+    balance: VacationBalanceOut
+
+
+class TimeEntryCreate(BaseModel):
+    """Fill in a working day that was never clocked.
+
+    ``user_id`` defaults to the caller. Naming someone else requires
+    ``time:manage``. The day is derived from ``clock_in`` rather than sent
+    separately, so the entry can never claim a date its own timestamps
+    contradict.
+    """
+
+    user_id: int | None = None
+    clock_in: datetime
+    clock_out: datetime | None = None
+    break_minutes: int = Field(default=0, ge=0, le=720)
+
+
+class TimeBackfillWindowOut(BaseModel):
+    """What the current user may fill in, so the UI can gate its own controls."""
+
+    user_id: int
+    can_backfill_any_day: bool
+    can_backfill_self: bool
+    earliest_self_day: date | None
+    latest_self_day: date | None

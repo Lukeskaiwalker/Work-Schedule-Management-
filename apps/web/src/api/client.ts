@@ -17,6 +17,37 @@ function authHeader(token: string | null): HeadersInit {
   return token ? { Authorization: `Bearer ${token}` } : {};
 }
 
+/**
+ * Called when the server rejects an authenticated request as unauthenticated.
+ *
+ * The API issues one 8-hour token at login and has no refresh endpoint, so a
+ * 401 on a request that DID carry a token means the session is over and cannot
+ * be recovered without signing in again. Before this hook existed, every call
+ * site caught that 401 and rendered `detail` — the literal string "Invalid
+ * token" — as a dismissible banner while the app carried on looking signed in.
+ * A worker could tap "Einstempeln", miss the banner, and work an entire day
+ * unclocked.
+ *
+ * Registered once by App. Module-level rather than React state because
+ * `apiFetch` is a plain function used from everywhere, including outside
+ * components.
+ */
+type UnauthorizedHandler = () => void;
+
+let unauthorizedHandler: UnauthorizedHandler | null = null;
+
+export function setUnauthorizedHandler(handler: UnauthorizedHandler | null): void {
+  unauthorizedHandler = handler;
+}
+
+function reportUnauthorized(token: string | null, status: number): void {
+  // Only for requests that actually presented a token. A 401 from /auth/login
+  // means "wrong password" and must stay on the login form; signing the user
+  // out there would be nonsense.
+  if (status !== 401 || !token) return;
+  unauthorizedHandler?.();
+}
+
 export type UploadProgress = {
   loaded: number;
   total: number | null;
@@ -39,6 +70,7 @@ export async function apiFetch<T>(
   });
 
   if (!response.ok) {
+    reportUnauthorized(token, response.status);
     let detail: unknown = response.statusText;
     let body: unknown = null;
     try {
@@ -57,6 +89,19 @@ export async function apiFetch<T>(
     throw new ApiError(message, response.status, detail, body);
   }
 
+  // 204 No Content carries no body, but FastAPI still sends
+  // `content-type: application/json` on endpoints declared `status_code=204`.
+  // Parsing that empty body throws — in WebKit with the message "The string
+  // did not match the expected pattern.", which surfaced to users as a red
+  // error banner on actions that had in fact succeeded (deleting a line from a
+  // construction box was the reported case). Because the throw happened before
+  // the caller's refetch, the deleted row also stayed on screen until some
+  // later action refreshed it.
+  //
+  // 205 and 304 are likewise defined as bodiless, so they get the same guard.
+  if (response.status === 204 || response.status === 205 || response.status === 304) {
+    return {} as T;
+  }
   const contentType = response.headers.get("content-type") ?? "";
   if (contentType.includes("application/json")) {
     return response.json() as Promise<T>;
