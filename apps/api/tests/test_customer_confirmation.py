@@ -18,7 +18,7 @@ falls into the ``not_configured`` branch — the task still ends up at
 """
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -191,7 +191,10 @@ def test_public_confirm_expired_link_returns_410(client: TestClient, admin_token
     # Create a task whose due_date is today (the link is invalid the
     # day of). The seeding helper sets project status to angenommen so
     # template task creation doesn't affect this.
-    today_iso = date.today().isoformat()
+    # utcnow(), not date.today(): _task_confirmation_expired compares against
+    # the UTC date, and in CEST the local date runs a day ahead between
+    # midnight and 02:00 — which made this fail nightly.
+    today_iso = datetime.now(timezone.utc).date().isoformat()
     task_id = client.post(
         "/api/tasks",
         headers=auth_headers(admin_token),

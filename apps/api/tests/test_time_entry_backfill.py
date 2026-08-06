@@ -8,7 +8,7 @@ naive implementation would let an employee write history.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 
 import sqlalchemy as sa
 from fastapi.testclient import TestClient
@@ -48,12 +48,26 @@ def _grant_self_backfill(user_id: int, *, allowed: bool = True) -> None:
         db.commit()
 
 
+def _local_today() -> date:
+    """The same calendar day the server uses to size the backfill window.
+
+    The window is derived from ``_local_date_from_utc(utcnow())`` — the LOCAL
+    date. Building test days from a raw ``utcnow()`` instead put them a day
+    earlier whenever local time is ahead of UTC and the clock has passed
+    midnight (00:00-02:00 in CEST), which pushed a day that should sit inside a
+    three-day window one day outside it and failed with 403 every night.
+    """
+    from app.routers.time_tracking import _local_date_from_utc
+
+    return _local_date_from_utc(datetime.utcnow())
+
+
 def _seed_entry(user_id: int, *, days_ago: int) -> int:
     """Insert a clocked entry N days back so a backfill window can derive from it."""
     from app.core.db import SessionLocal
     from app.models.entities import ClockEntry
 
-    start = datetime.utcnow().replace(hour=8, minute=0, second=0, microsecond=0) - timedelta(days=days_ago)
+    start = _day_at(days_ago)
     with SessionLocal() as db:
         entry = ClockEntry(user_id=user_id, clock_in=start, clock_out=start + timedelta(hours=8))
         db.add(entry)
@@ -62,9 +76,7 @@ def _seed_entry(user_id: int, *, days_ago: int) -> int:
 
 
 def _day_at(days_ago: int, hour: int = 8) -> datetime:
-    return (datetime.utcnow() - timedelta(days=days_ago)).replace(
-        hour=hour, minute=0, second=0, microsecond=0
-    )
+    return datetime.combine(_local_today() - timedelta(days=days_ago), time(hour=hour))
 
 
 def _post_entry(client: TestClient, token: str, *, clock_in: datetime, hours: int = 8, **extra):
