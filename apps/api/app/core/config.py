@@ -24,7 +24,18 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg2://smpl:smpl@db:5432/smpl"
     secret_key: str = "change-me"
     access_token_expire_minutes: int = 60 * 8
-    cors_origins: str = "https://localhost,http://localhost"
+    # ``capacitor://localhost`` is the origin of the native iOS shell
+    # (apps/mobile). It is a fixed constant of the platform rather than a
+    # per-deployment value, so it belongs in the default: every deployment that
+    # serves the app needs it, and leaving it out fails in a way that is hard to
+    # read from the client (every request dies in a CORS preflight, with no
+    # server-side log line to explain why).
+    #
+    # Allowing it is not a meaningful widening. The API authenticates with
+    # Bearer tokens held in the shell's own origin-scoped storage, which no
+    # other app can read, and CORS constrains browsers only — it was never what
+    # kept a non-browser client out.
+    cors_origins: str = "https://localhost,http://localhost,capacitor://localhost"
 
     initial_admin_email: str = "admin@example.com"
     initial_admin_password: str = "admin123"

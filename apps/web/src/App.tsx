@@ -3,6 +3,7 @@ import { AppContext } from "./context/AppContext";
 import type { AppContextValue } from "./context/AppContext";
 
 import { ApiError, apiFetch, apiUploadWithProgress, setUnauthorizedHandler } from "./api/client";
+import { apiUrl } from "./native/shell";
 import { taskBoxDisplay } from "./utils/boxes";
 import { compressReportImages } from "./utils/imageCompression";
 import type {
@@ -6968,12 +6969,15 @@ export function App() {
     }
   }
 
+  // These feed href/src attributes rather than fetch(), so the native network
+  // bridge never sees them — they have to be absolutised here or the WebView
+  // would look for the file inside the app bundle.
   function fileDownloadUrl(fileId: number) {
-    return `/api/files/${fileId}/download`;
+    return apiUrl(`/api/files/${fileId}/download`);
   }
 
   function filePreviewUrl(fileId: number) {
-    return `/api/files/${fileId}/preview`;
+    return apiUrl(`/api/files/${fileId}/preview`);
   }
 
   function isPreviewable(file: any) {
@@ -7000,7 +7004,7 @@ export function App() {
       .filter((segment) => segment.length > 0)
       .map((segment) => encodeURIComponent(segment))
       .join("/");
-    return `/api/wiki/library/raw/${normalized}${download ? "?download=1" : ""}`;
+    return apiUrl(`/api/wiki/library/raw/${normalized}${download ? "?download=1" : ""}`);
   }
 
   function formatFileSize(sizeBytes: number) {

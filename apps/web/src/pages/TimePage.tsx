@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAppContext } from "../context/AppContext";
 import { ApiError, apiFetch } from "../api/client";
+import { apiUrl } from "../native/shell";
 import { isoToLocalDateTimeInput, localDateTimeInputToIso } from "../utils/dates";
 import { shiftMonthStart, schoolWeekdayLabel } from "../utils/dates";
 import { formatHours, clamp } from "../utils/misc";
@@ -196,9 +197,11 @@ export function TimePage() {
       ? Number(timeTargetUserId)
       : user?.id ?? null
     : null;
-  const exportUrl = `/api/time/timesheet/export.xlsx?month=${monthCursorISO}${
-    exportTargetUserId != null ? `&user_id=${exportTargetUserId}` : ""
-  }`;
+  const exportUrl = apiUrl(
+    `/api/time/timesheet/export.xlsx?month=${monthCursorISO}${
+      exportTargetUserId != null ? `&user_id=${exportTargetUserId}` : ""
+    }`,
+  );
 
   // ── Removing a booked vacation day the person actually worked ──────────
   // Whose time-tracking the page is currently showing: the manager's picked

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { useAppContext } from "../../context/AppContext";
+import { apiUrl } from "../../native/shell";
 import type { Ticket, TicketChecklistItem, TicketStatus } from "../../types";
 
 type TicketFilter = "all" | TicketStatus;
@@ -207,7 +208,7 @@ export function ProjectTicketsTab() {
         }}
         printUrl={
           activeProjectId
-            ? `/api/projects/${activeProjectId}/job-tickets/${activeTicket.id}/print`
+            ? apiUrl(`/api/projects/${activeProjectId}/job-tickets/${activeTicket.id}/print`)
             : "#"
         }
       />
@@ -328,7 +329,7 @@ export function ProjectTicketsTab() {
                   className="ticket-row-btn"
                   target="_blank"
                   rel="noreferrer"
-                  href={`/api/projects/${activeProjectId}/job-tickets/${ticket.id}/print`}
+                  href={apiUrl(`/api/projects/${activeProjectId}/job-tickets/${ticket.id}/print`)}
                 >
                   {de ? "Drucken" : "Print"}
                 </a>

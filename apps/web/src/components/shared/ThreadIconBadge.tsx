@@ -1,5 +1,7 @@
 import { useState, useEffect } from "react";
 
+import { apiUrl } from "../../native/shell";
+
 export function threadInitials(name: string) {
   const parts = (name || "")
     .trim()
@@ -34,7 +36,7 @@ export function ThreadIconBadge({
     <div className={classNames} aria-hidden="true">
       {hasIcon && !failed && (
         <img
-          src={`/api/threads/${threadId}/icon?v=${encodeURIComponent(versionKey)}`}
+          src={apiUrl(`/api/threads/${threadId}/icon?v=${encodeURIComponent(versionKey)}`)}
           alt=""
           onError={() => setFailed(true)}
         />

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { apiFetch, ApiError } from "../../api/client";
+import { apiUrl } from "../../native/shell";
 import { useAppContext } from "../../context/AppContext";
 import type { ApiToken, ApiTokenCreated } from "../../types";
 
@@ -153,13 +154,13 @@ export function ApiTokensSection() {
         {de ? (
           <>
             Die vollständige API-Referenz ist unter{" "}
-            <a href="/api/docs" target="_blank" rel="noreferrer">/api/docs</a>
+            <a href={apiUrl("/api/docs")} target="_blank" rel="noreferrer">/api/docs</a>
             {" "}verfügbar.
           </>
         ) : (
           <>
             The full API reference is available at{" "}
-            <a href="/api/docs" target="_blank" rel="noreferrer">/api/docs</a>.
+            <a href={apiUrl("/api/docs")} target="_blank" rel="noreferrer">/api/docs</a>.
           </>
         )}
       </p>

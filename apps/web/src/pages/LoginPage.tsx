@@ -121,7 +121,17 @@ export function LoginPage() {
           </p>
           <label>
             Token
-            <input value={publicToken} onChange={(event) => setPublicToken(event.target.value)} required />
+            {/* Invite and reset tokens are case-sensitive and compared
+                verbatim, so autocapitalisation or autocorrect on a phone
+                does not just look wrong — it makes a valid token fail. */}
+            <input
+              value={publicToken}
+              onChange={(event) => setPublicToken(event.target.value)}
+              required
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+            />
           </label>
           {publicAuthMode === "invite" && (
             <>
@@ -135,6 +145,10 @@ export function LoginPage() {
                   type="email"
                   value={publicEmail}
                   onChange={(event) => setPublicEmail(event.target.value)}
+                  inputMode="email"
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
                 />
               </label>
             </>
@@ -216,7 +230,22 @@ export function LoginPage() {
           <p>{language === "de" ? "Private, selbst gehostete Workflow-App" : "Private self-hosted workflow app"}</p>
           <label>
             Email
-            <input value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="username" />
+            {/* iOS applies sentence-case to a bare text input, so a phone
+                keyboard turns "dev@…" into "Dev@…" before the value ever
+                reaches the form. The server lower-cases the address so this
+                particular field survived it, but nothing guaranteed that —
+                and the shifted first character is visible in the box, which
+                reads as a typo the user did not make. inputMode brings up the
+                keyboard with the @ key. */}
+            <input
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              autoComplete="username"
+              inputMode="email"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+            />
           </label>
           <PasswordField
             label={language === "de" ? "Passwort" : "Password"}

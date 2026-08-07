@@ -28,6 +28,11 @@
      300 — modal backdrops
      301 — modal dialogs
      400 — toast / snackbar notifications
+     500 — status-bar strip (fullscreen runtimes only). Deliberately above
+           everything: iOS paints the clock in a fixed dark colour that this
+           app cannot change without a native plugin, so the strip has to win
+           over the camera scanner's dark backdrop too, or the time becomes
+           black-on-black while scanning.
   ─────────────────────────────────────────────────────────────────────── */
   --z-dropdown:     99;
   --z-sticky:      100;
@@ -38,6 +43,7 @@
   --z-modal-bg:    300;
   --z-modal:       301;
   --z-toast:       400;
+  --z-statusbar:   500;
 }
 
 * {
@@ -786,6 +792,36 @@ button.project-item.active:focus-visible {
 .content {
   --content-pad-x: 1.4rem;
   padding: 1.25rem var(--content-pad-x);
+  /* Fullscreen runtimes — the iOS shell and an installed PWA — hand the page
+     the notch area as well, so the first row of content would otherwise start
+     underneath the clock. In a browser tab the chrome already owns that strip
+     and this inset resolves to 0, leaving the web build untouched. */
+  padding-top: calc(1.25rem + env(safe-area-inset-top, 0px));
+}
+
+/* Content scrolls freely under the status bar (the blue header is not sticky),
+   so without an opaque strip the clock and battery end up sitting on top of
+   whatever card happens to be passing. Painted in the page background rather
+   than letting the dark blue header run up behind it: iOS draws near-black
+   status glyphs here, which would be unreadable on #2B4C6F.
+
+   Sits above every other layer, including the fullscreen camera scanner: iOS
+   renders the clock in a fixed dark colour, so any dark backdrop reaching the
+   notch makes it unreadable. The scanner keeps its own top inset, which now
+   positions its header below this strip rather than behind the clock.
+
+   Zero-height — and therefore invisible — anywhere the inset is 0, which is
+   every browser tab. */
+body::before {
+  content: "";
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: env(safe-area-inset-top, 0px);
+  background: var(--bg);
+  z-index: var(--z-statusbar);
+  pointer-events: none;
 }
 
 /* Workspace header — minimal on desktop (just page title, no box).
@@ -31190,4 +31226,125 @@ button.time-calendar-cell {
   flex: 0 0 auto;
   height: auto;
   min-height: 42px;
+}
+
+/* ── Native shell: server setup gate ──────────────────────────────────────
+   Only ever rendered inside the iOS app, before the SPA mounts, so it cannot
+   rely on any layout the app sets up later. Deliberately built from the same
+   tokens as the rest of the sheet — it is the first screen a new device shows
+   and should not look like a different product.
+─────────────────────────────────────────────────────────────────────────── */
+.server-gate {
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: calc(24px + env(safe-area-inset-top, 0px)) 20px
+    calc(24px + env(safe-area-inset-bottom, 0px));
+  background: var(--bg);
+}
+
+.server-gate-card {
+  width: 100%;
+  max-width: 420px;
+  /* The shell renders this inside a fixed-width phone viewport; without an
+     explicit min-width:0 a long placeholder would push the grid item wider
+     than the screen. */
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.server-gate-title {
+  margin: 0;
+  font-size: 1.25rem;
+  color: var(--ink);
+}
+
+.server-gate-intro {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.server-gate-label {
+  margin-top: 4px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.server-gate-input {
+  width: 100%;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--ink);
+  /* 16px minimum, or iOS zooms the whole viewport on focus. */
+  font-size: 1rem;
+}
+
+.server-gate-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.server-gate-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.server-gate-submit {
+  margin-top: 4px;
+  /* Comfortably past the 44pt touch target minimum, for gloved hands. */
+  min-height: 48px;
+  padding: 12px 16px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.server-gate-submit:disabled {
+  opacity: 0.55;
+}
+
+.server-gate-probing {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+  text-align: center;
+}
+
+.server-gate-spinner {
+  width: 26px;
+  height: 26px;
+  margin: 0 auto;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: server-gate-spin 0.7s linear infinite;
+}
+
+@keyframes server-gate-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .server-gate-spinner {
+    animation-duration: 2.4s;
+  }
 }

@@ -252,6 +252,21 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    # Cross-origin callers (the native iOS shell, whose origin is
+    # capacitor://localhost) can only read the seven CORS-safelisted response
+    # headers unless the server names the rest here. Both of these are load
+    # bearing on the client:
+    #
+    #   X-Access-Token      — login and the MFA step read the session JWT out
+    #                         of this header. Without it the client sees null
+    #                         and reports "No access token returned", i.e. a
+    #                         login that cannot succeed even though the server
+    #                         authenticated the user perfectly.
+    #   Content-Disposition — the admin backup download parses the filename
+    #                         from it.
+    #
+    # Same-origin browsers are unaffected: they can already read every header.
+    expose_headers=["X-Access-Token", "Content-Disposition"],
 )
 
 _rate_bucket: dict[str, deque[datetime]] = defaultdict(deque)
