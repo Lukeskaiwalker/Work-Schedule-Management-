@@ -50,11 +50,42 @@ export const IS_NATIVE_SHELL: boolean = detectNativeShell();
  * Exported because the setup screen validates as the user types, and it must
  * apply exactly the rule that `apiUrl` will later rely on.
  */
+/**
+ * Is this host inside the local network, in the sense App Transport Security
+ * uses? NSAllowsLocalNetworking permits cleartext to exactly these and nothing
+ * else, so this predicate has to agree with iOS or we will hand the user a
+ * scheme the OS then refuses to dial.
+ */
+function isLocalHost(hostname: string): boolean {
+  const host = hostname.toLowerCase();
+  if (host === "localhost" || host.endsWith(".local") || host.endsWith(".localhost")) return true;
+  if (host === "[::1]" || host === "::1") return true;
+
+  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(host);
+  if (!v4) return false;
+  const [a, b] = [Number(v4[1]), Number(v4[2])];
+  if (a === 10 || a === 127) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 169 && b === 254) return true; // link-local
+  return false;
+}
+
 export function normalizeServerUrl(raw: string): string | null {
   const trimmed = raw.trim();
   if (!trimmed) return null;
-  // Crews type a bare IP far more often than a full URL.
-  const candidate = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`;
+
+  // Crews type a bare host far more often than a full URL, so a missing scheme
+  // has to be filled in — but not blindly with http://. App Transport Security
+  // only exempts cleartext for local addresses (NSAllowsLocalNetworking), so
+  // defaulting a public hostname to http:// produces a URL iOS refuses to load
+  // at all, surfacing as "server unreachable" for what is really a scheme
+  // problem. Guess by where the host lives: LAN gets http, anything else https.
+  let candidate = trimmed;
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) {
+    const hostOnly = trimmed.split("/")[0].split(":")[0];
+    candidate = `${isLocalHost(hostOnly) ? "http" : "https"}://${trimmed}`;
+  }
 
   let parsed: URL;
   try {

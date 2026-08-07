@@ -6104,7 +6104,12 @@ li {
   background: rgba(10, 26, 48, 0.55);
   display: grid;
   place-items: center;
-  padding: 1rem;
+  /* A tall dialog (max-height 92vh) centred in the viewport reaches within
+     ~4vh of the top, which is less than the notch inset — so its header slid
+     under the opaque status-bar strip. Padding the backdrop keeps the centred
+     card inside the safe area. Both insets are 0 in a browser tab. */
+  padding: calc(1rem + env(safe-area-inset-top, 0px)) 1rem
+    calc(1rem + env(safe-area-inset-bottom, 0px));
   backdrop-filter: blur(2px);
   /* Must sit ABOVE the mobile bottom nav (z-index 150) so modals
      aren't hidden behind the tab bar. */
@@ -17940,6 +17945,11 @@ td {
     z-index: var(--z-sidebar);
     box-shadow: 0 10px 32px rgba(12, 29, 44, 0.22);
     overflow-y: auto;
+    /* The drawer is fixed to the viewport, so in a fullscreen runtime it starts
+       behind the notch — and the status-bar strip is opaque, so the brand row
+       at the top of the drawer was simply not there. Inset it instead. Zero in
+       a browser tab. */
+    padding-top: env(safe-area-inset-top, 0px);
   }
 
   .sidebar.sidebar--open {
@@ -29801,7 +29811,41 @@ button.time-calendar-cell {
   border-radius: 8px;
   background: #fafbfc;
   overflow: hidden;
+  /* Deliberately NOT touch-action:none at rest. The pads sit mid-way down a
+     form much taller than a phone screen, so claiming every touch here meant a
+     thumb-swipe that began on the pad scrolled nothing and drew a stroke across
+     a finished signature. Drawing is armed by tapping — see SignaturePad.tsx. */
+  touch-action: auto;
+}
+
+.signature-pad-canvas-wrapper.is-signing {
   touch-action: none;
+  border-style: solid;
+  border-color: var(--accent);
+  background: #fff;
+}
+
+/* Transparent hit target that arms drawing. Full-bleed so the whole pad is
+   tappable, but an ordinary button, so swipes through it still scroll. */
+.signature-pad-arm-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.signature-pad-done-btn {
+  margin-left: auto;
+  padding: 4px 12px;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.8rem;
+  font-weight: 600;
 }
 .signature-pad-canvas-wrapper.is-required:not(.has-signature) {
   border-color: rgba(220, 38, 38, 0.4);

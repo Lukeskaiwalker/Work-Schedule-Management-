@@ -189,7 +189,13 @@ function ServerGate({ children }: { children: ReactNode }) {
         <input
           id="server-gate-url"
           className="server-gate-input"
-          type="url"
+          // NOT type="url". That applies URL constraint validation, which
+          // requires an explicit scheme — so the browser would silently refuse
+          // to submit "smpl-office.duckdns.org", the exact value the label
+          // above tells the user to type, and normalizeServerUrl's bare-host
+          // handling would be unreachable. inputMode still gets the URL
+          // keyboard without imposing the validation.
+          type="text"
           inputMode="url"
           autoCapitalize="none"
           autoCorrect="off"

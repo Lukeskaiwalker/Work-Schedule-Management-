@@ -313,6 +313,10 @@ export function App() {
   // MFA enabled, so LoginPage shows the 6-digit code step instead of the app.
   const [mfaLoginPending, setMfaLoginPending] = useState(false);
   const [mfaCode, setMfaCode] = useState("");
+  // Header copy of the MFA challenge issued by step one. Only load-bearing
+  // where the httpOnly cookie cannot travel (the native shell, whose origin is
+  // cross-site to the server); the browser keeps using the cookie.
+  const [mfaChallenge, setMfaChallenge] = useState("");
   const [publicAuthMode, setPublicAuthMode] = useState<
     "invite" | "reset" | "customer_confirmation" | null
   >(() => detectPublicAuthMode());
@@ -4653,7 +4657,12 @@ export function App() {
       const data = (await response.json()) as User | { mfa_required?: boolean };
       if (data && (data as { mfa_required?: boolean }).mfa_required) {
         // Password accepted; a second factor is required. The server set a
-        // short-lived httpOnly challenge cookie — show the code step.
+        // short-lived httpOnly challenge cookie AND echoed the same challenge
+        // in a header. Keep the header copy: in the native shell the cookie is
+        // SameSite=Strict and cross-site, so it is never sent back and the
+        // header is the only thing linking the two requests. Harmless on the
+        // web, where the cookie is what actually gets used.
+        setMfaChallenge(response.headers.get("X-Mfa-Challenge")?.trim() ?? "");
         setMfaCode("");
         setMfaLoginPending(true);
         return;
@@ -4693,7 +4702,12 @@ export function App() {
     try {
       const response = await fetch("/api/auth/login/mfa", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          // Only sent when step one handed us one. The server prefers the
+          // cookie, so this changes nothing in a browser.
+          ...(mfaChallenge ? { "X-Mfa-Challenge": mfaChallenge } : {}),
+        },
         body: JSON.stringify({ code: mfaCode.trim() }),
         credentials: "include",
       });
@@ -4720,6 +4734,8 @@ export function App() {
       setUser(me);
       setMfaLoginPending(false);
       setMfaCode("");
+      // The challenge is single-use and now spent; do not keep it around.
+      setMfaChallenge("");
       setPassword("");
     } catch (err: any) {
       setError(String(err?.message ?? "") || (language === "de" ? "Ungültiger Code" : "Invalid code"));
@@ -4729,6 +4745,7 @@ export function App() {
   function cancelMfaLogin() {
     setMfaLoginPending(false);
     setMfaCode("");
+    setMfaChallenge("");
     setPassword("");
     setError("");
     setNotice("");

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import SignatureCanvas from "react-signature-canvas";
 
 /**
@@ -58,6 +58,32 @@ export function SignaturePad({
 }: SignaturePadProps) {
   const padRef = useRef<SignatureCanvas | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
+
+  // Drawing is an explicit MODE rather than the pad's resting state.
+  //
+  // A signature pad and a scrolling form want the same gesture. Capturing
+  // strokes requires `touch-action: none`, which tells the browser "I own every
+  // touch here" — so a thumb-swipe that happens to begin on the pad does not
+  // scroll the report, it draws. On the Baustellenbericht the pads sit in the
+  // middle of a form far taller than a phone screen, so that is not an edge
+  // case: it is what happens whenever someone scrolls past them. The stroke
+  // lands on top of an already-captured signature, which the worker then has to
+  // notice and redo.
+  //
+  // There is no CSS value that means "scroll unless the user meant to draw" —
+  // `pan-y` would let the page steal the vertical half of every signature. So
+  // the pad stays inert (and scrollable straight through) until it is tapped.
+  const [signing, setSigning] = useState(false);
+
+  // Only touch input has the conflict. A mouse drag never scrolls the page, so
+  // on desktop the pad can stay live and behave exactly as it always has —
+  // making everyone click first would be friction bought for nothing.
+  const needsArming =
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(pointer: coarse)").matches;
+
+  const armed = signing || !needsArming;
 
   // v2.5.29 — track the most recent data URL we emitted via onChange.
   // The fix to the "signature disappears right after signing" bug:
@@ -178,8 +204,13 @@ export function SignaturePad({
     onChange("");
   }
 
-  const hint = placeholder ?? (language === "de" ? "Hier unterschreiben" : "Sign here");
-  const clearLabel = language === "de" ? "Löschen" : "Clear";
+  const de = language === "de";
+  // Two different prompts: before tapping, the pad is inert and the user has to
+  // be told that. Only once drawing is armed does "sign here" become true.
+  const signHint = placeholder ?? (de ? "Hier unterschreiben" : "Sign here");
+  const armHint = de ? "Zum Unterschreiben tippen" : "Tap to sign";
+  const clearLabel = de ? "Löschen" : "Clear";
+  const doneLabel = de ? "Fertig" : "Done";
 
   return (
     <div className="signature-pad" id={id}>
@@ -193,6 +224,15 @@ export function SignaturePad({
             touchcancel and multi-touch cases leave visible ink with an empty
             value), so disabling Clear removes the user's only escape.
             handleClear is idempotent, so clearing a blank pad is harmless. */}
+        {needsArming && signing ? (
+          <button
+            type="button"
+            className="signature-pad-done-btn"
+            onClick={() => setSigning(false)}
+          >
+            {doneLabel}
+          </button>
+        ) : null}
         <button
           type="button"
           className="signature-pad-clear-btn"
@@ -203,7 +243,7 @@ export function SignaturePad({
       </div>
       <div
         ref={containerRef}
-        className={`signature-pad-canvas-wrapper${value ? " has-signature" : ""}${required ? " is-required" : ""}`}
+        className={`signature-pad-canvas-wrapper${value ? " has-signature" : ""}${required ? " is-required" : ""}${signing ? " is-signing" : ""}`}
         // Inline minimum height so the container has a non-zero size even
         // before CSS loads — otherwise ResizeObserver fires once with 0×0
         // and the canvas comes up unusable.
@@ -224,13 +264,34 @@ export function SignaturePad({
           clearOnResize={false}
           canvasProps={{
             className: "signature-pad-canvas",
-            style: { width: "100%", height: "100%", display: "block", touchAction: "none" },
+            style: {
+              width: "100%",
+              height: "100%",
+              display: "block",
+              // Only claim the gesture while armed. `pointerEvents: none` is
+              // what actually protects the signature: with touch-action alone
+              // the browser would scroll AND signature_pad would still receive
+              // the touchmove stream and draw along the way.
+              touchAction: armed ? "none" : "auto",
+              pointerEvents: armed ? "auto" : "none",
+            },
           }}
         />
         {!value ? (
           <div className="signature-pad-placeholder" aria-hidden="true">
-            {hint}
+            {armed ? signHint : armHint}
           </div>
+        ) : null}
+        {needsArming && !signing ? (
+          // Sits above the inert canvas purely to arm it. A plain button keeps
+          // the browser's default touch handling, so a swipe that starts here
+          // still scrolls the form — which is the whole point.
+          <button
+            type="button"
+            className="signature-pad-arm-overlay"
+            onClick={() => setSigning(true)}
+            aria-label={`${label} — ${armHint}`}
+          />
         ) : null}
       </div>
     </div>

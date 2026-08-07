@@ -45,7 +45,9 @@ npm run sync          # builds apps/web, then copies into ios/ and updates pods
 npm run open          # opens the workspace in Xcode
 ```
 
-`npm run sync` bakes in the default server address. Override it per build:
+`npm run sync` on its own bakes in **no** default server address — a build
+without `VITE_SMPL_SERVER_URL` ships an app that shows the setup screen on first
+launch and asks for one. To bake in the usual server, set it explicitly:
 
 ```bash
 VITE_SMPL_SERVER_URL=https://smpl-office.duckdns.org npm run sync
@@ -70,10 +72,21 @@ not answer, the setup screen reappears with the old value prefilled — which is
 what makes a moved LAN IP self-healing rather than a support call. An address is
 only saved after it has actually answered, so a typo cannot strand the app.
 
-`https://smpl-office.duckdns.org` works both on the LAN and off-site and needs no
-App Transport Security exception. A bare LAN IP (`http://192.168.1.127`) also
-works: `Info.plist` carries `NSAllowsLocalNetworking`, which permits cleartext to
-private address ranges only, without weakening TLS for anything on the internet.
+`https://smpl-office.duckdns.org` works both on the LAN and off-site, needs no
+App Transport Security exception, and is the address to prefer.
+
+For a plain-http LAN server, `Info.plist` carries `NSAllowsLocalNetworking`.
+That relaxes ATS for local destinations without weakening TLS for anything on
+the internet — but Apple defines "local" narrowly (unqualified hostnames,
+`.local`, and link-local addresses), and the exact treatment of RFC1918
+literals has varied by iOS release. **Plain-http LAN access is untested on a
+real device.** If it turns out to be blocked, the fix is a per-domain
+`NSExceptionDomains` entry for that host rather than a blanket exception.
+
+Because a scheme-less entry has to be resolved to something,
+`normalizeServerUrl` guesses by destination: hosts that look local (RFC1918,
+`127.*`, `169.254.*`, `localhost`, `.local`) get `http://`, everything else
+gets `https://`. Typing a full URL always overrides the guess.
 
 ## What the server must allow
 
@@ -96,6 +109,24 @@ blocking therefore costs the shell nothing.
 matching the crew-facing UI.
 
 ## Known gaps
+
+- **`/api` URLs in `href`/`src` attributes are unauthenticated in the shell.**
+  `apiUrl()` fixes the host but cannot attach credentials: an `<img>` or `<a>`
+  never sends the `Authorization` header, and on the web these worked only
+  because the session cookie rode along same-origin. Cross-origin from
+  `capacitor://localhost` that cookie is not sent, so avatars, thread icons,
+  file preview/download, wiki files, job-ticket print and the timesheet XLSX
+  export all return 401 in the app. Fixing it means either fetching through
+  `apiFetch` into a blob URL, or teaching those endpoints to accept a token
+  the way `/api/events` already does.
+- **MFA login cannot complete in the shell.** The challenge between the two
+  login steps is carried solely by an httpOnly `SameSite=Strict` cookie
+  (`auth.py`), which is not sent on a cross-site request — so any account with
+  TOTP enabled cannot sign in on the phone. Needs the challenge returned in the
+  response body (and exposed) rather than only as a cookie.
+- **Unused plugins.** `@capacitor/app` and `@capacitor/status-bar` are
+  installed and compiled but never imported. Harmless, but they should go on
+  the next `cap sync`.
 
 - **File downloads.** Report PDFs and XLSX exports open through blob URLs. In a
   plain `WKWebView` these need a `WKDownloadDelegate` to reach the Files app;

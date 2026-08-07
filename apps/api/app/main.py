@@ -245,7 +245,22 @@ app = FastAPI(
     openapi_url="/api/openapi.json" if _docs_enabled else None,
 )
 
+# Origin of the native iOS shell (apps/mobile). Capacitor serves the bundled
+# SPA from this fixed scheme+host on every device and every install, so it is a
+# constant of the platform rather than a per-deployment choice.
+NATIVE_SHELL_ORIGIN = "capacitor://localhost"
+
 origins = [origin.strip() for origin in settings.cors_origins.split(",") if origin.strip()]
+
+# Unioned in unconditionally, NOT merely defaulted. Three layers can supply
+# CORS_ORIGINS — the field default here, apps/api/.env.example, and the
+# gitignored per-deployment apps/api/.env — and the last one wins. v2.9.0
+# shipped the shell origin as a field default and production still rejected
+# every request from the app, because .env.example carried a real value that
+# shadowed it; a deployment whose apps/api/.env pins the key would shadow that
+# fix in turn. Appending here is the only layer no configuration can outrank.
+if NATIVE_SHELL_ORIGIN not in origins:
+    origins.append(NATIVE_SHELL_ORIGIN)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -266,7 +281,10 @@ app.add_middleware(
     #                         from it.
     #
     # Same-origin browsers are unaffected: they can already read every header.
-    expose_headers=["X-Access-Token", "Content-Disposition"],
+    #   X-Mfa-Challenge     — links the two halves of an MFA login for clients
+    #                         whose origin makes the SameSite=Strict challenge
+    #                         cookie unusable. See routers/auth.py.
+    expose_headers=["X-Access-Token", "X-Mfa-Challenge", "Content-Disposition"],
 )
 
 _rate_bucket: dict[str, deque[datetime]] = defaultdict(deque)

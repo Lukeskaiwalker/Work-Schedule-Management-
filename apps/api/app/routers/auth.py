@@ -3,7 +3,7 @@ import hashlib
 import re
 import secrets
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -45,6 +45,10 @@ from app.services.runtime_settings import mark_initial_admin_bootstrap_completed
 # httpOnly cookie carrying the short-lived MFA challenge token between the two
 # login steps. Never JS-readable; cleared once the session is issued.
 _MFA_COOKIE = "mfa_challenge"
+# Header carrying the same challenge, for clients whose origin makes the
+# SameSite=Strict cookie unusable (the native iOS shell). Named in one place so
+# the issuing side, the accepting side and CORS expose_headers cannot drift.
+_MFA_CHALLENGE_HEADER = "X-Mfa-Challenge"
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 settings = get_settings()
@@ -260,6 +264,20 @@ def login(
             samesite="strict",
             max_age=5 * 60,
         )
+        # Mirror the challenge into a response header, exactly as _issue_session
+        # does with X-Access-Token, so a client that cannot use the cookie can
+        # still complete step two.
+        #
+        # The cookie is SameSite=Strict, so it is never attached to a request
+        # from the native iOS shell, whose document origin (capacitor://localhost)
+        # is cross-site to the server. Without this header the cookie is the only
+        # link between the two login requests, and every account with MFA enabled
+        # is simply unable to sign in on the phone — step one succeeds, the code
+        # field appears, and a correct code returns "MFA challenge expired".
+        #
+        # Handing it back is no weaker than the cookie: same 5-minute lifetime,
+        # same single purpose, and worthless without the TOTP code it gates.
+        response.headers[_MFA_CHALLENGE_HEADER] = challenge
         log_admin_action(
             db,
             user,
@@ -282,13 +300,19 @@ def login_mfa(
     request: Request,
     db: Session = Depends(get_db),
     mfa_challenge: str | None = Cookie(default=None),
+    x_mfa_challenge: str | None = Header(default=None),
 ):
-    """Second login step: exchange the MFA challenge cookie + a valid TOTP (or
-    recovery) code for a real session."""
+    """Second login step: exchange the MFA challenge + a valid TOTP (or
+    recovery) code for a real session.
+
+    The challenge arrives either as the httpOnly cookie (browsers, same-site) or
+    as the X-Mfa-Challenge header (the native shell, where a SameSite=Strict
+    cookie is never sent). Cookie wins when both are present.
+    """
     client_ip = _client_ip(request)
     user_agent = request.headers.get("user-agent", "")[:255] if request else ""
 
-    token_payload = decode_token(mfa_challenge or "")
+    token_payload = decode_token(mfa_challenge or x_mfa_challenge or "")
     if not token_payload or token_payload.get("purpose") != MFA_CHALLENGE_PURPOSE:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="MFA challenge expired")
     try:
