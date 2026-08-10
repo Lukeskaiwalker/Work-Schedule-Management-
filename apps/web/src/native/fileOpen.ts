@@ -1,5 +1,10 @@
 /**
- * Opening server files inside the native shell.
+ * Opening server files in-app, for surfaces where a link cannot open a tab.
+ *
+ * Two of those exist: the native iOS shell, and the SPA installed to the home
+ * screen as a PWA. They fail differently and only the shell has the auth
+ * problem, but the user-visible symptom is identical — tapping a file throws you
+ * out into Safari to read your own PDF.
  *
  * On the web an `<a href="/api/files/12/preview" target="_blank">` is the whole
  * feature: the tab is same-origin, the session cookie rides along, and the
@@ -22,9 +27,14 @@
  * someone adds would work on the web, pass review, and silently bounce to Safari
  * only on a phone.
  *
- * Inert in a browser — nothing is installed and every link behaves as before.
+ * The PWA case is simpler: it is same-origin, so the session cookie still rides
+ * along and only the navigation needs intercepting. The shell additionally has
+ * to attach the bearer token, which is what fetchFile does for both.
+ *
+ * Inert in a browser tab — nothing is installed and every link behaves as
+ * before.
  */
-import { IS_NATIVE_SHELL, getServerUrl } from "./shell";
+import { IS_APP_SURFACE, getServerUrl } from "./shell";
 
 export type OpenFileRequest = {
   /** Absolute URL of the file on the configured server. */
@@ -54,10 +64,22 @@ export function currentToken(): string | null {
 
 function isApiFileUrl(raw: string): boolean {
   const server = getServerUrl();
-  if (!server) return false;
-  if (!raw.startsWith(server)) return false;
-  const path = raw.slice(server.length);
-  return path.startsWith("/api/");
+  if (server) {
+    // Native shell: links were absolutised to the configured server by apiUrl().
+    if (!raw.startsWith(server)) return false;
+    return raw.slice(server.length).startsWith("/api/");
+  }
+
+  // Installed PWA: no rewriting happened, so the link is same-origin. Only
+  // intercept our own /api paths — an external link should still leave the app.
+  try {
+    const parsed = new URL(raw, window.location.href);
+    const sameOrigin =
+      parsed.protocol === window.location.protocol && parsed.host === window.location.host;
+    return sameOrigin && parsed.pathname.startsWith("/api/");
+  } catch {
+    return false;
+  }
 }
 
 function nameFor(anchor: HTMLAnchorElement, url: string): string {
@@ -84,7 +106,7 @@ function nameFor(anchor: HTMLAnchorElement, url: string): string {
  * something else, and there is nothing to intercept on a non-API link.
  */
 export function installNativeFileOpener(): void {
-  if (!IS_NATIVE_SHELL || installed) return;
+  if (!IS_APP_SURFACE || installed) return;
   installed = true;
 
   document.addEventListener(

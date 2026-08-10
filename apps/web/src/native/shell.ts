@@ -42,6 +42,34 @@ function detectNativeShell(): boolean {
 /** True only inside the native iOS shell. Always false in a browser. */
 export const IS_NATIVE_SHELL: boolean = detectNativeShell();
 
+function detectStandalonePwa(): boolean {
+  if (typeof window === "undefined") return false;
+  if (IS_NATIVE_SHELL) return false;
+  // iOS Safari predates the standard and only reports the legacy flag.
+  const legacy = (window.navigator as Navigator & { standalone?: boolean }).standalone === true;
+  const modern =
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(display-mode: standalone)").matches;
+  return legacy || modern;
+}
+
+/**
+ * True when the SPA is running as a home-screen app rather than a browser tab.
+ *
+ * It is same-origin like any tab — so requests, cookies and `/api` URLs all work
+ * untouched — but it has no browser chrome, which changes one thing that matters:
+ * a `target="_blank"` link cannot open "a new tab". iOS hands it to Safari
+ * instead, throwing the user out of the app to read their own PDF. That is the
+ * same complaint the native shell had, so it gets the same in-app viewer.
+ *
+ * Deliberately false inside the native shell, which has its own detection and
+ * additionally needs credentials attached; here the cookie already rides along.
+ */
+export const IS_STANDALONE_PWA: boolean = detectStandalonePwa();
+
+/** Surfaces where a link cannot open a tab, and files must be shown in-app. */
+export const IS_APP_SURFACE: boolean = IS_NATIVE_SHELL || IS_STANDALONE_PWA;
+
 /**
  * Accept what a person would actually type on a phone keyboard — `192.168.1.127`,
  * `smpl.local:8080`, `https://smpl.example.de/` — and return a canonical origin

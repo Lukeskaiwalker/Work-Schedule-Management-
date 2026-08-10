@@ -1,13 +1,15 @@
 /**
- * In-app file viewer for the native shell.
+ * In-app file viewer for the native shell and the installed PWA.
  *
  * Mounted once at the app root and dormant until a link to an /api file is
- * clicked (see native/fileOpen.ts). Renders nothing at all on the web, where
- * links open in a tab and already work.
+ * clicked (see native/fileOpen.ts). Renders nothing at all in a browser tab,
+ * where links open a tab and already work.
  *
- * Everything is fetched with the session token and displayed from an object
- * URL, which is the only way the shell can show a server file: the request has
- * to carry a bearer token, and a plain link cannot.
+ * Everything is fetched and displayed from an object URL. In the shell that is
+ * the only way to show a server file at all — the request has to carry a bearer
+ * token and a plain link cannot. In the PWA the fetch would succeed either way;
+ * what it buys there is staying inside the app instead of being handed to
+ * Safari.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 
@@ -17,7 +19,7 @@ import {
   type FetchedFile,
   type OpenFileRequest,
 } from "../../native/fileOpen";
-import { IS_NATIVE_SHELL } from "../../native/shell";
+import { IS_APP_SURFACE } from "../../native/shell";
 import { isGerman } from "../../utils/uiLanguage";
 
 type Phase = "idle" | "loading" | "ready" | "error";
@@ -170,6 +172,8 @@ function Viewer() {
 
 export function NativeFileViewer() {
   // Module-level constant, so this branch never flips for the life of the page.
-  if (!IS_NATIVE_SHELL) return null;
+  // Covers the native shell and an installed PWA — both are surfaces where a
+  // link cannot open a tab, so a file has to be shown in place.
+  if (!IS_APP_SURFACE) return null;
   return <Viewer />;
 }
