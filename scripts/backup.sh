@@ -33,6 +33,34 @@ if ! command -v docker >/dev/null 2>&1; then
   exit 1
 fi
 
+# Pick up the backup settings from .env when the environment does not already
+# carry them.
+#
+# Inside the update_runner container these arrive via compose, which reads .env
+# for us. Run straight from a shell — which is what ./scripts/safe_update.sh
+# over SSH does — nothing reads .env at all, so the script aborted with
+# "BACKUP_PASSPHRASE must be set" and the operator had to know to export it by
+# hand. That tripped three separate deploys, and forgetting it is worse than
+# just failing: a deploy that exports the WRONG value writes an archive under a
+# superseded key, which only surfaces during a restore.
+#
+# Read the two keys specifically rather than sourcing the file: .env holds
+# secrets with arbitrary characters, and sourcing it would also import every
+# other setting into this script's environment. Commented-out lines are skipped
+# by the leading-anchor match, which is what makes a retired passphrase inert.
+if [[ -z "${BACKUP_PASSPHRASE:-}" && -z "${BACKUP_PASSPHRASE_FILE:-}" && -f .env ]]; then
+  for _key in BACKUP_PASSPHRASE BACKUP_PASSPHRASE_FILE; do
+    _value="$(sed -n "s/^${_key}=//p" .env | head -n1)"
+    # Strip one layer of surrounding quotes, as compose does.
+    _value="${_value%\"}"; _value="${_value#\"}"
+    _value="${_value%\'}"; _value="${_value#\'}"
+    if [[ -n "${_value}" ]]; then
+      export "${_key}=${_value}"
+    fi
+  done
+  unset _key _value
+fi
+
 if [[ -z "${BACKUP_PASSPHRASE:-}" && -n "${BACKUP_PASSPHRASE_FILE:-}" ]]; then
   if [[ ! -f "${BACKUP_PASSPHRASE_FILE}" ]]; then
     echo "BACKUP_PASSPHRASE_FILE not found: ${BACKUP_PASSPHRASE_FILE}" >&2

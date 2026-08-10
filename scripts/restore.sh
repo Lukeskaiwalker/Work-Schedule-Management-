@@ -15,6 +15,21 @@ if [[ ! -f "$BACKUP_FILE" ]]; then
   exit 1
 fi
 
+# Same .env fallback as backup.sh — see the comment there. It matters more
+# here: a restore is run by hand, under pressure, on a box where the operator
+# may not remember which of the two passphrase settings this deployment uses.
+if [[ -z "${BACKUP_PASSPHRASE:-}" && -z "${BACKUP_PASSPHRASE_FILE:-}" && -f .env ]]; then
+  for _key in BACKUP_PASSPHRASE BACKUP_PASSPHRASE_FILE; do
+    _value="$(sed -n "s/^${_key}=//p" .env | head -n1)"
+    _value="${_value%\"}"; _value="${_value#\"}"
+    _value="${_value%\'}"; _value="${_value#\'}"
+    if [[ -n "${_value}" ]]; then
+      export "${_key}=${_value}"
+    fi
+  done
+  unset _key _value
+fi
+
 if [[ -z "${BACKUP_PASSPHRASE:-}" && -n "${BACKUP_PASSPHRASE_FILE:-}" ]]; then
   if [[ ! -f "${BACKUP_PASSPHRASE_FILE}" ]]; then
     echo "BACKUP_PASSPHRASE_FILE not found: ${BACKUP_PASSPHRASE_FILE}" >&2
