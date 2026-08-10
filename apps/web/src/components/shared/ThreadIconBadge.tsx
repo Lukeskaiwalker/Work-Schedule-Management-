@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 
 import { apiUrl } from "../../native/shell";
+import { AuthedImage } from "./AuthedImage";
 
 export function threadInitials(name: string) {
   const parts = (name || "")
@@ -35,7 +36,7 @@ export function ThreadIconBadge({
   return (
     <div className={classNames} aria-hidden="true">
       {hasIcon && !failed && (
-        <img
+        <AuthedImage
           src={apiUrl(`/api/threads/${threadId}/icon?v=${encodeURIComponent(versionKey)}`)}
           alt=""
           onError={() => setFailed(true)}

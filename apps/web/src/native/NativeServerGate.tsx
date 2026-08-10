@@ -17,6 +17,7 @@
  */
 import { useCallback, useEffect, useState, type FormEvent, type ReactNode } from "react";
 
+import { isGerman } from "../utils/uiLanguage";
 import { IS_NATIVE_SHELL, getServerUrl, normalizeServerUrl, setServerUrl } from "./shell";
 
 /** Long enough for a cold container on a slow link, short enough not to feel hung. */
@@ -59,10 +60,11 @@ async function probeServer(base: string): Promise<boolean> {
 }
 
 function preferGerman(): boolean {
-  // The crew UI is German-first and this screen renders before App has loaded
-  // the user's stored language preference, so fall back to the device locale.
-  if (typeof navigator === "undefined") return true;
-  return !/^en\b/i.test(navigator.language ?? "");
+  // <html lang> rather than the device locale: this screen renders before App
+  // mounts, so it reads index.html's value — which is "de", matching App's own
+  // default. Following navigator.language instead would show an English gate
+  // ahead of a German app on any crew phone set to English.
+  return isGerman();
 }
 
 type CopyKey =

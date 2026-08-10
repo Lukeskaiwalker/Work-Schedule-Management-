@@ -96,7 +96,7 @@ already defaults in the repo — no per-deployment env change:
 | Setting | Value | Why |
 | --- | --- | --- |
 | `cors_origins` | includes `capacitor://localhost` | Otherwise every request dies in preflight |
-| `expose_headers` | `X-Access-Token`, `Content-Disposition` | Cross-origin JS can only read the seven CORS-safelisted response headers. Login reads its JWT out of `X-Access-Token`; without exposing it the client sees `null` and reports "No access token returned" on a request the server authenticated perfectly. |
+| `expose_headers` | `X-Access-Token`, `X-Mfa-Challenge`, `Content-Disposition` | Cross-origin JS can only read the seven CORS-safelisted response headers. Login reads its JWT out of `X-Access-Token`; without exposing it the client sees `null` and reports "No access token returned" on a request the server authenticated perfectly. |
 
 Authentication itself is unaffected: the API accepts a Bearer token, and the CSRF
 check applies only to cookie-authenticated requests. WebKit's third-party-cookie
@@ -108,29 +108,33 @@ blocking therefore costs the shell nothing.
 (report attachments), and local network (LAN server) usage. Strings are German,
 matching the crew-facing UI.
 
+## Opening files
+
+Server files cannot be opened by a plain link in the shell: WKWebView hands a
+cross-origin `<a>` to the system browser, and the request arrives with no
+credential because an `<a>` cannot send `Authorization` and the session cookie is
+`SameSite=Strict`. So `native/fileOpen.ts` intercepts clicks on `/api` links,
+fetches the bytes with the bearer token, and `NativeFileViewer` displays them
+in-app — images, PDFs (WKWebView renders these from a `blob:` URL in an iframe)
+and text. `AuthedImage` does the same for `<img>`.
+
+> **Testing caveat.** None of this reproduces against a server on `localhost`.
+> WebKit treats `capacitor://localhost` and `http://localhost` as the same site,
+> so the cookie is sent and plain links/images work. Point the app at a LAN IP or
+> a real hostname to see what production does.
+
 ## Known gaps
 
-- **`/api` URLs in `href`/`src` attributes are unauthenticated in the shell.**
-  `apiUrl()` fixes the host but cannot attach credentials: an `<img>` or `<a>`
-  never sends the `Authorization` header, and on the web these worked only
-  because the session cookie rode along same-origin. Cross-origin from
-  `capacitor://localhost` that cookie is not sent, so avatars, thread icons,
-  file preview/download, wiki files, job-ticket print and the timesheet XLSX
-  export all return 401 in the app. Fixing it means either fetching through
-  `apiFetch` into a blob URL, or teaching those endpoints to accept a token
-  the way `/api/events` already does.
-- **MFA login cannot complete in the shell.** The challenge between the two
-  login steps is carried solely by an httpOnly `SameSite=Strict` cookie
-  (`auth.py`), which is not sent on a cross-site request — so any account with
-  TOTP enabled cannot sign in on the phone. Needs the challenge returned in the
-  response body (and exposed) rather than only as a cookie.
 - **Unused plugins.** `@capacitor/app` and `@capacitor/status-bar` are
   installed and compiled but never imported. Harmless, but they should go on
   the next `cap sync`.
 
-- **File downloads.** Report PDFs and XLSX exports open through blob URLs. In a
-  plain `WKWebView` these need a `WKDownloadDelegate` to reach the Files app;
-  untested here.
+- **Saving a file out of the app.** The viewer displays a file but offers no
+  "save to Files" or share action; a `WKDownloadDelegate` or the native share
+  sheet would be needed for that.
+- **Project file list (Liste view).** On a phone the table's rows are clipped and
+  do not scroll horizontally, so the Vorschau/Download columns are unreachable —
+  the Galerie view is the only way in. Predates the shell; affects mobile web too.
 - **Push notifications.** The service worker is skipped in the shell (WebKit does
   not run service workers on custom schemes). Real APNs push would need
   `@capacitor/push-notifications` and a server-side change.

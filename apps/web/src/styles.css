@@ -31392,3 +31392,126 @@ button.time-calendar-cell {
     animation-duration: 2.4s;
   }
 }
+
+/* ── Native shell: in-app file viewer ─────────────────────────────────────
+   Only ever rendered inside the iOS app. Fullscreen and above everything
+   except the status-bar strip, which stays on top so the clock keeps its
+   readable backdrop (see the z-index scale).
+─────────────────────────────────────────────────────────────────────────── */
+.file-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-toast);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+.file-viewer-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.file-viewer-title {
+  flex: 1 1 auto;
+  /* Long filenames must truncate, not push the close button off-screen. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.file-viewer-size {
+  flex: 0 0 auto;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.file-viewer-close {
+  flex: 0 0 auto;
+  min-height: 40px;
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.file-viewer-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  background: var(--bg);
+  -webkit-overflow-scrolling: touch;
+}
+
+.file-viewer-centre {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px;
+  text-align: center;
+  color: var(--muted);
+}
+
+.file-viewer-error {
+  margin: 0;
+  color: var(--danger);
+}
+
+.file-viewer-muted {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.file-viewer-image {
+  display: block;
+  max-width: 100%;
+  margin: 0 auto;
+}
+
+.file-viewer-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #fff;
+}
+
+.file-viewer-text {
+  margin: 0;
+  padding: 16px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.85rem;
+  color: var(--ink);
+}
+
+.file-viewer-spinner {
+  width: 26px;
+  height: 26px;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: server-gate-spin 0.7s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .file-viewer-spinner {
+    animation-duration: 2.4s;
+  }
+}

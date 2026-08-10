@@ -1,4 +1,5 @@
 import React from "react";
+import { AuthedImage } from "../components/shared/AuthedImage";
 import { useAppContext } from "../context/AppContext";
 import { AvatarBadge } from "../components/shared/AvatarBadge";
 import { ThreadIconBadge, threadInitials } from "../components/shared/ThreadIconBadge";
@@ -467,7 +468,7 @@ export function MessagesPage() {
                                       de ? "Bild vergrößern" : "Open image preview"
                                     }
                                   >
-                                    <img
+                                    <AuthedImage
                                       src={filePreviewUrl(attachment.id)}
                                       alt={attachment.file_name}
                                     />

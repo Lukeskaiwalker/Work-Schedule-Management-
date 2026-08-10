@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 
 import { apiUrl } from "../../native/shell";
+import { AuthedImage } from "./AuthedImage";
 
 export function AvatarBadge({
   userId,
@@ -25,7 +26,7 @@ export function AvatarBadge({
   return (
     <div className={classNames} aria-hidden="true">
       {hasAvatar && !failed && (
-        <img
+        <AuthedImage
           src={apiUrl(`/api/users/${userId}/avatar?v=${encodeURIComponent(versionKey)}`)}
           alt=""
           onError={() => setFailed(true)}

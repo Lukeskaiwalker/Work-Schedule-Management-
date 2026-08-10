@@ -293,6 +293,13 @@ export function App() {
   // the login screen can say why instead of looking like a random logout.
   const [sessionExpired, setSessionExpired] = useState(false);
   const [language, setLanguage] = useState<Language>("de");
+
+  // Publish the language on <html lang> so components mounted beside App (the
+  // native file viewer, the server gate) can read it, and so screen readers and
+  // hyphenation get the right language instead of index.html's static value.
+  useEffect(() => {
+    document.documentElement.lang = language;
+  }, [language]);
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>(() => readStoredWorkspaceMode());
   const [now, setNow] = useState<Date>(new Date());
 

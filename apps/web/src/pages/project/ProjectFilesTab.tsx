@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect } from "react";
+import { AuthedImage } from "../../components/shared/AuthedImage";
 import { useAppContext } from "../../context/AppContext";
 import { formatServerDateTime } from "../../utils/dates";
 import type { Language, ProjectFile } from "../../types";
@@ -135,7 +136,7 @@ function GalleryTile({
       title={`${file.file_name} · ${file.folder || "/"}`}
     >
       {isImage ? (
-        <img
+        <AuthedImage
           src={filePreviewUrl(file.id)}
           alt={file.file_name}
           className="gallery-tile-image"
