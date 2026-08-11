@@ -91,6 +91,22 @@ class ProjectMember(Base):
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     can_manage: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # True for rows handed out by the "everyone is on every project" default
+    # (services/project_membership.py), false when a human put this person on
+    # this project on purpose.
+    #
+    # Without this the two are the same row and cannot be told apart, which
+    # matters because they mean different things. Being on the team by default
+    # says "you may open this job" — the address, the access note, the
+    # material list. It does not say "you are involved in this job", and a
+    # couple of checks legitimately want the stronger statement: project
+    # finances read through `assert_project_access(..., allow_default_membership
+    # =False)` so margins stay scoped to people actually on the work, exactly
+    # as they were before the default existed.
+    #
+    # It also makes the default reversible: "undo the blanket grant" is
+    # `DELETE WHERE is_default`, which leaves deliberate assignments standing.
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
 class ProjectClassTemplate(Base):

@@ -387,7 +387,13 @@ def get_project_finance(
     current_user: User = Depends(require_permission("finance:view")),
     db: Session = Depends(get_db),
 ):
-    assert_project_access(db, current_user, project_id)
+    # allow_default_membership=False keeps this exactly where it was before
+    # every user became a member of every project. Employees hold finance:view
+    # by default, so counting the blanket membership here would have shown the
+    # contribution margin of every job in the company to every fitter. Reading
+    # finances still needs what it always needed: a deliberate membership, or a
+    # task in the project.
+    assert_project_access(db, current_user, project_id, allow_default_membership=False)
     project = db.get(Project, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -503,7 +509,15 @@ def update_project_finance(
     # members still qualify — allow_task_fallback=False excludes only the
     # read-only task path. The GET endpoint above intentionally keeps the
     # fallback so assigned employees can still *view* finances.
-    assert_project_access(db, current_user, project_id, allow_task_fallback=False)
+    # allow_default_membership=False for the same reason as the GET above: the
+    # blanket grant conveys visibility, never authority to edit the commercials.
+    assert_project_access(
+        db,
+        current_user,
+        project_id,
+        allow_task_fallback=False,
+        allow_default_membership=False,
+    )
     project = db.get(Project, project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -843,9 +857,18 @@ def add_project_member(
     ).first()
     if membership:
         membership.can_manage = payload.can_manage
+        # Adding somebody through this endpoint is a deliberate act, so it
+        # promotes them out of the blanket default even though a row already
+        # existed. Without this, putting a person on a project by hand would
+        # appear to work and still leave them without the access that a
+        # deliberate membership carries — finances in particular.
+        membership.is_default = False
     else:
         membership = ProjectMember(
-            project_id=project_id, user_id=payload.user_id, can_manage=payload.can_manage
+            project_id=project_id,
+            user_id=payload.user_id,
+            can_manage=payload.can_manage,
+            is_default=False,
         )
         db.add(membership)
     db.commit()

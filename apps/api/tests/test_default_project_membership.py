@@ -163,6 +163,77 @@ def test_a_deactivated_user_is_not_handed_new_projects(
     assert employee["id"] not in _member_ids(client, admin_token, project_id)
 
 
+def test_default_membership_does_not_expose_project_finances(
+    client: TestClient, admin_token: str
+) -> None:
+    """The boundary of the default: it grants team visibility, not commercials.
+
+    Employees hold `finance:view` by default, and the finance endpoint checks
+    that permission AND project access. Membership used to be the second key,
+    so a blanket grant would have put the contribution margin of every job in
+    the company in front of every fitter. That is not what "everyone is on the
+    team" was meant to mean.
+    """
+
+    project_id = _project(client, admin_token, "FIN-1")
+    _employee(client, admin_token, "kein-geld@example.com")
+    token = _login(client, "kein-geld@example.com")
+
+    # The project itself is visible — that is the whole point of the default.
+    visible = client.get("/api/projects", headers=_auth(token))
+    assert visible.status_code == 200, visible.text
+    assert "FIN-1" in {row["project_number"] for row in visible.json()}
+    # Its finances are not.
+    denied = client.get(f"/api/projects/{project_id}/finance", headers=_auth(token))
+    assert denied.status_code == 403, denied.text
+
+
+def test_a_deliberate_member_still_sees_finances(
+    client: TestClient, admin_token: str
+) -> None:
+    """The other half: adding somebody on purpose must restore what a
+    membership always carried, even though a default row already existed."""
+
+    project_id = _project(client, admin_token, "FIN-2")
+    employee = _employee(client, admin_token, "mit-geld@example.com")
+    token = _login(client, "mit-geld@example.com")
+    assert client.get(f"/api/projects/{project_id}/finance", headers=_auth(token)).status_code == 403
+
+    added = client.post(
+        f"/api/projects/{project_id}/members",
+        headers=_auth(admin_token),
+        json={"user_id": employee["id"], "can_manage": False},
+    )
+    assert added.status_code == 200, added.text
+
+    allowed = client.get(f"/api/projects/{project_id}/finance", headers=_auth(token))
+    assert allowed.status_code == 200, allowed.text
+
+
+def test_a_task_assignment_still_sees_finances(client: TestClient, admin_token: str) -> None:
+    """The pre-existing task fallback is untouched: an employee working the
+    job could always read its finances, and still can."""
+
+    project_id = _project(client, admin_token, "FIN-3")
+    employee = _employee(client, admin_token, "hat-aufgabe@example.com")
+    token = _login(client, "hat-aufgabe@example.com")
+    assert client.get(f"/api/projects/{project_id}/finance", headers=_auth(token)).status_code == 403
+
+    task = client.post(
+        "/api/tasks",
+        headers=_auth(admin_token),
+        json={
+            "project_id": project_id,
+            "title": "Verteiler setzen",
+            "assignee_ids": [employee["id"]],
+        },
+    )
+    assert task.status_code == 200, task.text
+
+    allowed = client.get(f"/api/projects/{project_id}/finance", headers=_auth(token))
+    assert allowed.status_code == 200, allowed.text
+
+
 def test_the_backfill_is_idempotent(client: TestClient, admin_token: str) -> None:
     """Migration 0067 runs this once, but a re-run must not double-insert —
     the unique constraint would raise rather than skip."""

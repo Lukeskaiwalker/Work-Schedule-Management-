@@ -75,7 +75,11 @@ def add_all_users_to_project(db: Session, *, project_id: int) -> int:
     for user_id in _active_user_ids(db):
         if (project_id, user_id) in existing:
             continue
-        db.add(ProjectMember(project_id=project_id, user_id=user_id, can_manage=False))
+        db.add(
+            ProjectMember(
+                project_id=project_id, user_id=user_id, can_manage=False, is_default=True
+            )
+        )
         added += 1
     return added
 
@@ -102,7 +106,11 @@ def add_user_to_all_projects(db: Session, *, user_id: int) -> int:
     for project_id in project_ids:
         if project_id in already:
             continue
-        db.add(ProjectMember(project_id=project_id, user_id=user_id, can_manage=False))
+        db.add(
+            ProjectMember(
+                project_id=project_id, user_id=user_id, can_manage=False, is_default=True
+            )
+        )
         added += 1
     return added
 
@@ -126,6 +134,13 @@ def backfill_default_memberships(db: Session) -> int:
         for user_id in user_ids:
             if (project_id, user_id) in existing:
                 continue
-            db.add(ProjectMember(project_id=project_id, user_id=user_id, can_manage=False))
+            db.add(
+                ProjectMember(
+                    project_id=project_id,
+                    user_id=user_id,
+                    can_manage=False,
+                    is_default=True,
+                )
+            )
             added += 1
     return added

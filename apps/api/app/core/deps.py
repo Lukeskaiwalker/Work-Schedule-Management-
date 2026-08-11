@@ -181,6 +181,7 @@ def assert_project_access(
     manage_required: bool = False,
     *,
     allow_task_fallback: bool = True,
+    allow_default_membership: bool = True,
 ) -> None:
     # ``allow_task_fallback`` toggles the v2.5.34 task-assignment read
     # fallback (see below). It defaults to True — most read paths want a
@@ -193,10 +194,23 @@ def assert_project_access(
     if has_global_project_access(user.id, user.role, manage_required=manage_required):
         return
 
+    # ``allow_default_membership`` toggles whether the blanket "everyone is on
+    # every project" grant counts here. It defaults to True, because being on
+    # the team by default is exactly what should let someone open a job they
+    # have not been assigned to — that is the point of the default.
+    #
+    # Callers guarding something that should track real involvement rather than
+    # mere visibility pass False. Project finances do: an employee holds
+    # finance:view by default, so without this the blanket grant would put the
+    # contribution margin of every job in the company in front of every fitter.
+    # With it, finance falls through to the same two qualifications it had
+    # before the default existed — a deliberate membership, or a task in the
+    # project.
+    #
     # No broad project permission — check direct ProjectMember entry.
     stmt = select(ProjectMember).where(ProjectMember.project_id == project_id, ProjectMember.user_id == user.id)
     membership = db.scalars(stmt).first()
-    if membership:
+    if membership and (allow_default_membership or not membership.is_default):
         if manage_required and not membership.can_manage:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Project manage access denied")
         return
