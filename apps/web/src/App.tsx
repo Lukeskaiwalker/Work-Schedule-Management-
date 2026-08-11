@@ -155,6 +155,7 @@ import {
   classTemplateMaterialsText,
   projectUpdatedTimestamp,
   isArchivedProjectStatus,
+  inProgressRank,
   formatProjectTitle,
   formatProjectTitleParts,
   projectLocationAddress,
@@ -1016,11 +1017,23 @@ export function App() {
         };
       })
       .sort((a, b) => {
+        // On the Baustelle side, the jobs currently being built come first —
+        // that is what the crew opens the app for, and burying them under a
+        // quote that happened to be edited this morning costs a scroll every
+        // single time. In the Büro the recency order is the useful one, so the
+        // promotion is scoped to the construction workspace.
+        //
+        // Only a first tiebreaker: within each group the existing
+        // last-edited-first order is untouched.
+        if (workspaceMode === "construction") {
+          const rankDiff = inProgressRank(a.status) - inProgressRank(b.status);
+          if (rankDiff !== 0) return rankDiff;
+        }
         const tsDiff = b.last_updated_timestamp - a.last_updated_timestamp;
         if (tsDiff !== 0) return tsDiff;
         return Number(b.project_id || 0) - Number(a.project_id || 0);
       });
-  }, [overview, projectsById]);
+  }, [overview, projectsById, workspaceMode]);
   const filteredDetailedOverview = useMemo(() => {
     if (overviewStatusFilter === "all") return detailedOverviewRows;
     return detailedOverviewRows.filter((row) => String(row.status ?? "").trim() === overviewStatusFilter);
@@ -1066,12 +1079,20 @@ export function App() {
       .map((projectId) => projectsById.get(projectId))
       .filter((project): project is Project => Boolean(project))
       .sort((a, b) => {
+        // Same rule as the project overview: on the Baustelle side the job
+        // being built outranks the one merely touched most recently. Applied
+        // before the slice, so an in-progress project cannot be cut off the
+        // bottom of the card by a stale one.
+        if (workspaceMode === "construction") {
+          const rankDiff = inProgressRank(a.status) - inProgressRank(b.status);
+          if (rankDiff !== 0) return rankDiff;
+        }
         const delta = (projectUpdatedTimestamp(b) ?? 0) - (projectUpdatedTimestamp(a) ?? 0);
         if (delta !== 0) return delta;
         return b.id - a.id;
       })
       .slice(0, 10);
-  }, [projectsById, tasks]);
+  }, [projectsById, tasks, workspaceMode]);
   const sortedTasks = useMemo(() => sortTasksByDueTime(tasks), [tasks]);
   const overviewActionCards = useMemo(
     () =>

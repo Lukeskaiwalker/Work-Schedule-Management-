@@ -124,6 +124,38 @@ export function isArchivedProjectStatus(value: string | null | undefined) {
   return normalized === "archived" || normalized === "archiviert" || normalized.includes("archiv");
 }
 
+/**
+ * True for the "In Durchführung" project status — the jobs actually being
+ * built right now.
+ *
+ * Matched loosely, like `isArchivedProjectStatus` above, because the status is
+ * free text: it comes from `PROJECT_STATUS_PRESETS` in the picker but existing
+ * rows were typed by hand or imported, so casing drifts and the umlaut is
+ * sometimes transliterated to "Durchfuehrung". A strict equality check would
+ * silently fail to promote exactly the projects the crew needs at the top.
+ */
+export function isInProgressProjectStatus(value: string | null | undefined) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+  if (!normalized) return false;
+  return normalized.includes("durchführ") || normalized.includes("durchfuehr");
+}
+
+/**
+ * Sort key that floats in-progress projects to the top.
+ *
+ * Returns 0 for in-progress and 1 for everything else, so it slots in front of
+ * an existing comparator as a first tiebreaker and leaves the established
+ * within-group order (recency) untouched:
+ *
+ *     .sort((a, b) => inProgressRank(a.status) - inProgressRank(b.status)
+ *                     || existingComparator(a, b))
+ */
+export function inProgressRank(value: string | null | undefined): 0 | 1 {
+  return isInProgressProjectStatus(value) ? 0 : 1;
+}
+
 export function preferredProjectDisplayName(customerName?: string | null, projectName?: string | null) {
   const customer = String(customerName ?? "").trim();
   if (customer) return customer;
