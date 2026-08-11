@@ -1,0 +1,828 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SMPL mobile mockup — drag this file into Figma to start designing.
+
+  Each top-level <g id="..."> becomes a Figma frame on import. Frame
+  dimensions are 390×844 (iPhone 14 / standard mobile design size).
+  Real design tokens extracted from apps/web/src/styles.css so what you
+  see here matches production.
+
+  Frames:
+    00 — Design system (colors, typography, components)
+    01 — Login
+    02 — Time tracking (most-used screen)
+    03 — My tasks
+    04 — Messages / threads
+    05 — Admin Backups (new in v2.3.0)
+
+  Source: SMPL workflow app, generated 2026-04-29 against v2.3.0 source.
+-->
+<svg xmlns="http://www.w3.org/2000/svg"
+     width="3090" height="980"
+     viewBox="0 0 3090 980"
+     font-family="Source Sans 3, system-ui, sans-serif">
+
+  <defs>
+    <!-- Reusable status bar (top of every screen). Time, signal, battery. -->
+    <symbol id="status-bar" viewBox="0 0 390 44" overflow="visible">
+      <text x="32" y="28" font-size="15" font-weight="600" fill="#14293d">9:41</text>
+      <g transform="translate(310,16)">
+        <!-- signal -->
+        <rect x="0" y="8" width="3" height="4" fill="#14293d" rx="0.5"/>
+        <rect x="5" y="6" width="3" height="6" fill="#14293d" rx="0.5"/>
+        <rect x="10" y="3" width="3" height="9" fill="#14293d" rx="0.5"/>
+        <rect x="15" y="0" width="3" height="12" fill="#14293d" rx="0.5"/>
+        <!-- wifi -->
+        <path d="M27 9 q4 -4 8 0" stroke="#14293d" stroke-width="2" fill="none" stroke-linecap="round"/>
+        <path d="M30 11 q1.5 -1.5 3 0" stroke="#14293d" stroke-width="2" fill="none" stroke-linecap="round"/>
+        <!-- battery -->
+        <rect x="48" y="2" width="22" height="10" rx="2" stroke="#14293d" stroke-width="1" fill="none"/>
+        <rect x="50" y="4" width="16" height="6" rx="1" fill="#14293d"/>
+        <rect x="71" y="5" width="2" height="4" fill="#14293d"/>
+      </g>
+    </symbol>
+
+    <!-- Reusable bottom nav: 5 tabs. The "active" tab is parameterized at use site. -->
+    <symbol id="bottom-nav-shell" viewBox="0 0 390 80" overflow="visible">
+      <rect x="0" y="0" width="390" height="80" fill="#ffffff"/>
+      <line x1="0" y1="0" x2="390" y2="0" stroke="#e2ecf7" stroke-width="1"/>
+    </symbol>
+  </defs>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       FRAME 00 — DESIGN SYSTEM
+       Colors, typography, and component swatches you can pull from while
+       designing the rest of the screens. Drop these onto any frame to
+       reuse SMPL brand tokens.
+       ═══════════════════════════════════════════════════════════════════ -->
+  <g id="00-Design-System" transform="translate(60,80)">
+    <!-- artboard background -->
+    <rect width="390" height="844" fill="#ffffff" stroke="#c9d9ea" stroke-width="1" rx="8"/>
+    <text x="195" y="-30" font-size="14" font-weight="600" fill="#5c7895" text-anchor="middle">00 — Design System</text>
+
+    <!-- Title -->
+    <text x="24" y="50" font-size="22" font-weight="700" fill="#14293d">SMPL Tokens</text>
+    <text x="24" y="72" font-size="12" fill="#8fa2ba">Drag swatches into your designs · v2.3.0</text>
+
+    <!-- Color swatches -->
+    <text x="24" y="110" font-size="13" font-weight="600" fill="#14293d">Colors</text>
+    <g transform="translate(24,124)">
+      <!-- Row 1: primary -->
+      <g>
+        <rect x="0" y="0" width="64" height="48" rx="6" fill="#14293d"/>
+        <text x="32" y="64" font-size="9" font-weight="600" fill="#14293d" text-anchor="middle">Navy</text>
+        <text x="32" y="76" font-size="8" fill="#8fa2ba" text-anchor="middle">#14293D</text>
+      </g>
+      <g transform="translate(72,0)">
+        <rect x="0" y="0" width="64" height="48" rx="6" fill="#2f70b7"/>
+        <text x="32" y="64" font-size="9" font-weight="600" fill="#14293d" text-anchor="middle">Blue</text>
+        <text x="32" y="76" font-size="8" fill="#8fa2ba" text-anchor="middle">#2F70B7</text>
+      </g>
+      <g transform="translate(144,0)">
+        <rect x="0" y="0" width="64" height="48" rx="6" fill="#5c7895"/>
+        <text x="32" y="64" font-size="9" font-weight="600" fill="#14293d" text-anchor="middle">Slate</text>
+        <text x="32" y="76" font-size="8" fill="#8fa2ba" text-anchor="middle">#5C7895</text>
+      </g>
+      <g transform="translate(216,0)">
+        <rect x="0" y="0" width="64" height="48" rx="6" fill="#c9d9ea"/>
+        <text x="32" y="64" font-size="9" font-weight="600" fill="#14293d" text-anchor="middle">Mist</text>
+        <text x="32" y="76" font-size="8" fill="#8fa2ba" text-anchor="middle">#C9D9EA</text>
+      </g>
+      <g transform="translate(288,0)">
+        <rect x="0" y="0" width="64" height="48" rx="6" fill="#edf4ff" stroke="#c9d9ea" stroke-width="0.5"/>
+        <text x="32" y="64" font-size="9" font-weight="600" fill="#14293d" text-anchor="middle">Tint</text>
+        <text x="32" y="76" font-size="8" fill="#8fa2ba" text-anchor="middle">#EDF4FF</text>
+      </g>
+      <!-- Row 2: semantic -->
+      <g transform="translate(0,100)">
+        <rect x="0" y="0" width="64" height="48" rx="6" fill="#34a853"/>
+        <text x="32" y="64" font-size="9" font-weight="600" fill="#14293d" text-anchor="middle">Vacation</text>
+        <text x="32" y="76" font-size="8" fill="#8fa2ba" text-anchor="middle">#34A853</text>
+      </g>
+      <g transform="translate(72,100)">
+        <rect x="0" y="0" width="64" height="48" rx="6" fill="#dc3545"/>
+        <text x="32" y="64" font-size="9" font-weight="600" fill="#14293d" text-anchor="middle">Sick</text>
+        <text x="32" y="76" font-size="8" fill="#8fa2ba" text-anchor="middle">#DC3545</text>
+      </g>
+      <g transform="translate(144,100)">
+        <rect x="0" y="0" width="64" height="48" rx="6" fill="#6c4ab6"/>
+        <text x="32" y="64" font-size="9" font-weight="600" fill="#14293d" text-anchor="middle">School</text>
+        <text x="32" y="76" font-size="8" fill="#8fa2ba" text-anchor="middle">#6C4AB6</text>
+      </g>
+      <g transform="translate(216,100)">
+        <rect x="0" y="0" width="64" height="48" rx="6" fill="#f0a500"/>
+        <text x="32" y="64" font-size="9" font-weight="600" fill="#14293d" text-anchor="middle">Warn</text>
+        <text x="32" y="76" font-size="8" fill="#8fa2ba" text-anchor="middle">#F0A500</text>
+      </g>
+      <g transform="translate(288,100)">
+        <rect x="0" y="0" width="64" height="48" rx="6" fill="#8fa2ba"/>
+        <text x="32" y="64" font-size="9" font-weight="600" fill="#14293d" text-anchor="middle">Muted</text>
+        <text x="32" y="76" font-size="8" fill="#8fa2ba" text-anchor="middle">#8FA2BA</text>
+      </g>
+    </g>
+
+    <!-- Typography scale -->
+    <text x="24" y="370" font-size="13" font-weight="600" fill="#14293d">Typography</text>
+    <g transform="translate(24,388)">
+      <text x="0" y="22" font-size="22" font-weight="700" fill="#14293d">H1 · 22px / 700</text>
+      <text x="0" y="48" font-size="18" font-weight="600" fill="#14293d">H2 · 18px / 600</text>
+      <text x="0" y="72" font-size="15" font-weight="600" fill="#14293d">H3 · 15px / 600</text>
+      <text x="0" y="94" font-size="14" font-weight="400" fill="#14293d">Body · 14px / regular</text>
+      <text x="0" y="114" font-size="12" font-weight="400" fill="#5c7895">Small · 12px / muted</text>
+      <text x="0" y="132" font-size="10" font-weight="500" fill="#8fa2ba">CAPTION · 10px / uppercase tone</text>
+    </g>
+
+    <!-- Components -->
+    <text x="24" y="560" font-size="13" font-weight="600" fill="#14293d">Components</text>
+    <g transform="translate(24,576)">
+      <!-- Primary button -->
+      <rect x="0" y="0" width="160" height="44" rx="10" fill="#2f70b7"/>
+      <text x="80" y="28" font-size="14" font-weight="600" fill="#ffffff" text-anchor="middle">Primary Button</text>
+      <!-- Ghost button -->
+      <rect x="172" y="0" width="160" height="44" rx="10" fill="#ffffff" stroke="#c9d9ea" stroke-width="1"/>
+      <text x="252" y="28" font-size="14" font-weight="600" fill="#14293d" text-anchor="middle">Ghost</text>
+
+      <!-- Input -->
+      <rect x="0" y="60" width="332" height="44" rx="10" fill="#ffffff" stroke="#c9d9ea" stroke-width="1"/>
+      <text x="14" y="88" font-size="13" fill="#8fa2ba">Input placeholder…</text>
+
+      <!-- Card -->
+      <rect x="0" y="120" width="332" height="64" rx="12" fill="#f8fbff" stroke="#e2ecf7" stroke-width="1"/>
+      <text x="14" y="142" font-size="13" font-weight="600" fill="#14293d">Card title</text>
+      <text x="14" y="160" font-size="12" fill="#5c7895">Card body text · meta info</text>
+      <text x="14" y="176" font-size="10" fill="#8fa2ba">2026-04-29 · 14:32</text>
+
+      <!-- Pills -->
+      <g transform="translate(0,200)">
+        <rect x="0" y="0" width="74" height="22" rx="11" fill="#34a853"/>
+        <text x="37" y="15" font-size="11" font-weight="600" fill="#ffffff" text-anchor="middle">Urlaub</text>
+        <rect x="82" y="0" width="86" height="22" rx="11" fill="#dc3545"/>
+        <text x="125" y="15" font-size="11" font-weight="600" fill="#ffffff" text-anchor="middle">Krankheit</text>
+        <rect x="176" y="0" width="100" height="22" rx="11" fill="#6c4ab6"/>
+        <text x="226" y="15" font-size="11" font-weight="600" fill="#ffffff" text-anchor="middle">Berufsschule</text>
+        <rect x="284" y="0" width="48" height="22" rx="11" fill="#edf4ff" stroke="#c5dbf0" stroke-width="1"/>
+        <text x="308" y="15" font-size="11" font-weight="600" fill="#14293d" text-anchor="middle">Tag</text>
+      </g>
+
+      <!-- Avatar -->
+      <g transform="translate(0,240)">
+        <circle cx="20" cy="20" r="20" fill="#2f70b7"/>
+        <text x="20" y="26" font-size="14" font-weight="600" fill="#ffffff" text-anchor="middle">LS</text>
+        <circle cx="60" cy="20" r="20" fill="#5c7895"/>
+        <text x="60" y="26" font-size="14" font-weight="600" fill="#ffffff" text-anchor="middle">AM</text>
+        <circle cx="100" cy="20" r="20" fill="#34a853"/>
+        <text x="100" y="26" font-size="14" font-weight="600" fill="#ffffff" text-anchor="middle">BK</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       FRAME 01 — LOGIN
+       Entry point. Brand mark + email/password + error/notice slots.
+       ═══════════════════════════════════════════════════════════════════ -->
+  <g id="01-Login" transform="translate(510,80)">
+    <rect width="390" height="844" fill="#f8fbff" rx="8"/>
+    <text x="195" y="-30" font-size="14" font-weight="600" fill="#5c7895" text-anchor="middle">01 — Login</text>
+
+    <use href="#status-bar"/>
+
+    <!-- Brand mark -->
+    <g transform="translate(0,180)">
+      <circle cx="195" cy="0" r="40" fill="#2f70b7"/>
+      <text x="195" y="9" font-size="28" font-weight="700" fill="#ffffff" text-anchor="middle">S</text>
+    </g>
+    <text x="195" y="252" font-size="22" font-weight="700" fill="#14293d" text-anchor="middle">SMPL Workflow</text>
+    <text x="195" y="276" font-size="13" fill="#5c7895" text-anchor="middle">Anmelden um fortzufahren</text>
+
+    <!-- Email field -->
+    <g transform="translate(28,330)">
+      <text x="0" y="0" font-size="11" font-weight="600" fill="#5c7895">E-MAIL</text>
+      <rect x="0" y="10" width="334" height="48" rx="10" fill="#ffffff" stroke="#c9d9ea" stroke-width="1"/>
+      <text x="14" y="40" font-size="14" fill="#14293d">name@firma.de</text>
+    </g>
+
+    <!-- Password field -->
+    <g transform="translate(28,418)">
+      <text x="0" y="0" font-size="11" font-weight="600" fill="#5c7895">PASSWORT</text>
+      <rect x="0" y="10" width="334" height="48" rx="10" fill="#ffffff" stroke="#c9d9ea" stroke-width="1"/>
+      <text x="14" y="40" font-size="20" letter-spacing="2" fill="#14293d">••••••••</text>
+      <!-- eye toggle -->
+      <g transform="translate(298,28)">
+        <circle cx="6" cy="6" r="6" fill="none" stroke="#8fa2ba" stroke-width="1.5"/>
+        <circle cx="6" cy="6" r="2" fill="#8fa2ba"/>
+      </g>
+    </g>
+
+    <!-- Login button -->
+    <g transform="translate(28,506)">
+      <rect x="0" y="0" width="334" height="50" rx="10" fill="#2f70b7"/>
+      <text x="167" y="32" font-size="15" font-weight="600" fill="#ffffff" text-anchor="middle">Anmelden</text>
+    </g>
+
+    <!-- Forgot link -->
+    <text x="195" y="582" font-size="13" font-weight="500" fill="#2f70b7" text-anchor="middle">Passwort vergessen?</text>
+
+    <!-- Footer build -->
+    <text x="195" y="800" font-size="11" fill="#8fa2ba" text-anchor="middle">v2.3.0 · build 0b91c8d</text>
+  </g>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       FRAME 02 — TIME TRACKING
+       Most-used screen. Donut KPI, clock-in/out, week summary,
+       calendar grid with absence pills (the v2.2.0 feature).
+       ═══════════════════════════════════════════════════════════════════ -->
+  <g id="02-Time-Tracking" transform="translate(960,80)">
+    <rect width="390" height="844" fill="#f8fbff" rx="8"/>
+    <text x="195" y="-30" font-size="14" font-weight="600" fill="#5c7895" text-anchor="middle">02 — Time Tracking</text>
+
+    <use href="#status-bar"/>
+
+    <!-- Mobile header -->
+    <g transform="translate(0,52)">
+      <rect width="390" height="56" fill="#ffffff"/>
+      <line x1="0" y1="56" x2="390" y2="56" stroke="#e2ecf7" stroke-width="1"/>
+      <text x="20" y="36" font-size="18" font-weight="700" fill="#14293d">Zeiterfassung</text>
+      <circle cx="354" cy="28" r="18" fill="#2f70b7"/>
+      <text x="354" y="34" font-size="13" font-weight="600" fill="#ffffff" text-anchor="middle">LS</text>
+    </g>
+
+    <!-- KPI donut card -->
+    <g transform="translate(20,128)">
+      <rect width="350" height="178" rx="16" fill="#ffffff" stroke="#e2ecf7" stroke-width="1"/>
+
+      <text x="20" y="28" font-size="11" font-weight="600" fill="#5c7895">HEUTE</text>
+      <text x="20" y="52" font-size="13" fill="#5c7895">Mittwoch, 29. April 2026</text>
+
+      <!-- Donut -->
+      <g transform="translate(245,90)">
+        <circle r="56" fill="none" stroke="#E2ECF7" stroke-width="10"/>
+        <!-- 65% arc — approx with stroke-dasharray -->
+        <circle r="56" fill="none" stroke="#2F70B7" stroke-width="10"
+                stroke-linecap="round"
+                stroke-dasharray="228.7 351.85"
+                transform="rotate(-90)"/>
+        <text y="2" font-size="20" font-weight="700" fill="#14293d" text-anchor="middle">5.2h</text>
+        <text y="20" font-size="11" fill="#8fa2ba" text-anchor="middle">of 8h</text>
+      </g>
+
+      <!-- Status text -->
+      <text x="20" y="100" font-size="13" fill="#14293d">Eingestempelt seit</text>
+      <text x="20" y="124" font-size="22" font-weight="700" fill="#14293d">07:42</text>
+
+      <!-- Action button -->
+      <rect x="20" y="138" width="148" height="32" rx="8" fill="#dc3545"/>
+      <text x="94" y="159" font-size="13" font-weight="600" fill="#ffffff" text-anchor="middle">Ausstempeln</text>
+    </g>
+
+    <!-- Mini calendar -->
+    <g transform="translate(20,326)">
+      <rect width="350" height="252" rx="16" fill="#ffffff" stroke="#e2ecf7" stroke-width="1"/>
+      <text x="20" y="28" font-size="13" font-weight="600" fill="#14293d">April 2026</text>
+      <text x="330" y="28" font-size="20" font-weight="600" fill="#5c7895" text-anchor="end">›</text>
+      <text x="304" y="28" font-size="20" font-weight="600" fill="#5c7895" text-anchor="end">‹</text>
+
+      <!-- weekday header -->
+      <g transform="translate(20,46)" font-size="10" font-weight="600" fill="#8fa2ba" text-anchor="middle">
+        <text x="20">Mo</text><text x="65">Di</text><text x="110">Mi</text><text x="155">Do</text>
+        <text x="200">Fr</text><text x="245">Sa</text><text x="290">So</text>
+      </g>
+
+      <!-- date cells (4 rows of 7 — abbreviated mockup) -->
+      <g transform="translate(20,58)" font-size="11" font-weight="600" fill="#14293d" text-anchor="middle">
+        <!-- row 1 (week 14, days 1-5 + weekend) -->
+        <g>
+          <rect x="0" y="0" width="40" height="36" rx="6" fill="#f5f9fd"/>
+          <text x="20" y="22">1</text>
+          <rect x="45" y="0" width="40" height="36" rx="6" fill="#d9e8f7"/>
+          <text x="65" y="16">2</text>
+          <text x="65" y="30" font-size="9" fill="#2f70b7">7.5h</text>
+          <rect x="90" y="0" width="40" height="36" rx="6" fill="#d9e8f7"/>
+          <text x="110" y="16">3</text>
+          <text x="110" y="30" font-size="9" fill="#2f70b7">8.0h</text>
+          <rect x="135" y="0" width="40" height="36" rx="6" fill="#e6f6ec"/>
+          <text x="155" y="16">4</text>
+          <rect x="135" y="22" width="36" height="11" rx="6" fill="#34a853" transform="translate(2,0)"/>
+          <text x="155" y="30" font-size="8" fill="#ffffff">Urlaub</text>
+          <rect x="180" y="0" width="40" height="36" rx="6" fill="#e6f6ec"/>
+          <text x="200" y="16">5</text>
+          <rect x="180" y="22" width="36" height="11" rx="6" fill="#34a853" transform="translate(2,0)"/>
+          <text x="200" y="30" font-size="8" fill="#ffffff">Urlaub</text>
+          <rect x="225" y="0" width="40" height="36" rx="6" fill="#f5f9fd"/>
+          <text x="245" y="22" fill="#9aaec4">6</text>
+          <rect x="270" y="0" width="40" height="36" rx="6" fill="#f5f9fd"/>
+          <text x="290" y="22" fill="#9aaec4">7</text>
+        </g>
+        <!-- row 2 -->
+        <g transform="translate(0,42)">
+          <rect x="0" y="0" width="40" height="36" rx="6" fill="#d9e8f7"/>
+          <text x="20" y="16">8</text>
+          <text x="20" y="30" font-size="9" fill="#2f70b7">8.0h</text>
+          <rect x="45" y="0" width="40" height="36" rx="6" fill="#ece5fa"/>
+          <text x="65" y="16">9</text>
+          <rect x="45" y="22" width="36" height="11" rx="6" fill="#6c4ab6" transform="translate(2,0)"/>
+          <text x="65" y="30" font-size="8" fill="#ffffff">BS</text>
+          <rect x="90" y="0" width="40" height="36" rx="6" fill="#d9e8f7"/>
+          <text x="110" y="16">10</text>
+          <text x="110" y="30" font-size="9" fill="#2f70b7">7.0h</text>
+          <rect x="135" y="0" width="40" height="36" rx="6" fill="#d9e8f7"/>
+          <text x="155" y="16">11</text>
+          <text x="155" y="30" font-size="9" fill="#2f70b7">8.5h</text>
+          <rect x="180" y="0" width="40" height="36" rx="6" fill="#fde7e9"/>
+          <text x="200" y="16">12</text>
+          <rect x="180" y="22" width="36" height="11" rx="6" fill="#dc3545" transform="translate(2,0)"/>
+          <text x="200" y="30" font-size="8" fill="#ffffff">Krank</text>
+          <rect x="225" y="0" width="40" height="36" rx="6" fill="#f5f9fd"/>
+          <text x="245" y="22" fill="#9aaec4">13</text>
+          <rect x="270" y="0" width="40" height="36" rx="6" fill="#f5f9fd"/>
+          <text x="290" y="22" fill="#9aaec4">14</text>
+        </g>
+        <!-- row 3 with TODAY (29) marked solid blue -->
+        <g transform="translate(0,84)">
+          <rect x="0" y="0" width="40" height="36" rx="6" fill="#d9e8f7"/>
+          <text x="20" y="22">15</text>
+          <rect x="45" y="0" width="40" height="36" rx="6" fill="#d9e8f7"/>
+          <text x="65" y="22">16</text>
+          <rect x="90" y="0" width="40" height="36" rx="6" fill="#d9e8f7"/>
+          <text x="110" y="22">17</text>
+          <rect x="135" y="0" width="40" height="36" rx="6" fill="#d9e8f7"/>
+          <text x="155" y="22">18</text>
+          <rect x="180" y="0" width="40" height="36" rx="6" fill="#d9e8f7"/>
+          <text x="200" y="22">19</text>
+          <rect x="225" y="0" width="40" height="36" rx="6" fill="#f5f9fd"/>
+          <text x="245" y="22" fill="#9aaec4">20</text>
+          <rect x="270" y="0" width="40" height="36" rx="6" fill="#f5f9fd"/>
+          <text x="290" y="22" fill="#9aaec4">21</text>
+        </g>
+        <!-- row 4 -->
+        <g transform="translate(0,126)">
+          <rect x="0" y="0" width="40" height="36" rx="6" fill="#d9e8f7"/>
+          <text x="20" y="22">22</text>
+          <rect x="45" y="0" width="40" height="36" rx="6" fill="#d9e8f7"/>
+          <text x="65" y="22">23</text>
+          <rect x="90" y="0" width="40" height="36" rx="6" fill="#d9e8f7"/>
+          <text x="110" y="22">24</text>
+          <rect x="135" y="0" width="40" height="36" rx="6" fill="#d9e8f7"/>
+          <text x="155" y="22">25</text>
+          <rect x="180" y="0" width="40" height="36" rx="6" fill="#d9e8f7"/>
+          <text x="200" y="22">26</text>
+          <rect x="225" y="0" width="40" height="36" rx="6" fill="#f5f9fd"/>
+          <text x="245" y="22" fill="#9aaec4">27</text>
+          <rect x="270" y="0" width="40" height="36" rx="6" fill="#f5f9fd"/>
+          <text x="290" y="22" fill="#9aaec4">28</text>
+        </g>
+        <!-- row 5: 29 (today, solid blue), 30, May 1 (holiday) -->
+        <g transform="translate(0,168)">
+          <rect x="0" y="0" width="40" height="36" rx="6" fill="#2f70b7"/>
+          <text x="20" y="16" fill="#ffffff">29</text>
+          <text x="20" y="30" font-size="9" fill="#ffffff">5.2h</text>
+          <rect x="45" y="0" width="40" height="36" rx="6" fill="#f5f9fd"/>
+          <text x="65" y="22" fill="#9aaec4">30</text>
+          <rect x="90" y="0" width="40" height="36" rx="6" fill="#eef2f7"/>
+          <text x="110" y="16">1</text>
+          <rect x="92" y="22" width="36" height="11" rx="6" fill="#6b7c8e"/>
+          <text x="110" y="30" font-size="8" fill="#ffffff">1. Mai</text>
+        </g>
+      </g>
+    </g>
+
+    <!-- Bottom nav with "Time" tab active -->
+    <g transform="translate(0,764)">
+      <use href="#bottom-nav-shell"/>
+      <!-- 5 tabs evenly spaced; centers at 39,117,195,273,351 -->
+      <g transform="translate(39,12)">
+        <rect x="-22" y="-2" width="44" height="40" rx="8" fill="#edf4ff"/>
+        <circle cx="0" cy="14" r="9" fill="none" stroke="#2f70b7" stroke-width="1.8"/>
+        <line x1="0" y1="9" x2="0" y2="14" stroke="#2f70b7" stroke-width="1.8" stroke-linecap="round"/>
+        <line x1="0" y1="14" x2="4" y2="14" stroke="#2f70b7" stroke-width="1.8" stroke-linecap="round"/>
+        <text x="0" y="44" font-size="10" font-weight="600" fill="#2f70b7" text-anchor="middle">Zeit</text>
+      </g>
+      <g transform="translate(117,12)">
+        <rect x="-3" y="2" width="6" height="20" fill="none" stroke="#8fa2ba" stroke-width="1.6"/>
+        <line x1="-7" y1="2" x2="7" y2="2" stroke="#8fa2ba" stroke-width="1.6"/>
+        <text x="0" y="44" font-size="10" font-weight="500" fill="#5c7895" text-anchor="middle">Aufgaben</text>
+      </g>
+      <g transform="translate(195,12)">
+        <rect x="-9" y="2" width="18" height="14" rx="3" fill="none" stroke="#8fa2ba" stroke-width="1.6"/>
+        <text x="0" y="44" font-size="10" font-weight="500" fill="#5c7895" text-anchor="middle">Projekte</text>
+      </g>
+      <g transform="translate(273,12)">
+        <path d="M-9 2 h18 v12 l-4 4 v-4 h-14 z" fill="none" stroke="#8fa2ba" stroke-width="1.6" stroke-linejoin="round"/>
+        <text x="0" y="44" font-size="10" font-weight="500" fill="#5c7895" text-anchor="middle">Threads</text>
+      </g>
+      <g transform="translate(351,12)">
+        <line x1="-7" y1="2" x2="7" y2="2" stroke="#8fa2ba" stroke-width="1.6"/>
+        <line x1="-7" y1="10" x2="7" y2="10" stroke="#8fa2ba" stroke-width="1.6"/>
+        <line x1="-7" y1="18" x2="7" y2="18" stroke="#8fa2ba" stroke-width="1.6"/>
+        <text x="0" y="44" font-size="10" font-weight="500" fill="#5c7895" text-anchor="middle">Mehr</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       FRAME 03 — MY TASKS
+       Filter chips + task cards. Each card shows project chip,
+       due date, partner pills, and assignee avatars.
+       ═══════════════════════════════════════════════════════════════════ -->
+  <g id="03-My-Tasks" transform="translate(1410,80)">
+    <rect width="390" height="844" fill="#f8fbff" rx="8"/>
+    <text x="195" y="-30" font-size="14" font-weight="600" fill="#5c7895" text-anchor="middle">03 — My Tasks</text>
+
+    <use href="#status-bar"/>
+
+    <!-- Header -->
+    <g transform="translate(0,52)">
+      <rect width="390" height="56" fill="#ffffff"/>
+      <line x1="0" y1="56" x2="390" y2="56" stroke="#e2ecf7" stroke-width="1"/>
+      <text x="20" y="36" font-size="18" font-weight="700" fill="#14293d">Meine Aufgaben</text>
+      <circle cx="354" cy="28" r="18" fill="#2f70b7"/>
+      <text x="354" y="34" font-size="13" font-weight="600" fill="#ffffff" text-anchor="middle">LS</text>
+    </g>
+
+    <!-- Filter chips -->
+    <g transform="translate(20,128)">
+      <rect x="0" y="0" width="68" height="34" rx="17" fill="#2f70b7"/>
+      <text x="34" y="22" font-size="13" font-weight="600" fill="#ffffff" text-anchor="middle">Heute</text>
+
+      <rect x="76" y="0" width="78" height="34" rx="17" fill="#ffffff" stroke="#c9d9ea" stroke-width="1"/>
+      <text x="115" y="22" font-size="13" font-weight="500" fill="#14293d" text-anchor="middle">Woche</text>
+
+      <rect x="162" y="0" width="62" height="34" rx="17" fill="#ffffff" stroke="#c9d9ea" stroke-width="1"/>
+      <text x="193" y="22" font-size="13" font-weight="500" fill="#14293d" text-anchor="middle">Alle</text>
+
+      <rect x="232" y="0" width="120" height="34" rx="17" fill="#ffffff" stroke="#c9d9ea" stroke-width="1"/>
+      <text x="252" y="22" font-size="13" font-weight="500" fill="#14293d">Überfällig</text>
+      <circle cx="335" cy="17" r="9" fill="#dc3545"/>
+      <text x="335" y="21" font-size="10" font-weight="700" fill="#ffffff" text-anchor="middle">3</text>
+    </g>
+
+    <!-- Task card 1 — overdue -->
+    <g transform="translate(20,180)">
+      <rect width="350" height="106" rx="14" fill="#ffffff" stroke="#f7c8cd" stroke-width="1"/>
+      <rect x="0" y="0" width="4" height="106" fill="#dc3545" rx="2"/>
+      <text x="18" y="26" font-size="14" font-weight="600" fill="#14293d">PV-Anlage Müller — Wechselrichter</text>
+      <text x="18" y="46" font-size="12" fill="#5c7895">Material aufladen + Termin Kunde abstimmen</text>
+      <!-- project chip -->
+      <rect x="18" y="58" width="98" height="20" rx="4" fill="#edf4ff"/>
+      <text x="67" y="72" font-size="10" font-weight="600" fill="#2861a2" text-anchor="middle">P-2026-014</text>
+      <!-- partner chip -->
+      <rect x="124" y="58" width="84" height="20" rx="4" fill="#fde7e9"/>
+      <text x="166" y="72" font-size="10" font-weight="600" fill="#dc3545" text-anchor="middle">Elektrik</text>
+      <!-- due -->
+      <text x="18" y="96" font-size="11" font-weight="600" fill="#dc3545">Fällig: gestern · 28.04.2026</text>
+      <!-- assignees -->
+      <g transform="translate(296,72)">
+        <circle cx="0" cy="0" r="14" fill="#5c7895" stroke="#ffffff" stroke-width="2"/>
+        <text x="0" y="4" font-size="10" font-weight="600" fill="#ffffff" text-anchor="middle">AM</text>
+        <circle cx="20" cy="0" r="14" fill="#34a853" stroke="#ffffff" stroke-width="2"/>
+        <text x="20" y="4" font-size="10" font-weight="600" fill="#ffffff" text-anchor="middle">BK</text>
+      </g>
+    </g>
+
+    <!-- Task card 2 — today -->
+    <g transform="translate(20,300)">
+      <rect width="350" height="100" rx="14" fill="#ffffff" stroke="#e2ecf7" stroke-width="1"/>
+      <text x="18" y="26" font-size="14" font-weight="600" fill="#14293d">Vor-Ort-Aufmaß Schmidt</text>
+      <text x="18" y="46" font-size="12" fill="#5c7895">Hauptstr. 14 · Köln</text>
+      <rect x="18" y="58" width="98" height="20" rx="4" fill="#edf4ff"/>
+      <text x="67" y="72" font-size="10" font-weight="600" fill="#2861a2" text-anchor="middle">P-2026-021</text>
+      <text x="18" y="92" font-size="11" font-weight="500" fill="#5c7895">Heute · 14:30 — 16:00</text>
+      <g transform="translate(316,72)">
+        <circle cx="0" cy="0" r="14" fill="#2f70b7" stroke="#ffffff" stroke-width="2"/>
+        <text x="0" y="4" font-size="10" font-weight="600" fill="#ffffff" text-anchor="middle">LS</text>
+      </g>
+    </g>
+
+    <!-- Task card 3 — checked off (subtle) -->
+    <g transform="translate(20,414)">
+      <rect width="350" height="80" rx="14" fill="#f8fbff" stroke="#e2ecf7" stroke-width="1"/>
+      <g transform="translate(18,32)">
+        <circle cx="6" cy="0" r="9" fill="#34a853"/>
+        <path d="M2 0 l3 3 l5 -5" stroke="#ffffff" stroke-width="1.8" fill="none" stroke-linecap="round"/>
+      </g>
+      <text x="42" y="36" font-size="14" font-weight="500" fill="#8fa2ba" text-decoration="line-through">Lieferung dokumentieren — P-2026-012</text>
+      <text x="42" y="56" font-size="11" fill="#9aaec4">Erledigt heute · 09:14</text>
+    </g>
+
+    <!-- Task card 4 -->
+    <g transform="translate(20,508)">
+      <rect width="350" height="100" rx="14" fill="#ffffff" stroke="#e2ecf7" stroke-width="1"/>
+      <text x="18" y="26" font-size="14" font-weight="600" fill="#14293d">Werkstattbedarf prüfen</text>
+      <text x="18" y="46" font-size="12" fill="#5c7895">Lager Köln · 8 offene Bedarfe</text>
+      <rect x="18" y="58" width="76" height="20" rx="4" fill="#fff7e6"/>
+      <text x="56" y="72" font-size="10" font-weight="600" fill="#a0670c" text-anchor="middle">Werkstatt</text>
+      <text x="18" y="92" font-size="11" font-weight="500" fill="#5c7895">Diese Woche · KW 18</text>
+    </g>
+
+    <!-- Floating action button -->
+    <g transform="translate(326,690)">
+      <circle r="28" fill="#2f70b7"/>
+      <line x1="-12" y1="0" x2="12" y2="0" stroke="#ffffff" stroke-width="3" stroke-linecap="round"/>
+      <line x1="0" y1="-12" x2="0" y2="12" stroke="#ffffff" stroke-width="3" stroke-linecap="round"/>
+    </g>
+
+    <!-- Bottom nav with "Aufgaben" active -->
+    <g transform="translate(0,764)">
+      <use href="#bottom-nav-shell"/>
+      <g transform="translate(39,12)">
+        <circle cx="0" cy="14" r="9" fill="none" stroke="#8fa2ba" stroke-width="1.8"/>
+        <line x1="0" y1="9" x2="0" y2="14" stroke="#8fa2ba" stroke-width="1.8" stroke-linecap="round"/>
+        <line x1="0" y1="14" x2="4" y2="14" stroke="#8fa2ba" stroke-width="1.8" stroke-linecap="round"/>
+        <text x="0" y="44" font-size="10" font-weight="500" fill="#5c7895" text-anchor="middle">Zeit</text>
+      </g>
+      <g transform="translate(117,12)">
+        <rect x="-22" y="-2" width="44" height="40" rx="8" fill="#edf4ff"/>
+        <rect x="-3" y="2" width="6" height="20" fill="none" stroke="#2f70b7" stroke-width="1.6"/>
+        <line x1="-7" y1="2" x2="7" y2="2" stroke="#2f70b7" stroke-width="1.6"/>
+        <text x="0" y="44" font-size="10" font-weight="600" fill="#2f70b7" text-anchor="middle">Aufgaben</text>
+      </g>
+      <g transform="translate(195,12)">
+        <rect x="-9" y="2" width="18" height="14" rx="3" fill="none" stroke="#8fa2ba" stroke-width="1.6"/>
+        <text x="0" y="44" font-size="10" font-weight="500" fill="#5c7895" text-anchor="middle">Projekte</text>
+      </g>
+      <g transform="translate(273,12)">
+        <path d="M-9 2 h18 v12 l-4 4 v-4 h-14 z" fill="none" stroke="#8fa2ba" stroke-width="1.6" stroke-linejoin="round"/>
+        <text x="0" y="44" font-size="10" font-weight="500" fill="#5c7895" text-anchor="middle">Threads</text>
+      </g>
+      <g transform="translate(351,12)">
+        <line x1="-7" y1="2" x2="7" y2="2" stroke="#8fa2ba" stroke-width="1.6"/>
+        <line x1="-7" y1="10" x2="7" y2="10" stroke="#8fa2ba" stroke-width="1.6"/>
+        <line x1="-7" y1="18" x2="7" y2="18" stroke="#8fa2ba" stroke-width="1.6"/>
+        <text x="0" y="44" font-size="10" font-weight="500" fill="#5c7895" text-anchor="middle">Mehr</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       FRAME 04 — MESSAGES / THREADS
+       Thread list with avatars, last-message preview, unread badges,
+       relative timestamps. Mirrors MessagesPage.tsx in production.
+       ═══════════════════════════════════════════════════════════════════ -->
+  <g id="04-Messages" transform="translate(1860,80)">
+    <rect width="390" height="844" fill="#ffffff" rx="8"/>
+    <text x="195" y="-30" font-size="14" font-weight="600" fill="#5c7895" text-anchor="middle">04 — Messages</text>
+
+    <use href="#status-bar"/>
+
+    <!-- Header with search and add -->
+    <g transform="translate(0,52)">
+      <rect width="390" height="56" fill="#ffffff"/>
+      <line x1="0" y1="56" x2="390" y2="56" stroke="#e2ecf7" stroke-width="1"/>
+      <text x="20" y="36" font-size="18" font-weight="700" fill="#14293d">Threads</text>
+      <!-- search icon -->
+      <g transform="translate(312,28)">
+        <circle cx="0" cy="0" r="7" fill="none" stroke="#5c7895" stroke-width="1.6"/>
+        <line x1="5" y1="5" x2="9" y2="9" stroke="#5c7895" stroke-width="1.6" stroke-linecap="round"/>
+      </g>
+      <!-- + add -->
+      <g transform="translate(354,28)">
+        <circle r="14" fill="#2f70b7"/>
+        <line x1="-6" y1="0" x2="6" y2="0" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>
+        <line x1="0" y1="-6" x2="0" y2="6" stroke="#ffffff" stroke-width="2" stroke-linecap="round"/>
+      </g>
+    </g>
+
+    <!-- Search bar -->
+    <g transform="translate(20,128)">
+      <rect width="350" height="40" rx="10" fill="#f5f9fd" stroke="#e2ecf7" stroke-width="1"/>
+      <g transform="translate(14,20)">
+        <circle cx="0" cy="0" r="6" fill="none" stroke="#8fa2ba" stroke-width="1.4"/>
+        <line x1="4" y1="4" x2="8" y2="8" stroke="#8fa2ba" stroke-width="1.4" stroke-linecap="round"/>
+      </g>
+      <text x="38" y="25" font-size="13" fill="#8fa2ba">Thread suchen…</text>
+    </g>
+
+    <!-- Thread row 1 — unread, with picture preview -->
+    <g transform="translate(0,196)">
+      <rect x="20" y="0" width="350" height="78" rx="14" fill="#edf4ff" stroke="#bcd1e8" stroke-width="1"/>
+      <circle cx="50" cy="39" r="22" fill="#2f70b7"/>
+      <text x="50" y="44" font-size="14" font-weight="700" fill="#ffffff" text-anchor="middle">P-14</text>
+      <text x="84" y="26" font-size="14" font-weight="700" fill="#14293d">PV Müller — Baustelle</text>
+      <text x="84" y="46" font-size="12" fill="#5c7895">Anna: 📷 Foto · Modul Position 4</text>
+      <!-- emoji reaction strip preview -->
+      <g transform="translate(84,56)">
+        <rect width="34" height="14" rx="7" fill="#d9e8f7" stroke="#91b5da"/>
+        <text x="17" y="11" font-size="9" font-weight="600" fill="#14293d" text-anchor="middle">👍 2</text>
+      </g>
+      <text x="346" y="22" font-size="11" font-weight="600" fill="#2f70b7" text-anchor="end">14:32</text>
+      <circle cx="346" cy="46" r="11" fill="#2f70b7"/>
+      <text x="346" y="50" font-size="10" font-weight="700" fill="#ffffff" text-anchor="middle">3</text>
+    </g>
+
+    <!-- Thread row 2 — read -->
+    <g transform="translate(0,288)">
+      <rect x="20" y="0" width="350" height="68" rx="14" fill="#ffffff"/>
+      <circle cx="50" cy="34" r="22" fill="#5c7895"/>
+      <text x="50" y="39" font-size="13" font-weight="700" fill="#ffffff" text-anchor="middle">SC</text>
+      <text x="84" y="22" font-size="14" font-weight="600" fill="#14293d">Schmidt · Beratung</text>
+      <text x="84" y="42" font-size="12" fill="#5c7895">Du: Termin bestätigt. Bis morgen.</text>
+      <text x="346" y="22" font-size="11" font-weight="500" fill="#8fa2ba" text-anchor="end">Gestern</text>
+    </g>
+
+    <!-- Thread row 3 — read -->
+    <g transform="translate(0,366)">
+      <rect x="20" y="0" width="350" height="68" rx="14" fill="#ffffff"/>
+      <circle cx="50" cy="34" r="22" fill="#34a853"/>
+      <text x="50" y="39" font-size="13" font-weight="700" fill="#ffffff" text-anchor="middle">B</text>
+      <text x="84" y="22" font-size="14" font-weight="600" fill="#14293d">Büro · Allgemein</text>
+      <text x="84" y="42" font-size="12" fill="#5c7895">Markus: Bitte Stundenzettel KW17 schicken</text>
+      <text x="346" y="22" font-size="11" font-weight="500" fill="#8fa2ba" text-anchor="end">Mo</text>
+    </g>
+
+    <!-- Thread row 4 — many participants -->
+    <g transform="translate(0,444)">
+      <rect x="20" y="0" width="350" height="68" rx="14" fill="#ffffff"/>
+      <circle cx="50" cy="34" r="22" fill="#6c4ab6"/>
+      <text x="50" y="39" font-size="13" font-weight="700" fill="#ffffff" text-anchor="middle">EP</text>
+      <text x="84" y="22" font-size="14" font-weight="600" fill="#14293d">Elektrik-Partner</text>
+      <text x="84" y="42" font-size="12" fill="#5c7895">Gemeinsamer Thread mit 4 Firmen</text>
+      <text x="346" y="22" font-size="11" font-weight="500" fill="#8fa2ba" text-anchor="end">25.04</text>
+    </g>
+
+    <!-- Thread row 5 — archive hint -->
+    <g transform="translate(0,522)">
+      <rect x="20" y="0" width="350" height="68" rx="14" fill="#ffffff"/>
+      <circle cx="50" cy="34" r="22" fill="#f0a500"/>
+      <text x="50" y="39" font-size="13" font-weight="700" fill="#ffffff" text-anchor="middle">W</text>
+      <text x="84" y="22" font-size="14" font-weight="600" fill="#14293d">Werkstatt</text>
+      <text x="84" y="42" font-size="12" fill="#5c7895">Lieferung Sika 271: angekommen</text>
+      <text x="346" y="22" font-size="11" font-weight="500" fill="#8fa2ba" text-anchor="end">23.04</text>
+    </g>
+
+    <!-- Bottom nav with "Threads" active -->
+    <g transform="translate(0,764)">
+      <use href="#bottom-nav-shell"/>
+      <g transform="translate(39,12)">
+        <circle cx="0" cy="14" r="9" fill="none" stroke="#8fa2ba" stroke-width="1.8"/>
+        <line x1="0" y1="9" x2="0" y2="14" stroke="#8fa2ba" stroke-width="1.8" stroke-linecap="round"/>
+        <line x1="0" y1="14" x2="4" y2="14" stroke="#8fa2ba" stroke-width="1.8" stroke-linecap="round"/>
+        <text x="0" y="44" font-size="10" font-weight="500" fill="#5c7895" text-anchor="middle">Zeit</text>
+      </g>
+      <g transform="translate(117,12)">
+        <rect x="-3" y="2" width="6" height="20" fill="none" stroke="#8fa2ba" stroke-width="1.6"/>
+        <line x1="-7" y1="2" x2="7" y2="2" stroke="#8fa2ba" stroke-width="1.6"/>
+        <text x="0" y="44" font-size="10" font-weight="500" fill="#5c7895" text-anchor="middle">Aufgaben</text>
+      </g>
+      <g transform="translate(195,12)">
+        <rect x="-9" y="2" width="18" height="14" rx="3" fill="none" stroke="#8fa2ba" stroke-width="1.6"/>
+        <text x="0" y="44" font-size="10" font-weight="500" fill="#5c7895" text-anchor="middle">Projekte</text>
+      </g>
+      <g transform="translate(273,12)">
+        <rect x="-22" y="-2" width="44" height="40" rx="8" fill="#edf4ff"/>
+        <path d="M-9 2 h18 v12 l-4 4 v-4 h-14 z" fill="none" stroke="#2f70b7" stroke-width="1.8" stroke-linejoin="round"/>
+        <text x="0" y="44" font-size="10" font-weight="600" fill="#2f70b7" text-anchor="middle">Threads</text>
+      </g>
+      <g transform="translate(351,12)">
+        <line x1="-7" y1="2" x2="7" y2="2" stroke="#8fa2ba" stroke-width="1.6"/>
+        <line x1="-7" y1="10" x2="7" y2="10" stroke="#8fa2ba" stroke-width="1.6"/>
+        <line x1="-7" y1="18" x2="7" y2="18" stroke="#8fa2ba" stroke-width="1.6"/>
+        <text x="0" y="44" font-size="10" font-weight="500" fill="#5c7895" text-anchor="middle">Mehr</text>
+      </g>
+    </g>
+  </g>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       FRAME 05 — ADMIN BACKUPS
+       The brand-new v2.3.0 panel. Status banner, backup table with
+       size + date + source, action buttons, "create backup" CTA, and
+       a "job running" progress card (the dashboard during a backup).
+       ═══════════════════════════════════════════════════════════════════ -->
+  <g id="05-Admin-Backups" transform="translate(2310,80)">
+    <rect width="390" height="844" fill="#f8fbff" rx="8"/>
+    <text x="195" y="-30" font-size="14" font-weight="600" fill="#5c7895" text-anchor="middle">05 — Admin Backups</text>
+
+    <use href="#status-bar"/>
+
+    <!-- Header with back arrow -->
+    <g transform="translate(0,52)">
+      <rect width="390" height="56" fill="#ffffff"/>
+      <line x1="0" y1="56" x2="390" y2="56" stroke="#e2ecf7" stroke-width="1"/>
+      <g transform="translate(20,28)">
+        <line x1="0" y1="0" x2="-8" y2="-6" stroke="#5c7895" stroke-width="2" stroke-linecap="round"/>
+        <line x1="0" y1="0" x2="-8" y2="6" stroke="#5c7895" stroke-width="2" stroke-linecap="round"/>
+        <line x1="-8" y1="0" x2="6" y2="0" stroke="#5c7895" stroke-width="2" stroke-linecap="round"/>
+      </g>
+      <text x="44" y="36" font-size="18" font-weight="700" fill="#14293d">Backups</text>
+    </g>
+
+    <!-- Status banner — passphrase configured -->
+    <g transform="translate(20,128)">
+      <rect width="350" height="56" rx="12" fill="#e6f6ec" stroke="#cfe9d7" stroke-width="1"/>
+      <g transform="translate(18,28)">
+        <circle r="10" fill="#34a853"/>
+        <path d="M-4 0 l3 3 l5 -5" stroke="#ffffff" stroke-width="1.8" fill="none" stroke-linecap="round"/>
+      </g>
+      <text x="42" y="24" font-size="13" font-weight="600" fill="#1f6f3c">Passphrase konfiguriert</text>
+      <text x="42" y="42" font-size="11" fill="#3d7d52">Backups werden verschlüsselt mit AES-256-CBC.</text>
+    </g>
+
+    <!-- Disk usage strip -->
+    <g transform="translate(20,200)">
+      <rect width="350" height="44" rx="10" fill="#ffffff" stroke="#e2ecf7" stroke-width="1"/>
+      <text x="14" y="20" font-size="11" font-weight="600" fill="#5c7895">SPEICHER</text>
+      <text x="336" y="20" font-size="11" font-weight="600" fill="#5c7895" text-anchor="end">12.4 GB / 50 GB</text>
+      <rect x="14" y="28" width="322" height="6" rx="3" fill="#edf4ff"/>
+      <rect x="14" y="28" width="80" height="6" rx="3" fill="#2f70b7"/>
+    </g>
+
+    <!-- Section header -->
+    <g transform="translate(20,266)">
+      <text x="0" y="0" font-size="14" font-weight="700" fill="#14293d">Vorhandene Backups</text>
+      <text x="350" y="0" font-size="12" font-weight="500" fill="#2f70b7" text-anchor="end">Hochladen</text>
+    </g>
+
+    <!-- Backup row 1 — generated, latest -->
+    <g transform="translate(20,284)">
+      <rect width="350" height="86" rx="14" fill="#ffffff" stroke="#e2ecf7" stroke-width="1"/>
+      <text x="18" y="26" font-size="13" font-weight="600" fill="#14293d">backup-20260428-234239.tar.enc</text>
+      <!-- source badge "Generated" -->
+      <rect x="18" y="36" width="80" height="18" rx="4" fill="#edf4ff"/>
+      <text x="58" y="49" font-size="10" font-weight="600" fill="#2861a2" text-anchor="middle">GENERIERT</text>
+      <text x="106" y="49" font-size="11" fill="#5c7895">142 MB · vor 13 h</text>
+      <!-- actions -->
+      <g transform="translate(18,64)">
+        <rect width="68" height="20" rx="6" fill="#edf4ff"/>
+        <text x="34" y="14" font-size="11" font-weight="600" fill="#2f70b7" text-anchor="middle">Download</text>
+        <rect x="76" width="100" height="20" rx="6" fill="#fde7e9"/>
+        <text x="126" y="14" font-size="11" font-weight="600" fill="#dc3545" text-anchor="middle">Wiederherstellen</text>
+        <text x="312" y="14" font-size="11" font-weight="500" fill="#8fa2ba" text-anchor="end">Löschen</text>
+      </g>
+    </g>
+
+    <!-- Backup row 2 — uploaded -->
+    <g transform="translate(20,386)">
+      <rect width="350" height="86" rx="14" fill="#ffffff" stroke="#e2ecf7" stroke-width="1"/>
+      <text x="18" y="26" font-size="13" font-weight="600" fill="#14293d">offsite-2026-04-15.tar.enc</text>
+      <rect x="18" y="36" width="78" height="18" rx="4" fill="#fff7e6"/>
+      <text x="57" y="49" font-size="10" font-weight="600" fill="#a0670c" text-anchor="middle">IMPORTIERT</text>
+      <text x="104" y="49" font-size="11" fill="#5c7895">138 MB · 14 Tage alt</text>
+      <g transform="translate(18,64)">
+        <rect width="68" height="20" rx="6" fill="#edf4ff"/>
+        <text x="34" y="14" font-size="11" font-weight="600" fill="#2f70b7" text-anchor="middle">Download</text>
+        <rect x="76" width="100" height="20" rx="6" fill="#fde7e9"/>
+        <text x="126" y="14" font-size="11" font-weight="600" fill="#dc3545" text-anchor="middle">Wiederherstellen</text>
+        <text x="312" y="14" font-size="11" font-weight="500" fill="#8fa2ba" text-anchor="end">Löschen</text>
+      </g>
+    </g>
+
+    <!-- Backup row 3 — older -->
+    <g transform="translate(20,488)">
+      <rect width="350" height="62" rx="14" fill="#ffffff" stroke="#e2ecf7" stroke-width="1"/>
+      <text x="18" y="22" font-size="12" font-weight="500" fill="#5c7895">backup-20260427-145056.tar.enc</text>
+      <text x="18" y="42" font-size="11" fill="#8fa2ba">141 MB · 2 Tage alt</text>
+      <text x="332" y="40" font-size="11" font-weight="500" fill="#2f70b7" text-anchor="end">Download</text>
+    </g>
+
+    <!-- Job-progress card (when a backup is running) -->
+    <g transform="translate(20,572)">
+      <rect width="350" height="98" rx="14" fill="#fff7e6" stroke="#f3e1bd" stroke-width="1"/>
+      <g transform="translate(18,28)">
+        <circle r="8" fill="none" stroke="#f0a500" stroke-width="2"/>
+        <path d="M0 -8 a8 8 0 0 1 8 8" stroke="#a0670c" stroke-width="2" fill="none" stroke-linecap="round"/>
+      </g>
+      <text x="38" y="32" font-size="13" font-weight="700" fill="#a0670c">Backup läuft…</text>
+      <text x="38" y="50" font-size="11" fill="#a0670c">tar -cf · pg_dump · openssl enc</text>
+      <!-- progress bar -->
+      <rect x="18" y="64" width="314" height="6" rx="3" fill="#ffffff"/>
+      <rect x="18" y="64" width="200" height="6" rx="3" fill="#f0a500"/>
+      <text x="332" y="84" font-size="10" font-weight="600" fill="#a0670c" text-anchor="end">63%</text>
+    </g>
+
+    <!-- Primary CTA -->
+    <g transform="translate(20,690)">
+      <rect width="350" height="50" rx="10" fill="#2f70b7"/>
+      <text x="175" y="32" font-size="14" font-weight="600" fill="#ffffff" text-anchor="middle">+ Backup erstellen</text>
+    </g>
+
+    <!-- Bottom nav with "More" tab dotted (admin sub-section) -->
+    <g transform="translate(0,764)">
+      <use href="#bottom-nav-shell"/>
+      <g transform="translate(39,12)">
+        <circle cx="0" cy="14" r="9" fill="none" stroke="#8fa2ba" stroke-width="1.8"/>
+        <line x1="0" y1="9" x2="0" y2="14" stroke="#8fa2ba" stroke-width="1.8" stroke-linecap="round"/>
+        <line x1="0" y1="14" x2="4" y2="14" stroke="#8fa2ba" stroke-width="1.8" stroke-linecap="round"/>
+        <text x="0" y="44" font-size="10" font-weight="500" fill="#5c7895" text-anchor="middle">Zeit</text>
+      </g>
+      <g transform="translate(117,12)">
+        <rect x="-3" y="2" width="6" height="20" fill="none" stroke="#8fa2ba" stroke-width="1.6"/>
+        <line x1="-7" y1="2" x2="7" y2="2" stroke="#8fa2ba" stroke-width="1.6"/>
+        <text x="0" y="44" font-size="10" font-weight="500" fill="#5c7895" text-anchor="middle">Aufgaben</text>
+      </g>
+      <g transform="translate(195,12)">
+        <rect x="-9" y="2" width="18" height="14" rx="3" fill="none" stroke="#8fa2ba" stroke-width="1.6"/>
+        <text x="0" y="44" font-size="10" font-weight="500" fill="#5c7895" text-anchor="middle">Projekte</text>
+      </g>
+      <g transform="translate(273,12)">
+        <path d="M-9 2 h18 v12 l-4 4 v-4 h-14 z" fill="none" stroke="#8fa2ba" stroke-width="1.6" stroke-linejoin="round"/>
+        <text x="0" y="44" font-size="10" font-weight="500" fill="#5c7895" text-anchor="middle">Threads</text>
+      </g>
+      <g transform="translate(351,12)">
+        <rect x="-22" y="-2" width="44" height="40" rx="8" fill="#edf4ff"/>
+        <line x1="-7" y1="2" x2="7" y2="2" stroke="#2f70b7" stroke-width="1.8"/>
+        <line x1="-7" y1="10" x2="7" y2="10" stroke="#2f70b7" stroke-width="1.8"/>
+        <line x1="-7" y1="18" x2="7" y2="18" stroke="#2f70b7" stroke-width="1.8"/>
+        <text x="0" y="44" font-size="10" font-weight="600" fill="#2f70b7" text-anchor="middle">Mehr</text>
+      </g>
+    </g>
+  </g>
+
+</svg>
