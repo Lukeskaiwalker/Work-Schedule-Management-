@@ -36,6 +36,7 @@ from app.models.notification import Notification
 from app.models.werkstatt import (
     WerkstattArticle,
     WerkstattArticleSupplier,
+    WerkstattArticleUnit,
     WerkstattCategory,
     WerkstattConstructionBox,
     WerkstattConstructionBoxItem,
@@ -96,6 +97,7 @@ __all__ = [
     "VacationRequest",
     "WerkstattArticle",
     "WerkstattArticleSupplier",
+    "WerkstattArticleUnit",
     "WerkstattCategory",
     "WerkstattConstructionBox",
     "WerkstattConstructionBoxItem",

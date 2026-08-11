@@ -54,6 +54,12 @@ class WerkstattLocation(Base):
         ForeignKey("werkstatt_locations.id", ondelete="SET NULL"), index=True
     )
     address: Mapped[str | None] = mapped_column(String(500))
+    # Set on `external` locations that are a specific customer's site, so
+    # "which machines are still at Müller" is a query rather than a guess based
+    # on how someone typed the location name.
+    customer_id: Mapped[int | None] = mapped_column(
+        ForeignKey("customers.id", ondelete="SET NULL"), index=True
+    )
     display_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     notes: Mapped[str | None] = mapped_column(Text)
     is_archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
@@ -242,6 +248,14 @@ class WerkstattMovement(Base):
     # it, so a box handover is auditable from the ledger side too.
     construction_box_id: Mapped[int | None] = mapped_column(
         ForeignKey("werkstatt_construction_boxes.id", ondelete="SET NULL"), index=True
+    )
+    # Set when the movement concerns one individually tracked machine rather
+    # than a quantity of a fungible article. Deliberately the same ledger: "who
+    # had this drill last, and did it come back" is the same question as "where
+    # did the stock go", and a second table would mean two half-answers and two
+    # places to forget to write to. `quantity` is always 1 for these rows.
+    unit_id: Mapped[int | None] = mapped_column(
+        ForeignKey("werkstatt_article_units.id", ondelete="SET NULL"), index=True
     )
 
     notes: Mapped[str | None] = mapped_column(Text)
@@ -451,3 +465,102 @@ class WerkstattConstructionBoxItem(Base):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Machines: individually tracked units of a catalogue article
+# ──────────────────────────────────────────────────────────────────────────
+
+
+class WerkstattArticleUnit(Base):
+    """One physically individual machine, tool or accessory.
+
+    The catalogue (`werkstatt_articles`) describes a *type* — "Bosch GSR 18V" —
+    and carries a fungible quantity. That is right for screws and wrong for
+    machines: you cannot send "3 of the drill" to a site and later ask which one
+    is overdue for its DGUV3 inspection, who had it last, or whether its battery
+    came back with it. A unit is the answer to "which one".
+
+    An article opts in via `werkstatt_articles.is_serialized`. Rows here exist
+    only for serialized articles, so the two stock models never overlap: a
+    serialized article's quantity is the count of its live units, and everything
+    else keeps using the movement-derived counters.
+
+    Sub-components (a charger belonging to a drill) are units whose
+    `parent_unit_id` points at the machine they travel with. That is deliberately
+    the same table rather than a separate one: a battery is itself a machine that
+    can be lent out alone, needs its own inspection date, and can be swapped
+    between drills — all of which a plain "accessory" row could not express.
+    """
+
+    __tablename__ = "werkstatt_article_units"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+
+    # "M-0001" — generated, printed on the label stuck to the machine, and what
+    # the scanner reads. Unique across the whole workshop, which is what makes
+    # a scan unambiguous without the user picking from a list.
+    unit_number: Mapped[str] = mapped_column(String(32), nullable=False, unique=True, index=True)
+
+    article_id: Mapped[int] = mapped_column(
+        ForeignKey("werkstatt_articles.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+
+    # Self-reference for sub-components. SET NULL, not CASCADE: detaching a
+    # charger from a scrapped drill must leave the charger in the inventory.
+    parent_unit_id: Mapped[int | None] = mapped_column(
+        ForeignKey("werkstatt_article_units.id", ondelete="SET NULL"), index=True
+    )
+
+    # The manufacturer's own number, when it is legible. Kept alongside our
+    # generated one so a machine can still be identified after the label peels
+    # off, and so warranty claims have something to quote.
+    serial_number: Mapped[str | None] = mapped_column(String(120), index=True)
+
+    # verfuegbar | ausgegeben | wartung | defekt | ausgemustert
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="verfuegbar", index=True
+    )
+
+    # Where the machine physically is. werkstatt_locations already models the
+    # three places the crew cares about via location_type: the workshop
+    # (hall/shelf), a van (vehicle) and a customer site (external).
+    current_location_id: Mapped[int | None] = mapped_column(
+        ForeignKey("werkstatt_locations.id", ondelete="SET NULL"), index=True
+    )
+
+    # Who currently has it. Distinct from location on purpose — a machine booked
+    # to a person still sits in a van, and both facts matter when it goes
+    # missing.
+    holder_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), index=True
+    )
+
+    # Booking window. `booked_until` NULL means "until returned"; the scanner's
+    # default of "for today" writes an end-of-day timestamp so an unreturned
+    # machine shows up as overdue tomorrow rather than never.
+    booked_from: Mapped[datetime | None] = mapped_column(DateTime)
+    booked_until: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+
+    # DGUV3 / BG-Prüfung, per unit rather than per type. The article-level fields
+    # of the same name stay as the DEFAULT for new units; once a machine exists
+    # its own dates are authoritative, because two identical drills bought a year
+    # apart are not due on the same day.
+    inspection_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    inspection_interval_days: Mapped[int | None] = mapped_column(Integer)
+    last_inspected_at: Mapped[datetime | None] = mapped_column(DateTime)
+    next_inspection_due_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+
+    purchased_at: Mapped[datetime | None] = mapped_column(DateTime)
+    notes: Mapped[str | None] = mapped_column(Text)
+
+    is_archived: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, index=True
+    )
+    created_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow, nullable=False
+    )
