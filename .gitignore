@@ -84,3 +84,7 @@ infra/maintenance/.flag
 
 # graphify knowledge-graph output (generated; rebuild with /graphify)
 graphify-out/
+
+# Local PDF render output from report debugging. Regenerated on demand and
+# occasionally several MB per file — scratch, never a build input.
+.preview-pdfs/
