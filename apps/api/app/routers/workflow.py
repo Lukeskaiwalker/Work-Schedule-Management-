@@ -30,6 +30,7 @@ from app.routers.workflow_werkstatt_boxes import (
     customer_boxes_router as werkstatt_customer_boxes_router,
     router as werkstatt_boxes_router,
 )
+from app.routers.workflow_werkstatt_machines import router as werkstatt_machines_router
 from app.routers.workflow_helpers import (
     _fetch_openweather_forecast,
     _weather_address_candidates,
@@ -73,3 +74,6 @@ router.include_router(werkstatt_mobile_router)
 # the persona routers rather than inside the desktop composite.
 router.include_router(werkstatt_boxes_router)
 router.include_router(werkstatt_customer_boxes_router)
+# Machines are cross-persona for the same reason boxes are: the phone books
+# them out by scan, the desktop maintains the register.
+router.include_router(werkstatt_machines_router)
