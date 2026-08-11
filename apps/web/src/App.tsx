@@ -310,6 +310,7 @@ export function App() {
   const [projectTab, setProjectTab] = useState<ProjectTab>("overview");
   const [werkstattTab, setWerkstattTab] = useState<WerkstattTab>("dashboard");
   const [activeWerkstattArticleId, setActiveWerkstattArticleId] = useState<number | null>(null);
+  const [activeWerkstattMachineId, setActiveWerkstattMachineId] = useState<number | null>(null);
   const [error, setError] = useState<string>("");
   const [notice, setNotice] = useState<string>("");
   const [actionLinkDialog, setActionLinkDialog] = useState<ActionLinkDialogState>(null);
@@ -9177,6 +9178,8 @@ export function App() {
     setWerkstattTab,
     activeWerkstattArticleId,
     setActiveWerkstattArticleId,
+    activeWerkstattMachineId,
+    setActiveWerkstattMachineId,
     projectBackView,
     setProjectBackView,
     constructionBackView,

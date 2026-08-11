@@ -2,7 +2,16 @@
 
 Gating follows the Werkstatt convention established by the boxes router: reads
 are authenticated-only so field staff can look a machine up, and structural
-mutations (creating, editing, archiving) require ``werkstatt:manage``.
+mutations require a management grant.
+
+Creating and editing are SEPARATE grants, because they are different jobs. The
+person who registers new tools as they arrive is often not the person allowed to
+correct a serial number or retire a machine. Each is satisfied by either its own
+narrow permission or by the ``werkstatt:manage`` umbrella, so nobody who could
+already do this loses the ability when the narrow grants are introduced:
+
+    POST  /machines          werkstatt:manage OR werkstatt:machines_create
+    PATCH /machines/{id}     werkstatt:manage OR werkstatt:machines_edit
 
 Booking, returning and recording an inspection are deliberately
 authenticated-only. The whole point is that the person who physically picks a
@@ -13,114 +22,39 @@ the machine, which is how tool registers stop reflecting reality.
 
 from __future__ import annotations
 
-from datetime import datetime
-
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import or_, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
-from app.core.deps import get_current_user, require_permission
+from app.core.deps import get_current_user, require_any_permission
 from app.core.time import utcnow
 from app.models.entities import (
     User,
     WerkstattArticle,
     WerkstattArticleUnit,
-    WerkstattLocation,
 )
 from app.schemas.werkstatt_machines import (
     MachineBookPayload,
-    MachineComponentOut,
     MachineCreatePayload,
     MachineInspectionPayload,
+    MachineLabelBatchOut,
+    MachineLabelBatchPayload,
+    MachineLabelPrintOut,
     MachineMovementOut,
     MachineOut,
     MachineReturnPayload,
     MachineUpdatePayload,
 )
+from app.services import werkstatt_labels
 from app.services import werkstatt_machines as machines
+from app.services.werkstatt_machine_view import (
+    machine_out as _to_out,
+    machine_out_with_components,
+    name_maps as _name_map,
+)
 
 router = APIRouter(prefix="/werkstatt", tags=["werkstatt-machines"])
-
-
-def _name_map(db: Session) -> tuple[dict[int, str], dict[int, str]]:
-    """id → name for locations and users, fetched once per request.
-
-    The alternative is a relationship load per row; a workshop with a few
-    hundred machines would turn one list into a few hundred queries.
-    """
-    locations = {
-        row.id: row.name for row in db.scalars(select(WerkstattLocation)).all()
-    }
-    users = {
-        row.id: (row.full_name or row.email) for row in db.scalars(select(User)).all()
-    }
-    return locations, users
-
-
-def _to_out(
-    unit: WerkstattArticleUnit,
-    *,
-    article: WerkstattArticle | None,
-    locations: dict[int, str],
-    users: dict[int, str],
-    components: list[WerkstattArticleUnit] | None = None,
-    component_articles: dict[int, WerkstattArticle] | None = None,
-    now: datetime | None = None,
-) -> MachineOut:
-    moment = now or utcnow()
-    component_articles = component_articles or {}
-
-    return MachineOut(
-        id=unit.id,
-        unit_number=unit.unit_number,
-        article_id=unit.article_id,
-        article_name=article.item_name if article else None,
-        manufacturer=article.manufacturer if article else None,
-        parent_unit_id=unit.parent_unit_id,
-        serial_number=unit.serial_number,
-        status=unit.status,
-        current_location_id=unit.current_location_id,
-        current_location_name=locations.get(unit.current_location_id or -1),
-        holder_user_id=unit.holder_user_id,
-        holder_name=users.get(unit.holder_user_id or -1),
-        booked_from=unit.booked_from,
-        booked_until=unit.booked_until,
-        is_overdue=bool(
-            unit.status == machines.STATUS_OUT
-            and unit.booked_until is not None
-            and unit.booked_until < moment
-        ),
-        inspection_required=unit.inspection_required,
-        inspection_interval_days=unit.inspection_interval_days,
-        last_inspected_at=unit.last_inspected_at,
-        next_inspection_due_at=unit.next_inspection_due_at,
-        inspection_overdue=bool(
-            unit.inspection_required
-            and unit.next_inspection_due_at is not None
-            and unit.next_inspection_due_at < moment
-        ),
-        purchased_at=unit.purchased_at,
-        notes=unit.notes,
-        is_archived=unit.is_archived,
-        created_at=unit.created_at,
-        components=[
-            MachineComponentOut(
-                id=child.id,
-                unit_number=child.unit_number,
-                article_id=child.article_id,
-                article_name=(
-                    component_articles[child.article_id].item_name
-                    if child.article_id in component_articles
-                    else None
-                ),
-                status=child.status,
-                serial_number=child.serial_number,
-                next_inspection_due_at=child.next_inspection_due_at,
-            )
-            for child in (components or [])
-        ],
-    )
 
 
 def _load(db: Session, unit_id: int) -> WerkstattArticleUnit:
@@ -215,24 +149,7 @@ def get_machine(
     _: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> MachineOut:
-    unit = _load(db, unit_id)
-    components = machines.child_units(db, unit.id)
-    locations, users = _name_map(db)
-    wanted = {unit.article_id} | {c.article_id for c in components}
-    articles = {
-        a.id: a
-        for a in db.scalars(
-            select(WerkstattArticle).where(WerkstattArticle.id.in_(wanted or {-1}))
-        ).all()
-    }
-    return _to_out(
-        unit,
-        article=articles.get(unit.article_id),
-        locations=locations,
-        users=users,
-        components=components,
-        component_articles=articles,
-    )
+    return machine_out_with_components(db, _load(db, unit_id))
 
 
 @router.get("/machines/{unit_id}/history", response_model=list[MachineMovementOut])
@@ -267,7 +184,9 @@ def get_machine_history(
 @router.post("/machines", response_model=MachineOut, status_code=status.HTTP_201_CREATED)
 def create_machine(
     payload: MachineCreatePayload,
-    current_user: User = Depends(require_permission("werkstatt:manage")),
+    current_user: User = Depends(
+        require_any_permission("werkstatt:manage", "werkstatt:machines_create")
+    ),
     db: Session = Depends(get_db),
 ) -> MachineOut:
     article = db.get(WerkstattArticle, payload.article_id)
@@ -307,7 +226,9 @@ def create_machine(
 def update_machine(
     unit_id: int,
     payload: MachineUpdatePayload,
-    _: User = Depends(require_permission("werkstatt:manage")),
+    _: User = Depends(
+        require_any_permission("werkstatt:manage", "werkstatt:machines_edit")
+    ),
     db: Session = Depends(get_db),
 ) -> MachineOut:
     unit = _load(db, unit_id)
@@ -447,3 +368,84 @@ def record_machine_inspection(
     article = db.get(WerkstattArticle, unit.article_id)
     locations, users = _name_map(db)
     return _to_out(unit, article=article, locations=locations, users=users)
+
+
+@router.post("/machines/{unit_id}/print-label", response_model=MachineLabelPrintOut)
+def print_machine_label(
+    unit_id: int,
+    _: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MachineLabelPrintOut:
+    """Print the machine's shelf label on the workshop's WAGO printer.
+
+    Authenticated-only for the same reason booking is: the person standing at
+    the printer with an unlabelled tool is rarely the person with manage
+    rights, and a label that is easy to print is a register that stays real.
+    """
+    unit = _load(db, unit_id)
+    try:
+        printer = werkstatt_labels.print_machine_label(db, _label_content(db, unit))
+    except werkstatt_labels.LabelPrinterNotConfigured:
+        raise HTTPException(status_code=503, detail="Kein Etikettendrucker konfiguriert")
+    except werkstatt_labels.LabelPrinterUnreachable as exc:
+        raise HTTPException(
+            status_code=502, detail=f"Etikettendrucker nicht erreichbar ({exc})"
+        )
+    return MachineLabelPrintOut(unit_number=unit.unit_number, printer=printer)
+
+
+def _label_content(db: Session, unit: WerkstattArticleUnit) -> werkstatt_labels.LabelContent:
+    article = db.get(WerkstattArticle, unit.article_id)
+    return werkstatt_labels.LabelContent(
+        unit_number=unit.unit_number,
+        article_name=article.item_name if article else None,
+        manufacturer=article.manufacturer if article else None,
+        serial_number=unit.serial_number,
+    )
+
+
+@router.post("/machines/print-labels", response_model=MachineLabelBatchOut)
+def print_machine_labels(
+    payload: MachineLabelBatchPayload,
+    _: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MachineLabelBatchOut:
+    """Print the collected queue in one go.
+
+    `klein` entries pack four-per-sheet in queue order — deliberately allowing
+    DIFFERENT machines on one physical label, which is the queue's reason to
+    exist. Authenticated-only like every other shop-floor print action.
+    """
+    ids = [item.unit_id for item in payload.items]
+    units = {
+        u.id: u
+        for u in db.scalars(
+            select(WerkstattArticleUnit).where(WerkstattArticleUnit.id.in_(set(ids)))
+        ).all()
+    }
+    missing = sorted({i for i in ids if i not in units})
+    if missing:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Maschine(n) nicht gefunden: {', '.join(str(i) for i in missing)}",
+        )
+
+    gross = [
+        _label_content(db, units[item.unit_id])
+        for item in payload.items
+        if item.format == "gross"
+    ]
+    klein = [
+        _label_content(db, units[item.unit_id])
+        for item in payload.items
+        if item.format == "klein"
+    ]
+    try:
+        sheets, printer = werkstatt_labels.print_label_jobs(db, gross=gross, klein=klein)
+    except werkstatt_labels.LabelPrinterNotConfigured:
+        raise HTTPException(status_code=503, detail="Kein Etikettendrucker konfiguriert")
+    except werkstatt_labels.LabelPrinterUnreachable as exc:
+        raise HTTPException(
+            status_code=502, detail=f"Etikettendrucker nicht erreichbar ({exc})"
+        )
+    return MachineLabelBatchOut(sheets=sheets, labels=len(payload.items), printer=printer)

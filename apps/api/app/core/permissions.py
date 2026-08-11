@@ -50,6 +50,11 @@ ALL_PERMISSIONS: frozenset[str] = frozenset(
         "finance:view",
         "finance:manage",
         "werkstatt:manage",
+        # Granular machine-register grants. `werkstatt:manage` remains the
+        # umbrella and still implies both, so adding these takes nothing away
+        # from anyone who already had it — see require_any_permission.
+        "werkstatt:machines_create",
+        "werkstatt:machines_edit",
     ]
 )
 
@@ -92,6 +97,8 @@ PERMISSION_LABELS: dict[str, str] = {
     "finance:view": "View project finances",
     "finance:manage": "Edit project finances",
     "werkstatt:manage": "Manage Werkstatt (workshop inventory)",
+    "werkstatt:machines_create": "Register new machines",
+    "werkstatt:machines_edit": "Edit machine master data",
 }
 
 PERMISSION_DESCRIPTIONS: dict[str, str] = {
@@ -131,7 +138,9 @@ PERMISSION_DESCRIPTIONS: dict[str, str] = {
     "backups:manage":      "List and delete backup files on disk; upload an externally-stored backup back into the system.",
     "finance:view":        "View the finances tab on projects (order values, budgets, margins).",
     "finance:manage":      "Edit financial data on projects (order values, down payments, costs).",
-    "werkstatt:manage":    "Create, edit and archive Werkstatt articles, suppliers, categories, locations and import Datanorm catalogs.",
+    "werkstatt:manage":    "Create, edit and archive Werkstatt articles, suppliers, categories, locations and import Datanorm catalogs. Also implies both machine permissions below.",
+    "werkstatt:machines_create": "Register new machines in the machine register and add components to them. Does NOT allow editing existing machines.",
+    "werkstatt:machines_edit":   "Edit an existing machine's serial number, location, status, notes and inspection cycle, and archive it. Does NOT allow registering new machines.",
 }
 
 # Logical groups of permissions for the admin UI matrix.
@@ -151,7 +160,7 @@ PERMISSION_GROUPS: list[dict] = [
     {"key": "settings", "label": "Settings", "permissions": ["settings:manage"]},
     {"key": "system",   "label": "System",   "permissions": ["system:manage", "backups:export", "backups:restore", "backups:manage"]},
     {"key": "finance",  "label": "Finance",  "permissions": ["finance:view", "finance:manage"]},
-    {"key": "werkstatt","label": "Werkstatt","permissions": ["werkstatt:manage"]},
+    {"key": "werkstatt","label": "Werkstatt","permissions": ["werkstatt:manage", "werkstatt:machines_create", "werkstatt:machines_edit"]},
 ]
 
 # Default permission map — the hard-coded baseline.  Never mutated at runtime.
@@ -195,6 +204,8 @@ PERMISSIONS_BY_ROLE: dict[str, set[str]] = {
         "finance:view",
         "finance:manage",
         "werkstatt:manage",
+        "werkstatt:machines_create",
+        "werkstatt:machines_edit",
     },
     ROLE_CEO: {
         "projects:manage",

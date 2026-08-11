@@ -95,6 +95,32 @@ class CompanySettingsUpdate(BaseModel):
     company_address: str = ""
 
 
+class LabelPrinterSettingsOut(BaseModel):
+    """Werkstatt label printer address as the admin UI sees it.
+
+    ``source`` says where the effective address came from: ``runtime`` (set in
+    this UI), ``env`` (deployment variables), or ``none`` (printing disabled).
+    """
+
+    host: str = ""
+    port: int = 9100
+    configured: bool = False
+    source: str = "none"
+
+
+class LabelPrinterSettingsUpdate(BaseModel):
+    """Empty host clears the runtime override (falls back to env, if set)."""
+
+    host: str = ""
+    port: int = Field(default=9100, ge=1, le=65535)
+
+
+class LabelPrinterTestOut(BaseModel):
+    ok: bool
+    printer: str = ""
+    detail: str = ""
+
+
 class UpdateStatusOut(BaseModel):
     repository: str
     branch: str

@@ -1154,6 +1154,7 @@ export type WerkstattTab =
   | "artikel"            // article detail — selected via activeWerkstattArticleId
   | "nachbestellen"
   | "kisten"             // Baustellenkisten — packed boxes assigned to customers
+  | "maschinen"          // individually tracked machines (M-0001) with a custody log
   | "on_site"            // "Auf Baustelle" — all checked-out items grouped by project
   | "bedarfe"            // Projekt-Bedarfe (absorbed from legacy Materials view)
   | "katalog"            // Datanorm pool browse (absorbed from legacy Materials view)

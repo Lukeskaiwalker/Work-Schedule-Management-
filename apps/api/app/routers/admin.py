@@ -54,6 +54,9 @@ from app.schemas.api import (
     UpdateInstallRequest,
     UpdateProgressOut,
     UpdateStatusOut,
+    LabelPrinterSettingsOut,
+    LabelPrinterSettingsUpdate,
+    LabelPrinterTestOut,
     WeatherSettingsOut,
     WeatherSettingsUpdate,
 )
@@ -2285,6 +2288,74 @@ def update_weather_settings(
         configured=bool(api_key),
         masked_api_key=_mask_secret(api_key),
     )
+
+
+@router.get("/settings/label-printer", response_model=LabelPrinterSettingsOut)
+def get_label_printer_runtime_settings(
+    _: User = Depends(require_permission("settings:manage")),
+    db: Session = Depends(get_db),
+):
+    from app.services import werkstatt_labels
+
+    address = werkstatt_labels.printer_address(db)
+    host, port = address if address else ("", 9100)
+    return LabelPrinterSettingsOut(
+        host=host,
+        port=port,
+        configured=address is not None,
+        source=werkstatt_labels.printer_address_source(db),
+    )
+
+
+@router.patch("/settings/label-printer", response_model=LabelPrinterSettingsOut)
+def update_label_printer_runtime_settings(
+    payload: LabelPrinterSettingsUpdate,
+    admin: User = Depends(require_permission("settings:manage")),
+    db: Session = Depends(get_db),
+):
+    from app.services import werkstatt_labels
+    from app.services.runtime_settings import set_label_printer_settings
+
+    set_label_printer_settings(db, host=payload.host, port=payload.port)
+    db.commit()
+    log_admin_action(
+        db,
+        admin,
+        "settings.label_printer.update",
+        "settings",
+        "label-printer",
+        {"configured": bool(payload.host.strip()), "port": payload.port},
+    )
+    address = werkstatt_labels.printer_address(db)
+    host, port = address if address else ("", 9100)
+    return LabelPrinterSettingsOut(
+        host=host,
+        port=port,
+        configured=address is not None,
+        source=werkstatt_labels.printer_address_source(db),
+    )
+
+
+@router.post("/settings/label-printer/test", response_model=LabelPrinterTestOut)
+def test_label_printer(
+    admin: User = Depends(require_permission("settings:manage")),
+    db: Session = Depends(get_db),
+):
+    """Print one fixed test label so the admin sees the path works end-to-end."""
+    from app.services import werkstatt_labels
+
+    try:
+        printer = werkstatt_labels.print_test_label(db)
+    except werkstatt_labels.LabelPrinterNotConfigured:
+        return LabelPrinterTestOut(ok=False, detail="Kein Etikettendrucker konfiguriert")
+    except werkstatt_labels.LabelPrinterUnreachable as exc:
+        return LabelPrinterTestOut(
+            ok=False, printer=str(exc), detail=f"Etikettendrucker nicht erreichbar ({exc})"
+        )
+    log_admin_action(
+        db, admin, "settings.label_printer.test", "settings", "label-printer", {"printer": printer}
+    )
+    return LabelPrinterTestOut(ok=True, printer=printer, detail="Testdruck gesendet")
 
 
 @router.get("/settings/openai", response_model=OpenAISettingsOut)

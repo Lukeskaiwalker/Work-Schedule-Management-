@@ -9,11 +9,13 @@ survives even if a snapshot is ever corrected by hand.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.core.time import utcnow
 from app.models.entities import (
     User,
@@ -43,14 +45,31 @@ VALID_STATUSES = {
 BOOKABLE_STATUSES = {STATUS_AVAILABLE}
 
 
+def _app_timezone() -> ZoneInfo:
+    """The workshop's timezone. Same helper as time_tracking / daily_clock_summary."""
+    name = (get_settings().app_timezone or "UTC").strip() or "UTC"
+    try:
+        return ZoneInfo(name)
+    except ZoneInfoNotFoundError:
+        return ZoneInfo("UTC")
+
+
 def _end_of_day(moment: datetime) -> datetime:
-    """23:59:59 on the day of `moment`.
+    """End of the workshop's LOCAL day, returned as naive UTC.
 
     The scanner's default booking is "for today", and the honest end of today is
     the end of the day — not now plus 24 hours, which would leave a machine
     looking legitimately booked halfway through the next morning.
+
+    The local part is not pedantry. Every timestamp in this app is stored as
+    naive UTC and rendered in the browser's timezone, so a plain 23:59 UTC would
+    reach a German screen as "01:59 tomorrow" — a return time nobody agreed to,
+    on a date that is not today, sitting next to the words "für heute".
     """
-    return moment.replace(hour=23, minute=59, second=59, microsecond=0)
+    tz = _app_timezone()
+    local = moment.replace(tzinfo=timezone.utc).astimezone(tz)
+    end_local = local.replace(hour=23, minute=59, second=59, microsecond=0)
+    return end_local.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 def child_units(db: Session, unit_id: int) -> list[WerkstattArticleUnit]:

@@ -20,6 +20,10 @@ USER_PERMISSIONS_KEY = "user_permissions"
 # admin only seeing the job that THEIR own click initiated. Cleared
 # when the runner reports the job has reached a terminal status.
 ACTIVE_UPDATE_JOB_KEY = "active_update_job"
+# v2.10: Werkstatt label printer (WAGO 258-5101 / Godex). Admin-editable so a
+# DHCP-moved printer is a settings change, not a redeploy. Env vars remain the
+# fallback for deployments configured the old way.
+WERKSTATT_LABEL_PRINTER_KEY = "werkstatt_label_printer"
 
 # Default model for ProjectLineItem extraction. Operators can switch to
 # `gpt-4o` (more accurate, more expensive) or any other OpenAI Structured-
@@ -58,6 +62,40 @@ def get_openweather_api_key(db: Session) -> str:
 
 def set_openweather_api_key(db: Session, value: str) -> None:
     set_runtime_setting(db, OPENWEATHER_API_KEY, (value or "").strip())
+
+
+def get_label_printer_settings(db: Session) -> dict[str, Any] | None:
+    """Runtime label-printer address as ``{"host": str, "port": int}``.
+
+    Defensive like :func:`get_active_update_job`: malformed JSON or a blank
+    host reads as "not configured at runtime" so the env fallback applies.
+    """
+    raw = get_runtime_setting(db, WERKSTATT_LABEL_PRINTER_KEY)
+    if not raw:
+        return None
+    try:
+        stored = json.loads(raw)
+    except Exception:
+        return None
+    if not isinstance(stored, dict):
+        return None
+    host = str(stored.get("host") or "").strip()
+    if not host:
+        return None
+    try:
+        port = int(stored.get("port") or 9100)
+    except (TypeError, ValueError):
+        port = 9100
+    return {"host": host, "port": port}
+
+
+def set_label_printer_settings(db: Session, *, host: str, port: int) -> None:
+    """Store the printer address; an empty host clears the runtime override."""
+    set_runtime_setting(
+        db,
+        WERKSTATT_LABEL_PRINTER_KEY,
+        json.dumps({"host": (host or "").strip(), "port": int(port)}),
+    )
 
 
 def get_active_update_job(db: Session) -> dict[str, Any] | None:

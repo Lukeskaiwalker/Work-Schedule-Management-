@@ -2,19 +2,33 @@
 
 Owned by Mobile BE (used only by ``workflow_werkstatt_mobile``).
 
-Given a raw scanned ``code`` (an EAN, SP-Nummer, supplier article number,
-or Datanorm catalog identifier), resolve it via the six-step cascade
-defined in ``WERKSTATT_CONTRACT.md §3.1``:
+Given a raw scanned ``code`` (a machine label, EAN, SP-Nummer, supplier article
+number, or Datanorm catalog identifier), resolve it via the cascade defined in
+``WERKSTATT_CONTRACT.md §3.1``:
 
-    1. werkstatt_articles.article_number == code       → werkstatt_article (sp)
-    2. werkstatt_articles.ean == code                  → werkstatt_article (ean)
-    3. werkstatt_article_suppliers.supplier_article_no == code
+    1. werkstatt_article_units.unit_number == code     → machine (machine_number)
+    2. werkstatt_articles.article_number == code       → werkstatt_article (sp)
+    3. werkstatt_articles.ean == code                  → werkstatt_article (ean)
+    4. werkstatt_article_suppliers.supplier_article_no == code
                                                        → werkstatt_article (supplier_no)
-    4. material_catalog_items.ean == code              → catalog_match (catalog_ean)
+    5. werkstatt_article_units.serial_number == code   → machine (serial_number)
+    6. material_catalog_items.ean == code              → catalog_match (catalog_ean)
                                                          (may return multiple)
-    5. material_catalog_items.article_no == code       → catalog_match (catalog_article_no)
+    7. material_catalog_items.article_no == code       → catalog_match (catalog_article_no)
                                                          (may return multiple)
-    6. Otherwise                                       → not_found
+    8. Otherwise                                       → not_found
+
+The two machine steps sit at opposite ends on purpose.
+
+Step 1 is our own label, stuck on exactly one physical object — if it resolves
+there is nothing more specific to find, so it wins outright. It is gated on the
+``M-<digits>`` shape, which cannot collide with an EAN or an SP-number, so the
+overwhelmingly common article scan costs no extra query.
+
+Step 5 is the MANUFACTURER's nameplate serial, which is an arbitrary string we
+did not issue and cannot pattern-match. Putting it after the article steps
+means every article scan resolves exactly as it did before machines existed —
+a serial can only claim a code nothing else wanted.
 
 Ordering is load-bearing — the FE relies on it, and it's documented in the
 contract. Do not rearrange without bumping the contract.
@@ -29,6 +43,7 @@ from app.models.entities import (
     MaterialCatalogItem,
     WerkstattArticle,
     WerkstattArticleSupplier,
+    WerkstattArticleUnit,
     WerkstattCategory,
     WerkstattLocation,
     WerkstattSupplier,
@@ -36,12 +51,15 @@ from app.models.entities import (
 from app.schemas.werkstatt import (
     MaterialCatalogItemLiteOut,
     ScanResolveCatalog,
+    ScanResolveMachine,
     ScanResolveNotFound,
     ScanResolveResult,
     ScanResolveWerkstatt,
     WerkstattArticleOut,
     WerkstattStockStatus,
 )
+from app.services.werkstatt_machine_view import machine_out_with_components
+from app.services.werkstatt_unit_numbers import UNIT_PATTERN, normalize_scanned_code
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -63,7 +81,23 @@ def resolve_scan(db: Session, code: str) -> ScanResolveResult:
     if not normalised:
         return ScanResolveNotFound(code=raw)
 
-    # 1. werkstatt_articles.article_number == code
+    # 1. Our own machine label. Gated on the M-<digits> shape so a plain EAN
+    #    scan does not pay for this lookup, and canonicalised first because a
+    #    hardware scanner, a hand-typed "m-1" and the printed "M-0001" all mean
+    #    the same drill to the person holding it.
+    if UNIT_PATTERN.match(normalize_scanned_code(normalised)):
+        unit = db.scalars(
+            select(WerkstattArticleUnit).where(
+                WerkstattArticleUnit.unit_number == normalize_scanned_code(normalised)
+            )
+        ).first()
+        if unit is not None:
+            return ScanResolveMachine(
+                machine=machine_out_with_components(db, unit),
+                matched_by="machine_number",
+            )
+
+    # 2. werkstatt_articles.article_number == code
     article = db.scalars(
         select(WerkstattArticle).where(WerkstattArticle.article_number == normalised)
     ).first()
@@ -73,7 +107,7 @@ def resolve_scan(db: Session, code: str) -> ScanResolveResult:
             matched_by="sp",
         )
 
-    # 2. werkstatt_articles.ean == code
+    # 3. werkstatt_articles.ean == code
     article = db.scalars(
         select(WerkstattArticle).where(WerkstattArticle.ean == normalised)
     ).first()
@@ -83,7 +117,7 @@ def resolve_scan(db: Session, code: str) -> ScanResolveResult:
             matched_by="ean",
         )
 
-    # 3. werkstatt_article_suppliers.supplier_article_no == code
+    # 4. werkstatt_article_suppliers.supplier_article_no == code
     #    If multiple links from different articles share the same supplier
     #    article number (shouldn't happen due to uniqueness per supplier_id,
     #    but we pick the deterministic winner by article_number ASC).
@@ -101,7 +135,25 @@ def resolve_scan(db: Session, code: str) -> ScanResolveResult:
                 matched_by="supplier_no",
             )
 
-    # 4. material_catalog_items.ean == code — return ALL rows
+    # 5. The manufacturer's nameplate serial. Only reached once every article
+    #    lookup has passed, so recording a serial can never change how an
+    #    existing article barcode resolves. Archived units are excluded: a
+    #    retired machine's serial should not hijack a live scan.
+    unit = db.scalars(
+        select(WerkstattArticleUnit)
+        .where(
+            WerkstattArticleUnit.serial_number == normalised,
+            WerkstattArticleUnit.is_archived.is_(False),
+        )
+        .order_by(WerkstattArticleUnit.unit_number.asc())
+    ).first()
+    if unit is not None:
+        return ScanResolveMachine(
+            machine=machine_out_with_components(db, unit),
+            matched_by="serial_number",
+        )
+
+    # 6. material_catalog_items.ean == code — return ALL rows
     catalog_rows = list(
         db.scalars(
             select(MaterialCatalogItem)
@@ -115,7 +167,7 @@ def resolve_scan(db: Session, code: str) -> ScanResolveResult:
             matched_by="catalog_ean",
         )
 
-    # 5. material_catalog_items.article_no == code — return ALL rows
+    # 7. material_catalog_items.article_no == code — return ALL rows
     catalog_rows = list(
         db.scalars(
             select(MaterialCatalogItem)
@@ -129,7 +181,7 @@ def resolve_scan(db: Session, code: str) -> ScanResolveResult:
             matched_by="catalog_article_no",
         )
 
-    # 6. Not found — echo the raw code unchanged.
+    # 8. Not found — echo the raw code unchanged.
     return ScanResolveNotFound(code=raw)
 
 

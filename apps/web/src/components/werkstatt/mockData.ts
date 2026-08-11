@@ -218,8 +218,22 @@ export type OrdersFilterKey =
 
 export const MOCK_ORDERS: ReadonlyArray<MockOrder> = [];
 
+/**
+ * The slice of an order these presentation helpers actually read.
+ *
+ * Typed structurally rather than as the full `WerkstattOrder` so the list
+ * (which receives summaries) and the drawer (which receives whole orders) can
+ * share one set of helpers. The alternative was a cast at every call site,
+ * which would have compiled just as happily on an object missing the fields.
+ */
+export interface OrderTiming {
+  status: WerkstattOrderStatus;
+  expected_delivery_at: string | null;
+  delivered_at: string | null;
+}
+
 export function orderMatchesFilter(
-  order: MockOrder,
+  order: Pick<OrderTiming, "status">,
   filter: OrdersFilterKey,
   daysOverdue: number | null,
 ): boolean {
@@ -308,7 +322,7 @@ export function daysSinceIso(iso: string | null, nowMs: number): number | null {
   return Math.floor((nowMs - parsed.getTime()) / MS_PER_DAY);
 }
 
-export function orderOverdueDays(order: MockOrder, nowMs: number): number | null {
+export function orderOverdueDays(order: OrderTiming, nowMs: number): number | null {
   if (order.status === "delivered" || order.status === "cancelled") return null;
   const diff = daysSinceIso(order.expected_delivery_at, nowMs);
   if (diff === null) return null;
@@ -318,7 +332,7 @@ export function orderOverdueDays(order: MockOrder, nowMs: number): number | null
 export type DeliveryTone = "neutral" | "amber" | "red" | "mint";
 
 export function deliveryLabel(
-  order: MockOrder,
+  order: OrderTiming,
   de: boolean,
   nowMs: number,
 ): { text: string; tone: DeliveryTone } {

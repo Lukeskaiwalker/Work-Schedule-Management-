@@ -157,6 +157,13 @@ export interface AppContextValue {
   setWerkstattTab: (tab: WerkstattTab) => void;
   activeWerkstattArticleId: number | null;
   setActiveWerkstattArticleId: (id: number | null) => void;
+  /**
+   * Machine the Maschinen tab should open on arrival. Set by the scanner, which
+   * resolves a label into a machine and then has to hand it to a page that owns
+   * its own selection state. Cleared by that page once consumed.
+   */
+  activeWerkstattMachineId: number | null;
+  setActiveWerkstattMachineId: (id: number | null) => void;
   projectBackView: MainView | null;
   setProjectBackView: (view: MainView | null) => void;
   constructionBackView: MainView | null;

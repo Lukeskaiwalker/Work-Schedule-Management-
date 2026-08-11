@@ -1,10 +1,11 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAppContext } from "../../context/AppContext";
+import { BestellVorlagenModal } from "../../components/werkstatt/BestellVorlagenModal";
+import { BestellungDetailPanel } from "../../components/werkstatt/BestellungDetailPanel";
+import { BestellungZusammenfuehrenModal } from "../../components/werkstatt/BestellungZusammenfuehrenModal";
+import { WarenkorbHolenModal } from "../../components/werkstatt/WarenkorbHolenModal";
 import {
-  MOCK_ORDERS,
   ORDERS_FILTER_CHIPS,
-  canMarkDelivered,
-  canMarkSent,
   daysSinceIso,
   deliveryLabel,
   formatMoney,
@@ -13,32 +14,46 @@ import {
   orderStatusLabel,
   orderStatusToTone,
   shortDate,
-  type MockOrder,
   type OrdersFilterKey,
 } from "../../components/werkstatt/mockData";
-import type { WerkstattOrderStatus } from "../../types/werkstatt";
+import type { WerkstattOrder, WerkstattOrderSummary, WerkstattSupplier } from "../../types/werkstatt";
+import { listSuppliers } from "../../utils/werkstattSuppliersApi";
+import {
+  addOrderLine,
+  applyTemplateToOrder,
+  attachOrder,
+  cancelOrder,
+  createOrderFromTemplate,
+  deleteOrderLine,
+  getOrder,
+  importCartXml,
+  listIdsConnections,
+  listOrderTemplates,
+  listOrders,
+  markOrderDelivered,
+  markOrderSent,
+  mergeOrders,
+  saveOrderAsTemplate,
+  startPunchout,
+  submitOrderToShop,
+  updateOrderLine,
+} from "../../utils/werkstattOrdersApi";
 
 /**
- * WerkstattOrdersPage — supervisor order list. Self-gates on
+ * WerkstattOrdersPage — the buyer's order list. Self-gates on
  * `mainView === "werkstatt" && werkstattTab === "orders"`.
  *
- * There is no Paper artboard for this screen yet; the layout follows the
- * existing Werkstatt visual vocabulary (breadcrumb eyebrow → title →
- * KPI strip → filter chips → table card → right-hand detail drawer).
+ * Wired to the real API. Beyond the plain order lifecycle it is the home of
+ * procurement: pulling a cart out of a wholesaler's webshop (IDS-Connect),
+ * merging the day's orders into one, and the saved templates that make a
+ * recurring job one click instead of forty.
  *
- * Order-status transitions are stub callbacks — real wiring lives with the
- * Tablet BE agent (`POST /api/werkstatt/orders/{id}/mark-sent|mark-delivered`,
- * see WERKSTATT_CONTRACT.md §3.4).
- *
- * Presentation helpers (date / money formatting, filter chip defs) live in
- * `components/werkstatt/mockData.ts` so this file stays under the 400-line
- * size cap.
+ * Presentation helpers (money, dates, status tones, filter chips) live in
+ * `components/werkstatt/mockData.ts` — they were written for the fixtures but
+ * are typed against the real API shapes, so they survived the de-mocking.
  */
 
-// "Today" for all relative-date math. Declared once per render so every row
-// sees the same instant — prevents jitter across a render pass and makes the
-// helper functions pure.
-const NOW_MS: number = Date.now();
+type ModalKind = "cart" | "merge" | "templates" | null;
 
 type KpiTone = "neutral" | "warning" | "info" | "danger";
 
@@ -50,67 +65,194 @@ interface KpiDef {
 }
 
 export function WerkstattOrdersPage() {
-  const { mainView, language, werkstattTab } = useAppContext();
-  const [activeFilter, setActiveFilter] = useState<OrdersFilterKey>("all");
-  const [activeOrderId, setActiveOrderId] = useState<number | null>(null);
-  // Local status overrides so the stub buttons feel alive without touching
-  // the fixture module. Keyed by order id.
-  const [statusOverrides, setStatusOverrides] = useState<
-    Readonly<Record<number, WerkstattOrderStatus>>
-  >({});
+  const { mainView, language, werkstattTab, token, user, tasks } = useAppContext();
 
-  const orders = useMemo<ReadonlyArray<MockOrder>>(() => {
-    return MOCK_ORDERS.map((order) => {
-      const override = statusOverrides[order.id];
-      return override && override !== order.status
-        ? { ...order, status: override }
-        : order;
-    });
-  }, [statusOverrides]);
+  const [orders, setOrders] = useState<WerkstattOrderSummary[]>([]);
+  const [templates, setTemplates] = useState<WerkstattOrderSummary[]>([]);
+  const [suppliers, setSuppliers] = useState<WerkstattSupplier[]>([]);
+  const [shopSupplierIds, setShopSupplierIds] = useState<ReadonlySet<number>>(new Set());
+  const [activeOrder, setActiveOrder] = useState<WerkstattOrder | null>(null);
+
+  const [activeFilter, setActiveFilter] = useState<OrdersFilterKey>("all");
+  const [loading, setLoading] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [modal, setModal] = useState<ModalKind>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const de = language === "de";
+  const active = mainView === "werkstatt" && werkstattTab === "orders";
+  const canManage = (user?.effective_permissions ?? []).includes("werkstatt:manage");
+  /** Only admins may read the shop connections; everyone else just sees no shop button. */
+  const canReadConnections = (user?.effective_permissions ?? []).includes("settings:manage");
+
+  const reportError = useCallback(
+    (err: unknown) => setError(err instanceof Error ? err.message : String(err)),
+    [],
+  );
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [orderRows, templateRows, supplierRows] = await Promise.all([
+        listOrders(token),
+        listOrderTemplates(token),
+        listSuppliers(token),
+      ]);
+      setOrders(orderRows);
+      setTemplates(templateRows);
+      setSuppliers(supplierRows);
+    } catch (err) {
+      reportError(err);
+    } finally {
+      setLoading(false);
+    }
+  }, [token, reportError]);
+
+  useEffect(() => {
+    if (!active) return;
+    void refresh();
+  }, [active, refresh]);
+
+  /**
+   * Which suppliers can be shopped at. Read from the connection list, which
+   * needs `settings:manage`; without it the set stays empty and the shop route
+   * simply is not offered. A non-admin never sees a button that would 403.
+   *
+   * `supplier_has_shop` on the full order covers the same question for the
+   * drawer, which is why the drawer does not depend on this.
+   */
+  useEffect(() => {
+    if (!active || !canReadConnections) return;
+    let cancelled = false;
+    listIdsConnections(token)
+      .then((connections) => {
+        if (cancelled) return;
+        setShopSupplierIds(
+          new Set(connections.filter((c) => c.is_enabled).map((c) => c.supplier_id)),
+        );
+      })
+      .catch(() => {
+        // Non-fatal: the XML import route still works without this.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [active, canReadConnections, token]);
+
+  /**
+   * Run a mutation, adopt the order it returns, and re-read the list.
+   *
+   * Every composition endpoint answers with the whole refreshed order, so the
+   * drawer never needs a second round trip — but the LIST does, because line
+   * counts and totals moved.
+   */
+  const runMutation = useCallback(
+    async (action: () => Promise<WerkstattOrder | null>) => {
+      setBusy(true);
+      setError(null);
+      try {
+        const updated = await action();
+        if (updated) setActiveOrder(updated);
+        await refresh();
+      } catch (err) {
+        reportError(err);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [refresh, reportError],
+  );
+
+  const openOrder = useCallback(
+    async (id: number) => {
+      setError(null);
+      try {
+        setActiveOrder(await getOrder(token, id));
+      } catch (err) {
+        reportError(err);
+      }
+    },
+    [token, reportError],
+  );
+
+  /**
+   * Open a punchout hand-over.
+   *
+   * A NEW TAB, never this one: the URL serves a form that posts itself to the
+   * wholesaler, so navigating in place would replace the app. The tab is
+   * opened synchronously from the click and its location set once the token
+   * arrives — opening it after the await would be swallowed by the popup
+   * blocker, which only trusts a window opened during a user gesture.
+   */
+  const openHandoff = useCallback(
+    async (request: () => Promise<{ handoff_url: string; warnings?: string[] }>) => {
+      const tab = window.open("", "_blank", "noopener,noreferrer");
+      setBusy(true);
+      setError(null);
+      try {
+        const handoff = await request();
+        if (tab) tab.location.href = handoff.handoff_url;
+        else window.location.assign(handoff.handoff_url);
+        const opened = de
+          ? "Shop geöffnet. Der Warenkorb erscheint hier, sobald er übergeben wurde."
+          : "Shop opened. The cart appears here once you hand it over.";
+        // Warnings first — a line the shop cannot match is the thing the user
+        // needs to read, and appending the reassuring sentence after it keeps
+        // both instead of one silently replacing the other.
+        setNotice(
+          handoff.warnings?.length ? `${handoff.warnings.join(" · ")} — ${opened}` : opened,
+        );
+      } catch (err) {
+        tab?.close();
+        reportError(err);
+      } finally {
+        setBusy(false);
+      }
+    },
+    [de, reportError],
+  );
 
   const kpiNumbers = useMemo(() => {
     let openCount = 0;
     let overdueCount = 0;
     let deliveredWeek = 0;
     let openValueCents = 0;
+    const nowMs = Date.now();
     for (const order of orders) {
-      const od = orderOverdueDays(order, NOW_MS);
-      const isOpen =
-        order.status !== "delivered" && order.status !== "cancelled";
+      const overdue = order.days_overdue;
+      const isOpen = order.status !== "delivered" && order.status !== "cancelled";
       if (isOpen) {
         openCount += 1;
         openValueCents += order.total_amount_cents ?? 0;
       }
-      if (od !== null && od > 0 && isOpen) overdueCount += 1;
+      if (overdue !== null && overdue > 0 && isOpen) overdueCount += 1;
       if (order.status === "delivered") {
-        const ago = daysSinceIso(order.delivered_at, NOW_MS);
+        const ago = daysSinceIso(order.delivered_at, nowMs);
         if (ago !== null && ago <= 7) deliveredWeek += 1;
       }
     }
     return { openCount, overdueCount, deliveredWeek, openValueCents };
   }, [orders]);
 
-  const filteredOrders = useMemo<ReadonlyArray<MockOrder>>(() => {
-    return orders.filter((o) =>
-      orderMatchesFilter(o, activeFilter, orderOverdueDays(o, NOW_MS)),
+  const filteredOrders = useMemo(() => {
+    const nowMs = Date.now();
+    // The server already computes days_overdue against its own clock; the
+    // local fallback only covers a summary that predates that field.
+    return orders.filter((order) =>
+      orderMatchesFilter(
+        order,
+        activeFilter,
+        order.days_overdue ?? orderOverdueDays(order, nowMs),
+      ),
     );
   }, [orders, activeFilter]);
 
-  const activeOrder = useMemo<MockOrder | null>(() => {
-    if (activeOrderId === null) return null;
-    return orders.find((o) => o.id === activeOrderId) ?? null;
-  }, [orders, activeOrderId]);
-
-  if (mainView !== "werkstatt" || werkstattTab !== "orders") return null;
-
-  const de = language === "de";
-
-  const applyTransition = (id: number, to: WerkstattOrderStatus) => {
-    setStatusOverrides((current) => ({ ...current, [id]: to }));
-  };
+  if (!active) return null;
 
   const inTransitCount = orders.filter(
-    (o) => o.status === "sent" || o.status === "confirmed",
+    (order) => order.status === "sent" || order.status === "confirmed",
   ).length;
 
   const kpis: ReadonlyArray<KpiDef> = [
@@ -155,20 +297,44 @@ export function WerkstattOrdersPage() {
           </span>
         </div>
         <div className="werkstatt-sub-actions">
-          <button type="button" className="werkstatt-action-btn">
-            {de ? "Exportieren" : "Export"}
-          </button>
           <button
             type="button"
-            className="werkstatt-action-btn werkstatt-action-btn--primary"
+            className="werkstatt-action-btn"
+            onClick={() => setModal("templates")}
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-            </svg>
-            {de ? "Neue Bestellung" : "New order"}
+            {de ? "Vorlagen" : "Templates"}
           </button>
+          {canManage && (
+            <button
+              type="button"
+              className="werkstatt-action-btn werkstatt-action-btn--primary"
+              onClick={() => setModal("cart")}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+              </svg>
+              {de ? "Warenkorb holen" : "Fetch cart"}
+            </button>
+          )}
         </div>
       </header>
+
+      {notice && (
+        <div className="werkstatt-orders-notice" role="status">
+          {notice}
+          <button type="button" onClick={() => setNotice(null)} aria-label={de ? "Schließen" : "Dismiss"}>
+            ✕
+          </button>
+        </div>
+      )}
+      {error && (
+        <div className="werkstatt-orders-notice werkstatt-orders-notice--error" role="alert">
+          {error}
+          <button type="button" onClick={() => setError(null)} aria-label={de ? "Schließen" : "Dismiss"}>
+            ✕
+          </button>
+        </div>
+      )}
 
       <div className="werkstatt-kpi-strip">
         {kpis.map((kpi) => (
@@ -228,9 +394,7 @@ export function WerkstattOrdersPage() {
             <span className="werkstatt-orders-col werkstatt-orders-col-supplier">
               {de ? "LIEFERANT" : "SUPPLIER"}
             </span>
-            <span className="werkstatt-orders-col werkstatt-orders-col-status">
-              {de ? "STATUS" : "STATUS"}
-            </span>
+            <span className="werkstatt-orders-col werkstatt-orders-col-status">STATUS</span>
             <span className="werkstatt-orders-col werkstatt-orders-col-items">
               {de ? "ARTIKEL" : "ITEMS"}
             </span>
@@ -243,20 +407,24 @@ export function WerkstattOrdersPage() {
             <span className="werkstatt-orders-col werkstatt-orders-col-expected">
               {de ? "LIEFERUNG" : "DELIVERY"}
             </span>
-            <span
-              className="werkstatt-orders-col werkstatt-orders-col-kebab"
-              aria-hidden="true"
-            />
           </div>
 
-          {filteredOrders.length === 0 ? (
+          {loading ? (
+            <div className="werkstatt-orders-empty">{de ? "Wird geladen…" : "Loading…"}</div>
+          ) : filteredOrders.length === 0 ? (
             <div className="werkstatt-orders-empty">
-              {de ? "Keine Bestellungen für diesen Filter." : "No orders match this filter."}
+              {orders.length === 0
+                ? de
+                  ? "Noch keine Bestellungen. Über „Warenkorb holen“ lässt sich ein Warenkorb aus dem Shop des Lieferanten übernehmen."
+                  : "No orders yet. Use “Fetch cart” to pull one from a supplier's shop."
+                : de
+                  ? "Keine Bestellungen für diesen Filter."
+                  : "No orders match this filter."}
             </div>
           ) : (
             <ul className="werkstatt-orders-table-body">
               {filteredOrders.map((order) => {
-                const delivery = deliveryLabel(order, de, NOW_MS);
+                const delivery = deliveryLabel(order, de, Date.now());
                 const tone = orderStatusToTone(order.status);
                 const isActive = activeOrder?.id === order.id;
                 return (
@@ -268,7 +436,7 @@ export function WerkstattOrdersPage() {
                     <button
                       type="button"
                       className="werkstatt-orders-row-btn"
-                      onClick={() => setActiveOrderId(order.id)}
+                      onClick={() => void openOrder(order.id)}
                       aria-label={
                         de
                           ? `Bestellung ${order.order_number} öffnen`
@@ -277,14 +445,18 @@ export function WerkstattOrdersPage() {
                     >
                       <span className="werkstatt-orders-col werkstatt-orders-col-number werkstatt-orders-col-number--value">
                         {order.order_number}
+                        {order.title && (
+                          <small className="werkstatt-orders-row-title">{order.title}</small>
+                        )}
                       </span>
                       <span className="werkstatt-orders-col werkstatt-orders-col-supplier">
                         {order.supplier_name}
+                        {order.task_title && (
+                          <small className="werkstatt-orders-row-title">{order.task_title}</small>
+                        )}
                       </span>
                       <span className="werkstatt-orders-col werkstatt-orders-col-status">
-                        <span
-                          className={`werkstatt-orders-status werkstatt-orders-status--${tone}`}
-                        >
+                        <span className={`werkstatt-orders-status werkstatt-orders-status--${tone}`}>
                           {orderStatusLabel(order.status, de)}
                         </span>
                       </span>
@@ -303,17 +475,6 @@ export function WerkstattOrdersPage() {
                         {delivery.text}
                       </span>
                     </button>
-                    <button
-                      type="button"
-                      className="werkstatt-orders-kebab"
-                      aria-label={de ? "Aktionen" : "Actions"}
-                    >
-                      <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
-                        <circle cx="5" cy="12" r="1.5" fill="currentColor" />
-                        <circle cx="12" cy="12" r="1.5" fill="currentColor" />
-                        <circle cx="19" cy="12" r="1.5" fill="currentColor" />
-                      </svg>
-                    </button>
                   </li>
                 );
               })}
@@ -322,108 +483,129 @@ export function WerkstattOrdersPage() {
         </div>
 
         {activeOrder && (
-          <aside
-            className="werkstatt-orders-drawer"
-            aria-label={de ? "Bestelldetails" : "Order details"}
-          >
-            <header className="werkstatt-orders-drawer-head">
-              <div className="werkstatt-orders-drawer-title-block">
-                <span className="werkstatt-orders-drawer-number">
-                  {activeOrder.order_number}
-                </span>
-                <h2 className="werkstatt-orders-drawer-title">
-                  {activeOrder.supplier_name}
-                </h2>
-                <span
-                  className={`werkstatt-orders-status werkstatt-orders-status--${orderStatusToTone(activeOrder.status)}`}
-                >
-                  {orderStatusLabel(activeOrder.status, de)}
-                </span>
-              </div>
-              <button
-                type="button"
-                className="werkstatt-orders-drawer-close"
-                onClick={() => setActiveOrderId(null)}
-                aria-label={de ? "Schließen" : "Close"}
-              >
-                <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
-                  <path
-                    d="M6 6l12 12M18 6L6 18"
-                    stroke="currentColor"
-                    strokeWidth="1.8"
-                    strokeLinecap="round"
-                  />
-                </svg>
-              </button>
-            </header>
-
-            <dl className="werkstatt-orders-drawer-meta">
-              <div>
-                <dt>{de ? "Bestellt am" : "Ordered"}</dt>
-                <dd>{shortDate(activeOrder.ordered_at, de)}</dd>
-              </div>
-              <div>
-                <dt>{de ? "Erwartet" : "Expected"}</dt>
-                <dd>{shortDate(activeOrder.expected_delivery_at, de)}</dd>
-              </div>
-              <div>
-                <dt>{de ? "Summe" : "Total"}</dt>
-                <dd>{formatMoney(activeOrder.total_amount_cents, activeOrder.currency)}</dd>
-              </div>
-              {activeOrder.delivery_reference && (
-                <div>
-                  <dt>{de ? "Lieferschein" : "Delivery ref"}</dt>
-                  <dd>{activeOrder.delivery_reference}</dd>
-                </div>
-              )}
-            </dl>
-
-            <section className="werkstatt-orders-drawer-lines">
-              <h3 className="werkstatt-orders-drawer-section-title">
-                {de ? "Positionen" : "Lines"}
-              </h3>
-              <ul className="werkstatt-orders-drawer-lines-list">
-                {activeOrder.lines.map((line) => (
-                  <li key={line.id} className="werkstatt-orders-drawer-line">
-                    <div className="werkstatt-orders-drawer-line-main">
-                      <b>{line.article_name}</b>
-                      <small>
-                        {line.article_number}
-                        {line.supplier_article_no ? ` · ${line.supplier_article_no}` : ""}
-                      </small>
-                    </div>
-                    <div className="werkstatt-orders-drawer-line-qty">
-                      <span>
-                        {line.quantity_received} / {line.quantity_ordered}
-                      </span>
-                      <small>{formatMoney(line.unit_price_cents, line.currency)}</small>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            </section>
-
-            <footer className="werkstatt-orders-drawer-actions">
-              <button
-                type="button"
-                className="werkstatt-action-btn"
-                disabled={!canMarkSent(activeOrder.status)}
-                onClick={() => applyTransition(activeOrder.id, "sent")}
-              >
-                {de ? "Als versendet markieren" : "Mark as sent"}
-              </button>
-              <button
-                type="button"
-                className="werkstatt-action-btn werkstatt-action-btn--primary"
-                disabled={!canMarkDelivered(activeOrder.status)}
-                onClick={() => applyTransition(activeOrder.id, "delivered")}
-              >
-                {de ? "Als geliefert markieren" : "Mark as delivered"}
-              </button>
-            </footer>
-          </aside>
+          <BestellungDetailPanel
+            language={language}
+            order={activeOrder}
+            tasks={tasks}
+            canManage={canManage}
+            busy={busy}
+            onClose={() => setActiveOrder(null)}
+            onAddLine={(description, quantity, priceCents) =>
+              void runMutation(() =>
+                addOrderLine(token, activeOrder.id, {
+                  description,
+                  quantity_ordered: quantity,
+                  unit_price_cents: priceCents,
+                }),
+              )
+            }
+            onUpdateLine={(lineId, patch) =>
+              void runMutation(() => updateOrderLine(token, activeOrder.id, lineId, patch))
+            }
+            onDeleteLine={(lineId) =>
+              void runMutation(() => deleteOrderLine(token, activeOrder.id, lineId))
+            }
+            onMarkSent={() => void runMutation(() => markOrderSent(token, activeOrder.id))}
+            onMarkDelivered={() =>
+              void runMutation(() => markOrderDelivered(token, activeOrder.id))
+            }
+            onCancel={() => void runMutation(() => cancelOrder(token, activeOrder.id))}
+            onMerge={() => setModal("merge")}
+            onApplyTemplate={() => setModal("templates")}
+            onSaveAsTemplate={(name) =>
+              void runMutation(async () => {
+                await saveOrderAsTemplate(token, activeOrder.id, name);
+                setNotice(de ? `Vorlage „${name}“ gespeichert.` : `Template “${name}” saved.`);
+                // Re-read the ORDER, not the template the call returned — the
+                // drawer is still showing the order the user was working on.
+                return getOrder(token, activeOrder.id);
+              })
+            }
+            onAttachTask={(taskId) =>
+              void runMutation(() => attachOrder(token, activeOrder.id, { task_id: taskId }))
+            }
+            onSubmitToShop={() =>
+              void openHandoff(() => submitOrderToShop(token, activeOrder.id))
+            }
+            onShopAgain={() =>
+              void openHandoff(() =>
+                startPunchout(token, {
+                  supplier_id: activeOrder.supplier_id,
+                  order_id: activeOrder.id,
+                }),
+              )
+            }
+          />
         )}
       </div>
+
+      <WarenkorbHolenModal
+        open={modal === "cart"}
+        language={language}
+        suppliers={suppliers}
+        shopSupplierIds={shopSupplierIds}
+        draftOrders={orders}
+        busy={busy}
+        onClose={() => setModal(null)}
+        onStartShop={(supplierId, orderId) => {
+          setModal(null);
+          void openHandoff(() =>
+            startPunchout(token, { supplier_id: supplierId, order_id: orderId }),
+          );
+        }}
+        onImportXml={(supplierId, xml, orderId) => {
+          setModal(null);
+          void runMutation(async () => {
+            const result = await importCartXml(token, {
+              supplier_id: supplierId,
+              xml,
+              order_id: orderId,
+            });
+            setNotice(
+              de
+                ? `${result.line_count} Position(en) in ${result.order_number} übernommen.`
+                : `${result.line_count} line(s) imported into ${result.order_number}.`,
+            );
+            return getOrder(token, result.order_id);
+          });
+        }}
+      />
+
+      {activeOrder && (
+        <BestellungZusammenfuehrenModal
+          open={modal === "merge"}
+          language={language}
+          target={activeOrder}
+          candidates={orders}
+          busy={busy}
+          onClose={() => setModal(null)}
+          onConfirm={(sourceOrderId, combineDuplicates) => {
+            setModal(null);
+            void runMutation(() =>
+              mergeOrders(token, activeOrder.id, sourceOrderId, combineDuplicates),
+            );
+          }}
+        />
+      )}
+
+      <BestellVorlagenModal
+        open={modal === "templates"}
+        language={language}
+        templates={templates}
+        targetOrderId={activeOrder && activeOrder.status === "draft" ? activeOrder.id : null}
+        targetSupplierId={activeOrder?.supplier_id ?? null}
+        busy={busy}
+        onClose={() => setModal(null)}
+        onApply={(templateId) => {
+          setModal(null);
+          if (!activeOrder) return;
+          void runMutation(() => applyTemplateToOrder(token, activeOrder.id, templateId));
+        }}
+        onCreate={(templateId, title) => {
+          setModal(null);
+          void runMutation(() => createOrderFromTemplate(token, { template_id: templateId, title }));
+        }}
+      />
     </section>
   );
 }

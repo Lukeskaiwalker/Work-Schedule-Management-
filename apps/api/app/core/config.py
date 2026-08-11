@@ -67,6 +67,12 @@ class Settings(BaseSettings):
     # this at a self-hosted OSRM instance. Empty string disables the
     # OSRM lookup and falls back to the haversine × 1.3 heuristic.
     osrm_base_url: str = "https://router.project-osrm.org"
+    # Werkstatt label printer (WAGO Smart Printer 258-5101 — a Godex OEM
+    # speaking EZPL) reachable over raw TCP "port 9100" printing. Empty host
+    # disables label printing; the endpoint then answers 503 instead of timing
+    # out against nothing.
+    werkstatt_label_printer_host: str = ""
+    werkstatt_label_printer_port: int = 9100
     app_release_version: str = ""
     app_release_commit: str = ""
     update_repo_owner: str = "Lukeskaiwalker"

@@ -39,12 +39,19 @@ from app.models.entities import (
 
 
 ORDER_NUMBER_PREFIX = "BST"
+# Templates share the orders table and therefore its unique number column, but
+# must not burn a real order number — a gap in the BST sequence looks like a
+# deleted order to anyone auditing it. "VRL" for Vorlage keeps the two series
+# separate and self-describing.
+TEMPLATE_NUMBER_PREFIX = "VRL"
 
 
-def generate_order_number(db: Session, *, now: datetime | None = None) -> str:
+def generate_order_number(
+    db: Session, *, now: datetime | None = None, prefix: str = ORDER_NUMBER_PREFIX
+) -> str:
     """Return the next available order number for the current year.
 
-    Format: ``BST-{YYYY}-{NNNN}`` with a zero-padded 4-digit counter that
+    Format: ``{PREFIX}-{YYYY}-{NNNN}`` with a zero-padded 4-digit counter that
     resets every calendar year. The counter is derived by scanning the
     maximum existing number that shares the same year prefix. A small
     retry loop guards against the unlikely race where two callers pick
@@ -53,7 +60,7 @@ def generate_order_number(db: Session, *, now: datetime | None = None) -> str:
 
     effective_now = now or utcnow()
     year = effective_now.year
-    prefix = f"{ORDER_NUMBER_PREFIX}-{year}-"
+    prefix = f"{prefix}-{year}-"
 
     existing_numbers = db.scalars(
         select(WerkstattOrder.order_number).where(
@@ -342,6 +349,19 @@ def finalize_delivery(
                 line.received_at = line.received_at or now
                 line.updated_at = now
                 db.add(line)
+            continue
+
+        if line.article_id is None:
+            # A free line — job material we buy but do not stock. It is
+            # genuinely received, so the bookkeeping is stamped, but there is
+            # no article whose counters could move and `WerkstattMovement`
+            # requires one. Writing a movement here would mean inventing a
+            # catalogue row for a metre of cable that is already in a wall.
+            line.quantity_received = line.quantity_ordered
+            line.line_status = "complete"
+            line.received_at = now
+            line.updated_at = now
+            db.add(line)
             continue
 
         movement = WerkstattMovement(

@@ -8,8 +8,21 @@ domain of their own rather than another article variant.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field
+
+from app.core.time import to_naive_utc
+
+# Inbound timestamps are normalised to naive UTC at the boundary rather than in
+# each service. A browser sends `2026-08-11T18:00:00.000Z` (correctly — that is
+# what `toISOString()` produces), the columns are naive, and every service
+# compares against a naive `utcnow()`; without this the first booking with an
+# explicit return time raises a TypeError deep inside `book_unit`.
+#
+# Output models keep the plain `datetime`: values coming out of the ORM are
+# already naive UTC, and re-validating them would be a no-op with a cost.
+NaiveUtcDatetime = Annotated[datetime, AfterValidator(to_naive_utc)]
 
 
 class _OrmBase(BaseModel):
@@ -73,8 +86,8 @@ class MachineCreatePayload(BaseModel):
     current_location_id: int | None = None
     inspection_required: bool | None = None
     inspection_interval_days: int | None = Field(default=None, ge=1, le=3650)
-    last_inspected_at: datetime | None = None
-    purchased_at: datetime | None = None
+    last_inspected_at: NaiveUtcDatetime | None = None
+    purchased_at: NaiveUtcDatetime | None = None
     notes: str | None = None
 
 
@@ -99,8 +112,8 @@ class MachineBookPayload(BaseModel):
 
     holder_user_id: int | None = None
     to_location_id: int | None = None
-    booked_from: datetime | None = None
-    booked_until: datetime | None = None
+    booked_from: NaiveUtcDatetime | None = None
+    booked_until: NaiveUtcDatetime | None = None
     for_today: bool = False
     notes: str | None = None
 
@@ -114,10 +127,39 @@ class MachineReturnPayload(BaseModel):
 
 
 class MachineInspectionPayload(BaseModel):
-    inspected_at: datetime | None = None
+    inspected_at: NaiveUtcDatetime | None = None
     interval_days: int | None = Field(default=None, ge=1, le=3650)
     passed: bool = True
     notes: str | None = None
+
+
+class MachineLabelPrintOut(BaseModel):
+    """Confirmation that a label job left for the printer.
+
+    `printer` is the "host:port" actually used — surfaced so a wrong IP is
+    diagnosable from the client instead of being a silent misprint elsewhere.
+    """
+
+    unit_number: str
+    printer: str
+
+
+class MachineLabelBatchItem(BaseModel):
+    unit_id: int
+    # "gross" = one full sheet; "klein" = quarter label, packed 4-per-sheet.
+    format: Literal["gross", "klein"] = "klein"
+
+
+class MachineLabelBatchPayload(BaseModel):
+    """The print queue: what the workshop collected before hitting Drucken."""
+
+    items: list[MachineLabelBatchItem] = Field(min_length=1, max_length=40)
+
+
+class MachineLabelBatchOut(BaseModel):
+    sheets: int
+    labels: int
+    printer: str
 
 
 class MachineMovementOut(_OrmBase):

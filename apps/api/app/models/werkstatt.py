@@ -54,6 +54,11 @@ class WerkstattLocation(Base):
         ForeignKey("werkstatt_locations.id", ondelete="SET NULL"), index=True
     )
     address: Mapped[str | None] = mapped_column(String(500))
+    # Availability of the place itself, as distinct from what is stored in it:
+    # open | closed for a hall or an external site, in_workshop | on_route for a
+    # vehicle. Nullable because a shelf has no status of its own — it inherits
+    # whatever its parent hall is doing.
+    status: Mapped[str | None] = mapped_column(String(32))
     # Set on `external` locations that are a specific customer's site, so
     # "which machines are still at Müller" is a query rather than a guess based
     # on how someone typed the location name.
@@ -289,6 +294,59 @@ class WerkstattOrder(Base):
 
     delivery_reference: Mapped[str | None] = mapped_column(String(128))
 
+    # ── Procurement extension ───────────────────────────────────────────
+    # See models/werkstatt_procurement.py for the wholesaler-punchout side.
+
+    # Human label. "BST-2026-0042" is unambiguous and tells a fitter nothing;
+    # a cart pulled from a wholesaler has no name of its own, and a template
+    # is unusable without one.
+    title: Mapped[str | None] = mapped_column(String(255))
+
+    # A template is an order that is never ordered — a saved shopping list for
+    # a recurring job ("Zählerschrank-Standardbestückung"). It lives in this
+    # table rather than a parallel one because a template IS an order in every
+    # respect except that it stays put: same lines, same supplier, same editing
+    # screen. A separate table would have duplicated all of that and then
+    # drifted from it.
+    #
+    # The cost of that choice is that every query over real orders must exclude
+    # templates. `list_orders` does, and the reorder/delivery paths cannot
+    # reach one because a template never leaves `draft`.
+    is_template: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, index=True
+    )
+    template_name: Mapped[str | None] = mapped_column(String(255))
+
+    # What the order is FOR. Both nullable and both allowed together: an order
+    # can belong to a job that itself belongs to a project, while a plain
+    # stock-replenishment order belongs to neither.
+    task_id: Mapped[int | None] = mapped_column(
+        ForeignKey("tasks.id", ondelete="SET NULL"), index=True
+    )
+    project_id: Mapped[int | None] = mapped_column(
+        ForeignKey("projects.id", ondelete="SET NULL"), index=True
+    )
+
+    # manual | ids | template | merge | reorder
+    source: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="manual", index=True
+    )
+    # The wholesaler's own handle for this cart, when they send one back.
+    external_reference: Mapped[str | None] = mapped_column(String(128))
+
+    # Set when this order was folded into another. The row is kept rather than
+    # deleted so "where did my order go?" has an answer and the audit trail
+    # survives the merge.
+    merged_into_order_id: Mapped[int | None] = mapped_column(
+        ForeignKey("werkstatt_orders.id", ondelete="SET NULL"), index=True
+    )
+    merged_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    # When the cart was last handed over to the shop. Distinct from
+    # `ordered_at`: handing a basket to the wholesaler's checkout is not the
+    # same as the order being placed, and the user may do it more than once.
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime)
+
     notes: Mapped[str | None] = mapped_column(Text)
     created_by: Mapped[int] = mapped_column(
         ForeignKey("users.id", ondelete="RESTRICT"), nullable=False, index=True
@@ -304,8 +362,27 @@ class WerkstattOrderLine(Base):
     order_id: Mapped[int] = mapped_column(
         ForeignKey("werkstatt_orders.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    article_id: Mapped[int] = mapped_column(
-        ForeignKey("werkstatt_articles.id", ondelete="RESTRICT"), nullable=False, index=True
+    # Nullable since the procurement extension. A line is one of two things:
+    #
+    #   resolved  — article_id points at a stocked article. Delivery moves
+    #               stock, exactly as before.
+    #   free      — article_id is NULL and the snapshot columns below carry
+    #               everything we know. Delivery records the receipt but moves
+    #               no stock, because there is no stock to move.
+    #
+    # The second kind is the whole reason a wholesaler cart can land here at
+    # all. Most of what comes back from a shop is job material — 40 m of cable,
+    # a box of terminals, one specific relay for one specific fault — that is
+    # bought, fitted and gone. Forcing a `werkstatt_articles` row for each would
+    # fill the inventory with thousands of things nobody will ever count on a
+    # shelf, and would make the stock figures for the things we DO count
+    # meaningless.
+    #
+    # A free line can be promoted later: point `article_id` at an article and
+    # it starts behaving like a resolved one. That is a one-way door on purpose
+    # — nothing demotes a resolved line back.
+    article_id: Mapped[int | None] = mapped_column(
+        ForeignKey("werkstatt_articles.id", ondelete="RESTRICT"), index=True
     )
     # Snapshot of the article-supplier link at the time of ordering, so the
     # article_no + unit price we used are preserved even if the link changes later.
@@ -313,6 +390,28 @@ class WerkstattOrderLine(Base):
         ForeignKey("werkstatt_article_suppliers.id", ondelete="SET NULL"), index=True
     )
 
+    # ── Snapshot of what the supplier called it ─────────────────────────
+    # Always written, for resolved lines too. The supplier renames things, the
+    # article-supplier link can be edited or deleted, and a delivery note has
+    # to still match the order a year later. These columns are what we ordered;
+    # the joins are only what we currently believe.
+    supplier_article_no: Mapped[str | None] = mapped_column(String(160), index=True)
+    description: Mapped[str | None] = mapped_column(String(500))
+    manufacturer: Mapped[str | None] = mapped_column(String(255))
+    ean: Mapped[str | None] = mapped_column(String(64), index=True)
+    unit: Mapped[str | None] = mapped_column(String(64))
+
+    # Which inbound cart produced this line. Survives a merge, so a line in a
+    # combined order can still be traced to the shopping trip it came from.
+    source_import_id: Mapped[int | None] = mapped_column(
+        ForeignKey("werkstatt_order_imports.id", ondelete="SET NULL"), index=True
+    )
+
+    # Whole units only, deliberately unchanged. The movement ledger and every
+    # stock counter downstream are integers, and widening this one column would
+    # push decimals through all of them. A cart line that arrives as "2,5" is
+    # rounded UP at import and flagged in the preview, so the operator sees it
+    # and can correct it — see services/ids_cart_parser.py.
     quantity_ordered: Mapped[int] = mapped_column(Integer, nullable=False)
     quantity_received: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 

@@ -7,6 +7,12 @@
  * See `WERKSTATT_CONTRACT.md` at the repo root for the full spec.
  */
 
+// Machines have their own contract file (this one is the article/stock
+// contract and is already long). The scan cascade can return one, so the
+// result union below needs the type — mirrors the same one-way import on the
+// backend, where `schemas/werkstatt.py` imports `schemas/werkstatt_machines`.
+import type { Machine } from "./werkstattMachines";
+
 // ──────────────────────────────────────────────────────────────────────────
 // Primitives
 // ──────────────────────────────────────────────────────────────────────────
@@ -65,12 +71,19 @@ export interface WerkstattCategory {
   updated_at: string;
 }
 
+/**
+ * Availability of the place itself, as distinct from what is stored in it.
+ * `null` for a shelf, which inherits its parent hall's.
+ */
+export type WerkstattLocationStatus = "open" | "closed" | "on_route" | "in_workshop";
+
 export interface WerkstattLocation {
   id: number;
   name: string;
   location_type: WerkstattLocationType;
   parent_id: number | null;
   address: string | null;
+  status: WerkstattLocationStatus | null;
   display_order: number;
   notes: string | null;
   is_archived: boolean;
@@ -224,12 +237,26 @@ export interface WerkstattMovement {
 
 export interface WerkstattOrderLine {
   id: number;
+  /**
+   * Null on a "free" line — something we are buying but do not stock, which is
+   * most of what comes back from a wholesaler cart. Such a line records the
+   * purchase but moves no stock on delivery. Use `is_stocked` rather than
+   * testing this, so the intent reads at the call site.
+   */
+  article_id: number | null;
   order_id: number;
-  article_id: number;
-  article_number: string;
+  article_number: string | null;
+  /** Always populated — the server falls back to the supplier's description. */
   article_name: string;
   article_supplier_id: number | null;
   supplier_article_no: string | null;
+  /** What the supplier called it at order time, kept even for stocked lines. */
+  description: string | null;
+  manufacturer: string | null;
+  ean: string | null;
+  unit: string | null;
+  source_import_id: number | null;
+  is_stocked: boolean;
   quantity_ordered: number;
   quantity_received: number;
   unit_price_cents: number | null;
@@ -258,6 +285,26 @@ export interface WerkstattOrder {
   created_by_name: string | null;
   line_count: number;
   lines: WerkstattOrderLine[];
+  // ── Procurement ─────────────────────────────────────────────────────
+  /** Human label. Order numbers identify; titles tell you what it is for. */
+  title: string | null;
+  /** Templates share this table but never ship — see the backend model. */
+  is_template: boolean;
+  template_name: string | null;
+  task_id: number | null;
+  task_title: string | null;
+  project_id: number | null;
+  project_name: string | null;
+  /** manual | ids | template | merge | reorder */
+  source: string;
+  /** The wholesaler's own handle for the cart this came from. */
+  external_reference: string | null;
+  /** Set when this order was folded into another; it is kept, not deleted. */
+  merged_into_order_id: number | null;
+  merged_at: string | null;
+  submitted_at: string | null;
+  /** Whether the supplier has an enabled punchout — gates the shop button. */
+  supplier_has_shop: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -265,6 +312,8 @@ export interface WerkstattOrder {
 export interface WerkstattOrderSummary {
   id: number;
   order_number: string;
+  /** One order goes to one supplier — used to gate merge and template picks. */
+  supplier_id: number;
   supplier_name: string;
   status: WerkstattOrderStatus;
   total_amount_cents: number | null;
@@ -274,6 +323,14 @@ export interface WerkstattOrderSummary {
   delivered_at: string | null;
   line_count: number;
   days_overdue: number | null;         // positive when expected < today and not delivered
+  title: string | null;
+  is_template: boolean;
+  template_name: string | null;
+  task_id: number | null;
+  task_title: string | null;
+  project_id: number | null;
+  source: string;
+  merged_into_order_id: number | null;
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -347,6 +404,20 @@ export interface MaterialCatalogItemLite {
 }
 
 export type ScanResolveResult =
+  | {
+      /**
+       * One physical machine — our own M-0001 label, or the manufacturer's
+       * nameplate serial. Distinct from `werkstatt_article` because the answer
+       * differs in kind: an article scan says what an item IS, a machine scan
+       * says which one this is and who currently has it.
+       *
+       * `machine.components` is populated, so the UI can warn that the battery
+       * and charger go out with it before the user confirms.
+       */
+      kind: "machine";
+      machine: Machine;
+      matched_by: "machine_number" | "serial_number";
+    }
   | {
       kind: "werkstatt_article";
       article: WerkstattArticle;

@@ -25,6 +25,11 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# Machines live in their own schema module (this file is already the shared
+# article/stock contract). The scan cascade can return one, so the union below
+# needs the type — the dependency only goes this way, never back.
+from app.schemas.werkstatt_machines import MachineOut
+
 
 # ──────────────────────────────────────────────────────────────────────────
 # §1  Primitives & enums
@@ -45,6 +50,7 @@ WerkstattOrderLineStatus = Literal["pending", "partial", "complete", "cancelled"
 WerkstattImageSource = Literal["unielektro", "manual", "catalog"]
 
 WerkstattLocationType = Literal["hall", "shelf", "vehicle", "external"]
+WerkstattLocationStatus = Literal["open", "closed", "on_route", "in_workshop"]
 
 ScanMatchedBy = Literal["sp", "ean", "supplier_no", "catalog_ean", "catalog_article_no"]
 
@@ -86,6 +92,9 @@ class WerkstattLocationOut(_OrmBase):
     location_type: WerkstattLocationType
     parent_id: int | None
     address: str | None
+    # open | closed (hall / external), in_workshop | on_route (vehicle),
+    # null for a shelf, which inherits its hall's.
+    status: WerkstattLocationStatus | None = None
     display_order: int
     notes: str | None
     is_archived: bool
@@ -121,6 +130,7 @@ class WerkstattLocationCreate(BaseModel):
     location_type: WerkstattLocationType = "hall"
     parent_id: int | None = None
     address: str | None = Field(default=None, max_length=500)
+    status: WerkstattLocationStatus | None = None
     display_order: int = 0
     notes: str | None = None
 
@@ -130,6 +140,7 @@ class WerkstattLocationUpdate(BaseModel):
     location_type: WerkstattLocationType | None = None
     parent_id: int | None = None
     address: str | None = Field(default=None, max_length=500)
+    status: WerkstattLocationStatus | None = None
     display_order: int | None = None
     notes: str | None = None
     is_archived: bool | None = None
@@ -443,11 +454,24 @@ class MyCheckoutOut(BaseModel):
 class WerkstattOrderLineOut(_OrmBase):
     id: int
     order_id: int
-    article_id: int
-    article_number: str
+    # Null on a "free" line — one we are buying but do not stock. See the
+    # column comment on WerkstattOrderLine.article_id.
+    article_id: int | None
+    article_number: str | None
+    # Always populated: the stocked article's name when there is one, else the
+    # snapshot description the supplier sent. The UI never has to decide.
     article_name: str
     article_supplier_id: int | None
     supplier_article_no: str | None
+    # Snapshot of what the supplier called it at order time.
+    description: str | None = None
+    manufacturer: str | None = None
+    ean: str | None = None
+    unit: str | None = None
+    source_import_id: int | None = None
+    # False when article_id is null — lets the UI mark lines that will not
+    # move stock on delivery, and offer to link them to an article.
+    is_stocked: bool = False
     quantity_ordered: int
     quantity_received: int
     unit_price_cents: int | None
@@ -476,6 +500,22 @@ class WerkstattOrderOut(_OrmBase):
     created_by_name: str | None
     line_count: int
     lines: list[WerkstattOrderLineOut] = Field(default_factory=list)
+    # ── Procurement ─────────────────────────────────────────────────────
+    title: str | None = None
+    is_template: bool = False
+    template_name: str | None = None
+    task_id: int | None = None
+    task_title: str | None = None
+    project_id: int | None = None
+    project_name: str | None = None
+    source: str = "manual"
+    external_reference: str | None = None
+    merged_into_order_id: int | None = None
+    merged_at: datetime | None = None
+    submitted_at: datetime | None = None
+    # True when the supplier has an enabled punchout connection, so the UI
+    # knows whether to offer "im Shop bestellen" at all.
+    supplier_has_shop: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -483,6 +523,10 @@ class WerkstattOrderOut(_OrmBase):
 class WerkstattOrderSummaryOut(_OrmBase):
     id: int
     order_number: str
+    # Carried alongside the name so the UI can enforce "one order, one
+    # supplier" before it asks the server — a template picker that offers a
+    # choice the merge/apply endpoint will reject is a worse picker.
+    supplier_id: int
     supplier_name: str
     status: WerkstattOrderStatus
     total_amount_cents: int | None
@@ -492,6 +536,14 @@ class WerkstattOrderSummaryOut(_OrmBase):
     delivered_at: datetime | None
     line_count: int
     days_overdue: int | None = None
+    title: str | None = None
+    is_template: bool = False
+    template_name: str | None = None
+    task_id: int | None = None
+    task_title: str | None = None
+    project_id: int | None = None
+    source: str = "manual"
+    merged_into_order_id: int | None = None
 
 
 # Tablet BE: append SubmitOrderPayload / UpdateOrderStatusPayload here.
@@ -509,11 +561,19 @@ class WerkstattOrderLineCreatePayload(BaseModel):
 
 
 class WerkstattOrderCreatePayload(BaseModel):
-    """Direct draft-order creation (not via the reorder-suggestion flow)."""
+    """Direct draft-order creation (not via the reorder-suggestion flow).
+
+    `lines` here only covers stocked articles. Free (catalog-less) positions
+    go through ``POST /werkstatt/orders/{id}/lines`` — see
+    `routers/workflow_werkstatt_order_composition.py`.
+    """
 
     supplier_id: int
     notes: str | None = None
     delivery_reference: str | None = Field(default=None, max_length=128)
+    title: str | None = Field(default=None, max_length=255)
+    task_id: int | None = None
+    project_id: int | None = None
     lines: list[WerkstattOrderLineCreatePayload] = Field(default_factory=list)
 
 
@@ -628,6 +688,19 @@ class MaterialCatalogItemLiteOut(BaseModel):
     image_url: str | None
 
 
+class ScanResolveMachine(BaseModel):
+    """A label stuck on one physical machine (M-0001), or its nameplate serial.
+
+    Distinct from `werkstatt_article` because the answer is different in kind:
+    an article scan says "this is what that item is", a machine scan says
+    "this is THAT drill, here is who has it, take it or bring it back".
+    """
+
+    kind: Literal["machine"] = "machine"
+    machine: MachineOut
+    matched_by: Literal["machine_number", "serial_number"]
+
+
 class ScanResolveWerkstatt(BaseModel):
     kind: Literal["werkstatt_article"] = "werkstatt_article"
     article: WerkstattArticleOut
@@ -646,7 +719,9 @@ class ScanResolveNotFound(BaseModel):
 
 
 # The FE imports this union via `ScanResolveResult` in types/werkstatt.ts.
-ScanResolveResult = ScanResolveWerkstatt | ScanResolveCatalog | ScanResolveNotFound
+ScanResolveResult = (
+    ScanResolveMachine | ScanResolveWerkstatt | ScanResolveCatalog | ScanResolveNotFound
+)
 
 
 # Mobile BE: append CheckoutPayload / ReturnPayload here.

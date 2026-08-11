@@ -188,20 +188,37 @@ GET  /api/werkstatt/scan/resolve?code=<raw>
 ```
 
 Cascade:
-1. `werkstatt_articles.article_number == code`       → kind=`werkstatt_article`
-2. `werkstatt_articles.ean == code`                  → kind=`werkstatt_article`
-3. `werkstatt_article_suppliers.supplier_article_no == code` → kind=`werkstatt_article`
-4. `material_catalog_items.ean == code`              → kind=`catalog_match`
-5. `material_catalog_items.article_no == code`       → kind=`catalog_match`
-6. Otherwise                                         → kind=`not_found`
+1. `werkstatt_article_units.unit_number == code`      → kind=`machine`
+2. `werkstatt_articles.article_number == code`       → kind=`werkstatt_article`
+3. `werkstatt_articles.ean == code`                  → kind=`werkstatt_article`
+4. `werkstatt_article_suppliers.supplier_article_no == code` → kind=`werkstatt_article`
+5. `werkstatt_article_units.serial_number == code`   → kind=`machine`
+6. `material_catalog_items.ean == code`              → kind=`catalog_match`
+7. `material_catalog_items.article_no == code`       → kind=`catalog_match`
+8. Otherwise                                         → kind=`not_found`
+
+Steps 1 and 5 were added with the Maschinen register (2026-08). They bracket
+the article steps rather than sitting together:
+
+- **Step 1** is our own `M-<digits>` label, stuck on exactly one physical
+  object — nothing more specific exists, so it wins outright. It is gated on
+  that shape, so an EAN scan costs no extra query.
+- **Step 5** is the manufacturer's nameplate serial: an arbitrary string we did
+  not issue and cannot pattern-match. Running it *after* the article steps
+  guarantees every article barcode resolves exactly as it did before machines
+  existed.
 
 Response shape:
 ```ts
 type ScanResolveResult =
+  | { kind: "machine"; machine: Machine; matched_by: "machine_number" | "serial_number" }
   | { kind: "werkstatt_article"; article: WerkstattArticle; matched_by: "sp" | "ean" | "supplier_no" }
   | { kind: "catalog_match"; catalog_items: MaterialCatalogItemLite[]; matched_by: "ean" | "article_no" }
   | { kind: "not_found"; code: string };
 ```
+
+`machine` carries the full `Machine` including its `components`, so the phone
+can warn "the battery and charger go with it" before the user confirms.
 
 ### 3.2 Quick checkout / return (owned by Mobile BE)
 

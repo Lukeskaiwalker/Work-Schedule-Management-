@@ -111,6 +111,19 @@ def _category_out(row: WerkstattCategory, *, article_count: int = 0) -> Werkstat
     )
 
 
+def _default_status(location_type: str) -> str | None:
+    """Status a newly-created place starts in.
+
+    Mirrors `defaultStatusForKind` in the Lagerorte modal, so a place created
+    from the UI and one created by an import agree.
+    """
+    if location_type == "vehicle":
+        return "in_workshop"
+    if location_type == "shelf":
+        return None
+    return "open"
+
+
 def _location_out(row: WerkstattLocation, *, article_count: int = 0) -> WerkstattLocationOut:
     return WerkstattLocationOut(
         id=row.id,
@@ -118,6 +131,7 @@ def _location_out(row: WerkstattLocation, *, article_count: int = 0) -> Werkstat
         location_type=row.location_type,  # type: ignore[arg-type]
         parent_id=row.parent_id,
         address=row.address,
+        status=row.status,  # type: ignore[arg-type]
         display_order=row.display_order,
         notes=row.notes,
         is_archived=row.is_archived,
@@ -250,6 +264,10 @@ def create_location(
         location_type=payload.location_type,
         parent_id=payload.parent_id,
         address=(payload.address or None),
+        # A place that arrives with no status reads as unusable on the shelf
+        # screen, so fall back to the sensible default for its kind rather than
+        # to null. A shelf genuinely has none — it inherits its hall's.
+        status=payload.status or _default_status(payload.location_type),
         display_order=payload.display_order,
         notes=(payload.notes or None),
     )

@@ -31,6 +31,10 @@ from app.routers.workflow_werkstatt_boxes import (
     router as werkstatt_boxes_router,
 )
 from app.routers.workflow_werkstatt_machines import router as werkstatt_machines_router
+from app.routers.workflow_werkstatt_ids import router as werkstatt_ids_router
+from app.routers.workflow_werkstatt_order_composition import (
+    router as werkstatt_order_composition_router,
+)
 from app.routers.workflow_helpers import (
     _fetch_openweather_forecast,
     _weather_address_candidates,
@@ -64,6 +68,12 @@ router.include_router(line_items_extract_router)
 router.include_router(line_items_router)
 router.include_router(reports_router)
 router.include_router(system_router)
+# Procurement extends the order surface the tablet router owns, so it mounts
+# first: FastAPI matches routes in registration order, and
+# ``POST /werkstatt/orders/from-template`` must reach its own literal route
+# before anything tries to read "from-template" as an order id.
+router.include_router(werkstatt_order_composition_router)
+router.include_router(werkstatt_ids_router)
 # Werkstatt — three persona-scoped routers under /api/werkstatt. All three
 # share the prefix; route paths within each do not collide. See
 # WERKSTATT_CONTRACT.md §5 for file ownership.

@@ -145,6 +145,29 @@ def require_permission(permission: str) -> Callable[[User], User]:
     return _checker
 
 
+def require_any_permission(*permissions: str) -> Callable[[User], User]:
+    """Pass if the user holds ANY of `permissions`.
+
+    Exists for the umbrella-plus-granular pattern: an endpoint that used to
+    require one broad permission gains a narrow one beside it, so a new
+    fine-grained grant can be handed out WITHOUT taking the ability away from
+    everyone who already had the broad one. Requiring the narrow permission
+    alone would silently break every existing holder on deploy.
+    """
+    if not permissions:
+        raise ValueError("require_any_permission needs at least one permission")
+
+    def _checker(current_user: User = Depends(get_current_user)) -> User:
+        if not any(
+            has_permission_for_user(current_user.id, current_user.role, permission)
+            for permission in permissions
+        ):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Permission denied")
+        return current_user
+
+    return _checker
+
+
 def require_admin(current_user: User = Depends(get_current_user)) -> User:
     if current_user.role != ROLE_ADMIN:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin role required")

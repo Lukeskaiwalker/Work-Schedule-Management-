@@ -1,11 +1,5 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAppContext } from "../../context/AppContext";
-import {
-  MOCK_CATEGORIES,
-  MOCK_LOCATIONS,
-  type MockCategory,
-  type MockLocation,
-} from "../../components/werkstatt/mockData";
 import {
   CategoryFormModal,
   type CategoryFormPayload,
@@ -20,23 +14,44 @@ import {
   validStatusesForKind,
 } from "../../components/werkstatt/LocationFormModal";
 import { KebabMenu, type KebabMenuItem } from "../../components/werkstatt/KebabMenu";
+import type { WerkstattCategory, WerkstattLocation } from "../../types/werkstatt";
+import {
+  archiveCategory as apiArchiveCategory,
+  archiveLocation as apiArchiveLocation,
+  createCategory,
+  createLocation,
+  listCategories,
+  listLocations,
+  unarchiveCategory,
+  unarchiveLocation,
+  updateCategory,
+  updateLocation,
+} from "../../utils/werkstattTaxonomyApi";
 
 /**
  * WerkstattKategorienPage — Kategorien & Lagerorte. Ported from Paper 9EE-0.
  * Two columns: category tree (left) + physical location tree (right). Each
  * node is expandable; nodes with children render a chevron + sub-list.
  *
- * Full create / edit / archive: the "+ Neue Kategorie" and "+ Neuer Lagerort"
- * header buttons open form modals; the pencil (✎) on every row opens edit
- * mode. Archive fires from inside the edit modal and from the kebab (…).
+ * This screen was mock-backed for its whole life: it rendered a fixed set of
+ * invented halls and categories and every mutation lived in local state. That
+ * became actively misleading once machines started carrying a real
+ * `current_location_id` — a drill would show "Werkstatt Regal A" while this
+ * page, the place you go to manage storage, listed something else entirely and
+ * offered no way to create the one you actually wanted.
  *
- * All mutations are local state today; backend endpoints exist at
- *   POST/PATCH/DELETE /api/werkstatt/categories
- *   POST/PATCH/DELETE /api/werkstatt/locations
- * and get threaded through AppContext when the BE wiring round happens.
+ * It now reads and writes the real endpoints. Two shape differences are worth
+ * knowing about:
+ *
+ *   * The API is FLAT (`parent_id`), this UI is a TREE (halls own `shelves`,
+ *     categories own `subcategories`). `buildCategoryTree` / `buildLocationTree`
+ *     do that fold in one place.
+ *   * Ids are numeric server-side and strings in the row components and modals.
+ *     They are stringified at the boundary rather than churning every child
+ *     component, and parsed back with `numericId` on the way out.
  */
 
-/* ── Local mutable state types (superset of the read-only MOCK_* types) ─ */
+/* ── View models: the tree shape the rows and modals expect ────────────── */
 
 interface Category {
   id: string;
@@ -66,58 +81,152 @@ interface Location {
   is_archived: boolean;
 }
 
-function seedCategories(): Category[] {
-  return MOCK_CATEGORIES.map((c: MockCategory) => ({
-    id: c.id,
-    name: c.name,
-    article_count: c.article_count,
-    subcategory_count: c.subcategory_count,
-    subcategories: c.subcategories,
-    expanded: c.expanded,
-    parent_id: null,
-    notes: "",
-    is_archived: false,
-  }));
+/** String id (UI) → numeric id (API). */
+function numericId(id: string): number {
+  return Number(id);
 }
 
-function seedLocations(): Location[] {
-  return MOCK_LOCATIONS.map((l: MockLocation) => ({
-    id: l.id,
-    name: l.name,
-    sub: l.sub,
-    kind: l.icon === "hall" ? "hall" : "vehicle",
-    icon: l.icon,
-    article_count: l.article_count,
-    status: l.status,
-    shelves: l.shelves,
-    expanded: l.expanded,
-    parent_id: null,
-    address: "",
-    notes: "",
-    is_archived: false,
-  }));
+function groupByParent<T extends { parent_id: number | null }>(rows: T[]): Map<number, T[]> {
+  const byParent = new Map<number, T[]>();
+  for (const row of rows) {
+    if (row.parent_id === null) continue;
+    const bucket = byParent.get(row.parent_id);
+    if (bucket) bucket.push(row);
+    else byParent.set(row.parent_id, [row]);
+  }
+  return byParent;
+}
+
+/**
+ * Fold the flat category list into the two-level tree the UI draws.
+ *
+ * Archived rows are kept in the returned array (the Archive strip below the
+ * tree needs them) but never appear as somebody's child — an archived
+ * subcategory hanging under a live parent would look active.
+ */
+function buildCategoryTree(rows: WerkstattCategory[]): Category[] {
+  const children = groupByParent(rows.filter((row) => !row.is_archived));
+  return rows
+    .filter((row) => row.parent_id === null || row.is_archived)
+    .map((row) => {
+      const subs = children.get(row.id) ?? [];
+      return {
+        id: String(row.id),
+        name: row.name,
+        article_count: row.article_count,
+        subcategory_count: subs.length,
+        subcategories: subs.map((sub) => ({
+          id: String(sub.id),
+          name: sub.name,
+          article_count: sub.article_count,
+        })),
+        expanded: false,
+        parent_id: row.parent_id === null ? null : String(row.parent_id),
+        notes: row.notes ?? "",
+        is_archived: row.is_archived,
+      };
+    });
+}
+
+/** Same fold for locations. A hall's children are its shelves. */
+function buildLocationTree(rows: WerkstattLocation[]): Location[] {
+  const children = groupByParent(rows.filter((row) => !row.is_archived));
+  const byId = new Map(rows.map((row) => [row.id, row]));
+
+  return rows
+    .filter((row) => row.location_type !== "shelf" || row.is_archived)
+    .map((row) => {
+      const shelves = children.get(row.id) ?? [];
+      const parent = row.parent_id === null ? null : byId.get(row.parent_id);
+      return {
+        id: String(row.id),
+        name: row.name,
+        // The secondary line: where a shelf lives, or the street address of a
+        // hall / site / van.
+        sub:
+          row.location_type === "shelf"
+            ? parent
+              ? `In ${parent.name}`
+              : ""
+            : row.address ?? "",
+        kind: row.location_type,
+        icon: row.location_type === "vehicle" ? "vehicle" : "hall",
+        article_count: row.article_count,
+        status: row.status ?? defaultStatusForKind(row.location_type),
+        shelves: shelves.map((shelf) => ({
+          id: String(shelf.id),
+          name: shelf.name,
+          article_count: shelf.article_count,
+        })),
+        expanded: false,
+        parent_id: row.parent_id === null ? null : String(row.parent_id),
+        address: row.address ?? "",
+        notes: row.notes ?? "",
+        is_archived: row.is_archived,
+      };
+    });
 }
 
 /* ── Page ────────────────────────────────────────────────────────────── */
 
 export function WerkstattKategorienPage() {
-  const { mainView, language, werkstattTab, setNotice, setWerkstattTab } = useAppContext();
+  const { mainView, language, werkstattTab, token, setNotice, setError, setWerkstattTab } =
+    useAppContext();
 
-  const [categories, setCategories] = useState<Category[]>(seedCategories);
-  const [locations, setLocations] = useState<Location[]>(seedLocations);
+  const [categoryRows, setCategoryRows] = useState<WerkstattCategory[]>([]);
+  const [locationRows, setLocationRows] = useState<WerkstattLocation[]>([]);
   const [showArchivedCats, setShowArchivedCats] = useState(false);
   const [showArchivedLocs, setShowArchivedLocs] = useState(false);
 
-  const [expandedCats, setExpandedCats] = useState<ReadonlySet<string>>(() => {
-    const initial = new Set<string>();
-    for (const cat of MOCK_CATEGORIES) if (cat.expanded) initial.add(cat.id);
-    return initial;
-  });
-  const [expandedLocs, setExpandedLocs] = useState<ReadonlySet<string>>(() => {
-    const initial = new Set<string>();
-    for (const loc of MOCK_LOCATIONS) if (loc.expanded) initial.add(loc.id);
-    return initial;
-  });
+  // Archived rows are fetched alongside the live ones so the Archive strip can
+  // render (and restore) without a second round trip on every toggle.
+  const categories = useMemo(() => buildCategoryTree(categoryRows), [categoryRows]);
+  const locations = useMemo(() => buildLocationTree(locationRows), [locationRows]);
+
+  const [expandedCats, setExpandedCats] = useState<ReadonlySet<string>>(new Set());
+  const [expandedLocs, setExpandedLocs] = useState<ReadonlySet<string>>(new Set());
+
+  const isActiveTab = mainView === "werkstatt" && werkstattTab === "kategorien";
+
+  const reportError = useCallback(
+    (err: unknown) => setError(err instanceof Error ? err.message : String(err)),
+    [setError],
+  );
+
+  const reload = useCallback(async () => {
+    try {
+      const [cats, locs] = await Promise.all([
+        listCategories(token, true),
+        listLocations(token, true),
+      ]);
+      setCategoryRows(cats);
+      setLocationRows(locs);
+    } catch (err: unknown) {
+      reportError(err);
+    }
+  }, [token, reportError]);
+
+  useEffect(() => {
+    if (!isActiveTab) return;
+    void reload();
+  }, [isActiveTab, reload]);
+
+  /**
+   * Run a mutation, then re-read. Both trees are derived from server state
+   * (article counts, shelf membership, sort order), so patching locally would
+   * mean re-deriving all of it in the browser and getting it subtly wrong.
+   */
+  const mutate = useCallback(
+    async (action: () => Promise<void>) => {
+      try {
+        await action();
+        await reload();
+      } catch (err: unknown) {
+        reportError(err);
+      }
+    },
+    [reload, reportError],
+  );
 
   // Modal state.
   const [categoryModal, setCategoryModal] = useState<
@@ -166,7 +275,7 @@ export function WerkstattKategorienPage() {
     [visibleCategories],
   );
 
-  if (mainView !== "werkstatt" || werkstattTab !== "kategorien") return null;
+  if (!isActiveTab) return null;
 
   /* ── Handlers ──────────────────────────────────────────────────── */
 
@@ -188,50 +297,28 @@ export function WerkstattKategorienPage() {
     });
   }
 
-  function nextId(prefix: string): string {
-    // Simple client-side id — BE will assign real IDs on create.
-    return `${prefix}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1000)}`;
-  }
-
   function saveCategory(payload: CategoryFormPayload) {
-    if (payload.id === null) {
-      // Create
-      const created: Category = {
-        id: nextId("c"),
-        name: payload.name,
-        article_count: 0,
-        subcategory_count: 0,
-        subcategories: [],
-        expanded: false,
-        parent_id: payload.parent_id,
-        notes: payload.notes,
-        is_archived: false,
-      };
-      setCategories((prev) => [...prev, created]);
-      setNotice(
-        de
-          ? `Kategorie "${payload.name}" angelegt (API folgt)`
-          : `Category "${payload.name}" created (API pending)`,
-      );
-      // TODO(werkstatt): POST /api/werkstatt/categories
-    } else {
-      // Edit
-      const id = payload.id;
-      setCategories((prev) =>
-        prev.map((c) =>
-          c.id === id
-            ? { ...c, name: payload.name, parent_id: payload.parent_id, notes: payload.notes }
-            : c,
-        ),
-      );
-      setNotice(
-        de
-          ? `Kategorie "${payload.name}" aktualisiert (API folgt)`
-          : `Category "${payload.name}" updated (API pending)`,
-      );
-      // TODO(werkstatt): PATCH /api/werkstatt/categories/{id}
-    }
-    setCategoryModal(null);
+    const parentId = payload.parent_id === null ? null : numericId(payload.parent_id);
+    void mutate(async () => {
+      if (payload.id === null) {
+        await createCategory(token, {
+          name: payload.name,
+          parent_id: parentId,
+          notes: payload.notes || null,
+        });
+        setNotice(de ? `Kategorie „${payload.name}“ angelegt` : `Category "${payload.name}" created`);
+      } else {
+        await updateCategory(token, numericId(payload.id), {
+          name: payload.name,
+          parent_id: parentId,
+          notes: payload.notes || null,
+        });
+        setNotice(
+          de ? `Kategorie „${payload.name}“ aktualisiert` : `Category "${payload.name}" updated`,
+        );
+      }
+      setCategoryModal(null);
+    });
   }
 
   function archiveCategory(id: string) {
@@ -242,52 +329,47 @@ export function WerkstattKategorienPage() {
         ? `Kategorie "${cat.name}" archivieren? Zugeordnete Artikel bleiben erhalten.`
         : `Archive category "${cat.name}"? Linked items stay.`,
     )) return;
-    setCategories((prev) =>
-      prev.map((c) => (c.id === id ? { ...c, is_archived: true } : c)),
-    );
-    setShowArchivedCats(true); // make sure user sees where it went
-    setNotice(
-      de
-        ? `Kategorie "${cat.name}" archiviert — unten im Archiv sichtbar`
-        : `Category "${cat.name}" archived — visible in Archive below`,
-    );
-    setCategoryModal(null);
-    // TODO(werkstatt): DELETE /api/werkstatt/categories/{id}
+    void mutate(async () => {
+      await apiArchiveCategory(token, numericId(id));
+      setShowArchivedCats(true); // make sure user sees where it went
+      setNotice(
+        de
+          ? `Kategorie "${cat.name}" archiviert — unten im Archiv sichtbar`
+          : `Category "${cat.name}" archived — visible in Archive below`,
+      );
+      setCategoryModal(null);
+    });
   }
 
   function restoreCategory(id: string) {
     const cat = categories.find((c) => c.id === id);
     if (!cat) return;
-    setCategories((prev) =>
-      prev.map((c) => (c.id === id ? { ...c, is_archived: false } : c)),
-    );
-    setNotice(
-      de
-        ? `Kategorie "${cat.name}" wiederhergestellt (API folgt)`
-        : `Category "${cat.name}" restored (API pending)`,
-    );
-    // TODO(werkstatt): PATCH /api/werkstatt/categories/{id} { is_archived: false }
+    void mutate(async () => {
+      await unarchiveCategory(token, numericId(id));
+      setNotice(
+        de ? `Kategorie "${cat.name}" wiederhergestellt` : `Category "${cat.name}" restored`,
+      );
+    });
   }
 
   function duplicateCategory(id: string) {
     const cat = categories.find((c) => c.id === id);
     if (!cat) return;
-    const created: Category = {
-      ...cat,
-      id: nextId("c"),
-      name: `${cat.name} ${de ? "(Kopie)" : "(copy)"}`,
-      article_count: 0,
-      subcategory_count: 0,
-      subcategories: [],
-      is_archived: false,
-    };
-    setCategories((prev) => [...prev, created]);
-    setNotice(
-      de
-        ? `Kategorie "${cat.name}" dupliziert als "${created.name}"`
-        : `Duplicated "${cat.name}" → "${created.name}"`,
-    );
-    // TODO(werkstatt): POST /api/werkstatt/categories { ...source, name: +(Kopie) }
+    const name = `${cat.name} ${de ? "(Kopie)" : "(copy)"}`;
+    void mutate(async () => {
+      // Copies the definition, never the contents: article counts belong to the
+      // articles, and a duplicate that claimed them would double the inventory.
+      await createCategory(token, {
+        name,
+        parent_id: cat.parent_id === null ? null : numericId(cat.parent_id),
+        notes: cat.notes || null,
+      });
+      setNotice(
+        de
+          ? `Kategorie "${cat.name}" dupliziert als "${name}"`
+          : `Duplicated "${cat.name}" → "${name}"`,
+      );
+    });
   }
 
   function showCategoryItems(cat: Category) {
@@ -304,128 +386,62 @@ export function WerkstattKategorienPage() {
   }
 
   function saveLocation(payload: LocationFormPayload) {
-    const iconFor = (kind: LocationKind): "hall" | "vehicle" =>
-      kind === "vehicle" ? "vehicle" : "hall";
-    const subFor = (p: LocationFormPayload): string => {
-      if (p.kind === "shelf") {
-        const parent = locations.find((l) => l.id === p.parent_id);
-        return parent ? `In ${parent.name}` : "";
-      }
-      return p.address || "";
-    };
+    const parentId = payload.parent_id === null ? null : numericId(payload.parent_id);
+    // A shelf has no status of its own — it is open exactly when its hall is.
+    const status = payload.kind === "shelf" ? null : payload.status;
 
-    if (payload.id === null) {
-      // Shelves are children of a hall — push into the parent's shelves array.
-      // Every other kind is a top-level row.
-      if (payload.kind === "shelf" && payload.parent_id !== null) {
-        const shelfId = nextId("s");
-        const parentId = payload.parent_id;
-        setLocations((prev) =>
-          prev.map((loc) =>
-            loc.id === parentId
-              ? {
-                  ...loc,
-                  shelves: [
-                    ...loc.shelves,
-                    { id: shelfId, name: payload.name, article_count: 0 },
-                  ],
-                }
-              : loc,
-          ),
+    void mutate(async () => {
+      if (payload.id === null) {
+        await createLocation(token, {
+          name: payload.name,
+          location_type: payload.kind,
+          parent_id: parentId,
+          address: payload.address || null,
+          status,
+          notes: payload.notes || null,
+        });
+        // Auto-expand the hall so a new shelf is visible where it landed
+        // instead of hidden inside a collapsed parent.
+        if (payload.kind === "shelf" && payload.parent_id !== null) {
+          const parent = payload.parent_id;
+          setExpandedLocs((prev) => new Set(prev).add(parent));
+        }
+        setNotice(
+          de ? `Lagerort „${payload.name}“ angelegt` : `Location "${payload.name}" created`,
         );
-        // Auto-expand the parent so the new shelf is visible immediately.
-        setExpandedLocs((prev) => {
-          const next = new Set(prev);
-          next.add(parentId);
-          return next;
+      } else {
+        await updateLocation(token, numericId(payload.id), {
+          name: payload.name,
+          location_type: payload.kind,
+          parent_id: parentId,
+          address: payload.address || null,
+          status,
+          notes: payload.notes || null,
         });
         setNotice(
-          de
-            ? `Regal "${payload.name}" zu Halle angelegt (API folgt)`
-            : `Shelf "${payload.name}" added to hall (API pending)`,
+          de ? `Lagerort „${payload.name}“ aktualisiert` : `Location "${payload.name}" updated`,
         );
-        // TODO(werkstatt): POST /api/werkstatt/locations { parent_id, location_type: "shelf" }
-        setLocationModal(null);
-        return;
       }
-
-      const created: Location = {
-        id: nextId("l"),
-        name: payload.name,
-        sub: subFor(payload),
-        kind: payload.kind,
-        icon: iconFor(payload.kind),
-        article_count: 0,
-        status: payload.status,
-        shelves: [],
-        expanded: false,
-        parent_id: payload.parent_id,
-        address: payload.address,
-        notes: payload.notes,
-        is_archived: false,
-      };
-      setLocations((prev) => [...prev, created]);
-      setNotice(
-        de
-          ? `Lagerort "${payload.name}" angelegt (API folgt)`
-          : `Location "${payload.name}" created (API pending)`,
-      );
-      // TODO(werkstatt): POST /api/werkstatt/locations
-    } else {
-      const id = payload.id;
-      setLocations((prev) =>
-        prev.map((l) =>
-          l.id === id
-            ? {
-                ...l,
-                name: payload.name,
-                kind: payload.kind,
-                icon: iconFor(payload.kind),
-                status: payload.status,
-                parent_id: payload.parent_id,
-                address: payload.address,
-                notes: payload.notes,
-                sub: subFor(payload),
-              }
-            : l,
-        ),
-      );
-      setNotice(
-        de
-          ? `Lagerort "${payload.name}" aktualisiert (API folgt)`
-          : `Location "${payload.name}" updated (API pending)`,
-      );
-      // TODO(werkstatt): PATCH /api/werkstatt/locations/{id}
-    }
-    setLocationModal(null);
+      setLocationModal(null);
+    });
   }
 
   /** Click the pill on a row → cycle to the next valid status for the kind.
    *  Useful for the vehicle ↔ workshop toggle that drivers do all day. */
   function cycleLocationStatus(id: string) {
-    setLocations((prev) =>
-      prev.map((l) => {
-        if (l.id !== id) return l;
-        const options = validStatusesForKind(l.kind);
-        if (options.length < 2) return l;
-        const idx = options.indexOf(l.status);
-        const next = options[(idx + 1) % options.length];
-        return { ...l, status: next };
-      }),
-    );
     const loc = locations.find((l) => l.id === id);
-    if (loc) {
-      const options = validStatusesForKind(loc.kind);
-      if (options.length < 2) return;
-      const idx = options.indexOf(loc.status);
-      const next = options[(idx + 1) % options.length];
+    if (!loc) return;
+    const options = validStatusesForKind(loc.kind);
+    if (options.length < 2) return;
+    const next = options[(options.indexOf(loc.status) + 1) % options.length];
+    void mutate(async () => {
+      await updateLocation(token, numericId(id), { status: next });
       setNotice(
         de
-          ? `Status von "${loc.name}" → ${statusLabel(next, true)} (API folgt)`
-          : `Status of "${loc.name}" → ${statusLabel(next, false)} (API pending)`,
+          ? `Status von "${loc.name}" → ${statusLabel(next, true)}`
+          : `Status of "${loc.name}" → ${statusLabel(next, false)}`,
       );
-      // TODO(werkstatt): PATCH /api/werkstatt/locations/{id} { status: next }
-    }
+    });
   }
 
   function archiveLocation(id: string) {
@@ -436,51 +452,49 @@ export function WerkstattKategorienPage() {
         ? `Lagerort "${loc.name}" archivieren? Artikel bleiben sichtbar, aber ohne Lagerzuordnung.`
         : `Archive location "${loc.name}"? Items stay visible but lose their storage assignment.`,
     )) return;
-    setLocations((prev) =>
-      prev.map((l) => (l.id === id ? { ...l, is_archived: true } : l)),
-    );
-    setShowArchivedLocs(true);
-    setNotice(
-      de
-        ? `Lagerort "${loc.name}" archiviert — unten im Archiv sichtbar`
-        : `Location "${loc.name}" archived — visible in Archive below`,
-    );
-    setLocationModal(null);
-    // TODO(werkstatt): DELETE /api/werkstatt/locations/{id}
+    void mutate(async () => {
+      await apiArchiveLocation(token, numericId(id));
+      setShowArchivedLocs(true);
+      setNotice(
+        de
+          ? `Lagerort "${loc.name}" archiviert — unten im Archiv sichtbar`
+          : `Location "${loc.name}" archived — visible in Archive below`,
+      );
+      setLocationModal(null);
+    });
   }
 
   function restoreLocation(id: string) {
     const loc = locations.find((l) => l.id === id);
     if (!loc) return;
-    setLocations((prev) =>
-      prev.map((l) => (l.id === id ? { ...l, is_archived: false } : l)),
-    );
-    setNotice(
-      de
-        ? `Lagerort "${loc.name}" wiederhergestellt (API folgt)`
-        : `Location "${loc.name}" restored (API pending)`,
-    );
-    // TODO(werkstatt): PATCH /api/werkstatt/locations/{id} { is_archived: false }
+    void mutate(async () => {
+      await unarchiveLocation(token, numericId(id));
+      setNotice(
+        de ? `Lagerort "${loc.name}" wiederhergestellt` : `Location "${loc.name}" restored`,
+      );
+    });
   }
 
   function duplicateLocation(id: string) {
     const loc = locations.find((l) => l.id === id);
     if (!loc) return;
-    const created: Location = {
-      ...loc,
-      id: nextId("l"),
-      name: `${loc.name} ${de ? "(Kopie)" : "(copy)"}`,
-      article_count: 0,
-      shelves: [],
-      is_archived: false,
-    };
-    setLocations((prev) => [...prev, created]);
-    setNotice(
-      de
-        ? `Lagerort "${loc.name}" dupliziert als "${created.name}"`
-        : `Duplicated "${loc.name}" → "${created.name}"`,
-    );
-    // TODO(werkstatt): POST /api/werkstatt/locations { ...source, name: +(Kopie) }
+    const name = `${loc.name} ${de ? "(Kopie)" : "(copy)"}`;
+    void mutate(async () => {
+      // The place, not its contents or its shelves — those are their own rows.
+      await createLocation(token, {
+        name,
+        location_type: loc.kind,
+        parent_id: loc.parent_id === null ? null : numericId(loc.parent_id),
+        address: loc.address || null,
+        status: loc.kind === "shelf" ? null : loc.status,
+        notes: loc.notes || null,
+      });
+      setNotice(
+        de
+          ? `Lagerort "${loc.name}" dupliziert als "${name}"`
+          : `Duplicated "${loc.name}" → "${name}"`,
+      );
+    });
   }
 
   function showLocationItems(loc: Location) {

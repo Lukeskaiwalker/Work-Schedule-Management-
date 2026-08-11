@@ -175,6 +175,31 @@ Construction report processing/runtime knobs:
 - Populate `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`.
 - Mirror values into API env (never commit real secrets).
 
+## Werkstatt Label Printer (optional)
+- The Maschinen register prints machine labels on the workshop's WAGO Smart
+  Printer 258-5101 — a Godex OEM device speaking EZPL — over raw TCP
+  port-9100 printing. (The first-gen smartPRINTER 258-5000 was a cab device;
+  this generation is not.)
+- **Preferred setup: Admin → Einstellungen → "Etikettendrucker (Werkstatt)"**
+  — IP + port live in runtime settings, changeable without a redeploy, with a
+  "Testdruck" button that prints one sample label.
+- Env fallback (used only when no runtime value is saved):
+  `WERKSTATT_LABEL_PRINTER_HOST` / `WERKSTATT_LABEL_PRINTER_PORT`. Nothing
+  configured anywhere disables printing; endpoints answer 503 "Kein
+  Etikettendrucker konfiguriert" instead of timing out.
+- Two formats: the full 99 × 44 mm label (DataMatrix, M-Nummer, Name, SN,
+  Firmenzeile, Logo) and the "Klein" quad sheet — four ≈49 × 22 mm labels with
+  dashed cut lines, filled from the Druckliste (print queue) on the Maschinen
+  page, deliberately allowing four different machines per sheet.
+- The logo is auto-downloaded into printer flash from `REPORT_LOGO_PATH`
+  under a content-hashed name — swapping the logo file re-uploads on the next
+  print.
+- The API container must be able to reach the printer's LAN. Give the printer
+  a DHCP reservation (its address drifting is the most likely failure).
+- Label geometry (WAGO 210-804: 99 × 44 mm type labels) lives as constants in
+  `apps/api/app/services/werkstatt_labels.py` — adjust there when a different
+  marking material is loaded.
+
 ## Local SMTP + Invite/Reset Links (optional but recommended)
 - Configure in `apps/api/.env.example` (or your deployment env):
   - `APP_PUBLIC_URL` (for generated invite/reset links)

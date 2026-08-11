@@ -3,6 +3,8 @@ import { useAppContext } from "../context/AppContext";
 import { AvatarBadge } from "../components/shared/AvatarBadge";
 import { AdminUpdateMenu } from "../components/shared/AdminUpdateMenu";
 import { AdminBackupsPanel } from "../components/admin/AdminBackupsPanel";
+import { AdminLabelPrinterCard } from "../components/admin/AdminLabelPrinterCard";
+import { AdminIdsConnectCard } from "../components/admin/AdminIdsConnectCard";
 import { MailIcon, KeyIcon, ArchiveUserIcon, ShieldIcon, ResetIcon } from "../components/icons";
 import { schoolWeekdayLabel } from "../utils/dates";
 import type { User, EmployeeGroup } from "../types";
@@ -1908,6 +1910,10 @@ export function AdminPage() {
                 </button>
               </form>
             </div>
+
+            <AdminLabelPrinterCard />
+
+            <AdminIdsConnectCard />
 
             <div className="admin-page-card admin-settings-block">
               <h2 className="admin-page-card-title">OpenAI</h2>

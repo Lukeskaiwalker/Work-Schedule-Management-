@@ -11,6 +11,7 @@ import { WerkstattOrdersPage } from "./werkstatt/WerkstattOrdersPage";
 import { WerkstattNachbestellenPage } from "./werkstatt/WerkstattNachbestellenPage";
 import { WerkstattAufBaustellePage } from "./werkstatt/WerkstattAufBaustellePage";
 import { WerkstattKistenPage } from "./werkstatt/WerkstattKistenPage";
+import { WerkstattMaschinenPage } from "./werkstatt/WerkstattMaschinenPage";
 import { WerkstattMobileHomePage } from "./werkstatt/WerkstattMobileHomePage";
 import { WerkstattMobileArtikelPage } from "./werkstatt/WerkstattMobileArtikelPage";
 import { WerkstattMobileNachbestellenPage } from "./werkstatt/WerkstattMobileNachbestellenPage";
@@ -67,6 +68,9 @@ export function WerkstattPage() {
           but both need the same list, so this is deliberately NOT split into a
           desktop/mobile pair. */}
       <WerkstattKistenPage />
+      {/* Also one responsive page: the register is read at a desk, but booking
+          a machine out happens in the workshop with a phone in one hand. */}
+      <WerkstattMaschinenPage />
 
       {/* Mobile variants (each self-gates on isMobile + tab). */}
       <WerkstattMobileHomePage />

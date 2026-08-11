@@ -18,6 +18,8 @@ from app.core.db import get_db
 from app.core.deps import get_current_user, require_permission
 from app.core.time import utcnow
 from app.models.entities import (
+    Project,
+    Task,
     User,
     WerkstattArticle,
     WerkstattArticleSupplier,
@@ -51,15 +53,27 @@ router = APIRouter(prefix="/werkstatt", tags=["werkstatt-tablet"])
 def list_orders(
     order_status: WerkstattOrderStatus | None = Query(default=None, alias="status"),
     supplier_id: int | None = None,
+    task_id: int | None = None,
     overdue_only: bool = False,
+    include_merged: bool = False,
     _: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[WerkstattOrderSummaryOut]:
-    stmt = select(WerkstattOrder)
+    # Templates live in this table but are not orders — they are never sent,
+    # never delivered, and would otherwise sit in the buyer's list forever
+    # looking like work to do. They have their own endpoint
+    # (`GET /werkstatt/order-templates`).
+    stmt = select(WerkstattOrder).where(WerkstattOrder.is_template.is_(False))
+    if not include_merged:
+        # An order folded into another is kept for the audit trail, not for
+        # the working list. Showing it would double-count the material.
+        stmt = stmt.where(WerkstattOrder.merged_into_order_id.is_(None))
     if order_status is not None:
         stmt = stmt.where(WerkstattOrder.status == order_status)
     if supplier_id is not None:
         stmt = stmt.where(WerkstattOrder.supplier_id == supplier_id)
+    if task_id is not None:
+        stmt = stmt.where(WerkstattOrder.task_id == task_id)
     stmt = stmt.order_by(WerkstattOrder.created_at.desc(), WerkstattOrder.id.desc())
     orders = list(db.scalars(stmt).all())
 
@@ -84,6 +98,14 @@ def list_orders(
         ).all()
         line_counts = {row[0]: row[1] for row in rows}
 
+    task_titles: dict[int, str] = {}
+    task_ids = {order.task_id for order in orders if order.task_id is not None}
+    if task_ids:
+        task_titles = {
+            task.id: task.title
+            for task in db.scalars(select(Task).where(Task.id.in_(task_ids))).all()
+        }
+
     now = utcnow()
     out: list[WerkstattOrderSummaryOut] = []
     for order in orders:
@@ -92,6 +114,7 @@ def list_orders(
             suppliers_by_id.get(order.supplier_id),
             line_counts.get(order.id, 0),
             now,
+            task_titles.get(order.task_id) if order.task_id else None,
         )
         if overdue_only and (summary.days_overdue is None or summary.days_overdue <= 0):
             continue
@@ -126,6 +149,11 @@ def create_order(
                 detail=f"Unknown article id(s): {missing}",
             )
 
+    if payload.task_id is not None and db.get(Task, payload.task_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Auftrag nicht gefunden")
+    if payload.project_id is not None and db.get(Project, payload.project_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Projekt nicht gefunden")
+
     now = utcnow()
     order = WerkstattOrder(
         order_number=generate_order_number(db, now=now),
@@ -134,6 +162,10 @@ def create_order(
         currency="EUR",
         notes=payload.notes,
         delivery_reference=payload.delivery_reference,
+        title=payload.title,
+        task_id=payload.task_id,
+        project_id=payload.project_id,
+        source="manual",
         created_by=current_user.id,
         created_at=now,
         updated_at=now,
