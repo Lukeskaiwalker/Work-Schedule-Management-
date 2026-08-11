@@ -65,6 +65,14 @@ def test_material_catalog_search_and_add_to_material_needs(client: TestClient, a
     )
     assert add_member.status_code == 200
 
+    # `outsider` has to be made an outsider: every user is added to every
+    # project by default now, so the denial this test pins has to be set up
+    # rather than assumed.
+    outsider_removed = client.delete(
+        f"/api/projects/{project_id}/members/{outsider['id']}", headers=auth_headers(admin_token)
+    )
+    assert outsider_removed.status_code in (200, 204), outsider_removed.text
+
     catalog_dir = _reset_catalog_dir()
     catalog_file = catalog_dir / "materials.csv"
     catalog_file.write_text(

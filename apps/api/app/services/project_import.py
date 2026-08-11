@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.entities import Project, ProjectFinance
+from app.services.project_membership import backfill_default_memberships
 
 
 PROJECT_NUMBER_KEYS = {
@@ -815,6 +816,15 @@ def _import_projects_from_rows(
             stats.updated += 1
 
     db.commit()
+
+    # Everyone is on every project by default. Done once for the whole import
+    # rather than per row: an import creates hundreds of projects, and the
+    # backfill is a single idempotent sweep that also picks up any project an
+    # earlier partial import left without members.
+    if stats.created:
+        backfill_default_memberships(db)
+        db.commit()
+
     return stats
 
 

@@ -5,6 +5,7 @@ from fastapi import APIRouter
 from app.core.events import notify
 from app.routers.workflow_helpers import *  # noqa: F401,F403
 from app.models.entities import Customer
+from app.services.project_membership import add_all_users_to_project
 from app.services.customers import (
     match_or_create_customer,
     sync_project_from_customer,
@@ -150,6 +151,12 @@ def create_project(
     if current_user.role == "employee":
         db.add(ProjectMember(project_id=project.id, user_id=current_user.id, can_manage=True))
         db.commit()
+
+    # Everyone is on every project by default — see services/project_membership.
+    # Runs AFTER the creator's row above so their `can_manage=True` survives:
+    # the helper never touches an existing membership.
+    add_all_users_to_project(db, project_id=project.id)
+    db.commit()
 
     return project
 

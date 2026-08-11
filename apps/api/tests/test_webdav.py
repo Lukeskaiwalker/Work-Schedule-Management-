@@ -40,6 +40,7 @@ def test_webdav_projects_root_respects_project_access(client: TestClient, admin_
         json={"project_number": "2026-2102", "name": "DAV Hidden", "description": "hidden", "status": "active"},
     )
     assert hidden_project.status_code == 200
+    hidden_project_id = hidden_project.json()["id"]
     hidden_project_number = hidden_project.json()["project_number"]
 
     member_response = client.post(
@@ -48,6 +49,15 @@ def test_webdav_projects_root_respects_project_access(client: TestClient, admin_
         json={"user_id": employee["id"], "can_manage": False},
     )
     assert member_response.status_code == 200
+
+    # Users are added to every project by default now, so "hidden" has to be
+    # made hidden on purpose. What is under test is that the DAV listing
+    # honours membership at all — not what the default membership happens to be.
+    removed = client.delete(
+        f"/api/projects/{hidden_project_id}/members/{employee['id']}",
+        headers=auth_headers(admin_token),
+    )
+    assert removed.status_code in (200, 204), removed.text
 
     propfind = client.request(
         "PROPFIND",

@@ -66,6 +66,13 @@ def test_project_task_planning_ticket_file_and_report_flow(client: TestClient, a
     )
     assert project.status_code == 200
     project_id = project.json()["id"]
+    # `outsider` has to be made an outsider: every user is added to every
+    # project by default now, so the not-on-this-project state this test
+    # exercises has to be created deliberately.
+    outsider_removed = client.delete(
+        f"/api/projects/{project_id}/members/{outsider['id']}", headers=auth_headers(admin_token)
+    )
+    assert outsider_removed.status_code in (200, 204), outsider_removed.text
     assert project.json()["project_number"] == "2026-1001"
     assert project.json()["customer_name"] == "ACME GmbH"
     assert project.json()["site_access_type"] == "code_access"

@@ -132,9 +132,18 @@ def test_member_can_read_list(client: TestClient, admin_token: str):
 
 def test_non_member_employee_cannot_list(client: TestClient, admin_token: str):
     """An employee with no membership and no task in the project can't
-    even read the member list."""
+    even read the member list.
+
+    Every user is now added to every project by default, so the non-member
+    state has to be created explicitly by removing that membership again. The
+    invariant under test is unchanged — scoping still bites when somebody is
+    deliberately taken off a project — but it is no longer the resting state.
+    """
     pid = _create_project(client, admin_token, "MEM-NOACCESS")
-    _create_employee(client, admin_token, "mem-noaccess@example.com")
+    emp = _create_employee(client, admin_token, "mem-noaccess@example.com")
+    removed = client.delete(f"/api/projects/{pid}/members/{emp['id']}", headers=_auth(admin_token))
+    assert removed.status_code in (200, 204), removed.text
+
     emp_token = _login(client, "mem-noaccess@example.com")
     denied = client.get(f"/api/projects/{pid}/members", headers=_auth(emp_token))
     assert denied.status_code == 403

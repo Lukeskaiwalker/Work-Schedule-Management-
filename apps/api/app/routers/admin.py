@@ -65,6 +65,7 @@ from app.services.audit import log_admin_action
 from app.routers.workflow_helpers import _content_disposition
 from app.services.emailer import send_email_detailed, send_email_message
 from app.services.project_import import import_projects_from_csv
+from app.services.project_membership import add_user_to_all_projects
 from app.services.runtime_settings import (
     OPENAI_DEFAULT_EXTRACTION_MODEL,
     clear_active_update_job,
@@ -1300,6 +1301,9 @@ def create_user(
     db.add(user)
     db.commit()
     db.refresh(user)
+    # Everyone is on every project by default — see services/project_membership.
+    add_user_to_all_projects(db, user_id=user.id)
+    db.commit()
     log_admin_action(db, admin, "user.create", "user", str(user.id), {"role": user.role, "email": user.email})
     return user
 
@@ -1357,6 +1361,12 @@ def create_and_send_invite(
     db.add(user)
     db.commit()
     db.refresh(user)
+    # Everyone is on every project by default. Granted at invite time rather
+    # than on acceptance so the projects are already there the moment they sign
+    # in — and unconditionally, because this endpoint also re-activates a
+    # previously deactivated account, whose memberships may have been pruned.
+    add_user_to_all_projects(db, user_id=user.id)
+    db.commit()
     log_admin_action(
         db,
         admin,
