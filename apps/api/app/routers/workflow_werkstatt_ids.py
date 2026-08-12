@@ -63,6 +63,7 @@ from app.services.ids_cart_parser import (
     parse_cart,
 )
 from app.services.ids_connect import (
+    assert_directions_not_swapped,
     consume_session,
     create_session,
     default_connection_values,
@@ -159,7 +160,7 @@ def upsert_ids_connection(
     connection.entry_url = (payload.entry_url or "").strip()
     connection.http_method = payload.http_method
     connection.ids_version = (payload.ids_version or "2.5").strip()
-    connection.charset = (payload.charset or "ISO-8859-1").strip()
+    connection.charset = (payload.charset or "UTF-8").strip()
     connection.username = (payload.username or "").strip() or None
     connection.customer_number = (payload.customer_number or "").strip() or None
     connection.hook_base_url = (payload.hook_base_url or "").strip() or None
@@ -174,8 +175,10 @@ def upsert_ids_connection(
         )
 
     if payload.fetch_field_map is not None:
+        assert_directions_not_swapped(payload.fetch_field_map, direction="fetch")
         connection.fetch_field_map = payload.fetch_field_map
     if payload.submit_field_map is not None:
+        assert_directions_not_swapped(payload.submit_field_map, direction="submit")
         connection.submit_field_map = payload.submit_field_map
     if payload.cart_field_names is not None:
         connection.cart_field_names = [str(name) for name in payload.cart_field_names]

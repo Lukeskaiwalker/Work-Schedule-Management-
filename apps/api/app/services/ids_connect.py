@@ -44,6 +44,7 @@ import secrets
 from datetime import datetime, timedelta
 from typing import Any, Mapping
 
+from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -126,6 +127,62 @@ DEFAULT_CART_FIELD_NAMES: list[str] = [
     "XMLDATA",
     "DATA",
 ]
+
+
+def action_of(field_map: Mapping[str, Any]) -> str:
+    """The action code a field map will send, or "" if it sets none.
+
+    Case-insensitive on the key because the spec writes `action` but shops and
+    admins both reach for `ACTION`, and either works on the wire.
+    """
+
+    for key, value in (field_map or {}).items():
+        if str(key).strip().lower() == "action":
+            return str(value or "").strip().upper()
+    return ""
+
+
+def assert_directions_not_swapped(field_map: Mapping[str, Any], *, direction: str) -> None:
+    """Refuse a field map that sends the opposite direction's action.
+
+    WKE and WKS are named from the craft software's point of view and read as
+    near-synonyms in German, so putting them the wrong way round is the natural
+    mistake — and it fails in a way that looks like anything but a swap:
+
+    A `WKS` sent as the fetch call *appears to work*. It hands our cart to the
+    shop and lands the user on the basket page looking exactly as expected. But
+    WKS has no return leg, so the shop never registers a hook, and when the user
+    presses "per IDS übermitteln" it has nowhere to send the cart and shows the
+    payload on a debug page instead. The user is left staring at their own data
+    on the wholesaler's site with no way back, and nothing anywhere reports an
+    error, because as far as both systems are concerned nothing went wrong.
+
+    Only the exact inversion is rejected. Every other action stays allowed:
+    another wholesaler may well need something this code has never heard of,
+    which is the entire reason the map is editable.
+    """
+
+    action = action_of(field_map)
+    if direction == "fetch" and action == ACTION_SUBMIT_CART:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Die Aktion zum Warenkorb-Holen darf nicht 'WKS' sein — das ist die "
+                "Übergabe eines Warenkorbs AN den Shop und registriert keine "
+                "Rückgabe-Adresse. Zum Holen wird 'WKE' (Warenkorbübernahme) "
+                "benötigt, sonst zeigt der Shop den Warenkorb nur an, statt ihn "
+                "zurückzuschicken."
+            ),
+        )
+    if direction == "submit" and action == ACTION_FETCH_CART:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Die Aktion zum Warenkorb-Senden darf nicht 'WKE' sein — das ist die "
+                "Übernahme eines Warenkorbs AUS dem Shop. Zum Senden wird 'WKS' "
+                "(Warenkorbübergabe) benötigt."
+            ),
+        )
 
 
 def default_connection_values() -> dict[str, Any]:

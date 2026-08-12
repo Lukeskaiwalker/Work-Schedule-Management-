@@ -1130,3 +1130,99 @@ def test_a_connection_without_credentials_sends_none() -> None:
     assert set(rendered) == {"action", "hook_url", "returntarget", "Version"}
     assert "passwort" not in rendered
     assert "benutzername" not in rendered
+
+
+def test_a_swapped_fetch_action_is_refused(client: TestClient, admin_token: str) -> None:
+    """WKS as the FETCH action is the failure that looks like success.
+
+    It hands our cart to the shop and lands the user on the basket page looking
+    exactly right — but registers no return leg, so the shop's "per IDS
+    übermitteln" has nowhere to post and prints the payload to a debug page.
+    Nothing errors on either side; the trip is simply lost. Refusing the save
+    is the only place this is cheap to catch.
+    """
+
+    supplier = _supplier(client, admin_token, "Swap-Test")
+    resp = client.put(
+        "/api/werkstatt/ids/connections",
+        headers=auth_headers(admin_token),
+        json={
+            "supplier_id": supplier["id"],
+            "is_enabled": True,
+            "entry_url": "https://www.unielektro.de/ids",
+            "fetch_field_map": {"action": "WKS", "benutzername": "{username}"},
+        },
+    )
+    assert resp.status_code == 400, resp.text
+    assert "WKE" in resp.json()["detail"]
+
+
+def test_a_swapped_submit_action_is_refused(client: TestClient, admin_token: str) -> None:
+    supplier = _supplier(client, admin_token, "Swap-Test-2")
+    resp = client.put(
+        "/api/werkstatt/ids/connections",
+        headers=auth_headers(admin_token),
+        json={
+            "supplier_id": supplier["id"],
+            "is_enabled": True,
+            "entry_url": "https://www.unielektro.de/ids",
+            "submit_field_map": {"action": "WKE", "warenkorb": "{cart_xml}"},
+        },
+    )
+    assert resp.status_code == 400, resp.text
+    assert "WKS" in resp.json()["detail"]
+
+
+def test_an_unknown_action_is_still_allowed(client: TestClient, admin_token: str) -> None:
+    """Only the exact inversion is rejected. A wholesaler needing an action
+    this code has never heard of is the reason the map is editable at all."""
+
+    supplier = _supplier(client, admin_token, "Exotic-Shop")
+    resp = client.put(
+        "/api/werkstatt/ids/connections",
+        headers=auth_headers(admin_token),
+        json={
+            "supplier_id": supplier["id"],
+            "is_enabled": True,
+            "entry_url": "https://shop.example.com/ids",
+            "fetch_field_map": {"action": "SOMETHING_ELSE", "user": "{username}"},
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+
+def test_the_real_unielektro_cart_parses(client: TestClient, admin_token: str) -> None:
+    """The actual payload Unielektro returned in production.
+
+    Kept verbatim because every previous guess about this dialect was wrong;
+    a real captured cart is the only trustworthy fixture. Notable shapes it
+    exercises: a default XML namespace on the root, `OrderItem` rather than
+    `ITEM`, `ArtNo`/`QU`/`Kurztext` field names, and both an `OfferPrice`
+    (list, x100 scale) and a `NetPrice` (what we actually pay) on every line —
+    reading the wrong one of those two would overstate the order 160-fold.
+    """
+
+    real = """<?xml version="1.0" encoding="UTF-8"?><Warenkorb
+        xmlns="http://www.itek.de/Shop-Anbindung/Warenkorb/">
+        <WarenkorbInfo><Date>2026-08-12</Date><Version>2.0</Version></WarenkorbInfo>
+        <Order>
+            <OrderInfo><OfferNo>IDS</OfferNo><Cur>EUR</Cur></OrderInfo>
+            <OrderItem>
+                <EAN>4050821656869</EAN><ArtNo>01473035</ArtNo>
+                <Qty>1.00</Qty><QU>PCE</QU>
+                <Kurztext>WAGO 211-856 LEITERMARKIERER</Kurztext>
+                <OfferPrice>3253.0000</OfferPrice><NetPrice>20.1700</NetPrice>
+                <PriceBasis>100.00</PriceBasis><VAT>19.00</VAT>
+            </OrderItem>
+        </Order></Warenkorb>"""
+
+    cart = parse_cart(real)
+    assert len(cart.lines) == 1
+    line = cart.lines[0]
+    assert line.supplier_article_no == "01473035"
+    assert line.ean == "4050821656869"
+    assert line.unit == "PCE"
+    assert line.quantity == 1
+    assert "LEITERMARKIERER" in (line.description or "")
+    # NetPrice, not OfferPrice.
+    assert line.unit_price_cents == 2017
