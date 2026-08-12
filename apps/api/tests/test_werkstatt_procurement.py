@@ -928,3 +928,205 @@ def test_shopping_needs_an_enabled_connection(client: TestClient, admin_token: s
         json={"supplier_id": supplier["id"]},
     )
     assert resp.status_code == 400
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# The wire protocol itself
+#
+# These pin the values the wholesaler actually reads. They exist because the
+# punchout originally shipped with invented field names, and the way that
+# failed hid the cause: Unielektro answered "Aktion 'WWWSHOP' ist nicht
+# gültig", which reads like one wrong value in an otherwise correct call. In
+# fact every field was wrong — `USERNAME` is not a mis-cased `benutzername`
+# but a different word, so the credentials were never read at all.
+#
+# Values confirmed against ITEK's IDS-Connect 2.5 spec and Unielektro's own
+# `action=LI` / `action=SV` discovery responses.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_the_fetch_call_uses_the_real_ids_action_and_field_names() -> None:
+    from app.services.ids_connect import DEFAULT_FETCH_FIELD_MAP
+
+    # WKE = Warenkorbübernahme, named from OUR point of view: the cart comes
+    # from the shop into us. Getting this backwards is the easy mistake.
+    assert DEFAULT_FETCH_FIELD_MAP["action"] == "WKE"
+    assert DEFAULT_FETCH_FIELD_MAP["benutzername"] == "{username}"
+    assert DEFAULT_FETCH_FIELD_MAP["passwort"] == "{password}"
+    assert DEFAULT_FETCH_FIELD_MAP["hook_url"] == "{hook_url}"
+    assert DEFAULT_FETCH_FIELD_MAP["returntarget"] == "_top"
+    # The English names are what the wholesaler silently ignores.
+    for rejected in ("USERNAME", "PASSWORD", "ACTION", "HOOK_URL", "TARGET"):
+        assert rejected not in DEFAULT_FETCH_FIELD_MAP
+
+
+def test_the_submit_call_carries_the_cart_in_warenkorb() -> None:
+    from app.services.ids_connect import DEFAULT_SUBMIT_FIELD_MAP
+
+    # WKS = Warenkorbübergabe — the opposite direction to WKE.
+    assert DEFAULT_SUBMIT_FIELD_MAP["action"] == "WKS"
+    assert DEFAULT_SUBMIT_FIELD_MAP["warenkorb"] == "{cart_xml}"
+    assert "IDS_XML" not in DEFAULT_SUBMIT_FIELD_MAP
+
+
+def test_a_returned_cart_is_found_in_the_warenkorb_field() -> None:
+    """The spec's own name for the payload must be recognised on the way back."""
+
+    from app.services.ids_connect import extract_cart_payload
+
+    payload, field = extract_cart_payload(
+        {"warenkorb": "<IDS><ITEM/></IDS>", "other": "noise"}, configured_names=None
+    )
+    assert field == "warenkorb"
+    assert payload == "<IDS><ITEM/></IDS>"
+
+
+def test_an_unknown_cart_field_name_is_still_found() -> None:
+    """A shop that invents its own field name must not cost the user the trip —
+    anything that looks like XML is accepted as a last resort."""
+
+    from app.services.ids_connect import extract_cart_payload
+
+    payload, field = extract_cart_payload(
+        {"someNewName": "<?xml version='1.0'?><IDS/>"}, configured_names=None
+    )
+    assert field == "someNewName"
+    assert payload.startswith("<?xml")
+
+
+def test_the_handoff_url_is_relative_to_our_own_origin(
+    client: TestClient, admin_token: str
+) -> None:
+    """It used to be built from `app_public_url`, which defaults to
+    https://localhost — that setting describes how the app refers to ITSELF,
+    which behind a reverse proxy or a duckdns name is not where the user's
+    browser is. The browser opening this page is already on our origin, so a
+    relative path is correct everywhere.
+
+    HOOK_URL is the one that must stay absolute: it is embedded in a form
+    submitted to the wholesaler, which has no origin of ours to resolve against.
+    """
+
+    supplier = _supplier(client, admin_token, "Unielektro")
+    _connection(client, admin_token, supplier["id"])
+
+    started = client.post(
+        "/api/werkstatt/ids/start",
+        headers=auth_headers(admin_token),
+        json={"supplier_id": supplier["id"]},
+    )
+    assert started.status_code == 200, started.text
+    handoff = started.json()["handoff_url"]
+    assert handoff.startswith("/api/werkstatt/ids/handoff/")
+    assert "localhost" not in handoff
+    assert not handoff.startswith("http")
+
+
+# A real cart returned by Unielektro's /basket/transmit, trimmed only of the
+# customer's postal details. Kept verbatim because every guess this parser
+# makes about element names was wrong for this document before it existed:
+# ArtNo, QU, NetPrice and Cur all missed, so every line imported with no
+# article number and no price.
+REAL_UNIELEKTRO_CART = """<?xml version="1.0" encoding="UTF-8"?>
+<Warenkorb xmlns="http://www.itek.de/Shop-Anbindung/Warenkorb/"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+    <WarenkorbInfo><Date>2026-08-12</Date><Time>09:16:12</Time>
+      <RueckgabeKZ>Warenkorbrückgabe</RueckgabeKZ><Version>2.0</Version></WarenkorbInfo>
+    <Order>
+        <OrderInfo><OfferNo>IDS</OfferNo><ModeOfShipment>Lieferung</ModeOfShipment>
+          <Cur>EUR</Cur></OrderInfo>
+        <CustomerInfo><IDNo>0001207716</IDNo><Address><Name1>SMPL Energy GmbH</Name1>
+          <City>Witten</City></Address></CustomerInfo>
+        <OrderItem><ItemChara>normal</ItemChara><RefItems/>
+            <EAN>4050821632627</EAN><ArtNo>01472975</ArtNo>
+            <Qty>1.00</Qty><QU>PCE</QU>
+            <Kurztext>WAGO 210-804 ETIKETT 44x99MM SILBER 500STK/RO</Kurztext>
+            <OfferPrice>8665.0000</OfferPrice><NetPrice>53.7200</NetPrice>
+            <PriceBasis>100.00</PriceBasis><VAT>19.00</VAT></OrderItem>
+        <OrderItem><ItemChara>normal</ItemChara><RefItems/>
+            <EAN>4055143456067</EAN><ArtNo>01273376</ArtNo>
+            <Qty>1.00</Qty><QU>PCE</QU>
+            <Kurztext>WAGO 210-813 Etiketten</Kurztext>
+            <OfferPrice>25500.0000</OfferPrice><NetPrice>158.1000</NetPrice>
+            <PriceBasis>100.00</PriceBasis><VAT>19.00</VAT></OrderItem>
+    </Order>
+</Warenkorb>"""
+
+
+def test_the_real_unielektro_dialect_parses_completely() -> None:
+    """Namespaced <Warenkorb>, <OrderItem> rows, English-ish element names."""
+
+    cart = parse_cart(REAL_UNIELEKTRO_CART)
+
+    assert len(cart.lines) == 2
+    assert cart.currency == "EUR"
+    # No doubts to report: everything resolved.
+    assert cart.warnings == ()
+    assert all(line.warnings == () for line in cart.lines)
+
+    first = cart.lines[0]
+    assert first.supplier_article_no == "01472975"   # <ArtNo>
+    assert first.ean == "4050821632627"
+    assert first.quantity == 1                        # <Qty>1.00</Qty>
+    assert first.unit == "PCE"                        # <QU>
+    assert "210-804" in first.description             # <Kurztext>
+
+
+def test_the_net_price_is_taken_and_the_list_price_ignored() -> None:
+    """The cart carries both, and confusing them is a 100x error.
+
+        <OfferPrice>8665.0000</OfferPrice>   list, scaled by PriceBasis=100
+        <NetPrice>53.7200</NetPrice>         what we actually pay
+
+    53.72 EUR for a 500-label roll is right; 86.65 is the undiscounted list,
+    8665.00 is that list unscaled, and 0.54 would be PriceBasis applied to the
+    net price. Only the first is correct.
+    """
+
+    cart = parse_cart(REAL_UNIELEKTRO_CART)
+
+    assert cart.lines[0].unit_price_cents == 5372
+    assert cart.lines[1].unit_price_cents == 15810
+    # The traps, spelled out so a future edit that reaches for OfferPrice fails.
+    for line in cart.lines:
+        assert line.unit_price_cents not in (866500, 8665, 54, 2550000, 25500, 158)
+
+
+def test_the_customer_number_is_not_mistaken_for_a_cart_reference() -> None:
+    """<CustomerInfo><IDNo> is our account number, not an order handle. The
+    header scan flattens the whole document, so it is close enough to the
+    reference aliases to be worth pinning."""
+
+    cart = parse_cart(REAL_UNIELEKTRO_CART)
+    assert cart.external_reference != "0001207716"
+
+
+def test_a_connection_without_credentials_sends_none() -> None:
+    """The credential-free mode, which is how other craft software does this.
+
+    Rather than storing a live wholesale ordering password, the shop is opened
+    with only the action and the hook URL; the user signs in on the
+    wholesaler's own page and the browser keeps that session. The cart still
+    finds its way home because hook_url travels regardless.
+
+    This works because `render_field_map` drops a field whose template is a
+    bare placeholder that resolved to nothing — sending `passwort=` empty
+    would earn an unhelpful login error instead.
+    """
+
+    from app.services.ids_connect import DEFAULT_FETCH_FIELD_MAP, render_field_map
+
+    rendered = render_field_map(
+        DEFAULT_FETCH_FIELD_MAP,
+        {
+            "username": "",
+            "password": "",
+            "customer_number": "",
+            "hook_url": "https://example.invalid/api/werkstatt/ids/hook/TOK",
+            "ids_version": "2.5",
+        },
+    )
+
+    assert set(rendered) == {"action", "hook_url", "returntarget", "Version"}
+    assert "passwort" not in rendered
+    assert "benutzername" not in rendered

@@ -25,11 +25,11 @@ filled and completes the purchase there.
 ## Why the connection is configuration and not code
 
 Every wholesaler publishes their own *IDS-Datenblatt* fixing the entry URL,
-the form-field names and the exact XML dialect, and they differ — one wants
-``USERNAME``/``PASSWORD``, the next wants ``user``/``pwd`` plus a
-``KUNDENNUMMER``, a third signs with a hashed ``KEY``. Hard-coding Unielektro's
-spelling would mean a deploy every time a field name moves, and would silently
-misfire the day it does.
+the form-field names and the exact XML dialect, and they differ. The spec's
+own spelling is ``benutzername``/``passwort``/``hook_url``; a shop in the wild
+answers to ``name_kunde``/``pw_kunde``/``hookurl`` for the same three fields.
+Hard-coding one spelling would mean a deploy every time a wholesaler differs,
+and would silently misfire the day one moves.
 
 So the field names live in ``fetch_field_map`` / ``submit_field_map`` as data,
 rendered against a small placeholder vocabulary (see
@@ -83,11 +83,13 @@ class WerkstattIdsConnection(Base):
     http_method: Mapped[str] = mapped_column(String(8), nullable=False, default="POST")
     ids_version: Mapped[str] = mapped_column(String(16), nullable=False, default="2.5")
 
-    # IDS predates UTF-8 being universal and most shops still specify
-    # ISO-8859-1 for both the form and the cart XML. Wrong charset here is the
-    # classic cause of "Möller" arriving as "MÃ¶ller", so it is configurable
-    # rather than assumed.
-    charset: Mapped[str] = mapped_column(String(32), nullable=False, default="ISO-8859-1")
+    # 2.5 says the cart XML declares its own encoding and that UTF-8 applies
+    # when it is silent, so UTF-8 is the default. Still configurable: older
+    # shops on 1.3/2.0 predate that and emit ISO-8859-1, and the wrong charset
+    # is the classic cause of "Möller" arriving as "MÃ¶ller". Only the OUTBOUND
+    # cart depends on this — inbound, the parser prefers whatever the document
+    # declares about itself.
+    charset: Mapped[str] = mapped_column(String(32), nullable=False, default="UTF-8")
 
     username: Mapped[str | None] = mapped_column(String(255))
     # Fernet ciphertext, never the plaintext. See services/secret_box.py. The
@@ -99,7 +101,7 @@ class WerkstattIdsConnection(Base):
 
     # Form fields for "let me shop" and for "here is my cart". Values are
     # templates over the placeholder vocabulary in services/ids_connect.py,
-    # e.g. {"ACTION": "WWWSHOP", "USERNAME": "{username}", "HOOK_URL": "{hook_url}"}.
+    # e.g. {"action": "WKE", "benutzername": "{username}", "hook_url": "{hook_url}"}.
     fetch_field_map: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     submit_field_map: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
 

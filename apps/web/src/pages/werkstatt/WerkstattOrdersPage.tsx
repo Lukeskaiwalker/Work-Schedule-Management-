@@ -193,8 +193,15 @@ export function WerkstattOrdersPage() {
       setError(null);
       try {
         const handoff = await request();
-        if (tab) tab.location.href = handoff.handoff_url;
-        else window.location.assign(handoff.handoff_url);
+        // Resolve against our own origin explicitly. The server returns a
+        // relative path — the handoff page is ours, and hard-coding an
+        // absolute base is what previously sent everyone to https://localhost.
+        // The target tab is still `about:blank` at this point, and relying on
+        // it to inherit the opener's base URL for a relative href is subtle
+        // enough to be worth not relying on.
+        const target = new URL(handoff.handoff_url, window.location.origin).toString();
+        if (tab) tab.location.href = target;
+        else window.location.assign(target);
         const opened = de
           ? "Shop geöffnet. Der Warenkorb erscheint hier, sobald er übergeben wurde."
           : "Shop opened. The cart appears here once you hand it over.";

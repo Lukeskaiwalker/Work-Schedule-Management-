@@ -68,36 +68,59 @@ TOKEN_BYTES = 32
 # something it was not meant to reach.
 PLACEHOLDER_PATTERN = re.compile(r"\{([a-z_]+)\}")
 
-# Sensible IDS-Connect 2.5 starting points. Every wholesaler's datasheet
-# differs, so these are seeds for the admin form, not truth. Unielektro's
-# actual field names go in over the top of these.
+# IDS-Connect 2.5 action codes (ITEK). The two that matter here are a pair,
+# named from the CRAFT SOFTWARE's point of view — which is the opposite of the
+# intuitive reading and an easy way to wire them backwards:
+#
+#   WKE  Warenkorbübernahme — cart comes FROM the shop INTO us  → "go shopping"
+#   WKS  Warenkorbübergabe  — cart goes FROM us INTO the shop   → "order this"
+#
+# The others exist and are useful for diagnosis: LI (Logininformationen) asks a
+# shop which credentials it wants, SV (Schnittstellenversion) which versions it
+# speaks, ADL (Artikeldeeplink) jumps to one article by GH-Nummer, AS
+# (Artikelsuche) opens a search.
+ACTION_FETCH_CART = "WKE"
+ACTION_SUBMIT_CART = "WKS"
+
+# Field names are the spec's, which are German and lower-case. This matters
+# more than it looks: `USERNAME` is not a mis-cased `benutzername`, it is a
+# different word, so a shop reading the spec names simply never sees a
+# credential sent under the English one — it reports the *action* as invalid
+# and never gets as far as complaining about the login. Verified against
+# Unielektro's own `action=LI` response, which answers in
+# Benutzername/Passwort/Kundennummer terms.
+#
+# These remain defaults rather than constants: `name_kunde`/`pw_kunde`/`hookurl`
+# is a real shop's spelling of the same three fields, so the map stays editable.
 DEFAULT_FETCH_FIELD_MAP: dict[str, str] = {
-    "ACTION": "WWWSHOP",
-    "USERNAME": "{username}",
-    "PASSWORD": "{password}",
-    "KUNDENNUMMER": "{customer_number}",
-    "HOOK_URL": "{hook_url}",
-    "TARGET": "_top",
-    "VERSION": "{ids_version}",
+    "action": ACTION_FETCH_CART,
+    "benutzername": "{username}",
+    "passwort": "{password}",
+    "kundennummer": "{customer_number}",
+    "hook_url": "{hook_url}",
+    "returntarget": "_top",
+    "Version": "{ids_version}",
 }
 
 DEFAULT_SUBMIT_FIELD_MAP: dict[str, str] = {
-    "ACTION": "WWWSHOPWARENKORB",
-    "USERNAME": "{username}",
-    "PASSWORD": "{password}",
-    "KUNDENNUMMER": "{customer_number}",
-    "HOOK_URL": "{hook_url}",
-    "TARGET": "_top",
-    "VERSION": "{ids_version}",
-    "IDS_XML": "{cart_xml}",
+    "action": ACTION_SUBMIT_CART,
+    "benutzername": "{username}",
+    "passwort": "{password}",
+    "kundennummer": "{customer_number}",
+    "hook_url": "{hook_url}",
+    "returntarget": "_top",
+    "Version": "{ids_version}",
+    # The cart XML for a WKS call.
+    "warenkorb": "{cart_xml}",
 }
 
 # POST fields the returned cart is commonly found in. Empty configuration
 # falls back to these, and failing those to "any field that parses as XML".
+# `warenkorb` leads because it is the spec's own name for the payload.
 DEFAULT_CART_FIELD_NAMES: list[str] = [
+    "warenkorb",
     "IDS_XML",
     "XML",
-    "WARENKORB",
     "CART",
     "IDS",
     "XMLDATA",
@@ -111,7 +134,7 @@ def default_connection_values() -> dict[str, Any]:
     return {
         "http_method": "POST",
         "ids_version": "2.5",
-        "charset": "ISO-8859-1",
+        "charset": "UTF-8",
         "fetch_field_map": dict(DEFAULT_FETCH_FIELD_MAP),
         "submit_field_map": dict(DEFAULT_SUBMIT_FIELD_MAP),
         "cart_field_names": list(DEFAULT_CART_FIELD_NAMES),

@@ -82,6 +82,9 @@ ITEM_TAGS = frozenset(
 # so ARTICLE_ID beats a generic ID.
 FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     "supplier_article_no": (
+        # `artno` is Unielektro's spelling (<ArtNo>01472975</ArtNo>) and leads
+        # because a real cart is better evidence than the generic names below.
+        "artno",
         "supplier_aid",
         "supplier_article_id",
         "supplier_pid",
@@ -126,6 +129,8 @@ FIELD_ALIASES: dict[str, tuple[str, ...]] = {
         "stueckzahl",
     ),
     "unit": (
+        # `qu` = Quantity Unit, Unielektro's <QU>PCE</QU>.
+        "qu",
         "order_unit",
         "mengeneinheit",
         "quantity_unit",
@@ -133,16 +138,32 @@ FIELD_ALIASES: dict[str, tuple[str, ...]] = {
         "unit",
         "me",
     ),
+    # NET price only, and never the list price. A real Unielektro cart carries
+    # both, and they are not interchangeable:
+    #
+    #     <OfferPrice>8665.0000</OfferPrice>   list, scaled by PriceBasis
+    #     <NetPrice>53.7200</NetPrice>         what we actually pay, per QU
+    #     <PriceBasis>100.00</PriceBasis>
+    #
+    # Across every line of that cart NetPrice / (OfferPrice/100) is exactly
+    # 0.620 — one flat 38% trade discount — which is what identifies OfferPrice
+    # as the list price and pins its scaling. NetPrice is taken as-is and is
+    # NOT divided by PriceBasis: the article above is a 500-label roll, and
+    # €53.72 for one is right where €0.54 is absurd.
+    #
+    # `offerprice` is deliberately absent from this tuple. Reading it would put
+    # an undiscounted, 100×-scaled number on the order.
     "unit_price": (
+        "netprice",
+        "nettopreis",
+        "net_price",
         "price_amount",
         "einzelpreis",
         "unit_price",
-        "nettopreis",
-        "net_price",
         "preis",
         "price",
     ),
-    "currency": ("price_currency", "currency", "waehrung", "währung"),
+    "currency": ("price_currency", "cur", "currency", "waehrung", "währung"),
     "notes": ("remark", "bemerkung", "long_description", "langtext", "hinweis"),
 }
 

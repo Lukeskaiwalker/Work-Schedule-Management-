@@ -27,7 +27,6 @@ from fastapi.responses import HTMLResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
 from app.core.db import get_db
 from app.core.deps import require_permission
 from app.core.time import utcnow
@@ -368,10 +367,19 @@ def start_punchout(
     db.commit()
     db.refresh(session)
 
-    base = (get_settings().app_public_url or "").rstrip("/")
+    # Relative on purpose. This page is opened by our own frontend, in a tab
+    # that is already on our origin, so the browser resolves it correctly in
+    # every deployment. Building it from `app_public_url` sent users to
+    # https://localhost — that setting defaults to localhost and describes
+    # how the app refers to ITSELF, which behind a reverse proxy, a duckdns
+    # name or a VPN is not the address the user's browser is using.
+    #
+    # HOOK_URL is the one URL here that must stay absolute (see
+    # ids_connect.hook_url_for): it is embedded in a form submitted to the
+    # wholesaler, so a relative path would have no origin to resolve against.
     return IdsStartOut(
         token=session.token,
-        handoff_url=f"{base}/api/werkstatt/ids/handoff/{session.token}",
+        handoff_url=f"/api/werkstatt/ids/handoff/{session.token}",
         expires_at=session.expires_at,
     )
 
@@ -432,10 +440,19 @@ def submit_order_to_shop(
     db.commit()
     db.refresh(session)
 
-    base = (get_settings().app_public_url or "").rstrip("/")
+    # Relative on purpose. This page is opened by our own frontend, in a tab
+    # that is already on our origin, so the browser resolves it correctly in
+    # every deployment. Building it from `app_public_url` sent users to
+    # https://localhost — that setting defaults to localhost and describes
+    # how the app refers to ITSELF, which behind a reverse proxy, a duckdns
+    # name or a VPN is not the address the user's browser is using.
+    #
+    # HOOK_URL is the one URL here that must stay absolute (see
+    # ids_connect.hook_url_for): it is embedded in a form submitted to the
+    # wholesaler, so a relative path would have no origin to resolve against.
     return IdsSubmitOut(
         token=session.token,
-        handoff_url=f"{base}/api/werkstatt/ids/handoff/{session.token}",
+        handoff_url=f"/api/werkstatt/ids/handoff/{session.token}",
         expires_at=session.expires_at,
         warnings=list(built.warnings),
     )
@@ -453,8 +470,6 @@ def render_handoff(token: str, db: Session = Depends(get_db)) -> HTMLResponse:
 
     session = db.scalar(select(WerkstattIdsSession).where(WerkstattIdsSession.token == token))
     now = utcnow()
-    base = (get_settings().app_public_url or "").rstrip("/")
-
     if session is None or session.status not in {"pending"} or session.expires_at <= now:
         return HTMLResponse(
             render_result_page(
@@ -463,7 +478,7 @@ def render_handoff(token: str, db: Session = Depends(get_db)) -> HTMLResponse:
                     "Diese Weiterleitung wurde bereits verwendet oder ist abgelaufen. "
                     "Bitte den Vorgang in SMPL erneut starten."
                 ),
-                return_url=base or "/",
+                return_url="/",
                 is_error=True,
             ),
             status_code=status.HTTP_410_GONE,
@@ -477,7 +492,7 @@ def render_handoff(token: str, db: Session = Depends(get_db)) -> HTMLResponse:
                     "Diese Weiterleitung wurde schon einmal aufgerufen. Aus "
                     "Sicherheitsgründen wird sie kein zweites Mal ausgeliefert."
                 ),
-                return_url=base or "/",
+                return_url="/",
                 is_error=True,
             ),
             status_code=status.HTTP_410_GONE,
@@ -543,10 +558,9 @@ def render_handoff(token: str, db: Session = Depends(get_db)) -> HTMLResponse:
 
 
 def _result(heading: str, message: str, *, error: bool = False, code: int = 200) -> HTMLResponse:
-    base = (get_settings().app_public_url or "").rstrip("/")
     return HTMLResponse(
         render_result_page(
-            heading=heading, message=message, return_url=base or "/", is_error=error
+            heading=heading, message=message, return_url="/", is_error=error
         ),
         status_code=code,
         headers=result_headers(),
