@@ -31690,6 +31690,35 @@ button.time-calendar-cell {
   font-weight: 600;
 }
 
+/* Same pill as Schließen — this sits next to it in the header bar and the two
+   are peers, so nothing here should pull rank on the other. 40px min-height
+   keeps it inside the touch-target floor the rest of the mobile shell uses. */
+.file-viewer-save {
+  flex: 0 0 auto;
+  min-height: 40px;
+  padding: 8px 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+/* The version shown when nothing can be rendered. There it is the only action
+   on screen rather than one of two, so it reads as the primary. */
+.file-viewer-save-large {
+  margin-top: 16px;
+  min-height: 44px;
+  padding: 10px 20px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--ink);
+  color: #fff;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
 .file-viewer-body {
   flex: 1 1 auto;
   min-height: 0;

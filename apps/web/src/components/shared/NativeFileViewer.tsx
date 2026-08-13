@@ -106,6 +106,34 @@ function Viewer() {
     [de, release],
   );
 
+  /**
+   * Hand the fetched bytes to the OS.
+   *
+   * Downloading was broken on every app surface, and not because downloads
+   * are hard: `fileOpen` intercepts *any* /api link, so a "Herunterladen"
+   * link was captured and handed to this viewer — which had no way to save
+   * anything. The file was fetched, shown if it happened to be renderable,
+   * and otherwise the tap simply did nothing.
+   *
+   * Interception cannot be dropped for download links, because that is what
+   * attaches the bearer token; a bare link 401s in the native shell. So the
+   * saving has to live here, where the bytes already are.
+   *
+   * A synthetic `<a download>` over the existing object URL is the portable
+   * form: Safari and WKWebView route it to the share sheet, everything else
+   * writes it to the downloads folder.
+   */
+  const save = useCallback(() => {
+    if (!file) return;
+    const anchor = document.createElement("a");
+    anchor.href = file.objectUrl;
+    anchor.download = file.name || "download";
+    anchor.rel = "noreferrer";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+  }, [file]);
+
   useEffect(() => {
     setFileOpenHandler(open);
     return () => setFileOpenHandler(null);
@@ -126,6 +154,11 @@ function Viewer() {
           {title}
         </span>
         {file ? <span className="file-viewer-size">{formatSize(file.size)}</span> : null}
+        {phase === "ready" && file ? (
+          <button type="button" className="file-viewer-save" onClick={save}>
+            {de ? "Speichern" : "Save"}
+          </button>
+        ) : null}
         <button type="button" className="file-viewer-close" onClick={close}>
           {de ? "Schließen" : "Close"}
         </button>
@@ -162,6 +195,12 @@ function Viewer() {
                   : "This file type cannot be displayed in the app."}
               </p>
               <p className="file-viewer-muted">{file.contentType || "unbekannt"}</p>
+              {/* The only way out of this branch. Without it the tap is a
+                  dead end: the bytes have been fetched and there is nothing
+                  the user can do with them. */}
+              <button type="button" className="file-viewer-save-large" onClick={save}>
+                {de ? "Datei speichern" : "Save file"}
+              </button>
             </div>
           )
         ) : null}

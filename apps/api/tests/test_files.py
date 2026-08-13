@@ -428,3 +428,143 @@ def test_project_files_multi_upload_all_empty_rejects(
         ],
     )
     assert response.status_code == 400, response.text
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Mobile preview
+#
+# Reported from the field: on a phone, opening a file shows a blank page,
+# download does nothing, and a HEIC photo downloads itself instead of being
+# shown. All three are server-side consequences of how the response is built.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def _project_for(client: TestClient, admin_token: str, number: str) -> int:
+    resp = client.post(
+        "/api/projects",
+        headers=auth_headers(admin_token),
+        json={"project_number": number, "name": f"P {number}", "status": "active"},
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()["id"]
+
+
+def _put_file(client: TestClient, project_id: int, name: str, body: bytes, content_type: str) -> int:
+    put = client.put(
+        f"/api/dav/projects/{project_id}/{name}",
+        auth=("admin@example.com", "ChangeMe123!"),
+        data=body,
+        headers={"Content-Type": content_type},
+    )
+    assert put.status_code == 201, put.text
+    files = client.get(f"/api/projects/{project_id}/files", headers=auth_headers(admin_token_cache[0]))
+    row = next(r for r in files.json() if r["file_name"] == name)
+    return row["id"]
+
+
+admin_token_cache: list[str] = [""]
+
+
+def _heic_bytes() -> bytes:
+    """A minimal but genuinely decodable HEIC, produced via pillow-heif.
+
+    A handcrafted stub would not exercise the decode path at all, and the whole
+    question here is whether the server can turn one into something a browser
+    can render.
+    """
+
+    import io
+
+    from PIL import Image
+    import pillow_heif
+
+    pillow_heif.register_heif_opener()
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8), (200, 30, 30)).save(buf, format="HEIF")
+    return buf.getvalue()
+
+
+def test_a_heic_photo_previews_as_something_a_browser_can_draw(
+    client: TestClient, admin_token: str
+) -> None:
+    """iPhone photos are HEIC, and no mainstream browser except Safari renders
+    it. Serving the original bytes inline shows nothing; refusing to serve them
+    inline downgrades the preview to an attachment, which is why tapping a
+    photo downloads it instead of opening it.
+
+    Either way the crew cannot see the picture they took, so the preview has to
+    hand back a format that draws everywhere.
+    """
+
+    admin_token_cache[0] = admin_token
+    project_id = _project_for(client, admin_token, "2026-HEIC")
+    file_id = _put_file(client, project_id, "foto.heic", _heic_bytes(), "image/heic")
+
+    preview = client.get(f"/api/files/{file_id}/preview", headers=auth_headers(admin_token))
+    assert preview.status_code == 200, preview.text
+    media_type = preview.headers.get("content-type", "")
+    assert media_type.startswith("image/jpeg"), f"got {media_type!r}"
+    assert "inline" in preview.headers.get("content-disposition", "")
+    # And it must be a real image, not the HEIC bytes relabelled.
+    assert preview.content[:2] == b"\xff\xd8", "not a JPEG payload"
+
+
+def test_downloading_a_heic_still_gives_the_untouched_original(
+    client: TestClient, admin_token: str
+) -> None:
+    """Preview may transcode; download must not. The original is what the
+    customer's photo actually is, and re-encoding loses quality and EXIF."""
+
+    admin_token_cache[0] = admin_token
+    project_id = _project_for(client, admin_token, "2026-HEIC2")
+    original = _heic_bytes()
+    file_id = _put_file(client, project_id, "foto2.heic", original, "image/heic")
+
+    download = client.get(f"/api/files/{file_id}/download", headers=auth_headers(admin_token))
+    assert download.status_code == 200
+    assert download.content == original
+    assert "attachment" in download.headers.get("content-disposition", "")
+
+
+def test_an_inline_preview_is_not_blocked_from_rendering(
+    client: TestClient, admin_token: str
+) -> None:
+    """`default-src 'none'` on a file served as a top-level document also
+    applies to the viewer the browser uses to draw it. Chrome renders PDFs in
+    an internal plugin that loads its own resources, so the strictest possible
+    policy shows an empty page — the reported blank preview.
+
+    The XSS protection that policy exists for comes from the disposition, the
+    media-type allowlist and `nosniff`, none of which are being relaxed here:
+    what is served inline is already restricted to types that cannot execute.
+    """
+
+    admin_token_cache[0] = admin_token
+    project_id = _project_for(client, admin_token, "2026-CSP")
+    pdf = b"%PDF-1.4\n1 0 obj<</Type/Catalog>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n"
+    file_id = _put_file(client, project_id, "plan.pdf", pdf, "application/pdf")
+
+    preview = client.get(f"/api/files/{file_id}/preview", headers=auth_headers(admin_token))
+    assert preview.status_code == 200
+    csp = preview.headers.get("content-security-policy", "")
+    assert "default-src 'none'" not in csp, "blocks the browser's own PDF viewer"
+    # The protections that actually matter must remain.
+    assert preview.headers.get("x-content-type-options") == "nosniff"
+    assert "frame-ancestors 'self'" in csp
+    assert "script-src 'none'" in csp
+
+
+def test_a_non_previewable_type_is_still_never_rendered_inline(
+    client: TestClient, admin_token: str
+) -> None:
+    """The relaxation above must not open the stored-XSS hole it was guarding."""
+
+    admin_token_cache[0] = admin_token
+    project_id = _project_for(client, admin_token, "2026-XSS")
+    html = b"<html><script>alert(1)</script></html>"
+    file_id = _put_file(client, project_id, "evil.html", html, "text/html")
+
+    preview = client.get(f"/api/files/{file_id}/preview", headers=auth_headers(admin_token))
+    assert preview.status_code == 200
+    assert preview.headers.get("content-type", "").startswith("application/octet-stream")
+    assert "attachment" in preview.headers.get("content-disposition", "")

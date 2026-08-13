@@ -117,6 +117,11 @@ from app.schemas.api import (
     WikiPageUpdate,
 )
 from app.services.construction_report_pdf import build_report_filename
+from app.services.image_preview import (
+    PREVIEW_MEDIA_TYPE,
+    needs_transcode,
+    transcode_to_jpeg,
+)
 from app.services.files import (
     encrypted_file_plain_size,
     iter_encrypted_file_bytes,
@@ -506,24 +511,67 @@ def _attachment_http_response(
     head_only: bool = False,
 ) -> Response:
     media_type = _safe_media_type(attachment.content_type)
+
+    # iPhone photos are HEIC and no browser but Safari draws them. Transcoding
+    # happens before the allowlist check, so the preview is judged on what we
+    # are actually about to send (JPEG) rather than on what is stored.
+    transcoded: bytes | None = None
+    display_name = attachment.file_name
+    if inline and needs_transcode(media_type):
+        source = _attachment_bytes_or_http_error(attachment)
+        transcoded = transcode_to_jpeg(source)
+        if transcoded is not None:
+            media_type = PREVIEW_MEDIA_TYPE
+            # Rename to match the bytes. The disposition is inline, but a
+            # "save image as" on the preview would otherwise write JPEG data
+            # into a .heic file, which then fails to open for the opposite
+            # reason it did before.
+            display_name = f"{Path(attachment.file_name).stem or 'foto'}.jpg"
+        # If it could not be decoded, fall through: the allowlist below rejects
+        # HEIC and it becomes a download, which is the old behaviour and still
+        # gets the user their file.
+
     # Stored-XSS guard: an uploaded file must never be rendered as active content
     # in our origin. If inline (preview) rendering was requested but the type is
     # not on the safe allowlist, downgrade to an attachment download with a
     # neutral type rather than trusting the stored Content-Type.
     if inline and media_type not in _INLINE_SAFE_MEDIA_TYPES:
         inline = False
+        transcoded = None
         media_type = "application/octet-stream"
     headers = {
-        "Content-Disposition": _content_disposition(attachment.file_name, inline=inline),
+        "Content-Disposition": _content_disposition(display_name, inline=inline),
         "X-Content-Type-Options": "nosniff",
-        # Belt-and-suspenders: even if a client ignores the disposition/type,
-        # forbid the file body from loading subresources, running script, or
-        # being framed by a hostile page.
-        "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
+        # Blocks active content without starving the renderer.
+        #
+        # This was `default-src 'none'`, which is stricter than it sounds: it
+        # applies to the viewer the BROWSER uses to draw the file, and Chrome's
+        # built-in PDF viewer loads its own resources — so a plan opened on a
+        # phone showed an empty page. `frame-ancestors 'none'` additionally
+        # blocked our own in-app preview frames.
+        #
+        # Nothing that actually guards against stored XSS is relaxed: only
+        # types on `_INLINE_SAFE_MEDIA_TYPES` are ever served inline, `nosniff`
+        # stops the browser second-guessing that, script and plugins stay
+        # forbidden, and framing is narrowed to our own origin rather than
+        # opened up. The same shape the wiki file route has always used.
+        "Content-Security-Policy": (
+            "script-src 'none'; object-src 'none'; base-uri 'none'; "
+            "form-action 'none'; frame-ancestors 'self'"
+        ),
         "Referrer-Policy": "no-referrer",
     }
     if include_dav_headers:
         headers.update(_dav_headers())
+
+    # The transcoded preview is already fully in memory and bears no relation
+    # to the stored size, so it short-circuits the streaming path below.
+    if transcoded is not None:
+        headers["Content-Length"] = str(len(transcoded))
+        if head_only:
+            return Response(status_code=200, media_type=media_type, headers=headers)
+        return Response(content=transcoded, media_type=media_type, headers=headers)
+
     try:
         chunked_plain_size = encrypted_file_plain_size(attachment.stored_path)
     except FileNotFoundError:
