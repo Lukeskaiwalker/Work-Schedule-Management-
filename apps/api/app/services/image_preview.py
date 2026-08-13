@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import io
 import logging
+import os
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +37,25 @@ MAX_SOURCE_BYTES = 60 * 1024 * 1024
 # well under any real camera.
 MAX_PIXELS = 50_000_000
 
+# How many transcodes may run at once, process-wide.
+#
+# Decoding is the expensive part and it is expensive in RAM, not just CPU: a
+# 12 Mpx iPhone photo peaks around 200-340 MB inside the api container, and a
+# 24 Mpx one roughly doubles that. The container is capped at 1500 MB with swap
+# disabled and idles near 840 MB, so the honest budget is one decode at a time.
+#
+# Nothing upstream bounds this. `preview_file` is a sync handler, so FastAPI
+# runs it in the anyio threadpool (40 slots) across ``API_WORKERS`` processes,
+# and the gallery renders every tile at once with no virtualisation — one tap
+# on a project holding 33 HEIC photos would otherwise start 33 simultaneous
+# decodes and hand the cgroup OOM killer an easy target. Killing the api takes
+# the app down for everyone, not just the person who opened the gallery.
+#
+# Raise it only alongside the container's mem_limit.
+PREVIEW_TRANSCODE_CONCURRENCY = max(1, int(os.getenv("PREVIEW_TRANSCODE_CONCURRENCY", "1") or 1))
+
+_transcode_slots = threading.BoundedSemaphore(PREVIEW_TRANSCODE_CONCURRENCY)
+
 
 def needs_transcode(media_type: str | None) -> bool:
     return (media_type or "").strip().lower() in TRANSCODE_SOURCE_TYPES
@@ -53,6 +74,16 @@ def transcode_to_jpeg(data: bytes) -> bytes | None:
     """
 
     if not data or len(data) > MAX_SOURCE_BYTES:
+        return None
+
+    # Shed load rather than queue it. Waiting for a slot would hold the request
+    # open and pile up threads, which is the same resource exhaustion one step
+    # removed; refusing immediately falls through to serving the original as a
+    # download — precisely the behaviour before this feature existed. A busy
+    # gallery therefore degrades to "some tiles download instead of drawing",
+    # never to "the api is dead".
+    if not _transcode_slots.acquire(blocking=False):
+        logger.info("Preview transcode slots busy; serving the original")
         return None
 
     try:
@@ -82,3 +113,5 @@ def transcode_to_jpeg(data: bytes) -> bytes | None:
         # malformed image, and none of them should take down a file request.
         logger.warning("HEIC preview transcode failed; serving the original", exc_info=True)
         return None
+    finally:
+        _transcode_slots.release()
