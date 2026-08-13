@@ -185,6 +185,104 @@ def assert_directions_not_swapped(field_map: Mapping[str, Any], *, direction: st
         )
 
 
+# Field names any IDS shop has been observed to accept: the 2.5 spec's own
+# spelling, plus the variants real shops use. Deliberately a *warning* list and
+# not a whitelist — a wholesaler may need something nobody here has seen, which
+# is why the map is editable at all.
+IDS_KNOWN_FIELDS: frozenset[str] = frozenset(
+    {
+        "action",
+        "benutzername", "name_kunde", "benutzer",
+        "passwort", "pw_kunde", "kennwort",
+        "kundennummer", "kdnr", "kundennr",
+        "hook_url", "hookurl", "hook",
+        "returntarget", "target",
+        "version",
+        "warenkorb", "searchterm", "ghnummer", "heatinglabel", "mode",
+    }
+)
+
+# The exact fingerprint of the invented default this feature shipped with.
+# Kept for diagnosis so the message can name the correct field outright rather
+# than leaving an admin to diff two lists by eye.
+INVENTED_TO_SPEC: dict[str, str] = {
+    "username": "benutzername",
+    "password": "passwort",
+    "target": "returntarget",
+    "ids_xml": "warenkorb",
+}
+
+
+def describe_field_map_problems(
+    field_map: Mapping[str, Any], *, direction: str, has_username: bool
+) -> tuple[list[str], list[str]]:
+    """Inspect a field map for the ways it silently fails to work.
+
+    Returns ``(errors, warnings)``. Errors mean the call cannot possibly
+    succeed; warnings mean it looks wrong but might be a wholesaler we have
+    simply never met.
+
+    This exists because the punchout's failures are all quiet. A field name the
+    shop does not recognise is not rejected — it is *ignored*, so a call with
+    the credential under the wrong name arrives unauthenticated and the shop
+    behaves as if an anonymous visitor had knocked. Nothing errors anywhere,
+    and the symptom surfaces three steps later as "the cart never came back".
+
+    Checking the ACTION alone is not enough, which the field learned the hard
+    way: an action can be corrected while every credential field around it
+    stays wrong, leaving a configuration that passes inspection and still
+    cannot log in.
+    """
+
+    errors: list[str] = []
+    warnings: list[str] = []
+    names = {str(key).strip().lower() for key in (field_map or {})}
+    templates = " ".join(str(value or "") for value in (field_map or {}).values())
+
+    if not action_of(field_map):
+        errors.append("Im Feld-Mapping fehlt eine 'action' — der Shop weiß nicht, was er tun soll.")
+
+    if direction == "fetch" and "{hook_url}" not in templates:
+        errors.append(
+            "Im Feld-Mapping kommt kein {hook_url} vor — der Shop weiß dann nicht, "
+            "wohin er den Warenkorb zurückschicken soll."
+        )
+    if direction == "submit" and "{cart_xml}" not in templates:
+        errors.append(
+            "Im Feld-Mapping kommt kein {cart_xml} vor — es würde ein leerer "
+            "Warenkorb übergeben."
+        )
+
+    # The live failure: a credential present, but under a name no shop reads.
+    if has_username and direction == "fetch":
+        credential_fields = {"benutzername", "name_kunde", "benutzer"}
+        if not (names & credential_fields):
+            offenders = sorted(names & set(INVENTED_TO_SPEC))
+            if offenders:
+                renamed = ", ".join(f"'{n}' → '{INVENTED_TO_SPEC[n]}'" for n in offenders)
+                errors.append(
+                    f"Die Zugangsdaten werden unter einem Feldnamen gesendet, den der "
+                    f"Shop nicht liest ({renamed}). Der Aufruf kommt dadurch ohne "
+                    f"Anmeldung an, und der Shop schickt den Warenkorb nicht zurück."
+                )
+            else:
+                warnings.append(
+                    "Im Feld-Mapping ist kein bekanntes Benutzername-Feld "
+                    "(benutzername) enthalten — bitte gegen das IDS-Datenblatt prüfen."
+                )
+
+    unknown = sorted(name for name in names if name not in IDS_KNOWN_FIELDS)
+    if unknown:
+        warnings.append(
+            "Diese Feldnamen stehen nicht in der IDS-Connect-2.5-Spezifikation: "
+            + ", ".join(unknown)
+            + ". Das kann korrekt sein, wenn das Datenblatt des Großhändlers sie so "
+            "vorgibt — sonst werden sie vom Shop ignoriert."
+        )
+
+    return errors, warnings
+
+
 def default_connection_values() -> dict[str, Any]:
     """Field values a freshly created connection starts with."""
 

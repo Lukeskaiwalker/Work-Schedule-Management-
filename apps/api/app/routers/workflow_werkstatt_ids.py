@@ -65,6 +65,7 @@ from app.services.ids_cart_parser import (
 from app.services.ids_connect import (
     assert_directions_not_swapped,
     consume_session,
+    describe_field_map_problems,
     create_session,
     default_connection_values,
     extract_cart_payload,
@@ -283,11 +284,19 @@ def test_ids_connection(
 
     values = placeholder_values(connection, token=PREVIEW_TOKEN)
     rendered = render_field_map(connection.fetch_field_map or {}, values)
-    if not any(hook_url in value for value in rendered.values()):
-        problems.append(
-            "Im Feld-Mapping kommt kein {hook_url} vor — der Shop weiß dann nicht, "
-            "wohin er den Warenkorb zurückschicken soll."
-        )
+
+    # The checks that matter most are about the NAMES, not the values: a field
+    # the shop does not recognise is ignored rather than rejected, so a
+    # credential under the wrong name produces an unauthenticated call and no
+    # error anywhere. Warnings are appended after errors so the actionable
+    # item reads first.
+    field_errors, field_warnings = describe_field_map_problems(
+        connection.fetch_field_map or {},
+        direction="fetch",
+        has_username=bool((connection.username or "").strip()),
+    )
+    problems.extend(field_errors)
+    problems.extend(field_warnings)
 
     password = values.get("password") or ""
     masked = {
@@ -341,6 +350,28 @@ def start_punchout(
 
     connection = _enabled_connection(db, payload.supplier_id)
     _validate_anchor(db, payload.task_id, payload.project_id)
+
+    # Check the mapping at the moment it is used, not only when it is saved.
+    # A save-time check cannot see a row that was already wrong — written by an
+    # older version, repaired by a migration, or edited straight in the
+    # database — and this is the last point where the failure is still legible.
+    # Past here the call goes out unauthenticated, the shop treats it as an
+    # anonymous visitor, and the user discovers the problem as a missing cart
+    # twenty minutes later with nothing to read anywhere.
+    field_errors, _ = describe_field_map_problems(
+        connection.fetch_field_map or {},
+        direction="fetch",
+        has_username=bool((connection.username or "").strip()),
+    )
+    if field_errors:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Die Shop-Anbindung ist nicht korrekt konfiguriert: "
+                + " ".join(field_errors)
+                + " (Admin → Einstellungen → IDS-Anbindung, dort 'Prüfen')"
+            ),
+        )
 
     target_order: WerkstattOrder | None = None
     if payload.order_id is not None:

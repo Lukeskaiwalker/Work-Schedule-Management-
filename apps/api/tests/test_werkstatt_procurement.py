@@ -1226,3 +1226,80 @@ def test_the_real_unielektro_cart_parses(client: TestClient, admin_token: str) -
     assert "LEITERMARKIERER" in (line.description or "")
     # NetPrice, not OfferPrice.
     assert line.unit_price_cents == 2017
+
+
+def test_a_broken_field_map_is_refused_at_punchout_not_just_at_save(
+    client: TestClient, admin_token: str
+) -> None:
+    """Save-time validation cannot see a row that was already wrong.
+
+    Rows get into that state by ordinary means — written by an older version,
+    half-repaired by a migration, edited straight in the database — and none of
+    those paths go through the save endpoint. Checking again at the moment the
+    call goes out is the last place the failure is still legible: past it, the
+    request reaches the shop unauthenticated, the shop treats it as an
+    anonymous visitor, and the user finds out as a cart that never arrives.
+    """
+
+    from app.core.db import SessionLocal
+    from app.models.entities import WerkstattIdsConnection
+
+    supplier = _supplier(client, admin_token, "Halb-repariert")
+    _connection(client, admin_token, supplier["id"])
+
+    # Reproduce the production state: action correct, credentials under names
+    # no shop reads. This bypasses the API deliberately — that is exactly how
+    # such a row comes into being.
+    with SessionLocal() as db:
+        connection = db.query(WerkstattIdsConnection).filter_by(
+            supplier_id=supplier["id"]
+        ).one()
+        connection.fetch_field_map = {
+            "ACTION": "WKE",
+            "USERNAME": "{username}",
+            "PASSWORD": "{password}",
+            "HOOK_URL": "{hook_url}",
+        }
+        db.commit()
+
+    started = client.post(
+        "/api/werkstatt/ids/start",
+        headers=auth_headers(admin_token),
+        json={"supplier_id": supplier["id"]},
+    )
+    assert started.status_code == 409, started.text
+    detail = started.json()["detail"]
+    # The message must name the correct field, not merely say "misconfigured".
+    assert "benutzername" in detail
+    assert "Prüfen" in detail
+
+
+def test_pruefen_reports_the_wrong_credential_field_name(
+    client: TestClient, admin_token: str
+) -> None:
+    """The whole failure mode is silence, so the check screen has to say it."""
+
+    from app.core.db import SessionLocal
+    from app.models.entities import WerkstattIdsConnection
+
+    supplier = _supplier(client, admin_token, "Pruef-Test")
+    _connection(client, admin_token, supplier["id"])
+    with SessionLocal() as db:
+        connection = db.query(WerkstattIdsConnection).filter_by(
+            supplier_id=supplier["id"]
+        ).one()
+        connection.fetch_field_map = {
+            "ACTION": "WKE",
+            "USERNAME": "{username}",
+            "HOOK_URL": "{hook_url}",
+        }
+        db.commit()
+
+    checked = client.post(
+        f"/api/werkstatt/ids/connections/{supplier['id']}/test",
+        headers=auth_headers(admin_token),
+    )
+    assert checked.status_code == 200, checked.text
+    body = checked.json()
+    assert body["ok"] is False
+    assert any("benutzername" in problem for problem in body["problems"])
