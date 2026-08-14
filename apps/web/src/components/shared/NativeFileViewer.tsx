@@ -83,7 +83,14 @@ function Viewer() {
           if (isText(fetched.contentType)) {
             // Read the text out now so the body can render it directly; an
             // object URL in an iframe would be a second navigation for nothing.
-            const body = await fetch(fetched.objectUrl).then((r) => r.text());
+            //
+            // Read from the Blob, not from its object URL. `fetch("blob:…")` is
+            // a fetch like any other and is checked against `connect-src`, which
+            // does not list blob: — so this threw a CSP error, the rejection
+            // escaped to the catch below, and every text file reported "could
+            // not be loaded" while sitting decoded in memory. Blob.text() is a
+            // local read with no request and no policy to satisfy.
+            const body = await fetched.blob.text();
             setTextBody(body);
           }
           setFile(fetched);

@@ -140,6 +140,19 @@ export type FetchedFile = {
   contentType: string;
   size: number;
   name: string;
+  /**
+   * The bytes themselves, so a caller that needs the content rather than a URL
+   * can read it directly.
+   *
+   * Handing back only an object URL forced the text viewer to re-`fetch()` its
+   * own blob, and `fetch("blob:…")` is governed by `connect-src` — which lists
+   * 'self' and the Nominatim host, not `blob:`. So the read was refused by the
+   * CSP and the rejection escaped into the caller's error path, meaning every
+   * .txt, .json, .csv and .log file failed to open with a generic "could not be
+   * loaded" and no way to save it. Keeping the Blob makes that read a local
+   * operation that no policy governs.
+   */
+  blob: Blob;
 };
 
 /**
@@ -177,5 +190,5 @@ export async function fetchFile(request: OpenFileRequest): Promise<FetchedFile> 
     }
   }
 
-  return { objectUrl: URL.createObjectURL(blob), contentType, size: blob.size, name };
+  return { objectUrl: URL.createObjectURL(blob), contentType, size: blob.size, name, blob };
 }
