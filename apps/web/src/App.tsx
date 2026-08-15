@@ -186,6 +186,8 @@ import {
   readStoredWorkspaceMode,
   detectPublicAuthMode,
   readPublicTokenParam,
+  readWerkstattOrderParam,
+  clearDeepLinkParams,
 } from "./utils/auth";
 import { isSessionExpired, millisUntilSessionExpiry } from "./utils/session";
 import { toIcsUtcDateTime, toIcsDate, escapeIcs } from "./utils/ics";
@@ -330,6 +332,40 @@ export function App() {
     "invite" | "reset" | "customer_confirmation" | null
   >(() => detectPublicAuthMode());
   const [publicToken, setPublicToken] = useState(() => readPublicTokenParam());
+  // Read once at construction, like the public-auth params above: the shop's
+  // return POST lands on a fresh document, so anything not in the URL is gone.
+  const [pendingWerkstattOrderId, setPendingWerkstattOrderId] = useState(() =>
+    readWerkstattOrderParam(),
+  );
+
+  // Land the buyer on the order the wholesaler just sent back.
+  //
+  // The IDS return is a browser form POST with target=_top, so the user arrives
+  // on a brand-new document: no in-memory state survives, and the app has no
+  // router to encode a destination in the path. The API therefore hands the id
+  // back as `?werkstatt_order=`, and this is where it is spent.
+  //
+  // Deliberately waits for `user`: the return can outlive a session, and
+  // switching views before the token is restored would flash the Werkstatt
+  // shell at someone the login form is about to replace.
+  useEffect(() => {
+    if (!pendingWerkstattOrderId || !user) return;
+    if (!(user.effective_permissions ?? []).includes("werkstatt:manage")) {
+      // No Werkstatt access — drop it rather than parking the buyer on a view
+      // they cannot open, and clear the URL so a reload does not retry.
+      setPendingWerkstattOrderId(0);
+      clearDeepLinkParams();
+      return;
+    }
+    setMainView("werkstatt");
+    setWerkstattTab("orders");
+    // The id itself stays until the orders page has opened it; only the address
+    // bar is cleaned, so a reload does not re-open what the buyer navigated away
+    // from.
+    clearDeepLinkParams();
+  }, [pendingWerkstattOrderId, user]);
+
+  const consumePendingWerkstattOrderId = useCallback(() => setPendingWerkstattOrderId(0), []);
   const [publicFullName, setPublicFullName] = useState("");
   const [publicEmail, setPublicEmail] = useState("");
   const [publicNewPassword, setPublicNewPassword] = useState("");
@@ -9197,6 +9233,8 @@ export function App() {
     setProjectTab,
     werkstattTab,
     setWerkstattTab,
+    pendingWerkstattOrderId,
+    consumePendingWerkstattOrderId,
     activeWerkstattArticleId,
     setActiveWerkstattArticleId,
     activeWerkstattMachineId,

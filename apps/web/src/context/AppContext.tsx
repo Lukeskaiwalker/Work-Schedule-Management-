@@ -155,6 +155,15 @@ export interface AppContextValue {
   setProjectTab: (tab: ProjectTab) => void;
   werkstattTab: WerkstattTab;
   setWerkstattTab: (tab: WerkstattTab) => void;
+  /**
+   * Order the IDS punchout asked us to open, from `?werkstatt_order=`.
+   *
+   * 0 when there is nothing pending. The orders page opens it and then calls
+   * `consumePendingWerkstattOrderId`, so it fires once per return trip rather
+   * than every time the tab is re-entered.
+   */
+  pendingWerkstattOrderId: number;
+  consumePendingWerkstattOrderId: () => void;
   activeWerkstattArticleId: number | null;
   setActiveWerkstattArticleId: (id: number | null) => void;
   /**

@@ -60,3 +60,49 @@ export function readCustomerConfirmationToken(): string {
   const token = normalizedPath.slice("/confirm/".length);
   return token.trim();
 }
+
+/**
+ * v2.9.13: the order id an IDS punchout wants us to open, from
+ * `/?werkstatt_order=<id>`.
+ *
+ * The wholesaler returns the finished cart as a browser form POST with
+ * target=_top, so the API's result page replaces the tab the buyer started in
+ * and its "Zurück zu SMPL" button is their way back. That button used to point
+ * at `/`, which dropped them on the dashboard with the order they had just
+ * created nowhere in sight — the app has no router, so there is no path that
+ * means "the orders tab".
+ *
+ * A query parameter is the way this codebase already carries a destination
+ * across an external round trip (invite and password-reset links do the same),
+ * and it survives the shop's redirect where in-memory state cannot.
+ *
+ * Returns 0 when absent or not a positive integer, so a hand-edited URL cannot
+ * push anything but a plausible id into the caller.
+ */
+export function readWerkstattOrderParam(): number {
+  try {
+    const raw = (new URLSearchParams(window.location.search).get("werkstatt_order") || "").trim();
+    if (!/^\d+$/.test(raw)) return 0;
+    const id = Number.parseInt(raw, 10);
+    return Number.isSafeInteger(id) && id > 0 ? id : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Drop a consumed deep-link parameter from the address bar.
+ *
+ * Without this a reload would re-open the order after the buyer had navigated
+ * away, and the id would ride along into any link they shared. Mirrors the
+ * `history.replaceState({}, "", "/")` the public auth flows already do once
+ * their token is spent.
+ */
+export function clearDeepLinkParams(): void {
+  try {
+    if (window.location.search) window.history.replaceState({}, "", window.location.pathname);
+  } catch {
+    /* replaceState is unavailable in some embedded webviews; a stale query
+       parameter is harmless next to throwing during boot. */
+  }
+}

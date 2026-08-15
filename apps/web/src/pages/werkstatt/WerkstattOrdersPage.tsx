@@ -65,7 +65,16 @@ interface KpiDef {
 }
 
 export function WerkstattOrdersPage() {
-  const { mainView, language, werkstattTab, token, user, tasks } = useAppContext();
+  const {
+    mainView,
+    language,
+    werkstattTab,
+    token,
+    user,
+    tasks,
+    pendingWerkstattOrderId,
+    consumePendingWerkstattOrderId,
+  } = useAppContext();
 
   const [orders, setOrders] = useState<WerkstattOrderSummary[]>([]);
   const [templates, setTemplates] = useState<WerkstattOrderSummary[]>([]);
@@ -176,6 +185,22 @@ export function WerkstattOrdersPage() {
     },
     [token, reportError],
   );
+
+  /**
+   * Open the order the wholesaler just sent back.
+   *
+   * The buyer arrives here from the shop's return POST, which App resolves into
+   * `pendingWerkstattOrderId` before switching to this tab. Consuming it
+   * immediately — before the await, not after — means a slow fetch cannot let a
+   * re-render queue the same order twice, and re-entering the tab later does
+   * not re-open a detail panel the buyer has closed.
+   */
+  useEffect(() => {
+    if (!active || !pendingWerkstattOrderId) return;
+    const id = pendingWerkstattOrderId;
+    consumePendingWerkstattOrderId();
+    void openOrder(id);
+  }, [active, pendingWerkstattOrderId, consumePendingWerkstattOrderId, openOrder]);
 
   /**
    * Open a punchout hand-over.

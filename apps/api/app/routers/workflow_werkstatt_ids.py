@@ -591,10 +591,17 @@ def render_handoff(token: str, db: Session = Depends(get_db)) -> HTMLResponse:
     )
 
 
-def _result(heading: str, message: str, *, error: bool = False, code: int = 200) -> HTMLResponse:
+def _result(
+    heading: str,
+    message: str,
+    *,
+    error: bool = False,
+    code: int = 200,
+    return_url: str = "/",
+) -> HTMLResponse:
     return HTMLResponse(
         render_result_page(
-            heading=heading, message=message, return_url="/", is_error=error
+            heading=heading, message=message, return_url=return_url, is_error=error
         ),
         status_code=code,
         headers=result_headers(),
@@ -703,14 +710,20 @@ async def receive_cart(token: str, request: Request, db: Session = Depends(get_d
     # The shop returns the cart as a browser form POST with target=_top, so this
     # page replaces the tab the user started in — it is not a popup. Telling
     # them to close it is telling them to close the app, and it contradicts the
-    # "Zurück zu SMPL" button directly underneath. Point them at the order
-    # instead; the SPA has no URL routing, so the button lands on the app root
-    # and the order is one tap away under Werkstatt → Bestellungen.
+    # "Zurück zu SMPL" button directly underneath.
+    #
+    # The button carries the order in a query parameter. The SPA has no router —
+    # navigation is a `mainView` state string — so a path like
+    # /werkstatt/orders/12 would simply load the app at its default view, which
+    # is what left the buyer on the dashboard hunting for the order they had
+    # just created. `?werkstatt_order=` is read once at boot, opens the order,
+    # and is then stripped from the URL, matching how the app already handles
+    # its invite and password-reset links.
     return _result(
         "Warenkorb übernommen",
         f"{count} Position{'en' if count != 1 else ''} wurden als Bestellung "
-        f"{order.order_number} gespeichert. Weiter geht es in SMPL unter "
-        "Werkstatt → Bestellungen.",
+        f"{order.order_number} gespeichert.",
+        return_url=f"/?werkstatt_order={order.id}",
     )
 
 
