@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- edited with XML Spy v4.3 U (http://www.xmlspy.com) by Kurt (Home) -->
+<Warenkorb xmlns="http://www.itek.de/Shop-Anbindung/Warenkorb/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" 
+xsi:schemaLocation="http://www.itek.de/Shop-Anbindung/Warenkorb/ warenkorb_senden_2_5.xsd">
+	<WarenkorbInfo>
+		<Date>2009-10-29</Date>
+		<Time>17:00:29</Time>
+		<Version>2.5</Version>
+	</WarenkorbInfo>
+	<Order>
+		<OrderInfo>
+			<InquiryNo/>
+			<OfferNo>AB55151&lt;21&gt;</OfferNo>
+			<PartNo>PNo123456789012</PartNo>
+			<OrderConfNo>OCNo12345678901</OrderConfNo>
+			<!-- alternativ <DeliveryDate>2009-11-11</DeliveryDate> -->
+			<DeliveryWeek>46</DeliveryWeek>
+			<DeliveryYear>2009</DeliveryYear>
+			<ModeOfShipment>Abholung</ModeOfShipment>
+			<Cur>EUR</Cur>
+			<ZusatzText>Zwischen 9:00 und 16:00 Uhr</ZusatzText>
+			<Kommission>Müller</Kommission>
+		</OrderInfo>
+		<SupplierInfo>
+			<IDNo>Lieferantennummer beim Handwerker</IDNo>
+			<Address>
+				<Name1>Musterhändler</Name1>
+				<Name2>GmbH</Name2>
+				<Street>Musterstrasse 1</Street>
+				<PCode>12345</PCode>
+				<City>Musterhausen</City>
+				<Country>Deutschland</Country>
+				<ILN>1234567890128</ILN>
+				<Contact>Verkauf</Contact>
+				<Phone>01234 / 567890</Phone>
+				<Fax>01234 / 567899</Fax>
+				<Email>info@musterhaendler.de</Email>
+			</Address>
+		</SupplierInfo>
+		<CustomerInfo>
+			<IDNo>12345</IDNo>
+			<Address>
+				<Name1>Musterkunde</Name1>
+				<Name2>GbR</Name2>
+				<Name3>Metallbau</Name3>
+				<Name4>und Installateur- und Heizungsbau</Name4>
+				<Street>Musterstrasse 2</Street>
+				<PCode>12345</PCode>
+				<City>Musterhauseb</City>
+				<Country>Deutschland</Country>
+				<ILN>1234567890135</ILN>
+				<Contact>Einkauf</Contact>
+				<Phone>012345 / 67890</Phone>
+				<Fax>012345 / 67899</Fax>
+				<Email>info@Musterkunde.de</Email>
+			</Address>
+		</CustomerInfo>
+		<DeliveryPlaceInfo>
+			<Address>
+				<Name1>Mustermann</Name1>
+				<Name2>Egon Mustermann</Name2>
+				<Name3>Mustermann GmbH</Name3>
+				<Name4>Mustermann-Büro</Name4>
+				<Street>Annenbrede 1</Street>
+				<PCode>12345</PCode>
+				<City>Musterhausen</City>
+				<Country>Deutschland</Country>
+				<ILN>1234567890142</ILN>
+				<Contact>Frau Mathilde Mustermann</Contact>
+				<Phone>012345 / 67890</Phone>
+				<Fax>012345 / 67899</Fax>
+				<Email>egon.mustermann@mutermann.de</Email>
+			</Address>
+		</DeliveryPlaceInfo>
+		<OrderItem>
+			<ItemChara>normal</ItemChara>
+			<RefItems>
+				<Customer>1</Customer>
+				<CustomerSubNo>1</CustomerSubNo>
+				<Supplier>1000</Supplier>
+				<SupplierSubNo>1</SupplierSubNo>
+			</RefItems>
+			<EAN>1234567890128</EAN>
+			<ArtNo>4711</ArtNo>
+			<Qty>50.00</Qty>
+			<QU>MTR</QU>
+			<Kurztext>Kabelring</Kurztext>
+			<Langtext>Kabelring</Langtext>
+			<OfferPrice>10000</OfferPrice>
+			<NetPrice>522</NetPrice>
+			<PriceBasis>1000</PriceBasis>
+			<VAT>19.00</VAT>
+			<TechnClarification>Yes</TechnClarification>
+			<Hinweis>Hinweis</Hinweis>
+			<Fehlercode>1</Fehlercode>
+			<Fehlertext>Fehlertext</Fehlertext>
+			<Zuschlag>-10</Zuschlag>
+			<Rohstoffanteil>
+				<Rohstoff>CU</Rohstoff>
+				<Gewichtsanteilswert>96</Gewichtsanteilswert>
+				<Gewichtsanteilseinheit>KGM</Gewichtsanteilseinheit>
+				<Basiswert>100</Basiswert>
+				<Basiseinheit>MTR</Basiseinheit>
+				<Basisnotierung>150</Basisnotierung>
+				<NotierungAktuell>300</NotierungAktuell>
+			</Rohstoffanteil>
+		</OrderItem>
+		<OrderItem>
+			<ArtNo>4712</ArtNo>
+			<Qty>50.00</Qty>
+			<QU>PCE</QU>
+		</OrderItem>
+	</Order>
+</Warenkorb>

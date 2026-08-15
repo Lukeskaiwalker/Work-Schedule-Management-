@@ -1,0 +1,746 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema targetNamespace="http://www.itek.de/Shop-Anbindung/Warenkorb/" xmlns="http://www.itek.de/Shop-Anbindung/Warenkorb/" xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified">
+	<xs:element name="Warenkorb" type="typeWarenkorb"/>
+	<xs:complexType name="typeWarenkorb">
+		<xs:annotation>
+			<xs:documentation>Erstellt vom ITEK</xs:documentation>
+		</xs:annotation>
+		<xs:sequence>
+			<xs:element name="WarenkorbInfo" type="typeWarenkorbInfo">
+				<xs:annotation>
+					<xs:documentation>Informationen zum Warenkorb</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="Order" type="typeOrder">
+				<xs:annotation>
+					<xs:documentation>Warenkorb</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="typeWarenkorbInfo">
+		<xs:annotation>
+			<xs:documentation>Informationen zum Warenkorb</xs:documentation>
+		</xs:annotation>
+		<xs:sequence>
+			<xs:element name="Date" type="tgDate">
+				<xs:annotation>
+					<xs:documentation>Datum</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="Time" type="tgTime">
+				<xs:annotation>
+					<xs:documentation>Erstellungszeit der Datenaustauschdatei</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="Version">
+				<xs:annotation>
+					<xs:documentation>Angabe der Schnittstellenversion</xs:documentation>
+				</xs:annotation>
+				<xs:simpleType>
+					<xs:restriction base="tgNormalizedString10">
+						<xs:enumeration value="2.5"/>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="typeOrder">
+		<xs:annotation>
+			<xs:documentation>Bestellung</xs:documentation>
+		</xs:annotation>
+		<xs:sequence>
+			<xs:element name="OrderInfo" type="typeOrderInfo" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Informationen zur Bestellung</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="SupplierInfo" type="typeSupplierInfo" minOccurs="0"/>
+			<xs:element name="CustomerInfo" type="typeCustomerInfo" minOccurs="0"/>
+			<xs:element name="DeliveryPlaceInfo" type="typeDeliveryPlaceInfo" minOccurs="0"/>
+			<xs:element name="OrderItem" type="typeOrderItem" minOccurs="0" maxOccurs="unbounded"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="typeOrderInfo">
+		<xs:sequence>
+			<xs:element name="InquiryNo" type="tgNormalizedString15" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Anfragenummer der Handwerkerssoftware</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="OfferNo" type="tgNormalizedString15" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Angebotsnummer</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="PartNo" type="tgNormalizedString15" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Bestellnummer HW</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="OrderConfNo" type="tgNormalizedString15" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Auftragsbestätigungsnummer GH</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:choice minOccurs="0">
+				<xs:sequence>
+					<xs:element name="DeliveryWeek" type="tgWeek">
+						<xs:annotation>
+							<xs:documentation>Lieferwoche</xs:documentation>
+						</xs:annotation>
+					</xs:element>
+					<xs:element name="DeliveryYear">
+						<xs:annotation>
+							<xs:documentation>Lieferjahr</xs:documentation>
+						</xs:annotation>
+						<xs:simpleType>
+							<xs:restriction base="xs:integer">
+								<xs:minInclusive value="2000"/>
+								<xs:maxInclusive value="2100"/>
+							</xs:restriction>
+							<!-- FIXME: How to restrict it !!! -->
+						</xs:simpleType>
+					</xs:element>
+				</xs:sequence>
+				<xs:element name="DeliveryDate" type="tgDate">
+					<xs:annotation>
+						<xs:documentation>Lieferdatum</xs:documentation>
+					</xs:annotation>
+				</xs:element>
+			</xs:choice>
+			<xs:element name="ModeOfShipment">
+				<xs:annotation>
+					<xs:documentation>Lieferung / Abholung</xs:documentation>
+				</xs:annotation>
+				<xs:simpleType>
+					<xs:restriction base="xs:NMTOKEN">
+						<xs:enumeration value="Lieferung"/>
+						<xs:enumeration value="Abholung"/>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+			<xs:element name="Cur" type="tgISOCur" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Waehrung</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="ZusatzText" type="tgNormalizedString100" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Zusatztext</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="Kommission" type="tgNormalizedString80" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Kommission</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="typeSupplierInfo">
+		<xs:annotation>
+			<xs:documentation>Informationen zum Lieferanten</xs:documentation>
+		</xs:annotation>
+		<xs:sequence>
+			<xs:element name="IDNo" type="tgNormalizedString40" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Lieferanten-Nummer</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="Address" type="typeAddress" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Informationen zur Adresse des Lieferanten</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="typeCustomerInfo">
+		<xs:annotation>
+			<xs:documentation>Informationen zum Besteller (Kunden)</xs:documentation>
+		</xs:annotation>
+		<xs:sequence>
+			<xs:element name="IDNo" type="tgNormalizedString40" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Kunden-Nummer beim Lieferanten</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="Address" type="typeAddress" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Informationen zur Adresse des Kunden</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="typeAddress">
+		<xs:annotation>
+			<xs:documentation>Informationen zur Adresse</xs:documentation>
+		</xs:annotation>
+		<xs:sequence>
+			<xs:element name="Name1" type="tgNormalizedString40" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Name Zeile 1</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="Name2" type="tgNormalizedString40" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Name Zeile 2</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="Name3" type="tgNormalizedString40" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Name Zeile 3</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="Name4" type="tgNormalizedString40" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Name Zeile 4</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="Street" type="tgNormalizedString40" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Strasse und Hausnummer oder "Postfach" und -Nr</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="PCode" type="tgNormalizedString20" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Postleitzahl</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="City" type="tgNormalizedString40" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Ort</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="Country" type="tgNormalizedString40" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Laenderbezeichnung</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="ILN" type="tgNormalizedString20" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>ILN-Nummer der Adresse</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="Contact" type="tgNormalizedString40" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Ansprechpartner</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="Phone" type="tgNormalizedString20" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Telefonnummer</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="Fax" type="tgNormalizedString20" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Faxnummer</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="Email" type="tgNormalizedString256" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Email-Adresse</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="typeDeliveryPlaceInfo">
+		<xs:annotation>
+			<xs:documentation>Informationen zum Lieferort</xs:documentation>
+		</xs:annotation>
+		<xs:sequence>
+			<xs:element name="IDNo" type="tgNormalizedString40" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>ID-Nummer für Lieferort</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="Address" type="typeAddress" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Informationen zur Adresse des Lieferort</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="typeOrderItem">
+		<xs:annotation>
+			<xs:documentation>Warenkorbposition. 
+			</xs:documentation>
+		</xs:annotation>
+		<xs:sequence>
+			<xs:element name="ItemChara" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Positionskennzeichen</xs:documentation>
+				</xs:annotation>
+				<xs:simpleType>
+					<xs:restriction base="tgNormalizedString">
+						<xs:enumeration value="normal"/>
+						<xs:enumeration value="alternate"/>
+						<xs:enumeration value="provis"/>
+					</xs:restriction>
+				</xs:simpleType>
+			</xs:element>
+			<xs:element name="RefItems" type="typeRefItems" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation/>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="EAN" type="tgDecimal_13_0" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>EAN-Nummer der Position</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="ManufacturerID" type="tgNormalizedString40" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Identifikation des Herstellers</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="ManufacturerIDType" type="tgNormalizedString40" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Typ der Identifikation des Herstellers (z. B. DUNS, GLN, ...)</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="ArtNo" type="tgNormalizedString15">
+				<xs:annotation>
+					<xs:documentation>Artikelnummer des Lieferanten oder Herstellers</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="Qty" type="tgDecimal_13_2">
+				<xs:annotation>
+					<xs:documentation>ArtMenge, Anfrage-, Angebots- oder Bestellmenge (je nach
+Datenaustauschphase)</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="QU">
+				<xs:annotation>
+					<xs:documentation>Mengeneinheit</xs:documentation>
+				</xs:annotation>
+				<xs:complexType>
+					<xs:simpleContent>
+						<xs:extension base="tgNormalizedString4"/>
+					</xs:simpleContent>
+				</xs:complexType>
+			</xs:element>
+			<xs:element name="Kurztext" type="tgNormalizedString100" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Kurztext</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="Langtext" type="xs:string" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Langtext</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="OfferPrice" type="tgDecimal_10_4" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Brutto-, Listenpreis</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="NetPrice" type="tgDecimal_10_4" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Einkaufspreis des Kunden</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="PriceBasis" type="tgDecimal_10_2" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Preis bezieht sich auf "n" Einheiten der Anfrage- / Angebots-Mengeneinheit</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="VAT" type="tgDecimal_5_2" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>MwSt in %</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="TechnClarification" type="tgYesNo" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>technical clarification</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="Hinweis" type="tgNormalizedString256" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Wichtiger Hinweis</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="Fehlercode" type="CodelisteFehlercode" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Fehlercode</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="Fehlertext" type="tgNormalizedString256" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Fehlertext</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="Zuschlag" type="tgDecimal_10_4" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Zuschlag</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="Rohstoffanteil" type="typeRohstoffanteil" minOccurs="0" maxOccurs="unbounded"/>
+			<xs:element name="Divers" type="xs:boolean" minOccurs="0"/>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="typeRohstoffanteil">
+		<xs:annotation>
+			<xs:documentation>Struktur zur Abbildung der Rohstoffanteile für NE-Metalle</xs:documentation>
+		</xs:annotation>
+		<xs:sequence>
+			<xs:element name="Rohstoff" type="CodelisteRohstoffe" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Rohstoff</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="Gewichtsanteilswert" type="tgDecimal_10_4" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Angabe des Gewichtsanteils</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="Gewichtsanteilseinheit" type="CodelisteMengeneinheit" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Angabe der Gewichtsanteilseinheit</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="Basiswert" type="tgDecimal_10_4" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Basiswert</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="Basiseinheit" type="CodelisteMengeneinheit" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Angabe der Basiseinheit auf den sich der Gewichtsanteil bezieht</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="Basisnotierung" type="tgDecimal_10_4" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Basis DEL-Notierung</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+			<xs:element name="NotierungAktuell" type="tgDecimal_10_4" minOccurs="0">
+				<xs:annotation>
+					<xs:documentation>Beinhaltet die DEL-Notierung mit der der Nettorpreis berechnet wurde; muss nicht der aktuellen DEL-Notierung entsprechen, da ggf. für Kontingente fixiert.</xs:documentation>
+				</xs:annotation>
+			</xs:element>
+		</xs:sequence>
+	</xs:complexType>
+	<xs:complexType name="typeRefItems">
+		<xs:sequence minOccurs="0" maxOccurs="unbounded">
+			<xs:sequence minOccurs="0">
+				<xs:element name="Customer" type="tgNormalizedString35">
+					<xs:annotation>
+						<xs:documentation>Positionsnummer des Handwerkers</xs:documentation>
+					</xs:annotation>
+				</xs:element>
+				<xs:element name="CustomerSubNo" type="tgNormalizedString35" minOccurs="0">
+					<xs:annotation>
+						<xs:documentation>Unterpositionsnummer des Handwerkers</xs:documentation>
+					</xs:annotation>
+				</xs:element>
+			</xs:sequence>
+			<xs:sequence minOccurs="0">
+				<xs:element name="Supplier" type="tgNormalizedString35">
+					<xs:annotation>
+						<xs:documentation>Positionsnummer des Großhändlers</xs:documentation>
+					</xs:annotation>
+				</xs:element>
+				<xs:element name="SupplierSubNo" type="tgNormalizedString35" minOccurs="0">
+					<xs:annotation>
+						<xs:documentation>Unterpositionsnummer des Großhändlers</xs:documentation>
+					</xs:annotation>
+				</xs:element>
+			</xs:sequence>
+		</xs:sequence>
+	</xs:complexType>
+	<!--=============================================================================================-->
+	<!--===================Definition der Simple Types=====================================================-->
+	<xs:simpleType name="tgDecimal_5_2">
+		<xs:restriction base="xs:decimal">
+			<xs:totalDigits value="15"/>
+			<xs:fractionDigits value="2" fixed="true"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="tgDecimal_10_2">
+		<xs:restriction base="xs:decimal">
+			<xs:totalDigits value="10"/>
+			<xs:fractionDigits value="2" fixed="true"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="tgDecimal_10_4">
+		<xs:restriction base="xs:decimal">
+			<xs:totalDigits value="10"/>
+			<xs:fractionDigits value="4" fixed="true"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="tgDecimal_13_0">
+		<xs:restriction base="xs:decimal">
+			<xs:totalDigits value="13"/>
+			<xs:fractionDigits value="0" fixed="true"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="tgDecimal_13_2">
+		<xs:annotation>
+			<xs:documentation>Dezimalwert mit insgesamt 13 Stellen, davon 2 nach dem Komma</xs:documentation>
+		</xs:annotation>
+		<xs:restriction base="xs:decimal">
+			<xs:totalDigits value="13"/>
+			<xs:fractionDigits value="2" fixed="true"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="tgInteger">
+		<xs:restriction base="xs:integer"/>
+	</xs:simpleType>
+	<xs:simpleType name="tgPositiveInteger">
+		<xs:restriction base="xs:positiveInteger"/>
+	</xs:simpleType>
+	<xs:simpleType name="tgNonNegativeInteger">
+		<xs:annotation>
+			<xs:documentation>Integerwert, der nicht negativ ist</xs:documentation>
+		</xs:annotation>
+		<xs:restriction base="xs:nonNegativeInteger"/>
+	</xs:simpleType>
+	<xs:simpleType name="tgDate">
+		<xs:annotation>
+			<xs:documentation>Datum</xs:documentation>
+		</xs:annotation>
+		<xs:restriction base="xs:date"/>
+	</xs:simpleType>
+	<xs:simpleType name="tgTime">
+		<xs:annotation>
+			<xs:documentation>Zeit</xs:documentation>
+		</xs:annotation>
+		<xs:restriction base="xs:time"/>
+	</xs:simpleType>
+	<xs:simpleType name="tgVersDate">
+		<xs:annotation>
+			<xs:documentation>Versionsdatum</xs:documentation>
+		</xs:annotation>
+		<xs:restriction base="xs:gYearMonth"/>
+	</xs:simpleType>
+	<xs:simpleType name="tgString">
+		<xs:restriction base="xs:string"/>
+	</xs:simpleType>
+	<xs:simpleType name="tgNormalizedString">
+		<xs:annotation>
+			<xs:documentation>Einzeilige Zeichenkette ohne Längenbegrenzung</xs:documentation>
+		</xs:annotation>
+		<xs:restriction base="xs:normalizedString"/>
+	</xs:simpleType>
+	<xs:simpleType name="tgNormalizedString3">
+		<xs:annotation>
+			<xs:documentation>Einzeilige Zeichenkette der max. Länge 3</xs:documentation>
+		</xs:annotation>
+		<xs:restriction base="tgNormalizedString">
+			<xs:maxLength value="3"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="tgNormalizedString4">
+		<xs:annotation>
+			<xs:documentation>Einzeilige Zeichenkette der max. Länge 4</xs:documentation>
+		</xs:annotation>
+		<xs:restriction base="tgNormalizedString">
+			<xs:maxLength value="4"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="tgNormalizedString5">
+		<xs:annotation>
+			<xs:documentation>Einzeilige Zeichenkette der max. Länge 5</xs:documentation>
+		</xs:annotation>
+		<xs:restriction base="tgNormalizedString">
+			<xs:maxLength value="5"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="tgNormalizedString8">
+		<xs:annotation>
+			<xs:documentation>Einzeilige Zeichenkette der max. Länge 8</xs:documentation>
+		</xs:annotation>
+		<xs:restriction base="tgNormalizedString">
+			<xs:maxLength value="8"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="tgNormalizedString10">
+		<xs:annotation>
+			<xs:documentation>Einzeilige Zeichenkette der max. Länge 10</xs:documentation>
+		</xs:annotation>
+		<xs:restriction base="tgNormalizedString">
+			<xs:maxLength value="10"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="tgNormalizedString12">
+		<xs:annotation>
+			<xs:documentation>Einzeilige Zeichenkette der max. Länge 12</xs:documentation>
+		</xs:annotation>
+		<xs:restriction base="tgNormalizedString">
+			<xs:maxLength value="12"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="tgNormalizedString13">
+		<xs:restriction base="tgNormalizedString">
+			<xs:maxLength value="13"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="tgNormalizedString15">
+		<xs:annotation>
+			<xs:documentation>Einzeilige Zeichenkette der max. Länge 15</xs:documentation>
+		</xs:annotation>
+		<xs:restriction base="tgNormalizedString">
+			<xs:maxLength value="15"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="tgNormalizedString20">
+		<xs:annotation>
+			<xs:documentation>Einzeilige Zeichenkette der max. Länge 20</xs:documentation>
+		</xs:annotation>
+		<xs:restriction base="tgNormalizedString">
+			<xs:maxLength value="20"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="tgNormalizedString30">
+		<xs:annotation>
+			<xs:documentation>Einzeilige Zeichenkette der max. Länge 30</xs:documentation>
+		</xs:annotation>
+		<xs:restriction base="tgNormalizedString">
+			<xs:maxLength value="30"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="tgNormalizedString35">
+		<xs:annotation>
+			<xs:documentation>Einzeilige Zeichenkette der max. Länge 35</xs:documentation>
+		</xs:annotation>
+		<xs:restriction base="tgNormalizedString">
+			<xs:maxLength value="35"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="tgNormalizedString40">
+		<xs:annotation>
+			<xs:documentation>Einzeilige Zeichenkette der max. Länge 40</xs:documentation>
+		</xs:annotation>
+		<xs:restriction base="tgNormalizedString">
+			<xs:maxLength value="40"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="tgNormalizedString55">
+		<xs:annotation>
+			<xs:documentation>Einzeilige Zeichenkette der max. Länge 55</xs:documentation>
+		</xs:annotation>
+		<xs:restriction base="tgNormalizedString">
+			<xs:maxLength value="55"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="tgNormalizedString60">
+		<xs:annotation>
+			<xs:documentation>Einzeilige Zeichenkette der max. Länge 60</xs:documentation>
+		</xs:annotation>
+		<xs:restriction base="tgNormalizedString">
+			<xs:maxLength value="60"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="tgNormalizedString80">
+		<xs:annotation>
+			<xs:documentation>Einzeilige Zeichenkette der max. Länge 80</xs:documentation>
+		</xs:annotation>
+		<xs:restriction base="tgNormalizedString">
+			<xs:maxLength value="80"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="tgNormalizedString100">
+		<xs:annotation>
+			<xs:documentation>Einzeilige Zeichenkette der max. Länge 100</xs:documentation>
+		</xs:annotation>
+		<xs:restriction base="tgNormalizedString">
+			<xs:maxLength value="100"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="tgNormalizedString120">
+		<xs:annotation>
+			<xs:documentation>Einzeilige Zeichenkette der max. Länge 120</xs:documentation>
+		</xs:annotation>
+		<xs:restriction base="tgNormalizedString">
+			<xs:maxLength value="120"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="tgNormalizedString256">
+		<xs:annotation>
+			<xs:documentation>Einzeilige Zeichenkette der max. Länge 256</xs:documentation>
+		</xs:annotation>
+		<xs:restriction base="tgNormalizedString">
+			<xs:maxLength value="256"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="tgYesNo">
+		<xs:annotation>
+			<xs:documentation>Yes / No</xs:documentation>
+		</xs:annotation>
+		<xs:restriction base="tgNormalizedString">
+			<xs:enumeration value="Yes"/>
+			<xs:enumeration value="No"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="tgYes">
+		<xs:annotation>
+			<xs:documentation>Yes</xs:documentation>
+		</xs:annotation>
+		<xs:restriction base="tgNormalizedString">
+			<xs:enumeration value="Yes"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="tgLeftRight">
+		<xs:annotation>
+			<xs:documentation>left/right</xs:documentation>
+		</xs:annotation>
+		<xs:restriction base="tgNormalizedString">
+			<xs:enumeration value="left"/>
+			<xs:enumeration value="right"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="tgWeek">
+		<xs:restriction base="tgPositiveInteger">
+			<xs:maxInclusive value="53"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="tgISOCur">
+		<xs:annotation>
+			<xs:documentation>Einzeilige Zeichenkette der max. Länge 3</xs:documentation>
+		</xs:annotation>
+		<xs:restriction base="tgNormalizedString">
+			<xs:length value="3"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CodelisteMengeneinheit">
+		<xs:restriction base="xs:NMTOKEN">
+			<xs:enumeration value="CMQ"/>
+			<xs:enumeration value="CMK"/>
+			<xs:enumeration value="CMT"/>
+			<xs:enumeration value="DZN"/>
+			<xs:enumeration value="GRM"/>
+			<xs:enumeration value="HLT"/>
+			<xs:enumeration value="KGM"/>
+			<xs:enumeration value="KTM"/>
+			<xs:enumeration value="LTR"/>
+			<xs:enumeration value="MMT"/>
+			<xs:enumeration value="MTK"/>
+			<xs:enumeration value="MTQ"/>
+			<xs:enumeration value="MTR"/>
+			<xs:enumeration value="PR"/>
+			<xs:enumeration value="PCE"/>
+			<xs:enumeration value="SET"/>
+			<xs:enumeration value="TNE"/>
+		</xs:restriction>
+	</xs:simpleType>
+	<xs:simpleType name="CodelisteFehlercode">
+		<xs:restriction base="xs:integer"/>
+	</xs:simpleType>
+	<xs:simpleType name="CodelisteRohstoffe">
+		<xs:restriction base="xs:NMTOKEN">
+			<xs:enumeration value="AL"/>
+			<xs:enumeration value="PB"/>
+			<xs:enumeration value="CR"/>
+			<xs:enumeration value="AU"/>
+			<xs:enumeration value="CD"/>
+			<xs:enumeration value="CU"/>
+			<xs:enumeration value="MG"/>
+			<xs:enumeration value="NI"/>
+			<xs:enumeration value="PL"/>
+			<xs:enumeration value="AG"/>
+			<xs:enumeration value="W"/>
+			<xs:enumeration value="ZN"/>
+			<xs:enumeration value="SN"/>
+		</xs:restriction>
+	</xs:simpleType>
+</xs:schema>

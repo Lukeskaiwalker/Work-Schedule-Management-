@@ -15,7 +15,11 @@ Weighted towards the failures that are silent rather than loud:
 
 from __future__ import annotations
 
-from datetime import timedelta
+import importlib.util
+from pathlib import Path
+import xml.etree.ElementTree as ET
+
+from datetime import datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -1498,3 +1502,177 @@ def test_a_normal_ids_cart_raises_no_price_warnings() -> None:
 
     cart = parse_cart(REAL_CART_WITH_QUANTITIES)
     assert [w for line in cart.lines for w in line.warnings] == []
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# The outbound cart must be ITEK Warenkorb
+#
+# The builder shipped emitting openTRANS/BMEcat vocabulary — <IDS>,
+# SHOPPING_CART, SUPPLIER_AID, QUANTITY — in no namespace. None of those names
+# occurs in the IDS spec or in any of its four schemas. Unielektro recognised
+# zero positions, so every export "succeeded" (POST 200) and arrived as an empty
+# basket, with nothing reported on either side.
+#
+# It survived because its only check was a round trip through our own parser,
+# and that parser strips namespaces and carries a deliberately wide alias table
+# so it can read many shops' dialects — including the invented one. A mirror is
+# not an oracle. The oracle is ITEK's schema, vendored under tests/fixtures/ids.
+# ──────────────────────────────────────────────────────────────────────────
+
+IDS_NS = "http://www.itek.de/Shop-Anbindung/Warenkorb/"
+_IDS_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "ids"
+
+
+def _built_cart(**overrides):
+    from app.services.ids_cart_builder import CartItem, build_cart_xml
+
+    items = overrides.pop(
+        "items",
+        [
+            CartItem(
+                supplier_article_no="11102138",
+                description="Kabel/Leitungen NYY-J 5X6 RE schwarz",
+                quantity=10,
+                unit="MTR",
+                ean="4011234567890",
+            ),
+            CartItem(
+                supplier_article_no="01004771",
+                description="HAGER CDS440D FI-Schutzschalter",
+                quantity=1,
+                unit="PCE",
+            ),
+        ],
+    )
+    overrides.setdefault("reference", "WK-TEST")
+    overrides.setdefault("now", datetime(2026, 8, 15, 21, 30, 0))
+    return build_cart_xml(items, **overrides)
+
+
+def test_the_outbound_cart_is_itek_warenkorb_not_opentrans() -> None:
+    """Guards the vocabulary itself, which is what was wrong.
+
+    Deliberately asserts the absence of the old names too: a half-migration that
+    left one SUPPLIER_AID behind would produce a document the shop rejects
+    wholesale, losing the entire cart rather than one line.
+    """
+
+    xml = _built_cart().xml
+    root = ET.fromstring(xml)
+
+    assert root.tag == f"{{{IDS_NS}}}Warenkorb"
+    for dead in (
+        "IDS", "SHOPPING_CART", "CART_HEADER", "ITEM_LIST", "ITEM",
+        "SUPPLIER_AID", "INTERNATIONAL_AID", "DESCRIPTION_SHORT",
+        "QUANTITY", "ORDER_UNIT", "PRICE_AMOUNT", "PRICE_CURRENCY",
+    ):
+        assert dead not in xml, f"openTRANS vocabulary {dead} is still emitted"
+
+
+def test_the_outbound_cart_carries_the_three_mandatory_item_elements() -> None:
+    """ArtNo, Qty and QU are the only Muss elements in typeOrderItem, and the
+    xs:sequence fixes their order — a reordered document is invalid even with
+    every element present."""
+
+    root = ET.fromstring(_built_cart().xml)
+    items = root.findall(f"{{{IDS_NS}}}Order/{{{IDS_NS}}}OrderItem")
+    assert len(items) == 2
+
+    names = [child.tag.split("}")[1] for child in items[0]]
+    assert names == ["RefItems", "EAN", "ArtNo", "Qty", "QU", "Kurztext"]
+
+    assert items[0].find(f"{{{IDS_NS}}}ArtNo").text == "11102138"
+    # tgDecimal_13_2 — a bare "10" is invalid against the type.
+    assert items[0].find(f"{{{IDS_NS}}}Qty").text == "10.00"
+    assert items[0].find(f"{{{IDS_NS}}}QU").text == "MTR"
+
+
+def test_a_line_without_an_article_number_is_dropped_and_reported() -> None:
+    """ArtNo is mandatory, so such a line cannot be expressed at all.
+
+    Emitting it anyway would make the whole document invalid and cost the buyer
+    the entire cart instead of one position, so it is dropped — but never
+    silently, or the shop's basket quietly disagrees with ours.
+    """
+
+    from app.services.ids_cart_builder import CartItem
+
+    built = _built_cart(
+        items=[
+            CartItem(supplier_article_no="A1", description="fine", quantity=1, unit="PCE"),
+            CartItem(supplier_article_no=None, description="Handeingabe", quantity=3),
+        ]
+    )
+    root = ET.fromstring(built.xml)
+    assert len(root.findall(f"{{{IDS_NS}}}Order/{{{IDS_NS}}}OrderItem")) == 1
+    assert any("Handeingabe" in w for w in built.warnings)
+
+
+def test_the_position_number_travels_so_the_shop_can_keep_line_identity() -> None:
+    """RefItems/Customer is "Positionsnummer des Handwerkers" — ours. Section 5.2
+    requires the shop to preserve transmitted position numbers, which it can
+    only do if we send them."""
+
+    root = ET.fromstring(_built_cart().xml)
+    items = root.findall(f"{{{IDS_NS}}}Order/{{{IDS_NS}}}OrderItem")
+    numbers = [i.find(f"{{{IDS_NS}}}RefItems/{{{IDS_NS}}}Customer").text for i in items]
+    assert numbers == ["1", "2"]
+
+
+def test_orderinfo_is_omitted_rather_than_invented() -> None:
+    """OrderInfo is optional, but ModeOfShipment is mandatory inside it and we
+    have nothing real to put there. Omitting the wrapper is valid; inventing a
+    shipping mode to satisfy it is how the field-name bugs started."""
+
+    assert "OrderInfo" not in _built_cart().xml
+
+
+def test_a_non_numeric_ean_is_omitted_rather_than_emitted() -> None:
+    """EAN is typed tgDecimal_13_0 — a number. A non-numeric value would make
+    the document invalid, which costs the whole cart."""
+
+    from app.services.ids_cart_builder import CartItem
+
+    xml = _built_cart(
+        items=[CartItem(supplier_article_no="A1", description="x", quantity=1,
+                        unit="PCE", ean="nicht-numerisch")]
+    ).xml
+    assert "EAN" not in xml
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("xmlschema") is None,
+    reason="xmlschema not installed; the structural tests above still guard the vocabulary",
+)
+def test_the_outbound_cart_validates_against_iteks_own_schema() -> None:
+    """The real oracle.
+
+    ITEK's own example is validated first as a control: if that fails, the
+    schema or the validator is at fault rather than our builder, and a bare
+    assertion on our output alone would send someone hunting in the wrong place.
+    """
+
+    import xmlschema
+
+    schema = xmlschema.XMLSchema(str(_IDS_FIXTURES / "warenkorb_senden_2_5.xsd"))
+    schema.validate(str(_IDS_FIXTURES / "beispielwarenkorb_senden.xml"))
+    schema.validate(_built_cart().xml)
+
+
+@pytest.mark.skipif(
+    importlib.util.find_spec("xmlschema") is None, reason="xmlschema not installed"
+)
+def test_the_old_opentrans_cart_would_have_failed_the_schema() -> None:
+    """Proves the guard has teeth: the shape that shipped is rejected."""
+
+    import xmlschema
+
+    schema = xmlschema.XMLSchema(str(_IDS_FIXTURES / "warenkorb_senden_2_5.xsd"))
+    old = (
+        '<?xml version="1.0" encoding="ISO-8859-1"?>\n'
+        '<IDS VERSION="2.5"><SHOPPING_CART><CART_HEADER><REFERENCE>WK-3</REFERENCE>'
+        "</CART_HEADER><ITEM_LIST><ITEM><SUPPLIER_AID>11102138</SUPPLIER_AID>"
+        "<QUANTITY>10</QUANTITY></ITEM></ITEM_LIST></SHOPPING_CART></IDS>"
+    )
+    with pytest.raises(Exception):
+        schema.validate(old)
