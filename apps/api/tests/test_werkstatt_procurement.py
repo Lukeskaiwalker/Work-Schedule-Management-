@@ -1676,3 +1676,135 @@ def test_the_old_opentrans_cart_would_have_failed_the_schema() -> None:
     )
     with pytest.raises(Exception):
         schema.validate(old)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# The return leg: doubling, and whether an order was actually placed
+#
+# Neither of these can be exercised by hand without placing a real order at a
+# real wholesaler, so they are pinned here instead.
+# ──────────────────────────────────────────────────────────────────────────
+
+RETURNED_CART = """<?xml version="1.0" encoding="UTF-8"?>
+<Warenkorb xmlns="http://www.itek.de/Shop-Anbindung/Warenkorb/">
+  <WarenkorbInfo>
+    <Date>2026-08-15</Date><Time>21:30:00</Time>
+    <RueckgabeKZ>{marker}</RueckgabeKZ>
+    <Version>2.5</Version>
+  </WarenkorbInfo>
+  <Order>
+    <OrderInfo><Cur>EUR</Cur></OrderInfo>
+    <OrderItem><ArtNo>11102138</ArtNo><Qty>10.00</Qty><QU>MTR</QU>
+      <Kurztext>NYY-J 5X6</Kurztext><NetPrice>45.6900</NetPrice></OrderItem>
+  </Order>
+</Warenkorb>"""
+
+
+def test_a_returned_cart_reports_whether_an_order_was_placed() -> None:
+    """RueckgabeKZ is the only field separating "looked" from "bought".
+
+    The spec permits exactly two values and makes the element mandatory inbound,
+    so a shop that follows it always tells us — but we were discarding it, which
+    left no way to know whether a hand-over ended in a purchase.
+    """
+
+    browsed = parse_cart(RETURNED_CART.format(marker="Warenkorbrückgabe"))
+    assert browsed.order_placed is False
+    assert browsed.return_marker == "Warenkorbrückgabe"
+
+    bought = parse_cart(RETURNED_CART.format(marker="Warenkorbrückgabe mit Bestellung"))
+    assert bought.order_placed is True
+
+
+def test_the_order_placed_flag_tolerates_the_shops_own_spelling() -> None:
+    """The value is German prose, and shops differ on case and spacing. Matching
+    the whole string exactly would make the flag fail open — reading "no order
+    placed" when one was."""
+
+    for marker in (
+        "warenkorbrückgabe MIT BESTELLUNG",
+        "  Warenkorbrückgabe mit Bestellung  ",
+        "Warenkorbrueckgabe mit Bestellung",
+    ):
+        assert parse_cart(RETURNED_CART.format(marker=marker)).order_placed is True
+
+
+def test_a_cart_without_the_marker_reads_as_not_ordered() -> None:
+    """Absence must mean "not ordered", never an error: a shop that omits the
+    field would otherwise break the whole hand-over over a status hint."""
+
+    without = RETURNED_CART.replace("<RueckgabeKZ>{marker}</RueckgabeKZ>", "")
+    cart = parse_cart(without)
+    assert cart.order_placed is False
+    assert cart.return_marker is None
+    assert len(cart.lines) == 1
+
+
+def test_an_exported_cart_coming_back_replaces_the_lines_rather_than_doubling(
+    client: TestClient, admin_token: str
+) -> None:
+    """The one that costs money.
+
+    `append_cart_lines` appends by design — a second shopping trip should extend
+    the first, and it deliberately does not merge duplicates because two trips
+    that both bought cable are two facts. But an EXPORTED cart coming back is
+    the SAME cart, so appending files every position twice: a purchase order
+    reading 20 m of cable where the buyer asked for 10.
+
+    Driven through the real hook endpoint, because the bug lives in the branch
+    that decides append-versus-replace, not in the parser.
+    """
+
+    from app.core.db import SessionLocal
+    from app.models.entities import WerkstattIdsConnection, WerkstattOrderLine
+    from app.services.ids_connect import create_session
+
+    supplier = _supplier(client, admin_token, "Return-Test")
+    order_id = _import_cart(client, admin_token, supplier["id"]).json()["order_id"]
+
+    with SessionLocal() as db:
+        assert db.query(WerkstattOrderLine).filter_by(order_id=order_id).count() == 2
+
+        connection = WerkstattIdsConnection(
+            supplier_id=supplier["id"],
+            is_enabled=True,
+            entry_url="https://shop.example.com/ids",
+            hook_base_url="https://smpl.example.com",
+            created_at=utcnow_for_test(),
+            updated_at=utcnow_for_test(),
+            **_connection_defaults(),
+        )
+        db.add(connection)
+        db.flush()
+        session = create_session(
+            db, connection=connection, user_id=1, direction="submit", order_id=order_id
+        )
+        token = session.token
+        db.commit()
+
+    # The shop hands the cart back. One position, the same article the order
+    # already holds.
+    resp = client.post(
+        f"/api/werkstatt/ids/hook/{token}",
+        data={"warenkorb": RETURNED_CART.format(marker="Warenkorbrückgabe mit Bestellung")},
+    )
+    assert resp.status_code == 200, resp.text
+
+    with SessionLocal() as db:
+        lines = db.query(WerkstattOrderLine).filter_by(order_id=order_id).all()
+
+    # One line in, one line held. Appending would have left three.
+    assert len(lines) == 1, f"the returned cart was appended, not applied: {len(lines)} lines"
+    assert lines[0].supplier_article_no == "11102138"
+
+
+def _connection_defaults() -> dict:
+    from app.services.ids_connect import default_connection_values
+
+    return default_connection_values()
+
+
+def utcnow_for_test():
+    from app.core.time import utcnow
+
+    return utcnow()

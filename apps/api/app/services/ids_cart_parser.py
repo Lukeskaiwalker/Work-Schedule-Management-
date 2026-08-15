@@ -155,6 +155,20 @@ FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     "notes": ("remark", "bemerkung", "long_description", "langtext", "hinweis"),
 }
 
+# WarenkorbInfo/RueckgabeKZ. The spec permits exactly two values:
+#   "Warenkorbrückgabe"                  the cart came back, nothing ordered
+#   "Warenkorbrückgabe mit Bestellung"   the cart came back AND an order was placed
+# It is Muss inbound and explicitly NOT transmissible outbound, which is why the
+# senden schema has no such element. This is the only field that distinguishes a
+# buyer browsing from a buyer committing, so it is what any order tracking has to
+# hang off.
+RETURN_MARKER_ALIASES = ("rueckgabekz", "rückgabekz", "ruckgabekz", "returnkz")
+
+# Matched on the substring rather than the whole string: the value is German
+# prose and shops differ on capitalisation and spacing, but "mit Bestellung" is
+# the part that carries the meaning.
+ORDER_PLACED_MARKER = "mit bestellung"
+
 # Cart-level reference the shop gives us, so a re-import of the same basket is
 # recognisable and a support call has something to quote.
 REFERENCE_ALIASES = (
@@ -242,6 +256,15 @@ class ParsedCart:
     external_reference: str | None = None
     currency: str = "EUR"
     warnings: tuple[str, ...] = field(default_factory=tuple)
+    # WarenkorbInfo/RueckgabeKZ, verbatim. Mandatory on an inbound cart and
+    # restricted by the spec to two values, so it is the wholesaler telling us
+    # whether the buyer merely looked or actually bought.
+    return_marker: str | None = None
+    # True when that marker says an order was placed. Kept as a separate flag
+    # because the raw string is German prose that no caller should be matching
+    # on, and because a shop that omits the field entirely must read as "not
+    # ordered" rather than as an error.
+    order_placed: bool = False
 
 
 class CartParseError(ValueError):
@@ -500,6 +523,8 @@ def parse_cart(text: str) -> ParsedCart:
 
     header = _collect_fields(root)
     external_reference = _first_alias(header, REFERENCE_ALIASES)
+    return_marker = _first_alias(header, RETURN_MARKER_ALIASES)
+    order_placed = ORDER_PLACED_MARKER in (return_marker or "").strip().lower()
     cart_currency = (_first_alias(header, FIELD_ALIASES["currency"]) or "EUR").upper()[:8]
 
     elements = _find_item_elements(root)
@@ -607,6 +632,8 @@ def parse_cart(text: str) -> ParsedCart:
         external_reference=_clip(external_reference, 128),
         currency=cart_currency,
         warnings=tuple(cart_warnings),
+        return_marker=_clip(return_marker, 64),
+        order_placed=order_placed,
     )
 
 

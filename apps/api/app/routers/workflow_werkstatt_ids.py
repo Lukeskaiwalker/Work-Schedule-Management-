@@ -38,6 +38,7 @@ from app.models.entities import (
     WerkstattIdsSession,
     WerkstattOrder,
     WerkstattOrderImport,
+    WerkstattOrderLine,
     WerkstattSupplier,
 )
 from app.routers._werkstatt_tablet_shared import load_order_full
@@ -701,12 +702,41 @@ async def receive_cart(token: str, request: Request, db: Session = Depends(get_d
     db.add(import_row)
     db.flush()
 
-    append_cart_lines(db, order, cart, import_id=import_row.id)
+    # Which way the cart is travelling decides whether it extends the order or
+    # supersedes it.
+    #
+    #   fetch (WKE)   a shopping trip. Appending is the point: a second trip
+    #                 extends the first rather than discarding it, which is what
+    #                 `append_cart_lines` documents and is correct here.
+    #   submit (WKS)  the cart we just handed over, coming back. Appending it
+    #                 would file every position twice — a purchase order that
+    #                 says 20 m of cable where the buyer asked for 10.
+    #
+    # On the way back the shop's version is the authoritative one: it has
+    # applied the customer's own conditions and may carry edits made in the
+    # basket. So it replaces rather than merges.
+    #
+    # Only when it actually contains something. An empty or unreadable return
+    # must not wipe an order the buyer spent time assembling, and the raw
+    # payload is stored either way, so nothing is lost by declining to act.
+    if session.direction == "submit" and cart.lines:
+        db.query(WerkstattOrderLine).filter(
+            WerkstattOrderLine.order_id == order.id
+        ).delete(synchronize_session=False)
+        db.flush()
+
+    if cart.lines or session.direction != "submit":
+        append_cart_lines(db, order, cart, import_id=import_row.id)
     session.order_id = order.id
     db.add(session)
     db.commit()
 
     count = len(cart.lines)
+    # WarenkorbInfo/RueckgabeKZ is the wholesaler saying whether the buyer
+    # actually committed. It is the only field that separates "looked at the
+    # basket" from "placed the order", so it is worth telling them which one the
+    # shop reported rather than leaving them to guess from the order list.
+    placed = " Der Shop meldet: Bestellung wurde ausgelöst." if cart.order_placed else ""
     # The shop returns the cart as a browser form POST with target=_top, so this
     # page replaces the tab the user started in — it is not a popup. Telling
     # them to close it is telling them to close the app, and it contradicts the
@@ -722,7 +752,7 @@ async def receive_cart(token: str, request: Request, db: Session = Depends(get_d
     return _result(
         "Warenkorb übernommen",
         f"{count} Position{'en' if count != 1 else ''} wurden als Bestellung "
-        f"{order.order_number} gespeichert.",
+        f"{order.order_number} gespeichert.{placed}",
         return_url=f"/?werkstatt_order={order.id}",
     )
 
