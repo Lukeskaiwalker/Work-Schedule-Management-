@@ -88,6 +88,9 @@ export function WerkstattOrdersPage() {
   const [error, setError] = useState<string | null>(null);
   const [modal, setModal] = useState<ModalKind>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // Set only when the browser refused the popup, so the buyer still has a way
+  // through. Cleared on the next hand-over attempt.
+  const [blockedShopUrl, setBlockedShopUrl] = useState<string | null>(null);
 
   const de = language === "de";
   const active = mainView === "werkstatt" && werkstattTab === "orders";
@@ -210,12 +213,38 @@ export function WerkstattOrdersPage() {
    * opened synchronously from the click and its location set once the token
    * arrives — opening it after the await would be swallowed by the popup
    * blocker, which only trusts a window opened during a user gesture.
+   *
+   * `noopener` must NOT go in the feature string, however much it looks like it
+   * belongs there. The HTML spec says window.open returns null when noopener is
+   * set — deliberately, since noopener exists to sever the very handle it would
+   * return. This previously read `window.open("", "_blank", "noopener,...")`,
+   * so `tab` was null on every call, control fell through to
+   * `window.location.assign`, and the buyer's own tab was navigated to the shop
+   * while the blank tab just opened was orphaned. Exporting a cart therefore
+   * meant leaving SMPL, and a buyer who then decided not to order had no way
+   * back. The opener link is cut on the handle instead, which achieves the same
+   * protection and keeps the reference.
+   *
+   * When the popup is blocked outright we now say so rather than navigating in
+   * place. Hijacking the tab is worse than not opening the shop: the buyer
+   * loses their order view either way, but silently.
    */
   const openHandoff = useCallback(
     async (request: () => Promise<{ handoff_url: string; warnings?: string[] }>) => {
-      const tab = window.open("", "_blank", "noopener,noreferrer");
+      const tab = window.open("", "_blank");
+      if (tab) {
+        try {
+          // Reverse-tabnabbing guard, applied while the tab is still
+          // about:blank and reachable. Survives the navigation to the shop.
+          tab.opener = null;
+        } catch {
+          /* Some embedded webviews refuse the assignment; not worth failing the
+             hand-over over, and the shop is a known origin. */
+        }
+      }
       setBusy(true);
       setError(null);
+      setBlockedShopUrl(null);
       try {
         const handoff = await request();
         // Resolve against our own origin explicitly. The server returns a
@@ -225,17 +254,26 @@ export function WerkstattOrdersPage() {
         // it to inherit the opener's base URL for a relative href is subtle
         // enough to be worth not relying on.
         const target = new URL(handoff.handoff_url, window.location.origin).toString();
-        if (tab) tab.location.href = target;
-        else window.location.assign(target);
-        const opened = de
-          ? "Shop geöffnet. Der Warenkorb erscheint hier, sobald er übergeben wurde."
-          : "Shop opened. The cart appears here once you hand it over.";
-        // Warnings first — a line the shop cannot match is the thing the user
-        // needs to read, and appending the reassuring sentence after it keeps
-        // both instead of one silently replacing the other.
-        setNotice(
-          handoff.warnings?.length ? `${handoff.warnings.join(" · ")} — ${opened}` : opened,
-        );
+        const warned = handoff.warnings?.length ? `${handoff.warnings.join(" · ")} — ` : "";
+
+        if (tab && !tab.closed) {
+          tab.location.href = target;
+          const opened = de
+            ? "Shop im neuen Tab geöffnet. Dieses Fenster bleibt offen."
+            : "Shop opened in a new tab. This window stays open.";
+          setNotice(`${warned}${opened}`);
+        } else {
+          // Blocked, or closed again before the token arrived. Hand the buyer a
+          // link instead of moving them: a real anchor clicked by them is a
+          // fresh user gesture that no blocker refuses.
+          setBlockedShopUrl(target);
+          setNotice(
+            warned +
+              (de
+                ? "Der Browser hat das Shop-Fenster blockiert — bitte über den Link unten öffnen."
+                : "The browser blocked the shop window — please use the link below."),
+          );
+        }
       } catch (err) {
         tab?.close();
         reportError(err);
@@ -354,7 +392,31 @@ export function WerkstattOrdersPage() {
       {notice && (
         <div className="werkstatt-orders-notice" role="status">
           {notice}
-          <button type="button" onClick={() => setNotice(null)} aria-label={de ? "Schließen" : "Dismiss"}>
+          {blockedShopUrl && (
+            /* A real anchor, not another window.open: the buyer's click on it is
+               a fresh user gesture, which is the one thing no popup blocker
+               refuses. rel keeps the opener severed as the scripted path does. */
+            <a
+              className="werkstatt-orders-notice-link"
+              href={blockedShopUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={() => {
+                setBlockedShopUrl(null);
+                setNotice(null);
+              }}
+            >
+              {de ? "Shop öffnen" : "Open shop"}
+            </a>
+          )}
+          <button
+            type="button"
+            onClick={() => {
+              setNotice(null);
+              setBlockedShopUrl(null);
+            }}
+            aria-label={de ? "Schließen" : "Dismiss"}
+          >
             ✕
           </button>
         </div>
