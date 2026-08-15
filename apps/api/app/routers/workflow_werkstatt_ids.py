@@ -700,10 +700,17 @@ async def receive_cart(token: str, request: Request, db: Session = Depends(get_d
     db.commit()
 
     count = len(cart.lines)
+    # The shop returns the cart as a browser form POST with target=_top, so this
+    # page replaces the tab the user started in — it is not a popup. Telling
+    # them to close it is telling them to close the app, and it contradicts the
+    # "Zurück zu SMPL" button directly underneath. Point them at the order
+    # instead; the SPA has no URL routing, so the button lands on the app root
+    # and the order is one tap away under Werkstatt → Bestellungen.
     return _result(
         "Warenkorb übernommen",
-        f"{count} Position{'en' if count != 1 else ''} wurden in {order.order_number} "
-        "übernommen. Das Fenster kann geschlossen werden.",
+        f"{count} Position{'en' if count != 1 else ''} wurden als Bestellung "
+        f"{order.order_number} gespeichert. Weiter geht es in SMPL unter "
+        "Werkstatt → Bestellungen.",
     )
 
 
