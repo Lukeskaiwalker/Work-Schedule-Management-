@@ -15,7 +15,20 @@ from app.core.db import get_db
 from app.core.deps import get_current_user
 from app.core.permissions import has_permission_for_user
 from app.core.time import utcnow
-from app.models.entities import BreakEntry, ClockEntry, EmployeeGroup, EmployeeGroupMember, SchoolAbsence, User, VacationRequest
+from app.models.entities import (
+    BreakEntry,
+    ClockEntry,
+    ConstructionReport,
+    Customer,
+    EmployeeGroup,
+    EmployeeGroupMember,
+    Project,
+    SchoolAbsence,
+    Task,
+    TaskAssignment,
+    User,
+    VacationRequest,
+)
 from app.schemas.api import (
     RequiredDailyHoursOut,
     RequiredDailyHoursUpdate,
@@ -36,6 +49,11 @@ from app.schemas.api import (
     VacationRequestCreate,
     VacationRequestOut,
     VacationRequestReview,
+)
+from app.schemas.time import (
+    DayActivityOut,
+    DayActivityReportOut,
+    DayActivityTaskOut,
 )
 from app.services.audit import log_admin_action
 from app.services.time_entry_backfill import BackfillWindow, self_backfill_window
@@ -2074,3 +2092,137 @@ def create_entry(
         category="time",
     )
     return _entry_out(db, entry, can_edit=True)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Day activity — what a person did on one day
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def _work_summary(payload: object) -> str | None:
+    """A short "what was done" line pulled from a report payload.
+
+    `work_done` is sometimes a string and sometimes a list of lines, so both
+    are flattened. Trimmed to a snippet: this is the day view, and the full
+    text lives in the report PDF the row links to.
+    """
+
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get("work_done")
+    if isinstance(value, list):
+        text = " · ".join(str(part).strip() for part in value if str(part).strip())
+    elif value is not None:
+        text = str(value).strip()
+    else:
+        text = ""
+    if not text:
+        return None
+    return text[:240]
+
+
+def _day_activity_task_out(db: Session, task: Task) -> DayActivityTaskOut:
+    project = db.get(Project, task.project_id) if task.project_id is not None else None
+    customer_id = task.customer_id if task.customer_id is not None else (
+        project.customer_id if project is not None else None
+    )
+    customer = db.get(Customer, customer_id) if customer_id is not None else None
+    return DayActivityTaskOut(
+        id=task.id,
+        title=task.title,
+        status=task.status,
+        task_type=task.task_type,
+        due_date=task.due_date,
+        project_id=task.project_id,
+        project_number=project.project_number if project else None,
+        project_name=project.name if project else None,
+        customer_id=customer_id,
+        customer_name=customer.name if customer else None,
+    )
+
+
+def _day_activity_report_out(db: Session, report: ConstructionReport) -> DayActivityReportOut:
+    # Local import keeps the workflow_helpers dependency out of module import
+    # time — it pulls in a large graph that would risk a cycle here.
+    from app.routers.workflow_helpers import _latest_report_pdf_attachment_for_report
+
+    payload = report.payload if isinstance(report.payload, dict) else {}
+    project = db.get(Project, report.project_id) if report.project_id is not None else None
+    project_number = (project.project_number if project else payload.get("project_number")) or None
+    project_name = (project.name if project else payload.get("project_name")) or None
+    customer_id = report.customer_id if report.customer_id is not None else (
+        project.customer_id if project is not None else None
+    )
+    customer = db.get(Customer, customer_id) if customer_id is not None else None
+    customer_name = (customer.name if customer else payload.get("customer")) or None
+    pdf = _latest_report_pdf_attachment_for_report(db, report.id)
+    return DayActivityReportOut(
+        id=report.id,
+        report_date=report.report_date,
+        report_number=report.report_number,
+        project_id=report.project_id,
+        project_number=str(project_number).strip() if project_number is not None else None,
+        project_name=str(project_name).strip() if project_name is not None else None,
+        customer_id=customer_id,
+        customer_name=str(customer_name).strip() if customer_name is not None else None,
+        work_summary=_work_summary(payload),
+        attachment_id=pdf.id if pdf else None,
+        processing_status=report.processing_status or "queued",
+    )
+
+
+@router.get("/day-activity", response_model=DayActivityOut)
+def get_day_activity(
+    day: date,
+    user_id: int | None = None,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> DayActivityOut:
+    """What one person did on one day: tasks scheduled for them, and the
+    construction reports they filed.
+
+    Access is the same gate as ``/entries``: you may read your own day, and
+    only ``time:view_all`` / ``time:manage`` may read anyone else's. That is
+    deliberate — this is the "who was doing what" companion to the hours a
+    supervisor is already allowed to see, and it must not become a way for a
+    colleague to read another employee's movements.
+
+    ``day`` matches ``report_date`` / ``due_date`` directly: those are plain
+    local-date columns, so no timezone conversion is involved and an adjacent
+    day cannot bleed in (unlike the naive-UTC clock timestamps elsewhere).
+    """
+
+    target_user_id = _resolve_target_user_id(current_user, user_id)
+
+    # A task belongs to this day+person when it is due that day and the person
+    # is on it — via the modern many-assignee join OR the legacy single-assignee
+    # column, since older rows only populate the latter.
+    assigned_task_ids = select(TaskAssignment.task_id).where(TaskAssignment.user_id == target_user_id)
+    tasks = list(
+        db.scalars(
+            select(Task)
+            .where(
+                Task.due_date == day,
+                or_(Task.assignee_id == target_user_id, Task.id.in_(assigned_task_ids)),
+            )
+            .order_by(Task.start_time.is_(None), Task.start_time.asc(), Task.id.asc())
+        ).all()
+    )
+
+    reports = list(
+        db.scalars(
+            select(ConstructionReport)
+            .where(
+                ConstructionReport.user_id == target_user_id,
+                ConstructionReport.report_date == day,
+            )
+            .order_by(ConstructionReport.created_at.asc(), ConstructionReport.id.asc())
+        ).all()
+    )
+
+    return DayActivityOut(
+        user_id=target_user_id,
+        day=day,
+        tasks=[_day_activity_task_out(db, task) for task in tasks],
+        reports=[_day_activity_report_out(db, report) for report in reports],
+    )

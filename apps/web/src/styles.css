@@ -21670,8 +21670,16 @@ button.time-calendar-cell {
 
 .edit-day-modal-close {
   appearance: none;
+  /* Centre the "×" glyph in the box. Without an explicit flex centre the
+     glyph fell to its inline baseline — top-left of the 32px square — so it
+     read as misaligned; line-height alone does not centre it. flex handles
+     both axes regardless of the glyph's own side bearings. */
+  display: flex;
+  align-items: center;
+  justify-content: center;
   width: 32px;
   height: 32px;
+  padding: 0;
   border: 1px solid #c9d9ea;
   border-radius: 8px;
   background-color: #ffffff;
@@ -21702,6 +21710,140 @@ button.time-calendar-cell {
   text-align: center;
   padding: 24px 0;
   font-size: 13px;
+}
+
+/* "Tätigkeiten" panel in the Edit Day modal — the tasks and reports for that
+   person on that day. Scoped under .edit-day-modal for the same specificity
+   reason the vacation card is. A plain bordered card on the surface token,
+   deliberately quieter than the amber vacation card: this is context, not an
+   action. */
+.edit-day-modal .day-activity {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  background-color: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.edit-day-modal .day-activity-title {
+  margin: 0;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.edit-day-modal .day-activity-muted {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.edit-day-modal .day-activity-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.edit-day-modal .day-activity-group-label {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.edit-day-modal .day-activity-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Whole row is the click target when the task links to a project. Left-aligned
+   text button that fills the row; the arrow of specificity here is just to sit
+   above the generic button reset. */
+.edit-day-modal .day-activity-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.edit-day-modal .day-activity-row:disabled {
+  cursor: default;
+}
+
+.edit-day-modal .day-activity-row-main {
+  flex: 1 1 auto;
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.edit-day-modal .day-activity-row-where {
+  flex: 0 1 auto;
+  color: var(--muted);
+  font-size: 12px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.edit-day-modal .day-activity-status {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: capitalize;
+}
+
+.edit-day-modal .day-activity-report {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.edit-day-modal .day-activity-report-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.edit-day-modal .day-activity-open {
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.edit-day-modal .day-activity-report-summary {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.4;
 }
 
 /* Vacation-day removal panel inside the Edit Day modal. Only rendered for

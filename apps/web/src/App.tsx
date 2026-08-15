@@ -604,6 +604,12 @@ export function App() {
     const current = new Date();
     return new Date(current.getFullYear(), current.getMonth(), 1);
   });
+  // A day (ISO) to reopen in the time page once it is next shown. Set when a
+  // user follows a project link out of a day's activity panel; consumed by
+  // TimePage on mount so returning lands them back on that day's modal rather
+  // than a bare calendar. Lives here, above TimePage, precisely because
+  // TimePage unmounts during the excursion and would lose its own state.
+  const [timeReopenDay, setTimeReopenDay] = useState<string | null>(null);
   const [timeEntriesStartDate, setTimeEntriesStartDate] = useState<string>(() => {
     const current = new Date();
     return formatDateISOLocal(new Date(current.getFullYear(), current.getMonth(), 1));
@@ -9600,6 +9606,8 @@ export function App() {
     setEditingSchoolAbsenceId,
     timeMonthCursor,
     setTimeMonthCursor,
+    timeReopenDay,
+    setTimeReopenDay,
     timeEntriesStartDate,
     setTimeEntriesStartDate,
     timeEntriesEndDate,

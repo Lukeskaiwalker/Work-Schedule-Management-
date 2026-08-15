@@ -581,6 +581,8 @@ export interface AppContextValue {
   setEditingSchoolAbsenceId: (id: number | null) => void;
   timeMonthCursor: Date;
   setTimeMonthCursor: (cursor: Date) => void;
+  timeReopenDay: string | null;
+  setTimeReopenDay: (day: string | null) => void;
   timeEntriesStartDate: string;
   setTimeEntriesStartDate: (value: string) => void;
   timeEntriesEndDate: string;

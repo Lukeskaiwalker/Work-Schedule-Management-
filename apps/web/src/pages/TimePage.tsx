@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useAppContext } from "../context/AppContext";
 import { ApiError, apiFetch } from "../api/client";
+import { DayActivityPanel } from "../components/time/DayActivityPanel";
 import { apiUrl } from "../native/shell";
 import { isoToLocalDateTimeInput, localDateTimeInputToIso } from "../utils/dates";
 import { shiftMonthStart, schoolWeekdayLabel } from "../utils/dates";
@@ -141,6 +142,8 @@ export function TimePage() {
     publicHolidays,
     setTimeEntriesStartDate,
     setTimeEntriesEndDate,
+    timeReopenDay,
+    setTimeReopenDay,
   } = useAppContext();
 
   // Holidays that fall within the currently displayed month
@@ -151,6 +154,18 @@ export function TimePage() {
   const de = language === "de";
   const [editEntriesDate, setEditEntriesDate] = useState<string | null>(null);
   const [removingVacationDay, setRemovingVacationDay] = useState(false);
+
+  // Return-to-the-day. When a user drilled from a day's activity panel into a
+  // project, the day was stashed in `timeReopenDay` (App-level, so it outlives
+  // this page unmounting). On the way back we reopen that day's modal so they
+  // land where they left, not on a bare calendar. One-shot — cleared as it is
+  // consumed, so a normal visit to the time page never pops a stale modal. The
+  // month cursor is App-level too, so the day's entries are already loaded.
+  useEffect(() => {
+    if (!timeReopenDay) return;
+    setEditEntriesDate(timeReopenDay);
+    setTimeReopenDay(null);
+  }, [timeReopenDay, setTimeReopenDay]);
   const [backfillWindow, setBackfillWindow] = useState<TimeBackfillWindow | null>(null);
   const [backfillWindowReloads, setBackfillWindowReloads] = useState(0);
   const employeeSearchRef = useRef<HTMLDivElement | null>(null);
@@ -1765,6 +1780,7 @@ export function TimePage() {
                   </button>
                 </div>
                 <div className="edit-day-modal-body">
+                  <DayActivityPanel day={modalDayIso} userId={viewedTimeUserId} />
                   {vacationOnDay && (
                     <div className="edit-day-vacation-card">
                       <div className="edit-day-vacation-head">

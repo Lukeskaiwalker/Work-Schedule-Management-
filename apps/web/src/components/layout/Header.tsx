@@ -70,6 +70,7 @@ export function Header() {
     else if (projectBackView === "office_tasks") setMainView("office_tasks");
     else if (projectBackView === "planning") setMainView("planning");
     else if (projectBackView === "customer_detail") setMainView("customer_detail");
+    else if (projectBackView === "time") setMainView("time");
     else setMainView("projects_all");
   }
 
@@ -82,7 +83,9 @@ export function Header() {
           ? language === "de" ? "← Wochenplanung" : "← Weekly Planning"
           : projectBackView === "customer_detail"
             ? language === "de" ? "← Kunde" : "← Customer"
-            : language === "de" ? "← Alle Projekte" : "← All Projects";
+            : projectBackView === "time"
+              ? language === "de" ? "← Zeiterfassung" : "← Time tracking"
+              : language === "de" ? "← Alle Projekte" : "← All Projects";
 
   const brandTitle = companySettings?.navigation_title?.trim() || "SMPL";
 

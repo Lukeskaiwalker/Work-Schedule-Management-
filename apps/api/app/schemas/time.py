@@ -195,3 +195,51 @@ class TimeBackfillWindowOut(BaseModel):
     can_backfill_self: bool
     earliest_self_day: date | None
     latest_self_day: date | None
+
+
+class DayActivityTaskOut(BaseModel):
+    """A task scheduled for the viewed person on the viewed day."""
+
+    id: int
+    title: str
+    status: str
+    task_type: str
+    due_date: date | None = None
+    project_id: int | None = None
+    project_number: str | None = None
+    project_name: str | None = None
+    customer_id: int | None = None
+    customer_name: str | None = None
+
+
+class DayActivityReportOut(BaseModel):
+    """A construction report the viewed person filed on the viewed day.
+
+    A SUMMARY, not the report body: `work_summary` is a short snippet of what
+    was done, and `attachment_id` points at the rendered PDF for anyone who
+    may open it. Opening it still goes through the report/file access check, so
+    a supervisor who can see the person's hours does not thereby gain the full
+    text of a report on a project they are not on.
+    """
+
+    id: int
+    report_date: date
+    report_number: int | None = None
+    project_id: int | None = None
+    project_number: str | None = None
+    project_name: str | None = None
+    customer_id: int | None = None
+    customer_name: str | None = None
+    work_summary: str | None = None
+    attachment_id: int | None = None
+    processing_status: str
+
+
+class DayActivityOut(BaseModel):
+    """Everything the viewed person did on one day: what they were scheduled to
+    do (tasks) and what they recorded doing (reports)."""
+
+    user_id: int
+    day: date
+    tasks: list[DayActivityTaskOut] = Field(default_factory=list)
+    reports: list[DayActivityReportOut] = Field(default_factory=list)
