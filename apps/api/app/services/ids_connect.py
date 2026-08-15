@@ -83,34 +83,67 @@ PLACEHOLDER_PATTERN = re.compile(r"\{([a-z_]+)\}")
 ACTION_FETCH_CART = "WKE"
 ACTION_SUBMIT_CART = "WKS"
 
-# Field names are the spec's, which are German and lower-case. This matters
-# more than it looks: `USERNAME` is not a mis-cased `benutzername`, it is a
-# different word, so a shop reading the spec names simply never sees a
-# credential sent under the English one — it reports the *action* as invalid
-# and never gets as far as complaining about the login. Verified against
-# Unielektro's own `action=LI` response, which answers in
-# Benutzername/Passwort/Kundennummer terms.
+# These are the spec's HTTP PARAMETER names, which are not the German words
+# that describe them.
 #
-# These remain defaults rather than constants: `name_kunde`/`pw_kunde`/`hookurl`
-# is a real shop's spelling of the same three fields, so the map stays editable.
+# The parameter table in IDS-Connect (§5.8, identical in 2.0, 2.3 and 2.5) has
+# two name columns, and only the second one goes on the wire:
+#
+#     Anfrageparameter   Muss/Kann   Format       HTTP Parameter
+#     Kundennummer       Kann        STRING 50    kndnr
+#     Benutzername       Kann        STRING 50    name_kunde
+#     Passwort           Kann        STRING 50    pw_kunde
+#     Aktionscode        Muss        Codeliste    action
+#     Warenkorb          Kann        STRING       warenkorb
+#     HOOK-URL           Kann        STRING 256   hookurl
+#     Version            Kann        STRING 5     version
+#     Target             Kann        STRING 50    target
+#
+# This module previously used the left column, lower-cased. Every field except
+# `action` was therefore a name no shop reads, and a shop does not reject an
+# unknown field — it ignores it. Two consequences, and the second is the one
+# that was reported:
+#
+#   * credentials arrived under `benutzername`/`passwort`, so the punchout ran
+#     anonymously. Measured: fake credentials under name_kunde/pw_kunde return
+#     "Ungültiger Benutzername oder Passwort"; under our old names the same
+#     request returned a plain 302 to /basket, i.e. nobody was logged in.
+#   * the return address arrived under `hook_url`, so no hook was registered at
+#     all. Measured two ways against www.unielektro.de: the shop's own transmit
+#     form renders action="https://…/hook/<token>" when the field is `hookurl`
+#     and action="/ids/debug" when it is `hook_url`; and the hook is stored in
+#     the shop's session cookie, whose length grew by exactly one byte per URL
+#     character with `hookurl` and did not move at all with `hook_url`.
+#
+# That second measurement is the whole bug: /ids/debug is the page showing raw
+# cart XML that the crew kept landing on. The spec is explicit about the
+# consequence — "Der Parameter Hook-Url muss in jedem Fall mitgesendet werden,
+# da nur dann eine Rückübertragung möglich ist."
+#
+# Corroborated by four independent implementations (Skeferstat/IDS in C#,
+# fega-schmitt-client in Python, IDSConnect-for-Delphi, OSG Trade's published
+# call), none of which spells the hook with an underscore.
+#
+# These remain defaults rather than constants: a wholesaler may need a spelling
+# nobody here has seen, which is why the map is admin-editable at all.
 DEFAULT_FETCH_FIELD_MAP: dict[str, str] = {
     "action": ACTION_FETCH_CART,
-    "benutzername": "{username}",
-    "passwort": "{password}",
-    "kundennummer": "{customer_number}",
-    "hook_url": "{hook_url}",
-    "returntarget": "_top",
-    "Version": "{ids_version}",
+    "name_kunde": "{username}",
+    "pw_kunde": "{password}",
+    "kndnr": "{customer_number}",
+    "hookurl": "{hook_url}",
+    "target": "_top",
+    "version": "{ids_version}",
 }
 
 DEFAULT_SUBMIT_FIELD_MAP: dict[str, str] = {
     "action": ACTION_SUBMIT_CART,
-    "benutzername": "{username}",
-    "passwort": "{password}",
-    "kundennummer": "{customer_number}",
-    "hook_url": "{hook_url}",
-    "returntarget": "_top",
-    "Version": "{ids_version}",
+    "name_kunde": "{username}",
+    "pw_kunde": "{password}",
+    "kndnr": "{customer_number}",
+    "hookurl": "{hook_url}",
+    "target": "_top",
+    "version": "{ids_version}",
     # The cart XML for a WKS call.
     "warenkorb": "{cart_xml}",
 }
@@ -192,24 +225,45 @@ def assert_directions_not_swapped(field_map: Mapping[str, Any], *, direction: st
 IDS_KNOWN_FIELDS: frozenset[str] = frozenset(
     {
         "action",
-        "benutzername", "name_kunde", "benutzer",
-        "passwort", "pw_kunde", "kennwort",
-        "kundennummer", "kdnr", "kundennr",
-        "hook_url", "hookurl", "hook",
-        "returntarget", "target",
+        # Spec names first, then the variants real shops use.
+        "name_kunde", "benutzername", "benutzer",
+        "pw_kunde", "passwort", "kennwort",
+        "kndnr", "kundennummer", "kdnr", "kundennr",
+        "hookurl", "hook_url", "hook",
+        "target", "returntarget",
         "version",
         "warenkorb", "searchterm", "ghnummer", "heatinglabel", "mode",
     }
 )
 
-# The exact fingerprint of the invented default this feature shipped with.
-# Kept for diagnosis so the message can name the correct field outright rather
-# than leaving an admin to diff two lists by eye.
+# The one field name that actually registers a return address. Measured against
+# Unielektro: of ten spellings tried (hookurl, hook_url, HOOK_URL, ReturnURL,
+# returnurl, return_url, hook, url, hook-url, hookadresse) only `hookurl` was
+# recorded — the rest left the shop's stored hook byte-identical to sending
+# nothing. Case is not significant; punctuation is.
+IDS_HOOK_FIELDS: frozenset[str] = frozenset({"hookurl"})
+
+# Fields a shop reads a username from.
+IDS_CREDENTIAL_FIELDS: frozenset[str] = frozenset({"name_kunde", "benutzername", "benutzer"})
+
+# Wrong field names this feature has shipped, mapped to the spec's HTTP
+# parameter. Two generations are represented, because there were two mistakes:
+# first invented English names, then the spec's German *labels* rather than its
+# HTTP parameters. Kept for diagnosis so a message can name the right field
+# outright instead of leaving an admin to diff two lists by eye.
 INVENTED_TO_SPEC: dict[str, str] = {
-    "username": "benutzername",
-    "password": "passwort",
-    "target": "returntarget",
+    # First generation: invented outright.
+    "username": "name_kunde",
+    "password": "pw_kunde",
     "ids_xml": "warenkorb",
+    # Second generation: the spec's descriptive label instead of its HTTP
+    # parameter. These look authoritative, which is exactly why they survived
+    # two rounds of correction.
+    "benutzername": "name_kunde",
+    "passwort": "pw_kunde",
+    "kundennummer": "kndnr",
+    "hook_url": "hookurl",
+    "returntarget": "target",
 }
 
 
@@ -247,6 +301,30 @@ def describe_field_map_problems(
             "Im Feld-Mapping kommt kein {hook_url} vor — der Shop weiß dann nicht, "
             "wohin er den Warenkorb zurückschicken soll."
         )
+    elif direction == "fetch" and not (names & IDS_HOOK_FIELDS):
+        # The placeholder being present is not enough — it is the FIELD NAME the
+        # shop reads. A map carrying {hook_url} under the key "hook_url" passed
+        # every check here for three releases while the shop quietly registered
+        # no return address and dumped the cart on its own debug page.
+        offender = next(
+            (n for n in sorted(names) if INVENTED_TO_SPEC.get(n) == "hookurl"),
+            None,
+        )
+        if offender:
+            errors.append(
+                f"Die Rücksprungadresse steht unter '{offender}' — diesen Feldnamen "
+                f"liest der Shop nicht. Er merkt sich dadurch keine Adresse und zeigt "
+                f"den Warenkorb am Ende als XML-Text an, statt ihn zurückzuschicken. "
+                f"Das Feld muss 'hookurl' heißen."
+            )
+        else:
+            # Some wholesaler we have never met may genuinely use another name,
+            # so this stays a warning rather than blocking the punchout.
+            warnings.append(
+                "Im Feld-Mapping ist kein 'hookurl' enthalten — ohne dieses Feld "
+                "schickt der Shop den Warenkorb nicht zurück. Bitte gegen das "
+                "IDS-Datenblatt des Großhändlers prüfen."
+            )
     if direction == "submit" and "{cart_xml}" not in templates:
         errors.append(
             "Im Feld-Mapping kommt kein {cart_xml} vor — es würde ein leerer "
@@ -255,8 +333,7 @@ def describe_field_map_problems(
 
     # The live failure: a credential present, but under a name no shop reads.
     if has_username and direction == "fetch":
-        credential_fields = {"benutzername", "name_kunde", "benutzer"}
-        if not (names & credential_fields):
+        if not (names & IDS_CREDENTIAL_FIELDS):
             offenders = sorted(names & set(INVENTED_TO_SPEC))
             if offenders:
                 renamed = ", ".join(f"'{n}' → '{INVENTED_TO_SPEC[n]}'" for n in offenders)
@@ -268,7 +345,7 @@ def describe_field_map_problems(
             else:
                 warnings.append(
                     "Im Feld-Mapping ist kein bekanntes Benutzername-Feld "
-                    "(benutzername) enthalten — bitte gegen das IDS-Datenblatt prüfen."
+                    "(name_kunde) enthalten — bitte gegen das IDS-Datenblatt prüfen."
                 )
 
     unknown = sorted(name for name in names if name not in IDS_KNOWN_FIELDS)

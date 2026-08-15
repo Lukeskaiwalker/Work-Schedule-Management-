@@ -934,14 +934,27 @@ def test_shopping_needs_an_enabled_connection(client: TestClient, admin_token: s
 # The wire protocol itself
 #
 # These pin the values the wholesaler actually reads. They exist because the
-# punchout originally shipped with invented field names, and the way that
-# failed hid the cause: Unielektro answered "Aktion 'WWWSHOP' ist nicht
-# gültig", which reads like one wrong value in an otherwise correct call. In
-# fact every field was wrong — `USERNAME` is not a mis-cased `benutzername`
-# but a different word, so the credentials were never read at all.
+# punchout has now shipped TWO generations of wrong field names, and both
+# failed silently — a shop ignores a field it does not recognise rather than
+# rejecting it, so every call kept "succeeding" while carrying nothing usable.
 #
-# Values confirmed against ITEK's IDS-Connect 2.5 spec and Unielektro's own
-# `action=LI` / `action=SV` discovery responses.
+#   1. Invented English names (USERNAME, PASSWORD, HOOK_URL). Unielektro
+#      answered "Aktion 'WWWSHOP' ist nicht gültig", which reads like one wrong
+#      value in an otherwise correct call. In fact every field was wrong.
+#   2. The spec's German LABELS, lower-cased (benutzername, passwort,
+#      kundennummer, hook_url). These look authoritative and are not what goes
+#      on the wire. The IDS parameter table has two name columns and only the
+#      second, headed "HTTP Parameter", is transmitted:
+#
+#          Kundennummer -> kndnr        Benutzername -> name_kunde
+#          Passwort     -> pw_kunde     HOOK-URL     -> hookurl
+#          Target       -> target
+#
+# The hook is the one that hurt: with `hook_url` the shop registers no return
+# address and renders its transmit form with action="/ids/debug", which is the
+# raw-XML page the crew kept landing on. With `hookurl` the same form points at
+# our hook. Measured directly against www.unielektro.de, and corroborated by
+# the spec plus four independent IDS implementations.
 # ──────────────────────────────────────────────────────────────────────────
 
 
@@ -951,12 +964,18 @@ def test_the_fetch_call_uses_the_real_ids_action_and_field_names() -> None:
     # WKE = Warenkorbübernahme, named from OUR point of view: the cart comes
     # from the shop into us. Getting this backwards is the easy mistake.
     assert DEFAULT_FETCH_FIELD_MAP["action"] == "WKE"
-    assert DEFAULT_FETCH_FIELD_MAP["benutzername"] == "{username}"
-    assert DEFAULT_FETCH_FIELD_MAP["passwort"] == "{password}"
-    assert DEFAULT_FETCH_FIELD_MAP["hook_url"] == "{hook_url}"
-    assert DEFAULT_FETCH_FIELD_MAP["returntarget"] == "_top"
-    # The English names are what the wholesaler silently ignores.
-    for rejected in ("USERNAME", "PASSWORD", "ACTION", "HOOK_URL", "TARGET"):
+    assert DEFAULT_FETCH_FIELD_MAP["name_kunde"] == "{username}"
+    assert DEFAULT_FETCH_FIELD_MAP["pw_kunde"] == "{password}"
+    assert DEFAULT_FETCH_FIELD_MAP["kndnr"] == "{customer_number}"
+    assert DEFAULT_FETCH_FIELD_MAP["hookurl"] == "{hook_url}"
+    assert DEFAULT_FETCH_FIELD_MAP["target"] == "_top"
+    # Both earlier generations of wrong names must be gone. `hook_url` in
+    # particular is the difference between the cart coming home and the crew
+    # staring at XML on the wholesaler's debug page.
+    for rejected in (
+        "USERNAME", "PASSWORD", "ACTION", "HOOK_URL", "TARGET",
+        "benutzername", "passwort", "kundennummer", "hook_url", "returntarget",
+    ):
         assert rejected not in DEFAULT_FETCH_FIELD_MAP
 
 
@@ -1107,10 +1126,10 @@ def test_a_connection_without_credentials_sends_none() -> None:
     Rather than storing a live wholesale ordering password, the shop is opened
     with only the action and the hook URL; the user signs in on the
     wholesaler's own page and the browser keeps that session. The cart still
-    finds its way home because hook_url travels regardless.
+    finds its way home because hookurl travels regardless.
 
     This works because `render_field_map` drops a field whose template is a
-    bare placeholder that resolved to nothing — sending `passwort=` empty
+    bare placeholder that resolved to nothing — sending `pw_kunde=` empty
     would earn an unhelpful login error instead.
     """
 
@@ -1127,8 +1146,8 @@ def test_a_connection_without_credentials_sends_none() -> None:
         },
     )
 
-    assert set(rendered) == {"action", "hook_url", "returntarget", "Version"}
-    assert "passwort" not in rendered
+    assert set(rendered) == {"action", "hookurl", "target", "version"}
+    assert "pw_kunde" not in rendered
     assert "benutzername" not in rendered
 
 
@@ -1270,7 +1289,7 @@ def test_a_broken_field_map_is_refused_at_punchout_not_just_at_save(
     assert started.status_code == 409, started.text
     detail = started.json()["detail"]
     # The message must name the correct field, not merely say "misconfigured".
-    assert "benutzername" in detail
+    assert "name_kunde" in detail
     assert "Prüfen" in detail
 
 
@@ -1302,4 +1321,69 @@ def test_pruefen_reports_the_wrong_credential_field_name(
     assert checked.status_code == 200, checked.text
     body = checked.json()
     assert body["ok"] is False
-    assert any("benutzername" in problem for problem in body["problems"])
+    assert any("name_kunde" in problem for problem in body["problems"])
+
+
+def test_pruefen_catches_a_hook_under_a_field_name_the_shop_does_not_read() -> None:
+    """The exact configuration that shipped for three releases, and passed.
+
+    The old check asked whether the {hook_url} PLACEHOLDER appeared anywhere in
+    the map's values. It did — under the key `hook_url`, which no shop reads.
+    So a connection that could never bring a cart home reported itself healthy,
+    and the failure surfaced three steps later as a wholesaler debug page full
+    of XML. What matters is the field NAME, so that is what is checked.
+    """
+
+    from app.services.ids_connect import describe_field_map_problems
+
+    broken = {
+        "action": "WKE",
+        "name_kunde": "{username}",
+        "pw_kunde": "{password}",
+        "hook_url": "{hook_url}",  # placeholder present, field name wrong
+    }
+    errors, _ = describe_field_map_problems(broken, direction="fetch", has_username=True)
+
+    assert errors, "a hook the shop cannot read must not pass as healthy"
+    assert any("hookurl" in error for error in errors), "the message must name the fix"
+    assert any("hook_url" in error for error in errors), "and name the offender"
+
+
+def test_pruefen_passes_the_shipped_defaults() -> None:
+    """Whatever else changes, the defaults themselves must be clean — otherwise
+    every new connection starts life reporting a problem."""
+
+    from app.services.ids_connect import (
+        DEFAULT_FETCH_FIELD_MAP,
+        DEFAULT_SUBMIT_FIELD_MAP,
+        describe_field_map_problems,
+    )
+
+    fetch_errors, fetch_warnings = describe_field_map_problems(
+        DEFAULT_FETCH_FIELD_MAP, direction="fetch", has_username=True
+    )
+    assert not fetch_errors and not fetch_warnings, (fetch_errors, fetch_warnings)
+
+    submit_errors, _ = describe_field_map_problems(
+        DEFAULT_SUBMIT_FIELD_MAP, direction="submit", has_username=True
+    )
+    assert not submit_errors, submit_errors
+
+
+def test_a_hook_field_name_nobody_recognises_warns_but_does_not_block() -> None:
+    """A wholesaler we have never met may use a spelling we do not know. That
+    deserves a warning, not a refusal — the maps are editable precisely for it.
+    """
+
+    from app.services.ids_connect import describe_field_map_problems
+
+    exotic = {
+        "action": "WKE",
+        "name_kunde": "{username}",
+        "ruecksprungadresse": "{hook_url}",
+    }
+    errors, warnings = describe_field_map_problems(
+        exotic, direction="fetch", has_username=True
+    )
+    assert not errors, "an unfamiliar name is not proof of a mistake"
+    assert any("hookurl" in warning for warning in warnings)

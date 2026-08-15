@@ -232,3 +232,97 @@ def test_0070_is_idempotent(engine) -> None:
     _run(engine, module)
     second, _ = _read(engine, 1)
     assert first == second
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# 0071 — the spec's HTTP parameter names
+#
+# The fourth repair, and the first whose predicate keys on something that is
+# both stable and wrong-by-construction: the field NAMES. 0068 and 0069 both
+# keyed on the action VALUE, which is the first thing a human edits while
+# debugging, so both skipped the one production row they existed to fix.
+#
+# What 0070 left behind was a row using the spec's German LABELS. Those look
+# authoritative — they are printed in the spec's own parameter table — but the
+# table has a second column headed "HTTP Parameter", and only that one goes on
+# the wire. Measured against www.unielektro.de: with `hookurl` the shop's
+# transmit form points at our hook; with `hook_url` it points at /ids/debug,
+# the raw-XML page the crew kept landing on.
+# ──────────────────────────────────────────────────────────────────────────
+
+# Exactly what production held after 0070, read from the live database.
+LABELS_NOT_PARAMETERS = {
+    "action": "WKE",
+    "benutzername": "{username}",
+    "passwort": "{password}",
+    "kundennummer": "{customer_number}",
+    "hook_url": "{hook_url}",
+    "returntarget": "_top",
+    "Version": "{ids_version}",
+}
+
+
+def test_0071_renames_the_labels_to_the_http_parameters(engine) -> None:
+    _insert(engine, 1, LABELS_NOT_PARAMETERS, {**LABELS_NOT_PARAMETERS, "action": "WKS"})
+    _run(engine, _load("20260814_0071_ids_http_parameter_names.py"))
+    fetch, submit = _read(engine, 1)
+
+    assert fetch["hookurl"] == "{hook_url}", "the field the whole loop depends on"
+    assert fetch["name_kunde"] == "{username}"
+    assert fetch["pw_kunde"] == "{password}"
+    assert fetch["kndnr"] == "{customer_number}"
+    assert fetch["target"] == "_top"
+    assert fetch["action"] == "WKE"
+    assert submit["action"] == "WKS", "the direction must survive the rename"
+
+    for gone in ("hook_url", "benutzername", "passwort", "kundennummer", "returntarget"):
+        assert gone not in fetch
+
+
+def test_0071_is_idempotent(engine) -> None:
+    """A second run must be a no-op, or a re-deploy would churn the row."""
+
+    _insert(engine, 1, LABELS_NOT_PARAMETERS, LABELS_NOT_PARAMETERS)
+    module = _load("20260814_0071_ids_http_parameter_names.py")
+    _run(engine, module)
+    once, _ = _read(engine, 1)
+    _run(engine, module)
+    twice, _ = _read(engine, 1)
+    assert once == twice
+
+
+def test_0071_leaves_a_deliberately_customised_row_alone(engine) -> None:
+    """The maps are admin-editable because a wholesaler may need something we
+    have never seen. A row already using the spec names must not be touched."""
+
+    custom = {
+        "action": "WKE",
+        "name_kunde": "{username}",
+        "hookurl": "{hook_url}",
+        "eigenes_feld_vom_grosshaendler": "wert",
+    }
+    _insert(engine, 1, custom, custom)
+    _run(engine, _load("20260814_0071_ids_http_parameter_names.py"))
+    fetch, _ = _read(engine, 1)
+    assert fetch == custom
+
+
+def test_0071_does_not_clobber_a_correct_key_that_is_already_present(engine) -> None:
+    """Renaming onto an occupied key would silently drop one of the values."""
+
+    both = {"action": "WKE", "hookurl": "{hook_url}", "hook_url": "STALE"}
+    _insert(engine, 1, both, both)
+    _run(engine, _load("20260814_0071_ids_http_parameter_names.py"))
+    fetch, _ = _read(engine, 1)
+    assert fetch["hookurl"] == "{hook_url}"
+
+
+def test_0071_also_repairs_the_first_generation_of_invented_names(engine) -> None:
+    """A site that never ran 0068 would still hold the original English names."""
+
+    _insert(engine, 1, BROKEN_DEFAULT, BROKEN_DEFAULT)
+    _run(engine, _load("20260814_0071_ids_http_parameter_names.py"))
+    fetch, _ = _read(engine, 1)
+    assert fetch["name_kunde"] == "{username}"
+    assert fetch["pw_kunde"] == "{password}"
+    assert fetch["hookurl"] == "{hook_url}"
