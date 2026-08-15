@@ -138,25 +138,13 @@ FIELD_ALIASES: dict[str, tuple[str, ...]] = {
         "unit",
         "me",
     ),
-    # NET price only, and never the list price. A real Unielektro cart carries
-    # both, and they are not interchangeable:
+    # Genuine PER-UNIT prices only. `netprice` is deliberately NOT here — see
+    # LINE_TOTAL_ALIASES below, it is an extended amount.
     #
-    #     <OfferPrice>8665.0000</OfferPrice>   list, scaled by PriceBasis
-    #     <NetPrice>53.7200</NetPrice>         what we actually pay, per QU
-    #     <PriceBasis>100.00</PriceBasis>
-    #
-    # Across every line of that cart NetPrice / (OfferPrice/100) is exactly
-    # 0.620 — one flat 38% trade discount — which is what identifies OfferPrice
-    # as the list price and pins its scaling. NetPrice is taken as-is and is
-    # NOT divided by PriceBasis: the article above is a 500-label roll, and
-    # €53.72 for one is right where €0.54 is absurd.
-    #
-    # `offerprice` is deliberately absent from this tuple. Reading it would put
-    # an undiscounted, 100×-scaled number on the order.
+    # `offerprice` is deliberately absent too. It is the LIST price and it is
+    # scaled by PriceBasis, so reading it would put an undiscounted, 100×-scaled
+    # number on the order.
     "unit_price": (
-        "netprice",
-        "nettopreis",
-        "net_price",
         "price_amount",
         "einzelpreis",
         "unit_price",
@@ -184,7 +172,48 @@ REFERENCE_ALIASES = (
 # Values that mean "line total", not "unit price". Read only when no unit
 # price is present, and then divided out — a cart that gives only the extended
 # amount is common and dropping the price entirely would be worse.
-LINE_TOTAL_ALIASES = ("price_line_amount", "gesamtpreis", "line_amount", "positionswert")
+# Fields carrying an EXTENDED amount — the price for the whole line, not one
+# unit. The unit price is this divided by the quantity the shop priced.
+#
+# `netprice` leads because it is IDS-Connect's own name for it, and mistaking it
+# for a unit price is the single most expensive error this parser can make. The
+# spec's field table is explicit:
+#
+#     Nettopreis — "Einkaufspreis des Kunden. Beinhaltet Rabatte bzw.
+#     Rohstoffanteile und bezieht sich immer auf die Anfragemenge und
+#     Mengeneinheit."   (ITEK IDS-Connect 2.0 and 2.5, Order/OrderItem/NetPrice)
+#
+# and its worked example multiplies the quantity IN:
+#
+#     Nettopreis (NP) = (AM * (AP / PB) − R + KZ)
+#                     = 50 m * (9.000 € / 1.000 m) + 72 € = 522 €
+#
+# for a 50 m cable at 9 €/m. A per-metre reading would have transmitted 10,44.
+# A changelog entry dated 09.06.2009 records this wording as a deliberate
+# clarification, which suggests we are not the first to read it the other way.
+#
+# This module previously had `netprice` in `unit_price`, reasoned from a cart in
+# which EVERY line had Qty 1.00 — where a line total and a unit price are the
+# same number, so the sample could not distinguish the two readings. The result
+# overstated every multi-quantity line by exactly its quantity: 10 m of NYY-J
+# 5×6 booked at 45,69 €/m instead of 4,569 €/m, and one live draft order reached
+# €2.52M.
+#
+# Note NetPrice is NOT divided by PriceBasis. PriceBasis appears in the formula
+# only as AP/PB — it scales OfferPrice, the list price, and nothing else.
+#
+# It is also inclusive of raw-material surcharges (Kupferzuschlag), so on copper
+# cable the net unit price legitimately exceeds list. Do not add a "net must not
+# exceed list" sanity check; the spec's own example shows the same inversion.
+LINE_TOTAL_ALIASES = (
+    "netprice",
+    "nettopreis",
+    "net_price",
+    "price_line_amount",
+    "gesamtpreis",
+    "line_amount",
+    "positionswert",
+)
 
 
 @dataclass(frozen=True)
@@ -512,11 +541,34 @@ def parse_cart(text: str) -> ParsedCart:
                 # quietly under-state the order by a third.
                 divisor = exact_quantity if exact_quantity and exact_quantity > 0 else None
                 if total_cents is not None and divisor is not None:
+                    # KNOWN LIMITATION: a unit price is stored in whole cents,
+                    # and metre-goods legitimately price below that resolution —
+                    # 45,69 € for 10 m is 4,569 €/m, and 8,88 € for 10 m is
+                    # 0,888 €/m. Rounding to 457 and 89 cents and multiplying
+                    # back gives 45,70 and 8,90, so our order total drifts from
+                    # the wholesaler's by a couple of cents per affected line,
+                    # and by more as quantities grow (half a cent times the
+                    # quantity, worst case).
+                    #
+                    # Storing the extended amount the shop actually sent would
+                    # remove the drift, but `unit_price_cents` is the only price
+                    # the order model carries, so that is a schema change rather
+                    # than a parser one. Left as-is deliberately: a two-cent
+                    # difference on a draft purchase order is visible and
+                    # harmless, where the 10x error this replaced was neither.
                     unit_price_cents = int(
                         (Decimal(total_cents) / divisor).quantize(Decimal("1"))
                     )
+                elif total_cents is not None:
+                    # The quantity was unreadable or zero, so there is nothing to
+                    # divide by. Take the extended amount as the unit price —
+                    # for the overwhelmingly common Qty 1 line that is exactly
+                    # right, and it is in any case better than the alternative,
+                    # which was to leave the line priced at nothing. A buyer can
+                    # correct a suspicious price; a silent zero looks deliberate.
+                    unit_price_cents = total_cents
                     warnings.append(
-                        "Kein Einzelpreis im Warenkorb — aus dem Positionswert errechnet"
+                        "Menge unlesbar — Positionswert als Einzelpreis übernommen, bitte prüfen"
                     )
 
         description = _first_alias(fields, FIELD_ALIASES["description"])

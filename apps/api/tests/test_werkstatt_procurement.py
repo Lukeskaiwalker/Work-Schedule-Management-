@@ -1387,3 +1387,114 @@ def test_a_hook_field_name_nobody_recognises_warns_but_does_not_block() -> None:
     )
     assert not errors, "an unfamiliar name is not proof of a mistake"
     assert any("hookurl" in warning for warning in warnings)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# NetPrice is an extended amount
+#
+# The whole suite passed under BOTH readings of NetPrice until these tests
+# existed, because every cart fixture had Qty 1.00 on every line — and at
+# quantity one a line total and a unit price are the same number. The bug that
+# hid there booked 10 m of cable at 45,69 EUR/m instead of 4,569, and one live
+# draft order at EUR 2.52M.
+#
+# The XML below is a verbatim excerpt of a real Unielektro return, kept in the
+# ITEK "Warenkorb" shape it actually arrives in, including the two elements that
+# make the distinction visible: a Qty that is not 1, and a PriceBasis that must
+# NOT be applied to NetPrice.
+# ──────────────────────────────────────────────────────────────────────────
+
+REAL_CART_WITH_QUANTITIES = """<?xml version="1.0" encoding="UTF-8"?>
+<Warenkorb xmlns="http://www.itek.de/Shop-Anbindung/Warenkorb/">
+  <WarenkorbInfo><Version>2.0</Version></WarenkorbInfo>
+  <Order>
+    <OrderInfo><Cur>EUR</Cur></OrderInfo>
+    <OrderItem>
+      <ArtNo>11102138</ArtNo><Qty>10.00</Qty><QU>MTR</QU>
+      <Kurztext>Kabel/Leitungen NYY-J 5X6 RE schwarz Trommel</Kurztext>
+      <OfferPrice>265.3100</OfferPrice><NetPrice>45.6900</NetPrice>
+      <PriceBasis>100.00</PriceBasis><VAT>19.00</VAT>
+    </OrderItem>
+    <OrderItem>
+      <ArtNo>01004771</ArtNo><Qty>1.00</Qty><QU>PCE</QU>
+      <Kurztext>HAGER CDS440D FI-Schutzschalter 4P 40A 30mA SK</Kurztext>
+      <OfferPrice>137.0000</OfferPrice><NetPrice>37.4400</NetPrice>
+      <PriceBasis>1.00</PriceBasis><VAT>19.00</VAT>
+    </OrderItem>
+  </Order>
+</Warenkorb>"""
+
+
+def test_netprice_is_the_line_total_not_the_unit_price() -> None:
+    """45,69 EUR for 10 m is 4,57 EUR/m — not 45,69 EUR/m.
+
+    ITEK's field table: "Nettopreis … bezieht sich immer auf die Anfragemenge
+    und Mengeneinheit", and the spec's worked example transmits 522 EUR for 50 m
+    at 9 EUR/m, i.e. with the quantity multiplied in.
+
+    Confirmed against the shop: Unielektro displayed this article at
+    "456,90 EUR je 100 M", which is 4,569 EUR/m.
+    """
+
+    cart = parse_cart(REAL_CART_WITH_QUANTITIES)
+    cable, fi_switch = cart.lines
+
+    assert cable.quantity == 10
+    # 45,69 / 10 = 4,569, stored to the nearest cent.
+    assert cable.unit_price_cents == 457, "NetPrice was read as a unit price again"
+    # The reading that shipped: 4569 cents, a factor of the quantity out.
+    assert cable.unit_price_cents != 4569
+
+    # PriceBasis is 100 on that line and must NOT touch NetPrice — dividing by
+    # it as well would give 0,4569 EUR/m, wrong in the other direction.
+    assert cable.unit_price_cents != 46
+
+    # A quantity-1 line is identical under either reading, which is exactly why
+    # a fixture made only of these could not catch the bug.
+    assert fi_switch.quantity == 1
+    assert fi_switch.unit_price_cents == 3744
+
+
+def test_a_quantity_one_cart_cannot_distinguish_the_two_readings() -> None:
+    """Documents the trap rather than guarding against it.
+
+    Kept so the next person to touch the price aliases sees, in a passing test,
+    why the previous fixture proved nothing: at Qty 1 the extended amount and
+    the unit price are the same number, so both the right answer and the wrong
+    one satisfy it.
+    """
+
+    cart = parse_cart(REAL_CART_WITH_QUANTITIES)
+    fi_switch = cart.lines[1]
+    net_price_as_written = 3744
+    assert fi_switch.unit_price_cents == net_price_as_written
+    assert fi_switch.quantity == 1
+
+
+def test_an_unreadable_quantity_still_prices_the_line() -> None:
+    """A line the shop priced must never arrive priced at nothing.
+
+    Moving NetPrice onto the line-total path introduced a way for the price to
+    vanish: with no divisor the computation simply did not happen and the line
+    went in at zero. A wrong-looking price gets questioned; a zero looks
+    deliberate and gets ordered.
+    """
+
+    xml = REAL_CART_WITH_QUANTITIES.replace("<Qty>10.00</Qty>", "<Qty>abc</Qty>")
+    cable = parse_cart(xml).lines[0]
+
+    assert cable.unit_price_cents == 4569, "the line lost its price"
+    assert any("Menge unlesbar" in w for w in cable.warnings)
+
+
+def test_a_normal_ids_cart_raises_no_price_warnings() -> None:
+    """Deriving the unit price from NetPrice is the normal path, not a fallback.
+
+    It previously appended "Kein Einzelpreis im Warenkorb" to every line of
+    every IDS cart, which trains buyers to ignore the warning column — and the
+    column is where the genuinely suspect lines (rounded-up quantities,
+    nameless positions) have to stand out.
+    """
+
+    cart = parse_cart(REAL_CART_WITH_QUANTITIES)
+    assert [w for line in cart.lines for w in line.warnings] == []
