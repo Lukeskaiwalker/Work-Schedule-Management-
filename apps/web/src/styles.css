@@ -6761,20 +6761,25 @@ li {
 }
 
 @media (max-width: 767px) {
-  /* Mobile planning toolbar — matches Paper mobile design */
+  /* Mobile planning toolbar — matches Paper mobile design.
+     Row + wrap (not a plain column) so items can share a line: `order` +
+     a 100% flex-basis give the week nav and the filter pills their own full
+     rows, which drops the board-mode switch and the + Aufgabe button onto the
+     last row together. */
   .planning-page .planning-toolbar {
-    flex-direction: column;
+    flex-direction: row;
+    flex-wrap: wrap;
     align-items: center;
     gap: 10px;
   }
 
-  /* Week nav centered — show only "W15" on mobile, hide date range */
+  /* Week nav on its own row, centered — show only "W15", hide date range */
   .planning-page .planning-week-nav {
     display: flex;
+    order: 1;
+    flex: 0 0 100%;
     margin-left: 0;
     justify-content: center;
-    align-self: center;
-    order: -1;
     width: auto;
     max-width: 100%;
   }
@@ -6787,21 +6792,38 @@ li {
     font-weight: 700;
   }
 
-  /* Filter pills — horizontal scroll, full width */
+  /* Filter pills — own row, horizontal scroll, full width */
   .planning-page .planning-filter-pills {
+    order: 2;
+    flex: 0 0 100%;
     overflow-x: auto;
     justify-content: flex-start;
     gap: 8px;
-    align-self: stretch;
   }
   .planning-page .planning-filter-pill {
     white-space: nowrap;
     flex-shrink: 0;
   }
 
-  /* Hide + Aufgabe button on mobile */
+  /* Board-mode switch (Einsätze / Aufgaben) shares the last row with the
+     button. It also carries the .planning-filter-pills class, so the 100%
+     basis above lands on it too and would force its own row — reset it to
+     content width. Its base margin-left:auto pins it right, opposite the
+     button. */
+  .planning-page .planning-board-mode-pills {
+    order: 4;
+    flex: 0 0 auto;
+  }
+
+  /* + Aufgabe on mobile — was hidden, but people with task rights need to add
+     tasks on the go. Left-aligned on the same row as the board-mode switch,
+     only as wide as its label (no stretch). Still gated on canManageTasks in
+     the JSX, so only the right holders ever see it. */
   .planning-page .planning-add-task-btn {
-    display: none;
+    order: 3;
+    display: inline-flex;
+    align-self: center;
+    min-height: 36px;
   }
 
   /* Hide the day/tag toggle button on mobile */
