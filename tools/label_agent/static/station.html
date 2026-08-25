@@ -1,0 +1,1704 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="robots" content="noindex">
+<title>Inventur-Station</title>
+<style>
+/* ------------------------------------------------------------------ *
+ * Inventur-Station - Werkstatt/Lager. Dunkel, gross, kontrastreich.
+ * Zwei Akzente: --ok (Erfolg), --warn (Aufmerksamkeit). Sonst nichts.
+ * ------------------------------------------------------------------ */
+:root{
+  --bg:#080b10;
+  --surface:#121821;
+  --surface2:#1a2230;
+  --line:#28323f;
+  --line2:#3a4757;
+  --fg:#f3f7fc;
+  --dim:#93a2b6;
+  --dim2:#68788c;
+  --ok:#2fe083;
+  --warn:#ffb02e;
+  --r:14px;
+  --pad:clamp(10px, 1.4vw, 20px);
+  --font:-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "Helvetica Neue", Arial, sans-serif;
+  --mono:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0;
+  background:var(--bg);
+  color:var(--fg);
+  font-family:var(--font);
+  font-size:16px;
+  -webkit-font-smoothing:antialiased;
+  overflow:hidden;
+  display:grid;
+  grid-template-rows:auto auto auto minmax(0,1fr) auto;
+  height:100dvh;
+  user-select:none;
+}
+input{user-select:text}
+button,input,a{font-family:inherit}
+:focus-visible{outline:3px solid var(--ok); outline-offset:2px}
+
+/* ---------- Scanner-Senke: fokussierbar, unsichtbar ---------- */
+#sink{
+  position:fixed; top:0; left:0;
+  width:2px; height:2px;
+  opacity:0; border:0; padding:0; margin:0;
+  background:transparent; color:transparent;
+  z-index:-1;
+}
+
+/* ---------- Kopfleiste ---------- */
+header{
+  display:flex; flex-wrap:wrap; align-items:center; gap:10px 14px;
+  padding:10px var(--pad);
+  background:var(--surface);
+  border-bottom:1px solid var(--line);
+}
+.brand{
+  font-size:.72rem; letter-spacing:.16em; text-transform:uppercase;
+  color:var(--dim2); font-weight:700; white-space:nowrap;
+}
+.sesswrap{display:flex; align-items:center; gap:8px}
+.sesslab{font-size:.72rem; letter-spacing:.12em; text-transform:uppercase; color:var(--dim2); font-weight:700}
+#sessionInput{
+  background:var(--surface2); color:var(--fg);
+  border:1px solid var(--line2); border-radius:9px;
+  padding:8px 11px; font-size:1rem; font-weight:650;
+  min-width:15ch; max-width:30ch;
+}
+.spacer{flex:1 1 auto; min-width:8px}
+
+.chip{
+  display:inline-flex; align-items:center; gap:9px;
+  padding:8px 13px; border-radius:999px;
+  background:var(--surface2); border:1px solid var(--line);
+  font-size:.92rem; font-weight:600; white-space:nowrap; color:var(--dim);
+}
+.chip b{color:var(--fg); font-weight:750}
+.chip.is-ok{color:var(--ok); border-color:#1d5b3d; background:#0d2419}
+.chip.is-ok b{color:var(--ok)}
+.chip.is-warn{color:var(--warn); border-color:#6a4a10; background:#241a06}
+.chip.is-warn b{color:var(--warn)}
+.dot{width:11px; height:11px; border-radius:50%; background:var(--dim2); flex:0 0 auto}
+.is-ok .dot{background:var(--ok)}
+.is-warn .dot{background:var(--warn)}
+.chip.armed .dot{animation:pulse 1.6s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1; transform:scale(1)} 50%{opacity:.35; transform:scale(.78)}}
+
+.totals{display:flex; gap:18px; align-items:baseline; white-space:nowrap}
+.tot{display:flex; flex-direction:column; line-height:1.05}
+.tot .n{font-size:1.65rem; font-weight:800; font-variant-numeric:tabular-nums}
+.tot .l{font-size:.66rem; letter-spacing:.13em; text-transform:uppercase; color:var(--dim2); font-weight:700}
+.tot.warn .n{color:var(--warn)}
+
+/* ---------- Schaltflaechen ---------- */
+.btn{
+  appearance:none; border:1px solid var(--line2); border-radius:11px;
+  background:var(--surface2); color:var(--fg);
+  padding:12px 16px; font-size:1rem; font-weight:700;
+  cursor:pointer; white-space:nowrap; text-decoration:none;
+  display:inline-flex; align-items:center; gap:9px; min-height:46px;
+  transition:background .12s ease, border-color .12s ease;
+}
+.btn:hover{background:#232d3c; border-color:#4a5a6d}
+.btn:active{transform:translateY(1px)}
+.btn.small{padding:8px 12px; font-size:.88rem; min-height:38px}
+.btn.ghost{background:transparent}
+.btn.primary{
+  background:var(--ok); color:#04180d; border-color:var(--ok);
+  font-size:1.22rem; padding:16px 26px; min-height:62px; font-weight:800;
+}
+.btn.primary:hover{background:#4bf09a; border-color:#4bf09a}
+.btn.primary[aria-busy="true"]{opacity:.65; cursor:progress}
+.btn .k{
+  font-size:.7rem; font-weight:700; opacity:.65;
+  border:1px solid currentColor; border-radius:5px; padding:1px 5px;
+}
+.btn.on{border-color:var(--ok); color:var(--ok); background:#0d2419}
+.btn.off{border-color:var(--line2); color:var(--dim)}
+
+/* ---------- Buehne: Held oder Namensabfrage ---------- */
+#stage{
+  margin:var(--pad) var(--pad) 0;
+  border:2px solid var(--line);
+  border-radius:var(--r);
+  background:var(--surface);
+  padding:clamp(12px,2vw,26px) clamp(14px,2.2vw,30px);
+  min-height:clamp(150px, 27vh, 260px);
+  display:flex; align-items:center;
+  position:relative; overflow:hidden;
+}
+#stage.flash-ok{animation:flashOk .45s ease-out}
+#stage.flash-warn{animation:flashWarn .5s ease-out}
+@keyframes flashOk{
+  0%{background:#124a2f; border-color:var(--ok)}
+  55%{background:#0e2c1e; border-color:#1d6b45}
+  100%{background:var(--surface); border-color:var(--line)}
+}
+@keyframes flashWarn{
+  0%{background:#4a3408; border-color:var(--warn)}
+  55%{background:#2b1f06; border-color:#7a561a}
+  100%{background:var(--surface); border-color:var(--line)}
+}
+@media (prefers-reduced-motion: reduce){
+  #stage.flash-ok,#stage.flash-warn{animation-duration:.01s}
+  .chip.armed .dot{animation:none}
+}
+#stage.needs-attention{border-color:var(--warn)}
+
+.hero{display:flex; align-items:center; gap:clamp(14px,3vw,44px); width:100%}
+.hero-main{flex:1 1 auto; min-width:0}
+.hero-badge{
+  display:inline-block; font-size:.68rem; letter-spacing:.15em; text-transform:uppercase;
+  font-weight:800; color:var(--dim2); border:1px solid var(--line2);
+  border-radius:6px; padding:3px 8px; margin-bottom:10px;
+}
+.hero-badge.ok{color:var(--ok); border-color:#1d5b3d; background:#0d2419}
+.hero-badge.warn{color:var(--warn); border-color:#6a4a10; background:#241a06}
+.hero-name{
+  margin:0; font-size:clamp(1.7rem, 4.4vw, 3.5rem); line-height:1.02;
+  font-weight:800; letter-spacing:-.02em;
+  overflow:hidden; display:-webkit-box;
+  -webkit-line-clamp:2; -webkit-box-orient:vertical;
+}
+.hero-name.idle{color:var(--dim); font-weight:700}
+.hero-meta{
+  margin-top:10px; font-size:clamp(.9rem,1.3vw,1.1rem); color:var(--dim);
+  font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.hero-meta .mono{font-family:var(--mono); color:var(--fg)}
+.hero-meta .warn{color:var(--warn)}
+.hero-qty{flex:0 0 auto; text-align:right; line-height:.82}
+.qty-num{
+  font-size:clamp(3.6rem, 11.5vw, 9.5rem); font-weight:850;
+  font-variant-numeric:tabular-nums; letter-spacing:-.045em;
+}
+.qty-num.ok{color:var(--ok)}
+.qty-num.idle{color:var(--line2)}
+.qty-lab{
+  font-size:.72rem; letter-spacing:.2em; text-transform:uppercase;
+  color:var(--dim2); font-weight:800; margin-top:10px;
+}
+
+/* ---------- Namensabfrage (inline, kein Modal) ---------- */
+.prompt{width:100%}
+.prompt-head{display:flex; align-items:baseline; flex-wrap:wrap; gap:10px 16px; margin-bottom:12px}
+.prompt-kicker{
+  font-size:.72rem; letter-spacing:.16em; text-transform:uppercase;
+  font-weight:800; color:var(--warn); background:#241a06;
+  border:1px solid #6a4a10; border-radius:6px; padding:4px 9px;
+}
+.prompt-code{
+  font-family:var(--mono);
+  font-size:clamp(1.1rem,2.4vw,1.9rem); font-weight:700; color:var(--fg);
+  word-break:break-all;
+}
+.prompt-qty{font-size:1rem; font-weight:750; color:var(--warn)}
+#nameInput{
+  width:100%; background:var(--bg); color:var(--fg);
+  border:2px solid var(--warn); border-radius:11px;
+  padding:clamp(10px,1.6vw,18px) 18px;
+  font-size:clamp(1.5rem,3.4vw,2.6rem); font-weight:750;
+}
+#nameInput::placeholder{color:var(--dim2); font-weight:600}
+.prompt-hint{margin-top:10px; font-size:.9rem; color:var(--dim); font-weight:600}
+
+/* ---------- Aktionsleiste ---------- */
+.actions{
+  display:flex; flex-wrap:wrap; align-items:center; gap:10px 12px;
+  padding:var(--pad); padding-bottom:0;
+}
+.actions .sep{width:1px; align-self:stretch; background:var(--line); margin:0 4px}
+#preview{
+  display:none; height:52px; max-width:230px; border-radius:8px;
+  background:#fff; padding:3px;
+}
+#hint{
+  flex:1 1 220px; min-width:0; font-size:1rem; font-weight:700;
+  color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+#hint.ok{color:var(--ok)}
+#hint.warn{color:var(--warn)}
+.manual{display:flex; align-items:center; gap:10px; flex:1 1 340px; min-width:280px}
+#manualName{
+  flex:1 1 auto; min-width:0;
+  background:var(--surface2); color:var(--fg);
+  border:1px solid var(--line2); border-radius:11px;
+  padding:13px 15px; font-size:1.02rem; font-weight:650; min-height:46px;
+}
+#manualName::placeholder{color:var(--dim2); font-weight:600}
+
+/* ---------- Liste ---------- */
+.listwrap{margin:var(--pad); margin-bottom:0; min-height:0; display:flex; flex-direction:column}
+.listhead{
+  display:flex; align-items:baseline; justify-content:space-between;
+  padding:0 4px 8px; font-size:.68rem; letter-spacing:.15em;
+  text-transform:uppercase; color:var(--dim2); font-weight:800;
+}
+#list{
+  list-style:none; margin:0; padding:0; overflow-y:auto; overscroll-behavior:contain;
+  border:1px solid var(--line); border-radius:var(--r); background:var(--surface);
+  min-height:0; flex:1 1 auto;
+}
+#list li{
+  display:flex; align-items:center; gap:14px;
+  padding:11px 14px; border-bottom:1px solid var(--line);
+  cursor:pointer;
+}
+#list li:last-child{border-bottom:0}
+#list li:hover{background:var(--surface2)}
+#list li.sel{background:var(--surface2); box-shadow:inset 4px 0 0 var(--ok)}
+#list li.attn{box-shadow:inset 4px 0 0 var(--warn)}
+#list li.zero{opacity:.45}
+.r-qty{
+  flex:0 0 auto; min-width:3.4ch; text-align:right;
+  font-size:clamp(1.4rem,2.6vw,2.1rem); font-weight:800;
+  font-variant-numeric:tabular-nums; letter-spacing:-.02em;
+}
+.r-qty.ok{color:var(--ok)}
+.r-main{flex:1 1 auto; min-width:0}
+.r-name{
+  display:block;
+  font-size:clamp(1rem,1.6vw,1.28rem); font-weight:700;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.r-meta{
+  display:block;
+  margin-top:3px; font-size:.82rem; color:var(--dim2); font-weight:600;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.r-meta .mono{font-family:var(--mono)}
+.r-meta .warn{color:var(--warn)}
+.r-acts{flex:0 0 auto; display:flex; gap:7px}
+.empty{padding:34px 20px; text-align:center; color:var(--dim2); font-size:1.05rem; font-weight:650}
+.more{padding:12px 14px; text-align:center; color:var(--dim2); font-size:.86rem; font-weight:700}
+
+/* ---------- Fussleiste ---------- */
+footer{
+  display:flex; flex-wrap:wrap; gap:6px 18px; align-items:center;
+  padding:9px var(--pad) calc(9px + env(safe-area-inset-bottom));
+  font-size:.8rem; color:var(--dim2); font-weight:650;
+}
+footer kbd{
+  font-family:inherit; font-size:.74rem; font-weight:800;
+  border:1px solid var(--line2); border-bottom-width:2px; border-radius:5px;
+  padding:1px 6px; margin-right:5px; color:var(--dim);
+}
+@media (max-height:760px){
+  #stage{min-height:132px}
+  .qty-num{font-size:clamp(3rem,9vw,6.4rem)}
+  .hero-name{font-size:clamp(1.5rem,3.4vw,2.4rem)}
+  .btn.primary{min-height:54px; padding:13px 20px; font-size:1.08rem}
+}
+</style>
+</head>
+<body>
+
+<input id="sink" aria-label="Scanner-Eingabe" autocomplete="off" autocorrect="off"
+       autocapitalize="off" spellcheck="false" inputmode="none">
+
+<header>
+  <span class="brand">Inventur</span>
+  <span class="sesswrap">
+    <span class="sesslab">Session</span>
+    <input id="sessionInput" data-keep-focus="1" autocomplete="off" autocorrect="off"
+           autocapitalize="off" spellcheck="false" maxlength="64" title="Session-Name - Enter uebernimmt">
+  </span>
+
+  <span class="chip" id="chipScan"><span class="dot"></span><b>Scanner</b></span>
+  <span class="chip" id="chipPrint"><span class="dot"></span><b>Drucker</b></span>
+  <span class="chip" id="chipUp"><span class="dot"></span><b>SMPL</b></span>
+
+  <span class="spacer"></span>
+
+  <span class="totals">
+    <span class="tot"><span class="n" id="totItems">0</span><span class="l">Positionen</span></span>
+    <span class="tot"><span class="n" id="totUnits">0</span><span class="l">Einheiten</span></span>
+    <span class="tot warn" id="totSyncWrap" hidden><span class="n" id="totSync">0</span><span class="l">offen</span></span>
+  </span>
+
+  <a class="btn small ghost" id="expCsv" href="#" target="_blank" rel="noopener">CSV</a>
+  <a class="btn small ghost" id="expJson" href="#" target="_blank" rel="noopener">JSON</a>
+  <button class="btn small" id="btnSound" type="button" title="Signalton an/aus">Ton</button>
+</header>
+
+<section id="stage">
+  <div class="hero" id="heroView">
+    <div class="hero-main">
+      <span class="hero-badge" id="heroBadge">bereit</span>
+      <h1 class="hero-name idle" id="heroName">Bereit zum Scannen</h1>
+      <div class="hero-meta" id="heroMeta">Barcode scannen &ndash; gez&auml;hlt wird sofort, ohne R&uuml;ckfrage.</div>
+    </div>
+    <div class="hero-qty">
+      <div class="qty-num idle" id="heroQty">&ndash;</div>
+      <div class="qty-lab" id="heroQtyLab">St&uuml;ck</div>
+    </div>
+  </div>
+
+  <div class="prompt" id="promptView" hidden>
+    <div class="prompt-head">
+      <span class="prompt-kicker" id="promptKicker">Unbekannter Code</span>
+      <span class="prompt-code" id="promptCode"></span>
+      <span class="prompt-qty" id="promptQty"></span>
+    </div>
+    <input id="nameInput" data-keep-focus="1" placeholder="Artikelname eingeben und Enter"
+           autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" maxlength="120">
+    <div class="prompt-hint" id="promptHint">Enter = anlegen und z&auml;hlen &middot; Esc = verwerfen &middot; leer + Enter = ohne Namen z&auml;hlen</div>
+  </div>
+</section>
+
+<div class="actions">
+  <button class="btn primary" id="btnPrint" type="button">Etikett drucken <span class="k">F2</span></button>
+  <img id="preview" alt="Etikettenvorschau">
+  <button class="btn" id="btnAuto" type="button">Auto-Etikett <span class="k">F4</span></button>
+  <button class="btn" id="btnUndo" type="button">R&uuml;ckg&auml;ngig <span class="k">&#8984;Z</span></button>
+  <span class="sep"></span>
+  <span class="manual">
+    <input id="manualName" data-keep-focus="1" placeholder="Artikel ohne Barcode: Name eingeben (F3)"
+           autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" maxlength="120">
+    <button class="btn" id="btnManual" type="button">Anlegen&nbsp;+&nbsp;Etikett</button>
+  </span>
+  <span id="hint"></span>
+</div>
+
+<div class="listwrap">
+  <div class="listhead"><span>Gez&auml;hlte Positionen &ndash; zuletzt oben</span><span id="listCount"></span></div>
+  <ul id="list"></ul>
+</div>
+
+<footer>
+  <span><kbd>Enter</kbd>Scan &uuml;bernehmen</span>
+  <span><kbd>Esc</kbd>Eingabe abbrechen</span>
+  <span><kbd>&#8984;Z</kbd>letzten Scan r&uuml;ckg&auml;ngig</span>
+  <span><kbd>F2</kbd>Etikett</span>
+  <span><kbd>F3</kbd>Artikel ohne Barcode</span>
+  <span><kbd>F4</kbd>Auto-Etikett</span>
+  <span id="footNote"></span>
+</footer>
+
+<noscript><p style="padding:24px;font-size:1.2rem">Diese Station ben&ouml;tigt JavaScript.</p></noscript>
+
+<script>
+(function(){
+'use strict';
+
+/* ================================================================== *
+ * Konfiguration
+ * ================================================================== */
+var CFG = {
+  healthMs:      3000,   /* Drucker-/Agent-Status pollen                 */
+  reconcileMs:   15000,  /* Abgleich mit Server (nur wenn Agent da ist)  */
+  watchdogMs:    350,    /* Fokus-Waechter                               */
+  gapResetMs:    1500,   /* Puffer verwerfen, wenn zu lange nichts kam   */
+  tResolve:      3500,   /* /resolve darf den Bediener nicht aufhalten   */
+  tCount:        6000,
+  tPrint:        25000,
+  tHealth:       2500,
+  tSession:      8000,
+  maxRows:       200,    /* sichtbare Zeilen (Rest als Hinweis)          */
+  sigGapMs:      30,     /* HID-Scanner: Zeichenabstand in ms            */
+  sigMinChars:   5,      /* ab so vielen Zeichen gilt ein Burst als Scan */
+  hintMs:        5000,
+  maxCodeLen:    128,
+  maxNameLen:    120
+};
+var LSK = 'smpl.station.v1';
+var CTRL_RE = /[\u0000-\u001F\u007F]/g;
+
+/* ================================================================== *
+ * Kleine Helfer
+ * ================================================================== */
+function $(id){ return document.getElementById(id); }
+
+function esc(s){
+  return String(s === null || s === undefined ? '' : s).replace(/[&<>"']/g, function(c){
+    if(c === '&') return '&amp;';
+    if(c === '<') return '&lt;';
+    if(c === '>') return '&gt;';
+    if(c === '"') return '&quot;';
+    return '&#39;';
+  });
+}
+function num(v, dflt){
+  var n = typeof v === 'number' ? v : parseFloat(v);
+  return (typeof n === 'number' && isFinite(n)) ? n : dflt;
+}
+function sanitizeCode(s){
+  if(typeof s !== 'string') return '';
+  var out = s.replace(CTRL_RE, '').trim();
+  if(out.length > CFG.maxCodeLen) out = out.slice(0, CFG.maxCodeLen);
+  return out;
+}
+function sanitizeName(s){
+  if(typeof s !== 'string') return '';
+  var out = s.replace(CTRL_RE, ' ').replace(/\s+/g, ' ').trim();
+  if(out.length > CFG.maxNameLen) out = out.slice(0, CFG.maxNameLen);
+  return out;
+}
+function sanitizeSession(s){
+  var out = String(s === null || s === undefined ? '' : s)
+    .trim().replace(/[^A-Za-z0-9._-]+/g, '-').replace(/^[-.]+/, '').replace(/[-.]+$/, '').slice(0, 64);
+  return out || defaultSession();
+}
+function defaultSession(){
+  var d = new Date();
+  function p(n){ return (n < 10 ? '0' : '') + n; }
+  return 'inventur-' + d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+}
+function clockOf(ms){
+  var n = num(ms, 0);
+  if(!n) return '';
+  try{
+    return new Date(n).toLocaleTimeString('de-DE', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+  }catch(e){ return ''; }
+}
+function parseTs(v){
+  if(typeof v === 'number' && isFinite(v)) return v > 1e12 ? v : v * 1000;
+  if(typeof v === 'string' && v){
+    var t = Date.parse(v);
+    if(!isNaN(t)) return t;
+  }
+  return 0;
+}
+
+/* ================================================================== *
+ * Netzwerk - wirft niemals, blockiert nie laenger als das Timeout
+ * ================================================================== */
+function api(path, opts){
+  opts = opts || {};
+  var method = opts.method || 'GET';
+  var body = opts.body || null;
+  var timeout = num(opts.timeout, 6000);
+
+  if(typeof fetch !== 'function'){
+    return Promise.resolve({ok:false, error:'fetch nicht verfuegbar'});
+  }
+  var ctrl = null, timer = 0;
+  try{ ctrl = new AbortController(); }catch(e){ ctrl = null; }
+
+  var init = {method:method, cache:'no-store'};
+  if(body){
+    init.headers = {'Content-Type':'application/json'};
+    try{ init.body = JSON.stringify(body); }
+    catch(e){ return Promise.resolve({ok:false, error:'Ungueltige Anfrage'}); }
+  }
+  if(ctrl){
+    init.signal = ctrl.signal;
+    timer = setTimeout(function(){ try{ ctrl.abort(); }catch(e){} }, timeout);
+  }
+
+  function done(r){ if(timer) clearTimeout(timer); return r; }
+
+  return fetch(path, init).then(function(res){
+    if(!res.ok) return {ok:false, error:'HTTP ' + res.status, status:res.status};
+    return res.text().then(function(txt){
+      var data = null;
+      try{ data = JSON.parse(txt); }catch(e){ return {ok:false, error:'Antwort ist kein JSON'}; }
+      if(data === null || typeof data !== 'object') return {ok:false, error:'Unerwartete Antwort'};
+      return {ok:true, data:data};
+    }, function(){ return {ok:false, error:'Antwort nicht lesbar'}; });
+  }, function(err){
+    var aborted = !!err && (err.name === 'AbortError' || err.code === 20);
+    return {ok:false, error: aborted ? 'Zeitueberschreitung' : 'Agent nicht erreichbar'};
+  }).then(done, function(){ return done({ok:false, error:'Unbekannter Fehler'}); });
+}
+
+/* ================================================================== *
+ * Ton - synthetisiert, keine Datei, keine externe Quelle
+ * ================================================================== */
+var actx = null;
+var TONES = {
+  /* [Frequenz, Startversatz s, Dauer s, Lautstaerke] */
+  tick:  [[1500, 0.000, 0.020, 0.10]],
+  ok:    [[1150, 0.000, 0.070, 0.26]],
+  ok2:   [[1150, 0.000, 0.050, 0.24], [1600, 0.055, 0.065, 0.24]],
+  warn:  [[ 560, 0.000, 0.090, 0.28], [ 420, 0.115, 0.150, 0.28]],
+  err:   [[ 240, 0.000, 0.260, 0.28]],
+  print: [[ 900, 0.000, 0.050, 0.20], [1350, 0.055, 0.100, 0.20]],
+  undo:  [[ 760, 0.000, 0.055, 0.24], [ 480, 0.065, 0.095, 0.24]]
+};
+function ensureAudio(){
+  try{
+    if(!actx){
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if(!AC) return null;
+      actx = new AC();
+    }
+    if(actx.state === 'suspended' && actx.resume) actx.resume()['catch'](function(){});
+    return actx;
+  }catch(e){ return null; }
+}
+function beep(kind){
+  if(!state.sound) return;
+  var ctx = ensureAudio();
+  if(!ctx) return;
+  var spec = TONES[kind] || TONES.ok;
+  var t0 = ctx.currentTime + 0.001;
+  try{
+    for(var i = 0; i < spec.length; i++){
+      var s = spec[i];
+      var osc = ctx.createOscillator();
+      var g = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(s[0], t0 + s[1]);
+      g.gain.setValueAtTime(0.0001, t0 + s[1]);
+      g.gain.exponentialRampToValueAtTime(s[3], t0 + s[1] + 0.006);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + s[1] + s[2]);
+      osc.connect(g); g.connect(ctx.destination);
+      osc.start(t0 + s[1]);
+      osc.stop(t0 + s[1] + s[2] + 0.03);
+    }
+  }catch(e){ /* Ton ist niemals kritisch */ }
+}
+
+/* ================================================================== *
+ * Zustand (unveraenderlich fortgeschrieben)
+ * ================================================================== */
+var ordSeq = 1;
+function nextOrd(){ return ++ordSeq; }
+
+var state = {
+  session:    defaultSession(),
+  rows:       {},      /* code -> Zeile */
+  current:    null,
+  undo:       [],
+  autoPrint:  true,
+  sound:      true,
+  health:     null,
+  agentOk:    false,
+  agentErr:   'wird geprueft',
+  namePrompt: null,    /* {code, mode:'new'|'rename', qty} */
+  printBusy:  false,
+  printQueue: [],
+  hint:       '',
+  hintKind:   ''
+};
+function setState(patch){ state = Object.assign({}, state, patch); }
+
+function newRow(code, name){
+  var nm = sanitizeName(name) || code;
+  return {
+    code: code, name: nm, qty: 0, scans: 0,
+    lastAt: 0, ord: 0, article: '', source: '',
+    provisional: (nm === code), unsynced: false, inflight: 0, seq: 0
+  };
+}
+function putRow(code, row){
+  var rows = Object.assign({}, state.rows);
+  rows[code] = row;
+  setState({rows: rows});
+}
+function pickName(prev, incoming, force){
+  var inc = sanitizeName(incoming);
+  if(!inc) return prev.name;
+  if(force) return inc;
+  if(prev.provisional || prev.name === prev.code) return inc;
+  return prev.name;
+}
+function sortedCodes(){
+  var rows = state.rows;
+  var codes = Object.keys(rows);
+  codes.sort(function(a, b){
+    var ra = rows[a], rb = rows[b];
+    return (rb.ord - ra.ord) || (rb.lastAt - ra.lastAt) || (a < b ? -1 : 1);
+  });
+  return codes;
+}
+function totals(){
+  var codes = Object.keys(state.rows), items = 0, units = 0, open = 0, i, r;
+  for(i = 0; i < codes.length; i++){
+    r = state.rows[codes[i]];
+    if(r.qty > 0) items++;
+    units += r.qty;
+    if(r.unsynced || r.inflight > 0) open++;
+  }
+  return {items:items, units:units, open:open};
+}
+
+/* ================================================================== *
+ * Persistenz - ein Neuladen darf keine Zaehlung kosten
+ * ================================================================== */
+var persistTimer = 0;
+function persistSoon(){
+  if(persistTimer) return;
+  persistTimer = setTimeout(function(){ persistTimer = 0; persist(); }, 400);
+}
+function persist(){
+  try{
+    localStorage.setItem(LSK + '.prefs', JSON.stringify({
+      autoPrint: state.autoPrint, sound: state.sound, session: state.session
+    }));
+    localStorage.setItem(LSK + '.s.' + state.session, JSON.stringify({
+      rows: state.rows, current: state.current, savedAt: Date.now()
+    }));
+  }catch(e){ /* Kontingent voll / privater Modus: nicht kritisch */ }
+}
+function loadPrefs(){
+  try{
+    var raw = localStorage.getItem(LSK + '.prefs');
+    if(!raw) return null;
+    var d = JSON.parse(raw);
+    if(!d || typeof d !== 'object') return null;
+    return d;
+  }catch(e){ return null; }
+}
+function loadLocalRows(session){
+  try{
+    var raw = localStorage.getItem(LSK + '.s.' + session);
+    if(!raw) return null;
+    var d = JSON.parse(raw);
+    if(!d || typeof d !== 'object' || !d.rows || typeof d.rows !== 'object') return null;
+    var out = {}, codes = Object.keys(d.rows), i, src, code, row;
+    for(i = 0; i < codes.length; i++){
+      code = sanitizeCode(codes[i]);
+      if(!code) continue;
+      src = d.rows[codes[i]];
+      if(!src || typeof src !== 'object') continue;
+      row = newRow(code, typeof src.name === 'string' ? src.name : code);
+      row.qty = Math.max(0, Math.round(num(src.qty, 0)));
+      row.scans = Math.max(0, Math.round(num(src.scans, 0)));
+      row.lastAt = num(src.lastAt, 0);
+      row.ord = nextOrd();
+      row.article = typeof src.article === 'string' ? src.article : '';
+      row.source = typeof src.source === 'string' ? src.source : '';
+      row.provisional = src.provisional === true || row.name === code;
+      row.unsynced = src.unsynced === true || num(src.inflight, 0) > 0;
+      out[code] = row;
+    }
+    return {rows: out, current: typeof d.current === 'string' ? d.current : null};
+  }catch(e){ return null; }
+}
+
+/* ================================================================== *
+ * Darstellung
+ * ================================================================== */
+var previewKey = '', previewTimer = 0, hintTimer = 0;
+
+function setHint(msg, kind){
+  setState({hint: msg || '', hintKind: kind || ''});
+  if(hintTimer) clearTimeout(hintTimer);
+  if(msg){
+    hintTimer = setTimeout(function(){
+      hintTimer = 0;
+      setState({hint:'', hintKind:''});
+      renderHint();
+    }, CFG.hintMs);
+  }
+  renderHint();
+}
+function renderHint(){
+  var el = $('hint');
+  el.textContent = state.hint;
+  el.className = state.hintKind === 'ok' ? 'ok' : (state.hintKind === 'warn' ? 'warn' : '');
+}
+
+function flash(kind){
+  var el = $('stage');
+  if(!el) return;
+  el.classList.remove('flash-ok', 'flash-warn');
+  void el.offsetWidth;                       /* Neustart der Animation erzwingen */
+  el.classList.add(kind === 'warn' ? 'flash-warn' : 'flash-ok');
+}
+
+function chip(el, kind, label, value){
+  el.className = 'chip' + (kind === 'ok' ? ' is-ok' : (kind === 'warn' ? ' is-warn' : ''));
+  el.innerHTML = '<span class="dot"></span><b>' + esc(label) + '</b>' +
+                 (value ? ' <span>' + esc(value) + '</span>' : '');
+  return el;
+}
+
+function isArmed(){
+  return !state.namePrompt &&
+         document.activeElement === $('sink') &&
+         (typeof document.hasFocus !== 'function' || document.hasFocus());
+}
+
+function renderStatus(){
+  /* Scanner */
+  var c = $('chipScan');
+  if(state.namePrompt){
+    chip(c, 'warn', 'Scanner', 'wartet auf Namen');
+  }else if(isArmed()){
+    chip(c, 'ok', 'Scanner', 'bereit');
+    c.classList.add('armed');
+  }else if(isTextField(document.activeElement)){
+    chip(c, 'warn', 'Scanner', 'Texteingabe aktiv');
+  }else if(typeof document.hasFocus === 'function' && !document.hasFocus()){
+    chip(c, 'warn', 'Scanner', 'Fenster nicht aktiv');
+  }else{
+    chip(c, 'warn', 'Scanner', 'wird aktiviert');
+  }
+
+  /* Drucker */
+  var p = $('chipPrint'), h = state.health;
+  if(!state.agentOk){
+    chip(p, 'warn', 'Drucker', state.agentErr || 'Agent offline');
+  }else if(h && h.printer_connected === true){
+    var mm = num(h.media_width_mm, 0);
+    chip(p, 'ok', 'Drucker', mm ? ('bereit - ' + mm + ' mm') : 'bereit');
+  }else{
+    chip(p, 'warn', 'Drucker', (h && typeof h.error === 'string' && h.error) ? h.error : 'nicht verbunden');
+  }
+
+  /* SMPL-Anbindung */
+  var u = $('chipUp');
+  if(!state.agentOk) chip(u, 'warn', 'SMPL', 'unbekannt');
+  else if(state.health && state.health.upstream_ok === true) chip(u, 'ok', 'SMPL', 'verbunden');
+  else chip(u, 'warn', 'SMPL', 'offline - Cache');
+
+  /* Summen */
+  var t = totals();
+  $('totItems').textContent = String(t.items);
+  $('totUnits').textContent = String(t.units);
+  $('totSync').textContent = String(t.open);
+  $('totSyncWrap').hidden = t.open === 0;
+
+  /* Export */
+  var s = encodeURIComponent(state.session);
+  $('expCsv').setAttribute('href', '/export/' + s + '.csv');
+  $('expJson').setAttribute('href', '/export/' + s + '.json');
+
+  /* Session-Feld nur schreiben, wenn der Bediener nicht darin tippt */
+  var si = $('sessionInput');
+  if(document.activeElement !== si && si.value !== state.session) si.value = state.session;
+
+  /* Umschalter */
+  var a = $('btnAuto');
+  a.className = 'btn ' + (state.autoPrint ? 'on' : 'off');
+  a.innerHTML = 'Auto-Etikett: ' + (state.autoPrint ? 'AN' : 'AUS') + ' <span class="k">F4</span>';
+  var sd = $('btnSound');
+  sd.className = 'btn small ' + (state.sound ? 'on' : 'off');
+  sd.textContent = state.sound ? 'Ton AN' : 'Ton AUS';
+
+  $('btnPrint').setAttribute('aria-busy', state.printBusy ? 'true' : 'false');
+
+  document.title = t.units + ' Einheiten - ' + state.session;
+  $('footNote').textContent = state.autoPrint
+    ? 'Auto-Etikett: neu angelegte Artikel werden sofort gedruckt.'
+    : 'Auto-Etikett aus - Etiketten nur auf Knopfdruck.';
+}
+
+function renderStage(){
+  var np = state.namePrompt;
+  $('promptView').hidden = !np;
+  $('heroView').hidden = !!np;
+  if(np) $('stage').classList.add('needs-attention');
+  else $('stage').classList.remove('needs-attention');
+
+  if(np){
+    $('promptKicker').textContent = np.mode === 'rename' ? 'Name nachtragen' : 'Unbekannter Code';
+    $('promptCode').textContent = np.code;
+    $('promptQty').textContent = np.qty > 1 ? ('bereits ' + np.qty + 'x gescannt') : '';
+    $('promptHint').textContent = np.mode === 'rename'
+      ? 'Enter = Namen speichern | Esc = abbrechen'
+      : 'Enter = anlegen und zaehlen | Esc = verwerfen | leer + Enter = ohne Namen zaehlen';
+    updatePreview();
+    return;
+  }
+
+  var row = state.current ? state.rows[state.current] : null;
+  var badge = $('heroBadge'), name = $('heroName'), meta = $('heroMeta'), qty = $('heroQty');
+
+  if(!row){
+    badge.className = 'hero-badge';
+    badge.textContent = 'bereit';
+    name.className = 'hero-name idle';
+    name.textContent = 'Bereit zum Scannen';
+    meta.innerHTML = 'Barcode scannen &ndash; gez&auml;hlt wird sofort, ohne R&uuml;ckfrage.';
+    qty.className = 'qty-num idle';
+    qty.textContent = '–';
+    updatePreview();
+    return;
+  }
+
+  var attn = row.provisional || row.unsynced;
+  badge.className = 'hero-badge ' + (attn ? 'warn' : 'ok');
+  badge.textContent = row.provisional ? 'Name fehlt'
+                     : (row.unsynced ? 'nicht gespeichert'
+                     : (row.source === 'cache' ? 'aus Cache'
+                     : (row.source === 'smpl' ? 'aus SMPL' : 'gezaehlt')));
+  name.className = 'hero-name';
+  name.textContent = row.name;
+
+  var bits = ['<span class="mono">' + esc(row.code) + '</span>'];
+  if(row.article && row.article !== row.code) bits.push('Art.-Nr. ' + esc(row.article));
+  bits.push(row.scans + (row.scans === 1 ? ' Scan' : ' Scans'));
+  if(row.lastAt) bits.push(esc(clockOf(row.lastAt)));
+  if(row.unsynced) bits.push('<span class="warn">nicht gespeichert - Abgleich laeuft</span>');
+  else if(row.provisional) bits.push('<span class="warn">Name nachtragen: Zeile anklicken</span>');
+  meta.innerHTML = bits.join(' &middot; ');
+
+  qty.className = 'qty-num ' + (row.qty > 0 ? 'ok' : 'idle');
+  qty.textContent = String(row.qty);
+  updatePreview();
+}
+
+function updatePreview(){
+  var img = $('preview');
+  var row = state.current ? state.rows[state.current] : null;
+  if(!row || state.namePrompt){
+    previewKey = '';
+    img.style.display = 'none';
+    img.removeAttribute('src');
+    return;
+  }
+  var key = row.code + '\u0001' + row.name;
+  if(key === previewKey) return;
+  previewKey = key;
+  if(previewTimer) clearTimeout(previewTimer);
+  previewTimer = setTimeout(function(){
+    previewTimer = 0;
+    img.onerror = function(){ img.style.display = 'none'; };
+    img.onload  = function(){ img.style.display = 'block'; };
+    img.src = '/preview.png?code=' + encodeURIComponent(row.code) +
+              '&title=' + encodeURIComponent(row.name);
+  }, 350);
+}
+
+function renderList(){
+  var codes = sortedCodes();
+  var ul = $('list');
+  $('listCount').textContent = codes.length ? (codes.length + ' Positionen') : '';
+
+  if(!codes.length){
+    ul.innerHTML = '<li class="empty" style="cursor:default">Noch nichts gez&auml;hlt. Ersten Barcode scannen.</li>';
+    return;
+  }
+  var shown = codes.slice(0, CFG.maxRows);
+  var html = [];
+  for(var i = 0; i < shown.length; i++){
+    var r = state.rows[shown[i]];
+    var classes = [];
+    if(r.code === state.current) classes.push('sel');
+    if(r.provisional || r.unsynced) classes.push('attn');
+    if(r.qty === 0) classes.push('zero');
+
+    var meta = ['<span class="mono">' + esc(r.code) + '</span>'];
+    if(r.article && r.article !== r.code) meta.push(esc(r.article));
+    meta.push(r.scans + 'x');
+    if(r.lastAt) meta.push(esc(clockOf(r.lastAt)));
+    if(r.unsynced) meta.push('<span class="warn">offen</span>');
+    else if(r.provisional) meta.push('<span class="warn">Name fehlt</span>');
+
+    html.push(
+      '<li class="' + classes.join(' ') + '" data-code="' + esc(r.code) + '">' +
+        '<span class="r-qty' + (r.qty > 0 ? ' ok' : '') + '">' + r.qty + '</span>' +
+        '<span class="r-main">' +
+          '<span class="r-name">' + esc(r.name) + '</span>' +
+          '<span class="r-meta">' + meta.join(' &middot; ') + '</span>' +
+        '</span>' +
+        '<span class="r-acts">' +
+          '<button class="btn small" type="button" data-act="minus" title="eine Einheit abziehen">&minus;1</button>' +
+          '<button class="btn small" type="button" data-act="print" title="Etikett drucken">Etikett</button>' +
+        '</span>' +
+      '</li>'
+    );
+  }
+  if(codes.length > shown.length){
+    html.push('<li class="more" style="cursor:default">' + (codes.length - shown.length) +
+              ' weitere Positionen &ndash; vollst&auml;ndig im CSV-Export</li>');
+  }
+  ul.innerHTML = html.join('');
+}
+
+function render(){
+  renderStatus();
+  renderStage();
+  renderList();
+  renderHint();
+  persistSoon();
+}
+
+/* ================================================================== *
+ * Zaehlen
+ * ================================================================== */
+function applyCount(code, name, delta, opts){
+  opts = opts || {};
+  var prev = state.rows[code] || newRow(code, name);
+  var nm = pickName(prev, name, opts.forceName === true);
+  var qty = Math.max(0, prev.qty + delta);
+  var scans = delta > 0 ? prev.scans + 1 : (delta < 0 ? Math.max(0, prev.scans - 1) : prev.scans);
+
+  var next = Object.assign({}, prev, {
+    name: nm,
+    qty: qty,
+    scans: scans,
+    lastAt: Date.now(),
+    ord: nextOrd(),
+    inflight: prev.inflight + 1,
+    seq: prev.seq + 1,
+    article: opts.article || prev.article || '',
+    source: opts.source || prev.source || '',
+    provisional: opts.forceName === true ? false
+                 : (opts.provisional === true ? true : prev.provisional)
+  });
+  putRow(code, next);
+  setState({current: code});
+
+  if(delta > 0 && opts.isUndo !== true){
+    setState({undo: state.undo.concat([{code:code, qty:delta, name:nm, ts:Date.now()}]).slice(-500)});
+  }
+  render();
+  sendCount(code, nm, delta, next.seq);
+  return next;
+}
+
+function sendCount(code, name, qty, seq){
+  api('/count', {
+    method: 'POST',
+    timeout: CFG.tCount,
+    body: {session: state.session, code: code, article_name: name, qty: qty}
+  }).then(function(r){
+    var row = state.rows[code];
+    if(!row) return;
+    var inflight = Math.max(0, row.inflight - 1);
+    var quiet = (inflight === 0) && (seq === row.seq);
+
+    if(r.ok && typeof r.data.counted_qty === 'number' && isFinite(r.data.counted_qty)){
+      putRow(code, Object.assign({}, row, {
+        inflight: inflight,
+        unsynced: inflight > 0 ? row.unsynced : false,
+        qty:   quiet ? Math.max(0, Math.round(r.data.counted_qty)) : row.qty,
+        scans: (quiet && typeof r.data.scan_count === 'number' && isFinite(r.data.scan_count))
+                 ? Math.max(0, Math.round(r.data.scan_count)) : row.scans
+      }));
+    }else{
+      putRow(code, Object.assign({}, row, {inflight: inflight, unsynced: true}));
+      setHint('Nicht gespeichert (' + (r.error || 'Fehler') + ') - wird automatisch nachgetragen', 'warn');
+    }
+    render();
+  });
+}
+
+/* ================================================================== *
+ * Scan-Verarbeitung
+ * ================================================================== */
+var resolveCache = Object.create(null);   /* code -> {found, item_name, ...} */
+var resolvePending = Object.create(null); /* code -> Promise                */
+
+function resolveOnce(code){
+  if(resolveCache[code]) return Promise.resolve(resolveCache[code]);
+  if(resolvePending[code]) return resolvePending[code];
+
+  var p = api('/resolve', {method:'POST', timeout:CFG.tResolve, body:{code:code}})
+    .then(function(r){
+      delete resolvePending[code];
+      if(r.ok && r.data.found === true){
+        var res = {
+          found: true,
+          item_name: sanitizeName(r.data.item_name) || code,
+          article_number: typeof r.data.article_number === 'string' ? r.data.article_number : '',
+          source: (r.data.source === 'smpl' || r.data.source === 'cache') ? r.data.source : ''
+        };
+        resolveCache[code] = res;
+        return res;
+      }
+      if(r.ok && r.data.found === false){
+        var miss = {found:false};
+        resolveCache[code] = miss;          /* nicht erneut fragen, bis angelegt */
+        return miss;
+      }
+      return {found:null, error: r.error || 'Fehler'};   /* Netzproblem: nichts merken */
+    }, function(){
+      delete resolvePending[code];
+      return {found:null, error:'Fehler'};
+    });
+
+  resolvePending[code] = p;
+  return p;
+}
+
+function onScan(raw){
+  var code = sanitizeCode(raw);
+  if(!code) return;
+
+  /* Offene Namensabfrage: gleicher Code = weiterzaehlen,
+     anderer Code = vorlaeufig festschreiben statt verlieren. */
+  var np = state.namePrompt;
+  if(np){
+    if(np.code === code){
+      setState({namePrompt: Object.assign({}, np, {qty: np.qty + 1})});
+      beep('tick'); flash('warn'); renderStage();
+      return;
+    }
+    commitPromptProvisionally();
+    render();
+    refocus(true);   /* das Ausblenden der Abfrage darf den Fokus nicht verlieren */
+  }
+
+  var known = state.rows[code];
+  if(known){
+    beep('ok'); flash('ok');
+    applyCount(code, known.name, 1, {});
+    return;
+  }
+  var cached = resolveCache[code];
+  if(cached && cached.found === true){
+    beep('ok'); flash('ok');
+    applyCount(code, cached.item_name, 1, {article: cached.article_number, source: cached.source});
+    return;
+  }
+
+  /* Unbekannt: sofort quittieren, dann aufloesen. */
+  beep('tick');
+  flash('ok');
+  showLookup(code);
+  resolveOnce(code).then(function(res){
+    if(res && res.found === true){
+      beep('ok'); flash('ok');
+      applyCount(code, res.item_name, 1,
+                 {article: res.article_number, source: res.source, forceName: true});
+      return;
+    }
+    if(res && res.found === false){
+      openNamePrompt(code, 'new', 1);
+      return;
+    }
+    /* Kein Ergebnis (offline/Zeitueberschreitung): zaehlen statt blockieren. */
+    beep('warn'); flash('warn');
+    applyCount(code, code, 1, {provisional: true});
+    setHint('Offline gezaehlt - Name fehlt (' + ((res && res.error) || 'Agent nicht erreichbar') + ')', 'warn');
+  });
+}
+
+function showLookup(code){
+  if(state.namePrompt) return;
+  $('promptView').hidden = true;
+  $('heroView').hidden = false;
+  var badge = $('heroBadge'), name = $('heroName'), meta = $('heroMeta'), qty = $('heroQty');
+  badge.className = 'hero-badge';
+  badge.textContent = 'wird gesucht';
+  name.className = 'hero-name idle';
+  name.textContent = code;
+  meta.innerHTML = 'Artikel wird nachgeschlagen &hellip;';
+  qty.className = 'qty-num idle';
+  qty.textContent = '…';
+}
+
+/* ---------- Namensabfrage (inline, kein Modal) ---------- */
+function openNamePrompt(code, mode, qty){
+  setState({namePrompt: {code: code, mode: mode, qty: Math.max(1, num(qty, 1))}});
+  render();
+  var el = $('nameInput');
+  el.value = (mode === 'rename' && state.rows[code]) ? state.rows[code].name : '';
+  try{ el.focus({preventScroll:true}); }catch(e){ try{ el.focus(); }catch(e2){} }
+  try{ el.select(); }catch(e){}
+  beep('warn');
+  flash('warn');
+}
+function closeNamePrompt(){
+  setState({namePrompt: null});
+  $('nameInput').value = '';
+  render();
+  refocus(true);
+}
+function commitNamePrompt(){
+  var np = state.namePrompt;
+  if(!np) return;
+  var name = sanitizeName($('nameInput').value);
+
+  if(np.mode === 'rename'){
+    if(name){
+      applyCount(np.code, name, 0, {forceName: true});
+      delete resolveCache[np.code];
+      beep('ok');
+      setHint('Name gespeichert: ' + name, 'ok');
+    }
+    closeNamePrompt();
+    return;
+  }
+  if(name){
+    applyCount(np.code, name, np.qty, {forceName: true});
+    beep('ok2'); flash('ok');
+    setHint('Neu angelegt: ' + name + ' (' + np.qty + ')', 'ok');
+    delete resolveCache[np.code];
+    if(state.autoPrint) queuePrint(np.code);
+  }else{
+    applyCount(np.code, np.code, np.qty, {provisional: true});
+    beep('warn'); flash('warn');
+    setHint('Ohne Namen gezaehlt - Name spaeter ueber die Zeile nachtragen', 'warn');
+  }
+  closeNamePrompt();
+}
+/* Ein neuer Scan waehrend offener Abfrage darf nichts verlieren. */
+function commitPromptProvisionally(){
+  var np = state.namePrompt;
+  if(!np) return;
+  var typed = sanitizeName($('nameInput').value);
+  setState({namePrompt: null});
+  $('nameInput').value = '';
+
+  if(np.mode === 'rename'){
+    if(typed) applyCount(np.code, typed, 0, {forceName: true});
+    return;
+  }
+  if(typed){
+    applyCount(np.code, typed, np.qty, {forceName: true});
+    if(state.autoPrint) queuePrint(np.code);
+    setHint('Angelegt: ' + typed, 'ok');
+  }else{
+    applyCount(np.code, np.code, np.qty, {provisional: true});
+    setHint('Ohne Namen gezaehlt: ' + np.code + ' - Name spaeter nachtragen', 'warn');
+  }
+}
+
+/* ---------- Artikel ohne Barcode ---------- */
+var CODE_ALPHABET = '0123456789ABCDEFGHJKLMNPQRSTUVWXYZ'; /* ohne I und O */
+function generateCode(){
+  for(var attempt = 0; attempt < 8; attempt++){
+    var s = '', i, bytes = null;
+    try{
+      if(window.crypto && window.crypto.getRandomValues){
+        bytes = new Uint8Array(6);
+        window.crypto.getRandomValues(bytes);
+      }
+    }catch(e){ bytes = null; }
+    for(i = 0; i < 6; i++){
+      var v = bytes ? bytes[i] : Math.floor(Math.random() * 256);
+      s += CODE_ALPHABET.charAt(v % CODE_ALPHABET.length);
+    }
+    var code = 'SMPL-' + s;
+    if(!state.rows[code]) return code;
+  }
+  return 'SMPL-' + String(Date.now()).slice(-8);
+}
+function manualCreate(){
+  var el = $('manualName');
+  var name = sanitizeName(el.value);
+  if(!name){
+    beep('err');
+    setHint('Bitte zuerst einen Namen eingeben', 'warn');
+    focusManual();
+    return;
+  }
+  var code = generateCode();
+  el.value = '';
+  applyCount(code, name, 1, {forceName: true});
+  beep('ok2'); flash('ok');
+  setHint('Angelegt: ' + name + ' (' + code + ') - Etikett wird gedruckt', 'ok');
+  queuePrint(code);
+  refocus(true);
+}
+
+/* ================================================================== *
+ * Drucken - seriell, blockiert niemals das Zaehlen
+ * ================================================================== */
+function queuePrint(code){
+  if(!code || !state.rows[code]) return;
+  setState({printQueue: state.printQueue.concat([code])});
+  drainPrint();
+}
+function drainPrint(){
+  if(state.printBusy || state.printQueue.length === 0) return;
+  var code = state.printQueue[0];
+  setState({printBusy: true, printQueue: state.printQueue.slice(1)});
+  var row = state.rows[code];
+  var title = row ? row.name : code;
+  setHint('Drucke Etikett: ' + title, '');
+  renderStatus();
+
+  api('/print', {method:'POST', timeout:CFG.tPrint,
+                 body:{code: code, title: title, subtitle: code}})
+    .then(function(r){
+      if(r.ok && r.data.ok === true){
+        var ms = num(r.data.ms_total, 0);
+        setHint('Etikett gedruckt: ' + title + (ms ? ' (' + Math.round(ms) + ' ms)' : ''), 'ok');
+        beep('print');
+      }else{
+        var why = r.ok
+          ? ((typeof r.data.error === 'string' && r.data.error) ? r.data.error : 'Drucker meldet Fehler')
+          : r.error;
+        setHint('Druck fehlgeschlagen: ' + why + ' - Zaehlung laeuft weiter', 'warn');
+        beep('err');
+      }
+      setState({printBusy: false});
+      render();
+      if(state.printQueue.length) setTimeout(drainPrint, 80);
+    });
+}
+function printCurrent(){
+  if(state.namePrompt){
+    setHint('Erst Namen bestaetigen oder mit Esc verwerfen', 'warn');
+    beep('err');
+    return;
+  }
+  if(!state.current || !state.rows[state.current]){
+    beep('err');
+    setHint('Kein Artikel ausgewaehlt - Zeile anklicken oder scannen', 'warn');
+    return;
+  }
+  queuePrint(state.current);
+}
+
+/* ================================================================== *
+ * Rueckgaengig
+ * ================================================================== */
+function undoLast(){
+  if(!state.undo.length){
+    beep('err');
+    setHint('Nichts zum Rueckgaengigmachen', 'warn');
+    return;
+  }
+  var last = state.undo[state.undo.length - 1];
+  setState({undo: state.undo.slice(0, -1)});
+  var row = state.rows[last.code];
+  var nm = row ? row.name : last.name;
+  applyCount(last.code, nm, -Math.abs(last.qty), {isUndo: true});
+  beep('undo'); flash('warn');
+  setHint('Rueckgaengig: ' + nm + ' -' + Math.abs(last.qty), 'warn');
+}
+function decrement(code){
+  var row = state.rows[code];
+  if(!row) return;
+  if(row.qty <= 0){ beep('err'); return; }
+  /* passenden Undo-Eintrag entfernen, damit Cmd+Z nicht doppelt abzieht */
+  for(var i = state.undo.length - 1; i >= 0; i--){
+    if(state.undo[i].code === code){
+      setState({undo: state.undo.slice(0, i).concat(state.undo.slice(i + 1))});
+      break;
+    }
+  }
+  applyCount(code, row.name, -1, {isUndo: true});
+  beep('undo'); flash('warn');
+  setHint('-1: ' + row.name, 'warn');
+}
+
+/* ================================================================== *
+ * Fokus - ein Scan darf niemals ins Leere gehen
+ * ================================================================== */
+function isTextField(el){
+  if(!el || el === $('sink')) return false;
+  var tag = el.tagName;
+  if(tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+  return el.isContentEditable === true;
+}
+function focusTarget(){
+  return state.namePrompt ? $('nameInput') : $('sink');
+}
+function refocus(force){
+  var want = focusTarget();
+  if(!want) return;
+  var act = document.activeElement;
+  if(act === want) return;
+  if(!force && isTextField(act)) return;   /* Bediener tippt bewusst irgendwo */
+  try{ want.focus({preventScroll:true}); }
+  catch(e){ try{ want.focus(); }catch(e2){} }
+}
+function focusManual(){
+  if(state.namePrompt) return;
+  var el = $('manualName');
+  try{ el.focus({preventScroll:true}); }catch(e){ try{ el.focus(); }catch(e2){} }
+  try{ el.select(); }catch(e){}
+  renderStatus();
+}
+
+/* ================================================================== *
+ * Tastatur / HID-Scanner
+ * ================================================================== */
+var buf = '', lastKeyAt = 0;
+
+function nowMs(){
+  return (window.performance && performance.now) ? performance.now() : Date.now();
+}
+
+document.addEventListener('keydown', function(e){
+  ensureAudio();                             /* erste Taste = Nutzergeste fuer WebAudio */
+  var inField = isTextField(e.target);
+
+  if(e.key === 'Escape'){
+    if(state.namePrompt){ e.preventDefault(); beep('tick'); closeNamePrompt(); return; }
+    if(inField){
+      e.preventDefault();
+      try{ e.target.blur(); }catch(e2){}
+      refocus(true); renderStatus();
+      return;
+    }
+    buf = '';
+    return;
+  }
+
+  /* Kurzbefehle - ueberall gueltig, auch in Textfeldern */
+  if((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z')){ e.preventDefault(); undoLast(); return; }
+  if((e.metaKey || e.ctrlKey) && (e.key === 'p' || e.key === 'P')){ e.preventDefault(); printCurrent(); return; }
+  if(e.key === 'F2'){ e.preventDefault(); printCurrent(); return; }
+  if(e.key === 'F3'){ e.preventDefault(); focusManual(); return; }
+  if(e.key === 'F4'){ e.preventDefault(); toggleAutoPrint(); return; }
+
+  if(inField) return;                        /* Feld verarbeitet die Taste selbst */
+  if(e.metaKey || e.ctrlKey || e.altKey) return;
+
+  var t = nowMs();
+  if(t - lastKeyAt > CFG.gapResetMs) buf = '';
+  lastKeyAt = t;
+
+  if(e.key === 'Enter' || e.key === 'Tab'){
+    var code = buf;
+    buf = '';
+    if(e.key === 'Tab') e.preventDefault();  /* Tab darf den Fokus nicht verschieben */
+    if(code){
+      e.preventDefault();
+      $('sink').value = '';
+      onScan(code);
+    }
+    return;
+  }
+  if(e.key === 'Backspace'){ buf = buf.slice(0, -1); return; }
+  if(typeof e.key === 'string' && e.key.length === 1){
+    buf += e.key;
+    if(buf.length > CFG.maxCodeLen) buf = buf.slice(-CFG.maxCodeLen);
+  }
+}, true);
+
+/* ---------- Scanner-Erkennung innerhalb von Textfeldern ---------- *
+ * Ein HID-Scanner tippt so schnell, wie kein Mensch es kann. Wird
+ * waehrend einer Namenseingabe gescannt, trennen wir die schnelle
+ * Zeichenfolge am Ende ab und behandeln sie als Scan statt als Text. */
+function attachScannerSignature(input, onDetected){
+  var times = [];
+  input.addEventListener('focus', function(){ times = []; });
+  input.addEventListener('paste', function(){ times = []; });
+  input.addEventListener('keydown', function(e){
+    if(e.key === 'Enter' || e.key === 'Tab'){
+      var burst = detectBurst(times, input.value);
+      times = [];
+      if(burst && burst.code){
+        e.preventDefault();
+        e.stopPropagation();
+        input.value = burst.rest;
+        onDetected(burst.code, burst.rest);
+      }
+      return;
+    }
+    if(typeof e.key === 'string' && e.key.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey){
+      times.push(nowMs());
+      if(times.length > 300) times.shift();
+    }else{
+      times = [];                            /* Korrektur/Navigation: Messung verwerfen */
+    }
+  }, true);
+}
+function detectBurst(times, value){
+  var v = typeof value === 'string' ? value : '';
+  if(times.length < CFG.sigMinChars) return null;
+  var i = times.length - 1, gaps = 0;
+  while(i > 0 && (times[i] - times[i - 1]) <= CFG.sigGapMs){ gaps++; i--; }
+  var chars = gaps + 1;
+  if(chars < CFG.sigMinChars) return null;
+  if(chars > v.length) return null;
+  var code = v.slice(v.length - chars);
+  if(/\s/.test(code)) return null;           /* Barcodes enthalten keine Leerzeichen */
+  return {code: sanitizeCode(code), rest: sanitizeName(v.slice(0, v.length - chars))};
+}
+
+/* ================================================================== *
+ * Eingabefelder
+ * ================================================================== */
+$('nameInput').addEventListener('keydown', function(e){
+  if(e.key === 'Enter'){ e.preventDefault(); commitNamePrompt(); }
+});
+attachScannerSignature($('nameInput'), function(code){
+  commitPromptProvisionally();
+  render();
+  refocus(true);
+  onScan(code);
+});
+
+$('manualName').addEventListener('keydown', function(e){
+  if(e.key === 'Enter'){ e.preventDefault(); manualCreate(); }
+});
+attachScannerSignature($('manualName'), function(code){
+  refocus(true);
+  onScan(code);
+});
+
+$('sessionInput').addEventListener('keydown', function(e){
+  if(e.key === 'Enter'){ e.preventDefault(); commitSession(); }
+});
+$('sessionInput').addEventListener('blur', commitSession);
+attachScannerSignature($('sessionInput'), function(code){
+  commitSession();
+  refocus(true);
+  onScan(code);
+});
+
+function commitSession(){
+  var el = $('sessionInput');
+  var next = sanitizeSession(el.value);
+  el.value = next;
+  if(next === state.session){ renderStatus(); return; }
+  switchSession(next);
+}
+
+/* ================================================================== *
+ * Schaltflaechen
+ * ================================================================== */
+function toggleAutoPrint(){
+  setState({autoPrint: !state.autoPrint});
+  setHint('Auto-Etikett ' + (state.autoPrint ? 'eingeschaltet' : 'ausgeschaltet'),
+          state.autoPrint ? 'ok' : '');
+  beep('tick');
+  render();
+}
+$('btnAuto').addEventListener('click', toggleAutoPrint);
+$('btnPrint').addEventListener('click', printCurrent);
+$('btnUndo').addEventListener('click', undoLast);
+$('btnManual').addEventListener('click', manualCreate);
+$('btnSound').addEventListener('click', function(){
+  setState({sound: !state.sound});
+  if(state.sound) beep('ok');
+  render();
+});
+
+$('list').addEventListener('click', function(e){
+  var t = e.target;
+  var btn = (t && t.closest) ? t.closest('button') : null;
+  var li  = (t && t.closest) ? t.closest('li[data-code]') : null;
+  if(!li) return;
+  var code = li.getAttribute('data-code');
+  if(!code || !state.rows[code]) return;
+
+  if(btn){
+    var act = btn.getAttribute('data-act');
+    if(act === 'minus'){ decrement(code); return; }
+    if(act === 'print'){ setState({current: code}); render(); queuePrint(code); return; }
+    return;
+  }
+  setState({current: code});
+  if(state.rows[code].provisional){ openNamePrompt(code, 'rename', 1); return; }
+  render();
+});
+
+/* Nach jedem Klick den Knopf-Fokus abgeben, damit Enter ihn nicht erneut ausloest. */
+document.addEventListener('click', function(e){
+  var b = (e.target && e.target.closest) ? e.target.closest('button') : null;
+  if(!b) return;
+  setTimeout(function(){
+    try{ b.blur(); }catch(err){}
+    refocus(false);
+    renderStatus();
+  }, 0);
+});
+
+$('stage').addEventListener('animationend', function(){
+  $('stage').classList.remove('flash-ok', 'flash-warn');
+});
+
+/* ================================================================== *
+ * Fokus-Waechter und Fensterereignisse
+ * ================================================================== */
+setInterval(function(){
+  if(typeof document.hasFocus === 'function' && !document.hasFocus()) return;
+  refocus(false);
+  var sink = $('sink');
+  if(sink.value) sink.value = '';            /* Senke leer halten */
+  renderStatus();
+}, CFG.watchdogMs);
+
+window.addEventListener('focus', function(){ refocus(false); renderStatus(); });
+window.addEventListener('blur',  function(){ renderStatus(); });
+document.addEventListener('visibilitychange', function(){
+  if(!document.hidden) refocus(false);
+  renderStatus();
+});
+document.addEventListener('mouseup', function(){
+  setTimeout(function(){ refocus(false); }, 0);
+});
+
+/* ================================================================== *
+ * Status-Abfrage und Abgleich
+ * ================================================================== */
+function pollHealth(){
+  api('/health', {timeout: CFG.tHealth}).then(function(r){
+    var wasOk = state.agentOk;
+    if(r.ok){
+      setState({health: r.data, agentOk: true, agentErr: ''});
+      if(!wasOk) setTimeout(reconcile, 800);   /* nach Wiederkehr sofort abgleichen */
+    }else{
+      setState({health: null, agentOk: false, agentErr: r.error || 'Agent offline'});
+    }
+    renderStatus();
+    setTimeout(pollHealth, CFG.healthMs);
+  });
+}
+
+var reconcileBusy = false;
+function reconcile(){
+  if(reconcileBusy || !state.agentOk) return;
+  var codes = Object.keys(state.rows), anyOpen = false, i, r;
+  for(i = 0; i < codes.length; i++){
+    r = state.rows[codes[i]];
+    if(r.unsynced || r.provisional){ anyOpen = true; break; }
+  }
+  if(!anyOpen) return;
+
+  reconcileBusy = true;
+  api('/session/' + encodeURIComponent(state.session), {timeout: CFG.tSession}).then(function(res){
+    reconcileBusy = false;
+    if(!res.ok || !Array.isArray(res.data.counts)) return;
+
+    var server = Object.create(null), j, c;
+    for(j = 0; j < res.data.counts.length; j++){
+      c = res.data.counts[j];
+      if(c && typeof c === 'object' && typeof c.code === 'string') server[c.code] = c;
+    }
+    var list = Object.keys(state.rows), k, row, sc, delta, nm;
+    for(k = 0; k < list.length; k++){
+      row = state.rows[list[k]];
+      if(row.inflight > 0) continue;
+      sc = server[row.code];
+
+      /* 1) Mengendifferenz einmalig nachtragen - kein blindes Wiederholen,
+            sonst zaehlt eine verlorene Antwort doppelt. */
+      if(row.unsynced){
+        delta = row.qty - (sc ? Math.max(0, Math.round(num(sc.counted_qty, 0))) : 0);
+        if(delta !== 0){
+          applyCount(row.code, row.name, delta, {isUndo: true, forceName: !row.provisional});
+        }else{
+          putRow(row.code, Object.assign({}, row, {unsynced: false}));
+        }
+        continue;
+      }
+      /* 2) Fehlende Namen nachtraeglich aufloesen. */
+      if(row.provisional){
+        nm = sc ? sanitizeName(sc.item_name) : '';
+        if(nm && nm !== row.code){
+          putRow(row.code, Object.assign({}, row, {name: nm, provisional: false}));
+        }else{
+          retryResolveName(row.code);
+        }
+      }
+    }
+    render();
+  }, function(){ reconcileBusy = false; });
+}
+function retryResolveName(code){
+  if(resolveCache[code] && resolveCache[code].found === false) return;  /* wirklich unbekannt */
+  delete resolveCache[code];
+  resolveOnce(code).then(function(res){
+    if(!res || res.found !== true) return;
+    var row = state.rows[code];
+    if(!row || !row.provisional) return;
+    putRow(code, Object.assign({}, row, {
+      name: res.item_name, provisional: false,
+      article: res.article_number || row.article,
+      source: res.source || row.source
+    }));
+    applyCount(code, res.item_name, 0, {forceName: true});
+    render();
+  });
+}
+setInterval(reconcile, CFG.reconcileMs);
+
+/* ================================================================== *
+ * Session laden / wechseln
+ * ================================================================== */
+function mergeServerCounts(counts){
+  if(!Array.isArray(counts)) return;
+  var rows = Object.assign({}, state.rows), i, c, code, prev, row, nm;
+  for(i = 0; i < counts.length; i++){
+    c = counts[i];
+    if(!c || typeof c !== 'object') continue;
+    code = sanitizeCode(c.code);
+    if(!code) continue;
+    nm = sanitizeName(c.item_name);
+    prev = rows[code];
+    if(prev){
+      if(prev.inflight > 0 || prev.unsynced) continue;   /* lokal gewinnt, Abgleich folgt */
+      rows[code] = Object.assign({}, prev, {
+        qty:   Math.max(0, Math.round(num(c.counted_qty, prev.qty))),
+        scans: Math.max(0, Math.round(num(c.scan_count, prev.scans))),
+        name:  (prev.provisional && nm && nm !== code) ? nm : prev.name,
+        provisional: prev.provisional && !(nm && nm !== code)
+      });
+    }else{
+      row = newRow(code, nm || code);
+      row.qty = Math.max(0, Math.round(num(c.counted_qty, 0)));
+      row.scans = Math.max(0, Math.round(num(c.scan_count, 0)));
+      row.lastAt = parseTs(c.last_counted_at);
+      row.ord = 0;                                       /* Serverzeilen unter die frischen */
+      row.provisional = !(nm && nm !== code);
+      rows[code] = row;
+    }
+  }
+  setState({rows: rows});
+}
+function loadSession(){
+  api('/session/' + encodeURIComponent(state.session), {timeout: CFG.tSession}).then(function(r){
+    if(r.ok && Array.isArray(r.data.counts)){
+      mergeServerCounts(r.data.counts);
+    }else if(!r.ok){
+      setHint('Session nicht geladen (' + r.error + ') - lokal wird weitergezaehlt', 'warn');
+    }
+    render();
+  });
+}
+function switchSession(name){
+  persist();
+  setState({
+    session: name, rows: {}, current: null, undo: [],
+    namePrompt: null, printQueue: []
+  });
+  resolveCache = Object.create(null);
+  resolvePending = Object.create(null);
+  previewKey = '';
+  var local = loadLocalRows(name);
+  if(local) setState({rows: local.rows, current: local.current});
+  setHint('Session: ' + name, 'ok');
+  render();
+  loadSession();
+  refocus(true);
+}
+
+/* ================================================================== *
+ * Start
+ * ================================================================== */
+function boot(){
+  var qs = null;
+  try{ qs = new URLSearchParams(window.location.search); }catch(e){ qs = null; }
+  var prefs = loadPrefs() || {};
+  var wanted = (qs && qs.get('session')) || prefs.session || defaultSession();
+
+  setState({
+    session: sanitizeSession(wanted),
+    autoPrint: prefs.autoPrint !== false,
+    sound: prefs.sound !== false
+  });
+
+  var local = loadLocalRows(state.session);
+  if(local){
+    setState({rows: local.rows, current: local.current});
+    var open = totals().open;
+    if(open){
+      setHint(open + ' Position(en) aus der letzten Sitzung noch nicht gespeichert - wird nachgetragen', 'warn');
+    }
+  }
+
+  $('sessionInput').value = state.session;
+  render();
+  refocus(true);
+  pollHealth();
+  loadSession();
+}
+
+window.addEventListener('beforeunload', function(e){
+  if(totals().open > 0){
+    e.preventDefault();
+    e.returnValue = '';
+    return '';
+  }
+});
+
+boot();
+
+})();
+</script>
+</body>
+</html>

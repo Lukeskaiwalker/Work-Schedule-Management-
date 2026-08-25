@@ -98,3 +98,7 @@ benning software/
 # runtime state, never source. Untracked files on prod break `git pull --ff-only`.
 .staged-deploy.json
 .deploy.lock
+
+# Local label-agent runtime state (SQLite lives in ~/.smpl-label-agent)
+tools/label_agent/**/__pycache__/
+tools/label_agent/.venv/

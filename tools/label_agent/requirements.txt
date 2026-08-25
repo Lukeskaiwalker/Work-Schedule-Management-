@@ -1,0 +1,15 @@
+# Runtime dependencies for the SMPL label agent.
+#
+# Deliberately two lines long. The HTTP server, the SQLite store and the SMPL
+# client are all stdlib, so a broken or missing wheel can never stop the agent
+# from booting and counting - it only costs you printing.
+#
+#   pyusb   - raw USB bulk transfer to the Brother PT-P710BT (brother_raster.py)
+#   pillow  - rasterising the label bitmap                   (label_render.py)
+#
+# pyusb also needs the native libusb-1.0 library, which pip does not install:
+#   macOS:          brew install libusb
+#   Debian/Rasp Pi: sudo apt install libusb-1.0-0
+
+pyusb==1.3.1
+pillow==11.3.0
