@@ -76,8 +76,13 @@ running_image_id() {
 # returns a 12-char id, which can never equal a 64-char digest — that made the
 # update_runner check below fire on every single swap.
 built_image_id() {
-  docker image inspect -f '{{.Id}}' "$(docker compose config --images 2>/dev/null | grep -m1 "$1" || echo "$1")" 2>/dev/null \
-    | sed 's/^sha256://' || echo ""
+  # Anchor on the service suffix. A bare `grep api` also matches
+  # `smpl-all-api_worker`, and `docker compose config --images` does not
+  # guarantee an order — so `status` intermittently compared the api service
+  # against api_worker's image and reported a swap that had actually worked.
+  local image
+  image="$(docker compose config --images 2>/dev/null | grep -m1 -E "(^|[-_/])$1\$" || echo "$1")"
+  docker image inspect -f '{{.Id}}' "$image" 2>/dev/null | sed 's/^sha256://' || echo ""
 }
 
 health_of() {
