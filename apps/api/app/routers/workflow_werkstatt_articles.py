@@ -59,6 +59,7 @@ from app.services.werkstatt_article_dedup import (
     link_catalog_duplicates,
     merge_articles,
 )
+from app.services.werkstatt_movements import book_opening_stock
 from app.services.werkstatt_article_numbers import next_article_number
 from app.services.search_matching import (
     similarity_score,
@@ -204,8 +205,11 @@ def create_article(
         image_url=(payload.image_url or None),
         image_source=payload.image_source,
         source_catalog_item_id=payload.source_catalog_item_id,
-        stock_total=payload.stock_total,
-        stock_available=payload.stock_total,
+        # Counters start at zero and are derived from the ledger; the opening
+        # quantity is booked as an `intake` movement below. Setting them here
+        # would be undone by the first recompute.
+        stock_total=0,
+        stock_available=0,
         stock_out=0,
         stock_repair=0,
         stock_min=payload.stock_min,
@@ -219,6 +223,7 @@ def create_article(
     )
     db.add(article)
     db.flush()
+    book_opening_stock(db, article, payload.stock_total, user_id=current_user.id)
 
     for link_payload in payload.supplier_links:
         _add_supplier_link(db, article_id=article.id, payload=link_payload)
@@ -446,8 +451,11 @@ def create_article_from_catalog(
         image_source=("catalog" if catalog_item.image_url else None),
         image_checked_at=utcnow() if catalog_item.image_url else None,
         source_catalog_item_id=catalog_item.id,
-        stock_total=payload.stock_total,
-        stock_available=payload.stock_total,
+        # Counters start at zero and are derived from the ledger; the opening
+        # quantity is booked as an `intake` movement below. Setting them here
+        # would be undone by the first recompute.
+        stock_total=0,
+        stock_available=0,
         stock_out=0,
         stock_repair=0,
         stock_min=payload.stock_min,
@@ -457,6 +465,7 @@ def create_article_from_catalog(
     )
     db.add(article)
     db.flush()
+    book_opening_stock(db, article, payload.stock_total, user_id=current_user.id)
 
     # Auto-link the catalog row's own supplier_id if the caller didn't provide
     # their own link for that supplier.

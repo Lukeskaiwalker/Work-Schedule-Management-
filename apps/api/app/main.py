@@ -17,6 +17,7 @@ from app.core.permissions import ROLE_ADMIN
 from app.core.security import get_password_hash, verify_password
 from app.core.time import utcnow
 from app.models.entities import User
+from app.routers import workflow_werkstatt_inventory
 from app.routers import admin, api_tokens, auth, events, time_tracking, workflow, workflow_notifications, workflow_schaltplan, workflow_training_reports
 from app.services.material_catalog import sync_pending_material_catalog_images
 from app.services.runtime_settings import (
@@ -365,6 +366,7 @@ app.include_router(workflow.router, prefix="/api")
 app.include_router(workflow_notifications.router, prefix="/api")
 app.include_router(time_tracking.router, prefix="/api")
 app.include_router(workflow_training_reports.router, prefix="/api")
+app.include_router(workflow_werkstatt_inventory.router, prefix="/api")
 app.include_router(workflow_schaltplan.router, prefix="/api")
 
 

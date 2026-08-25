@@ -47,6 +47,10 @@ from app.models.werkstatt import (
     WerkstattOrderLine,
     WerkstattSupplier,
 )
+from app.models.werkstatt_inventory import (
+    WerkstattInventoryCount,
+    WerkstattInventorySession,
+)
 from app.models.werkstatt_procurement import (
     WerkstattIdsConnection,
     WerkstattIdsSession,
@@ -60,6 +64,8 @@ from app.models.time_models import ClockEntry, BreakEntry, VacationRequest, Scho
 from app.models.settings_models import AppSetting, AuditLog
 
 __all__ = [
+    "WerkstattInventorySession",
+    "WerkstattInventoryCount",
     "ApiToken",
     "AppSetting",
     "AuditLog",

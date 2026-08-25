@@ -65,6 +65,13 @@ _DELTAS: dict[str, dict[str, int]] = {
     "correction":  {"total":     -1, "out":    -1},
     "repair_out":  {"out":       -1, "repair": +1},
     "repair_back": {"repair":    -1, "available": +1},
+    # Stock-take reconciliation. Deliberately NOT `correction`: that one also
+    # decrements `out`, which is right for "a checked-out item is confirmed
+    # lost" and wrong for a shelf count — counting a shelf tells you nothing
+    # about what is checked out or in repair. These touch total+available only,
+    # which keeps the invariant total == available + out + repair intact.
+    "inventory_plus":  {"total": +1, "available": +1},
+    "inventory_minus": {"total": -1, "available": -1},
 }
 
 ALLOWED_MOVEMENT_TYPES: frozenset[str] = frozenset(_DELTAS.keys())
@@ -150,6 +157,35 @@ def apply_movement(
 
     recompute_article_stock(db, article)
     return movement
+
+
+def book_opening_stock(
+    db: Session,
+    article: WerkstattArticle,
+    quantity: int,
+    *,
+    user_id: int | None = None,
+    notes: str | None = None,
+) -> None:
+    """Record an article's starting quantity as a real ``intake`` movement.
+
+    Article creation used to assign ``stock_total``/``stock_available`` as
+    plain scalars. The ledger is the source of truth, so the first subsequent
+    movement called ``recompute_article_stock`` — which rebuilds every counter
+    from the ledger alone — and silently reset that opening quantity to zero.
+    Anything that creates an article with stock must come through here.
+    """
+
+    if quantity <= 0:
+        return
+    apply_movement(
+        db,
+        article=article,
+        movement_type="intake",
+        quantity=quantity,
+        user_id=user_id,
+        notes=notes or "Anfangsbestand",
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────

@@ -893,3 +893,88 @@ class WerkstattSimilarArticleOut(BaseModel):
     stock_total: int
     similarity: float
     supplier_names: list[str]
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Inventur (stock-taking sessions)
+# ──────────────────────────────────────────────────────────────────────────
+
+
+class InventorySessionCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    location_id: int | None = None
+    notes: str | None = Field(default=None, max_length=2000)
+
+
+class InventoryCountOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    article_id: int
+    article_number: str
+    item_name: str
+    ean: str | None = None
+    unit: str | None = None
+    counted_qty: int
+    scan_count: int
+    # What the shelf snapshot says right now — the variance the operator is
+    # about to book. Recomputed on read so the list stays honest while the
+    # session is open.
+    expected_qty: int
+    delta: int
+
+
+class InventorySessionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    status: str
+    location_id: int | None = None
+    started_by: int | None = None
+    started_at: datetime
+    finalized_by: int | None = None
+    finalized_at: datetime | None = None
+    notes: str | None = None
+    counted_articles: int = 0
+    total_units: int = 0
+
+
+class InventorySessionDetailOut(InventorySessionOut):
+    counts: list[InventoryCountOut] = []
+
+
+class InventoryScanRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=200)
+    # Lets the operator type "12" instead of scanning twelve times.
+    quantity: int = Field(default=1, ge=1, le=100000)
+
+
+class InventoryScanResult(BaseModel):
+    status: Literal["counted", "created", "needs_name", "session_closed"]
+    code: str
+    article: WerkstattArticleOut | None = None
+    counted_qty: int = 0
+    created_from_catalog: bool = False
+
+
+class InventoryCountSet(BaseModel):
+    """Hand-typed correction — replaces the counted quantity outright."""
+
+    counted_qty: int = Field(ge=0, le=1000000)
+
+
+class InventoryNameNewArticle(BaseModel):
+    """The one interruption: a code nothing has ever seen."""
+
+    code: str | None = Field(default=None, max_length=200)
+    item_name: str = Field(min_length=1, max_length=500)
+    unit: str | None = Field(default=None, max_length=64)
+    quantity: int = Field(default=1, ge=1, le=100000)
+
+
+class InventoryFinalizeResult(BaseModel):
+    counted_articles: int
+    adjusted: int
+    unchanged: int
+    units_added: int
+    units_removed: int
