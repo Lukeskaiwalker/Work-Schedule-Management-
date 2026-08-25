@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="robots" content="noindex">
+<title>Station einrichten</title>
+<style>
+/* ------------------------------------------------------------------ *
+ * Einrichtung der Station. Bewusst eine EIGENE Seite, nicht Teil von
+ * station.html: die Scanseite faengt jeden Tastendruck ab, damit ein
+ * HID-Scanner nie ins Leere tippt. Ein Textfeld dort einzubauen heisst,
+ * mit genau dieser Logik zu kaempfen - und der Scanweg ist das Produkt.
+ * Diese Seite oeffnet man einmal beim Aufstellen, danach nie wieder.
+ * ------------------------------------------------------------------ */
+:root{
+  --bg:#080b10; --surface:#121821; --surface2:#1a2230;
+  --line:#28323f; --line2:#3a4757;
+  --fg:#f3f7fc; --dim:#93a2b6; --dim2:#68788c;
+  --ok:#2fe083; --warn:#ffb02e; --bad:#ff6b6b;
+  --r:14px;
+  --font:-apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, "Helvetica Neue", Arial, sans-serif;
+  --mono:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+*{box-sizing:border-box}
+[hidden]{display:none !important}
+body{
+  margin:0; background:var(--bg); color:var(--fg);
+  font-family:var(--font); font-size:16px; line-height:1.5;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:760px; margin:0 auto; padding:clamp(16px,3vw,40px)}
+h1{font-size:clamp(1.4rem,3vw,2rem); margin:0 0 4px}
+.sub{color:var(--dim); margin:0 0 28px}
+h2{font-size:1.05rem; margin:0 0 12px; letter-spacing:.02em}
+.card{
+  background:var(--surface); border:1px solid var(--line);
+  border-radius:var(--r); padding:clamp(14px,2vw,22px); margin-bottom:18px;
+}
+.row{display:flex; flex-wrap:wrap; gap:10px; align-items:center}
+.btn{
+  appearance:none; border:1px solid var(--line2); background:var(--surface2);
+  color:var(--fg); font:inherit; font-weight:600; padding:11px 18px;
+  border-radius:10px; cursor:pointer; min-height:44px;
+}
+.btn:hover{border-color:var(--dim2)}
+.btn.primary{background:var(--ok); border-color:var(--ok); color:#04140b}
+.btn.ghost{background:transparent}
+.btn:disabled{opacity:.45; cursor:default}
+.state{display:inline-flex; align-items:center; gap:8px; font-weight:600}
+.dot{width:10px; height:10px; border-radius:50%; background:var(--dim2); flex:0 0 auto}
+.dot.ok{background:var(--ok)} .dot.warn{background:var(--warn)} .dot.bad{background:var(--bad)}
+.code{
+  font-family:var(--mono); font-size:clamp(2rem,8vw,3.4rem); font-weight:700;
+  letter-spacing:.12em; margin:14px 0 6px; color:var(--ok); word-break:break-all;
+}
+.muted{color:var(--dim); font-size:.92rem}
+.tiny{color:var(--dim2); font-size:.82rem}
+a{color:var(--ok)}
+dl{display:grid; grid-template-columns:auto 1fr; gap:6px 16px; margin:0}
+dt{color:var(--dim); white-space:nowrap}
+dd{margin:0; font-family:var(--mono); font-size:.9rem; word-break:break-all}
+/* Die Tabelle steht auf einem Telefon genauso wie auf einem Monitor. Statt
+   sie umbrechen zu lassen - wo "nur lokal" zweizeilig wird und der Status
+   dann wie ein Fehler aussieht - darf sie seitlich scrollen. */
+.scroller{overflow-x:auto; -webkit-overflow-scrolling:touch}
+table{width:100%; border-collapse:collapse; font-size:.9rem; min-width:420px}
+th,td{text-align:left; padding:8px 10px; border-bottom:1px solid var(--line)}
+th{color:var(--dim); font-weight:600}
+td.when{white-space:nowrap; font-variant-numeric:tabular-nums; color:var(--dim)}
+td.count{white-space:nowrap}
+.pill{
+  display:inline-block; white-space:nowrap; padding:2px 9px; border-radius:999px;
+  font-size:.78rem; font-weight:600; border:1px solid var(--line2); color:var(--dim);
+}
+.pill.ok{color:var(--ok); border-color:var(--ok)}
+.pill.warn{color:var(--warn); border-color:var(--warn)}
+/* Fussnote, kein Callout: diese Saetze erklaeren, was gerade passiert ist,
+   und sollen den Blick nicht vom Knopf darueber wegziehen. Eine Haarlinie
+   nach oben trennt sie ausreichend. */
+.note{
+  border-top:1px solid var(--line); margin-top:16px; padding-top:12px;
+  color:var(--dim); font-size:.9rem;
+}
+.err{color:var(--bad)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Station einrichten</h1>
+  <p class="sub">Einmal beim Aufstellen. Zum Z&auml;hlen und Drucken geht es
+     <a href="/">zur Scanseite</a>.</p>
+
+  <!-- ============================ SMPL-Login ============================ -->
+  <section class="card">
+    <h2>SMPL-Anmeldung</h2>
+
+    <p class="state" id="pairState"><span class="dot" id="pairDot"></span>
+       <span id="pairLabel">wird geladen&hellip;</span></p>
+
+    <div id="pairIdle">
+      <p class="muted">Die Station meldet sich <b>ohne Passwort</b> an: sie zeigt
+         einen kurzen Code, den eine Administratorin in SMPL best&auml;tigt &ndash;
+         dort, wo sie ohnehin schon angemeldet ist.</p>
+      <div class="row"><button class="btn primary" id="btnPair" type="button">Anmeldung starten</button></div>
+    </div>
+
+    <div id="pairWaiting" hidden>
+      <div class="code" id="userCode">&hellip;</div>
+      <p class="muted">In SMPL unter <b>Scan-Station</b> best&auml;tigen &ndash;
+         der Men&uuml;punkt ist nur f&uuml;r Systemadministratoren sichtbar.</p>
+      <p class="muted"><a id="verifyLink" href="#" target="_blank" rel="noopener noreferrer">&hellip;</a></p>
+      <p class="tiny" id="expiry"></p>
+      <div class="row">
+        <button class="btn ghost" id="btnCancel" type="button">Abbrechen</button>
+      </div>
+    </div>
+
+    <div id="pairDone" hidden>
+      <dl>
+        <dt>Name in SMPL</dt><dd id="tokLabel">&ndash;</dd>
+        <dt>Angemeldet seit</dt><dd id="tokSince">&ndash;</dd>
+        <dt>Token-Datei</dt><dd id="tokFile">&ndash;</dd>
+      </dl>
+      <div class="row" style="margin-top:14px">
+        <button class="btn ghost" id="btnForget" type="button">Anmeldung entfernen</button>
+      </div>
+      <p class="note">Der Token wird nur auf dieser Station gespeichert (Rechte 0600).
+         Zum endg&uuml;ltigen Entziehen muss er zus&auml;tzlich in SMPL widerrufen werden.</p>
+    </div>
+
+    <p class="err" id="pairError" hidden></p>
+  </section>
+
+  <!-- ============================ Geraet ============================ -->
+  <section class="card">
+    <h2>Diese Station</h2>
+    <dl>
+      <dt>Name</dt><dd id="devName">&ndash;</dd>
+      <dt>Kennung</dt><dd id="devId">&ndash;</dd>
+      <dt>Drucker</dt><dd id="devPrinter">&ndash;</dd>
+      <dt>Datenbank</dt><dd id="devDb">&ndash;</dd>
+      <dt>SMPL-Server</dt><dd id="devUpstream">&ndash;</dd>
+    </dl>
+  </section>
+
+  <!-- ============================ SD-Karten ============================ -->
+  <section class="card">
+    <h2>Pr&uuml;fger&auml;te-Karten</h2>
+    <p class="state" id="sdState"><span class="dot" id="sdDot"></span>
+       <span id="sdLabel">wird geladen&hellip;</span></p>
+    <p class="muted" id="sdHint"></p>
+
+    <div class="scroller">
+      <table id="importTable" hidden>
+        <thead><tr><th>Zeitpunkt</th><th>Ger&auml;t</th><th>Dateien</th><th>SMPL</th></tr></thead>
+        <tbody id="importRows"></tbody>
+      </table>
+    </div>
+    <p class="muted" id="importEmpty">Noch keine Karte eingelesen.</p>
+
+    <div class="row" style="margin-top:14px">
+      <button class="btn ghost" id="btnRescan" type="button">Karten erneut lesen</button>
+      <button class="btn ghost" id="btnRetry" type="button">Upload wiederholen</button>
+    </div>
+    <p class="note">Karten werden <b>nur gelesen</b>. Jede Datei wird unver&auml;ndert
+       kopiert und mit ihrer Pr&uuml;fsumme abgelegt, bevor irgendetwas ausgewertet
+       wird &ndash; auch dann, wenn das Format unbekannt ist.</p>
+  </section>
+
+  <p class="tiny">Version <span id="ver">&ndash;</span> &middot;
+     <a href="/health">/health</a></p>
+</div>
+
+<script>
+(function(){
+'use strict';
+
+function $(id){ return document.getElementById(id); }
+function text(id, value){ var el = $(id); if(el) el.textContent = value; }
+function show(id, on){ var el = $(id); if(el) el.hidden = !on; }
+
+/* Alles, was vom Server kommt, wird als Text gesetzt (textContent), nie als
+   HTML. Der Import-Manifest enthaelt Dateinamen von einer fremden SD-Karte -
+   also Fremdtext, der niemals als Markup interpretiert werden darf. */
+
+function api(path, options){
+  var opts = options || {};
+  opts.headers = Object.assign({'Accept':'application/json'}, opts.headers || {});
+  if(opts.body){ opts.headers['Content-Type'] = 'application/json'; }
+  return fetch(path, opts).then(function(response){
+    return response.json().catch(function(){ return {}; }).then(function(body){
+      if(!response.ok && !body.state){ throw new Error(body.error || ('HTTP ' + response.status)); }
+      return body;
+    });
+  });
+}
+
+/* ---------------------------- Anmeldung ---------------------------- */
+
+var pollTimer = null;
+
+var PAIR_TEXT = {
+  idle:        ['',     'nicht angemeldet'],
+  starting:    ['warn', 'wird gestartet…'],
+  waiting:     ['warn', 'wartet auf Bestätigung'],
+  paired:      ['ok',   'angemeldet'],
+  denied:      ['bad',  'abgelehnt'],
+  expired:     ['bad',  'Code abgelaufen'],
+  cancelled:   ['',     'abgebrochen'],
+  unavailable: ['warn', 'von diesem SMPL-Server nicht angeboten'],
+  error:       ['bad',  'Fehler']
+};
+
+function renderPairing(snapshot){
+  var state = snapshot.state || 'idle';
+  var paired = !!snapshot.paired;
+  var info = PAIR_TEXT[state] || ['', state];
+
+  $('pairDot').className = 'dot ' + (paired ? 'ok' : info[0]);
+  text('pairLabel', paired ? PAIR_TEXT.paired[1] : info[1]);
+
+  show('pairWaiting', state === 'waiting' && !paired);
+  show('pairDone', paired);
+  show('pairIdle', !paired && state !== 'waiting');
+
+  if(snapshot.error){
+    text('pairError', snapshot.error);
+    show('pairError', true);
+  } else {
+    show('pairError', false);
+  }
+
+  if(state === 'waiting' && snapshot.user_code){
+    text('userCode', snapshot.user_code);
+    var link = $('verifyLink');
+    var target = snapshot.verification_uri_complete || snapshot.verification_uri || '';
+    /* Nur http/https folgen: eine URL vom Server ist kein Freibrief fuer
+       javascript: oder data:. */
+    link.href = /^https?:\/\//i.test(target) ? target : '#';
+    link.textContent = snapshot.verification_uri || target || '–';
+    var left = snapshot.seconds_left;
+    text('expiry', typeof left === 'number'
+      ? 'Der Code gilt noch ' + Math.floor(left / 60) + ':' +
+        String(left % 60).padStart(2, '0') + ' Minuten.'
+      : '');
+  }
+
+  if(paired && snapshot.token_info){
+    text('tokLabel', snapshot.token_info.label || '–');
+    text('tokSince', snapshot.token_info.obtained_at || '–');
+  }
+  text('devName', snapshot.device_name || '–');
+  text('devId', snapshot.device_id || '–');
+
+  if(snapshot.token_file_secure === false){
+    text('pairError', 'Die Token-Datei ist für andere Benutzer lesbar. ' +
+                      'Beheben mit: chmod 600 <Token-Datei>');
+    show('pairError', true);
+  }
+
+  var live = (state === 'waiting' || state === 'starting');
+  clearTimeout(pollTimer);
+  if(live){ pollTimer = setTimeout(refreshPairing, 2000); }
+}
+
+function refreshPairing(){
+  api('/pair/status').then(renderPairing).catch(function(err){
+    text('pairLabel', 'nicht verfügbar');
+    text('pairError', String(err.message || err));
+    show('pairError', true);
+  });
+}
+
+$('btnPair').addEventListener('click', function(){
+  $('btnPair').disabled = true;
+  api('/pair/start', {method:'POST', body:'{}'})
+    .then(renderPairing)
+    .catch(function(err){ text('pairError', String(err.message || err)); show('pairError', true); })
+    .finally(function(){ $('btnPair').disabled = false; });
+});
+
+$('btnCancel').addEventListener('click', function(){
+  api('/pair/cancel', {method:'POST', body:'{}'}).then(renderPairing);
+});
+
+$('btnForget').addEventListener('click', function(){
+  if(!window.confirm('Anmeldung dieser Station entfernen?')){ return; }
+  api('/pair/forget', {method:'POST', body:'{}'}).then(refreshPairing);
+});
+
+/* ---------------------------- Gesundheit ---------------------------- */
+
+function renderHealth(health){
+  text('ver', health.version || '–');
+  text('devDb', health.db || '–');
+  text('devPrinter', health.printer_connected
+    ? ('verbunden, ' + (health.media_width_mm || '?') + ' mm Band')
+    : (health.simulated ? 'simuliert (--no-printer)' : (health.error || 'nicht verbunden')));
+  text('devUpstream', health.upstream_configured
+    ? (health.upstream_ok === false ? 'nicht erreichbar' : 'erreichbar')
+    : 'nicht konfiguriert (Offline-Betrieb)');
+  if(health.identity && health.identity.token_file){
+    text('tokFile', health.identity.token_file);
+  }
+
+  var sd = health.sd_import || {};
+  var dot = $('sdDot');
+  if(sd.disabled){
+    dot.className = 'dot';
+    text('sdLabel', 'abgeschaltet (--no-sd)');
+    text('sdHint', '');
+  } else if(sd.running){
+    dot.className = 'dot ok';
+    text('sdLabel', sd.simulated ? 'wartet auf Karten (simuliert)' : 'wartet auf Karten');
+    text('sdHint', 'Beobachtet: ' + (sd.watch_root || '–') +
+                   (sd.last_error ? ' – zuletzt: ' + sd.last_error : ''));
+  } else {
+    dot.className = 'dot bad';
+    text('sdLabel', 'läuft nicht');
+    text('sdHint', sd.last_error || '');
+  }
+}
+
+/* ---------------------------- Importe ---------------------------- */
+
+/* Ein Benning-Protokoll ist oft nur ein paar hundert Byte gross. "1 kB" fuer
+   alles darunter zu schreiben verwischt genau den Unterschied, an dem man
+   sieht, ob eine Karte wirklich gelesen wurde. */
+function size(bytes){
+  if(bytes < 1024){ return bytes + ' B'; }
+  if(bytes < 1024 * 1024){ return Math.round(bytes / 1024) + ' kB'; }
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+}
+
+var UPLOAD_TEXT = {
+  uploaded:    ['ok',   'übertragen'],
+  pending:     ['warn', 'wartet'],
+  failed:      ['warn', 'fehlgeschlagen'],
+  unavailable: ['',     'nur lokal']
+};
+
+function renderImports(rows){
+  var body = $('importRows');
+  body.textContent = '';
+  show('importTable', rows.length > 0);
+  show('importEmpty', rows.length === 0);
+
+  rows.forEach(function(row){
+    var tr = document.createElement('tr');
+
+    function cell(value, cls){
+      var td = document.createElement('td');
+      td.textContent = value;
+      if(cls){ td.className = cls; }
+      tr.appendChild(td);
+      return td;
+    }
+
+    /* Sekunden weglassen: sie sind hier nie die Information, aber sie sind
+       breit genug, um die Spalte umbrechen zu lassen. */
+    cell((row.created_at || '').replace('T', ' ').replace(/:\d\dZ?$/, ''), 'when');
+
+    /* Der Kartenname steht dabei, weil "benning" allein drei Zeilen lang
+       gleich aussieht und niemand dann sagen kann, welche Karte fehlt. */
+    var who = [row.vendor || 'unbekannt', row.model_hint].filter(Boolean).join(' – ');
+    cell(row.volume_label ? who + '  ·  ' + row.volume_label : who);
+
+    cell(row.file_count + ' (' + size(row.byte_count || 0) + ')', 'count');
+
+    var status = UPLOAD_TEXT[row.upload_status] || ['', row.upload_status || '–'];
+    var td = cell('');
+    var pill = document.createElement('span');
+    pill.className = 'pill ' + status[0];
+    pill.textContent = status[1];
+    if(row.upload_error){ pill.title = row.upload_error; }
+    td.appendChild(pill);
+
+    body.appendChild(tr);
+  });
+}
+
+function refreshAll(){
+  api('/health').then(renderHealth).catch(function(){});
+  api('/imports').then(function(body){ renderImports(body.imports || []); }).catch(function(){});
+}
+
+$('btnRescan').addEventListener('click', function(){
+  api('/imports/rescan', {method:'POST', body:'{}'})
+    .then(function(){ setTimeout(refreshAll, 1500); });
+});
+
+$('btnRetry').addEventListener('click', function(){
+  api('/imports/retry', {method:'POST', body:'{}'})
+    .then(function(){ setTimeout(refreshAll, 1500); });
+});
+
+refreshPairing();
+refreshAll();
+/* Langsam genug, dass die Seite den ganzen Tag offen bleiben kann, ohne der
+   Station Arbeit zu machen: der Scanweg hat Vorrang. */
+setInterval(refreshAll, 10000);
+
+})();
+</script>
+</body>
+</html>

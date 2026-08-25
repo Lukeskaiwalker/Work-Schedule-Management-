@@ -1,0 +1,36 @@
+# SMPL station - let the agent talk to the Brother PT-P710BT without root.
+#
+# Install as:  /etc/udev/rules.d/99-brother-ptouch.rules
+# Apply with:  sudo udevadm control --reload-rules && sudo udevadm trigger
+#              (then unplug and replug the printer)
+#
+# 04f9:20af is the PT-P710BT.  The vendor id is Brother's; the product id is
+# from the Raster Command Reference, Appendix A, and is confirmed by `lsusb`.
+#
+# Why a rule is needed at all
+# ---------------------------
+# The agent does not print through CUPS.  It opens the USB device directly and
+# writes raster bytes, because the PT-P710BT has no ESC/P or template firmware
+# to drive and because a queue between the scan and the tape adds latency we
+# do not have.  Direct access means the device node must be openable by the
+# service user, and by default a USB device is root-only.
+#
+# MODE 0660 + GROUP lp gives access to members of the 'lp' group and nobody
+# else.  The service user must therefore be in that group:
+#
+#     sudo usermod -aG lp smpl-station
+#
+# 'lp' rather than a new group on purpose: it already exists on Raspberry Pi
+# OS, it already means "may talk to printers", and one fewer group is one
+# fewer thing to get wrong at 8am.
+#
+# Note there is deliberately no rule to unbind the kernel's usblp driver.  The
+# agent detaches it itself when it claims the interface (that call genuinely
+# works on Linux, unlike on macOS), so a RUN+= that pokes /sys here would just
+# be a second, racier way of doing the same thing.
+
+SUBSYSTEM=="usb", ATTR{idVendor}=="04f9", ATTR{idProduct}=="20af", MODE="0660", GROUP="lp"
+
+# The same device also appears as a usb interface node; matching both means the
+# agent can claim it whichever way libusb reaches it.
+SUBSYSTEM=="usbmisc", ATTRS{idVendor}=="04f9", ATTRS{idProduct}=="20af", MODE="0660", GROUP="lp"

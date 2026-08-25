@@ -56,7 +56,7 @@ from app.schemas.werkstatt_procurement import (
     OrderImportOut,
 )
 from app.services.audit import log_admin_action
-from app.services.ids_cart_builder import CartItem, build_cart_xml
+from app.services.ids_cart_builder import build_cart_xml, cart_items_for_order_lines
 from app.services.ids_cart_parser import (
     CartParseError,
     ParsedCart,
@@ -430,6 +430,12 @@ def submit_order_to_shop(
     This does not place the order. It fills the shop's basket and hands the
     browser over so the human confirms there, under the wholesaler's own
     prices and stock. See `services/ids_cart_builder.py`.
+
+    The returned `warnings` are the only channel the buyer has for a line the
+    shop will not receive. `ids_ean_resolver` translates each line into this
+    supplier's own article number and names — with SP-number, description and
+    EAN — every line it could not, so a short basket is visible here rather
+    than discovered when the van is loaded.
     """
 
     order = db.get(WerkstattOrder, order_id)
@@ -442,25 +448,24 @@ def submit_order_to_shop(
         )
 
     connection = _enabled_connection(db, order.supplier_id)
+    supplier = db.get(WerkstattSupplier, order.supplier_id)
     full = load_order_full(db, order)
+    items, resolution = cart_items_for_order_lines(
+        db,
+        supplier_id=order.supplier_id,
+        lines=full.lines,
+        supplier_name=supplier.name if supplier else None,
+    )
     built = build_cart_xml(
-        [
-            CartItem(
-                supplier_article_no=line.supplier_article_no,
-                description=line.article_name,
-                quantity=line.quantity_ordered,
-                unit=line.unit,
-                ean=line.ean,
-                unit_price_cents=line.unit_price_cents,
-                currency=line.currency,
-                notes=None,
-            )
-            for line in full.lines
-        ],
+        items,
         reference=order.order_number,
         customer_number=connection.customer_number,
         ids_version=connection.ids_version,
         charset=connection.charset,
+        # The resolver has already reported every dropped line, with the
+        # detail needed to fix it. The builder's generic notice would only
+        # repeat it, less usefully.
+        warn_on_missing_article_no=False,
     )
 
     session = create_session(
@@ -489,7 +494,9 @@ def submit_order_to_shop(
         token=session.token,
         handoff_url=f"/api/werkstatt/ids/handoff/{session.token}",
         expires_at=session.expires_at,
-        warnings=list(built.warnings),
+        # Resolution warnings first: an unresolved line is the one that will be
+        # missing from the basket, and the buyer skims this list.
+        warnings=[*resolution.warnings(), *built.warnings],
     )
 
 
@@ -547,23 +554,20 @@ def render_handoff(token: str, db: Session = Depends(get_db)) -> HTMLResponse:
         if order is not None:
             order_number = order.order_number
             full = load_order_full(db, order)
+            # The same resolver as /submit, so the XML the shop receives cannot
+            # disagree with the warnings the buyer was shown a moment ago. It
+            # is idempotent: everything /submit backfilled resolves at step 1
+            # here, and this pass writes nothing new.
+            items, _ = cart_items_for_order_lines(
+                db, supplier_id=order.supplier_id, lines=full.lines
+            )
             cart_xml = build_cart_xml(
-                [
-                    CartItem(
-                        supplier_article_no=line.supplier_article_no,
-                        description=line.article_name,
-                        quantity=line.quantity_ordered,
-                        unit=line.unit,
-                        ean=line.ean,
-                        unit_price_cents=line.unit_price_cents,
-                        currency=line.currency,
-                    )
-                    for line in full.lines
-                ],
+                items,
                 reference=order.order_number,
                 customer_number=connection.customer_number,
                 ids_version=connection.ids_version,
                 charset=connection.charset,
+                warn_on_missing_article_no=False,
             ).xml
 
     field_map = (

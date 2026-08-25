@@ -6,9 +6,17 @@
 #   ./run.sh                 # normal operation (USB printer expected)
 #   ./run.sh --no-printer    # no hardware; prints are simulated
 #   AGENT_PORT=9000 ./run.sh # different port
-#   NO_BROWSER=1 ./run.sh    # headless (a Raspberry Pi bridge, say)
+#   NO_BROWSER=1 ./run.sh    # headless
+#
+# Rehearsing the SD-card import with no instrument to hand:
+#   python3 server.py --make-fixtures /tmp/cards
+#   ./run.sh --no-printer --sd-simulate /tmp/cards
 #
 # Any argument is forwarded to server.py untouched.
+#
+# On the office Pi this script is NOT the entry point - systemd is. See
+# packaging/smpl-station.service and docs/PI_STATION.md. This is for a bench,
+# a laptop, and for debugging the Pi by hand once you are on it.
 
 set -euo pipefail
 
@@ -57,8 +65,15 @@ fi
 
 if ! have_deps "$PY"; then
   echo "!! $PY cannot import pyusb/pillow - printing will be unavailable."
-  echo "!! Scanning, counting and exporting still work. Fix with:"
+  echo "!! Scanning, counting, exporting and SD import still work. Fix with:"
   echo "!!   $PY -m pip install -r $HERE/requirements.txt"
+  # pip installs pyusb but not the native library it binds to, and the package
+  # name differs per platform - which is the single most common reason a fresh
+  # box imports pyusb happily and then cannot find a printer.
+  case "$(uname -s)" in
+    Linux)  echo "!! ...and the native library: sudo apt install libusb-1.0-0" ;;
+    Darwin) echo "!! ...and the native library: brew install libusb" ;;
+  esac
 fi
 
 URL="http://${AGENT_HOST}:${AGENT_PORT}/"

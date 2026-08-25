@@ -56,6 +56,14 @@ from app.models.werkstatt_procurement import (
     WerkstattIdsSession,
     WerkstattOrderImport,
 )
+from app.models.station import (
+    PAIRING_APPROVED,
+    PAIRING_CLAIMED,
+    PAIRING_DENIED,
+    PAIRING_PENDING,
+    Station,
+    StationPairing,
+)
 from app.models.training import TrainingWeekReport
 from app.models.schaltplan import PanelPlan
 from app.models.wiki import WikiPage
@@ -101,8 +109,14 @@ __all__ = [
     "ProjectMaterialNeed",
     "ProjectMember",
     "ProjectWeatherCache",
+    "PAIRING_APPROVED",
+    "PAIRING_CLAIMED",
+    "PAIRING_DENIED",
+    "PAIRING_PENDING",
     "SchoolAbsence",
     "Site",
+    "Station",
+    "StationPairing",
     "Task",
     "TaskAssignment",
     "TaskPartner",

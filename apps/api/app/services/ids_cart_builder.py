@@ -47,6 +47,15 @@ every basket from the customer's own conditions, so ours would be overwritten at
 best; and the prices we hold for anything imported before v2.9.14 are line
 totals mis-stored as unit prices, which would hand the shop a cart overstating
 metre-goods by their quantity.
+
+## Where ArtNo comes from
+
+``ArtNo`` must be the *supplier's own* number. The workshop scans EANs, so what
+an order line carries is frequently not that, and a shop handed a GTIN drops
+the position without saying so. ``cart_items_for_order_lines`` below runs
+``ids_ean_resolver`` over the lines first and hands ``build_cart_xml`` numbers
+the shop can act on; ``build_cart_xml`` itself stays pure and takes no session,
+so the XML shape remains testable without a database.
 """
 
 from __future__ import annotations
@@ -54,7 +63,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
+from typing import TYPE_CHECKING, Sequence
 from xml.sax.saxutils import escape
+
+from app.services.ids_ean_resolver import ResolutionReport, resolve_order_lines
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from sqlalchemy.orm import Session
 
 
 @dataclass(frozen=True)
@@ -153,12 +168,18 @@ def build_cart_xml(
     ids_version: str = "2.5",
     charset: str = "UTF-8",
     now: datetime | None = None,
+    warn_on_missing_article_no: bool = True,
 ) -> BuiltCart:
     """Render the cart as an ITEK Warenkorb document.
 
     ``reference`` is our order number. It has no home in the senden schema —
     the only free-text carriers live in ``OrderInfo``, which we omit — so it is
     kept in the signature for callers and deliberately not emitted.
+
+    ``warn_on_missing_article_no`` is set False by
+    ``cart_items_for_order_lines``, which has already reported those lines with
+    the article number, name and EAN a buyer needs. The position is still
+    dropped either way; only the duplicate, less informative warning goes.
     """
 
     warnings: list[str] = []
@@ -171,10 +192,11 @@ def build_cart_xml(
             # ArtNo is mandatory. A position without one cannot be expressed at
             # all, and emitting it anyway would produce a document the shop
             # rejects wholesale — losing the entire cart rather than one line.
-            warnings.append(
-                f"Position {index} ({item.description or 'ohne Bezeichnung'}) hat keine "
-                "Lieferanten-Artikelnummer und kann nicht an den Shop übergeben werden"
-            )
+            if warn_on_missing_article_no:
+                warnings.append(
+                    f"Position {index} ({item.description or 'ohne Bezeichnung'}) hat keine "
+                    "Lieferanten-Artikelnummer und kann nicht an den Shop übergeben werden"
+                )
             continue
         if len(artno) > _ARTNO_MAX:
             warnings.append(
@@ -215,6 +237,52 @@ def build_cart_xml(
         "</Warenkorb>"
     )
     return BuiltCart(xml=xml, warnings=tuple(warnings))
+
+
+def cart_items_for_order_lines(
+    db: Session,
+    *,
+    supplier_id: int,
+    lines: Sequence[object],
+    supplier_name: str | None = None,
+    backfill: bool = True,
+) -> tuple[list[CartItem], ResolutionReport]:
+    """Turn an order's lines into cart positions the shop can match.
+
+    The single place the EAN→supplier-number translation is applied, so the
+    ``/submit`` response and the hand-over page that follows it cannot disagree
+    about what is in the basket — they used to build ``CartItem`` independently,
+    and a divergence there would be invisible until the wholesaler's cart came
+    up short.
+
+    Every line produces a ``CartItem``, including unresolved ones. Dropping them
+    here would shift every later ``RefItems/Customer`` position number, so
+    "Position 3" in a warning would no longer be the third line of the order.
+    ``build_cart_xml`` omits them from the XML; the returned report says which
+    and why.
+    """
+
+    report = resolve_order_lines(
+        db,
+        supplier_id=supplier_id,
+        lines=lines,
+        supplier_name=supplier_name,
+        backfill=backfill,
+    )
+    items = [
+        CartItem(
+            supplier_article_no=resolution.supplier_article_no,
+            description=getattr(line, "article_name", None)
+            or getattr(line, "description", None),
+            quantity=getattr(line, "quantity_ordered", 1),
+            unit=getattr(line, "unit", None),
+            ean=getattr(line, "ean", None) or resolution.ean,
+            unit_price_cents=getattr(line, "unit_price_cents", None),
+            currency=getattr(line, "currency", None) or "EUR",
+        )
+        for line, resolution in zip(lines, report.resolutions, strict=True)
+    ]
+    return items, report
 
 
 def encode_cart(xml: str, charset: str = "ISO-8859-1") -> bytes:

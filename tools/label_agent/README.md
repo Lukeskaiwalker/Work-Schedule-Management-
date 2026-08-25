@@ -9,6 +9,8 @@ It runs on the machine the hardware is plugged into:
 - **Brother PT-P710BT** over USB (raw raster, no driver, no CUPS)
 - an **HID barcode scanner**, which behaves as a keyboard and types into the
   browser page the agent serves
+- on the office Pi, a **USB card reader** for Benning and Metrel test
+  instruments - see *The office Pi* below
 
 There is no framework. The HTTP server, the database and the SMPL client are
 all Python standard library; the only third-party code is pyusb and Pillow,
@@ -17,8 +19,12 @@ and both are reached through the two sibling modules (`brother_raster.py`,
 still counts — you just cannot print. That is deliberate: **the SQLite file is
 the product, the printer is an accessory.**
 
-The same process is meant to move onto a Raspberry Pi later as a LAN print
-bridge. Nothing in it is macOS-specific — see *Running it on a Pi* below.
+The same process runs on macOS and on Raspberry Pi OS. On the Pi it gains two
+things it does not need on a bench: a SMPL identity it can obtain without
+anybody typing a password into it, and an importer for test-instrument SD
+cards. Both are optional, and neither can stop the agent booting.
+[`docs/PI_STATION.md`](../../docs/PI_STATION.md) is the install and operate
+guide for that machine.
 
 ---
 
@@ -34,12 +40,15 @@ cd "tools/label_agent"
 `/health`, prints the URL and opens the station page.
 
 ```sh
-./run.sh --no-printer     # no hardware attached: prints are simulated
-AGENT_PORT=9000 ./run.sh  # different port
-NO_BROWSER=1 ./run.sh     # headless box
+./run.sh --no-printer          # no hardware attached: prints are simulated
+./run.sh --no-sd               # do not watch for test-instrument cards
+./run.sh --sd-simulate DIR     # every subdirectory of DIR is an "inserted" card
+AGENT_PORT=9000 ./run.sh       # different port
+NO_BROWSER=1 ./run.sh          # headless box
 ```
 
-Default URL: <http://127.0.0.1:8765/>
+Default URL: <http://127.0.0.1:8765/>, and <http://127.0.0.1:8765/setup> for
+the one-time setup page.
 
 Optional environment, for the catalog lookup:
 
@@ -49,7 +58,17 @@ export SMPL_API_TOKEN=<a token for a user with werkstatt access>
 ```
 
 Both are optional. **With neither set the agent is fully usable** — it just
-cannot name an article it has never seen before.
+cannot name an article it has never seen before. `SMPL_API_TOKEN` is also
+optional once a station is *paired*; see *Logging in to SMPL* below, which is
+the better answer because a paired token can be revoked centrally.
+
+Everything the agent owns lives under one directory — the counts database, the
+pairing token and any staged imports — so a station has a single thing to back
+up and a single thing to wipe:
+
+```sh
+export AGENT_STATE_DIR=~/.smpl-label-agent   # the default
+```
 
 ---
 
@@ -99,6 +118,15 @@ Three design choices carry that budget:
 | `GET` | `/export/{name}.json` | the session as JSON, ready for SMPL |
 | `GET` | `/export/{name}.csv` | the same as CSV (UTF-8 with BOM, so Excel behaves) |
 | `GET` | `/sessions` | every session the database knows about |
+| `GET` | `/setup` | the one-time setup page: SMPL login, imports, diagnostics |
+| `POST` | `/pair/start` | ask SMPL for a pairing code and start waiting |
+| `GET` | `/pair/status` | the code, the countdown, or the resulting token's details |
+| `POST` | `/pair/cancel` | stop waiting |
+| `POST` | `/pair/forget` | delete the local token (revoke it in SMPL separately) |
+| `GET` | `/imports` | every SD-card import, newest first |
+| `GET` | `/imports/{id}` | one import, with its full manifest |
+| `POST` | `/imports/rescan` | look at every mounted card again |
+| `POST` | `/imports/retry` | re-queue everything SMPL has not taken yet |
 
 ```sh
 curl -s localhost:8765/health
@@ -177,28 +205,136 @@ print reconnects automatically. Counting is untouched throughout — this is the
 case the design is built around, because the operator cannot stop counting to
 go find a cable.
 
-**No authentication.** The agent binds `127.0.0.1` by default and trusts
-whoever can reach it. Do not expose it to an untrusted network.
+**No authentication on the local API.** The agent binds `127.0.0.1` by default
+and trusts whoever can reach it. Pairing gives the station an identity *toward
+SMPL*; it does not put a lock on port 8765. `--host 0.0.0.0` is therefore a
+decision about the network the station sits on, and the agent says so at
+startup when you make it. Staged import files are deliberately not served over
+HTTP for the same reason — `/imports` returns metadata, and the files stay on
+disk.
 
 **`--no-printer`** simulates the print step (real render, real timing, no
 tape) so the station page and the counting flow can be exercised without
-hardware.
+hardware. `--sd-simulate` does the same for card imports.
 
 ---
 
-## Running it on a Pi
+## Logging in to SMPL
+
+The station has no keyboard and, on the Pi, no screen. Typing a password into
+a shared appliance would be both awkward and wrong — a password typed into a
+shared appliance now lives on a shared appliance.
+
+So it uses the **OAuth 2.0 Device Authorization Grant** (RFC 8628), the same
+pattern a smart TV uses for the same reason:
+
+```sh
+python3 server.py --pair          # or open /setup in a browser
+```
+
+The station shows a short code. An admin opens SMPL in a browser where they
+are already logged in, approves it, and the station's next poll collects a
+long-lived token. The token is written to
+`~/.smpl-label-agent/station-token.json` with mode `0600`, is sent as
+`Authorization: Bearer …` from then on, and can be revoked centrally without
+anyone touching the hardware.
+
+**The SMPL side of this was built in parallel**, so `pairing.py` treats every
+endpoint as possibly absent: it tries several plausible paths, accepts
+several spellings of every field, and when nothing answers it reports
+`unavailable` and the agent falls back to `SMPL_API_TOKEN` or to the
+unauthenticated local behaviour it has today. A station that has never been
+paired counts, prints and exports exactly as before.
+
+---
+
+## Test-instrument SD cards
+
+On the Pi, a card from a Benning ST 760 or a Metrel MI 3152 goes into a USB
+reader and its protocols are copied, hashed and queued for SMPL without
+anybody opening a laptop.
+
+The order matters and is the whole design:
+
+```
+copy byte-for-byte  →  sha256 + manifest  →  *then* try to parse
+```
+
+A test protocol is evidence in a DGUV V3 audit. A parser that mangles one is
+worse than no parser, because a mangled record looks correct and gets
+believed. So the evidence is safe before anything is interpreted, an
+unrecognised instrument still produces a complete import, and cards are
+mounted **read-only** — the station never writes to one.
+
+What is parsed is *structure*, never *meaning*. Column names, element names
+and container entries come through exactly as the instrument wrote them;
+`0,52` stays the string `0,52` and `35 kOhm` stays `35 kOhm`. Metrel's `MID` /
+`Id` codes and Benning's column vocabulary are **not** mapped to anything,
+because no published dictionary for them exists.
+[`sd_formats.py`](sd_formats.py) documents what was established, with
+confidence levels, and `docs/PI_STATION.md` has the table.
+
+Rehearse the whole path with no hardware at all:
+
+```sh
+python3 server.py --make-fixtures /tmp/cards      # sample Benning + Metrel cards
+./run.sh --no-printer --sd-simulate /tmp/cards    # each subdirectory = a card
+```
+
+---
+
+## Tests
+
+```sh
+python3 -m unittest discover -s tests
+```
+
+128 tests. No hardware, no network, no printing, no fixed ports — the HTTP
+tests bind port 0 and the pairing tests run against a stub SMPL that can be
+told to behave like a canonical implementation, like a plausible one with
+different field names, like a server that has never heard of pairing, or like
+SMPL's actual station router (`TestRealSmplContract`, transcribed from
+`apps/api/app/schemas/station.py` so the two halves cannot drift apart
+silently).
+
+A good half of them assert a *negative*: that no unit was converted, no column
+renamed, no vendor code given a meaning, no symlink followed off a card, no
+staged file written outside the staging directory. Those are the tests that
+stop a later change from quietly turning a passthrough into a wrong answer.
+
+---
+
+## The office Pi
+
+Full install, wiring, failure modes and backups:
+**[`docs/PI_STATION.md`](../../docs/PI_STATION.md)**.
+
+The short version:
+
+```sh
+sudo tools/label_agent/packaging/install-pi.sh --smpl-url https://smpl.example.de
+```
+
+That installs the udev rules, builds the virtualenv, creates the service user
+and starts `smpl-station.service`. Then pair it, and scan something.
+
+Everything in [`packaging/`](packaging/) is readable on its own if you would
+rather do it by hand:
+
+| File | What it is for |
+|---|---|
+| `99-brother-ptouch.rules` | lets the service user open `04f9:20af` without root |
+| `99-smpl-sd-automount.rules` | mounts an inserted card on a headless Pi, where nothing else will |
+| `smpl-sd-mount.sh` | the mount helper — read-only, and sanitises the card label before it becomes a path |
+| `smpl-station.service` | the systemd unit: starts on boot, restarts on failure, logs to the journal |
+| `install-pi.sh` | all of the above, idempotently |
+
+On Linux the agent needs the native libusb that pip does not install:
 
 ```sh
 sudo apt install libusb-1.0-0
-./run.sh --host 0.0.0.0
 ```
 
-`--host 0.0.0.0` makes it a LAN print bridge for other machines. On Linux the
-USB device needs a udev rule so the service user may open it without root:
-
-```
-# /etc/udev/rules.d/99-brother-ptouch.rules
-SUBSYSTEM=="usb", ATTR{idVendor}=="04f9", ATTR{idProduct}=="20af", MODE="0660", GROUP="lp"
-```
-
-Nothing else changes — same process, same database, same endpoints.
+Bind the LAN with `--host 0.0.0.0` to serve other machines. The agent has no
+authentication of its own, so that is a decision about the network it is on,
+not a default.

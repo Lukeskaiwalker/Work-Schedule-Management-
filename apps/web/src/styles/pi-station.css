@@ -1,0 +1,526 @@
+/* ── Pi-Station (admin) ────────────────────────────────────────────────────
+ *
+ * Page-local sheet, imported from PiStationPage.tsx rather than appended to
+ * src/styles.css. That is a deliberate exception to the single-stylesheet
+ * convention: this page was written while several agents held styles.css open,
+ * and a separate file is the one shape of the change that cannot conflict.
+ *
+ * Everything is scoped under `.pi-station`, and the page root also carries
+ * `.admin-page` so the shared card, button and input rules (which are scoped
+ * to `.admin-page`) apply unchanged. Only what those rules do not already
+ * cover lives here. Colours come from the tokens in styles.css — the literals
+ * that do appear are tints of the accent/danger tokens for backgrounds, which
+ * have no token of their own.
+ */
+
+.pi-station {
+  gap: 18px;
+}
+
+/* ── Header ────────────────────────────────────────────────────────────── */
+
+.pi-station-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+
+.pi-station-header-text {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 62ch;
+}
+
+.pi-station-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.pi-station-updated {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Layout ────────────────────────────────────────────────────────────── */
+
+.pi-station-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(320px, 1fr);
+  gap: 22px;
+  align-items: start;
+}
+
+.pi-station-column {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  min-width: 0;
+}
+
+@media (max-width: 1080px) {
+  .pi-station-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ── Status pill ───────────────────────────────────────────────────────── */
+
+.pi-station-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background-color: var(--surface-2);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.pi-station-pill-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background-color: var(--line);
+  flex-shrink: 0;
+}
+
+.pi-station-pill--online {
+  background-color: var(--ok-bg);
+  border-color: var(--ok-line);
+  color: #1a7a45;
+}
+
+.pi-station-pill--online .pi-station-pill-dot {
+  background-color: #1a7a45;
+}
+
+.pi-station-pill--stale {
+  background-color: #fdf4e3;
+  border-color: #ecd3a2;
+  color: #8a5a10;
+}
+
+.pi-station-pill--stale .pi-station-pill-dot {
+  background-color: #c58516;
+}
+
+.pi-station-pill--offline {
+  background-color: #fbecec;
+  border-color: #e6bcbc;
+  color: var(--danger);
+}
+
+.pi-station-pill--offline .pi-station-pill-dot {
+  background-color: var(--danger);
+}
+
+/* ── Station switcher (only rendered with 2+ stations) ─────────────────── */
+
+.pi-station-switcher {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pi-station-switcher-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background-color: #ffffff;
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  min-height: 0;
+  transition:
+    border-color 0.12s ease,
+    background-color 0.12s ease;
+}
+
+.pi-station-switcher-btn:hover {
+  border-color: var(--accent);
+}
+
+.pi-station-switcher-btn--active {
+  border-color: var(--accent);
+  background-color: var(--surface-2);
+}
+
+/* ── Station detail ────────────────────────────────────────────────────── */
+
+.pi-station-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.pi-station-detail-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.pi-station-name {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.pi-station-sub {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.pi-station-subhead {
+  margin: 4px 0 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* Dense key/value grid: an ops page is read by scanning down the labels. */
+.pi-station-meta {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px 18px;
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background-color: var(--surface);
+}
+
+.pi-station-meta-item {
+  min-width: 0;
+}
+
+.pi-station-meta dt {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.pi-station-meta dd {
+  margin: 3px 0 0;
+  font-size: 13px;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.pi-station-mono {
+  font-family: ui-monospace, "SFMono-Regular", "SF Mono", "Menlo", "Consolas", monospace;
+  font-size: 12px;
+}
+
+/* ── Hardware rows ─────────────────────────────────────────────────────── */
+
+.pi-station-hw {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.pi-station-hw-row {
+  display: grid;
+  grid-template-columns: 10px 150px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  font-size: 13px;
+}
+
+.pi-station-hw-row + .pi-station-hw-row {
+  border-top: 1px solid var(--line);
+}
+
+.pi-station-hw-label {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.pi-station-hw-value {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.pi-station-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background-color: var(--line);
+}
+
+.pi-station-dot--ok {
+  background-color: #1a7a45;
+}
+
+.pi-station-dot--bad {
+  background-color: var(--danger);
+}
+
+@media (max-width: 560px) {
+  .pi-station-hw-row {
+    grid-template-columns: 10px minmax(0, 1fr);
+  }
+
+  .pi-station-hw-value {
+    grid-column: 2;
+  }
+}
+
+/* ── Notices, warnings, feedback ───────────────────────────────────────── */
+
+.pi-station-notice {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background-color: var(--surface);
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.pi-station-notice span {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.pi-station-notice--bad {
+  border-color: #e6bcbc;
+  background-color: #fbecec;
+}
+
+.pi-station-notice--bad strong {
+  color: var(--danger);
+}
+
+.pi-station-warn {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #8a5a10;
+}
+
+.pi-station-warn--bad {
+  color: var(--danger);
+}
+
+.pi-station-feedback {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: #1a7a45;
+}
+
+.pi-station-feedback--bad {
+  color: var(--danger);
+}
+
+/* ── Actions ───────────────────────────────────────────────────────────── */
+
+.pi-station-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.pi-station-danger-btn {
+  appearance: none;
+  height: 40px;
+  padding: 0 20px;
+  border: 0;
+  border-radius: 8px;
+  background-color: var(--danger);
+  color: #ffffff;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  min-height: 0;
+  transition: background-color 0.15s ease;
+}
+
+.pi-station-danger-btn:hover:not(:disabled) {
+  background-color: #7d1616;
+}
+
+.pi-station-danger-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.pi-station-unpair {
+  margin-left: auto;
+  color: var(--danger);
+}
+
+/* ── Sessions table ────────────────────────────────────────────────────── */
+
+.pi-station-table-wrap {
+  /* Six columns of counts do not fit a narrow admin column; the table gets
+     its own scroller so the page body never scrolls sideways. */
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.pi-station-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.pi-station-table th {
+  padding: 10px 14px;
+  text-align: left;
+  background-color: var(--surface);
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.pi-station-table td {
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--surface-2);
+  color: var(--ink);
+  vertical-align: top;
+  white-space: nowrap;
+}
+
+.pi-station-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.pi-station-table tbody tr:hover td {
+  background-color: var(--surface);
+}
+
+.pi-station-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.pi-station-row-action {
+  text-align: right;
+}
+
+.pi-station-tag {
+  display: block;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* ── Pairing ───────────────────────────────────────────────────────────── */
+
+.pi-station-pairing {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+/* The code is read off a screen and typed into a Pi across the room, so it is
+   sized to be legible at that distance and spaced so 0/O cannot blur. */
+.pi-station-code {
+  display: block;
+  width: 100%;
+  padding: 14px 16px;
+  border: 1px dashed var(--accent);
+  border-radius: 10px;
+  background-color: var(--surface-2);
+  font-family: ui-monospace, "SFMono-Regular", "SF Mono", "Menlo", "Consolas", monospace;
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  text-align: center;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.pi-station-countdown {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.pi-station-url {
+  margin: 0;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background-color: var(--surface);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.pi-station-qr {
+  /* inline-flex, not flex: the white plate must hug the code, not stretch to
+     the width of the card. */
+  display: inline-flex;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background-color: #ffffff;
+}
+
+.pi-station-qr svg {
+  display: block;
+  width: 168px;
+  height: 168px;
+}
+
+/* ── Setup block ───────────────────────────────────────────────────────── */
+
+.pi-station-pre {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background-color: var(--surface);
+  font-family: ui-monospace, "SFMono-Regular", "SF Mono", "Menlo", "Consolas", monospace;
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--ink);
+  max-height: 340px;
+  overflow: auto;
+  white-space: pre;
+  tab-size: 2;
+}

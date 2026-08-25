@@ -1,0 +1,77 @@
+# SMPL station - scan, print, and import test-instrument cards.
+#
+# Install as:  /etc/systemd/system/smpl-station.service
+# Enable with: sudo systemctl enable --now smpl-station
+# Watch with:  journalctl -u smpl-station -f
+#
+# packaging/install-pi.sh does all of that for you; this file is here so the
+# unit is reviewable and so a hand-install is possible.
+
+[Unit]
+Description=SMPL label + inventory station
+Documentation=file:/opt/smpl-station/tools/label_agent/README.md
+# Only "network-online" because the *catalog lookup* wants a network. The
+# agent is designed to run without one, so this is a preference, not a
+# requirement, and there is deliberately no Requires= that could keep the
+# station down because a switch was slow to come up.
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=exec
+User=smpl-station
+Group=smpl-station
+# 'lp' is what the Brother udev rule grants. Without this the agent boots,
+# counts and exports, and simply cannot print - which is the intended
+# degradation, but it is not the intended *configuration*.
+SupplementaryGroups=lp
+
+WorkingDirectory=/opt/smpl-station/tools/label_agent
+
+# StateDirectory makes systemd create and chown /var/lib/smpl-station itself,
+# so the one directory holding the counts, the token and the staged imports
+# cannot end up owned by root because somebody ran the agent by hand once.
+StateDirectory=smpl-station
+StateDirectoryMode=0700
+Environment=AGENT_STATE_DIR=/var/lib/smpl-station
+Environment=AGENT_HOST=0.0.0.0
+Environment=AGENT_PORT=8765
+Environment=PYTHONUNBUFFERED=1
+# SMPL_API_URL, and optionally SMPL_API_TOKEN and STATION_NAME, live here.
+# The leading '-' means a station with no SMPL server still starts.
+EnvironmentFile=-/etc/smpl-station/agent.env
+
+ExecStart=/opt/smpl-station/tools/label_agent/.venv/bin/python \
+          /opt/smpl-station/tools/label_agent/server.py \
+          --host ${AGENT_HOST} --port ${AGENT_PORT}
+
+# An office appliance restarts. Always, quickly, and without a start limit
+# that would leave it dead at 7am because it flapped five times at 3am.
+Restart=always
+RestartSec=3
+StartLimitBurst=0
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=smpl-station
+
+# -- Hardening -------------------------------------------------------------
+# Deliberately moderate. ProtectSystem=strict plus PrivateTmp gives the service
+# its own mount namespace, and while host mounts do propagate into it, that is
+# exactly the mechanism the SD-card watcher depends on - so the settings that
+# could silently break "insert a card, nothing happens" are left off. If you
+# tighten this, test a card insertion afterwards, not just a restart.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target

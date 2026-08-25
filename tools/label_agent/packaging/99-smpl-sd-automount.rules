@@ -1,0 +1,34 @@
+# SMPL station - mount an inserted SD card so the agent can read it.
+#
+# Install as:  /etc/udev/rules.d/99-smpl-sd-automount.rules
+# Apply with:  sudo udevadm control --reload-rules && sudo udevadm trigger
+#
+# Why this file exists at all
+# ---------------------------
+# Raspberry Pi OS *with a desktop* auto-mounts removable media through
+# udisks2, and on such a machine this rule is unnecessary.  A headless Lite
+# image mounts nothing: the card enumerates, /dev/sdb1 appears, and no
+# filesystem is ever mounted, so the agent's watcher correctly reports that
+# there is no card.  This is the piece that closes that gap.
+#
+# It replaces the old `usbmount` package, which is unmaintained and does not
+# work on a systemd machine.  systemd-mount is the supported mechanism.
+#
+# Note the card being imported goes into a **USB card reader**.  The Pi's own
+# microSD slot holds the operating system and is mounted at / - it is not, and
+# must not become, an import source.
+#
+# Scope
+# -----
+# ENV{ID_BUS}=="usb" keeps this to removable readers and sticks.
+# ENV{ID_FS_USAGE}=="filesystem" skips partition tables, swap and empty slots.
+# ENV{UDISKS_IGNORE}!="1" leaves anything the desktop stack claimed alone, so
+#   installing this on a desktop image does not produce two competing mounts.
+
+ACTION=="add", SUBSYSTEM=="block", ENV{ID_BUS}=="usb", ENV{ID_FS_USAGE}=="filesystem", \
+  ENV{UDISKS_IGNORE}!="1", \
+  RUN{program}+="/usr/local/sbin/smpl-sd-mount.sh $devnode"
+
+# On removal systemd-mount --collect tears its own unit down, so there is no
+# unmount rule here on purpose: a second mechanism racing the first is how you
+# get a stuck mount point that needs a reboot to clear.

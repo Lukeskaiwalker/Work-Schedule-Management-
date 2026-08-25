@@ -268,6 +268,7 @@ const ProfilePage = lazy(() => import("./pages/ProfilePage").then((m) => ({ defa
 const MapPage = lazy(() => import("./pages/MapPage").then((m) => ({ default: m.MapPage })));
 const ProjectPage = lazy(() => import("./pages/ProjectPage").then((m) => ({ default: m.ProjectPage })));
 const ProjectsAllPage = lazy(() => import("./pages/ProjectsAllPage").then((m) => ({ default: m.ProjectsAllPage })));
+const PiStationPage = lazy(() => import("./pages/PiStationPage").then((m) => ({ default: m.PiStationPage })));
 const ProjectsArchivePage = lazy(() =>
   import("./pages/ProjectsArchivePage").then((m) => ({ default: m.ProjectsArchivePage }))
 );
@@ -1547,6 +1548,7 @@ export function App() {
       "construction",
       "schaltplan",
       "ausbildung",
+      "pi_station",
       "reports",
       "materials",
       "werkstatt",
@@ -1566,14 +1568,22 @@ export function App() {
         return workspaceMode === "construction";
       }
       // Ausbildungsnachweis: shown to the two audiences who have one — the
-      // apprentice keeping the record, and the trainer countersigning it.
-      // Both modes, because an Azubi is on site and the Ausbilder is not.
+      // apprentice keeping the record, and the trainer countersigning it —
+      // and only in construction mode. The office view has no use for it
+      // today (owner request), so it is mode-gated the same way my_tasks is;
+      // the audience gating still applies on top, so the nav is unchanged for
+      // everyone else.
       if (view === "ausbildung") {
-        return isApprentice || canManageTraining;
+        return workspaceMode === "construction" && (isApprentice || canManageTraining);
+      }
+      // Scan-Station: the Raspberry-Pi kiosk pairing/ops surface. Admin tool,
+      // not something the crew needs in either mode.
+      if (view === "pi_station") {
+        return canManageSystem;
       }
       return true;
     });
-  }, [workspaceMode, isApprentice, canManageTraining]);
+  }, [workspaceMode, isApprentice, canManageTraining, canManageSystem]);
 
   const projectTabs = useMemo<ProjectTab[]>(() => {
     const tabs: ProjectTab[] = ["overview"];
@@ -2128,11 +2138,11 @@ export function App() {
       setMainView("my_tasks");
       return;
     }
-    // Verteilerpläne is construction-only and has no office counterpart to
-    // swap to, so switching modes has to land somewhere. Without this the
-    // page stayed mounted with nothing selected in the nav — a view the user
-    // can see but cannot navigate back to.
-    if (workspaceMode === "office" && mainView === "schaltplan") {
+    // Verteilerpläne and the Ausbildungsnachweis are construction-only and
+    // have no office counterpart to swap to, so switching modes has to land
+    // somewhere. Without this the page stayed mounted with nothing selected
+    // in the nav — a view the user can see but cannot navigate back to.
+    if (workspaceMode === "office" && (mainView === "schaltplan" || mainView === "ausbildung")) {
       setMainView("overview");
     }
   }, [workspaceMode, mainView]);
@@ -10339,6 +10349,7 @@ export function App() {
           {mainView === "construction" && <ConstructionPage />}
           {mainView === "schaltplan" && <SchaltplanPage />}
           {mainView === "ausbildung" && <AusbildungPage />}
+          {mainView === "pi_station" && <PiStationPage />}
           {mainView === "reports" && <ReportsPage />}
           {mainView === "wiki" && <WikiPage />}
           {mainView === "messages" && <MessagesPage />}

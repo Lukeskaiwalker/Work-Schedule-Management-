@@ -1114,7 +1114,8 @@ export type WorkspaceMode = "construction" | "office";
  * Current nav map:
  *   sidebar nav items  → overview, werkstatt, projects_all, projects_archive,
  *                         my_tasks, office_tasks, project, calendar, planning,
- *                         construction, schaltplan, ausbildung, wiki, messages, time
+ *                         construction, schaltplan, ausbildung, pi_station,
+ *                         wiki, messages, time
  *   sidebar user menu  → profile, admin
  *
  * Conditional nav items:
@@ -1123,8 +1124,13 @@ export type WorkspaceMode = "construction" | "office";
  *     office view has no use for it.
  *
  *   - "ausbildung" only appears for apprentices (users.is_apprentice) and for
- *     trainers (training:manage). It is filtered out of navViews for everyone
- *     else, so the nav is unchanged for the rest of the crew.
+ *     trainers (training:manage), and only in construction mode. It is
+ *     filtered out of navViews for everyone else, so the nav is unchanged for
+ *     the rest of the crew. The office view has no use for the record today.
+ *
+ *   - "pi_station" (Scan-Station) only appears for system administrators
+ *     (system:manage). It is the Raspberry-Pi kiosk ops surface, not a crew
+ *     tool, so it is filtered out of navViews for everyone else.
  *
  * Legacy / transitional:
  *   - "materials" is kept for deep-link backwards compatibility. On load,
@@ -1148,6 +1154,7 @@ export type MainView =
   | "construction"
   | "schaltplan"
   | "ausbildung"
+  | "pi_station"
   | "reports"
   | "wiki"
   | "messages"

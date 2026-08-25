@@ -1,4 +1,4 @@
-"""USB raster driver for the Brother P-touch Cube PT-P710BT (macOS / pyusb).
+"""USB raster driver for the Brother P-touch Cube PT-P710BT (macOS + Linux / pyusb).
 
 Every command byte below is taken from Brother's official
 "Software Developer's Manual -- Raster Command Reference PT-E550W/P750W/P710BT",
@@ -35,7 +35,9 @@ included -- must go out as a full 16-byte G transfer.
 
 from __future__ import annotations
 
+import os
 import struct
+import sys
 import time
 from dataclasses import dataclass
 
@@ -231,14 +233,45 @@ _PRINT_COMPLETION_TIMEOUT_S = 60.0
 # transfer would hit the timeout instead of simply blocking per chunk.
 _WRITE_CHUNK_BYTES = 4096
 
-# Where Homebrew puts libusb on Apple Silicon and on Intel macs.  ctypes'
-# find_library() often misses these under the SIP-protected system python,
-# so we fall back to explicit paths rather than failing to find a backend.
-_LIBUSB_FALLBACK_PATHS = (
+# Where libusb actually lives when ctypes' find_library() cannot see it.
+#
+# macOS: Homebrew's prefix differs between Apple Silicon and Intel, and the
+# SIP-protected system python often fails to find either.
+# Linux: find_library() shells out to `ldconfig`/`gcc`, which is present on a
+# desktop and frequently absent from a minimal Raspberry Pi OS Lite image, so
+# the Debian multiarch paths are listed explicitly.  Both 64-bit (aarch64) and
+# 32-bit (armhf) Pi images are covered, because "which one is this card?" is
+# not a question anyone should have to answer while standing at the station.
+_LIBUSB_MACOS_PATHS = (
     "/opt/homebrew/lib/libusb-1.0.dylib",
     "/usr/local/lib/libusb-1.0.dylib",
     "/opt/homebrew/lib/libusb-1.0.0.dylib",
 )
+
+_LIBUSB_LINUX_PATHS = (
+    "/usr/lib/aarch64-linux-gnu/libusb-1.0.so.0",   # Raspberry Pi OS 64-bit
+    "/usr/lib/arm-linux-gnueabihf/libusb-1.0.so.0",  # Raspberry Pi OS 32-bit
+    "/usr/lib/x86_64-linux-gnu/libusb-1.0.so.0",     # Debian/Ubuntu amd64
+    "/usr/lib/libusb-1.0.so.0",
+    "/usr/local/lib/libusb-1.0.so.0",
+    "/lib/aarch64-linux-gnu/libusb-1.0.so.0",
+    "/lib/arm-linux-gnueabihf/libusb-1.0.so.0",
+)
+
+if sys.platform == "darwin":
+    _LIBUSB_FALLBACK_PATHS = _LIBUSB_MACOS_PATHS
+    _LIBUSB_INSTALL_HINT = "brew install libusb"
+elif sys.platform.startswith("linux"):
+    _LIBUSB_FALLBACK_PATHS = _LIBUSB_LINUX_PATHS
+    _LIBUSB_INSTALL_HINT = "sudo apt install libusb-1.0-0"
+else:
+    _LIBUSB_FALLBACK_PATHS = _LIBUSB_MACOS_PATHS + _LIBUSB_LINUX_PATHS
+    _LIBUSB_INSTALL_HINT = "install libusb-1.0"
+
+# The udev rule shipped in packaging/99-brother-ptouch.rules.  Named here so
+# the permission error can tell the operator the exact file to install rather
+# than "check your permissions".
+_UDEV_RULE_FILE = "/etc/udev/rules.d/99-brother-ptouch.rules"
 
 
 class PrinterError(Exception):
@@ -325,18 +358,56 @@ def _decode_status(raw: bytes) -> PrinterStatus:
     )
 
 
+def _claim_failure_message(exc: "usb.core.USBError") -> str:
+    """Turn "LIBUSB_ERROR_ACCESS" into an instruction someone can act on.
+
+    Failing to claim the interface has exactly two causes and they need
+    opposite responses, so guessing between them wastes the operator's
+    afternoon: either we are not *allowed* to open the device (a missing udev
+    rule on Linux -- by far the most common first-boot failure on a Pi), or
+    somebody else already has it (a print queue).  errno tells them apart.
+    """
+    errno = getattr(exc, "errno", None)
+
+    if sys.platform.startswith("linux") and errno == 13:  # EACCES
+        return (
+            "permission denied opening the PT-P710BT (%s). The udev rule is not "
+            "installed or has not been applied. Install packaging/"
+            "99-brother-ptouch.rules as %s, then run "
+            "`sudo udevadm control --reload-rules && sudo udevadm trigger`, "
+            "and unplug/replug the printer. Check the service user is in the "
+            "'lp' group: `id -nG smpl-station`." % (exc, _UDEV_RULE_FILE)
+        )
+    if sys.platform.startswith("linux"):
+        return (
+            "the PT-P710BT is attached but busy (%s). On Linux the usual holder "
+            "is the kernel's `usblp` module or a CUPS queue. Check with "
+            "`lsof /dev/usb/lp*` and `lpstat -t`; if CUPS owns it, disable that "
+            "queue (`sudo cupsdisable <queue>`) -- the agent talks to the "
+            "printer directly and does not need CUPS at all." % exc
+        )
+    return (
+        "the PT-P710BT is attached but busy (%s). Something else holds it -- "
+        "typically a macOS/CUPS print queue or the P-touch Editor. Pause the "
+        "queue in System Settings > Printers & Scanners, or quit the other "
+        "application, then retry." % exc
+    )
+
+
 def _backend():
-    """Return a libusb1 backend, falling back to explicit Homebrew paths."""
+    """Return a libusb1 backend, falling back to explicit per-platform paths."""
     backend = usb.backend.libusb1.get_backend()
     if backend is not None:
         return backend
     for path in _LIBUSB_FALLBACK_PATHS:
+        if not os.path.exists(path):
+            continue
         backend = usb.backend.libusb1.get_backend(find_library=lambda _p=path: _p)
         if backend is not None:
             return backend
     raise PrinterNotFound(
-        "libusb backend not available; install it with `brew install libusb` "
-        "(expected at %s)" % _LIBUSB_FALLBACK_PATHS[0]
+        "libusb backend not available; install it with `%s` (looked for %s)"
+        % (_LIBUSB_INSTALL_HINT, ", ".join(_LIBUSB_FALLBACK_PATHS[:3]))
     )
 
 
@@ -453,10 +524,18 @@ class BrotherPTouch:
                 % (VENDOR_ID, PRODUCT_ID)
             )
 
-        # macOS binds its own USB printing-class driver to this device.  libusb
-        # cannot detach it on Darwin -- the call raises NotImplementedError
-        # rather than failing -- so treat it as best-effort and let the claim
-        # below produce the real, actionable error.
+        # Both operating systems bind their own printing-class driver to this
+        # device, and they behave differently about giving it up:
+        #
+        #   macOS -- libusb cannot detach on Darwin at all; the call raises
+        #            NotImplementedError rather than failing, so this is
+        #            best-effort and the claim below produces the real error.
+        #   Linux -- `usblp` really does grab 04f9:20af, and detaching really
+        #            does work, which is why this is attempted rather than
+        #            skipped.  On a Pi the usual outcome is that the udev rule
+        #            has already handed us the device and there is nothing
+        #            bound; if CUPS is installed, this is the line that gets
+        #            the printer back.
         try:
             if device.is_kernel_driver_active(0):
                 device.detach_kernel_driver(0)
@@ -482,12 +561,7 @@ class BrotherPTouch:
         try:
             usb.util.claim_interface(device, interface)
         except usb.core.USBError as exc:
-            raise PrinterBusy(
-                "the PT-P710BT is attached but busy (%s). Something else holds "
-                "it -- typically a macOS/CUPS print queue or the P-touch Editor. "
-                "Pause the queue in System Settings > Printers & Scanners, or "
-                "quit the other application, then retry." % exc
-            ) from exc
+            raise PrinterBusy(_claim_failure_message(exc)) from exc
 
         self._device = device
         self._interface = interface

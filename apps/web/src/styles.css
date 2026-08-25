@@ -12957,6 +12957,11 @@ li {
   .admin-users-detail-grid {
     grid-template-columns: 1fr;
   }
+  /* Touch target: 36px is fine with a mouse, not with a thumb. Matches the
+     44px the date input inside these fields already takes on phones. */
+  .admin-users-toggle {
+    min-height: 44px;
+  }
   .admin-tools-form-row {
     grid-template-columns: 1fr;
   }
@@ -30443,19 +30448,76 @@ button.time-calendar-cell {
  * v2.5.23 — API access toggle + Personal Access Token (PAT) panel
  * ──────────────────────────────────────────────────────────────── */
 
-/* Admin user-edit checkbox wrapper. */
+/* Admin user-edit checkbox wrapper.
+
+   v2.7.x — these live in `.admin-users-detail-grid` directly beside the Rolle
+   and Ansicht selects, so they now carry that same control surface (36px, 1px
+   #C9D9EA, 8px radius, white) instead of being a bare checkbox floating in the
+   grid cell. That float is what made the Ausbildung field unfindable: with no
+   control chrome and a caption that flipped to "Kein Azubi" when off, the
+   default state rendered as a dead status line rather than something you can
+   switch on.
+
+   The off state stays deliberately quiet — muted caption on a plain surface —
+   because for most of the crew "not an apprentice" / "no API access" is simply
+   the normal case and must not read as an error or a disabled feature. `--on`
+   is the exception worth noticing, so it takes full ink on a tinted surface. */
 .admin-users-toggle {
-  display: inline-flex;
+  display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 0.92rem;
+  gap: 10px;
+  min-height: 36px;
+  padding: 7px 12px;
+  box-sizing: border-box;
+  border: 1px solid #C9D9EA;
+  border-radius: 8px;
+  background-color: #ffffff;
+  font-size: 13px;
+  line-height: 1.3;
+  color: #5c7895;
   cursor: pointer;
   user-select: none;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease, background-color 0.12s ease, color 0.12s ease;
+}
+.admin-users-toggle:hover {
+  border-color: #2f70b7;
+}
+/* Focus lives on the checkbox inside, so the ring has to be drawn by the
+   wrapper — same ring the neighbouring selects use on :focus. */
+.admin-users-toggle:focus-within {
+  border-color: #2f70b7;
+  box-shadow: 0 0 0 3px rgba(47, 112, 183, 0.15);
 }
 .admin-users-toggle input[type="checkbox"] {
   width: 18px;
   height: 18px;
+  flex-shrink: 0;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
   cursor: pointer;
+}
+.admin-users-toggle--on {
+  border-color: #2f70b7;
+  background-color: #f2f7fc;
+  color: #14293D;
+  font-weight: 600;
+}
+
+/* Secondary control revealed by a toggle (e.g. Ausbildungsbeginn once the
+   apprentice box is ticked). Indented caption + control, so it reads as
+   belonging to the switch above it rather than as a sibling grid field. */
+.admin-users-subfield {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+  cursor: pointer;
+}
+.admin-users-subfield-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: #5c7895;
 }
 
 /* Tokens panel on the user's profile page. Reuses the .profile-page-card

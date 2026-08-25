@@ -50,7 +50,10 @@ STATIC_DIR = BASE_DIR / "static"
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
-DEFAULT_DB = Path.home() / ".smpl-label-agent" / "inventory.db"
+# Everything the agent owns lives in one directory so a Pi install has a single
+# thing to back up, chown and wipe. See agent_paths for the rest of it.
+DEFAULT_STATE_DIR = Path(os.environ.get("AGENT_STATE_DIR", "~/.smpl-label-agent")).expanduser()
+DEFAULT_DB = DEFAULT_STATE_DIR / "inventory.db"
 DEFAULT_TAPE_MM = 12
 DEFAULT_SESSION = "default"
 
@@ -63,6 +66,9 @@ MAX_BODY_BYTES = 64 * 1024
 PRINT_BUDGET_MS = 5000
 
 SESSION_NAME_RE = re.compile(r"^[A-Za-z0-9._ -]{1,64}$")
+# Import ids are minted by the agent as "<UTC timestamp>-<6 hex>"; constraining
+# the route to that shape keeps a path component from ever reaching the disk.
+IMPORT_ID_RE = re.compile(r"^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{6}$")
 
 if str(BASE_DIR) not in sys.path:
     sys.path.insert(0, str(BASE_DIR))
@@ -357,9 +363,14 @@ class Upstream:
     into ``None`` - the agent is required to work with no network at all.
     """
 
-    def __init__(self, base_url: str, token: str, timeout: float = UPSTREAM_TIMEOUT_S) -> None:
+    def __init__(self, base_url: str, token: str = "", timeout: float = UPSTREAM_TIMEOUT_S,
+                 token_provider=None) -> None:
         self.base_url = (base_url or "").rstrip("/")
         self.token = token or ""
+        # A paired station's token can be revoked centrally and re-issued
+        # without restarting the agent, so the token is asked for per request
+        # rather than captured once at construction.
+        self._token_provider = token_provider
         self.timeout = timeout
         self._last_ok: bool | None = None
         self._last_error = ""
@@ -368,6 +379,16 @@ class Upstream:
     @property
     def configured(self) -> bool:
         return bool(self.base_url)
+
+    def bearer(self) -> str:
+        if self._token_provider is not None:
+            try:
+                token = self._token_provider()
+            except Exception:  # noqa: BLE001 - a broken provider must not stop a scan
+                token = ""
+            if token:
+                return token
+        return self.token
 
     @property
     def last_ok(self) -> bool | None:
@@ -381,6 +402,25 @@ class Upstream:
         with self._lock:
             self._last_ok = ok
             self._last_error = error
+        if ok:
+            station = getattr(self, "station", None)
+            if station is not None:
+                station.note_success()
+
+    def _note_auth(self, status: int) -> None:
+        """Tell the station that its credentials were refused, or accepted.
+
+        A 401 from SMPL is the one upstream failure a person can actually fix,
+        and the fix ("re-pair the station") is not guessable from "HTTP 401",
+        so it is worth carrying all the way to /health.
+        """
+        station = getattr(self, "station", None)
+        if station is None:
+            return
+        if status in (401, 403):
+            station.note_rejection(status)
+        elif status < 400:
+            station.note_success()
 
     def _get(self, path: str, params: dict | None = None) -> dict:
         url = self.base_url + path
@@ -389,8 +429,9 @@ class Upstream:
         request = urllib.request.Request(url, method="GET")
         request.add_header("Accept", "application/json")
         request.add_header("User-Agent", f"smpl-label-agent/{VERSION}")
-        if self.token:
-            request.add_header("Authorization", f"Bearer {self.token}")
+        bearer = self.bearer()
+        if bearer:
+            request.add_header("Authorization", f"Bearer {bearer}")
         with urllib.request.urlopen(request, timeout=self.timeout) as response:  # noqa: S310
             raw = response.read(512 * 1024)
         return json.loads(raw.decode("utf-8"))
@@ -404,6 +445,7 @@ class Upstream:
         except urllib.error.HTTPError as exc:
             # 404 is a real answer ("unknown code"), not an outage.
             self._note(exc.code < 500, f"HTTP {exc.code}")
+            self._note_auth(exc.code)
             return None
         except Exception as exc:  # noqa: BLE001 - timeouts, DNS, TLS, bad JSON
             self._note(False, f"{type(exc).__name__}: {exc}")
@@ -422,6 +464,7 @@ class Upstream:
         except urllib.error.HTTPError as exc:
             ok = exc.code not in (401, 403) and exc.code < 500
             self._note(ok, "" if ok else f"HTTP {exc.code}")
+            self._note_auth(exc.code)
             return ok
         except Exception as exc:  # noqa: BLE001
             self._note(False, f"{type(exc).__name__}: {exc}")
@@ -678,14 +721,23 @@ class Printer:
 class Agent:
     """Everything the request handlers need, assembled once at startup."""
 
-    def __init__(self, store: Store, printer: Printer, upstream: Upstream) -> None:
+    def __init__(self, store: Store, printer: Printer, upstream: Upstream,
+                 station=None) -> None:
         self.store = store
         self.printer = printer
         self.upstream = upstream
+        # Optional on purpose: pairing and SD import are Pi features, and the
+        # agent has to keep booting on a machine where neither is wanted or
+        # where the modules failed to import at all.
+        self.station = station
+        if station is not None:
+            self.upstream.station = station
         self._stop = threading.Event()
         self._probe_thread: threading.Thread | None = None
 
     def start_background(self) -> None:
+        if self.station is not None:
+            self.station.start()
         if not self.upstream.configured:
             return
         self._probe_thread = threading.Thread(
@@ -700,13 +752,15 @@ class Agent:
 
     def shutdown(self) -> None:
         self._stop.set()
+        if self.station is not None:
+            self.station.shutdown()
         self.printer.close()
 
     # -- endpoints --------------------------------------------------------
 
     def health(self) -> dict:
         status = self.printer.status()
-        return {
+        payload = {
             "ok": True,
             "version": VERSION,
             "printer_connected": bool(status.get("printer_connected")),
@@ -722,6 +776,11 @@ class Agent:
                 "label_render": module("label_render") is not None,
             },
         }
+        if self.station is not None:
+            payload.update(self.station.health())
+        else:
+            payload["identity"] = {"paired": False, "disabled": True}
+        return payload
 
     def resolve(self, code: str) -> dict:
         """Identify a scanned code in well under two seconds, network or not.
@@ -950,8 +1009,13 @@ class Handler(BaseHTTPRequestHandler):
             "/": self._get_index,
             "/index.html": self._get_index,
             "/health": lambda q: self._json(200, self.agent.health()),
+            "/setup": self._get_setup,
+            "/setup.html": self._get_setup,
             "/preview.png": self._get_preview,
             "/sessions": lambda q: self._json(200, {"sessions": self.agent.store.sessions()}),
+            "/pair/status": lambda q: self._json(200, self._station().pair_status()),
+            "/imports": lambda q: self._json(200, self._station().imports(
+                require_int(q, "limit", 50, 1, 500))),
         }
         self._guard(lambda: self._dispatch(table, parsed.path, query))
 
@@ -964,6 +1028,11 @@ class Handler(BaseHTTPRequestHandler):
             "/resolve": lambda q: self._post_resolve(),
             "/count": lambda q: self._post_count(),
             "/print": lambda q: self._post_print(),
+            "/pair/start": lambda q: self._post_pair_start(),
+            "/pair/cancel": lambda q: self._json(200, self._station().pair_cancel()),
+            "/pair/forget": lambda q: self._json(200, self._station().unpair()),
+            "/imports/rescan": lambda q: self._json(200, self._station().rescan()),
+            "/imports/retry": lambda q: self._json(200, self._station().retry_uploads()),
         }
         self._guard(lambda: self._dispatch(table, parsed.path, {}))
 
@@ -980,6 +1049,22 @@ class Handler(BaseHTTPRequestHandler):
                     "The API is up - try /health, /resolve, /count, /print.\n"
                 ).encode("utf-8"),
             )
+            return
+        self._send(200, "text/html; charset=utf-8", page.read_bytes())
+
+    def _get_setup(self, _query: dict) -> None:
+        """The one-time setup page: pairing, identity, imports.
+
+        Deliberately a separate page from the station. station.html swallows
+        every keystroke so a HID scanner can never type into the void, and a
+        text field or a link fighting that logic is a good way to break the
+        thing the station exists for.
+        """
+        page = STATIC_DIR / "setup.html"
+        if not page.is_file():
+            self._send(503, "text/plain; charset=utf-8",
+                       b"static/setup.html is missing. Pair from the terminal instead:\n"
+                       b"  python3 server.py --pair\n")
             return
         self._send(200, "text/html; charset=utf-8", page.read_bytes())
 
@@ -1016,6 +1101,15 @@ class Handler(BaseHTTPRequestHandler):
                                {"Content-Disposition": f'attachment; filename="{filename}"'})
                     return True
             raise ApiError(400, "export must end in .json or .csv")
+        if path.startswith("/imports/"):
+            import_id = urllib.parse.unquote(path[len("/imports/"):]).strip("/")
+            if not IMPORT_ID_RE.match(import_id):
+                raise ApiError(400, "malformed import id")
+            detail = self._station().import_detail(import_id)
+            if detail is None:
+                raise ApiError(404, f"no import {import_id}")
+            self._json(200, detail)
+            return True
         if path.startswith("/static/"):
             return self._serve_static(path[len("/static/"):])
         return False
@@ -1050,6 +1144,22 @@ class Handler(BaseHTTPRequestHandler):
         article_name = require_str(payload, "article_name", max_len=256, required=False)
         qty = require_int(payload, "qty", 1, -10000, 10000)
         self._json(200, self.agent.count(session, code, article_name, qty))
+
+    def _station(self):
+        station = self.agent.station
+        if station is None:
+            raise ApiError(
+                503,
+                "station services are not available: pairing and SD import were "
+                "disabled or failed to load. Scanning, counting and printing are "
+                "unaffected.",
+            )
+        return station
+
+    def _post_pair_start(self) -> None:
+        payload = self._read_json()
+        name = require_str(payload, "device_name", max_len=120, required=False)
+        self._json(200, self._station().pair_start(name))
 
     def _post_print(self) -> None:
         payload = self._read_json()
@@ -1089,16 +1199,83 @@ def build_parser() -> argparse.ArgumentParser:
                         help="fallback tape width in mm when the printer cannot be asked")
     parser.add_argument("--no-printer", action="store_true",
                         help="run without hardware: prints are simulated, everything else is real")
+    parser.add_argument("--device-name", default=os.environ.get("STATION_NAME", ""),
+                        help="what this station calls itself when an admin approves it")
+    parser.add_argument("--pair", action="store_true",
+                        help="pair with SMPL from the terminal and exit (no server started)")
+    parser.add_argument("--no-sd", action="store_true",
+                        help="do not watch for SD cards from test instruments")
+    parser.add_argument("--sd-simulate", metavar="DIR", default=os.environ.get("SD_SIMULATE", ""),
+                        help="treat each subdirectory of DIR as an inserted card "
+                             "(rehearse the whole import path with no hardware)")
+    parser.add_argument("--sd-poll", type=float, default=float(os.environ.get("SD_POLL_S", "2.0")),
+                        help="seconds between checks of the mount table")
+    parser.add_argument("--make-fixtures", metavar="DIR",
+                        help="write sample instrument cards into DIR and exit, for --sd-simulate")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
-    store = Store(Path(args.db).expanduser())
+    # One lazy import boundary for the whole station feature: pairing, SD
+    # import and their CLI. If any of it is broken or absent, `helpers` is
+    # None and the agent runs exactly as it did before the feature existed.
+    helpers = module("station_cli")
+
+    if args.make_fixtures:
+        if helpers is None:
+            print(f"cannot build fixtures: {module_error('station_cli')}")
+            return 1
+        return helpers.write_fixtures(args.make_fixtures, BASE_DIR)
+
+    db_path = Path(args.db).expanduser()
+    base_url = os.environ.get("SMPL_API_URL", "")
+    env_token = os.environ.get("SMPL_API_TOKEN", "")
+
+    # The heartbeat reports the printer's state to SMPL, but the station is
+    # built before the printer exists (pairing must work with no hardware at
+    # all). A late-bound holder keeps the construction order simple and means
+    # a heartbeat that fires before the printer is warm reports "unknown"
+    # rather than crashing.
+    printer_holder: dict = {}
+
+    def printer_status() -> dict:
+        current = printer_holder.get("printer")
+        if current is None:
+            return {}
+        status = current.status()
+        return {
+            "printer_connected": bool(status.get("printer_connected")),
+            "media_width_mm": status.get("media_width_mm"),
+            "error": status.get("error"),
+            "status": {
+                "simulated": bool(status.get("simulated")),
+                "queue_depth": current.queue_depth(),
+                "db": str(db_path),
+            },
+        }
+
+    station = None
+    if helpers is None:
+        print(f"  station : unavailable ({module_error('station_cli')})")
+    else:
+        station = helpers.build_station(args, db_path, base_url, env_token, VERSION,
+                                        status_provider=printer_status)
+    if args.pair:
+        if helpers is None:
+            print("station services are unavailable, so there is nothing to pair.")
+            return 1
+        return helpers.run_pairing_cli(station)
+
+    store = Store(db_path)
     printer = Printer(enabled=not args.no_printer, default_tape_mm=args.tape)
-    upstream = Upstream(os.environ.get("SMPL_API_URL", ""), os.environ.get("SMPL_API_TOKEN", ""))
-    agent = Agent(store, printer, upstream)
+    printer_holder["printer"] = printer
+    upstream = Upstream(
+        base_url, env_token,
+        token_provider=station.token if station is not None else None,
+    )
+    agent = Agent(store, printer, upstream, station=station)
     agent.start_background()
 
     if not args.no_printer:
@@ -1114,6 +1291,24 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  database: {store.path}")
     print(f"  printer : {'simulated (--no-printer)' if args.no_printer else 'USB PT-P710BT'}")
     print(f"  upstream: {upstream.base_url or 'not configured (offline mode)'}")
+    if station is not None:
+        identity = station.health()["identity"]
+        source = identity["token_source"]
+        print(f"  identity: {identity['device_name']} ({identity['device_id']}) - "
+              f"{'paired' if identity['paired'] else 'not paired'}"
+              f"{'' if source in ('paired', 'none') else f', using the {source} token'}")
+        sd_status = station.health()["sd_import"]
+        if sd_status.get("disabled"):
+            print("  sd card : disabled (--no-sd)")
+        else:
+            print(f"  sd card : watching {sd_status['watch_root']}"
+                  f"{' (simulated)' if sd_status['simulated'] else ''}")
+        if not identity["token_file_secure"]:
+            print("  !! the station token file is readable by other users; "
+                  "fix with chmod 600")
+    if args.host not in ("127.0.0.1", "localhost", "::1"):
+        print(f"  !! bound to {args.host}: the agent has no authentication of its "
+              "own, so anything that can reach this port can print and count.")
     sys.stdout.flush()
     try:
         server.serve_forever(poll_interval=0.2)

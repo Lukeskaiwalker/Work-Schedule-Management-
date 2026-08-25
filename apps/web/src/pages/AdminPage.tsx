@@ -681,11 +681,17 @@ export function AdminPage() {
                                 Flipping back to off invalidates any existing tokens immediately
                                 (they are kept in the DB so re-enabling restores them).
                               */}
-                              <label className="admin-users-field">
+                              <div className="admin-users-field">
                                 <span className="admin-users-field-label">
                                   {de ? "API-Zugang" : "API access"}
                                 </span>
-                                <label className="admin-users-toggle">
+                                <label
+                                  className={
+                                    u.api_access_enabled
+                                      ? "admin-users-toggle admin-users-toggle--on"
+                                      : "admin-users-toggle"
+                                  }
+                                >
                                   <input
                                     type="checkbox"
                                     checked={Boolean(u.api_access_enabled)}
@@ -697,13 +703,29 @@ export function AdminPage() {
                                       : de ? "Deaktiviert (nur Browser)" : "Disabled (browser only)"}
                                   </span>
                                 </label>
-                              </label>
+                              </div>
 
-                              <label className="admin-users-field">
+                              {/*
+                                Ausbildung — most of the crew are *not* apprentices, so OFF is the
+                                ordinary case and has to read as calm, not as an error or a feature
+                                that is switched off. The caption therefore names what ticking the
+                                box does and never changes; it used to flip to "Kein Azubi", which
+                                left a dead status line where a control should be and is why this
+                                could not be found in the Admin Center at all. Off renders muted,
+                                on renders in full ink on a tinted surface — the rare case is the
+                                one that stands out while scanning the user list.
+                              */}
+                              <div className="admin-users-field">
                                 <span className="admin-users-field-label">
                                   {de ? "Ausbildung" : "Apprenticeship"}
                                 </span>
-                                <label className="admin-users-toggle">
+                                <label
+                                  className={
+                                    u.is_apprentice
+                                      ? "admin-users-toggle admin-users-toggle--on"
+                                      : "admin-users-toggle"
+                                  }
+                                >
                                   <input
                                     type="checkbox"
                                     checked={Boolean(u.is_apprentice)}
@@ -712,38 +734,45 @@ export function AdminPage() {
                                     }
                                   />
                                   <span>
-                                    {u.is_apprentice
-                                      ? de ? "Azubi (führt Wochenberichte)" : "Apprentice (keeps weekly reports)"
-                                      : de ? "Kein Azubi" : "Not an apprentice"}
+                                    {de ? "Azubi (führt Wochenberichte)" : "Apprentice (keeps weekly reports)"}
                                   </span>
                                 </label>
                                 {u.is_apprentice && (
-                                  <input
-                                    type="date"
-                                    className="admin-users-date-input"
-                                    value={trainingDateDrafts[u.id] ?? u.training_started_on ?? ""}
-                                    aria-label={de ? "Ausbildungsbeginn" : "Training start"}
-                                    title={de ? "Ausbildungsbeginn (für das Ausbildungsjahr)" : "Training start (drives the training year)"}
-                                    onChange={(e) =>
-                                      setTrainingDateDrafts((prev) => ({ ...prev, [u.id]: e.target.value }))
-                                    }
-                                    onBlur={(e) => {
-                                      const next = e.target.value;
-                                      setTrainingDateDrafts((prev) => {
-                                        const { [u.id]: _dropped, ...rest } = prev;
-                                        return rest;
-                                      });
-                                      if (next === (u.training_started_on ?? "")) return;
-                                      void updateApprenticeSettings(
-                                        u.id,
-                                        next
-                                          ? { training_started_on: next }
-                                          : { clear_training_started_on: true },
-                                      );
-                                    }}
-                                  />
+                                  <label className="admin-users-subfield">
+                                    <span className="admin-users-subfield-label">
+                                      {de ? "Ausbildungsbeginn" : "Training start"}
+                                    </span>
+                                    {/*
+                                      Commit on blur, never on change: a <input type="date"> bound
+                                      to server state fires onChange for every complete intermediate
+                                      value the user types, which would PATCH garbage dates.
+                                    */}
+                                    <input
+                                      type="date"
+                                      className="admin-users-date-input"
+                                      value={trainingDateDrafts[u.id] ?? u.training_started_on ?? ""}
+                                      title={de ? "Ausbildungsbeginn (für das Ausbildungsjahr)" : "Training start (drives the training year)"}
+                                      onChange={(e) =>
+                                        setTrainingDateDrafts((prev) => ({ ...prev, [u.id]: e.target.value }))
+                                      }
+                                      onBlur={(e) => {
+                                        const next = e.target.value;
+                                        setTrainingDateDrafts((prev) => {
+                                          const { [u.id]: _dropped, ...rest } = prev;
+                                          return rest;
+                                        });
+                                        if (next === (u.training_started_on ?? "")) return;
+                                        void updateApprenticeSettings(
+                                          u.id,
+                                          next
+                                            ? { training_started_on: next }
+                                            : { clear_training_started_on: true },
+                                        );
+                                      }}
+                                    />
+                                  </label>
                                 )}
-                              </label>
+                              </div>
 
                               <div className="admin-users-field admin-users-field--span-2">
                                 <span className="admin-users-field-label">

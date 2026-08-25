@@ -17,6 +17,7 @@ from app.core.permissions import ROLE_ADMIN
 from app.core.security import get_password_hash, verify_password
 from app.core.time import utcnow
 from app.models.entities import User
+from app.routers import workflow_station
 from app.routers import workflow_werkstatt_inventory
 from app.routers import admin, api_tokens, auth, events, time_tracking, workflow, workflow_notifications, workflow_schaltplan, workflow_training_reports
 from app.services.material_catalog import sync_pending_material_catalog_images
@@ -205,6 +206,16 @@ Two channels are supported:
   `api_access_enabled = true` on the user; PATs are minted via
   `POST /api/auth/api-tokens`.
 
+* **Station token** — for the unattended scan station (Raspberry Pi with
+  barcode scanner and label printer). Pass
+  `Authorization: Bearer smpl_station_…`. A station token is not minted
+  by a user at all: the device requests a pairing code
+  (`POST /api/station/pair/start`), an administrator with `system:manage`
+  approves it (`POST /api/station/pair/approve`), and the device collects
+  the token exactly once by polling (`POST /api/station/pair/poll`) —
+  the OAuth 2.0 device authorization grant. A station authenticates as a
+  device, not as a user, and reaches only the `/api/station/*` endpoints.
+
 ## Rate limiting
 
 Per-IP, 1-minute sliding window. Default 480 req/min; the
@@ -322,6 +333,15 @@ def _rate_scope(path: str, auth_header: str | None) -> tuple[str, int]:
     # because the request hasn't run the auth dep yet at this layer.
     if auth_header and auth_header.lower().startswith("bearer smpl_pat_"):
         return ("api_pat", 1200)
+    # The two unauthenticated station-pairing endpoints. Neither is used by
+    # a human, so the ceilings can sit far below the default without any risk
+    # of a real user tripping them: a Pi starts a pairing once, then polls at
+    # the 5-second interval the server hands it (12/min). Both endpoints are
+    # additionally throttled per-pairing inside the router.
+    if path == "/api/station/pair/start":
+        return ("station_pair_start", 20)
+    if path == "/api/station/pair/poll":
+        return ("station_pair_poll", 120)
     if path == "/api/auth/login":
         # Tight, source-scoped ceiling on the login endpoint as a credential-
         # stuffing backstop (many accounts, few tries each — which the per-
@@ -367,6 +387,7 @@ app.include_router(workflow_notifications.router, prefix="/api")
 app.include_router(time_tracking.router, prefix="/api")
 app.include_router(workflow_training_reports.router, prefix="/api")
 app.include_router(workflow_werkstatt_inventory.router, prefix="/api")
+app.include_router(workflow_station.router, prefix="/api")
 app.include_router(workflow_schaltplan.router, prefix="/api")
 
 
