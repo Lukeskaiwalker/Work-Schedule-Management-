@@ -204,7 +204,14 @@ cmd_swap() {
   # `depends_on: api: condition: service_healthy`, so a crash-looping new api
   # makes this exit non-zero — and that happens AFTER the migration committed.
   # Maintenance must stay up.
-  docker compose up -d api api_worker web \
+  # --force-recreate is REQUIRED, not defensive. `docker compose up -d` decides
+  # staleness from the service's config hash, not the image digest — so an
+  # image rebuilt under the same tag does NOT trigger a recreate. On the
+  # v2.10.1 swap that silently skipped `web` entirely (api and api_worker were
+  # only recreated by luck: they env_file `apps/api/.release.env`, whose
+  # contents changed, which DID move their hash). A frontend-only release would
+  # otherwise build, report success, and never go live.
+  docker compose up -d --force-recreate api api_worker web \
     || die "container swap failed after the database was migrated — maintenance stays UP. Fix forward, or restore the backup named in $STAGE_MARKER"
 
   log "4/4  Wait for health, then lift maintenance"
