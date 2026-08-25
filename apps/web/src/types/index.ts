@@ -1110,8 +1110,13 @@ export type WorkspaceMode = "construction" | "office";
  * Current nav map:
  *   sidebar nav items  → overview, werkstatt, projects_all, projects_archive,
  *                         my_tasks, office_tasks, project, calendar, planning,
- *                         construction, wiki, messages, time
+ *                         construction, schaltplan, wiki, messages, time
  *   sidebar user menu  → profile, admin
+ *
+ * Conditional nav items:
+ *   - "schaltplan" (Verteilerpläne) only appears in construction mode. It is
+ *     a field tool for the person standing in front of an open panel; the
+ *     office view has no use for it.
  *
  * Legacy / transitional:
  *   - "materials" is kept for deep-link backwards compatibility. On load,
@@ -1133,6 +1138,7 @@ export type MainView =
   | "calendar"
   | "planning"
   | "construction"
+  | "schaltplan"
   | "reports"
   | "wiki"
   | "messages"

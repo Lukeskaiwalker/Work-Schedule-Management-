@@ -247,6 +247,7 @@ import type { BrowserNotifPermission } from "./hooks/useBrowserNotifications";
 const AdminPage = lazy(() => import("./pages/AdminPage").then((m) => ({ default: m.AdminPage })));
 const CalendarPage = lazy(() => import("./pages/CalendarPage").then((m) => ({ default: m.CalendarPage })));
 const ConstructionPage = lazy(() => import("./pages/ConstructionPage").then((m) => ({ default: m.ConstructionPage })));
+const SchaltplanPage = lazy(() => import("./pages/SchaltplanPage").then((m) => ({ default: m.SchaltplanPage })));
 const LoginPage = lazy(() => import("./pages/LoginPage").then((m) => ({ default: m.LoginPage })));
 const PublicCustomerConfirmationPage = lazy(() =>
   import("./pages/PublicCustomerConfirmationPage").then((m) => ({
@@ -1537,6 +1538,7 @@ export function App() {
       "calendar",
       "planning",
       "construction",
+      "schaltplan",
       "reports",
       "materials",
       "werkstatt",
@@ -1550,8 +1552,9 @@ export function App() {
       if (view === "office_tasks" || view === "projects_map") {
         return workspaceMode === "office";
       }
-      // Construction-only item: the personal assigned task list.
-      if (view === "my_tasks") {
+      // Construction-only items: the personal assigned task list, and the
+      // Verteilerplan editor — a tool for the person at the open panel.
+      if (view === "my_tasks" || view === "schaltplan") {
         return workspaceMode === "construction";
       }
       return true;
@@ -2109,6 +2112,14 @@ export function App() {
     }
     if (workspaceMode === "construction" && mainView === "office_tasks") {
       setMainView("my_tasks");
+      return;
+    }
+    // Verteilerpläne is construction-only and has no office counterpart to
+    // swap to, so switching modes has to land somewhere. Without this the
+    // page stayed mounted with nothing selected in the nav — a view the user
+    // can see but cannot navigate back to.
+    if (workspaceMode === "office" && mainView === "schaltplan") {
+      setMainView("overview");
     }
   }, [workspaceMode, mainView]);
 
@@ -10270,6 +10281,7 @@ export function App() {
           {mainView === "calendar" && <CalendarPage />}
           {mainView === "planning" && <PlanningPage />}
           {mainView === "construction" && <ConstructionPage />}
+          {mainView === "schaltplan" && <SchaltplanPage />}
           {mainView === "reports" && <ReportsPage />}
           {mainView === "wiki" && <WikiPage />}
           {mainView === "messages" && <MessagesPage />}

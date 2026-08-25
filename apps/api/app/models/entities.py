@@ -52,6 +52,7 @@ from app.models.werkstatt_procurement import (
     WerkstattIdsSession,
     WerkstattOrderImport,
 )
+from app.models.schaltplan import PanelPlan
 from app.models.wiki import WikiPage
 from app.models.files import Attachment, ProjectFolder
 from app.models.time_models import ClockEntry, BreakEntry, VacationRequest, SchoolAbsence
@@ -81,6 +82,7 @@ __all__ = [
     "Message",
     "MessageReaction",
     "Notification",
+    "PanelPlan",
     "Partner",
     "Project",
     "ProjectActivity",

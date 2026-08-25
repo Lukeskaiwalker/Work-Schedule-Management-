@@ -21,6 +21,7 @@ const PAGES_WITH_OWN_TITLE: ReadonlySet<MainView> = new Set<MainView>([
   "customers",
   "customer_detail",
   "reports",
+  "schaltplan",
 ]);
 
 export function Header() {

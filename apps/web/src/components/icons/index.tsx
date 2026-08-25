@@ -91,6 +91,18 @@ export function SidebarNavIcon({ view }: { view: MainView }) {
       </svg>
     );
   }
+  if (view === "schaltplan") {
+    // A distribution board: enclosure with a DIN rail and three modules on it.
+    // Reads as "Verteiler" rather than as another document icon, which is what
+    // distinguishes it from the Baustellenbericht entry right above.
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true" className="nav-icon">
+        <rect x="3.5" y="4.5" width="17" height="15" rx="2.2" fill="none" stroke="currentColor" strokeWidth="1.8" />
+        <path d="M3.5 12h17" fill="none" stroke="currentColor" strokeWidth="1.8" />
+        <path d="M8 8.4v3.6M12 8.4v3.6M16 8.4v3.6" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      </svg>
+    );
+  }
   if (view === "reports") {
     return (
       <svg viewBox="0 0 24 24" aria-hidden="true" className="nav-icon">
