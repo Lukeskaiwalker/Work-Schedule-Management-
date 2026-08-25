@@ -54,6 +54,7 @@ __all__ = [
     "PrinterError",
     "PrinterNotFound",
     "PrinterBusy",
+    "PrinterStalled",
     "PrinterStatus",
     "find_printer",
     "BrotherPTouch",
@@ -246,6 +247,10 @@ class PrinterError(Exception):
 
 class PrinterNotFound(PrinterError):
     """No PT-P710BT is attached, or libusb cannot see it."""
+
+
+class PrinterStalled(PrinterError):
+    """A stalled endpoint was detected and reset. The operation should be retried."""
 
 
 class PrinterBusy(PrinterError):
@@ -588,8 +593,49 @@ class BrotherPTouch:
             # on macOS reports it inconsistently, so match on both.
             if exc.errno == 110 or "timeout" in str(exc).lower():
                 return b""
+            # errno 32 (EPIPE) is a STALLED endpoint. It survives closing and
+            # reopening the handle and even restarting the process -- the halt
+            # lives on the device -- so without recovery here a single
+            # interrupted transfer bricks printing until someone unplugs the
+            # printer. Observed in the field after a process was killed
+            # mid-transfer. clear_halt is the documented fix but returns
+            # "Entity not found" on macOS, so fall through to a device reset,
+            # which does work. One attempt only: if the reset does not take,
+            # the caller needs to see the real error rather than a hang.
+            if exc.errno == 32 or "pipe" in str(exc).lower():
+                if self._recover_stall():
+                    raise PrinterStalled(
+                        "USB endpoint had stalled; the device was reset. Retry the operation."
+                    ) from exc
             raise PrinterError("USB read failed: %s" % exc) from exc
         return bytes(bytearray(data))
+
+    def _recover_stall(self) -> bool:
+        """Clear a stalled endpoint. Returns True if the device was reset."""
+
+        for endpoint in (self._ep_out, self._ep_in):
+            if endpoint is None:
+                continue
+            try:
+                self._device.clear_halt(endpoint.bEndpointAddress)
+            except Exception:  # noqa: BLE001 - macOS reports ENOENT here; reset is the real fix
+                pass
+        try:
+            self._device.reset()
+        except Exception:  # noqa: BLE001
+            return False
+        # The handle is invalid after a reset; drop it so the next call re-opens.
+        self._invalidate_after_reset()
+        return True
+
+    def _invalidate_after_reset(self) -> None:
+        try:
+            usb.util.dispose_resources(self._device)
+        except Exception:  # noqa: BLE001
+            pass
+        self._device = None
+        self._ep_in = None
+        self._ep_out = None
 
     def _read_status_frame(self, timeout_ms: int) -> PrinterStatus | None:
         """Read one 32-byte status frame, or None if nothing arrived in time.
