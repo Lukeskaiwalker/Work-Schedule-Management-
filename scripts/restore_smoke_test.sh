@@ -21,7 +21,7 @@ on_error() {
 trap on_error ERR
 
 echo "Starting db/api for smoke setup..."
-docker compose up -d db api
+docker compose up -d --no-recreate db api
 
 echo "Creating smoke marker data..."
 docker compose exec -T db sh -lc "psql -U smpl -d smpl -c \"INSERT INTO projects (project_number, name, description, status, created_by, created_at, extra_attributes) VALUES ('${MARKER_NUMBER}', '${MARKER}', 'restore smoke marker', 'active', NULL, NOW(), '{}'::jsonb);\""

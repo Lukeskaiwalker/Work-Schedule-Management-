@@ -58,7 +58,11 @@ wait_for_db() {
 
 create_tmp_dir() {
   local dir
-  dir="$(mktemp -d)"
+  # Restore stages the decrypted tar AND its extracted contents — roughly 20 GB
+  # for a 6.3 GB archive. /tmp is a 3.9 GB tmpfs, so a bare mktemp -d makes the
+  # recovery path fail exactly when it is needed.
+  mkdir -p "${RESTORE_STAGING_ROOT:-/var/tmp}"
+  dir="$(mktemp -d "${RESTORE_STAGING_ROOT:-/var/tmp}/smpl-restore.XXXXXXXX")"
   chmod 700 "$dir"
   printf '%s\n' "$dir"
 }
@@ -82,7 +86,10 @@ openssl enc -d -aes-256-cbc -pbkdf2 -in "$BACKUP_FILE" -out "$RAW_TAR" -pass env
 tar -xf "$RAW_TAR" -C "$TMP_DIR"
 
 echo "Starting database + api containers..."
-docker compose up -d db api
+# --no-recreate: recreating api here would run its CMD `alembic upgrade head`
+# against the database we are about to pg_restore into — re-applying the very
+# migration a restore may be rolling back.
+docker compose up -d --no-recreate db api
 wait_for_db
 
 echo "Restoring database..."
@@ -97,7 +104,9 @@ docker compose exec -T api rm -f /tmp/uploads.tar.gz
 
 if [[ "${RESTORE_START_FULL_STACK:-true}" == "true" ]]; then
   echo "Starting full stack..."
-  docker compose up -d web caddy
+  # `caddy` was folded into the single `web` container in ea62f63 (2026-04-27).
+  # Naming it here made every restore exit non-zero after succeeding.
+  docker compose up -d web
 fi
 
 echo "Restore completed from $BACKUP_FILE"

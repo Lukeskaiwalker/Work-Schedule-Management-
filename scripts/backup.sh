@@ -87,9 +87,23 @@ wait_for_db() {
   done
 }
 
+# Debian 13 mounts /tmp as a tmpfs (3.9 GB on smpl-prod) while this script
+# stages ~13 GB — the db dump plus the whole uploads tarball. A bare `mktemp -d`
+# lands there and the run dies mid-backup with "no space left on device", which
+# is how the 2026-07-21 "stuck at archive_volume" report and the 2026-08-25
+# deploy failure both started. Default to a disk-backed staging root; an
+# explicit TMPDIR from the caller still wins.
+# BACKUP_STAGING_ROOT is authoritative and deliberately ignores TMPDIR: an
+# ambient TMPDIR=/tmp inherited from a cron, a shell or the update_runner
+# container is exactly how this lands back on the tmpfs. Override the knob, not
+# the environment.
+BACKUP_STAGING_ROOT="${BACKUP_STAGING_ROOT:-/var/tmp}"
+
 create_tmp_dir() {
-  local dir
-  dir="$(mktemp -d)"
+  local dir base
+  base="$BACKUP_STAGING_ROOT"
+  mkdir -p "$base"
+  dir="$(mktemp -d "${base%/}/smpl-backup.XXXXXXXX")"
   chmod 700 "$dir"
   printf '%s\n' "$dir"
 }
@@ -114,7 +128,14 @@ trap cleanup EXIT
 
 emit_stage "ensure_containers" 5 "Container vorbereiten"
 echo "Ensuring database + api containers are running..."
-docker compose up -d db api
+# --no-recreate is load-bearing, not cosmetic. safe_update.sh builds the new
+# images BEFORE calling this script, so a plain `up -d` recreates the api
+# container on the *new* image — and the api Dockerfile CMD is
+# `alembic upgrade head`. That silently migrated production outside the
+# maintenance window on 2026-08-25: the schema moved while web/api_worker were
+# still serving the old bundle. We need api running (the uploads volume is
+# only reachable through it), but we need the container that is running NOW.
+docker compose up -d --no-recreate db api
 wait_for_db
 
 emit_stage "db_dump" 25 "Datenbank-Dump"

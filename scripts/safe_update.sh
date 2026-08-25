@@ -61,6 +61,26 @@ PULL_REPO=false
 BRANCH="main"
 CHECK_ONLY=false
 
+# ── Single-deploy lock ──────────────────────────────────────────────────────
+# The Admin Center (update_runner) and an operator shell can otherwise deploy
+# at the same time and lift each other's maintenance page. jobs.py has only an
+# in-process lock, which does not see a second process. The repo directory is
+# bind-mounted into the runner at /repo, so both paths flock the same inode.
+DEPLOY_LOCK="${DEPLOY_LOCK:-$ROOT_DIR/.deploy.lock}"
+# flock comes from busybox in the runner image rather than an explicit package,
+# so treat it as best-effort: warn and continue if it ever disappears. Silently
+# losing the Admin Center's update button would be a worse failure than the
+# concurrent-deploy race this guards against.
+if command -v flock >/dev/null 2>&1; then
+  exec 9>"$DEPLOY_LOCK"
+  if ! flock -n 9; then
+    echo "Another deploy is already running (lock: $DEPLOY_LOCK). Refusing to start a second one." >&2
+    exit 75   # EX_TEMPFAIL — the runner surfaces this as a failed job, not a crash
+  fi
+else
+  echo "WARNING: flock unavailable; running without the concurrent-deploy guard." >&2
+fi
+
 usage() {
   cat <<USAGE
 Usage: ./scripts/safe_update.sh [--pull] [--branch <name>] [--check-only]

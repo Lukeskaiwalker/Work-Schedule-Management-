@@ -93,3 +93,8 @@ graphify-out/
 # office uses; not part of this codebase). A 3rd-party setup.exe has no place
 # in a public git history — licence-wise or size-wise.
 benning software/
+
+# staged_deploy.sh writes this between `stage` and `swap`; it is host-local
+# runtime state, never source. Untracked files on prod break `git pull --ff-only`.
+.staged-deploy.json
+.deploy.lock

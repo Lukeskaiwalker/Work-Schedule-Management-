@@ -23,7 +23,9 @@ wait_for_db() {
 
 create_tmp_dir() {
   local dir
-  dir="$(mktemp -d)"
+  # Same tmpfs trap as backup.sh — this stages a full pg_dump.
+  mkdir -p "${PREFLIGHT_STAGING_ROOT:-/var/tmp}"
+  dir="$(mktemp -d "${PREFLIGHT_STAGING_ROOT:-/var/tmp}/smpl-preflight.XXXXXXXX")"
   chmod 700 "$dir"
   printf '%s\n' "$dir"
 }
@@ -55,7 +57,12 @@ cleanup() {
 trap cleanup EXIT
 
 echo "Ensuring database + api services are running..."
-docker compose up -d db api >/dev/null
+# --no-recreate for the same reason as backup.sh: safe_update.sh has already
+# built the new images by the time this runs, and this still executes BEFORE
+# maintenance mode. A plain `up -d` recreates api on the new image, whose CMD
+# is `alembic upgrade head` — migrating production out of the window. Fixing
+# only backup.sh left this identical hole five lines later in the same run.
+docker compose up -d --no-recreate db api >/dev/null
 wait_for_db
 
 echo "Creating source database dump for migration preflight..."
