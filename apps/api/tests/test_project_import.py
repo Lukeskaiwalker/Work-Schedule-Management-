@@ -95,7 +95,8 @@ def test_import_projects_from_excel_existing_project_only_fills_missing_fields(t
         project = db.scalars(select(Project).where(Project.project_number == "2026-7777")).first()
         assert project is not None
         assert project.name == "Alt"
-        assert project.status == "active"
+        # Status consolidation: an empty/legacy status lands on its funnel slug.
+        assert project.status == "in_durchfuehrung"
         assert project.last_state == "first"
         assert project.customer_address == "Musterweg 1, 12345 Berlin"
     finally:
@@ -143,7 +144,7 @@ def test_import_projects_from_excel_maps_german_status_and_notiz(tmp_path: Path)
 
         project = db.scalars(select(Project).where(Project.project_number == "321")).first()
         assert project is not None
-        assert project.status == "Kundentermin vereinbart"
+        assert project.status == "angebotsphase"  # was "Kundentermin vereinbart"
         assert project.last_state == "Termin am Freitag bestaetigt"
         assert project.description is None
     finally:
@@ -198,14 +199,14 @@ def test_import_projects_from_excel_imports_last_status_datetime_and_deduplicate
 
         numbered = db.scalars(select(Project).where(Project.project_number == "1001")).first()
         assert numbered is not None
-        assert numbered.status == "In Durchfuehrung"
+        assert numbered.status == "in_durchfuehrung"
         assert numbered.last_state == "Montage gestartet"
         assert numbered.last_status_at == datetime(2026, 2, 21, 7, 30)
 
         temporary = db.scalars(select(Project).where(Project.customer_name == "Ohne Nummer GmbH")).first()
         assert temporary is not None
         assert temporary.project_number.startswith("T")
-        assert temporary.status == "In Durchfuehrung"
+        assert temporary.status == "in_durchfuehrung"
         assert temporary.last_state == "Techniker vor Ort"
         assert temporary.last_status_at == datetime(2026, 2, 21, 10, 15)
 
@@ -264,7 +265,7 @@ def test_import_projects_from_csv_preserves_columns_and_generates_temp_numbers(t
         numbered = db.scalars(select(Project).where(Project.project_number == "6001")).first()
         assert numbered is not None
         assert numbered.name == "PV Nord"
-        assert numbered.status == "Angebot erstellen"
+        assert numbered.status == "angebotsphase"  # was "Angebot erstellen"
         assert numbered.last_state == "Initial"
         assert numbered.extra_attributes["Neue Spalte"] == "A"
 
@@ -333,7 +334,8 @@ def test_import_projects_from_csv_imports_finance_and_does_not_overwrite_existin
         project = db.scalars(select(Project).where(Project.project_number == "6100")).first()
         assert project is not None
         assert project.name == "PV Finance"
-        assert project.status == "active"
+        # Status consolidation: an empty/legacy status lands on its funnel slug.
+        assert project.status == "in_durchfuehrung"
 
         second_finance = db.get(ProjectFinance, project.id)
         assert second_finance is not None

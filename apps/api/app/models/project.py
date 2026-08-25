@@ -15,7 +15,9 @@ class Project(Base):
     project_number: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str | None] = mapped_column(Text)
-    status: Mapped[str] = mapped_column(String(64), default="active", nullable=False)
+    # Free text historically; the four canonical slugs since the status
+    # consolidation (services/project_status.py). Default = top of the funnel.
+    status: Mapped[str] = mapped_column(String(64), default="angebotsphase", nullable=False)
     last_state: Mapped[str | None] = mapped_column(Text)
     last_status_at: Mapped[datetime | None] = mapped_column(DateTime)
     last_updated_at: Mapped[datetime | None] = mapped_column(DateTime, default=utcnow, nullable=True)

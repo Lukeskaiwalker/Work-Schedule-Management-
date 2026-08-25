@@ -29,6 +29,7 @@ from app.core.deps import assert_project_access, get_current_user, require_permi
 from app.core.permissions import ALL_ROLES, has_global_project_access, has_permission_for_user
 from app.core.time import utcnow
 from app.models.project import PROJECT_STATUS_AUFTRAG_ANGENOMMEN
+from app.services.project_status import is_won_project_status
 from app.models.entities import (
     Attachment,
     ChatThread,
@@ -2275,7 +2276,11 @@ def _sync_project_class_templates(
 
     project = db.get(Project, project_id)
     project_status = (project.status or "").strip() if project is not None else ""
-    create_tasks_now = project_status == PROJECT_STATUS_AUFTRAG_ANGENOMMEN
+    # Status consolidation: "won" now means in_durchfuehrung or later, with
+    # the legacy "Auftrag angenommen" still honoured pre-migration. Keying on
+    # the retired literal alone would defer these tasks forever — the status
+    # that used to release them no longer exists in the picker.
+    create_tasks_now = is_won_project_status(project_status)
     now = utcnow()
 
     new_assignments: dict[int, ProjectClassAssignment] = {}

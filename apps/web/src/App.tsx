@@ -5950,7 +5950,8 @@ export function App() {
 
   async function unarchiveProject(projectId: number, expectedLastUpdatedAt?: string | null) {
     if (!canCreateProject) return;
-    const payload: Record<string, unknown> = { status: "active" };
+    // Unarchiving puts the job back into the running stage of the funnel.
+    const payload: Record<string, unknown> = { status: "in_durchfuehrung" };
     if (expectedLastUpdatedAt !== null && expectedLastUpdatedAt !== undefined) {
       payload.expected_last_updated_at = expectedLastUpdatedAt;
     }
@@ -6118,7 +6119,7 @@ export function App() {
             project_number: generatedProjectNumber,
             name: projectName,
             description: taskModalForm.description.trim() || "",
-            status: "active",
+            status: "in_durchfuehrung",
             last_state: null,
             last_status_at: null,
             customer_name: "",

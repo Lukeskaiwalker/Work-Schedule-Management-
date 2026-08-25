@@ -6,6 +6,7 @@ from app.core.events import notify
 from app.routers.workflow_helpers import *  # noqa: F401,F403
 from app.models.entities import Customer
 from app.services.project_membership import add_all_users_to_project
+from app.services.project_status import is_won_project_status, normalize_project_status
 from app.services.customers import (
     match_or_create_customer,
     sync_project_from_customer,
@@ -89,7 +90,7 @@ def create_project(
         project_number=project_number,
         name=payload.name,
         description=payload.description,
-        status=payload.status,
+        status=normalize_project_status(payload.status),
         last_state=payload.last_state,
         last_status_at=payload.last_status_at,
         last_updated_at=utcnow(),
@@ -209,6 +210,10 @@ def update_project(
     ]:
         value = getattr(payload, field)
         if value is not None:
+            # Known legacy statuses heal to the four canonical ones on every
+            # write; unknown text and 'archived' pass through untouched.
+            if field == "status":
+                value = normalize_project_status(value)
             setattr(project, field, value)
 
     # Customer resolution. Three cases:
@@ -273,12 +278,13 @@ def update_project(
             message=f"State changed to {next_status or '-'}",
             details={"from": previous_status, "to": next_status},
         )
-        # v2.4.2 angenommen-gate: when a project transitions INTO
-        # "Auftrag angenommen", any class assignments still flagged as
-        # tasks_created_at IS NULL are now allowed to materialise their
-        # tasks. Re-entry (angenommen → other → angenommen) is a no-op
-        # because the helper stamps tasks_created_at at creation time.
-        if next_status == PROJECT_STATUS_AUFTRAG_ANGENOMMEN:
+        # Angenommen-gate, funnel edition: deferred template tasks release
+        # when the project transitions from a not-yet-won status into a won
+        # one (in_durchfuehrung or later; the legacy "Auftrag angenommen"
+        # literal still counts pre-migration). Edge-triggered on the
+        # transition; re-entry stays a no-op because the helper stamps
+        # tasks_created_at at creation time.
+        if is_won_project_status(next_status) and not is_won_project_status(previous_status):
             deferred_tasks_created = _create_deferred_class_template_tasks(
                 db,
                 project_id=project.id,

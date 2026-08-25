@@ -14,6 +14,11 @@ const ALL_PIN_FILTERS: readonly MapPinFilter[] = MAP_PIN_FILTERS;
 function pinTypeOf(project: Project): MapPinFilter {
   if (project.is_critical) return "critical";
   const s = project.status.toLowerCase();
+  // The four funnel stages first (status consolidation), legacy values after.
+  if (s === "in_durchfuehrung" || s === "in durchführung") return "active";
+  if (s === "angebotsphase") return "planning";
+  if (s === "rechnung_verschickt") return "on_hold";
+  if (s === "abgeschlossen") return "completed";
   if (s === "active" || s === "aktiv") return "active";
   if (s === "planning" || s === "planung") return "planning";
   if (s === "on_hold" || s === "on hold" || s === "pausiert") return "on_hold";

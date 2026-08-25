@@ -5,15 +5,25 @@ import { normalizeAddressInput } from "./misc";
 
 const ZIP_RE = /\b\d{5}\b/g;
 
+const PROJECT_STATUS_LABELS: Record<string, { de: string; en: string }> = {
+  angebotsphase: { de: "Angebotsphase", en: "Quote phase" },
+  in_durchfuehrung: { de: "In Durchführung", en: "In progress" },
+  rechnung_verschickt: { de: "Rechnung verschickt", en: "Invoice sent" },
+  abgeschlossen: { de: "Abgeschlossen", en: "Completed" },
+  archived: { de: "Archiviert", en: "Archived" },
+  // Legacy machine values — healed to the four on write/migration, but any
+  // row that slips through still renders as its funnel stage, not raw text.
+  active: { de: "In Durchführung", en: "In progress" },
+  on_hold: { de: "In Durchführung", en: "In progress" },
+  completed: { de: "Abgeschlossen", en: "Completed" },
+};
+
 export function statusLabel(value: string, language: Language) {
   const raw = String(value || "").trim();
-  const normalized = raw
-    .trim()
-    .toLowerCase();
-  if (normalized === "active") return language === "de" ? "Aktiv" : "Active";
-  if (normalized === "on_hold") return language === "de" ? "Pausiert" : "On hold";
-  if (normalized === "completed") return language === "de" ? "Abgeschlossen" : "Completed";
-  return raw || (language === "de" ? "Aktiv" : "Active");
+  const known = PROJECT_STATUS_LABELS[raw.toLowerCase()];
+  if (known) return language === "de" ? known.de : known.en;
+  // Unknown free text (old imports) shows as-is — it is information.
+  return raw || (language === "de" ? "Angebotsphase" : "Quote phase");
 }
 
 export function normalizeProjectSiteAccessType(value?: string | null) {

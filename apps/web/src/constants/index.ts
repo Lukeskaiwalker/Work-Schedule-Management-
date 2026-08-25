@@ -80,20 +80,22 @@ export const TAB_LABELS: Record<Language, Record<ProjectTab, string>> = {
   },
 };
 
+/**
+ * The four project statuses — the funnel a job actually moves through.
+ *
+ * Deliberately reduced from 13 grown values ("Aktiv" neben "In Durchführung",
+ * five flavours of Angebotsphase …) that nobody curated: with four stages the
+ * list finally answers "wie viele Kunden sind in der Angebotsphase, welche
+ * sind aktiv". Stored as slugs (werkstatt idiom); `statusLabel` renders the
+ * display names. The archive is NOT a stage — archiving stays its own action.
+ * Legacy values still in the data are healed by the backend on write and by
+ * migration 0073 in bulk.
+ */
 export const PROJECT_STATUS_PRESETS = [
-  "active",
-  "archived",
-  "on_hold",
-  "completed",
-  "Anfrage erhalten",
-  "Angebot erstellen",
-  "Angebot abgeschickt",
-  "Kundentermin angefragt",
-  "Kundentermin vereinbart",
-  "Auftrag angenommen",
-  "In Durchführung",
-  "Rechnung erstellen",
-  "Rückfragen klären",
+  "angebotsphase",
+  "in_durchfuehrung",
+  "rechnung_verschickt",
+  "abgeschlossen",
 ];
 
 export const PROJECT_SITE_ACCESS_PRESETS = [
@@ -214,7 +216,7 @@ export const EMPTY_PROJECT_FORM: ProjectFormState = {
   project_number: "",
   name: "",
   description: "",
-  status: "active",
+  status: "angebotsphase",
   last_state: "",
   last_status_at: "",
   customer_id: null,

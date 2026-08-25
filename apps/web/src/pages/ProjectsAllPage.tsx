@@ -5,6 +5,14 @@ import { CriticalDot } from "../components/project/CriticalDot";
 
 function statusBadgeClass(status: string): string {
   const normalized = status.toLowerCase().trim();
+  // The four funnel stages (legacy machine values keep their old colors below).
+  if (normalized === "angebotsphase") return "projects-all-status-pill projects-all-status-pill--planning";
+  if (normalized === "in_durchfuehrung" || normalized === "in durchführung")
+    return "projects-all-status-pill projects-all-status-pill--active";
+  if (normalized === "rechnung_verschickt")
+    return "projects-all-status-pill projects-all-status-pill--hold";
+  if (normalized === "abgeschlossen")
+    return "projects-all-status-pill projects-all-status-pill--completed";
   if (normalized === "active") return "projects-all-status-pill projects-all-status-pill--active";
   if (normalized === "planning") return "projects-all-status-pill projects-all-status-pill--planning";
   if (normalized === "on_hold" || normalized === "hold")

@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from app.models.entities import Project, ProjectFinance
 from app.services.project_membership import backfill_default_memberships
+from app.services.project_status import PROJECT_STATUS_DURCHFUEHRUNG, normalize_project_status
 
 
 PROJECT_NUMBER_KEYS = {
@@ -209,8 +210,11 @@ def _as_clean_string(value: Any) -> str:
 
 def _project_status_value(value: Any) -> str:
     if _is_empty(value):
-        return "active"
-    return re.sub(r"\s+", " ", _as_clean_string(value))
+        return PROJECT_STATUS_DURCHFUEHRUNG
+    # Collapse whitespace, then map known legacy statuses onto the four
+    # canonical ones. Unknown spreadsheet text survives as-is — an import must
+    # never destroy information to enforce a vocabulary.
+    return normalize_project_status(re.sub(r"\s+", " ", _as_clean_string(value)))
 
 
 def _parse_float(value: Any) -> float | None:

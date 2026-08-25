@@ -8,7 +8,8 @@ class ProjectCreate(BaseModel):
     project_number: str = Field(min_length=1, max_length=64)
     name: str
     description: str | None = None
-    status: str = "active"
+    # New projects enter at the top of the funnel.
+    status: str = "angebotsphase"
     last_state: str | None = None
     last_status_at: datetime | None = None
     customer_id: int | None = None
