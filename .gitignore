@@ -88,3 +88,8 @@ graphify-out/
 # Local PDF render output from report debugging. Regenerated on demand and
 # occasionally several MB per file — scratch, never a build input.
 .preview-pdfs/
+
+# Vendor installer for the Benning IT 130/200 testers (Windows software the
+# office uses; not part of this codebase). A 3rd-party setup.exe has no place
+# in a public git history — licence-wise or size-wise.
+benning software/
