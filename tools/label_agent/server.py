@@ -268,14 +268,21 @@ class Store:
                 """
                 INSERT INTO counts (session, code, item_name, counted_qty, scan_count,
                                     first_counted_at, last_counted_at)
-                VALUES (?, ?, ?, ?, 1, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(session, code) DO UPDATE SET
                     counted_qty     = counts.counted_qty + excluded.counted_qty,
-                    scan_count      = counts.scan_count + 1,
+                    -- Only a real scan advances scan_count. An undo (qty < 0)
+                    -- and a name backfill (qty == 0) both come through here,
+                    -- and counting them would make undoing a scan RAISE the
+                    -- scan count. counted_qty is the quantity; scan_count is
+                    -- the evidence of how it was arrived at, and the two must
+                    -- not drift or "scanned 47 times or typed 47?" stops being
+                    -- answerable — which is the whole reason both are stored.
+                    scan_count      = counts.scan_count + (CASE WHEN excluded.counted_qty > 0 THEN 1 ELSE 0 END),
                     item_name       = COALESCE(NULLIF(excluded.item_name, ''), counts.item_name),
                     last_counted_at = excluded.last_counted_at
                 """,
-                (session, code, item_name, qty, stamp, stamp),
+                (session, code, item_name, qty, 1 if qty > 0 else 0, stamp, stamp),
             )
         row = self.conn.execute(
             "SELECT * FROM counts WHERE session = ? AND code = ?", (session, code)
