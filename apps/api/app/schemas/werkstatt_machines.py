@@ -162,6 +162,17 @@ class MachineLabelBatchOut(BaseModel):
     printer: str
 
 
+class MachineLabelCapabilitiesOut(BaseModel):
+    """What the ACTIVE printer material can carry — drives honest buttons."""
+
+    material_id: str
+    material_name: str
+    tier: str
+    gross: bool
+    klein: bool = True
+    hint: str | None = None
+
+
 class MachineMovementOut(_OrmBase):
     """One line of a machine's custody log."""
 

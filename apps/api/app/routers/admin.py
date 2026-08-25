@@ -54,6 +54,8 @@ from app.schemas.api import (
     UpdateInstallRequest,
     UpdateProgressOut,
     UpdateStatusOut,
+    LabelFreetextPayload,
+    LabelMaterialOut,
     LabelPrinterSettingsOut,
     LabelPrinterSettingsUpdate,
     LabelPrinterTestOut,
@@ -2300,21 +2302,51 @@ def update_weather_settings(
     )
 
 
-@router.get("/settings/label-printer", response_model=LabelPrinterSettingsOut)
-def get_label_printer_runtime_settings(
-    _: User = Depends(require_permission("settings:manage")),
-    db: Session = Depends(get_db),
-):
+def _label_printer_settings_out(db: Session) -> LabelPrinterSettingsOut:
     from app.services import werkstatt_labels
+    from app.services.werkstatt_label_materials import get_label_printer_config
 
+    config = get_label_printer_config(db)
     address = werkstatt_labels.printer_address(db)
     host, port = address if address else ("", 9100)
+    active = next(
+        profile
+        for profile in config["materials"]
+        if profile.id == config["active_material_id"]
+    )
     return LabelPrinterSettingsOut(
         host=host,
         port=port,
         configured=address is not None,
         source=werkstatt_labels.printer_address_source(db),
+        materials=[
+            LabelMaterialOut(
+                id=profile.id,
+                name=profile.name,
+                part_no=profile.part_no,
+                width_mm=profile.width_mm,
+                length_mm=profile.length_mm,
+                gap_mm=profile.gap_mm,
+                x_offset_mm=profile.x_offset_mm,
+                darkness=profile.darkness,
+                builtin=profile.builtin,
+                tier=profile.tier,
+                continuous=profile.continuous,
+            )
+            for profile in config["materials"]
+        ],
+        active_material_id=active.id,
+        active_material_name=active.name,
+        active_tier=active.tier,
     )
+
+
+@router.get("/settings/label-printer", response_model=LabelPrinterSettingsOut)
+def get_label_printer_runtime_settings(
+    _: User = Depends(require_permission("settings:manage")),
+    db: Session = Depends(get_db),
+):
+    return _label_printer_settings_out(db)
 
 
 @router.patch("/settings/label-printer", response_model=LabelPrinterSettingsOut)
@@ -2323,10 +2355,30 @@ def update_label_printer_runtime_settings(
     admin: User = Depends(require_permission("settings:manage")),
     db: Session = Depends(get_db),
 ):
-    from app.services import werkstatt_labels
-    from app.services.runtime_settings import set_label_printer_settings
+    from app.services.werkstatt_label_materials import (
+        MaterialValidationError,
+        get_label_printer_config,
+        normalize_incoming_material,
+        set_label_printer_config,
+    )
 
-    set_label_printer_settings(db, host=payload.host, port=payload.port)
+    current = get_label_printer_config(db)
+    try:
+        materials = (
+            [normalize_incoming_material(item.model_dump()) for item in payload.materials]
+            if payload.materials is not None
+            else current["materials"]
+        )
+        set_label_printer_config(
+            db,
+            host=payload.host,
+            port=payload.port,
+            materials=materials,
+            active_material_id=payload.active_material_id
+            or current["active_material_id"],
+        )
+    except MaterialValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     db.commit()
     log_admin_action(
         db,
@@ -2334,16 +2386,44 @@ def update_label_printer_runtime_settings(
         "settings.label_printer.update",
         "settings",
         "label-printer",
-        {"configured": bool(payload.host.strip()), "port": payload.port},
+        {
+            "configured": bool(payload.host.strip()),
+            "port": payload.port,
+            "materials": len(materials),
+            "active_material_id": payload.active_material_id,
+        },
     )
-    address = werkstatt_labels.printer_address(db)
-    host, port = address if address else ("", 9100)
-    return LabelPrinterSettingsOut(
-        host=host,
-        port=port,
-        configured=address is not None,
-        source=werkstatt_labels.printer_address_source(db),
+    return _label_printer_settings_out(db)
+
+
+@router.post("/settings/label-printer/freetext", response_model=LabelPrinterTestOut)
+def print_label_printer_freetext(
+    payload: LabelFreetextPayload,
+    admin: User = Depends(require_permission("settings:manage")),
+    db: Session = Depends(get_db),
+):
+    """Free text on the ACTIVE material — marking strips, shrink tube, labels."""
+    from app.services import werkstatt_labels
+
+    try:
+        printer = werkstatt_labels.print_freetext(
+            db, text=payload.text, copies=payload.copies
+        )
+    except werkstatt_labels.LabelPrinterNotConfigured:
+        return LabelPrinterTestOut(ok=False, detail="Kein Etikettendrucker konfiguriert")
+    except werkstatt_labels.LabelPrinterUnreachable as exc:
+        return LabelPrinterTestOut(
+            ok=False, printer=str(exc), detail=f"Etikettendrucker nicht erreichbar ({exc})"
+        )
+    log_admin_action(
+        db,
+        admin,
+        "settings.label_printer.freetext",
+        "settings",
+        "label-printer",
+        {"printer": printer, "copies": payload.copies, "chars": len(payload.text)},
     )
+    return LabelPrinterTestOut(ok=True, printer=printer, detail="Druck gesendet")
 
 
 @router.post("/settings/label-printer/test", response_model=LabelPrinterTestOut)

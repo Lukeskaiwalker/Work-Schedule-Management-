@@ -61,6 +61,10 @@ export interface MaschineDetailPanelProps {
   onReturn: (payload: MachineReturnPayload) => void;
   onInspect: (payload: MachineInspectionPayload) => void;
   onPrintLabel: () => void;
+  /** False when the loaded printer material cannot take the full label. */
+  grossPrintable: boolean;
+  /** German reason shown as tooltip while `grossPrintable` is false. */
+  grossHint: string | null;
   /** Adds this machine to the klein-label print queue (4 per sheet). */
   onQueueLabel: () => void;
   onAddComponent: () => void;
@@ -92,6 +96,8 @@ export function MaschineDetailPanel({
   onReturn,
   onInspect,
   onPrintLabel,
+  grossPrintable,
+  grossHint,
   onQueueLabel,
   onAddComponent,
   onOpenComponent,
@@ -558,7 +564,8 @@ export function MaschineDetailPanel({
                   type="button"
                   className="werkstatt-card-action"
                   onClick={onPrintLabel}
-                  disabled={busy}
+                  disabled={busy || !grossPrintable}
+                  title={!grossPrintable ? (grossHint ?? undefined) : undefined}
                 >
                   {de ? "Etikett drucken" : "Print label"}
                 </button>

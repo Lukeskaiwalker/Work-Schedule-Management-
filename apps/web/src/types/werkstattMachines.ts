@@ -163,6 +163,16 @@ export interface MachineLabelBatchResult {
   printer: string;
 }
 
+/** What the ACTIVE printer material can carry — from GET /machines/label-capabilities. */
+export interface MachineLabelCapabilities {
+  material_id: string;
+  material_name: string;
+  tier: "voll" | "kompakt" | "mini";
+  gross: boolean;
+  klein: boolean;
+  hint: string | null;
+}
+
 /** Server-side filters. Mirrors the query params of GET /werkstatt/machines. */
 export interface MachineListFilters {
   q?: string;

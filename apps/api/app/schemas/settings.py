@@ -2,7 +2,7 @@ from __future__ import annotations
 from datetime import date, datetime, time
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 class WeatherSettingsOut(BaseModel):
     provider: str = "openweather"
@@ -95,30 +95,86 @@ class CompanySettingsUpdate(BaseModel):
     company_address: str = ""
 
 
+class LabelMaterialOut(BaseModel):
+    """One printable stock the workshop owns, plus derived facts (tier)."""
+
+    id: str
+    name: str
+    part_no: str = ""
+    width_mm: float
+    length_mm: float | None = None  # None = continuous (tape, shrink tube)
+    gap_mm: float = 3.0
+    x_offset_mm: float = 2.0
+    darkness: int | None = None
+    builtin: bool = False
+    tier: str = "mini"
+    continuous: bool = False
+
+
+class LabelMaterialIn(BaseModel):
+    """Admin-entered material; `builtin`/`tier` are derived, never accepted."""
+
+    id: str = Field(min_length=1, max_length=40)
+    name: str = Field(min_length=1, max_length=60)
+    part_no: str = Field(default="", max_length=40)
+    width_mm: float = Field(gt=0, le=47)  # the print head is 47 mm wide
+    length_mm: float | None = Field(default=None, gt=0, le=762)
+    gap_mm: float = Field(default=3.0, ge=0, le=10)
+    x_offset_mm: float = Field(default=2.0, ge=0, le=10)
+    darkness: int | None = Field(default=None, ge=0, le=19)
+
+
 class LabelPrinterSettingsOut(BaseModel):
-    """Werkstatt label printer address as the admin UI sees it.
+    """Werkstatt label printer config as the admin UI sees it.
 
     ``source`` says where the effective address came from: ``runtime`` (set in
     this UI), ``env`` (deployment variables), or ``none`` (printing disabled).
+    The active material mirrors what is physically loaded in the printer.
     """
 
     host: str = ""
     port: int = 9100
     configured: bool = False
     source: str = "none"
+    materials: list[LabelMaterialOut] = Field(default_factory=list)
+    active_material_id: str = ""
+    active_material_name: str = ""
+    active_tier: str = ""
 
 
 class LabelPrinterSettingsUpdate(BaseModel):
-    """Empty host clears the runtime override (falls back to env, if set)."""
+    """Empty host clears the runtime override (falls back to env, if set).
+
+    ``materials``/``active_material_id`` are optional: omitting them keeps
+    the stored values, so the address form and the material picker can PATCH
+    independently without clobbering each other.
+    """
 
     host: str = ""
     port: int = Field(default=9100, ge=1, le=65535)
+    materials: list[LabelMaterialIn] | None = None
+    active_material_id: str | None = None
 
 
 class LabelPrinterTestOut(BaseModel):
     ok: bool
     printer: str = ""
     detail: str = ""
+
+
+class LabelFreetextPayload(BaseModel):
+    """Free text for continuous stock (marking strips, shrink tube)."""
+
+    text: str = Field(min_length=1, max_length=120)
+    copies: int = Field(default=1, ge=1, le=50)
+
+    @field_validator("text")
+    @classmethod
+    def _not_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("Text fehlt")
+        return stripped
 
 
 class UpdateStatusOut(BaseModel):

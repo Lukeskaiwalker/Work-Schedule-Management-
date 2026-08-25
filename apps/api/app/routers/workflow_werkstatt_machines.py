@@ -40,6 +40,7 @@ from app.schemas.werkstatt_machines import (
     MachineInspectionPayload,
     MachineLabelBatchOut,
     MachineLabelBatchPayload,
+    MachineLabelCapabilitiesOut,
     MachineLabelPrintOut,
     MachineMovementOut,
     MachineOut,
@@ -141,6 +142,36 @@ def list_machines(
         _to_out(u, article=articles.get(u.article_id), locations=locations, users=users, now=now)
         for u in units
     ]
+
+
+@router.get("/machines/label-capabilities", response_model=MachineLabelCapabilitiesOut)
+def get_label_capabilities(
+    _: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> MachineLabelCapabilitiesOut:
+    """What the ACTIVE printer material can carry, for honest print buttons.
+
+    A visible "Etikett drucken" that answers 400 because 15 × 6 labels are
+    loaded is worse than a disabled one that says why. Declared BEFORE the
+    `/machines/{unit_id}` routes: FastAPI matches in declaration order, and
+    "label-capabilities" must not be parsed as a unit id.
+    """
+    from app.services.werkstatt_label_materials import TIER_VOLL, active_material
+
+    profile = active_material(db)
+    supports_gross = profile.tier == TIER_VOLL
+    return MachineLabelCapabilitiesOut(
+        material_id=profile.id,
+        material_name=profile.name,
+        tier=profile.tier,
+        gross=supports_gross,
+        klein=True,
+        hint=(
+            None
+            if supports_gross
+            else f"Aktives Material „{profile.name}“ — Vollformat braucht 99 × 44 mm"
+        ),
+    )
 
 
 @router.get("/machines/{unit_id}", response_model=MachineOut)
@@ -385,6 +416,8 @@ def print_machine_label(
     unit = _load(db, unit_id)
     try:
         printer = werkstatt_labels.print_machine_label(db, _label_content(db, unit))
+    except werkstatt_labels.LabelFormatUnsupported as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except werkstatt_labels.LabelPrinterNotConfigured:
         raise HTTPException(status_code=503, detail="Kein Etikettendrucker konfiguriert")
     except werkstatt_labels.LabelPrinterUnreachable as exc:
@@ -442,6 +475,8 @@ def print_machine_labels(
     ]
     try:
         sheets, printer = werkstatt_labels.print_label_jobs(db, gross=gross, klein=klein)
+    except werkstatt_labels.LabelFormatUnsupported as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     except werkstatt_labels.LabelPrinterNotConfigured:
         raise HTTPException(status_code=503, detail="Kein Etikettendrucker konfiguriert")
     except werkstatt_labels.LabelPrinterUnreachable as exc:
@@ -449,3 +484,5 @@ def print_machine_labels(
             status_code=502, detail=f"Etikettendrucker nicht erreichbar ({exc})"
         )
     return MachineLabelBatchOut(sheets=sheets, labels=len(payload.items), printer=printer)
+
+

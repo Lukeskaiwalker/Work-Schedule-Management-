@@ -883,7 +883,12 @@ def test_admin_can_configure_printer_at_runtime_and_it_wins(
     # Unconfigured by default (no env host in the test settings).
     got = client.get("/api/admin/settings/label-printer", headers=auth_headers(admin_token))
     assert got.status_code == 200, got.text
-    assert got.json() == {"host": "", "port": 9100, "configured": False, "source": "none"}
+    body = got.json()
+    # Subset, not equality: the response also carries the material profiles.
+    assert body["host"] == ""
+    assert body["port"] == 9100
+    assert body["configured"] is False
+    assert body["source"] == "none"
 
     saved = client.patch(
         "/api/admin/settings/label-printer",

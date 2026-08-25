@@ -48,6 +48,7 @@ import type {
   MachineBookPayload,
   MachineCreatePayload,
   MachineInspectionPayload,
+  MachineLabelCapabilities,
   MachineMovement,
   MachineReturnPayload,
   MachineUpdatePayload,
@@ -55,6 +56,7 @@ import type {
 import {
   bookMachine,
   createMachine,
+  getLabelCapabilities,
   getMachine,
   getMachineHistory,
   listMachines,
@@ -178,11 +180,26 @@ export function WerkstattMaschinenPage() {
     }
   }, [token]);
 
+  /**
+   * What the loaded printer material can carry — drives the print buttons.
+   * `null` (fetch failed / old server) degrades to permissive: the server
+   * still gates for real, this is only about honest buttons.
+   */
+  const [labelCaps, setLabelCaps] = useState<MachineLabelCapabilities | null>(null);
+  const loadLabelCaps = useCallback(async () => {
+    try {
+      setLabelCaps(await getLabelCapabilities(token));
+    } catch {
+      setLabelCaps(null);
+    }
+  }, [token]);
+
   useEffect(() => {
     if (!isActiveTab) return;
     void loadMachines();
     void loadLocations();
-  }, [isActiveTab, loadMachines, loadLocations]);
+    void loadLabelCaps();
+  }, [isActiveTab, loadMachines, loadLocations, loadLabelCaps]);
 
   /** Load one machine plus its log into the detail view. */
   const openMachine = useCallback(
@@ -570,6 +587,8 @@ export function WerkstattMaschinenPage() {
           onReturn={handleReturn}
           onInspect={handleInspection}
           onPrintLabel={handlePrintLabel}
+          grossPrintable={labelCaps?.gross ?? true}
+          grossHint={labelCaps?.hint ?? null}
           onQueueLabel={queueLabel}
           onAddComponent={() => {
             setCreateParentId(selected.id);

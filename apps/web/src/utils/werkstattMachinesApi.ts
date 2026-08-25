@@ -21,6 +21,7 @@
 //   POST   /werkstatt/machines/{id}/inspection  → recordInspection
 //   POST   /werkstatt/machines/{id}/print-label → printMachineLabel
 //   POST   /werkstatt/machines/print-labels     → printMachineLabels (Druckliste)
+//   GET    /werkstatt/machines/label-capabilities → getLabelCapabilities
 
 import { apiFetch } from "../api/client";
 import type {
@@ -30,6 +31,7 @@ import type {
   MachineInspectionPayload,
   MachineLabelBatchPayload,
   MachineLabelBatchResult,
+  MachineLabelCapabilities,
   MachineLabelPrintResult,
   MachineListFilters,
   MachineMovement,
@@ -165,4 +167,14 @@ export async function printMachineLabels(
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+/**
+ * What the loaded printer material can carry. The Maschinen page uses this to
+ * disable the Vollformat button with a reason instead of letting it 400.
+ */
+export async function getLabelCapabilities(
+  token: string | null,
+): Promise<MachineLabelCapabilities> {
+  return apiFetch<MachineLabelCapabilities>(`/werkstatt/machines/label-capabilities`, token);
 }
