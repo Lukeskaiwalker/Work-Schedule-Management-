@@ -245,6 +245,9 @@ import type { BrowserNotifPermission } from "./hooks/useBrowserNotifications";
 
 // Pages — loaded on first navigation, never on initial load
 const AdminPage = lazy(() => import("./pages/AdminPage").then((m) => ({ default: m.AdminPage })));
+const AusbildungPage = lazy(() =>
+  import("./pages/AusbildungPage").then((m) => ({ default: m.AusbildungPage })),
+);
 const CalendarPage = lazy(() => import("./pages/CalendarPage").then((m) => ({ default: m.CalendarPage })));
 const ConstructionPage = lazy(() => import("./pages/ConstructionPage").then((m) => ({ default: m.ConstructionPage })));
 const SchaltplanPage = lazy(() => import("./pages/SchaltplanPage").then((m) => ({ default: m.SchaltplanPage })));
@@ -822,6 +825,10 @@ export function App() {
   const canManageFiles = effectivePermissions.has("files:manage");
   const canViewFinance = user?.effective_permissions?.includes("finance:view") ?? false;
   const canManageFinance = user?.effective_permissions?.includes("finance:manage") ?? false;
+  // Ausbildung has two audiences: the apprentice (a fact about the person,
+  // not a grant) and the Ausbilder who countersigns (a real permission).
+  const isApprentice = Boolean(user?.is_apprentice);
+  const canManageTraining = effectivePermissions.has("training:manage");
   const mainLabels = MAIN_LABELS[language];
   const tabLabels = TAB_LABELS[language];
   const workspaceModeLabel =
@@ -1539,6 +1546,7 @@ export function App() {
       "planning",
       "construction",
       "schaltplan",
+      "ausbildung",
       "reports",
       "materials",
       "werkstatt",
@@ -1557,9 +1565,15 @@ export function App() {
       if (view === "my_tasks" || view === "schaltplan") {
         return workspaceMode === "construction";
       }
+      // Ausbildungsnachweis: shown to the two audiences who have one — the
+      // apprentice keeping the record, and the trainer countersigning it.
+      // Both modes, because an Azubi is on site and the Ausbilder is not.
+      if (view === "ausbildung") {
+        return isApprentice || canManageTraining;
+      }
       return true;
     });
-  }, [workspaceMode]);
+  }, [workspaceMode, isApprentice, canManageTraining]);
 
   const projectTabs = useMemo<ProjectTab[]>(() => {
     const tabs: ProjectTab[] = ["overview"];
@@ -7825,6 +7839,46 @@ export function App() {
     }
   }
 
+  async function updateApprenticeSettings(
+    targetUserId: number,
+    patch: { is_apprentice?: boolean; training_started_on?: string | null; clear_training_started_on?: boolean },
+  ) {
+    // Ausbildung: apprentice flag + training start. Lives on the dedicated
+    // /training endpoint (users:manage-gated) — same optimistic local update
+    // as updateApiAccessEnabled above, without a full /admin/users refetch.
+    try {
+      const result = await apiFetch<{
+        user_id: number;
+        is_apprentice: boolean;
+        training_started_on: string | null;
+      }>(`/training/apprentices/${targetUserId}`, token, {
+        method: "PATCH",
+        body: JSON.stringify(patch),
+      });
+      setUsers((current) =>
+        current.map((entry) =>
+          entry.id === targetUserId
+            ? { ...entry, is_apprentice: result.is_apprentice, training_started_on: result.training_started_on }
+            : entry,
+        ),
+      );
+      if (user && user.id === targetUserId) {
+        setUser({ ...user, is_apprentice: result.is_apprentice, training_started_on: result.training_started_on });
+      }
+      setNotice(
+        language === "de"
+          ? result.is_apprentice
+            ? "Als Auszubildende/r markiert"
+            : "Azubi-Markierung entfernt"
+          : result.is_apprentice
+            ? "Marked as apprentice"
+            : "Apprentice flag removed",
+      );
+    } catch (err: any) {
+      setError(err.message ?? "Failed to update apprentice settings");
+    }
+  }
+
   async function updateRequiredDailyHours(targetUserId: number) {
     const targetHours = Number(requiredHoursDrafts[targetUserId]);
     if (!targetUserId || !Number.isFinite(targetHours) || targetHours < 1 || targetHours > 24) {
@@ -10123,6 +10177,7 @@ export function App() {
     updateRole,
     updateWorkspaceLock,
     updateApiAccessEnabled,
+    updateApprenticeSettings,
     updateRequiredDailyHours,
     updateVacationBalance,
     saveProfileSettings,
@@ -10282,6 +10337,7 @@ export function App() {
           {mainView === "planning" && <PlanningPage />}
           {mainView === "construction" && <ConstructionPage />}
           {mainView === "schaltplan" && <SchaltplanPage />}
+          {mainView === "ausbildung" && <AusbildungPage />}
           {mainView === "reports" && <ReportsPage />}
           {mainView === "wiki" && <WikiPage />}
           {mainView === "messages" && <MessagesPage />}

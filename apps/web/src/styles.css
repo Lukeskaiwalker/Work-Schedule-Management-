@@ -32858,6 +32858,1023 @@ button.time-calendar-cell {
 .admin-settings-material-name small {
   color: var(--text-muted, #5c7895);
 }
+
+/* ── Ausbildungsnachweis ──────────────────────────────────────────────────
+   The Ausbildung page (the Berichtsheft) plus the week editor modal.
+
+   Everything here rides on the shared tokens and the house component idioms:
+   buttons follow .construction-report-btn (38px / 8px radius / --accent),
+   chips follow .tasks-page-status-pill (19px / 4px radius / uppercase), and
+   the modal reuses .modal-card. Where a colour is not a token it is a status
+   tint, defined once below rather than inline at each use site. */
+
+/* Status tints. Named once so the chips, the roster badges and the gap
+   warnings cannot drift apart. */
+:root {
+  --training-warn-bg: #fff8ea;
+  --training-warn-line: #e8cf9a;
+  --training-warn-ink: #8a6110;
+  --training-ok-bg: #eefaf2;
+  --training-ok-line: #b5e0c2;
+  --training-ok-ink: #256b45;
+  --training-info-bg: #eef6fd;
+  --training-info-line: #bcd7f0;
+  --training-info-ink: #1d5c93;
+}
+
+/* ── Page ───────────────────────────────────────────────────────────────── */
+
+.ausbildung-page {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 4px 0 32px;
+}
+
+.ausbildung-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.ausbildung-eyebrow {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.ausbildung-title {
+  margin: 2px 0 0;
+  font-size: 28px;
+  line-height: 1.15;
+  color: var(--ink);
+}
+
+.ausbildung-panel {
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 16px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ausbildung-panel--queue {
+  border-color: var(--training-warn-line);
+  background: var(--training-warn-bg);
+}
+
+.ausbildung-panel-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ausbildung-count {
+  display: inline-flex;
+  align-items: center;
+  height: 19px;
+  padding: 0 7px;
+  border-radius: 4px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+
+.ausbildung-heft-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* ── Buttons (mirrors .construction-report-btn) ─────────────────────────── */
+
+.ausbildung-btn,
+.wochenbericht-btn {
+  appearance: none;
+  height: 38px;
+  min-height: 0;
+  padding: 0 18px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.ausbildung-btn:hover,
+.wochenbericht-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.ausbildung-btn--primary,
+.wochenbericht-btn--primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.ausbildung-btn--primary:hover,
+.wochenbericht-btn--primary:hover {
+  background: var(--accent-2);
+  border-color: var(--accent-2);
+  color: #fff;
+}
+
+.wochenbericht-btn--danger {
+  border-color: #e0b4b4;
+  color: var(--danger);
+}
+
+.wochenbericht-btn--danger:hover {
+  background: #fdf1f1;
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.ausbildung-btn:active,
+.wochenbericht-btn:active {
+  filter: brightness(0.94);
+}
+
+.ausbildung-btn:disabled,
+.wochenbericht-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.ausbildung-btn:focus-visible,
+.wochenbericht-btn:focus-visible,
+.ausbildung-row-open:focus-visible,
+.wochenbericht-close:focus-visible,
+.wochenbericht-add-entry:focus-visible,
+.wochenbericht-entry-remove:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Hover states latch on touch devices; unlatch them there. */
+@media (hover: none) {
+  .ausbildung-btn:hover,
+  .wochenbericht-btn:hover {
+    border-color: var(--line);
+    color: var(--ink);
+  }
+  .ausbildung-btn--primary:hover,
+  .wochenbericht-btn--primary:hover {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+}
+
+.ausbildung-link-btn {
+  appearance: none;
+  background: none;
+  border: 0;
+  padding: 0;
+  font: inherit;
+  color: var(--accent);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* ── Chips (mirrors .tasks-page-status-pill) ───────────────────────────── */
+
+.ausbildung-chip,
+.wochenbericht-status {
+  display: inline-flex;
+  align-items: center;
+  height: 19px;
+  padding: 0 8px;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.ausbildung-chip--draft,
+.wochenbericht-status--draft {
+  background: var(--surface-2);
+  border-color: var(--line);
+  color: var(--muted);
+}
+
+.ausbildung-chip--submitted,
+.wochenbericht-status--submitted {
+  background: var(--training-warn-bg);
+  border-color: var(--training-warn-line);
+  color: var(--training-warn-ink);
+}
+
+.ausbildung-chip--signed,
+.wochenbericht-status--signed {
+  background: var(--training-ok-bg);
+  border-color: var(--training-ok-line);
+  color: var(--training-ok-ink);
+}
+
+.ausbildung-chip--missing {
+  background: #fdf1f1;
+  border-color: #e0b4b4;
+  color: var(--danger);
+}
+
+/* ── Rows ───────────────────────────────────────────────────────────────── */
+
+.ausbildung-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ausbildung-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+}
+
+.ausbildung-row-open {
+  flex: 1;
+  min-width: 0;
+  appearance: none;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  color: var(--ink);
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.ausbildung-row-open:hover {
+  border-color: var(--accent);
+  background: var(--surface);
+}
+
+@media (hover: none) {
+  .ausbildung-row-open:hover {
+    border-color: var(--line);
+    background: #fff;
+  }
+}
+
+.ausbildung-row-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ausbildung-row-sub {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.ausbildung-row-pdf {
+  display: inline-flex;
+  align-items: center;
+  padding: 0 12px;
+  min-height: 48px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-decoration: none;
+}
+
+.ausbildung-row-pdf:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ── Roster ─────────────────────────────────────────────────────────────── */
+
+.ausbildung-roster {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 8px;
+}
+
+.ausbildung-roster-card {
+  width: 100%;
+  appearance: none;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px 12px;
+  min-height: 56px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  cursor: pointer;
+  font: inherit;
+  color: var(--ink);
+  text-align: left;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.ausbildung-roster-card:hover,
+.ausbildung-roster-card--active {
+  border-color: var(--accent);
+  background: var(--surface);
+}
+
+.ausbildung-roster-name {
+  font-weight: 600;
+}
+
+.ausbildung-roster-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ── Stats ──────────────────────────────────────────────────────────────── */
+
+.ausbildung-stats {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+}
+
+.ausbildung-stats > div {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px 12px;
+  background: var(--surface);
+}
+
+.ausbildung-stats dt {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.ausbildung-stats dd {
+  margin: 2px 0 0;
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+/* Must out-specify `.ausbildung-stats > div` above (0-1-1); a bare class
+   (0-1-0) loses and the tile silently stayed white. */
+.ausbildung-stats > div.ausbildung-stat--warn {
+  border-color: var(--training-warn-line);
+  background: var(--training-warn-bg);
+}
+
+.ausbildung-stat--warn dd {
+  color: var(--training-warn-ink);
+}
+
+.ausbildung-gap-note {
+  margin: 0;
+  font-size: 13px;
+  color: var(--training-warn-ink);
+  background: var(--training-warn-bg);
+  border: 1px solid var(--training-warn-line);
+  border-radius: 10px;
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.ausbildung-gap-btn {
+  appearance: none;
+  background: #fff;
+  border: 1px solid var(--training-warn-line);
+  border-radius: 6px;
+  padding: 2px 8px;
+  min-height: 28px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--training-warn-ink);
+  cursor: pointer;
+}
+
+.ausbildung-gap-btn:hover {
+  border-color: var(--training-warn-ink);
+}
+
+.ausbildung-year {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ausbildung-year-title {
+  margin: 6px 0 0;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ausbildung-hint {
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.ausbildung-error {
+  margin: 0;
+  font-size: 13px;
+  color: var(--danger);
+  background: #fdf1f1;
+  border: 1px solid #e0b4b4;
+  border-radius: 10px;
+  padding: 8px 12px;
+}
+
+/* ── Week editor modal ──────────────────────────────────────────────────── */
+
+.wochenbericht-modal {
+  width: min(960px, 96vw);
+  max-height: 92vh;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+}
+
+.wochenbericht-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px 18px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.wochenbericht-head > div:first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.wochenbericht-eyebrow {
+  display: block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.wochenbericht-title {
+  margin: 2px 0 0;
+  font-size: 22px;
+  line-height: 1.2;
+  color: var(--ink);
+}
+
+.wochenbericht-close {
+  appearance: none;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  width: 34px;
+  height: 34px;
+  font-size: 22px;
+  line-height: 1;
+  color: var(--muted);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.wochenbericht-close:hover {
+  border-color: var(--line);
+  color: var(--ink);
+}
+
+.wochenbericht-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.wochenbericht-notice {
+  margin: 0;
+  font-size: 13px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--training-info-bg);
+  border: 1px solid var(--training-info-line);
+  color: var(--training-info-ink);
+}
+
+.wochenbericht-error {
+  margin: 0;
+  font-size: 13px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: #fdf1f1;
+  border: 1px solid #e0b4b4;
+  color: var(--danger);
+}
+
+.wochenbericht-meta {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.wochenbericht-jahr {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.wochenbericht-jahr select {
+  height: 34px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: #fff;
+  padding: 0 8px;
+  font: inherit;
+  color: var(--ink);
+}
+
+/* ── The week grid ──────────────────────────────────────────────────────
+   One template shared by the header and every entry row, so Tätigkeit / Art /
+   Std. line up down the whole week instead of zig-zagging per day. */
+
+.wochenbericht-week {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.wochenbericht-entry,
+.wochenbericht-week-head-cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 132px 74px 36px;
+  gap: 8px;
+  align-items: start;
+}
+
+/* Same outer split as .wochenbericht-day, so each heading sits over its own
+   column instead of shifting one place along. */
+.wochenbericht-week-head {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.wochenbericht-day {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.wochenbericht-day:last-child {
+  border-bottom: 0;
+}
+
+.wochenbericht-day-label {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding-top: 8px;
+}
+
+.wochenbericht-day-name {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.wochenbericht-day-date,
+.wochenbericht-day-sum {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.wochenbericht-day-sum {
+  font-weight: 700;
+}
+
+.wochenbericht-day-entries {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.wochenbericht-day-empty {
+  margin: 0;
+  padding: 8px 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.wochenbericht-entry-text,
+.wochenbericht-entry-cat,
+.wochenbericht-entry-hours {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  padding: 8px 10px;
+}
+
+.wochenbericht-entry-text {
+  resize: vertical;
+  min-height: 38px;
+  line-height: 20px;
+}
+
+.wochenbericht-entry-cat,
+.wochenbericht-entry-hours {
+  height: 38px;
+  padding: 0 8px;
+}
+
+.wochenbericht-entry-hours {
+  text-align: right;
+}
+
+.wochenbericht-entry-text:focus,
+.wochenbericht-entry-cat:focus,
+.wochenbericht-entry-hours:focus,
+.wochenbericht-remarks textarea:focus,
+.wochenbericht-jahr select:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(47, 112, 183, 0.15);
+}
+
+.wochenbericht-entry-text:disabled,
+.wochenbericht-entry-cat:disabled,
+.wochenbericht-entry-hours:disabled {
+  background: var(--surface);
+  color: var(--muted);
+}
+
+.wochenbericht-entry-remove {
+  appearance: none;
+  width: 36px;
+  height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.wochenbericht-entry-remove:hover {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.wochenbericht-add-entry {
+  appearance: none;
+  align-self: flex-start;
+  background: none;
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  padding: 0 12px;
+  min-height: 34px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.wochenbericht-add-entry:hover {
+  border-color: var(--accent);
+  border-style: solid;
+}
+
+.wochenbericht-remarks {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.wochenbericht-remarks textarea {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--ink);
+  resize: vertical;
+  min-height: 56px;
+}
+
+.wochenbericht-signed-info {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.wochenbericht-sign-box {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px;
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.wochenbericht-sign-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.wochenbericht-owner,
+.wochenbericht-total {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+/* ── Footer action bar ──────────────────────────────────────────────────── */
+
+.wochenbericht-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 12px 18px;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+}
+
+.wochenbericht-foot-spacer {
+  flex: 1;
+}
+
+.wochenbericht-foot-total {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.wochenbericht-foot-total-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.wochenbericht-foot-total strong {
+  font-size: 22px;
+  color: var(--ink);
+}
+
+.wochenbericht-pdf {
+  display: inline-flex;
+  align-items: center;
+  min-height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-decoration: none;
+}
+
+.wochenbericht-pdf:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.admin-users-date-input {
+  /* Safari/WebKit ignores height on a date input unless appearance is reset —
+     without this it renders taller than the controls beside it. */
+  -webkit-appearance: none;
+  appearance: none;
+  min-height: 34px;
+  height: 34px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0 8px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  background: #fff;
+}
+
+/* ── Phones ─────────────────────────────────────────────────────────────
+   The crew fills these in on site. iOS Safari auto-zooms any control that
+   computes under 16px, and this sheet has up to forty of them — so the whole
+   form goes to 16px/44px, exactly like the construction report form does. */
+
+@media (max-width: 767px) {
+  .ausbildung-title {
+    font-size: 22px;
+  }
+
+  .ausbildung-page {
+    gap: 14px;
+  }
+
+  .ausbildung-panel {
+    padding: 12px;
+  }
+
+  .ausbildung-btn,
+  .wochenbericht-btn {
+    min-height: 44px;
+    height: auto;
+    font-size: 14px;
+  }
+
+  .ausbildung-row-open,
+  .ausbildung-row-pdf,
+  .ausbildung-roster-card {
+    min-height: 52px;
+  }
+
+  .wochenbericht-modal {
+    width: 100%;
+    max-width: 100%;
+    max-height: 100vh;
+    height: 100vh;
+    border-radius: 0;
+  }
+
+  .wochenbericht-head,
+  .wochenbericht-body,
+  .wochenbericht-foot {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  /* The column header describes a desktop-only layout; on a phone each entry
+     is a labelled stack, so the header would be a lie. */
+  .wochenbericht-week-head {
+    display: none;
+  }
+
+  .wochenbericht-day {
+    grid-template-columns: 1fr;
+    gap: 6px;
+    padding: 10px;
+  }
+
+  .wochenbericht-day-label {
+    flex-direction: row;
+    align-items: baseline;
+    gap: 8px;
+    padding-top: 0;
+  }
+
+  /* Text takes the full width; the small controls share the line under it. */
+  .wochenbericht-entry {
+    grid-template-columns: minmax(0, 1fr) 88px 44px;
+    gap: 6px;
+  }
+
+  .wochenbericht-entry-text {
+    grid-column: 1 / -1;
+    font-size: 16px;
+    min-height: 56px;
+    line-height: 22px;
+  }
+
+  .wochenbericht-entry-cat,
+  .wochenbericht-entry-hours {
+    height: 44px;
+    font-size: 16px;
+  }
+
+  .wochenbericht-entry-remove {
+    width: 44px;
+    height: 44px;
+  }
+
+  .wochenbericht-add-entry {
+    min-height: 44px;
+    width: 100%;
+    font-size: 14px;
+  }
+
+  .wochenbericht-remarks textarea,
+  .wochenbericht-jahr select,
+  .admin-users-date-input {
+    font-size: 16px;
+    min-height: 44px;
+  }
+
+  .wochenbericht-close {
+    width: 44px;
+    height: 44px;
+  }
+
+  /* Keep the primary action nearest the thumb, like the report form footer. */
+  .wochenbericht-foot {
+    flex-direction: column-reverse;
+    align-items: stretch;
+  }
+
+  .wochenbericht-foot .wochenbericht-btn,
+  .wochenbericht-foot .wochenbericht-pdf {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .wochenbericht-foot-spacer {
+    display: none;
+  }
+
+  .wochenbericht-foot-total {
+    justify-content: space-between;
+    padding: 4px 0;
+  }
+}
+
 /* ══════════════════════════════════════════════════════════════════════════
    Verteilerpläne (Schaltplan editor)             prefix: .sp-
    ══════════════════════════════════════════════════════════════════════════

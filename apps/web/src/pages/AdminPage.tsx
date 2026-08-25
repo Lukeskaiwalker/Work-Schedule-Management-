@@ -120,6 +120,7 @@ export function AdminPage() {
     updateRole,
     updateWorkspaceLock,
     updateApiAccessEnabled,
+    updateApprenticeSettings,
     requiredHoursDrafts,
     setRequiredHoursDrafts,
     updateRequiredDailyHours,
@@ -239,6 +240,17 @@ export function AdminPage() {
   const [auditDateFrom, setAuditDateFrom] = useState("");
   const [auditDateTo, setAuditDateTo] = useState("");
   const [resettingRole, setResettingRole] = useState<string | null>(null);
+  /**
+   * Ausbildungsbeginn while it is being typed, keyed by user id.
+   *
+   * A <input type="date"> bound straight to server state fires onChange for
+   * every *complete* intermediate value: editing 2024-09-01 to 2024-10-01
+   * emits 2024-01-01 the moment the month segment is touched. That was being
+   * PATCHed, committed and audit-logged on the way past — and the stored date
+   * decides every future report's Ausbildungsjahr. Hold the draft locally and
+   * commit once, on blur.
+   */
+  const [trainingDateDrafts, setTrainingDateDrafts] = useState<Record<number, string>>({});
   const [expandedPermUserId, setExpandedPermUserId] = useState<number | null>(null);
   const [permDraft, setPermDraft] = useState<{ extra: Set<string>; denied: Set<string> } | null>(null);
   const [permSaving, setPermSaving] = useState(false);
@@ -685,6 +697,52 @@ export function AdminPage() {
                                       : de ? "Deaktiviert (nur Browser)" : "Disabled (browser only)"}
                                   </span>
                                 </label>
+                              </label>
+
+                              <label className="admin-users-field">
+                                <span className="admin-users-field-label">
+                                  {de ? "Ausbildung" : "Apprenticeship"}
+                                </span>
+                                <label className="admin-users-toggle">
+                                  <input
+                                    type="checkbox"
+                                    checked={Boolean(u.is_apprentice)}
+                                    onChange={(e) =>
+                                      void updateApprenticeSettings(u.id, { is_apprentice: e.target.checked })
+                                    }
+                                  />
+                                  <span>
+                                    {u.is_apprentice
+                                      ? de ? "Azubi (führt Wochenberichte)" : "Apprentice (keeps weekly reports)"
+                                      : de ? "Kein Azubi" : "Not an apprentice"}
+                                  </span>
+                                </label>
+                                {u.is_apprentice && (
+                                  <input
+                                    type="date"
+                                    className="admin-users-date-input"
+                                    value={trainingDateDrafts[u.id] ?? u.training_started_on ?? ""}
+                                    aria-label={de ? "Ausbildungsbeginn" : "Training start"}
+                                    title={de ? "Ausbildungsbeginn (für das Ausbildungsjahr)" : "Training start (drives the training year)"}
+                                    onChange={(e) =>
+                                      setTrainingDateDrafts((prev) => ({ ...prev, [u.id]: e.target.value }))
+                                    }
+                                    onBlur={(e) => {
+                                      const next = e.target.value;
+                                      setTrainingDateDrafts((prev) => {
+                                        const { [u.id]: _dropped, ...rest } = prev;
+                                        return rest;
+                                      });
+                                      if (next === (u.training_started_on ?? "")) return;
+                                      void updateApprenticeSettings(
+                                        u.id,
+                                        next
+                                          ? { training_started_on: next }
+                                          : { clear_training_started_on: true },
+                                      );
+                                    }}
+                                  />
+                                )}
                               </label>
 
                               <div className="admin-users-field admin-users-field--span-2">

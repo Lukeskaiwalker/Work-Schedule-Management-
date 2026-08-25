@@ -55,6 +55,8 @@ ALL_PERMISSIONS: frozenset[str] = frozenset(
         # from anyone who already had it — see require_any_permission.
         "werkstatt:machines_create",
         "werkstatt:machines_edit",
+        # Ausbildung: review + countersign apprentice weekly reports.
+        "training:manage",
     ]
 )
 
@@ -99,6 +101,7 @@ PERMISSION_LABELS: dict[str, str] = {
     "werkstatt:manage": "Manage Werkstatt (workshop inventory)",
     "werkstatt:machines_create": "Register new machines",
     "werkstatt:machines_edit": "Edit machine master data",
+    "training:manage": "Review apprentice training reports",
 }
 
 PERMISSION_DESCRIPTIONS: dict[str, str] = {
@@ -141,6 +144,7 @@ PERMISSION_DESCRIPTIONS: dict[str, str] = {
     "werkstatt:manage":    "Create, edit and archive Werkstatt articles, suppliers, categories, locations and import Datanorm catalogs. Also implies both machine permissions below.",
     "werkstatt:machines_create": "Register new machines in the machine register and add components to them. Does NOT allow editing existing machines.",
     "werkstatt:machines_edit":   "Edit an existing machine's serial number, location, status, notes and inspection cycle, and archive it. Does NOT allow registering new machines.",
+    "training:manage":  "See every apprentice's Ausbildungsnachweise (weekly training reports) and countersign them as the Ausbilder. Apprentices write their own reports without any permission — this grant is for the trainer side only.",
 }
 
 # Logical groups of permissions for the admin UI matrix.
@@ -161,6 +165,7 @@ PERMISSION_GROUPS: list[dict] = [
     {"key": "system",   "label": "System",   "permissions": ["system:manage", "backups:export", "backups:restore", "backups:manage"]},
     {"key": "finance",  "label": "Finance",  "permissions": ["finance:view", "finance:manage"]},
     {"key": "werkstatt","label": "Werkstatt","permissions": ["werkstatt:manage", "werkstatt:machines_create", "werkstatt:machines_edit"]},
+    {"key": "training", "label": "Ausbildung","permissions": ["training:manage"]},
 ]
 
 # Default permission map — the hard-coded baseline.  Never mutated at runtime.
@@ -206,6 +211,7 @@ PERMISSIONS_BY_ROLE: dict[str, set[str]] = {
         "werkstatt:manage",
         "werkstatt:machines_create",
         "werkstatt:machines_edit",
+        "training:manage",
     },
     ROLE_CEO: {
         "projects:manage",

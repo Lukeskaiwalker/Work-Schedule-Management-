@@ -46,6 +46,10 @@ class UserOut(BaseModel):
     vacation_days_available: float = 0
     vacation_days_carryover: float = 0
     vacation_days_total_remaining: float = 0
+    # Ausbildung — lets the SPA gate the Wochenbericht entry point without an
+    # extra round-trip. from_attributes picks both straight off the ORM row.
+    is_apprentice: bool = False
+    training_started_on: date | None = None
     avatar_updated_at: datetime | None = None
     invite_sent_at: datetime | None = None
     invite_accepted_at: datetime | None = None

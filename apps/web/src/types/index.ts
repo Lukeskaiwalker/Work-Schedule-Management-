@@ -56,6 +56,10 @@ export type User = {
   can_update_recent_own_time_entries?: boolean;
   /** When set, locks the user to a single workspace mode and hides the toggle. */
   workspace_lock?: "construction" | "office" | null;
+  /** Ausbildung: gates the Wochenbericht (IHK Ausbildungsnachweis) feature. */
+  is_apprentice?: boolean;
+  /** First day of the Ausbildung (ISO date) — prefills the Ausbildungsjahr. */
+  training_started_on?: string | null;
   /**
    * v2.5.23 — opt-in flag for programmatic API access (PATs).
    * Default false. Admins toggle this in the user-edit modal; the
@@ -1110,13 +1114,17 @@ export type WorkspaceMode = "construction" | "office";
  * Current nav map:
  *   sidebar nav items  → overview, werkstatt, projects_all, projects_archive,
  *                         my_tasks, office_tasks, project, calendar, planning,
- *                         construction, schaltplan, wiki, messages, time
+ *                         construction, schaltplan, ausbildung, wiki, messages, time
  *   sidebar user menu  → profile, admin
  *
  * Conditional nav items:
  *   - "schaltplan" (Verteilerpläne) only appears in construction mode. It is
  *     a field tool for the person standing in front of an open panel; the
  *     office view has no use for it.
+ *
+ *   - "ausbildung" only appears for apprentices (users.is_apprentice) and for
+ *     trainers (training:manage). It is filtered out of navViews for everyone
+ *     else, so the nav is unchanged for the rest of the crew.
  *
  * Legacy / transitional:
  *   - "materials" is kept for deep-link backwards compatibility. On load,
@@ -1139,6 +1147,7 @@ export type MainView =
   | "planning"
   | "construction"
   | "schaltplan"
+  | "ausbildung"
   | "reports"
   | "wiki"
   | "messages"

@@ -1,7 +1,7 @@
 from __future__ import annotations
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String
+from sqlalchemy import JSON, Boolean, Date, DateTime, Float, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
@@ -29,6 +29,12 @@ class User(Base):
     avatar_stored_path: Mapped[str | None] = mapped_column(String(500))
     avatar_content_type: Mapped[str | None] = mapped_column(String(128))
     avatar_updated_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # Ausbildung: marks the user as an apprentice (Auszubildende/r). Gates the
+    # Wochenbericht (IHK Ausbildungsnachweis) feature; nothing else keys on it.
+    is_apprentice: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # First day of the Ausbildung, used to prefill the Ausbildungsjahr on new
+    # reports. Nullable: the year stays hand-editable on the sheet either way.
+    training_started_on: Mapped[date | None] = mapped_column(Date)
     invite_sent_at: Mapped[datetime | None] = mapped_column(DateTime)
     invite_accepted_at: Mapped[datetime | None] = mapped_column(DateTime)
     password_reset_sent_at: Mapped[datetime | None] = mapped_column(DateTime)

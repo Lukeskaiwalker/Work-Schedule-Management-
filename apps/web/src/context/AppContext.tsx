@@ -1204,6 +1204,10 @@ export interface AppContextValue {
    * (the rows aren't deleted, just temporarily refused).
    */
   updateApiAccessEnabled: (userId: number, enabled: boolean) => Promise<void>;
+  updateApprenticeSettings: (
+    userId: number,
+    patch: { is_apprentice?: boolean; training_started_on?: string | null; clear_training_started_on?: boolean },
+  ) => Promise<void>;
   updateRequiredDailyHours: (targetUserId: number) => Promise<void>;
   saveProfileSettings: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   sendInviteToUser: (targetUserId: number) => Promise<void>;

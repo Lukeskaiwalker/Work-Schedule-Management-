@@ -52,6 +52,7 @@ from app.models.werkstatt_procurement import (
     WerkstattIdsSession,
     WerkstattOrderImport,
 )
+from app.models.training import TrainingWeekReport
 from app.models.schaltplan import PanelPlan
 from app.models.wiki import WikiPage
 from app.models.files import Attachment, ProjectFolder
@@ -117,5 +118,6 @@ __all__ = [
     "WerkstattIdsConnection",
     "WerkstattIdsSession",
     "WerkstattSupplier",
+    "TrainingWeekReport",
     "WikiPage",
 ]
