@@ -28,6 +28,8 @@
   --mono:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 *{box-sizing:border-box}
+/* Muss nach den display-Regeln unten gewinnen, sonst bleibt [hidden] wirkungslos. */
+[hidden]{display:none !important}
 html,body{height:100%}
 body{
   margin:0;
@@ -57,14 +59,10 @@ button,input,a{font-family:inherit}
 
 /* ---------- Kopfleiste ---------- */
 header{
-  display:flex; flex-wrap:wrap; align-items:center; gap:10px 14px;
+  display:flex; flex-wrap:wrap; align-items:center; gap:8px 10px;
   padding:10px var(--pad);
   background:var(--surface);
   border-bottom:1px solid var(--line);
-}
-.brand{
-  font-size:.72rem; letter-spacing:.16em; text-transform:uppercase;
-  color:var(--dim2); font-weight:700; white-space:nowrap;
 }
 .sesswrap{display:flex; align-items:center; gap:8px}
 .sesslab{font-size:.72rem; letter-spacing:.12em; text-transform:uppercase; color:var(--dim2); font-weight:700}
@@ -72,13 +70,13 @@ header{
   background:var(--surface2); color:var(--fg);
   border:1px solid var(--line2); border-radius:9px;
   padding:8px 11px; font-size:1rem; font-weight:650;
-  min-width:15ch; max-width:30ch;
+  min-width:12ch; max-width:26ch;
 }
 .spacer{flex:1 1 auto; min-width:8px}
 
 .chip{
-  display:inline-flex; align-items:center; gap:9px;
-  padding:8px 13px; border-radius:999px;
+  display:inline-flex; align-items:center; gap:8px;
+  padding:7px 11px; border-radius:999px;
   background:var(--surface2); border:1px solid var(--line);
   font-size:.92rem; font-weight:600; white-space:nowrap; color:var(--dim);
 }
@@ -221,8 +219,10 @@ header{
   display:none; height:52px; max-width:230px; border-radius:8px;
   background:#fff; padding:3px;
 }
+/* Eigene Zeile: Meldungen duerfen die Eingabefelder nie zusammenquetschen. */
 #hint{
-  flex:1 1 220px; min-width:0; font-size:1rem; font-weight:700;
+  flex:1 0 100%; min-width:0; min-height:1.2em;
+  font-size:1rem; font-weight:700;
   color:var(--dim); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
 }
 #hint.ok{color:var(--ok)}
@@ -306,7 +306,6 @@ footer kbd{
        autocapitalize="off" spellcheck="false" inputmode="none">
 
 <header>
-  <span class="brand">Inventur</span>
   <span class="sesswrap">
     <span class="sesslab">Session</span>
     <input id="sessionInput" data-keep-focus="1" autocomplete="off" autocorrect="off"
@@ -708,10 +707,21 @@ function flash(kind){
   el.classList.add(kind === 'warn' ? 'flash-warn' : 'flash-ok');
 }
 
-function chip(el, kind, label, value){
+/* Der Agent liefert teils sehr lange Diagnosetexte. In der Leiste wird
+   gekuerzt, der volle Text haengt als Tooltip daran. */
+function shortText(s, max){
+  var t = String(s === null || s === undefined ? '' : s).replace(/\s+/g, ' ').trim();
+  if(t.length <= max) return t;
+  return t.slice(0, max - 1).replace(/[\s,;:(-]+$/, '') + '…';
+}
+function chip(el, kind, label, value, full){
   el.className = 'chip' + (kind === 'ok' ? ' is-ok' : (kind === 'warn' ? ' is-warn' : ''));
+  var short = shortText(value, 34);
   el.innerHTML = '<span class="dot"></span><b>' + esc(label) + '</b>' +
-                 (value ? ' <span>' + esc(value) + '</span>' : '');
+                 (short ? ' <span>' + esc(short) + '</span>' : '');
+  var tip = full || value;
+  if(tip && String(tip).length > short.length) el.title = String(tip);
+  else el.removeAttribute('title');
   return el;
 }
 
@@ -745,14 +755,27 @@ function renderStatus(){
     var mm = num(h.media_width_mm, 0);
     chip(p, 'ok', 'Drucker', mm ? ('bereit - ' + mm + ' mm') : 'bereit');
   }else{
-    chip(p, 'warn', 'Drucker', (h && typeof h.error === 'string' && h.error) ? h.error : 'nicht verbunden');
+    /* Kurzes, stabiles Label: der Agent liefert teils sehr lange Diagnosen,
+       die sonst die ganze Kopfleiste sprengen. Details im Tooltip. */
+    var perr = (h && typeof h.error === 'string' && h.error) ? h.error : '';
+    chip(p, 'warn', 'Drucker', perr ? 'nicht bereit' : 'nicht verbunden',
+         perr || 'Kein Drucker gefunden.');
   }
 
   /* SMPL-Anbindung */
   var u = $('chipUp');
-  if(!state.agentOk) chip(u, 'warn', 'SMPL', 'unbekannt');
-  else if(state.health && state.health.upstream_ok === true) chip(u, 'ok', 'SMPL', 'verbunden');
-  else chip(u, 'warn', 'SMPL', 'offline - Cache');
+  if(!state.agentOk){
+    chip(u, 'warn', 'SMPL', 'unbekannt');
+  }else if(h && h.upstream_ok === true){
+    chip(u, 'ok', 'SMPL', 'verbunden');
+  }else if(h && h.upstream_configured === false){
+    /* Kein SMPL hinterlegt: kein Fehler, die Station laeuft dann rein lokal. */
+    chip(u, '', 'SMPL', 'nicht konfiguriert',
+         'Kein SMPL-Upstream hinterlegt - Artikel werden nur lokal gefuehrt.');
+  }else{
+    chip(u, 'warn', 'SMPL', 'offline - Cache',
+         (h && typeof h.upstream_error === 'string' && h.upstream_error) ? h.upstream_error : '');
+  }
 
   /* Summen */
   var t = totals();
@@ -995,7 +1018,9 @@ function resolveOnce(code){
         var res = {
           found: true,
           item_name: sanitizeName(r.data.item_name) || code,
-          article_number: typeof r.data.article_number === 'string' ? r.data.article_number : '',
+          /* Der Agent liefert die Detailzeile als 'subtitle'; 'article_number'
+             bleibt als Alias erlaubt, falls sich das Schema aendert. */
+          article_number: sanitizeName(r.data.article_number) || sanitizeName(r.data.subtitle) || '',
           source: (r.data.source === 'smpl' || r.data.source === 'cache') ? r.data.source : ''
         };
         resolveCache[code] = res;
@@ -1202,11 +1227,13 @@ function drainPrint(){
   setState({printBusy: true, printQueue: state.printQueue.slice(1)});
   var row = state.rows[code];
   var title = row ? row.name : code;
+  /* Detailzeile bevorzugen; nur wenn keine da ist, den Code wiederholen. */
+  var subtitle = (row && row.article) ? row.article : code;
   setHint('Drucke Etikett: ' + title, '');
   renderStatus();
 
   api('/print', {method:'POST', timeout:CFG.tPrint,
-                 body:{code: code, title: title, subtitle: code}})
+                 body:{code: code, title: title, subtitle: subtitle}})
     .then(function(r){
       if(r.ok && r.data.ok === true){
         var ms = num(r.data.ms_total, 0);

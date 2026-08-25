@@ -23,6 +23,8 @@ from app.models.entities import (
 )
 from app.schemas.werkstatt import (
     InventoryCountOut,
+    InventoryImportRequest,
+    InventoryImportResult,
     InventoryCountSet,
     InventoryFinalizeResult,
     InventoryNameNewArticle,
@@ -34,7 +36,9 @@ from app.schemas.werkstatt import (
 )
 from app.services.werkstatt_article_numbers import next_article_number
 from app.services.werkstatt_inventory import (
+    ImportRow,
     finalize_session,
+    import_counts,
     scan_into_session,
 )
 from app.services.werkstatt_inventory import _bump as bump_count  # noqa: PLC2701 — same package
@@ -256,6 +260,34 @@ def remove_count(
         db.delete(row)
         db.commit()
     return Response(status_code=204)
+
+
+@router.post("/sessions/{session_id}/import", response_model=InventoryImportResult)
+def import_offline_counts(
+    session_id: int,
+    payload: InventoryImportRequest,
+    current_user: User = Depends(_MANAGE),
+    db: Session = Depends(get_db),
+) -> InventoryImportResult:
+    """Fold in a session counted offline by the local label agent.
+
+    Post the agent's `/export/{name}.json` verbatim. Quantities are SET rather
+    than added, so retrying a failed upload cannot double the count.
+    """
+
+    session = _require_open(db, session_id)
+    rows = [
+        ImportRow(
+            code=r.code,
+            item_name=r.item_name,
+            counted_qty=r.counted_qty,
+            scan_count=r.scan_count,
+        )
+        for r in payload.counts
+    ]
+    return InventoryImportResult(
+        **import_counts(db, session=session, rows=rows, user=current_user)
+    )
 
 
 @router.post("/sessions/{session_id}/finalize", response_model=InventoryFinalizeResult)

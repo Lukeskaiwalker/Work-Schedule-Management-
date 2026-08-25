@@ -978,3 +978,28 @@ class InventoryFinalizeResult(BaseModel):
     unchanged: int
     units_added: int
     units_removed: int
+
+
+class InventoryImportRow(BaseModel):
+    """One row of the local label agent's export."""
+
+    code: str = Field(min_length=1, max_length=200)
+    item_name: str = Field(default="", max_length=500)
+    counted_qty: int = Field(ge=0, le=1000000)
+    scan_count: int = Field(default=0, ge=0, le=1000000)
+
+
+class InventoryImportRequest(BaseModel):
+    # The agent's export carries a `counts` array; extra keys (source,
+    # version, exported_at) are accepted and ignored so the file can be
+    # posted verbatim.
+    counts: list[InventoryImportRow] = Field(default_factory=list)
+
+
+class InventoryImportResult(BaseModel):
+    rows: int
+    matched_existing: int
+    created_from_catalog: int
+    created_new: int
+    codes_without_barcode: list[str] = []
+    skipped_zero_qty: list[str] = []

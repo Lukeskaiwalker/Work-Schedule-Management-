@@ -253,3 +253,101 @@ def test_a_typed_correction_replaces_the_count_but_keeps_the_scan_history(
     assert body["counted_qty"] == 12
     assert body["scan_count"] == 4, "a typed correction does not rewrite how many scans happened"
     assert body["delta"] == 12
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Importing a session counted offline
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def test_importing_an_offline_session_lands_on_the_right_articles(
+    client: TestClient, admin_token: str
+) -> None:
+    """Shaped like a real export from the local label agent: a mix of EAN-13,
+    a supplier article number, and SMPL-xxxxxx codes minted for items that had
+    no barcode at all."""
+
+    known = _article(client, admin_token, "Hager MBS116", stock=0, ean="3250614314735")
+    session = _session(client, admin_token, "Inventur Halle 1")
+
+    payload = {
+        "source": "smpl-label-agent",
+        "version": "1.0.0",
+        "counts": [
+            {"code": "3250614314735", "item_name": "Hager MBS116", "counted_qty": 16, "scan_count": 16},
+            {"code": "4064827281024", "item_name": "Eurotec Tellerkopf A2 8,2x100", "counted_qty": 12, "scan_count": 12},
+            {"code": "SMPL-LFCXKQ", "item_name": "Hager K96DB", "counted_qty": 8, "scan_count": 8},
+        ],
+    }
+    resp = client.post(
+        f"/api/werkstatt/inventory/sessions/{session['id']}/import",
+        headers=auth_headers(admin_token),
+        json=payload,
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["rows"] == 3
+    assert body["matched_existing"] == 1, "the known EAN must attach to the existing article"
+    assert body["created_new"] == 2
+    # The generated code is not a barcode and must not be filed as one.
+    assert body["codes_without_barcode"] == ["SMPL-LFCXKQ"]
+
+    detail = client.get(
+        f"/api/werkstatt/inventory/sessions/{session['id']}", headers=auth_headers(admin_token)
+    ).json()
+    assert detail["counted_articles"] == 3
+    assert detail["total_units"] == 36
+    counted = {c["item_name"]: c["counted_qty"] for c in detail["counts"]}
+    assert counted["Hager MBS116"] == 16
+
+    # The article created for a barcode-less item must NOT claim an EAN.
+    made_up = next(c for c in detail["counts"] if c["item_name"] == "Hager K96DB")
+    assert made_up["ean"] is None, "a minted SMPL- code is not a manufacturer barcode"
+    # ...while a real EAN is adopted, so the next live scan resolves it.
+    eurotec = next(c for c in detail["counts"] if c["item_name"].startswith("Eurotec"))
+    assert eurotec["ean"] == "4064827281024"
+    assert known["id"] in {c["article_id"] for c in detail["counts"]}
+
+
+def test_reimporting_the_same_export_does_not_double_the_count(
+    client: TestClient, admin_token: str
+) -> None:
+    """A retried upload must be safe: quantities are set, not added."""
+
+    session = _session(client, admin_token, "Inventur Halle 2")
+    payload = {"counts": [
+        {"code": "4003899942761", "item_name": "Eltropa PV-Fuss Alu", "counted_qty": 5, "scan_count": 5}
+    ]}
+    url = f"/api/werkstatt/inventory/sessions/{session['id']}/import"
+
+    first = client.post(url, headers=auth_headers(admin_token), json=payload).json()
+    second = client.post(url, headers=auth_headers(admin_token), json=payload).json()
+    assert first["created_new"] == 1
+    assert second["matched_existing"] == 1, "the second pass finds the article it created"
+
+    detail = client.get(
+        f"/api/werkstatt/inventory/sessions/{session['id']}", headers=auth_headers(admin_token)
+    ).json()
+    assert detail["counted_articles"] == 1
+    assert detail["total_units"] == 5, "re-import must not double the stock-take"
+
+
+def test_an_imported_session_finalizes_into_real_stock(
+    client: TestClient, admin_token: str
+) -> None:
+    article = _article(client, admin_token, "Shelly i4 Gen3", stock=10, ean="3800235261828")
+    session = _session(client, admin_token, "Inventur Halle 3")
+    client.post(
+        f"/api/werkstatt/inventory/sessions/{session['id']}/import",
+        headers=auth_headers(admin_token),
+        json={"counts": [{"code": "3800235261828", "item_name": "Shelly i4 Gen3",
+                          "counted_qty": 4, "scan_count": 4}]},
+    )
+    assert _get(client, admin_token, article["id"])["stock_available"] == 10, "import alone moves nothing"
+
+    summary = client.post(
+        f"/api/werkstatt/inventory/sessions/{session['id']}/finalize",
+        headers=auth_headers(admin_token),
+    ).json()
+    assert summary["units_removed"] == 6
+    assert _get(client, admin_token, article["id"])["stock_available"] == 4

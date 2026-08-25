@@ -148,6 +148,120 @@ def scan_into_session(db: Session, *, session_id: int, code: str, user: User) ->
     return ScanOutcome(status="needs_name", code=code)
 
 
+@dataclass(frozen=True)
+class ImportRow:
+    code: str
+    item_name: str
+    counted_qty: int
+    scan_count: int = 0
+
+
+def import_counts(
+    db: Session,
+    *,
+    session: WerkstattInventorySession,
+    rows: list[ImportRow],
+    user: User,
+) -> dict:
+    """Fold an offline count (from the local label agent) into a session.
+
+    Quantities are SET, not added, so re-importing the same export is safe —
+    a half-finished upload that gets retried must not double the stock-take.
+
+    Each code goes through the same cascade a live scan does, so an offline
+    session lands on exactly the articles a live one would have hit:
+    known article -> Datanorm catalog row -> otherwise a new article named by
+    whoever did the counting.
+    """
+
+    matched = from_catalog = created = 0
+    unresolved: list[str] = []
+    skipped: list[str] = []
+
+    for row in rows:
+        code = (row.code or "").strip()
+        if not code or row.counted_qty <= 0:
+            # A zero row means "scanned, then undone" — the agent has no way to
+            # say "I counted zero because the shelf is empty", which is a
+            # different and meaningful claim. Reported rather than dropped in
+            # silence, so a real empty shelf is not mistaken for a mis-scan.
+            if code:
+                skipped.append(code)
+            continue
+
+        article: WerkstattArticle | None = None
+        result = resolve_scan(db, code)
+        kind = getattr(result, "kind", "not_found")
+
+        if kind == "werkstatt_article":
+            article = db.get(WerkstattArticle, result.article.id)
+            if article is not None:
+                matched += 1
+        elif kind == "catalog_match" and result.catalog_items:
+            item = db.get(MaterialCatalogItem, result.catalog_items[0].id)
+            if item is not None:
+                article = _article_from_catalog(db, item, user)
+                from_catalog += 1
+
+        if article is None:
+            name = (row.item_name or "").strip() or code
+            article = WerkstattArticle(
+                article_number=next_article_number(db),
+                # Only adopt the code as an EAN when it plausibly IS one. The
+                # agent mints SMPL-xxxxxx codes for items that had no barcode,
+                # and writing those into the EAN column would make them look
+                # like manufacturer barcodes to every later lookup.
+                ean=code if code.isdigit() and 8 <= len(code) <= 14 else None,
+                item_name=name[:500],
+                stock_total=0,
+                stock_available=0,
+                stock_out=0,
+                stock_repair=0,
+                stock_min=0,
+                currency="EUR",
+                created_by=user.id,
+            )
+            db.add(article)
+            db.flush()
+            created += 1
+            if not code.isdigit():
+                unresolved.append(code)
+
+        existing = db.scalar(
+            select(WerkstattInventoryCount).where(
+                WerkstattInventoryCount.session_id == session.id,
+                WerkstattInventoryCount.article_id == article.id,
+            )
+        )
+        now = utcnow()
+        if existing is None:
+            db.add(
+                WerkstattInventoryCount(
+                    session_id=session.id,
+                    article_id=article.id,
+                    counted_qty=int(row.counted_qty),
+                    scan_count=int(row.scan_count or 0),
+                    first_counted_at=now,
+                    last_counted_at=now,
+                )
+            )
+        else:
+            existing.counted_qty = int(row.counted_qty)
+            existing.scan_count = int(row.scan_count or 0)
+            existing.last_counted_at = now
+            db.add(existing)
+
+    db.commit()
+    return {
+        "rows": len(rows),
+        "matched_existing": matched,
+        "created_from_catalog": from_catalog,
+        "created_new": created,
+        "codes_without_barcode": unresolved[:50],
+        "skipped_zero_qty": skipped[:50],
+    }
+
+
 def finalize_session(db: Session, *, session: WerkstattInventorySession, user: User) -> dict:
     """Turn counts into ledger movements, in one transaction.
 
