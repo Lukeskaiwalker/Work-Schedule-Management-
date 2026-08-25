@@ -173,6 +173,79 @@ def preview_file(
     return _attachment_http_response(attachment, inline=True)
 
 
+@router.get("/files/{attachment_id}/preview-pages")
+def preview_page_count(
+    attachment_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Page count for the paged PDF preview.
+
+    Exists for engines with no inline PDF renderer (Chrome on Android reports
+    navigator.pdfViewerEnabled === false): the in-app viewer then shows the
+    document as per-page PNGs from the sibling endpoint instead of a frame
+    that draws Chromium's sad-page placeholder. Same access rule as /preview.
+    """
+
+    from app.services.pdf_preview import PdfPreviewUnavailable, pdf_page_count
+
+    attachment = _resolve_attachment_for_access(db, current_user, attachment_id)
+    if _safe_media_type(attachment.content_type) != "application/pdf":
+        raise HTTPException(status_code=409, detail="Nur PDF-Dateien haben eine Seitenvorschau")
+    data = _attachment_bytes_or_http_error(attachment)
+    try:
+        return {"page_count": pdf_page_count(data)}
+    except PdfPreviewUnavailable:
+        raise HTTPException(status_code=409, detail="PDF konnte nicht gelesen werden")
+
+
+@router.get("/files/{attachment_id}/preview-pages/{page}")
+def preview_page_image(
+    attachment_id: int,
+    page: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """One PDF page as a PNG (1-based), rendered by poppler at 120 dpi."""
+
+    from app.services.pdf_preview import (
+        PAGE_MEDIA_TYPE,
+        PdfPreviewBusy,
+        PdfPreviewUnavailable,
+        render_pdf_page,
+    )
+
+    attachment = _resolve_attachment_for_access(db, current_user, attachment_id)
+    if _safe_media_type(attachment.content_type) != "application/pdf":
+        raise HTTPException(status_code=409, detail="Nur PDF-Dateien haben eine Seitenvorschau")
+    data = _attachment_bytes_or_http_error(attachment)
+    try:
+        png = render_pdf_page(data, page)
+    except PdfPreviewBusy:
+        raise HTTPException(
+            status_code=503,
+            detail="Vorschau ist gerade ausgelastet — bitte kurz erneut versuchen.",
+            headers={"Retry-After": "3"},
+        )
+    except PdfPreviewUnavailable as exc:
+        # An out-of-range page is the caller iterating past the end — 404.
+        # Anything else about the document itself is a 409.
+        detail = str(exc)
+        status_code = 404 if "existiert nicht" in detail else 409
+        raise HTTPException(status_code=status_code, detail="Seite nicht verfügbar")
+    return Response(
+        content=png,
+        media_type=PAGE_MEDIA_TYPE,
+        headers={
+            # Same hardening shape as the file preview itself.
+            "X-Content-Type-Options": "nosniff",
+            "Content-Disposition": _content_disposition(
+                f"seite-{page}.png", inline=True
+            ),
+        },
+    )
+
+
 @router.delete("/files/{attachment_id}", status_code=204)
 def delete_file(
     attachment_id: int,

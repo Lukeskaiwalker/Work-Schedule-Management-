@@ -568,3 +568,78 @@ def test_a_non_previewable_type_is_still_never_rendered_inline(
     assert preview.status_code == 200
     assert preview.headers.get("content-type", "").startswith("application/octet-stream")
     assert "attachment" in preview.headers.get("content-disposition", "")
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Paged PDF preview (Android has no inline PDF renderer)
+#
+# Field report: on an Android phone the in-app viewer showed only Chromium's
+# sad-page placeholder for a project PDF — the frame loaded, but the engine
+# has no PDF renderer behind it. These pin the server half of the fix: PDF
+# pages rendered as PNGs by poppler.
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def _two_page_pdf() -> bytes:
+    from io import BytesIO
+
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas
+
+    buf = BytesIO()
+    pdf = canvas.Canvas(buf, pagesize=A4)
+    pdf.setFont("Helvetica", 24)
+    pdf.drawString(80, 700, "Seite Eins")
+    pdf.showPage()
+    pdf.setFont("Helvetica", 24)
+    pdf.drawString(80, 700, "Seite Zwei")
+    pdf.save()
+    return buf.getvalue()
+
+
+def test_pdf_pages_render_as_png(client: TestClient, admin_token: str) -> None:
+    admin_token_cache[0] = admin_token
+    project_id = _project_for(client, admin_token, "2026-PDFP")
+    file_id = _put_file(client, project_id, "plan2.pdf", _two_page_pdf(), "application/pdf")
+
+    count = client.get(f"/api/files/{file_id}/preview-pages", headers=auth_headers(admin_token))
+    assert count.status_code == 200, count.text
+    assert count.json()["page_count"] == 2
+
+    for page in (1, 2):
+        image = client.get(
+            f"/api/files/{file_id}/preview-pages/{page}", headers=auth_headers(admin_token)
+        )
+        assert image.status_code == 200, image.text
+        assert image.headers["content-type"].startswith("image/png")
+        assert image.content[:8] == b"\x89PNG\r\n\x1a\n"
+
+    # Out of range answers 404, not a render error.
+    assert (
+        client.get(f"/api/files/{file_id}/preview-pages/3", headers=auth_headers(admin_token)).status_code
+        == 404
+    )
+    assert (
+        client.get(f"/api/files/{file_id}/preview-pages/0", headers=auth_headers(admin_token)).status_code
+        == 404
+    )
+
+
+def test_non_pdf_files_have_no_page_preview(client: TestClient, admin_token: str) -> None:
+    admin_token_cache[0] = admin_token
+    project_id = _project_for(client, admin_token, "2026-PDFN")
+    file_id = _put_file(client, project_id, "notes.txt", b"kein pdf", "text/plain")
+
+    resp = client.get(f"/api/files/{file_id}/preview-pages", headers=auth_headers(admin_token))
+    assert resp.status_code == 409, resp.text
+
+
+def test_a_corrupt_pdf_answers_409_not_500(client: TestClient, admin_token: str) -> None:
+    admin_token_cache[0] = admin_token
+    project_id = _project_for(client, admin_token, "2026-PDFX")
+    file_id = _put_file(client, project_id, "kaputt.pdf", b"%PDF-1.4 truncated garbage", "application/pdf")
+
+    count = client.get(f"/api/files/{file_id}/preview-pages", headers=auth_headers(admin_token))
+    assert count.status_code == 409, count.text
+    page = client.get(f"/api/files/{file_id}/preview-pages/1", headers=auth_headers(admin_token))
+    assert page.status_code in (404, 409), page.text

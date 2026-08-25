@@ -192,3 +192,34 @@ export async function fetchFile(request: OpenFileRequest): Promise<FetchedFile> 
 
   return { objectUrl: URL.createObjectURL(blob), contentType, size: blob.size, name, blob };
 }
+
+
+/**
+ * Fetch any same-app URL with the bearer token and hand back an object URL.
+ * Used by the viewer's paged-PDF mode, where every page image needs the same
+ * auth treatment as the document itself. Caller revokes the URL.
+ */
+export async function fetchAuthorizedBlobUrl(url: string): Promise<string> {
+  const token = currentToken();
+  const response = await fetch(url, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    credentials: "include",
+  });
+  if (!response.ok) {
+    throw new Error(String(response.status));
+  }
+  return URL.createObjectURL(await response.blob());
+}
+
+/** JSON variant of the authorized fetch, for tiny metadata endpoints. */
+export async function fetchAuthorizedJson<T>(url: string): Promise<T> {
+  const token = currentToken();
+  const response = await fetch(url, {
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    credentials: "include",
+  });
+  if (!response.ok) {
+    throw new Error(String(response.status));
+  }
+  return (await response.json()) as T;
+}
