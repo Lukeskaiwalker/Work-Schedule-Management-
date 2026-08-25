@@ -94,9 +94,14 @@ def _article_from_catalog(db: Session, item: MaterialCatalogItem, user: User) ->
     article = WerkstattArticle(
         article_number=next_article_number(db),
         ean=(item.ean or None),
-        item_name=item.name or (item.ean or "Unbenannter Artikel"),
-        manufacturer=getattr(item, "manufacturer", None),
-        unit=getattr(item, "unit", None),
+        # MaterialCatalogItem.item_name, NOT .name — the attribute does not
+        # exist and every catalog-matched import died on it. The tests missed
+        # this because they never built a real catalog row.
+        item_name=item.item_name or (item.ean or "Unbenannter Artikel"),
+        manufacturer=item.manufacturer,
+        unit=item.unit,
+        image_url=item.image_url,
+        image_source=("catalog" if item.image_url else None),
         source_catalog_item_id=item.id,
         stock_total=0,
         stock_available=0,

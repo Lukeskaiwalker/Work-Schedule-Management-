@@ -351,3 +351,57 @@ def test_an_imported_session_finalizes_into_real_stock(
     ).json()
     assert summary["units_removed"] == 6
     assert _get(client, admin_token, article["id"])["stock_available"] == 4
+
+
+def test_a_scan_that_hits_the_datanorm_catalog_creates_a_real_article(
+    client: TestClient, admin_token: str
+) -> None:
+    """The path that broke on the first production import.
+
+    A code the system has never seen but the Datanorm catalog HAS must mint an
+    article carrying the catalog's own name, manufacturer and unit — not a
+    blank one, and not an exception. The earlier tests only covered
+    already-known articles and completely unknown codes, so the catalog branch
+    reached production having never run against a real MaterialCatalogItem.
+    """
+
+    from app.core.db import SessionLocal
+    from app.models.entities import MaterialCatalogItem
+
+    ean = "4029155718048"
+    with SessionLocal() as db:
+        db.add(
+            MaterialCatalogItem(
+                external_key=f"test-{ean}",
+                source_file="test.001",
+                source_line=1,
+                article_no="NH1-125",
+                item_name="JeanMüller NH1 125A Sicherungseinsatz",
+                unit="Stk",
+                manufacturer="Jean Müller",
+                ean=ean,
+                search_text="jeanmueller nh1 125a",
+            )
+        )
+        db.commit()
+
+    session = _session(client, admin_token, "Katalog-Inventur")
+    result = _scan(client, admin_token, session["id"], ean)
+
+    assert result["status"] == "created", result
+    assert result["created_from_catalog"] is True
+    article = result["article"]
+    # The catalog's data, not a placeholder.
+    assert article["item_name"] == "JeanMüller NH1 125A Sicherungseinsatz"
+    assert article["manufacturer"] == "Jean Müller"
+    assert article["unit"] == "Stk"
+    assert article["ean"] == ean
+    # Opening stock stays zero — the session's own count is the truth.
+    assert article["stock_total"] == 0
+    assert result["counted_qty"] == 1
+
+    # And scanning it again resolves to that article rather than making another.
+    again = _scan(client, admin_token, session["id"], ean)
+    assert again["status"] == "counted"
+    assert again["article"]["id"] == article["id"]
+    assert again["counted_qty"] == 2
