@@ -1,19 +1,22 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAppContext } from "../../context/AppContext";
 import { useBarcodeScanner } from "../../hooks/useBarcodeScanner";
 import { NeuerArtikelModal } from "../../components/werkstatt/NeuerArtikelModal";
 import { EntnehmenModal } from "../../components/werkstatt/EntnehmenModal";
 import { BestandAnpassenModal } from "../../components/werkstatt/BestandAnpassenModal";
-import {
-  MOCK_INVENTORY_ROWS,
-  type MockInventoryRow,
-  type MockStockTone,
-} from "../../components/werkstatt/mockData";
+import { type MockInventoryRow, type MockStockTone } from "../../components/werkstatt/mockData";
+import { listArticles, type WerkstattArticleLite } from "../../utils/werkstattArticlesApi";
 
 /**
  * WerkstattInventarPage — full inventory list. Ported from Paper 7RO-0
- * "Alle Artikel". Self-gates on mainView+werkstattTab. Backed by mock rows
- * until /api/werkstatt/articles lands; see WERKSTATT_CONTRACT.md §3.3.
+ * "Alle Artikel". Self-gates on mainView+werkstattTab.
+ *
+ * Reads /api/werkstatt/articles. It previously rendered MOCK_INVENTORY_ROWS —
+ * an EMPTY array — beside hard-coded filter counts (412/368/14/3/27), so the
+ * page confidently reported four hundred articles over an empty table while
+ * production held two hundred and forty-nine real ones. Counts are now derived
+ * from the rows actually fetched, which is the only way the two can never
+ * disagree again.
  *
  * External HID barcode scans are routed through useBarcodeScanner — a scan
  * outside any input jumps to the matching SP-/EAN-lookup. Until the BE
@@ -29,12 +32,15 @@ type FilterDef = {
 };
 
 export function WerkstattInventarPage() {
-  const { mainView, language, werkstattTab, projects, setNotice } = useAppContext();
+  const { mainView, language, werkstattTab, projects, setNotice, token } = useAppContext();
 
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState<string>("all");
   const [location, setLocation] = useState<string>("all");
   const [activeFilter, setActiveFilter] = useState<FilterKey>("all");
+  const [articles, setArticles] = useState<WerkstattArticleLite[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   /* Modal state — each modal gets its own slot; Entnehmen + BestandAnpassen
    * hold the row the user is acting on (null when closed). */
@@ -51,31 +57,85 @@ export function WerkstattInventarPage() {
     },
   });
 
+  const active = mainView === "werkstatt" && werkstattTab === "inventar";
+
+  const reload = useCallback(async () => {
+    if (!active) return;
+    setLoading(true);
+    try {
+      // Server-side search: the article table grows with every stock-take, so
+      // fetching everything and filtering here would fail quietly as it grows.
+      const rows = await listArticles(token, { q: search.trim() || undefined, limit: 500 });
+      setArticles(rows);
+      setLoadError(null);
+    } catch (err) {
+      // An empty table must never be mistaken for "no stock" — that is exactly
+      // the failure this page shipped with.
+      setArticles([]);
+      setLoadError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLoading(false);
+    }
+  }, [active, token, search]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => void reload(), search ? 250 : 0);
+    return () => window.clearTimeout(timer);
+  }, [reload, search]);
+
+  /** API row → the presentational shape this page already renders.
+   *
+   * MockInventoryRow is label-shaped, not number-shaped: it wants the strings
+   * the table prints. Formatting here keeps the table dumb and means German
+   * wording lives in one place instead of being rebuilt per cell.
+   */
+  const allRows = useMemo<MockInventoryRow[]>(
+    () =>
+      articles.map((a) => {
+        const out = Math.max(0, a.stock_total - a.stock_available);
+        const tone: MockStockTone =
+          a.stock_status === "unavailable" ? "empty" : (a.stock_status as MockStockTone);
+        return {
+          id: String(a.id),
+          article_no: a.article_number,
+          item_name: a.item_name,
+          sub_meta: [a.manufacturer, a.ean].filter(Boolean).join(" · "),
+          category: a.category_name ?? "—",
+          location: a.location_name ?? "—",
+          stock_label: `${a.stock_available} Stk`,
+          stock_tone: tone,
+          out_initials: null,
+          out_label: out > 0 ? `${out} unterwegs` : null,
+          in_transit_label: a.next_expected_delivery_at
+            ? new Date(a.next_expected_delivery_at).toLocaleDateString(
+                language === "de" ? "de-DE" : "en-US",
+              )
+            : null,
+        };
+      }),
+    [articles, language],
+  );
+
   const counts = useMemo(() => {
-    const by: Record<MockStockTone, number> = {
-      available: 0,
-      low: 0,
-      empty: 0,
-      out: 0,
-    };
-    for (const row of MOCK_INVENTORY_ROWS) by[row.stock_tone] += 1;
+    const by: Record<MockStockTone, number> = { available: 0, low: 0, empty: 0, out: 0 };
+    for (const row of allRows) by[row.stock_tone] += 1;
     return by;
-  }, []);
+  }, [allRows]);
 
   const filters: ReadonlyArray<FilterDef> = useMemo(
     () => [
-      { key: "all", label_de: "Alle", label_en: "All", count: 412 },
-      { key: "available", label_de: "Verfügbar", label_en: "Available", count: 368 },
-      { key: "low", label_de: "Niedrig", label_en: "Low", count: 14 },
-      { key: "empty", label_de: "Leer", label_en: "Empty", count: 3 },
-      { key: "out", label_de: "Unterwegs", label_en: "Out", count: 27 },
+      { key: "all", label_de: "Alle", label_en: "All", count: allRows.length },
+      { key: "available", label_de: "Verfügbar", label_en: "Available", count: counts.available },
+      { key: "low", label_de: "Niedrig", label_en: "Low", count: counts.low },
+      { key: "empty", label_de: "Leer", label_en: "Empty", count: counts.empty },
+      { key: "out", label_de: "Unterwegs", label_en: "Out", count: counts.out },
     ],
-    [],
+    [allRows.length, counts],
   );
 
   const rows = useMemo<ReadonlyArray<MockInventoryRow>>(() => {
     const needle = search.trim().toLowerCase();
-    return MOCK_INVENTORY_ROWS.filter((row) => {
+    return allRows.filter((row) => {
       if (activeFilter !== "all" && row.stock_tone !== activeFilter) return false;
       if (category !== "all" && row.category !== category) return false;
       if (location !== "all" && row.location !== location) return false;
@@ -87,15 +147,13 @@ export function WerkstattInventarPage() {
         row.location.toLowerCase().includes(needle)
       );
     });
-  }, [search, category, location, activeFilter]);
+  }, [allRows, search, category, location, activeFilter]);
 
   if (mainView !== "werkstatt" || werkstattTab !== "inventar") return null;
 
   const de = language === "de";
-  const categoryOptions = Array.from(new Set(MOCK_INVENTORY_ROWS.map((r) => r.category)));
-  const locationOptions = Array.from(new Set(MOCK_INVENTORY_ROWS.map((r) => r.location)));
-  // Only the counts above are still counted; 'counts' feeds future badges.
-  void counts;
+  const categoryOptions = Array.from(new Set(allRows.map((r) => r.category))).sort();
+  const locationOptions = Array.from(new Set(allRows.map((r) => r.location))).sort();
 
   return (
     <section className="werkstatt-tab-page">
@@ -272,7 +330,25 @@ export function WerkstattInventarPage() {
               </span>
             </li>
           ))}
-          {rows.length === 0 && (
+          {rows.length === 0 && loading && (
+            <li className="werkstatt-row werkstatt-row--empty muted">
+              {de ? "Artikel werden geladen…" : "Loading articles…"}
+            </li>
+          )}
+          {/* A failed request must never render as "no articles" — that reads
+              as an empty warehouse and is exactly how this page shipped
+              showing nothing while production held 249 articles. */}
+          {rows.length === 0 && !loading && loadError && (
+            <li className="werkstatt-row werkstatt-row--empty" role="alert">
+              {de
+                ? "Bestand konnte nicht geladen werden — das heißt nicht, dass kein Bestand da ist."
+                : "Stock could not be loaded — that does not mean there is none."}{" "}
+              <button type="button" className="werkstatt-card-action" onClick={() => void reload()}>
+                {de ? "Erneut versuchen" : "Try again"}
+              </button>
+            </li>
+          )}
+          {rows.length === 0 && !loading && !loadError && (
             <li className="werkstatt-row werkstatt-row--empty muted">
               {de ? "Keine Artikel für die aktuelle Auswahl." : "No items match the current filter."}
             </li>
