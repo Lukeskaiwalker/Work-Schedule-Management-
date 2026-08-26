@@ -20,6 +20,7 @@ from app.core.db import get_db
 from app.core.deps import get_current_user, require_permission
 from app.core.time import utcnow
 from app.models.entities import (
+    WerkstattArticleUnit,
     User,
     WerkstattArticle,
     WerkstattCategory,
@@ -62,6 +63,30 @@ def _location_article_counts(db: Session) -> dict[int, int]:
             WerkstattArticle.location_id.is_not(None),
         )
         .group_by(WerkstattArticle.location_id)
+    ).all()
+    return {lid: int(count) for lid, count in rows}
+
+
+def _location_machine_counts(db: Session) -> dict[int, int]:
+    """Machines standing at each location.
+
+    Counted separately from articles because they hang off a different column:
+    a stock article carries `location_id`, while an individual machine carries
+    `current_location_id` on its unit and moves independently of its type. A
+    van holding nineteen machines and no stock reported "0" until this existed,
+    which reads as an empty van rather than as a different kind of contents.
+    """
+
+    rows = db.execute(
+        select(
+            WerkstattArticleUnit.current_location_id,
+            func.count(WerkstattArticleUnit.id),
+        )
+        .where(
+            WerkstattArticleUnit.is_archived.is_(False),
+            WerkstattArticleUnit.current_location_id.is_not(None),
+        )
+        .group_by(WerkstattArticleUnit.current_location_id)
     ).all()
     return {lid: int(count) for lid, count in rows}
 
@@ -124,7 +149,9 @@ def _default_status(location_type: str) -> str | None:
     return "open"
 
 
-def _location_out(row: WerkstattLocation, *, article_count: int = 0) -> WerkstattLocationOut:
+def _location_out(
+    row: WerkstattLocation, *, article_count: int = 0, machine_count: int = 0
+) -> WerkstattLocationOut:
     return WerkstattLocationOut(
         id=row.id,
         name=row.name,
@@ -136,6 +163,7 @@ def _location_out(row: WerkstattLocation, *, article_count: int = 0) -> Werkstat
         notes=row.notes,
         is_archived=row.is_archived,
         article_count=article_count,
+        machine_count=machine_count,
         created_at=row.created_at,
         updated_at=row.updated_at,
     )
@@ -245,8 +273,12 @@ def list_locations(
         stmt = stmt.where(WerkstattLocation.is_archived.is_(False))
     rows = list(db.scalars(stmt).all())
     counts = _location_article_counts(db)
+    machines = _location_machine_counts(db)
     sorted_rows = _sort_tree(rows)
-    return [_location_out(r, article_count=counts.get(r.id, 0)) for r in sorted_rows]
+    return [
+        _location_out(r, article_count=counts.get(r.id, 0), machine_count=machines.get(r.id, 0))
+        for r in sorted_rows
+    ]
 
 
 @router.post("/locations", response_model=WerkstattLocationOut)

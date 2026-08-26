@@ -44,6 +44,7 @@ import logging
 import socket
 import zlib
 from dataclasses import dataclass
+from itertools import combinations
 from functools import lru_cache
 
 from sqlalchemy.orm import Session
@@ -100,10 +101,40 @@ _V_SERIAL_Y, _V_SERIAL_SIZE = 380, 52
 _V_FOOTER_Y, _V_FOOTER_SIZE = 452, 44
 
 # ── Kompakt ratios (from the physically validated quad quadrant, h = 264) ──
-_K_NUMBER_Y, _K_NUMBER_SIZE = 0.174, 0.28
-_K_NAME_Y, _K_NAME_MAX = 0.538, 0.1515
-_K_SITE_Y, _K_SITE_SIZE = 0.742, 0.106
+#
+# The device name and the site line were doubled at the owner's request: at
+# 0.1515/0.106 of a 264 px quadrant they rendered around 27 px, which is
+# legible on a bench and not on a drill in a van.
+#
+# Doubling the SITE line is just a bigger number. Doubling the NAME is not:
+# _fit_text_size divides the width budget by the character count, so a 27-char
+# name like "Makita Akkustichsäge DJV184" was already being shrunk to fit and
+# would simply be shrunk again. The name therefore wraps onto up to two lines —
+# halving the characters per line is what buys the height back.
+# Three name lines, not two: the longest word group in a typical tool name
+# ("Akkustichsäge DJV184") is ~20 chars on two lines, and 20 chars is what caps
+# the font size — width binds here, not height. Three lines gets it to ~13.
+# The number shrinks to pay for it; it is the least valuable glyph on the label
+# because the DataMatrix beside it already encodes exactly that string.
+# Sized to sit comfortably inside the quadrant, NOT to fill it. A first pass at
+# genuinely doubling everything left only 6 px under the site line; on the two
+# lower quadrants that is the physical edge of the sheet, and feed tolerance
+# printed the company name off the label. The original layout's ~40 px of
+# bottom margin was doing real work. _K_BOTTOM_MARGIN now states it explicitly.
+_K_NUMBER_Y, _K_NUMBER_SIZE = 0.050, 0.150
+_K_NAME_Y, _K_NAME_MAX = 0.240, 0.160
+# The manufacturer's serial. Nineteen battery packs carry the same name and
+# look identical on a shelf, so without this the M-number is the only thing
+# telling two labels apart — and if the wrong sticker goes on the wrong pack
+# nothing downstream looks wrong, it is just quietly incorrect forever.
+# Smaller than the name on purpose: it is read once, when matching a label to
+# the tool in your hand, not across a van.
+_K_SERIAL_Y, _K_SERIAL_SIZE = 0.560, 0.106
+_K_SITE_Y, _K_SITE_SIZE = 0.705, 0.135
+_K_BOTTOM_MARGIN = 0.14  # of quadrant height — never draw into this
 _K_NAME_MIN = 20
+_K_NAME_LINES = 2
+_K_NAME_LEADING = 1.10
 
 _DASH_ON, _DASH_OFF = 14, 10
 
@@ -170,6 +201,40 @@ def _mm(value: float) -> int:
 
 def _est_text_w(text: str, size: int) -> int:
     return int(_GLYPH_WIDTH_RATIO * size * len(text))
+
+
+def _wrap_words(text: str, lines: int) -> list[str]:
+    """Split on word boundaries into at most `lines`, balancing the parts.
+
+    Balanced, not greedy. Greedy wrapping of "Makita Akkustichsäge DJV184"
+    yields a 20-char line and a 6-char stub, and the LONGEST line is what caps
+    the font size for every line — so the stub buys nothing. Splitting evenly
+    gets the same name to 13 chars a line, which is what actually doubles the
+    rendered size.
+
+    Words are never broken: a hyphenated part number split across lines reads
+    as two different numbers, which on an asset label is worse than small text.
+    """
+
+    words = text.split()
+    if lines <= 1 or len(words) < 2:
+        return [text]
+    lines = min(lines, len(words))
+
+    # Exhaustive over cut positions — a tool name is a handful of words, so the
+    # search space is trivial and an optimal split is worth more than cleverness.
+    best: list[str] = [text]
+    best_cost: int | None = None
+    for cuts in combinations(range(1, len(words)), lines - 1):
+        parts: list[str] = []
+        previous = 0
+        for cut in (*cuts, len(words)):
+            parts.append(" ".join(words[previous:cut]))
+            previous = cut
+        cost = max(len(part) for part in parts)
+        if best_cost is None or cost < best_cost:
+            best, best_cost = parts, cost
+    return best
 
 
 def _fit_text_size(text: str, budget_px: int, max_size: int, min_size: int) -> int:
@@ -338,8 +403,29 @@ def _compact_block(
     )
     if name:
         budget = origin_x + block_w - text_x - 16
-        size = _fit_text_size(name, budget, round(block_h * _K_NAME_MAX), _K_NAME_MIN)
-        lines.append(_at(frame, text_x, origin_y + round(block_h * _K_NAME_Y), size, name))
+        ceiling = round(block_h * _K_NAME_MAX)
+        # Size on the LONGEST wrapped line — the widest line is what has to fit.
+        name_lines = _wrap_words(name, _K_NAME_LINES)
+        size = _fit_text_size(max(name_lines, key=len), budget, ceiling, _K_NAME_MIN)
+        # A single line that already fits at full size needs no wrap.
+        if len(name_lines) > 1 and _fit_text_size(name, budget, ceiling, _K_NAME_MIN) >= size:
+            name_lines = [name]
+            size = _fit_text_size(name, budget, ceiling, _K_NAME_MIN)
+        step = round(size * _K_NAME_LEADING)
+        top = origin_y + round(block_h * _K_NAME_Y)
+        for index, chunk in enumerate(name_lines):
+            lines.append(_at(frame, text_x, top + index * step, size, chunk))
+    serial = _clean(content.serial_number or "", 24)
+    if serial and block_h >= 240:
+        lines.append(
+            _at(
+                frame,
+                text_x,
+                origin_y + round(block_h * _K_SERIAL_Y),
+                round(block_h * _K_SERIAL_SIZE),
+                f"SN {serial}",
+            )
+        )
     if block_h >= 240:  # the site line needs ≥ 20 mm of height to stay legible
         lines.append(
             _at(
@@ -362,7 +448,7 @@ def _render_kompakt(profile: MaterialProfile, content: LabelContent) -> list[str
         module = max(6, min(9, (h_px - 48) // 12))
         widest = max(
             _est_text_w(number, round(h_px * _K_NUMBER_SIZE)),
-            _est_text_w(name, round(h_px * _K_NAME_MAX)),
+            _est_text_w(max(_wrap_words(name, _K_NAME_LINES), key=len), round(h_px * _K_NAME_MAX)),
             _est_text_w(_SITE_TEXT, round(h_px * _K_SITE_SIZE)) if h_px >= 240 else 0,
         )
         w_px = _MARGIN + 12 * module + 20 + widest + _MARGIN

@@ -99,6 +99,11 @@ class WerkstattLocationOut(_OrmBase):
     notes: str | None
     is_archived: bool
     article_count: int = 0
+    # Individual machines standing here. Separate from article_count because
+    # they hang off a different column: stock articles carry `location_id`,
+    # machines carry `current_location_id` on their unit and move
+    # independently of their type.
+    machine_count: int = 0
     created_at: datetime
     updated_at: datetime
 

@@ -405,3 +405,49 @@ def test_a_scan_that_hits_the_datanorm_catalog_creates_a_real_article(
     assert again["status"] == "counted"
     assert again["article"]["id"] == article["id"]
     assert again["counted_qty"] == 2
+
+
+def test_a_location_reports_the_machines_standing_there(
+    client: TestClient, admin_token: str
+) -> None:
+    """A van holding machines reported "0" until machine_count existed.
+
+    Stock articles hang off `location_id`; individual machines hang off
+    `current_location_id` on their unit and move independently of their type.
+    Counting only the former made a van full of tools look like an empty one.
+    """
+
+    loc = client.post(
+        "/api/werkstatt/locations",
+        headers=auth_headers(admin_token),
+        json={"name": "Testfahrzeug", "location_type": "vehicle"},
+    )
+    assert loc.status_code == 200, loc.text
+    location_id = loc.json()["id"]
+
+    article = client.post(
+        "/api/werkstatt/articles",
+        headers=auth_headers(admin_token),
+        json={"item_name": "Makita Testbohrer", "unit": "Stk", "is_serialized": True},
+    )
+    assert article.status_code == 200, article.text
+
+    for serial in ("SN-A", "SN-B"):
+        made = client.post(
+            "/api/werkstatt/machines",
+            headers=auth_headers(admin_token),
+            json={
+                "article_id": article.json()["id"],
+                "serial_number": serial,
+                "current_location_id": location_id,
+            },
+        )
+        assert made.status_code == 201, made.text
+
+    rows = client.get("/api/werkstatt/locations", headers=auth_headers(admin_token))
+    assert rows.status_code == 200, rows.text
+    row = next(r for r in rows.json() if r["id"] == location_id)
+    assert row["machine_count"] == 2, "the two machines standing here must be counted"
+    # The article itself was never given a location, so the article count stays 0 —
+    # the two numbers answer different questions and must not be conflated.
+    assert row["article_count"] == 0
