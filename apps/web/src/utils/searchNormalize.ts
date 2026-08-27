@@ -11,6 +11,8 @@
  * - **separator-free identifier equality** (`identifier_key`) so `2024-021`
  *   finds `2024021` and vice versa
  * - **decimal separator drift** (`term_variants`) so `3x1,5` finds `3x1.5`
+ * - **phone-number prefix drift** (`phone_search_key`) so `0171 1234567`
+ *   finds a number stored as `+49 171 1234567`
  *
  * One rule is added on top, because the client can afford it and Postgres
  * `ILIKE` cannot: **diacritic folding**, in both directions. `Müller` is folded
@@ -19,6 +21,8 @@
  */
 
 const WHITESPACE_RE = /\s+/g;
+const NON_DIGIT_RE = /\D+/g;
+const PHONE_QUERY_RE = /^[\d\s+()/.\-]+$/;
 const COMBINING_MARKS_RE = /[\u0300-\u036f]/g;
 const NON_ALNUM_RE = /[^a-z0-9]+/g;
 const DECIMAL_COMMA_RE = /(\d),(\d)/g;
@@ -62,6 +66,57 @@ export function tokenizeQuery(value: string): string[] {
 /** Reduce an identifier to comparable form: `2024-021` -> `2024021`. */
 export function identifierKey(value: string): string {
   return value.toLowerCase().replace(NON_ALNUM_RE, "");
+}
+
+/**
+ * German country code. This app serves one German electrical contractor, so
+ * every stored number is a German one and there is exactly one country code to
+ * strip — mirrors `GERMANY_COUNTRY_CODE` in `search_matching.py`. Crossing a
+ * border turns this into configuration, which is why it is not a bare "49".
+ */
+const GERMANY_COUNTRY_CODE = "49";
+
+/**
+ * Fewer digits than this is a fragment, not a number: "17" is a substring of
+ * nearly every stored number, so matching on it selects everybody.
+ */
+export const PHONE_MIN_DIGITS = 3;
+
+/** Keep only the digits — the one part every spelling of a number agrees on. */
+export function phoneDigits(value: string): string {
+  return value.replace(NON_DIGIT_RE, "");
+}
+
+/**
+ * National significant digits of a phone number. Mirrors `phone_search_key`.
+ *
+ * `+49 171 1234567`, `0049 171 1234567` and `0171 1234567` are one number
+ * written three ways, and everything that differs is a *prefix*: access code,
+ * country code, trunk `0`. Dropping it leaves `1711234567` for all three. The
+ * result is a suffix of the typed digits, so a substring test against the
+ * stored number (which keeps its own prefix) finds the record either way.
+ */
+export function phoneSearchKey(value: string): string {
+  const digits = phoneDigits(value);
+  const international = `00${GERMANY_COUNTRY_CODE}`;
+  if (digits.startsWith(international)) return digits.slice(international.length);
+  if (digits.startsWith(GERMANY_COUNTRY_CODE)) return digits.slice(GERMANY_COUNTRY_CODE.length);
+  if (digits.startsWith("0")) return digits.slice(1);
+  return digits;
+}
+
+/**
+ * Whether the whole query is one phone number rather than search words.
+ *
+ * Queries are split on whitespace and every token must match, but a number
+ * written the way people write it contains whitespace: `+49 171 1234567`
+ * splits into a `+49` that carries two digits and matches nothing. A query
+ * with no letters has no text intent to protect, so the caller may match it a
+ * second way — unsplit. Mirrors `looks_like_phone_query`.
+ */
+export function looksLikePhoneQuery(value: string): boolean {
+  const trimmed = value.trim();
+  return trimmed.length > 0 && PHONE_QUERY_RE.test(trimmed);
 }
 
 /** Spellings of a token that differ only in decimal separator. */

@@ -8,16 +8,27 @@
  * single dropped/transposed/wrong letter ("Schmit" → "Schmidt") still scores.
  * Every query token must contribute (AND semantics); the total is their sum,
  * with name-field matches weighted above address/email/contact matches.
+ *
+ * The phone number is the one field deliberately kept *out* of that fuzzy
+ * path: edit distance on digit strings is meaningless — every number is within
+ * two edits of a dozen unrelated ones — so phone is matched only as an exact
+ * digit substring, using the same normalisation as the server.
  */
+
+import { looksLikePhoneQuery, phoneDigits, phoneSearchKey, PHONE_MIN_DIGITS } from "./searchNormalize";
 
 export type FuzzyCustomerFields = {
   name?: string | null;
   address?: string | null;
   email?: string | null;
   contact_person?: string | null;
+  phone?: string | null;
 };
 
 const MAX_EDIT_DISTANCE = 2;
+
+/** A phone hit is unambiguous, so it scores like an exact token match. */
+const PHONE_MATCH_SCORE = 3;
 
 /** Lowercase, strip diacritics (ü→u) and trim so "Muller" can match "Müller". */
 function normalize(value: string): string {
@@ -78,6 +89,19 @@ function scoreToken(queryToken: string, haystackTokens: string[]): number {
 }
 
 /**
+ * Score one query fragment against a stored phone number (0 = no match).
+ *
+ * Both sides are reduced to digits, the fragment further to its national
+ * significant form, so the stored prefix (`+49`, `0049`, `0`) is irrelevant.
+ * Short fragments score nothing: "17" sits inside almost every number.
+ */
+function scorePhone(fragment: string, phone: string | null | undefined): number {
+  if (!phone) return 0;
+  if (phoneDigits(fragment).length < PHONE_MIN_DIGITS) return 0;
+  return phoneDigits(phone).includes(phoneSearchKey(fragment)) ? PHONE_MATCH_SCORE : 0;
+}
+
+/**
  * Score a customer against the query. Returns 0 when any query token matches
  * nothing (AND semantics); otherwise the summed, name-weighted token scores.
  */
@@ -94,8 +118,19 @@ export function scoreCustomerMatch(query: string, fields: FuzzyCustomerFields): 
 
   let total = 0;
   for (const qt of queryTokens) {
-    const tokenScore = Math.max(scoreToken(qt, nameTokens) * 1.5, scoreToken(qt, otherTokens));
-    if (tokenScore <= 0) return 0; // every query token must match some field
+    const tokenScore = Math.max(
+      scoreToken(qt, nameTokens) * 1.5,
+      scoreToken(qt, otherTokens),
+      scorePhone(qt, fields.phone),
+    );
+    if (tokenScore <= 0) {
+      // Every query token must match some field — except when the query is a
+      // phone number typed with spaces in it ("+49 171 1234567"), where the
+      // fragments are not words and "+49" carries too few digits to match on
+      // its own. Such a query has no text intent, so fall back to matching it
+      // unsplit, exactly as the server does.
+      return looksLikePhoneQuery(query) ? scorePhone(query, fields.phone) : 0;
+    }
     total += tokenScore;
   }
   return total;

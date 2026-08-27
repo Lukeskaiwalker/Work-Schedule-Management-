@@ -18,7 +18,7 @@ customer does NOT cascade: linked projects keep their customer_id.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, or_, select
+from sqlalchemy import ColumnElement, and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
@@ -33,6 +33,14 @@ from app.schemas.customer import (
 )
 from app.schemas.project import ProjectOut
 from app.services.customers import sync_project_from_customer
+from app.services.search_matching import (
+    PHONE_MIN_DIGITS,
+    escape_like,
+    looks_like_phone_query,
+    phone_column_key,
+    phone_digits,
+    phone_search_key,
+)
 
 router = APIRouter(prefix="", tags=["customers"])
 
@@ -108,6 +116,35 @@ def _active_flag_expr():
     )
 
 
+def _phone_clause(fragment: str) -> ColumnElement | None:
+    """`Customer.phone` contains this number, or None when it is too short.
+
+    Both sides are reduced to digits before comparing (the column in SQL, the
+    fragment in Python) because the column stores whatever punctuation the
+    creator typed. Returning None rather than a false-y clause lets the caller
+    drop the phone leg entirely, so a two-digit fragment never contributes.
+    """
+    if len(phone_digits(fragment)) < PHONE_MIN_DIGITS:
+        return None
+    # The key is digits only, so it cannot carry LIKE wildcards.
+    return phone_column_key(Customer.phone).ilike(f"%{phone_search_key(fragment)}%")
+
+
+def _token_clause(token: str) -> ColumnElement:
+    """One search token: matched against any searched field (OR)."""
+    needle = f"%{escape_like(token)}%"
+    clauses: list[ColumnElement] = [
+        Customer.name.ilike(needle, escape="\\"),
+        Customer.contact_person.ilike(needle, escape="\\"),
+        Customer.email.ilike(needle, escape="\\"),
+        Customer.address.ilike(needle, escape="\\"),
+    ]
+    phone_clause = _phone_clause(token)
+    if phone_clause is not None:
+        clauses.append(phone_clause)
+    return or_(*clauses)
+
+
 @router.get("/customers", response_model=list[CustomerListItemOut])
 def list_customers(
     q: str | None = Query(default=None),
@@ -125,20 +162,23 @@ def list_customers(
     if q and q.strip():
         # Token-normalized AND-match: split the query into whitespace tokens and
         # require each token to appear (case-insensitively) in at least one of the
-        # searched fields. Word order becomes irrelevant ("Beta AG" finds
-        # "AG Beta") and partial multi-field matches work, while staying pure
-        # ilike so behaviour is identical on Postgres and the SQLite test DB.
+        # searched fields — name, contact, email, address, or the phone number.
+        # Word order becomes irrelevant ("Beta AG" finds "AG Beta") and partial
+        # multi-field matches work, while staying pure ilike/replace so behaviour
+        # is identical on Postgres and the SQLite test DB.
         # (A single token reduces to the previous substring search.)
-        for token in q.strip().split():
-            needle = f"%{token}%"
-            stmt = stmt.where(
-                or_(
-                    Customer.name.ilike(needle),
-                    Customer.contact_person.ilike(needle),
-                    Customer.email.ilike(needle),
-                    Customer.address.ilike(needle),
-                )
-            )
+        query = q.strip()
+        token_match = and_(*(_token_clause(token) for token in query.split()))
+        # A query of nothing but digits and phone punctuation is one number, not
+        # several words — but people write numbers with spaces in them. Splitting
+        # "+49 171 1234567" yields a "+49" that carries two digits, matches
+        # nothing, and would make the AND rule reject the number just typed. Such
+        # a query has no text intent to protect, so match it a second way, as one
+        # unsplit number, and OR that in. A mixed query ("Meier 0171") never takes
+        # this branch, so "every token must match" still holds where it means
+        # something.
+        whole_number = _phone_clause(query) if looks_like_phone_query(query) else None
+        stmt = stmt.where(token_match if whole_number is None else or_(token_match, whole_number))
     stmt = stmt.order_by(Customer.name.asc(), Customer.id.asc()).limit(limit).offset(offset)
     customers = list(db.scalars(stmt).all())
     stats = _aggregate_project_stats(db, [c.id for c in customers])

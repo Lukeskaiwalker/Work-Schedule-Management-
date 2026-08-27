@@ -140,8 +140,8 @@ export function CustomersPage() {
             onChange={(event) => setQuery(event.target.value)}
             placeholder={
               de
-                ? "Name, Adresse, E-Mail durchsuchen…"
-                : "Search by name, address, email…"
+                ? "Name, Adresse, E-Mail, Telefon durchsuchen…"
+                : "Search by name, address, email, phone…"
             }
           />
         </div>

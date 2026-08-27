@@ -478,3 +478,74 @@ def test_customer_only_task_skips_class_template_validation(client: TestClient, 
     )
     assert response.status_code == 400
     assert "class_template_id" in response.json()["detail"]
+
+# --- phone search -----------------------------------------------------------
+#
+# Phone numbers are stored exactly as somebody typed them — nothing normalises
+# them on the way in — so the same connection exists in the database as
+# "+49 171 1234567", "0171/1234567" or "0171 1234567" depending on who created
+# the record. Every test below fixes ONE stored spelling and searches for it
+# the other ways round, because that asymmetry is the whole bug: a naive
+# ilike on the raw column matches only the spelling that happens to be stored.
+
+
+def _phone_names(client: TestClient, admin_token: str, q: str) -> set[str]:
+    response = client.get(f"/api/customers?q={q}", headers=auth_headers(admin_token))
+    assert response.status_code == 200, response.text
+    return {row["name"] for row in response.json()}
+
+
+def test_customer_search_finds_an_international_number_typed_nationally(client, admin_token):
+    """Stored '+49 171 1234567', typed the way a German would dial it."""
+    _create_customer(client, admin_token, name="Phone Intl", phone="+49 171 1234567")
+    _create_customer(client, admin_token, name="Phone Other", phone="+49 30 9999999")
+
+    for typed in ("01711234567", "0171 1234567", "0171/1234567", "0049 171 1234567"):
+        assert _phone_names(client, admin_token, typed) == {"Phone Intl"}, typed
+
+
+def test_customer_search_finds_a_national_number_typed_internationally(client, admin_token):
+    """The reverse direction: stored without a country code, searched with one."""
+    _create_customer(client, admin_token, name="Phone Nat", phone="0301234567")
+
+    for typed in ("+49 30 1234567", "030 1234567", "0301234567"):
+        assert _phone_names(client, admin_token, typed) == {"Phone Nat"}, typed
+
+
+def test_customer_search_matches_a_phone_fragment(client, admin_token):
+    """People remember the last few digits, not the dialling prefix."""
+    _create_customer(client, admin_token, name="Phone Frag", phone="+49 171 1234567")
+
+    assert _phone_names(client, admin_token, "1234567") == {"Phone Frag"}
+    assert _phone_names(client, admin_token, "171 1234567") == {"Phone Frag"}
+
+
+def test_customer_search_ignores_phone_fragments_too_short_to_mean_anything(client, admin_token):
+    """A one- or two-digit fragment sits inside nearly every number.
+
+    Without the minimum-length guard the phone clause degenerates into
+    "select everyone", which is worse than not searching phones at all.
+    """
+    _create_customer(client, admin_token, name="Phone Short", phone="+49 171 1234567")
+    _create_customer(client, admin_token, name="Zeta Ltd", phone=None, address="Hauptstr 1")
+
+    # "17" is a substring of the stored number but must not pull it in on its own.
+    assert "Phone Short" not in _phone_names(client, admin_token, "17")
+
+
+def test_phone_search_does_not_weaken_and_across_tokens(client, admin_token):
+    """A mixed query still requires every token to match something."""
+    _create_customer(client, admin_token, name="Meier GmbH", phone="+49 171 1234567")
+    _create_customer(client, admin_token, name="Schulze AG", phone="+49 171 7654321")
+
+    assert _phone_names(client, admin_token, "Meier 1234567") == {"Meier GmbH"}
+    # Name matches one row, number matches the other -> nothing satisfies both.
+    assert _phone_names(client, admin_token, "Meier 7654321") == set()
+
+
+def test_customer_search_treats_a_percent_as_a_literal(client, admin_token):
+    """A LIKE wildcard typed by a user is a search term, not a wildcard."""
+    _create_customer(client, admin_token, name="Rabatt 50% GmbH", address="Hauptstr 1")
+    _create_customer(client, admin_token, name="Nothing To Do With It", address="Nebenstr 2")
+
+    assert _phone_names(client, admin_token, "50%25") == {"Rabatt 50% GmbH"}

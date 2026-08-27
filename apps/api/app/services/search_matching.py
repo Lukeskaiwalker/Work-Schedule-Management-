@@ -1,4 +1,4 @@
-"""Shared text-matching helpers for catalog and Werkstatt article search.
+"""Shared text-matching helpers for catalog, Werkstatt and customer search.
 
 Both search paths have to cope with how tradespeople actually type. Three
 failure modes drove this module:
@@ -34,6 +34,27 @@ _DECIMAL_COMMA_RE = re.compile(r"(\d),(\d)")
 _DECIMAL_POINT_RE = re.compile(r"(\d)\.(\d)")
 _WHITESPACE_RE = re.compile(r"\s+")
 _NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
+_NON_DIGIT_RE = re.compile(r"\D+")
+
+# This app serves one German electrical contractor, so every stored number is a
+# German one and "the" country code is a constant rather than a per-record
+# property. Naming it keeps the intent visible: a future multi-country tenant
+# has to replace this with configuration, not hunt for a bare "49" in a slice.
+GERMANY_COUNTRY_CODE = "49"
+
+# Fewer digits than this is a fragment, not a number: "0" or "17" occurs inside
+# nearly every stored number, so matching on it would turn the phone clause
+# into a filter that selects everyone.
+PHONE_MIN_DIGITS = 3
+
+# What people put *between* the digits of a phone number. Python and SQL strip
+# exactly this set, from one shared constant, so the two normalisations cannot
+# drift apart and start disagreeing about what is stored.
+PHONE_SEPARATORS = (" ", "-", "/", "(", ")", "+", ".")
+
+# A query made only of digits and phone punctuation: no letters, therefore no
+# text intent to preserve.
+_PHONE_QUERY_RE = re.compile(r"^[\d\s+()/.\-]+$")
 
 # Trigram similarity below this is noise rather than a near-miss. Chosen to be
 # forgiving enough for a one-character typo in a short word ("schuko" vs
@@ -66,6 +87,81 @@ def identifier_key(value: str) -> str:
     different punctuation than the catalog stores still counts as exact.
     """
     return _NON_ALNUM_RE.sub("", value.casefold())
+
+
+def phone_digits(value: str) -> str:
+    """Keep only the digits of a phone number.
+
+    Nothing normalises a phone number on the way in: it is stored exactly as
+    somebody typed it, so the same connection lives in the database as
+    ``+49 171 1234567``, ``0171/1234567`` or ``0171 12 34 567`` depending on
+    who created the record. Digits are the only part all spellings agree on,
+    which makes digits-to-digits the only comparison that can work.
+    """
+    return _NON_DIGIT_RE.sub("", value)
+
+
+def phone_search_key(value: str) -> str:
+    """Reduce a phone number to its national significant digits.
+
+    ``+49 171 1234567``, ``0049 171 1234567`` and ``0171 1234567`` are one
+    number written three ways, and everything that differs between them is a
+    *prefix*: the international access code, the country code, the national
+    trunk ``0``. Dropping the prefix leaves ``1711234567`` for all three.
+
+    The result is always a suffix of the typed digits, and that is what makes
+    a plain substring match sufficient on the other side: the stored column
+    keeps whatever prefix it was typed with, so the key is found inside it
+    regardless of which of the three spellings the record happens to use.
+    A stripped prefix can only ever *widen* the match — worst case (someone
+    types a local number that genuinely begins ``49``) it searches for a
+    shorter string, never for the wrong one.
+    """
+    digits = phone_digits(value)
+    if digits.startswith("00" + GERMANY_COUNTRY_CODE):
+        return digits[len("00" + GERMANY_COUNTRY_CODE) :]
+    if digits.startswith(GERMANY_COUNTRY_CODE):
+        return digits[len(GERMANY_COUNTRY_CODE) :]
+    if digits.startswith("0"):
+        return digits[1:]
+    return digits
+
+
+def looks_like_phone_query(value: str) -> bool:
+    """Whether the whole query is one phone number rather than search words.
+
+    Callers split queries on whitespace and require every token to match, but
+    a phone number written the way people write it *contains* whitespace:
+    ``+49 171 1234567`` splits into a ``+49`` that carries two digits, matches
+    nothing, and would make the AND-across-tokens rule reject the very number
+    the user just typed. A query with no letters in it has no text intent to
+    protect, so callers may match it a second way — as one unsplit number.
+    """
+    stripped = value.strip()
+    if not stripped:
+        return False
+    return bool(_PHONE_QUERY_RE.match(stripped))
+
+
+def phone_column_key(column: ColumnElement) -> ColumnElement:
+    """Strip phone separators from a stored column, in SQL.
+
+    Nested ``func.replace`` rather than ``regexp_replace`` on purpose:
+    ``replace`` is the one string-rewriting function both PostgreSQL
+    (production) and SQLite speak, and the test suite runs on SQLite — it
+    builds its schema with ``Base.metadata.create_all`` and never runs
+    migrations. A ``regexp_replace`` here would pass in production and fail
+    every test that touches it.
+
+    Country code and trunk zero are deliberately left in place: removing them
+    in SQL would need a CASE per prefix on every row. The *query* side reduces
+    to national significant digits instead (:func:`phone_search_key`), and a
+    substring match then finds the row whichever prefix it carries.
+    """
+    expression: ColumnElement = column
+    for separator in PHONE_SEPARATORS:
+        expression = func.replace(expression, separator, "")
+    return expression
 
 
 def term_variants(token: str) -> list[str]:
