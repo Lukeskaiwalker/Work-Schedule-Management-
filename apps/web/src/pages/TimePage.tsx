@@ -201,6 +201,238 @@ export function TimePage() {
     };
   }, [token, mainView, backfillWindowReloads]);
 
+  // These are hooks (and one value a hook needs), so they must stay
+  // ABOVE the early return: React counts hooks per render, and a hook
+  // that only runs on some renders crashes the page when the branch flips.
+  // TimePage is currently mounted only while active, which is the sole
+  // reason this was latent rather than a crash like Bestand's.
+
+  const todayIso = now.toISOString().slice(0, 10);
+
+  // Calculate current week hours from the month rows (for the "This week" donut)
+  const currentWeekRow = useMemo(() => {
+    const todayIsoLocal = now.toISOString().slice(0, 10);
+    return timeMonthRows.find((row) => row.weekStart <= todayIsoLocal && row.weekEnd >= todayIsoLocal)
+      ?? timeMonthRows[0]
+      ?? null;
+  }, [timeMonthRows, now]);
+
+  // Build day-by-day calendar data for the current month from timeEntries,
+  // approved absences (vacation + school/sick/etc.), and the configured
+  // region's public holidays. The personal time-tracking calendar previously
+  // only summed entries; the user reported absences not showing up — they're
+  // now merged in here, scoped to whichever user the page is currently
+  // viewing (self, or another user when a manager has switched targets).
+  // Public holidays do NOT scope by user since they apply to everyone in
+  // the region.
+  const monthCalendar = useMemo(() => {
+    const monthDate = timeMonthCursor;
+    const year = monthDate.getFullYear();
+    const month = monthDate.getMonth();
+    const firstDay = new Date(year, month, 1);
+    const lastDay = new Date(year, month + 1, 0);
+    const daysInMonth = lastDay.getDate();
+
+    // Group entry hours by YYYY-MM-DD — use parseServerDateTime so naive UTC
+    // strings from the backend are read as UTC (not local), then converted
+    // to the user's timezone via the Date object's getFullYear/Month/Date.
+    const hoursByDate = new Map<string, number>();
+    for (const entry of timeEntries) {
+      const entryDate = parseServerDateTime(entry.clock_in);
+      if (!entryDate) continue;
+      if (entryDate.getFullYear() !== year || entryDate.getMonth() !== month) continue;
+      // Build the local-time YYYY-MM-DD key manually — toISOString() would
+      // give back the UTC date, which can be off by a day for late-evening
+      // clock-ins in positive-offset timezones.
+      const localIso =
+        `${entryDate.getFullYear()}-` +
+        `${String(entryDate.getMonth() + 1).padStart(2, "0")}-` +
+        `${String(entryDate.getDate()).padStart(2, "0")}`;
+      hoursByDate.set(localIso, (hoursByDate.get(localIso) ?? 0) + entry.net_hours);
+    }
+
+    // ── Absences by date ────────────────────────────────────────────────
+    // The personal calendar shows the active target user's own absences:
+    // self when no target is set, otherwise the manager's selected target.
+    // School absences with `recurrence_weekday` repeat on that weekday from
+    // start_date until min(end_date, recurrence_until). We mirror the
+    // backend's `_expand_school_absence_days` rule client-side so the same
+    // days light up that the planning endpoint would surface.
+    type AbsenceMarker = { type: string; label: string };
+    // timeTargetUserId is a string (form value, "" when no manager target
+    // is selected). Coerce explicitly so the empty string doesn't fall
+    // through to NaN/0 and match the wrong user.
+    const explicitTarget =
+      typeof timeTargetUserId === "string" && timeTargetUserId.trim() !== ""
+        ? Number(timeTargetUserId)
+        : null;
+    const targetUserId: number | null =
+      explicitTarget != null && Number.isFinite(explicitTarget)
+        ? explicitTarget
+        : (user?.id ?? null);
+    const absencesByDate = new Map<string, AbsenceMarker[]>();
+    const monthFirstIso = `${year}-${String(month + 1).padStart(2, "0")}-01`;
+    const monthLastIso =
+      `${year}-${String(month + 1).padStart(2, "0")}-${String(daysInMonth).padStart(2, "0")}`;
+
+    function pushAbsence(iso: string, marker: AbsenceMarker) {
+      const list = absencesByDate.get(iso) ?? [];
+      // Avoid duplicate markers for the same (type, label) on the same day.
+      if (!list.some((m) => m.type === marker.type && m.label === marker.label)) {
+        list.push(marker);
+        absencesByDate.set(iso, list);
+      }
+    }
+
+    function isoOfDate(d: Date): string {
+      return (
+        `${d.getFullYear()}-` +
+        `${String(d.getMonth() + 1).padStart(2, "0")}-` +
+        `${String(d.getDate()).padStart(2, "0")}`
+      );
+    }
+
+    function clampIso(value: string, lo: string, hi: string): string | null {
+      const lower = value < lo ? lo : value;
+      if (lower > hi) return null;
+      return lower;
+    }
+
+    function spanDays(startIso: string, endIso: string, push: (iso: string) => void) {
+      const cursor = new Date(`${startIso}T00:00:00`);
+      const stop = new Date(`${endIso}T00:00:00`);
+      while (cursor <= stop) {
+        push(isoOfDate(cursor));
+        cursor.setDate(cursor.getDate() + 1);
+      }
+    }
+
+    // Public holidays apply to everyone in the configured region (NRW today),
+    // so we merge them into the day cells without a targetUserId scope. Type
+    // is "holiday" so the cell picks up the existing .time-calendar-cell--
+    // absence-holiday styling and matches the shape of school-absence rows
+    // whose absence_type is also "holiday". The separate "Feiertage" callout
+    // below the calendar still summarises them as a list — the pill on the
+    // cell is purely additive.
+    for (const holiday of publicHolidays) {
+      if (!holiday.date.startsWith(monthCursorISO)) continue;
+      pushAbsence(holiday.date, { type: "holiday", label: holiday.name });
+    }
+
+    // Vacation rows: only "approved" status comes through approvedVacationRequests.
+    for (const row of approvedVacationRequests) {
+      if (targetUserId != null && row.user_id !== targetUserId) continue;
+      const lo = clampIso(row.start_date, monthFirstIso, monthLastIso);
+      if (lo === null) continue;
+      const hiCandidate = row.end_date > monthLastIso ? monthLastIso : row.end_date;
+      if (hiCandidate < lo) continue;
+      const label = de ? "Urlaub" : "Vacation";
+      spanDays(lo, hiCandidate, (iso) => pushAbsence(iso, { type: "vacation", label }));
+    }
+
+    // School / sick / Berufsschule / etc. — drop pending+rejected.
+    for (const row of schoolAbsences) {
+      if (row.status !== "approved") continue;
+      if (targetUserId != null && row.user_id !== targetUserId) continue;
+      const typeMeta = absenceTypes.find((t) => t.key === row.absence_type);
+      const label = typeMeta ? (de ? typeMeta.label_de : typeMeta.label_en) : row.title;
+
+      if (row.recurrence_weekday == null) {
+        const lo = clampIso(row.start_date, monthFirstIso, monthLastIso);
+        if (lo === null) continue;
+        const hiCandidate = row.end_date > monthLastIso ? monthLastIso : row.end_date;
+        if (hiCandidate < lo) continue;
+        spanDays(lo, hiCandidate, (iso) =>
+          pushAbsence(iso, { type: row.absence_type, label }),
+        );
+        continue;
+      }
+
+      // Recurring: include only days where weekday matches recurrence_weekday.
+      // The DB convention is Python's date.weekday() (0=Mon..6=Sun); JS's
+      // Date.getDay() is 0=Sun..6=Sat. Convert via (jsDay + 6) % 7.
+      const recurUpper =
+        row.recurrence_until && row.recurrence_until < monthLastIso
+          ? row.recurrence_until
+          : monthLastIso;
+      const lo = clampIso(row.start_date, monthFirstIso, monthLastIso);
+      if (lo === null) continue;
+      const hiCandidate = row.end_date > recurUpper ? recurUpper : row.end_date;
+      if (hiCandidate < lo) continue;
+      spanDays(lo, hiCandidate, (iso) => {
+        const cursorDate = new Date(`${iso}T00:00:00`);
+        const pyWeekday = (cursorDate.getDay() + 6) % 7;
+        if (pyWeekday === row.recurrence_weekday) {
+          pushAbsence(iso, { type: row.absence_type, label });
+        }
+      });
+    }
+
+    // Build 6-row × 7-col grid starting on Monday
+    type CalendarCell = {
+      date: number | null;
+      iso: string;
+      hours: number;
+      isToday: boolean;
+      isPast: boolean;
+      absences: AbsenceMarker[];
+    };
+    const cells: CalendarCell[] = [];
+    // JS: 0 = Sunday, 1 = Monday, ..., 6 = Saturday. We want Monday as first.
+    const firstWeekdayJs = firstDay.getDay(); // 0..6 (Sun..Sat)
+    const leadingBlanks = firstWeekdayJs === 0 ? 6 : firstWeekdayJs - 1;
+    for (let i = 0; i < leadingBlanks; i += 1) {
+      cells.push({ date: null, iso: "", hours: 0, isToday: false, isPast: false, absences: [] });
+    }
+    const todayIso = now.toISOString().slice(0, 10);
+    for (let d = 1; d <= daysInMonth; d += 1) {
+      const iso = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+      cells.push({
+        date: d,
+        iso,
+        hours: hoursByDate.get(iso) ?? 0,
+        isToday: iso === todayIso,
+        isPast: iso < todayIso,
+        absences: absencesByDate.get(iso) ?? [],
+      });
+    }
+    // Pad to full rows of 7
+    while (cells.length % 7 !== 0) {
+      cells.push({ date: null, iso: "", hours: 0, isToday: false, isPast: false, absences: [] });
+    }
+    return cells;
+  }, [
+    timeMonthCursor,
+    timeEntries,
+    now,
+    approvedVacationRequests,
+    schoolAbsences,
+    absenceTypes,
+    publicHolidays,
+    monthCursorISO,
+    timeTargetUserId,
+    user?.id,
+    de,
+  ]);
+
+  // Group recent entries by date for the Paper-style Recent Entries list (latest 4-6 days)
+  const recentEntriesGrouped = useMemo(() => {
+    const sorted = [...timeEntries].sort((a, b) => (a.clock_in < b.clock_in ? 1 : -1));
+    const groups = new Map<string, typeof timeEntries>();
+    for (const entry of sorted) {
+      const parsed = parseServerDateTime(entry.clock_in);
+      if (!parsed) continue;
+      const iso =
+        `${parsed.getFullYear()}-` +
+        `${String(parsed.getMonth() + 1).padStart(2, "0")}-` +
+        `${String(parsed.getDate()).padStart(2, "0")}`;
+      const arr = groups.get(iso) ?? [];
+      arr.push(entry);
+      groups.set(iso, arr);
+    }
+    return Array.from(groups.entries()).slice(0, 6);
+  }, [timeEntries]);
+
   if (mainView !== "time") return null;
 
   // Build export URL — always scope by user_id so the XLSX never accidentally
@@ -458,7 +690,6 @@ export function TimePage() {
     return de ? "Genehmigt" : "Approved";
   }
 
-  const todayIso = now.toISOString().slice(0, 10);
   const pendingAbsenceRequests = schoolAbsences.filter((row) => row.status === "pending");
   const activeApprovedAbsences = schoolAbsences.filter((row) => {
     if (row.status !== "approved") return false;
@@ -472,229 +703,8 @@ export function TimePage() {
     })
     .slice(0, 10);
 
-  // Calculate current week hours from the month rows (for the "This week" donut)
-  const currentWeekRow = useMemo(() => {
-    const todayIsoLocal = now.toISOString().slice(0, 10);
-    return timeMonthRows.find((row) => row.weekStart <= todayIsoLocal && row.weekEnd >= todayIsoLocal)
-      ?? timeMonthRows[0]
-      ?? null;
-  }, [timeMonthRows, now]);
 
-  // Build day-by-day calendar data for the current month from timeEntries,
-  // approved absences (vacation + school/sick/etc.), and the configured
-  // region's public holidays. The personal time-tracking calendar previously
-  // only summed entries; the user reported absences not showing up — they're
-  // now merged in here, scoped to whichever user the page is currently
-  // viewing (self, or another user when a manager has switched targets).
-  // Public holidays do NOT scope by user since they apply to everyone in
-  // the region.
-  const monthCalendar = useMemo(() => {
-    const monthDate = timeMonthCursor;
-    const year = monthDate.getFullYear();
-    const month = monthDate.getMonth();
-    const firstDay = new Date(year, month, 1);
-    const lastDay = new Date(year, month + 1, 0);
-    const daysInMonth = lastDay.getDate();
 
-    // Group entry hours by YYYY-MM-DD — use parseServerDateTime so naive UTC
-    // strings from the backend are read as UTC (not local), then converted
-    // to the user's timezone via the Date object's getFullYear/Month/Date.
-    const hoursByDate = new Map<string, number>();
-    for (const entry of timeEntries) {
-      const entryDate = parseServerDateTime(entry.clock_in);
-      if (!entryDate) continue;
-      if (entryDate.getFullYear() !== year || entryDate.getMonth() !== month) continue;
-      // Build the local-time YYYY-MM-DD key manually — toISOString() would
-      // give back the UTC date, which can be off by a day for late-evening
-      // clock-ins in positive-offset timezones.
-      const localIso =
-        `${entryDate.getFullYear()}-` +
-        `${String(entryDate.getMonth() + 1).padStart(2, "0")}-` +
-        `${String(entryDate.getDate()).padStart(2, "0")}`;
-      hoursByDate.set(localIso, (hoursByDate.get(localIso) ?? 0) + entry.net_hours);
-    }
-
-    // ── Absences by date ────────────────────────────────────────────────
-    // The personal calendar shows the active target user's own absences:
-    // self when no target is set, otherwise the manager's selected target.
-    // School absences with `recurrence_weekday` repeat on that weekday from
-    // start_date until min(end_date, recurrence_until). We mirror the
-    // backend's `_expand_school_absence_days` rule client-side so the same
-    // days light up that the planning endpoint would surface.
-    type AbsenceMarker = { type: string; label: string };
-    // timeTargetUserId is a string (form value, "" when no manager target
-    // is selected). Coerce explicitly so the empty string doesn't fall
-    // through to NaN/0 and match the wrong user.
-    const explicitTarget =
-      typeof timeTargetUserId === "string" && timeTargetUserId.trim() !== ""
-        ? Number(timeTargetUserId)
-        : null;
-    const targetUserId: number | null =
-      explicitTarget != null && Number.isFinite(explicitTarget)
-        ? explicitTarget
-        : (user?.id ?? null);
-    const absencesByDate = new Map<string, AbsenceMarker[]>();
-    const monthFirstIso = `${year}-${String(month + 1).padStart(2, "0")}-01`;
-    const monthLastIso =
-      `${year}-${String(month + 1).padStart(2, "0")}-${String(daysInMonth).padStart(2, "0")}`;
-
-    function pushAbsence(iso: string, marker: AbsenceMarker) {
-      const list = absencesByDate.get(iso) ?? [];
-      // Avoid duplicate markers for the same (type, label) on the same day.
-      if (!list.some((m) => m.type === marker.type && m.label === marker.label)) {
-        list.push(marker);
-        absencesByDate.set(iso, list);
-      }
-    }
-
-    function isoOfDate(d: Date): string {
-      return (
-        `${d.getFullYear()}-` +
-        `${String(d.getMonth() + 1).padStart(2, "0")}-` +
-        `${String(d.getDate()).padStart(2, "0")}`
-      );
-    }
-
-    function clampIso(value: string, lo: string, hi: string): string | null {
-      const lower = value < lo ? lo : value;
-      if (lower > hi) return null;
-      return lower;
-    }
-
-    function spanDays(startIso: string, endIso: string, push: (iso: string) => void) {
-      const cursor = new Date(`${startIso}T00:00:00`);
-      const stop = new Date(`${endIso}T00:00:00`);
-      while (cursor <= stop) {
-        push(isoOfDate(cursor));
-        cursor.setDate(cursor.getDate() + 1);
-      }
-    }
-
-    // Public holidays apply to everyone in the configured region (NRW today),
-    // so we merge them into the day cells without a targetUserId scope. Type
-    // is "holiday" so the cell picks up the existing .time-calendar-cell--
-    // absence-holiday styling and matches the shape of school-absence rows
-    // whose absence_type is also "holiday". The separate "Feiertage" callout
-    // below the calendar still summarises them as a list — the pill on the
-    // cell is purely additive.
-    for (const holiday of publicHolidays) {
-      if (!holiday.date.startsWith(monthCursorISO)) continue;
-      pushAbsence(holiday.date, { type: "holiday", label: holiday.name });
-    }
-
-    // Vacation rows: only "approved" status comes through approvedVacationRequests.
-    for (const row of approvedVacationRequests) {
-      if (targetUserId != null && row.user_id !== targetUserId) continue;
-      const lo = clampIso(row.start_date, monthFirstIso, monthLastIso);
-      if (lo === null) continue;
-      const hiCandidate = row.end_date > monthLastIso ? monthLastIso : row.end_date;
-      if (hiCandidate < lo) continue;
-      const label = de ? "Urlaub" : "Vacation";
-      spanDays(lo, hiCandidate, (iso) => pushAbsence(iso, { type: "vacation", label }));
-    }
-
-    // School / sick / Berufsschule / etc. — drop pending+rejected.
-    for (const row of schoolAbsences) {
-      if (row.status !== "approved") continue;
-      if (targetUserId != null && row.user_id !== targetUserId) continue;
-      const typeMeta = absenceTypes.find((t) => t.key === row.absence_type);
-      const label = typeMeta ? (de ? typeMeta.label_de : typeMeta.label_en) : row.title;
-
-      if (row.recurrence_weekday == null) {
-        const lo = clampIso(row.start_date, monthFirstIso, monthLastIso);
-        if (lo === null) continue;
-        const hiCandidate = row.end_date > monthLastIso ? monthLastIso : row.end_date;
-        if (hiCandidate < lo) continue;
-        spanDays(lo, hiCandidate, (iso) =>
-          pushAbsence(iso, { type: row.absence_type, label }),
-        );
-        continue;
-      }
-
-      // Recurring: include only days where weekday matches recurrence_weekday.
-      // The DB convention is Python's date.weekday() (0=Mon..6=Sun); JS's
-      // Date.getDay() is 0=Sun..6=Sat. Convert via (jsDay + 6) % 7.
-      const recurUpper =
-        row.recurrence_until && row.recurrence_until < monthLastIso
-          ? row.recurrence_until
-          : monthLastIso;
-      const lo = clampIso(row.start_date, monthFirstIso, monthLastIso);
-      if (lo === null) continue;
-      const hiCandidate = row.end_date > recurUpper ? recurUpper : row.end_date;
-      if (hiCandidate < lo) continue;
-      spanDays(lo, hiCandidate, (iso) => {
-        const cursorDate = new Date(`${iso}T00:00:00`);
-        const pyWeekday = (cursorDate.getDay() + 6) % 7;
-        if (pyWeekday === row.recurrence_weekday) {
-          pushAbsence(iso, { type: row.absence_type, label });
-        }
-      });
-    }
-
-    // Build 6-row × 7-col grid starting on Monday
-    type CalendarCell = {
-      date: number | null;
-      iso: string;
-      hours: number;
-      isToday: boolean;
-      isPast: boolean;
-      absences: AbsenceMarker[];
-    };
-    const cells: CalendarCell[] = [];
-    // JS: 0 = Sunday, 1 = Monday, ..., 6 = Saturday. We want Monday as first.
-    const firstWeekdayJs = firstDay.getDay(); // 0..6 (Sun..Sat)
-    const leadingBlanks = firstWeekdayJs === 0 ? 6 : firstWeekdayJs - 1;
-    for (let i = 0; i < leadingBlanks; i += 1) {
-      cells.push({ date: null, iso: "", hours: 0, isToday: false, isPast: false, absences: [] });
-    }
-    const todayIso = now.toISOString().slice(0, 10);
-    for (let d = 1; d <= daysInMonth; d += 1) {
-      const iso = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
-      cells.push({
-        date: d,
-        iso,
-        hours: hoursByDate.get(iso) ?? 0,
-        isToday: iso === todayIso,
-        isPast: iso < todayIso,
-        absences: absencesByDate.get(iso) ?? [],
-      });
-    }
-    // Pad to full rows of 7
-    while (cells.length % 7 !== 0) {
-      cells.push({ date: null, iso: "", hours: 0, isToday: false, isPast: false, absences: [] });
-    }
-    return cells;
-  }, [
-    timeMonthCursor,
-    timeEntries,
-    now,
-    approvedVacationRequests,
-    schoolAbsences,
-    absenceTypes,
-    publicHolidays,
-    monthCursorISO,
-    timeTargetUserId,
-    user?.id,
-    de,
-  ]);
-
-  // Group recent entries by date for the Paper-style Recent Entries list (latest 4-6 days)
-  const recentEntriesGrouped = useMemo(() => {
-    const sorted = [...timeEntries].sort((a, b) => (a.clock_in < b.clock_in ? 1 : -1));
-    const groups = new Map<string, typeof timeEntries>();
-    for (const entry of sorted) {
-      const parsed = parseServerDateTime(entry.clock_in);
-      if (!parsed) continue;
-      const iso =
-        `${parsed.getFullYear()}-` +
-        `${String(parsed.getMonth() + 1).padStart(2, "0")}-` +
-        `${String(parsed.getDate()).padStart(2, "0")}`;
-      const arr = groups.get(iso) ?? [];
-      arr.push(entry);
-      groups.set(iso, arr);
-    }
-    return Array.from(groups.entries()).slice(0, 6);
-  }, [timeEntries]);
 
   function formatTimeHHMM(iso: string | null | undefined): string {
     const d = parseServerDateTime(iso);
