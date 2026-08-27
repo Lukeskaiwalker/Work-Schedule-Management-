@@ -22,6 +22,7 @@ import {
   type OpenFileRequest,
 } from "../../native/fileOpen";
 import { IS_APP_SURFACE } from "../../native/shell";
+import { createPageCache, type PageCache } from "../../utils/pdfPageCache";
 import { isGerman } from "../../utils/uiLanguage";
 
 type Phase = "idle" | "loading" | "ready" | "error" | "saving";
@@ -36,6 +37,25 @@ type Phase = "idle" | "loading" | "ready" | "error" | "saving";
  *                 offer something else rather than assume success.
  */
 type SaveOutcome = "shared" | "aborted" | "declined";
+
+/**
+ * How many rendered pages to keep as object URLs.
+ *
+ * Measured on the worst real document in production (a 151-page SUN2000
+ * inverter manual): pages come back as 66–436 KB PNGs, so twelve is a few MB
+ * at the top end and well under one for a typical report. Enough that paging
+ * back through what you just read never touches the network.
+ */
+const MAX_CACHED_PAGES = 12;
+
+/**
+ * Pages to pull ahead of the one on screen.
+ *
+ * Only forward. Backward needs no prefetch — you were just there, so it is
+ * already cached — and the server renders with a semaphore of 2, so a user
+ * who fans out in both directions starts queueing against themselves.
+ */
+const PREFETCH_AHEAD = 1;
 
 function isImage(type: string): boolean {
   return type.startsWith("image/");
@@ -112,12 +132,26 @@ function Viewer() {
   const [pageCount, setPageCount] = useState<number>(0);
   const [page, setPage] = useState<number>(1);
   const [pageUrl, setPageUrl] = useState<string>("");
+  // True only while a page the user is *waiting for* is in flight. A prefetch
+  // never sets it: the point of prefetching is that it is invisible.
   const [pageLoading, setPageLoading] = useState(false);
+  const [pageError, setPageError] = useState(false);
+  // Draft value of the page box while it is being typed in, and of the slider
+  // while it is being dragged. Both are held locally so that neither fires a
+  // render request per keystroke or per pixel of drag.
+  const [pageDraft, setPageDraft] = useState<string>("");
+  const [scrubPage, setScrubPage] = useState<number | null>(null);
   // Whether the page-count probe has answered yet. `pageCount === 0` alone
   // cannot say: it is both "not asked yet" and "asked and failed", and those
   // need opposite fallbacks — wait, versus drop back to the frame.
   const [pagesProbe, setPagesProbe] = useState<"pending" | "ok" | "failed">("pending");
-  const pageUrlRef = useRef<string | null>(null);
+  /**
+   * Rendered pages. A displayed URL is only ever borrowed from here — the
+   * cache owns it, so nothing else may revoke it or paging back would show a
+   * broken image. Created lazily because the base URL is not known until a
+   * file is open.
+   */
+  const pageCacheRef = useRef<PageCache | null>(null);
 
   // Read per render rather than once: the user can toggle DE/EN while the app
   // is running, and App republishes it on <html lang>.
@@ -134,11 +168,25 @@ function Viewer() {
     }
   }, []);
 
+  /** Drop every cached page. Called on close, on open, and on unmount. */
   const releasePage = useCallback(() => {
-    if (pageUrlRef.current) {
-      URL.revokeObjectURL(pageUrlRef.current);
-      pageUrlRef.current = null;
+    pageCacheRef.current?.clear();
+    pageCacheRef.current = null;
+  }, []);
+
+  /**
+   * One rendered page, from cache when possible. The cache is rebuilt per
+   * document, so the base URL is captured at creation and a new file can never
+   * read the previous one's pages.
+   */
+  const acquirePage = useCallback((base: string, wanted: number): Promise<string> => {
+    if (!pageCacheRef.current) {
+      pageCacheRef.current = createPageCache({
+        maxEntries: MAX_CACHED_PAGES,
+        fetchPage: (n) => fetchAuthorizedBlobUrl(`${base}/${n}`),
+      });
     }
+    return pageCacheRef.current.acquire(wanted);
   }, []);
 
   const close = useCallback(() => {
@@ -365,32 +413,99 @@ function Viewer() {
   useEffect(() => {
     if (phase !== "ready" || !pagesBase || pageCount < 1) return;
     let cancelled = false;
-    setPageLoading(true);
-    fetchAuthorizedBlobUrl(`${pagesBase}/${page}`)
+    const base = pagesBase;
+    const wanted = page;
+
+    // A cache hit must not flash a spinner — that is the whole point of the
+    // cache. Only an actual wait sets the loading flag.
+    const cached = pageCacheRef.current?.peek(wanted);
+    if (cached) {
+      setPageUrl(cached);
+      setPageLoading(false);
+    } else {
+      setPageLoading(true);
+    }
+    setPageError(false);
+
+    acquirePage(base, wanted)
       .then((url) => {
-        if (cancelled) {
-          URL.revokeObjectURL(url);
-          return;
-        }
-        releasePage();
-        pageUrlRef.current = url;
+        if (cancelled) return;
         setPageUrl(url);
         setPageLoading(false);
+        // Pull the next page in behind this one. By the time the reader taps
+        // forward the render has already happened, so the wait that used to
+        // sit in front of every tap now sits behind it.
+        for (let ahead = wanted + 1; ahead <= Math.min(wanted + PREFETCH_AHEAD, pageCount); ahead++) {
+          void acquirePage(base, ahead).catch(() => {
+            /* a prefetch that fails is not an error the reader should see —
+               the page is fetched again, visibly, if they actually go there */
+          });
+        }
       })
       .catch(() => {
-        if (!cancelled) {
-          setPageUrl("");
-          setPageLoading(false);
-        }
+        if (cancelled) return;
+        setPageLoading(false);
+        setPageError(true);
       });
+
     return () => {
       cancelled = true;
     };
-  }, [phase, pagesBase, pageCount, page, releasePage]);
+  }, [phase, pagesBase, pageCount, page, acquirePage]);
+
+  // Keep the page box showing the live page whenever it is not being typed in.
+  useEffect(() => {
+    setPageDraft(String(page));
+  }, [page]);
 
   // Revoke on unmount as well; the app root unmounting mid-view is unlikely but
   // leaking a multi-megabyte blob is not worth the bet.
   useEffect(() => release, [release]);
+
+  /** Move to `target`, clamped. The single funnel every control goes through. */
+  const goToPage = useCallback(
+    (target: number) => {
+      if (!Number.isFinite(target)) return;
+      setPage(Math.min(Math.max(Math.round(target), 1), Math.max(pageCount, 1)));
+    },
+    [pageCount],
+  );
+
+  /** Commit whatever was typed in the page box, or restore it if it was junk. */
+  const commitPageDraft = useCallback(() => {
+    const parsed = Number.parseInt(pageDraft, 10);
+    if (Number.isNaN(parsed)) {
+      setPageDraft(String(page));
+      return;
+    }
+    goToPage(parsed);
+  }, [pageDraft, page, goToPage]);
+
+  /**
+   * Horizontal swipe across the page canvas.
+   *
+   * Deliberately strict: the gesture must be 60px and clearly more horizontal
+   * than vertical, because a tall page scrolls vertically in this same box and
+   * stealing that would be worse than having no swipe at all.
+   */
+  const swipeRef = useRef<{ x: number; y: number } | null>(null);
+  const onCanvasTouchStart = useCallback((event: React.TouchEvent) => {
+    const touch = event.touches[0];
+    swipeRef.current = touch ? { x: touch.clientX, y: touch.clientY } : null;
+  }, []);
+  const onCanvasTouchEnd = useCallback(
+    (event: React.TouchEvent) => {
+      const start = swipeRef.current;
+      swipeRef.current = null;
+      const touch = event.changedTouches[0];
+      if (!start || !touch) return;
+      const dx = touch.clientX - start.x;
+      const dy = touch.clientY - start.y;
+      if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+      goToPage(page + (dx < 0 ? 1 : -1));
+    },
+    [page, goToPage],
+  );
 
   if (phase === "idle") return null;
 
@@ -454,37 +569,107 @@ function Viewer() {
                the frame: on iOS the frame is *available* but shows only page
                one, so preferring it would reinstate the bug. */
             <div className="file-viewer-pages">
-              <div className="file-viewer-page-canvas">
-                {pageLoading && <span className="file-viewer-spinner" aria-hidden="true" />}
-                {pageUrl && !pageLoading && (
+              <div
+                className="file-viewer-page-canvas"
+                onTouchStart={onCanvasTouchStart}
+                onTouchEnd={onCanvasTouchEnd}
+              >
+                {/* The outgoing page stays on screen, dimmed, while the next
+                    one loads. Blanking to a spinner made every page turn feel
+                    like a fresh load even when it took well under a second. */}
+                {pageUrl && (
                   <img
-                    className="file-viewer-page-image"
+                    className={`file-viewer-page-image${pageLoading ? " is-stale" : ""}`}
                     src={pageUrl}
                     alt={`${file.name} – ${de ? "Seite" : "Page"} ${page}`}
                   />
                 )}
+                {pageLoading && (
+                  <span className="file-viewer-page-spinner" aria-hidden="true" />
+                )}
+                {pageError && !pageLoading && (
+                  <p className="file-viewer-error" role="alert">
+                    {de ? "Seite konnte nicht geladen werden." : "That page could not be loaded."}
+                  </p>
+                )}
               </div>
+
               {pageCount > 1 && (
                 <div className="file-viewer-pager">
-                  <button
-                    type="button"
-                    className="file-viewer-pager-btn"
-                    disabled={page <= 1 || pageLoading}
-                    onClick={() => setPage((current) => Math.max(1, current - 1))}
-                  >
-                    ‹
-                  </button>
-                  <span className="file-viewer-pager-label">
-                    {de ? "Seite" : "Page"} {page} / {pageCount}
-                  </span>
-                  <button
-                    type="button"
-                    className="file-viewer-pager-btn"
-                    disabled={page >= pageCount || pageLoading}
-                    onClick={() => setPage((current) => Math.min(pageCount, current + 1))}
-                  >
-                    ›
-                  </button>
+                  {/* A slider only earns its space once tapping ‹ › stops being
+                      a plausible way to cross the document. */}
+                  {pageCount > 8 && (
+                    <input
+                      className="file-viewer-pager-slider"
+                      type="range"
+                      min={1}
+                      max={pageCount}
+                      step={1}
+                      value={scrubPage ?? page}
+                      aria-label={de ? "Seite wählen" : "Jump to page"}
+                      // Dragging updates the label only. Committing per pixel
+                      // would queue a render for every page dragged past.
+                      onChange={(event) => setScrubPage(Number(event.target.value))}
+                      onPointerUp={() => {
+                        if (scrubPage !== null) goToPage(scrubPage);
+                        setScrubPage(null);
+                      }}
+                      onKeyUp={() => {
+                        if (scrubPage !== null) goToPage(scrubPage);
+                        setScrubPage(null);
+                      }}
+                      onBlur={() => setScrubPage(null)}
+                    />
+                  )}
+
+                  <div className="file-viewer-pager-row">
+                    <button
+                      type="button"
+                      className="file-viewer-pager-btn"
+                      disabled={page <= 1}
+                      aria-label={de ? "Vorherige Seite" : "Previous page"}
+                      onClick={() => goToPage(page - 1)}
+                    >
+                      ‹
+                    </button>
+
+                    <span className="file-viewer-pager-jump">
+                      {/* Typing a number is the only way to cross 151 pages in
+                          one action; the slider is for browsing, this is for
+                          "take me to the wiring diagram on page 96". */}
+                      <input
+                        className="file-viewer-pager-input"
+                        type="text"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        value={scrubPage !== null ? String(scrubPage) : pageDraft}
+                        aria-label={de ? "Seitenzahl" : "Page number"}
+                        onChange={(event) =>
+                          setPageDraft(event.target.value.replace(/[^0-9]/g, ""))
+                        }
+                        onFocus={(event) => event.target.select()}
+                        onBlur={commitPageDraft}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            event.preventDefault();
+                            commitPageDraft();
+                            event.currentTarget.blur();
+                          }
+                        }}
+                      />
+                      <span className="file-viewer-pager-total">/ {pageCount}</span>
+                    </span>
+
+                    <button
+                      type="button"
+                      className="file-viewer-pager-btn"
+                      disabled={page >= pageCount}
+                      aria-label={de ? "Nächste Seite" : "Next page"}
+                      onClick={() => goToPage(page + 1)}
+                    >
+                      ›
+                    </button>
+                  </div>
                 </div>
               )}
             </div>

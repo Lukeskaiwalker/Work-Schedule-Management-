@@ -33957,6 +33957,8 @@ button.time-calendar-cell {
   justify-content: center;
   background: #e8edf3;
   padding: 12px;
+  /* Anchors the loading spinner over the page it is replacing. */
+  position: relative;
 }
 
 .file-viewer-page-image {
@@ -33964,31 +33966,77 @@ button.time-calendar-cell {
   height: auto;
   background: #fff;
   box-shadow: 0 1px 6px rgba(20, 41, 61, 0.18);
+  transition: opacity 0.12s ease-out;
+}
+
+/* The page being replaced. It stays put rather than blanking, so a page turn
+   reads as a transition instead of a reload. Faint enough to signal "not this
+   one yet", solid enough to keep the reader's place. */
+.file-viewer-page-image.is-stale {
+  opacity: 0.4;
+}
+
+.file-viewer-page-spinner {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  margin: -15px 0 0 -15px;
+  width: 30px;
+  height: 30px;
+  border: 3px solid rgba(255, 255, 255, 0.85);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  box-shadow: 0 1px 6px rgba(20, 41, 61, 0.25);
+  animation: server-gate-spin 0.7s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .file-viewer-page-spinner {
+    animation-duration: 2.4s;
+  }
 }
 
 .file-viewer-pager {
   flex: 0 0 auto;
   display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 14px;
+  flex-direction: column;
+  gap: 8px;
   padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
   border-top: 1px solid var(--line);
   background: #fff;
+}
+
+.file-viewer-pager-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+}
+
+/* Full width and a fat thumb: this is the control that makes a 151-page
+   manual navigable at all, so it gets the room rather than the arrows. */
+.file-viewer-pager-slider {
+  width: 100%;
+  margin: 0;
+  accent-color: var(--accent);
+  /* iOS shrinks the native track to a hairline that is hard to grab. */
+  height: 28px;
 }
 
 .file-viewer-pager-btn {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 44px;
-  height: 40px;
+  /* 48px is the smallest comfortable touch target; the old 44x40 was being
+     hit repeatedly on long documents, which is exactly when it must not miss. */
+  width: 52px;
+  height: 48px;
   padding: 0;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: #fff;
   color: var(--ink);
-  font-size: 20px;
+  font-size: 22px;
   line-height: 1;
   cursor: pointer;
 }
@@ -33998,12 +34046,33 @@ button.time-calendar-cell {
   cursor: default;
 }
 
-.file-viewer-pager-label {
+.file-viewer-pager-jump {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
   font-size: 13px;
   font-weight: 600;
   color: var(--ink);
-  min-width: 90px;
+}
+
+.file-viewer-pager-input {
+  width: 56px;
+  height: 40px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  /* 16px keeps iOS from zooming the whole viewer when the field is focused. */
+  font-size: 16px;
+  font-weight: 600;
   text-align: center;
+}
+
+.file-viewer-pager-total {
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
 }
 
 /* ══════════════════════════════════════════════════════════════════════════
