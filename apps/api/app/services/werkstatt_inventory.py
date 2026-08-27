@@ -83,6 +83,16 @@ def _bump(db: Session, session_id: int, article: WerkstattArticle, by: int = 1) 
     return int(row.counted_qty)
 
 
+def looks_like_ean(code: str) -> bool:
+    """Whether a scanned code plausibly is a manufacturer barcode.
+
+    EAN-8 through GTIN-14 are digits only. Anything else — notably the
+    ``SMPL-XXXXXX`` codes this app mints for unbarcoded stock — is ours, and
+    belongs in ``internal_code`` instead.
+    """
+    return bool(code) and code.isdigit() and 8 <= len(code) <= 14
+
+
 def _article_from_catalog(db: Session, item: MaterialCatalogItem, user: User) -> WerkstattArticle:
     """Mint an article from a Datanorm row so a scan never has to stop.
 
@@ -216,7 +226,12 @@ def import_counts(
                 # agent mints SMPL-xxxxxx codes for items that had no barcode,
                 # and writing those into the EAN column would make them look
                 # like manufacturer barcodes to every later lookup.
-                ean=code if code.isdigit() and 8 <= len(code) <= 14 else None,
+                ean=code if looks_like_ean(code) else None,
+                # ...but it still has to be stored, or the label the operator
+                # just stuck on the shelf matches no row and the article is
+                # unscannable despite being in stock. That was the bug: the
+                # code was correctly kept out of `ean` and then dropped.
+                internal_code=None if looks_like_ean(code) else (code or None),
                 item_name=name[:500],
                 stock_total=0,
                 stock_available=0,

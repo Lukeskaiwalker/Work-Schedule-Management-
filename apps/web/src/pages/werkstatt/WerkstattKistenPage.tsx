@@ -79,7 +79,15 @@ type SearchHit = {
   unit: string | null;
   stock_available: number | null;
   /** Anything but "partial" is an exact hit on a scannable identifier. */
-  match: "exact_ean" | "exact_article_no" | "exact_supplier_no" | "partial";
+  // Mirrors ItemMatchKind in schemas/werkstatt_boxes.py. "exact_internal_code"
+  // is a barcode we printed ourselves; it outranks an EAN because it exists
+  // only because we issued it.
+  match:
+    | "exact_internal_code"
+    | "exact_ean"
+    | "exact_article_no"
+    | "exact_supplier_no"
+    | "partial";
   supplier_name: string | null;
   supplier_article_no: string | null;
 };

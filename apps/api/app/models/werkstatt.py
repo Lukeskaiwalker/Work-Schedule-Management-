@@ -117,6 +117,14 @@ class WerkstattArticle(Base):
     # Partial-unique index declared in migration: unique WHERE ean IS NOT NULL.
     # Here it's just declared as indexed for fast lookups.
     ean: Mapped[str | None] = mapped_column(String(64), index=True)
+    # The barcode WE printed, for stock that reached the shelf without a
+    # manufacturer one — the stock-take station mints "SMPL-XXXXXX" and puts it
+    # on a label. It gets its own column rather than borrowing `ean` on purpose:
+    # an EAN means "the manufacturer says this is the product", and a code we
+    # invented does not. Conflating them makes an in-house sticker look like a
+    # GTIN to catalog matching, supplier lookups and any future price import.
+    # Nullable because catalog-sourced articles never need one.
+    internal_code: Mapped[str | None] = mapped_column(String(64), index=True)
     item_name: Mapped[str] = mapped_column(String(500), nullable=False, index=True)
     manufacturer: Mapped[str | None] = mapped_column(String(255))
 

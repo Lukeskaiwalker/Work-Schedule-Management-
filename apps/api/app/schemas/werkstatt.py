@@ -709,7 +709,7 @@ class ScanResolveMachine(BaseModel):
 class ScanResolveWerkstatt(BaseModel):
     kind: Literal["werkstatt_article"] = "werkstatt_article"
     article: WerkstattArticleOut
-    matched_by: Literal["sp", "ean", "supplier_no"]
+    matched_by: Literal["sp", "internal_code", "ean", "supplier_no"]
 
 
 class ScanResolveCatalog(BaseModel):

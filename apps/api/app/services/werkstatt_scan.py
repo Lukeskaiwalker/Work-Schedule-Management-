@@ -68,7 +68,7 @@ from app.services.werkstatt_unit_numbers import UNIT_PATTERN, normalize_scanned_
 
 
 def resolve_scan(db: Session, code: str) -> ScanResolveResult:
-    """Run the six-step scan cascade and return a ``ScanResolveResult``.
+    """Run the scan cascade and return a ``ScanResolveResult``.
 
     An empty / whitespace-only code resolves to ``not_found`` (with the
     original string preserved). All DB lookups use the normalised (stripped)
@@ -107,7 +107,21 @@ def resolve_scan(db: Session, code: str) -> ScanResolveResult:
             matched_by="sp",
         )
 
-    # 3. werkstatt_articles.ean == code
+    # 3. werkstatt_articles.internal_code == code — the barcode we printed
+    #    ourselves for stock that arrived without a manufacturer one. Ahead of
+    #    `ean` because it is unambiguously ours: a code in this column was
+    #    issued by this app, so a hit here cannot be a coincidental collision
+    #    with somebody's GTIN.
+    article = db.scalars(
+        select(WerkstattArticle).where(WerkstattArticle.internal_code == normalised)
+    ).first()
+    if article is not None:
+        return ScanResolveWerkstatt(
+            article=_article_out(db, article),
+            matched_by="internal_code",
+        )
+
+    # 4. werkstatt_articles.ean == code
     article = db.scalars(
         select(WerkstattArticle).where(WerkstattArticle.ean == normalised)
     ).first()

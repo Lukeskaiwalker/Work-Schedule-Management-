@@ -642,3 +642,36 @@ def test_item_search_ignores_whitespace_only_query(client: TestClient, admin_tok
     response = client.get("/api/werkstatt/item-search?q=%20", headers=auth_headers(admin_token))
     assert response.status_code == 200
     assert response.json() == []
+
+
+def test_item_search_finds_an_article_by_our_own_printed_barcode(
+    client: TestClient, admin_token: str
+) -> None:
+    """The reported bug: in-house labels would not scan into a Kiste.
+
+    Stock added during a stock-take gets a code this app mints and prints.
+    The Kisten scanner searched item_name, article_number, EAN and supplier
+    number — every column except the one that code lives in — so packing a
+    crate by scanning our own labels found nothing for stock on the shelf.
+    """
+
+    from app.core.db import SessionLocal
+    from app.models.entities import WerkstattArticle
+
+    article = _article(client, admin_token, "Wago 285-1185", stock=5)
+    with SessionLocal() as db:
+        row = db.get(WerkstattArticle, article["id"])
+        row.internal_code = "SMPL-Z7W5C9"
+        db.commit()
+
+    found = client.get(
+        "/api/werkstatt/item-search?q=SMPL-Z7W5C9", headers=auth_headers(admin_token)
+    )
+    assert found.status_code == 200, found.text
+    hits = found.json()
+    assert len(hits) == 1, "an in-house code identifies exactly one article"
+    assert hits[0]["article_id"] == article["id"]
+    assert hits[0]["match"] == "exact_internal_code"
+    # The scanner reads position 0 and refuses anything that is not exact, so
+    # a "partial" here would have the same effect as finding nothing.
+    assert hits[0]["match"] != "partial"

@@ -714,6 +714,10 @@ def search_items(
         WerkstattArticle.item_name,
         WerkstattArticle.article_number,
         WerkstattArticle.ean,
+        # The barcode we printed ourselves. Without it, scanning an in-house
+        # label into a Kiste found nothing for stock that was plainly on the
+        # shelf — the code is on the sticker and in no searched column.
+        WerkstattArticle.internal_code,
     ]
     token_clauses = [token_matches_any(article_columns, token) for token in tokens]
     article_stmt = select(WerkstattArticle).where(
@@ -731,7 +735,12 @@ def search_items(
     ).all()
     for article in articles:
         supplier_name, supplier_article_no = supplier_by_article.get(article.id, (None, None))
-        if exact(article.ean):
+        if exact(article.internal_code):
+            # Ranked first: a code in this column was issued by this app, so a
+            # hit is ours by construction and cannot be a coincidental
+            # collision with a manufacturer's GTIN.
+            match = "exact_internal_code"
+        elif exact(article.ean):
             match = "exact_ean"
         elif exact(article.article_number):
             match = "exact_article_no"
@@ -800,14 +809,17 @@ def search_items(
     # scanner reads position 0, so this ordering is what stops a substring
     # match on an unrelated article from being dropped into a crate.
     match_rank = {
-        "exact_ean": 0,
-        "exact_supplier_no": 1,
-        "exact_article_no": 2,
-        "partial": 3,
+        # Our own printed code outranks even an EAN: it exists only because we
+        # issued it, so it identifies exactly one row by construction.
+        "exact_internal_code": 0,
+        "exact_ean": 1,
+        "exact_supplier_no": 2,
+        "exact_article_no": 3,
+        "partial": 4,
     }
     hits.sort(
         key=lambda hit: (
-            match_rank.get(hit.match, 3),
+            match_rank.get(hit.match, 4),
             0 if hit.source == "article" else 1,
             hit.item_name.casefold(),
         )

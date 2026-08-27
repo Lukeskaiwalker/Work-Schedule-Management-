@@ -100,6 +100,7 @@ class WerkstattBoxItemUpdate(BaseModel):
 # How a hit matched the query. Everything except "partial" is an exact match
 # on a scannable identifier, which is what makes a scan safe to auto-add.
 ItemMatchKind = Literal[
+    "exact_internal_code",
     "exact_ean",
     "exact_article_no",
     "exact_supplier_no",

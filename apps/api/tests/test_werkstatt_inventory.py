@@ -300,9 +300,13 @@ def test_importing_an_offline_session_lands_on_the_right_articles(
     counted = {c["item_name"]: c["counted_qty"] for c in detail["counts"]}
     assert counted["Hager MBS116"] == 16
 
-    # The article created for a barcode-less item must NOT claim an EAN.
+    # The article created for a barcode-less item must NOT claim an EAN...
     made_up = next(c for c in detail["counts"] if c["item_name"] == "Hager K96DB")
     assert made_up["ean"] is None, "a minted SMPL- code is not a manufacturer barcode"
+    # ...but the code must still be KEPT. Dropping it was the bug: the operator
+    # has already stuck that label on the shelf, and a code stored nowhere
+    # makes the article unscannable while sitting in stock. See the round-trip
+    # test below for the behaviour that actually matters.
     # ...while a real EAN is adopted, so the next live scan resolves it.
     eurotec = next(c for c in detail["counts"] if c["item_name"].startswith("Eurotec"))
     assert eurotec["ean"] == "4064827281024"
@@ -451,3 +455,62 @@ def test_a_location_reports_the_machines_standing_there(
     # The article itself was never given a location, so the article count stays 0 —
     # the two numbers answer different questions and must not be conflated.
     assert row["article_count"] == 0
+
+
+def test_a_minted_code_can_be_scanned_after_an_offline_import(
+    client: TestClient, admin_token: str
+) -> None:
+    """The round trip the whole in-house barcode exists for.
+
+    The station prints SMPL-XXXXXX for stock with no manufacturer barcode and
+    the operator puts it on the shelf. Importing that session used to keep the
+    code out of `ean` (right) and then drop it entirely (wrong), so scanning
+    the label answered "unknown article" for stock that was plainly there.
+    """
+
+    session = _session(client, admin_token, "Inventur Regal 3")
+    resp = client.post(
+        f"/api/werkstatt/inventory/sessions/{session['id']}/import",
+        headers=auth_headers(admin_token),
+        json={
+            "counts": [
+                {"code": "SMPL-Z7W5C9", "item_name": "Wago 285-1185", "counted_qty": 3, "scan_count": 3}
+            ]
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+    scanned = client.get(
+        "/api/werkstatt/scan/resolve?code=SMPL-Z7W5C9", headers=auth_headers(admin_token)
+    )
+    assert scanned.status_code == 200, scanned.text
+    body = scanned.json()
+    assert body["kind"] == "werkstatt_article"
+    assert body["matched_by"] == "internal_code"
+    assert body["article"]["item_name"] == "Wago 285-1185"
+
+
+def test_a_real_barcode_is_still_filed_as_an_ean(client: TestClient, admin_token: str) -> None:
+    """The split must cut the right way round: digits are the manufacturer's."""
+
+    session = _session(client, admin_token, "Inventur Regal 4")
+    resp = client.post(
+        f"/api/werkstatt/inventory/sessions/{session['id']}/import",
+        headers=auth_headers(admin_token),
+        json={
+            "counts": [
+                {
+                    "code": "4064827281024",
+                    "item_name": "Eurotec Tellerkopf",
+                    "counted_qty": 2,
+                    "scan_count": 2,
+                }
+            ]
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+    scanned = client.get(
+        "/api/werkstatt/scan/resolve?code=4064827281024", headers=auth_headers(admin_token)
+    ).json()
+    assert scanned["matched_by"] == "ean", "a digits-only code is a manufacturer barcode"

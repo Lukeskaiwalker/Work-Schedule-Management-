@@ -39,6 +39,7 @@ from app.services.werkstatt_inventory import (
     ImportRow,
     finalize_session,
     import_counts,
+    looks_like_ean,
     scan_into_session,
 )
 from app.services.werkstatt_inventory import _bump as bump_count  # noqa: PLC2701 — same package
@@ -190,9 +191,15 @@ def name_new_article(
 
     _require_open(db, session_id)
     code = (payload.code or "").strip() or None
+    # Split the same way the offline import does: a digits-only code is a
+    # manufacturer barcode, anything else is one we minted. This path used to
+    # put both in `ean`, which scanned but asserted that a manufacturer had
+    # assigned a code this app invented.
+    is_ean = looks_like_ean(code or "")
     article = WerkstattArticle(
         article_number=next_article_number(db),
-        ean=code,
+        ean=code if is_ean else None,
+        internal_code=None if is_ean else code,
         item_name=payload.item_name.strip(),
         unit=(payload.unit or None),
         stock_total=0,
