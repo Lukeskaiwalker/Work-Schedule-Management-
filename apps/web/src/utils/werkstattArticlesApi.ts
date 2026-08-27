@@ -17,6 +17,8 @@ export type WerkstattStockStatus = "available" | "low" | "empty" | "out" | "unav
 
 /** Mirrors WerkstattArticleLiteOut. */
 export interface WerkstattArticleLite {
+  /** The barcode we printed ourselves, when the article has no manufacturer one. */
+  internal_code?: string | null;
   id: number;
   article_number: string;
   ean: string | null;
@@ -55,4 +57,31 @@ export async function listArticles(
   if (options.limit != null) params.set("limit", String(options.limit));
   const qs = params.toString();
   return apiFetch<WerkstattArticleLite[]>(`/werkstatt/articles${qs ? `?${qs}` : ""}`, token);
+}
+
+
+export interface ArticleLabelPrintResult {
+  article_id: number;
+  internal_code: string;
+  /** False when the article already had a code and this was a reprint. */
+  minted: boolean;
+  printer: string;
+}
+
+/**
+ * Print a shelf label, minting the article's in-house code on first use.
+ *
+ * The server writes the code in the same transaction that prints it, so a
+ * failed print leaves no code behind — which is why the returned code is the
+ * one now physically on the shelf, not merely one that was allocated.
+ */
+export async function printArticleLabel(
+  token: string,
+  articleId: number,
+): Promise<ArticleLabelPrintResult> {
+  return apiFetch<ArticleLabelPrintResult>(
+    `/werkstatt/articles/${articleId}/print-label`,
+    token,
+    { method: "POST" },
+  );
 }

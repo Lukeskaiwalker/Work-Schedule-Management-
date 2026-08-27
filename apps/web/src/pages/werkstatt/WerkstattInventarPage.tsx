@@ -5,7 +5,11 @@ import { NeuerArtikelModal } from "../../components/werkstatt/NeuerArtikelModal"
 import { EntnehmenModal } from "../../components/werkstatt/EntnehmenModal";
 import { BestandAnpassenModal } from "../../components/werkstatt/BestandAnpassenModal";
 import { type MockInventoryRow, type MockStockTone } from "../../components/werkstatt/mockData";
-import { listArticles, type WerkstattArticleLite } from "../../utils/werkstattArticlesApi";
+import {
+  listArticles,
+  printArticleLabel,
+  type WerkstattArticleLite,
+} from "../../utils/werkstattArticlesApi";
 
 /**
  * WerkstattInventarPage — full inventory list. Ported from Paper 7RO-0
@@ -45,6 +49,8 @@ export function WerkstattInventarPage() {
   /* Modal state — each modal gets its own slot; Entnehmen + BestandAnpassen
    * hold the row the user is acting on (null when closed). */
   const [neuerArtikelOpen, setNeuerArtikelOpen] = useState(false);
+  const [printingId, setPrintingId] = useState<number | null>(null);
+  const [labelNotice, setLabelNotice] = useState<string>("");
   const [entnehmenRow, setEntnehmenRow] = useState<MockInventoryRow | null>(null);
   const [bestandRow, setBestandRow] = useState<MockInventoryRow | null>(null);
 
@@ -111,6 +117,10 @@ export function WerkstattInventarPage() {
                 language === "de" ? "de-DE" : "en-US",
               )
             : null,
+          article_id: a.id,
+          // Either identifier makes the article findable with a scanner; with
+          // neither, it can only be found by typing its name.
+          scannable: Boolean(a.ean || a.internal_code),
         };
       }),
     [articles, language],
@@ -152,6 +162,39 @@ export function WerkstattInventarPage() {
   if (mainView !== "werkstatt" || werkstattTab !== "inventar") return null;
 
   const de = language === "de";
+
+  /**
+   * Print a shelf label for one article.
+   *
+   * Reloads afterwards because the first print mints the article's code, which
+   * flips it from unscannable to scannable — the button's own appearance is
+   * derived from that, so not reloading would leave it inviting a second print.
+   */
+  const handlePrintLabel = useCallback(
+    async (row: MockInventoryRow) => {
+      if (!token || printingId !== null) return;
+      setPrintingId(row.article_id);
+      setLabelNotice("");
+      try {
+        const result = await printArticleLabel(token, row.article_id);
+        setLabelNotice(
+          de
+            ? `${result.internal_code} gedruckt – ${row.item_name}`
+            : `Printed ${result.internal_code} – ${row.item_name}`,
+        );
+        if (result.minted) await reload();
+      } catch (err) {
+        // The server distinguishes "no printer configured" (503) from
+        // "printer unreachable" (502); both arrive here as a message worth
+        // showing verbatim, because the fix differs.
+        setLabelNotice(err instanceof Error ? err.message : String(err));
+      } finally {
+        setPrintingId(null);
+      }
+    },
+    [token, printingId, de, reload],
+  );
+
   const categoryOptions = Array.from(new Set(allRows.map((r) => r.category))).sort();
   const locationOptions = Array.from(new Set(allRows.map((r) => r.location))).sort();
 
@@ -263,6 +306,19 @@ export function WerkstattInventarPage() {
           <span className="werkstatt-col werkstatt-col-actions" />
         </div>
 
+        {labelNotice && (
+          <p className="werkstatt-label-notice" role="status">
+            {labelNotice}
+            <button
+              type="button"
+              className="werkstatt-label-notice-close"
+              aria-label={de ? "Hinweis schließen" : "Dismiss"}
+              onClick={() => setLabelNotice("")}
+            >
+              ×
+            </button>
+          </p>
+        )}
         <ul className="werkstatt-table-body">
           {rows.map((row) => (
             <li
@@ -318,6 +374,26 @@ export function WerkstattInventarPage() {
                 <span className="werkstatt-row-out-label">{row.out_label}</span>
               </span>
               <span className="werkstatt-col werkstatt-col-actions">
+                {/* Unscannable stock is the actionable case, so that button is
+                    the prominent one; for everything else this is a reprint. */}
+                <button
+                  type="button"
+                  className={`werkstatt-row-label-btn${row.scannable ? "" : " is-missing"}`}
+                  disabled={printingId !== null}
+                  aria-label={
+                    row.scannable
+                      ? de ? "Etikett erneut drucken" : "Reprint label"
+                      : de ? "Etikett drucken – Artikel ist nicht scannbar" : "Print label – article is not scannable"
+                  }
+                  title={
+                    row.scannable
+                      ? de ? "Etikett erneut drucken" : "Reprint label"
+                      : de ? "Kein Barcode – Etikett drucken" : "No barcode – print a label"
+                  }
+                  onClick={() => void handlePrintLabel(row)}
+                >
+                  {printingId === row.article_id ? "…" : "⎙"}
+                </button>
                 <button
                   type="button"
                   className="werkstatt-row-overflow"

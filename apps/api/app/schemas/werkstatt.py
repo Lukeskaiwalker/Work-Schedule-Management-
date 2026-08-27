@@ -240,6 +240,9 @@ class WerkstattArticleOut(_OrmBase):
     id: int
     article_number: str
     ean: str | None
+    # The barcode we printed ourselves, for stock with no manufacturer
+    # one. Surfaced so the UI can show what is on the shelf label.
+    internal_code: str | None = None
     item_name: str
     manufacturer: str | None
     category_id: int | None
@@ -283,6 +286,9 @@ class WerkstattArticleLiteOut(_OrmBase):
     id: int
     article_number: str
     ean: str | None
+    # The barcode we printed ourselves, for stock with no manufacturer
+    # one. Surfaced so the UI can show what is on the shelf label.
+    internal_code: str | None = None
     item_name: str
     manufacturer: str | None
     category_name: str | None
@@ -1008,3 +1014,10 @@ class InventoryImportResult(BaseModel):
     created_new: int
     codes_without_barcode: list[str] = []
     skipped_zero_qty: list[str] = []
+class WerkstattArticleLabelPrintOut(BaseModel):
+    """What was printed, so the UI can show the code now on the shelf."""
+
+    article_id: int
+    internal_code: str
+    minted: bool  # False when the article already had a code and this is a reprint
+    printer: str

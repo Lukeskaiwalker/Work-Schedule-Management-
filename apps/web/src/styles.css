@@ -35456,3 +35456,63 @@ button.time-calendar-cell {
     border: 0;
   }
 }
+
+/* Label printing from the stock list -------------------------------------- */
+
+.werkstatt-row-label-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  margin-right: 4px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.werkstatt-row-label-btn:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: var(--ink);
+}
+
+.werkstatt-row-label-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* An article nothing can scan. Called out rather than left uniform, because
+   this is the one case where printing is a fix and not a reprint. */
+.werkstatt-row-label-btn.is-missing {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.werkstatt-label-notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f4f7fb;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.werkstatt-label-notice-close {
+  margin-left: auto;
+  padding: 0 4px;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}

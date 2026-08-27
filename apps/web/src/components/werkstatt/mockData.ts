@@ -97,6 +97,11 @@ export type MockInventoryRow = {
   out_initials: string | null;
   out_label: string | null;
   in_transit_label: string | null;
+  /** Numeric article id, for calls that act on the article itself. */
+  article_id: number;
+  /** Whether anything on this article can be scanned. Drives the label button:
+   *  a false here is stock you cannot find with a scanner. */
+  scannable: boolean;
 };
 
 export const MOCK_INVENTORY_ROWS: ReadonlyArray<MockInventoryRow> = [];

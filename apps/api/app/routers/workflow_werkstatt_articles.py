@@ -24,6 +24,8 @@ from sqlalchemy.orm import Session
 from app.core.db import get_db
 from app.core.deps import get_current_user, require_permission
 from app.core.time import utcnow
+from app.services import werkstatt_labels
+from app.services.werkstatt_internal_codes import ensure_internal_code
 from app.models.entities import (
     MaterialCatalogItem,
     User,
@@ -41,6 +43,7 @@ from app.routers.workflow_werkstatt_article_mappers import (
 from app.schemas.werkstatt import (
     WerkstattArticleCreate,
     WerkstattArticleFromCatalogCreate,
+    WerkstattArticleLabelPrintOut,
     WerkstattArticleLinkCatalog,
     WerkstattArticleLiteOut,
     WerkstattArticleMergeOut,
@@ -670,3 +673,54 @@ def list_similar_articles(
         )
         for candidate, candidate_score in rows
     ]
+@router.post("/articles/{article_id}/print-label", response_model=WerkstattArticleLabelPrintOut)
+def print_article_label(
+    article_id: int,
+    _: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WerkstattArticleLabelPrintOut:
+    """Print a shelf label for an article, minting its code on first use.
+
+    Authenticated rather than manage-only, for the same reason machine labels
+    are: the person holding the unlabelled box is rarely the person with
+    manage rights, and a label that is awkward to print is a shelf that stays
+    unscannable. That is not hypothetical here — half the stock reached this
+    state because the code existed only on paper.
+
+    The code is written in the same transaction that prints it, so the sticker
+    and the row cannot disagree. Reprinting reproduces the same code rather
+    than minting a second one, or the label already on the shelf would be
+    orphaned.
+    """
+    article = db.get(WerkstattArticle, article_id)
+    if article is None:
+        raise HTTPException(status_code=404, detail="Artikel nicht gefunden")
+
+    had_code = bool(article.internal_code)
+    code = ensure_internal_code(db, article)
+    try:
+        printer = werkstatt_labels.print_machine_label(
+            db,
+            werkstatt_labels.LabelContent(
+                unit_number=code,
+                article_name=article.item_name,
+                manufacturer=article.manufacturer,
+                serial_number=article.article_number,
+            ),
+        )
+    except werkstatt_labels.LabelFormatUnsupported as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except werkstatt_labels.LabelPrinterNotConfigured:
+        raise HTTPException(status_code=503, detail="Kein Etikettendrucker konfiguriert")
+    except werkstatt_labels.LabelPrinterUnreachable as exc:
+        raise HTTPException(status_code=502, detail=f"Etikettendrucker nicht erreichbar ({exc})")
+
+    # Only after the printer accepted the job: a code committed for a label
+    # that never came out is a code nobody can scan and nobody knows exists.
+    db.commit()
+    return WerkstattArticleLabelPrintOut(
+        article_id=article.id,
+        internal_code=code,
+        minted=not had_code,
+        printer=printer,
+    )
