@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0 --port 5173",
     "build": "vite build",
-    "preview": "vite preview --host 0.0.0.0 --port 4173"
+    "preview": "vite preview --host 0.0.0.0 --port 4173",
+    "check": "node scripts/check-pdf-preview-probes.mjs"
   },
   "dependencies": {
     "@types/react-signature-canvas": "^1.0.5",

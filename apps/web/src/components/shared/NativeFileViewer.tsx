@@ -24,7 +24,18 @@ import {
 import { IS_APP_SURFACE } from "../../native/shell";
 import { isGerman } from "../../utils/uiLanguage";
 
-type Phase = "idle" | "loading" | "ready" | "error";
+type Phase = "idle" | "loading" | "ready" | "error" | "saving";
+
+/**
+ * What happened when the bytes were handed to the OS.
+ *  - `shared`   — the share sheet took them.
+ *  - `aborted`  — the sheet opened and the user dismissed it. Deliberate, so
+ *                 it must not trigger a fallback; that would turn "cancel"
+ *                 into "download anyway".
+ *  - `declined` — no share path available or it refused. The caller has to
+ *                 offer something else rather than assume success.
+ */
+type SaveOutcome = "shared" | "aborted" | "declined";
 
 function isImage(type: string): boolean {
   return type.startsWith("image/");
@@ -37,14 +48,40 @@ function isText(type: string): boolean {
 }
 
 /**
- * True when this engine cannot draw a PDF inline. Chrome on Android reports
+ * True when this engine cannot draw a PDF at all. Chrome on Android reports
  * `navigator.pdfViewerEnabled === false` — the frame loads but Chromium only
- * paints its sad-page placeholder behind it (the exact field report). iOS
- * WKWebView and desktop engines either report true or predate the API; both
- * render framed PDFs fine, so `undefined` counts as capable.
+ * paints its sad-page placeholder behind it. Engines that predate the API
+ * report `undefined`, which counts as capable.
+ *
+ * Note what this does NOT answer: whether a PDF renders usefully *in a frame*.
+ * See `pdfFrameShowsFirstPageOnly`.
  */
 function pdfFrameUnsupported(): boolean {
   return (navigator as { pdfViewerEnabled?: boolean }).pdfViewerEnabled === false;
+}
+
+/**
+ * True on iOS/iPadOS, where a framed PDF renders as page one and nothing else.
+ *
+ * WebKit draws PDFs in a subframe as a single static page: no scrolling, no
+ * page controls, no way to reach page 2. Only a top-level navigation gets the
+ * real multi-page viewer, and this app has no top level to navigate to — the
+ * whole reason the viewer exists is that an installed PWA cannot open a tab.
+ *
+ * This is why `pdfViewerEnabled` alone was the wrong gate: iOS answers `true`
+ * (it does have a renderer), took the frame path, and every multi-page
+ * document showed only its first page. "Has a PDF renderer" and "renders a
+ * framed PDF usefully" are separate capabilities and only the first has a
+ * standard probe, so this one is a UA sniff — deliberately, and narrowly.
+ *
+ * iPadOS 13+ reports a desktop `Macintosh` UA; `maxTouchPoints` is the
+ * documented way to tell an iPad from a Mac. A Mac running the installed PWA
+ * reports 0 and correctly keeps the frame.
+ */
+function pdfFrameShowsFirstPageOnly(): boolean {
+  const ua = navigator.userAgent || "";
+  if (/\b(iPhone|iPad|iPod)\b/.test(ua)) return true;
+  return /\bMacintosh\b/.test(ua) && (navigator.maxTouchPoints ?? 0) > 1;
 }
 
 /**
@@ -76,6 +113,10 @@ function Viewer() {
   const [page, setPage] = useState<number>(1);
   const [pageUrl, setPageUrl] = useState<string>("");
   const [pageLoading, setPageLoading] = useState(false);
+  // Whether the page-count probe has answered yet. `pageCount === 0` alone
+  // cannot say: it is both "not asked yet" and "asked and failed", and those
+  // need opposite fallbacks — wait, versus drop back to the frame.
+  const [pagesProbe, setPagesProbe] = useState<"pending" | "ok" | "failed">("pending");
   const pageUrlRef = useRef<string | null>(null);
 
   // Read per render rather than once: the user can toggle DE/EN while the app
@@ -108,10 +149,56 @@ function Viewer() {
     setFailure("");
     setSourceUrl("");
     setPageCount(0);
+    setPagesProbe("pending");
     setPage(1);
     setPageUrl("");
     setPhase("idle");
   }, [release, releasePage]);
+
+  /**
+   * Offer `target`'s bytes to the OS share sheet.
+   *
+   * Split out of `save` so a save-intent click can reach it without a viewer
+   * render in between. Reports what happened instead of swallowing it, because
+   * the two callers want different things from a refusal.
+   */
+  const offerToShareSheet = useCallback(async (target: FetchedFile): Promise<SaveOutcome> => {
+    // Prefer the OS share sheet: on Android's installed PWA a programmatic
+    // blob <a download> silently does nothing (the second half of the field
+    // report — "download did not work either"), while share with files is
+    // reliable and offers "save to Files/Drive". AbortError = user closed
+    // the sheet; that is not a failure and must not trigger the fallback,
+    // or cancelling would immediately start a download.
+    try {
+      const nav = navigator as Navigator & {
+        canShare?: (data: { files: File[] }) => boolean;
+        share?: (data: { files: File[]; title?: string }) => Promise<void>;
+      };
+      const asFile = new File([target.blob], target.name || "download", {
+        type: target.contentType || "application/octet-stream",
+      });
+      if (nav.canShare?.({ files: [asFile] }) && nav.share) {
+        await nav.share({ files: [asFile], title: target.name });
+        return "shared";
+      }
+    } catch (err) {
+      if ((err as Error)?.name === "AbortError") return "aborted";
+      // Anything else — including iOS refusing the call because the user
+      // gesture expired while the file was downloading — is a decline.
+    }
+    return "declined";
+  }, []);
+
+  /** Write `target` to the downloads folder via a synthetic anchor. */
+  const offerToAnchor = useCallback((target: FetchedFile) => {
+    const anchor = document.createElement("a");
+    anchor.href = target.objectUrl;
+    anchor.download = target.name || "download";
+    anchor.rel = "noreferrer";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+  }, []);
 
   const open = useCallback(
     (request: OpenFileRequest) => {
@@ -122,8 +209,58 @@ function Viewer() {
       setFailure("");
       setSourceUrl(request.url);
       setPageCount(0);
+      setPagesProbe("pending");
       setPage(1);
       setPageUrl("");
+
+      /**
+       * A save-intent click never renders the document. It used to: every
+       * intercepted link landed in the viewer, so "Download" beside "Vorschau"
+       * re-opened the file the user was already looking at and saving took a
+       * second tap inside it.
+       *
+       * The bytes still have to be fetched first (that is what the bearer
+       * token is for), which is why this cannot be a plain link. Fetching
+       * costs the user gesture, and iOS may then refuse `share()` for want of
+       * transient activation — so a refusal falls back to the viewer with its
+       * Save button rather than failing silently. That is the old two-tap
+       * flow, reached only when the one-tap path is genuinely unavailable.
+       */
+      if (request.intent === "save") {
+        setPhase("saving");
+        void fetchFile(request)
+          .then(async (fetched) => {
+            objectUrlRef.current = fetched.objectUrl;
+            setFile(fetched);
+            const outcome = await offerToShareSheet(fetched);
+            if (outcome === "shared" || outcome === "aborted") {
+              close();
+              return;
+            }
+            // No share path. Not worth trying the anchor unattended here:
+            // this viewer only ever runs on an app surface (installed PWA or
+            // WKWebView), and those are precisely where a programmatic blob
+            // anchor can no-op silently — which would look like the tap did
+            // nothing. Show the file with its Save button instead, so the
+            // fallback is something the user can see and act on.
+            //
+            // That state renders the file for real, so anything the view path
+            // prepares has to be prepared here too — a text body is read from
+            // the blob, not from the object URL, or the <pre> shows empty.
+            if (isText(fetched.contentType)) {
+              setTextBody(await fetched.blob.text());
+            }
+            setPhase("ready");
+          })
+          .catch(() => {
+            setFailure(
+              de ? "Datei konnte nicht geladen werden." : "The file could not be loaded.",
+            );
+            setPhase("error");
+          });
+        return;
+      }
+
       setPhase("loading");
 
       void fetchFile(request)
@@ -159,7 +296,7 @@ function Viewer() {
           setPhase("error");
         });
     },
-    [de, release, releasePage],
+    [de, release, releasePage, close, offerToShareSheet],
   );
 
   /**
@@ -179,59 +316,46 @@ function Viewer() {
    * form: Safari and WKWebView route it to the share sheet, everything else
    * writes it to the downloads folder.
    */
+  /** The viewer's own Save button: share sheet first, anchor as the fallback. */
   const save = useCallback(async () => {
     if (!file) return;
-    // Prefer the OS share sheet: on Android's installed PWA a programmatic
-    // blob <a download> silently does nothing (the second half of the field
-    // report — "download did not work either"), while share with files is
-    // reliable and offers "save to Files/Drive". AbortError = user closed
-    // the sheet; that is not a failure and must not trigger the fallback,
-    // or cancelling would immediately start a download.
-    try {
-      const nav = navigator as Navigator & {
-        canShare?: (data: { files: File[] }) => boolean;
-        share?: (data: { files: File[]; title?: string }) => Promise<void>;
-      };
-      const asFile = new File([file.blob], file.name || "download", {
-        type: file.contentType || "application/octet-stream",
-      });
-      if (nav.canShare?.({ files: [asFile] }) && nav.share) {
-        await nav.share({ files: [asFile], title: file.name });
-        return;
-      }
-    } catch (err) {
-      if ((err as Error)?.name === "AbortError") return;
-      // fall through to the anchor
-    }
-    const anchor = document.createElement("a");
-    anchor.href = file.objectUrl;
-    anchor.download = file.name || "download";
-    anchor.rel = "noreferrer";
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-  }, [file]);
+    const outcome = await offerToShareSheet(file);
+    if (outcome === "shared" || outcome === "aborted") return;
+    offerToAnchor(file);
+  }, [file, offerToShareSheet, offerToAnchor]);
 
   useEffect(() => {
     setFileOpenHandler(open);
     return () => setFileOpenHandler(null);
   }, [open]);
 
-  // Engines with no inline PDF renderer (Chrome on Android) get the document
-  // as server-rendered page images instead of a frame that draws Chromium's
-  // sad-page placeholder. Only attachments have the pages endpoint; other
-  // PDFs (e.g. training reports) show the save hint below instead.
-  const pagesBase = file && isPdf(file.contentType) && pdfFrameUnsupported() ? pagesBaseFor(sourceUrl) : null;
+  /**
+   * Serve the document as server-rendered page images when the frame cannot do
+   * the job: Chromium on Android draws nothing at all, and WebKit draws only
+   * page one. Both end up here; what differs is their fallback when a file has
+   * no pages endpoint (only attachments do — a training report does not).
+   */
+  const pdfNeedsPages =
+    !!file && isPdf(file.contentType) && (pdfFrameUnsupported() || pdfFrameShowsFirstPageOnly());
+  const pagesBase = pdfNeedsPages ? pagesBaseFor(sourceUrl) : null;
 
   useEffect(() => {
     if (phase !== "ready" || !pagesBase) return;
     let cancelled = false;
     fetchAuthorizedJson<{ page_count: number }>(pagesBase)
       .then((meta) => {
-        if (!cancelled) setPageCount(meta.page_count);
+        if (cancelled) return;
+        const count = Number(meta.page_count) || 0;
+        setPageCount(count);
+        // A document that reports no pages is not something the pager can
+        // show; treat it like a failed probe so the frame still gets a turn.
+        setPagesProbe(count > 0 ? "ok" : "failed");
       })
       .catch(() => {
-        if (!cancelled) setPageCount(0);
+        if (!cancelled) {
+          setPageCount(0);
+          setPagesProbe("failed");
+        }
       });
     return () => {
       cancelled = true;
@@ -297,6 +421,15 @@ function Viewer() {
           </div>
         ) : null}
 
+        {/* Deliberately not the document: a save-intent tap should never look
+            like the preview re-opening. */}
+        {phase === "saving" ? (
+          <div className="file-viewer-centre">
+            <span className="file-viewer-spinner" aria-hidden="true" />
+            <p>{de ? "Datei wird vorbereitet…" : "Preparing file…"}</p>
+          </div>
+        ) : null}
+
         {phase === "error" ? (
           <div className="file-viewer-centre">
             <p className="file-viewer-error" role="alert">
@@ -308,11 +441,18 @@ function Viewer() {
         {phase === "ready" && file ? (
           isImage(file.contentType) ? (
             <img className="file-viewer-image" src={file.objectUrl} alt={file.name} />
-          ) : isPdf(file.contentType) && !pdfFrameUnsupported() ? (
-            <iframe className="file-viewer-frame" src={file.objectUrl} title={file.name} />
+          ) : isPdf(file.contentType) && pagesBase && pagesProbe === "pending" ? (
+            /* The pager is wanted but the page count has not arrived. Waiting
+               beats rendering the frame here: on iOS the frame would paint a
+               first page that is about to be replaced, and mounting a blob PDF
+               only to tear it down is the flash the pager exists to avoid. */
+            <div className="file-viewer-centre">
+              <span className="file-viewer-spinner" aria-hidden="true" />
+            </div>
           ) : isPdf(file.contentType) && pagesBase && pageCount > 0 ? (
-            /* No inline PDF renderer on this engine (Android): server-rendered
-               page images with a simple pager. */
+            /* Server-rendered page images with a simple pager. Checked before
+               the frame: on iOS the frame is *available* but shows only page
+               one, so preferring it would reinstate the bug. */
             <div className="file-viewer-pages">
               <div className="file-viewer-page-canvas">
                 {pageLoading && <span className="file-viewer-spinner" aria-hidden="true" />}
@@ -348,9 +488,15 @@ function Viewer() {
                 </div>
               )}
             </div>
+          ) : isPdf(file.contentType) && !pdfFrameUnsupported() ? (
+            /* The frame can draw something. On iOS with no pages endpoint that
+               is page one only — imperfect, but it is what this engine has
+               always shown, and a readable first page beats replacing it with
+               an "unsupported" notice. */
+            <iframe className="file-viewer-frame" src={file.objectUrl} title={file.name} />
           ) : isPdf(file.contentType) ? (
-            /* PDF on an engine without a renderer AND without a pages endpoint
-               (non-attachment PDFs): an honest hint beats a sad-page icon. */
+            /* No renderer AND no pages endpoint: an honest hint beats a
+               sad-page icon. */
             <div className="file-viewer-centre">
               <p>
                 {de

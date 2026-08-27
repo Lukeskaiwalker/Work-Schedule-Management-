@@ -41,6 +41,18 @@ export type OpenFileRequest = {
   url: string;
   /** Best-effort display name, from the link text or the URL. */
   name: string;
+  /**
+   * What the click asked for. Interception cannot be dropped for either kind
+   * (a bare link 401s without the bearer token), so the two have to be told
+   * apart here rather than by letting the browser handle one of them.
+   *
+   * `save` comes from an explicit `download` attribute — the standard HTML way
+   * to say "put this on the device, do not navigate to it". Without this the
+   * viewer was the only destination, so "Download" next to "Vorschau" in a file
+   * row re-opened the document the user was already looking at, and saving took
+   * a second tap inside the viewer (the iOS field report).
+   */
+  intent: "view" | "save";
 };
 
 type OpenHandler = (request: OpenFileRequest) => void;
@@ -129,7 +141,12 @@ export function installNativeFileOpener(): void {
 
       event.preventDefault();
       event.stopPropagation();
-      handler({ url, name: nameFor(anchor as HTMLAnchorElement, url) });
+      handler({
+        url,
+        name: nameFor(anchor as HTMLAnchorElement, url),
+        // Presence, not value: `download` with an empty value still means save.
+        intent: anchor.hasAttribute("download") ? "save" : "view",
+      });
     },
     true,
   );

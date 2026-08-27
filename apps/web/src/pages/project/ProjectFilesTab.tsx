@@ -184,7 +184,17 @@ function FileRow({
             {language === "de" ? "Vorschau" : "Preview"}
           </a>
         )}
-        <a href={fileDownloadUrl(file.id)} target="_blank" rel="noreferrer">
+        {/* `download` is what separates this from the "Vorschau" link beside
+            it: both point at the same file and both are intercepted in the app
+            (the bearer token has to be attached), so without the attribute the
+            in-app viewer was the destination for both and Download re-opened
+            the document instead of saving it. */}
+        <a
+          href={fileDownloadUrl(file.id)}
+          download={file.file_name}
+          target="_blank"
+          rel="noreferrer"
+        >
           {language === "de" ? "Download" : "Download"}
         </a>
         {canManageFiles && (
