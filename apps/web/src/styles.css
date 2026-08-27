@@ -24974,7 +24974,7 @@ button.time-calendar-cell {
 }
 .werkstatt-table-head {
   display: grid;
-  grid-template-columns: 32px minmax(260px, 2.2fr) minmax(140px, 1fr) minmax(180px, 1.2fr) 120px minmax(160px, 1.1fr) 36px;
+  grid-template-columns: 32px minmax(260px, 2.2fr) minmax(140px, 1fr) minmax(180px, 1.2fr) 120px minmax(160px, 1.1fr) 74px;
   align-items: center;
   gap: 12px;
   padding: 12px 16px;
@@ -25001,7 +25001,7 @@ button.time-calendar-cell {
 }
 .werkstatt-row {
   display: grid;
-  grid-template-columns: 32px minmax(260px, 2.2fr) minmax(140px, 1fr) minmax(180px, 1.2fr) 120px minmax(160px, 1.1fr) 36px;
+  grid-template-columns: 32px minmax(260px, 2.2fr) minmax(140px, 1fr) minmax(180px, 1.2fr) 120px minmax(160px, 1.1fr) 74px;
   align-items: center;
   gap: 12px;
   padding: 12px 16px;
@@ -25038,7 +25038,11 @@ button.time-calendar-cell {
 .werkstatt-col-actions {
   display: flex;
   align-items: center;
-  justify-content: center;
+  /* Right-aligned, not centred: the cell holds a variable number of buttons
+     (label print, then the overflow menu), and centring makes the last one
+     shift horizontally depending on how many are shown. */
+  justify-content: flex-end;
+  gap: 4px;
   flex-shrink: 0;
 }
 .werkstatt-col-mono {
@@ -26469,7 +26473,7 @@ button.time-calendar-cell {
 @media (max-width: 1100px) {
   .werkstatt-table-head,
   .werkstatt-row {
-    grid-template-columns: 24px minmax(220px, 2fr) minmax(120px, 1fr) minmax(140px, 1fr) 100px minmax(120px, 1fr) 36px;
+    grid-template-columns: 24px minmax(220px, 2fr) minmax(120px, 1fr) minmax(140px, 1fr) 100px minmax(120px, 1fr) 74px;
   }
   .werkstatt-table-head--suppliers,
   .werkstatt-row--suppliers {
@@ -35463,9 +35467,8 @@ button.time-calendar-cell {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 34px;
-  height: 34px;
-  margin-right: 4px;
+  width: 32px;
+  height: 32px;
   padding: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
