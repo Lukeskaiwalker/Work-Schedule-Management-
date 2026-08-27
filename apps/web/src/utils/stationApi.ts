@@ -19,13 +19,14 @@
 //   POST   /station/stations/{id}/restart                 → StationActionResult
 //   GET    /station/stations/{id}/sessions                → StationSessionListResponse
 //   POST   /station/stations/{id}/sessions/{name}/import  → StationImportResult
-//   POST   /station/pairing                               → StationPairing
-//   GET    /station/pairing/{code}                        → StationPairing
-//   DELETE /station/pairing/{code}                        → 204 (revoke)
+//   POST   /station/pair/start                            → device grant (Pi)
+//   GET    /station/pair/pending                          → StationPairingRequest[]
+//   POST   /station/pair/approve                          → { station: Station }
+//   POST   /station/pair/deny                             → 204
 //   GET    /station/setup                                 → StationSetup
 //
 // The collection is `/station/stations` and not `/station/{id}` on purpose:
-// `/station/pairing` and `/station/setup` would otherwise collide with an int
+// `/station/pair/...` and `/station/setup` would otherwise collide with an int
 // path parameter, and FastAPI answers that collision with a 422 rather than
 // falling through to the next route.
 //
@@ -155,29 +156,6 @@ export interface StationActionResult {
   detail: string;
   /** Round trip in milliseconds, when the agent measured it. */
   ms: number | null;
-}
-
-/**
- * A short-lived pairing code.
- *
- * The point of the whole mechanism: an operator standing at the Pi types eight
- * characters instead of looking up an admin password. The code is single-use
- * and expires in minutes, so shoulder-surfing it is worthless a moment later.
- * `enroll_url` is what the QR encodes, for a Pi with a camera or a phone
- * relaying it.
- */
-export interface StationPairing {
-  code: string;
-  expires_at: string;
-  expires_in_seconds: number;
-  enroll_url: string;
-  claimed: boolean;
-  claimed_station: Station | null;
-}
-
-export interface StationPairingPayload {
-  name?: string;
-  location?: string;
 }
 
 export interface StationPatchPayload {
@@ -511,8 +489,7 @@ export async function getSetupScript(token: string | null): Promise<StationSetup
  * an admin standing at a fresh Pi needs commands on screen, and these do not
  * depend on anything the server has to compute except its own URL.
  */
-export function fallbackSetupScript(baseUrl: string, pairingCode?: string | null): string {
-  const code = pairingCode?.trim() ? pairingCode.trim() : "<Kopplungscode>";
+export function fallbackSetupScript(baseUrl: string): string {
   return [
     "# 1) Abhängigkeiten (Raspberry Pi OS)",
     "sudo apt update && sudo apt install -y git python3-venv libusb-1.0-0",
@@ -527,8 +504,16 @@ export function fallbackSetupScript(baseUrl: string, pairingCode?: string | null
     "sudo udevadm control --reload-rules && sudo udevadm trigger",
     "",
     "# 4) Mit dieser SMPL-Installation koppeln",
+    // No pairing code to enter here: the agent starts the pairing itself and
+    // prints a code to approve in SMPL. The script used to export
+    // SMPL_PAIRING_CODE with a <Kopplungscode> placeholder — a variable the
+    // agent has never read, standing in for a code the operator cannot obtain
+    // before the agent runs, which left them looking for one that will not
+    // exist until it does.
     `export SMPL_API_URL=${baseUrl}`,
-    `export SMPL_PAIRING_CODE=${code}`,
     "./run.sh --host 0.0.0.0",
+    "",
+    "# 5) Der Agent zeigt jetzt einen Kopplungscode.",
+    "#    In SMPL unter Scan-Station freigeben — Code muss übereinstimmen.",
   ].join("\n");
 }
