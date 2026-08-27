@@ -159,8 +159,9 @@ export function WerkstattInventarPage() {
     });
   }, [allRows, search, category, location, activeFilter]);
 
-  if (mainView !== "werkstatt" || werkstattTab !== "inventar") return null;
-
+  // Everything below is a hook, so it must sit ABOVE the early return.
+  // React counts hooks per render: one extra on the renders where this
+  // tab is active crashes the page the moment you navigate to it.
   const de = language === "de";
 
   /**
@@ -194,6 +195,9 @@ export function WerkstattInventarPage() {
     },
     [token, printingId, de, reload],
   );
+
+  if (mainView !== "werkstatt" || werkstattTab !== "inventar") return null;
+
 
   const categoryOptions = Array.from(new Set(allRows.map((r) => r.category))).sort();
   const locationOptions = Array.from(new Set(allRows.map((r) => r.location))).sort();
