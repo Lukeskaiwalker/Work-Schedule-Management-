@@ -29,6 +29,7 @@ from app.core.deps import assert_project_access, get_current_user, require_permi
 from app.core.permissions import ALL_ROLES, has_global_project_access, has_permission_for_user
 from app.core.time import utcnow
 from app.models.project import PROJECT_STATUS_AUFTRAG_ANGENOMMEN
+from app.services.task_materials import import_box_into_task, remove_box_from_task
 from app.services.project_status import is_won_project_status
 from app.models.entities import (
     Attachment,
@@ -59,6 +60,7 @@ from app.models.entities import (
     SchoolAbsence,
     Site,
     Task,
+    TaskMaterial,
     TaskAssignment,
     TaskPartner,
     User,
@@ -102,6 +104,7 @@ from app.schemas.api import (
     PublicCustomerConfirmationOut,
     PublicCustomerConfirmationRequest,
     TaskCreate,
+    TaskMaterialOut,
     TaskOut,
     TaskUpdate,
     PlanningWeekOut,
@@ -2855,6 +2858,59 @@ def _apply_task_construction_box(task: Task, box: WerkstattConstructionBox | Non
     task.storage_box_number = box.slot if box is not None else None
 
 
+def _task_materials_map(db: Session, tasks: list[Task]) -> dict[int, list[TaskMaterialOut]]:
+    """Material lines for many tasks in one query.
+
+    Batched for the same reason the box map is: the task list renders dozens of
+    rows and the packing list has to be visible there, so a per-task query
+    would turn one screen into dozens of round trips.
+    """
+    task_ids = [task.id for task in tasks if task.id is not None]
+    if not task_ids:
+        return {}
+    rows = db.scalars(
+        select(TaskMaterial)
+        .where(TaskMaterial.task_id.in_(task_ids))
+        .order_by(TaskMaterial.task_id, TaskMaterial.id)
+    ).all()
+    grouped: dict[int, list[TaskMaterialOut]] = {}
+    for row in rows:
+        grouped.setdefault(row.task_id, []).append(TaskMaterialOut.model_validate(row))
+    return grouped
+
+
+def _sync_task_box_materials(
+    db: Session, task: Task, *, previous_box_id: int | None, user_id: int | None
+) -> None:
+    """Bring the task's material lines in step with the box it points at.
+
+    Separate from :func:`_apply_task_construction_box` because that runs while
+    a new task is still unsaved: material rows need a task id, so this can only
+    happen after the flush. Call it once per write path, after the task exists.
+
+    Only acts when the link actually changed. Re-importing on every unrelated
+    save would quietly resurrect lines somebody had removed from the task, and
+    a task is patched for all sorts of reasons that have nothing to do with the
+    crate. The cost is that items packed into the box *after* the task was
+    linked do not appear until the box is picked again — a stale list is easier
+    to notice, and to fix, than a list that will not stay edited.
+
+    Still moves no stock. The lines say what is going out; the movements happen
+    when the box is assigned and when the task is completed.
+    """
+    current_box_id = task.construction_box_id
+    if previous_box_id == current_box_id:
+        return
+
+    if previous_box_id is not None:
+        remove_box_from_task(db, task_id=task.id, box_id=previous_box_id)
+
+    if current_box_id is not None:
+        box = db.get(WerkstattConstructionBox, current_box_id)
+        if box is not None:
+            import_box_into_task(db, task=task, box=box, user_id=user_id)
+
+
 def _task_out(
     task: Task,
     assignee_ids: list[int],
@@ -2862,6 +2918,7 @@ def _task_out(
     partners: list[Partner] | None = None,
     confirmation_by_display_name: str | None = None,
     box: ConstructionBoxRef | None = None,
+    materials: list[TaskMaterialOut] | None = None,
 ) -> TaskOut:
     partner_ids = partner_ids or []
     partner_rows = partners or []
@@ -2878,6 +2935,7 @@ def _task_out(
         construction_box_number=box.box_number if box else None,
         construction_box_label=box.label if box else None,
         construction_box_status=box.status if box else None,
+        materials=materials or [],
         task_type=task.task_type,
         class_template_id=task.class_template_id,
         status=task.status,
@@ -3070,10 +3128,12 @@ def _tasks_out(db: Session, tasks: list[Task]) -> list[TaskOut]:
         rows = db.scalars(select(User).where(User.id.in_(confirmation_user_ids))).all()
         confirmation_names = {row.id: (row.display_name or row.email or "") for row in rows}
     boxes_by_id = _task_box_map(db, tasks)
+    materials_by_task = _task_materials_map(db, tasks)
     return [
         _task_out(
             task,
             assignees_by_task.get(task.id, []),
+            materials=materials_by_task.get(task.id, []),
             box=boxes_by_id.get(task.construction_box_id)
             if task.construction_box_id is not None
             else None,

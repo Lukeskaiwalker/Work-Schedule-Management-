@@ -112,3 +112,68 @@ class TaskAssignment(Base):
     task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), index=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
+class TaskMaterial(Base):
+    """One material line on a task — what to bring, and what came back.
+
+    Tasks previously carried materials as ``Task.materials_required``, a single
+    free-text blob. That is fine for a note to a colleague and useless for
+    anything else: it cannot be checked off on site, cannot say how much of
+    something is needed, and above all cannot be reconciled against stock,
+    because nothing in it identifies an article.
+
+    These rows exist so a construction box can be unpacked into the task that
+    will consume it. ``quantity`` is what was packed; ``quantity_used`` is what
+    the report says was actually fitted, and stays NULL until then. The gap
+    between them is what goes back on the shelf — which is the whole reason
+    both are stored rather than one being overwritten.
+
+    Identity is snapshotted (name, article number, EAN) the way box items do
+    it: an article can be renamed or archived years later, and a finished job
+    should still read as it did on the day.
+    """
+
+    __tablename__ = "task_materials"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    task_id: Mapped[int] = mapped_column(
+        ForeignKey("tasks.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+
+    # Where this line came from. Deselecting a box must remove exactly the
+    # lines that selecting it added and nothing a person typed by hand, so
+    # provenance is stored rather than inferred. SET NULL on the item because
+    # box lines are edited freely while the crate is being packed; the box id
+    # is what the removal actually keys on.
+    source_box_id: Mapped[int | None] = mapped_column(
+        ForeignKey("werkstatt_construction_boxes.id", ondelete="SET NULL"), index=True
+    )
+    source_box_item_id: Mapped[int | None] = mapped_column(
+        ForeignKey("werkstatt_construction_box_items.id", ondelete="SET NULL"), index=True
+    )
+
+    # Null for a catalog or free-text line: only article-backed rows can move
+    # stock, exactly as in werkstatt_construction_box_items.
+    article_id: Mapped[int | None] = mapped_column(
+        ForeignKey("werkstatt_articles.id", ondelete="SET NULL"), index=True
+    )
+
+    item_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    article_no: Mapped[str | None] = mapped_column(String(64))
+    ean: Mapped[str | None] = mapped_column(String(64))
+    unit: Mapped[str | None] = mapped_column(String(32))
+
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # NULL means "not reported yet", which is different from a reported zero:
+    # zero says the item came back untouched, NULL says nobody has said.
+    quantity_used: Mapped[int | None] = mapped_column(Integer)
+
+    notes: Mapped[str | None] = mapped_column(Text)
+    added_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow, nullable=False
+    )

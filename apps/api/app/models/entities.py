@@ -16,7 +16,7 @@ from app.models.project import (
     ProjectMember,
     ProjectWeatherCache,
 )
-from app.models.task import Task, TaskAssignment
+from app.models.task import Task, TaskAssignment, TaskMaterial
 from app.models.site import Site, JobTicket
 from app.models.team import EmployeeGroup, EmployeeGroupMember
 from app.models.project_line_item import ProjectLineItem
@@ -119,6 +119,7 @@ __all__ = [
     "StationPairing",
     "Task",
     "TaskAssignment",
+    "TaskMaterial",
     "TaskPartner",
     "User",
     "UserActionToken",

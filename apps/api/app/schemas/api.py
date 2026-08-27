@@ -113,6 +113,7 @@ from app.schemas.task import (
     PublicCustomerConfirmationOut,
     PublicCustomerConfirmationRequest,
     TaskCreate,
+    TaskMaterialOut,
     TaskOut,
     TaskUpdate,
 )
@@ -209,6 +210,7 @@ __all__ = [
     "ProjectTrackedMaterialOut",
     "TaskCreate",
     "TaskUpdate",
+    "TaskMaterialOut",
     "TaskOut",
     "CustomerConfirmationEmailResult",
     "CustomerConfirmationManualRequest",

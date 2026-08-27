@@ -154,6 +154,10 @@ class TaskOut(BaseModel):
     customer_confirmation_token_expired: bool = False
     updated_at: datetime | None = None
 
+    # The crate's contents, copied onto the task when a box is selected.
+    # Empty for a task with no box, which is most of them.
+    materials: list["TaskMaterialOut"] = []
+
     model_config = ConfigDict(from_attributes=True)
 
 
@@ -227,3 +231,21 @@ class PlanningWeekOut(BaseModel):
     week_start: date
     week_end: date
     days: list[PlanningDayOut]
+class TaskMaterialOut(BaseModel):
+    """One material line on a task: what to bring, and what came back."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    item_name: str
+    article_no: str | None = None
+    ean: str | None = None
+    unit: str | None = None
+    quantity: int
+    # None until a report says otherwise. A reported zero means "came back
+    # untouched"; None means nobody has said yet, and the two must not be
+    # rendered the same way.
+    quantity_used: int | None = None
+    article_id: int | None = None
+    source_box_id: int | None = None
+    notes: str | None = None

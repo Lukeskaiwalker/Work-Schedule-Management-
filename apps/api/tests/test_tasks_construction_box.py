@@ -360,3 +360,246 @@ def test_planning_week_path_enforces_the_same_rule(client: TestClient, admin_tok
     )
     assert resp.status_code == 400, resp.text
     assert "belongs to a different customer" in str(resp.json()["detail"])
+
+
+# ── Unpacking a box into the task that will consume it ──────────────────────
+#
+# Selecting a crate used to record only which crate it was. The person on site
+# still had no list of what was in it, which is the gap these cover.
+
+
+def _pack(client: TestClient, admin_token: str, box_id: int, name: str, qty: int) -> dict:
+    resp = client.post(
+        f"/api/werkstatt/boxes/{box_id}/items",
+        headers=auth_headers(admin_token),
+        json={"item_name": name, "quantity": qty},
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def _materials(client: TestClient, admin_token: str, task_id: int) -> list[dict]:
+    """Read one task's material lines off the list endpoint.
+
+    There is no GET /tasks/{id}; the list is how the UI reads tasks too, which
+    makes it the right surface to assert against.
+    """
+    resp = client.get("/api/tasks", headers=auth_headers(admin_token))
+    assert resp.status_code == 200, resp.text
+    match = [row for row in resp.json() if row["id"] == task_id]
+    assert match, f"task {task_id} not in the list"
+    return match[0]["materials"]
+
+
+def test_selecting_a_box_imports_its_contents_onto_the_task(
+    client: TestClient, admin_token: str
+):
+    customer_id = _customer(client, admin_token, "Kunde Packliste")
+    box = _box(client, admin_token, "Kiste Packliste")
+    _pack(client, admin_token, box["id"], "Wago 285-1185", 12)
+    _pack(client, admin_token, box["id"], "Hager K96DB", 3)
+
+    created = _create_task(
+        client, admin_token, customer_id=customer_id, construction_box_id=box["id"]
+    )
+    assert created.status_code == 200, created.text
+
+    rows = _materials(client, admin_token, created.json()["id"])
+    assert {(r["item_name"], r["quantity"]) for r in rows} == {
+        ("Wago 285-1185", 12),
+        ("Hager K96DB", 3),
+    }
+    # Nobody has reported usage. That is not the same as reporting none, and
+    # the difference decides whether stock comes back or is written off.
+    assert all(r["quantity_used"] is None for r in rows)
+
+
+def test_deselecting_the_box_removes_exactly_what_it_added(
+    client: TestClient, admin_token: str
+):
+    """Picking the wrong crate must be undoable without collateral."""
+
+    customer_id = _customer(client, admin_token, "Kunde Falsche Kiste")
+    box = _box(client, admin_token, "Falsche Kiste")
+    _pack(client, admin_token, box["id"], "NYM-J 3x1,5", 100)
+
+    task_id = _create_task(
+        client, admin_token, customer_id=customer_id, construction_box_id=box["id"]
+    ).json()["id"]
+    assert len(_materials(client, admin_token, task_id)) == 1
+
+    cleared = client.patch(
+        f"/api/tasks/{task_id}",
+        headers=auth_headers(admin_token),
+        json={"construction_box_id": None},
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert _materials(client, admin_token, task_id) == []
+
+
+def test_swapping_the_box_replaces_the_list(client: TestClient, admin_token: str):
+    """Re-pointing a task at a different crate must not merge the two."""
+
+    customer_id = _customer(client, admin_token, "Kunde Kistentausch")
+    first = _box(client, admin_token, "Kiste A")
+    second = _box(client, admin_token, "Kiste B")
+    _pack(client, admin_token, first["id"], "Aus Kiste A", 1)
+    _pack(client, admin_token, second["id"], "Aus Kiste B", 2)
+
+    task_id = _create_task(
+        client, admin_token, customer_id=customer_id, construction_box_id=first["id"]
+    ).json()["id"]
+    swapped = client.patch(
+        f"/api/tasks/{task_id}",
+        headers=auth_headers(admin_token),
+        json={"construction_box_id": second["id"]},
+    )
+    assert swapped.status_code == 200, swapped.text
+
+    rows = _materials(client, admin_token, task_id)
+    assert [r["item_name"] for r in rows] == ["Aus Kiste B"]
+
+
+def test_an_unrelated_patch_does_not_duplicate_the_list(
+    client: TestClient, admin_token: str
+):
+    """Tasks are saved constantly for reasons that have nothing to do with the
+    crate. Each of those must leave the list exactly as it was."""
+
+    customer_id = _customer(client, admin_token, "Kunde Mehrfachspeichern")
+    box = _box(client, admin_token, "Kiste Mehrfach")
+    _pack(client, admin_token, box["id"], "Schraube 4x40", 50)
+
+    task_id = _create_task(
+        client, admin_token, customer_id=customer_id, construction_box_id=box["id"]
+    ).json()["id"]
+
+    for title in ("Titel eins", "Titel zwei", "Titel drei"):
+        resp = client.patch(
+            f"/api/tasks/{task_id}", headers=auth_headers(admin_token), json={"title": title}
+        )
+        assert resp.status_code == 200, resp.text
+
+    rows = _materials(client, admin_token, task_id)
+    assert len(rows) == 1, f"the list grew on unrelated saves: {rows}"
+
+
+def test_importing_a_box_still_moves_no_stock(client: TestClient, admin_token: str):
+    """The contract the existing tests pin, restated for the copied lines.
+
+    Selecting a crate says what is going out; it does not take it off the
+    shelf. Stock moves on the box's own assign/return, and later on completion.
+    """
+
+    from app.core.db import SessionLocal
+    from app.models.entities import WerkstattArticle, WerkstattMovement
+
+    created = client.post(
+        "/api/werkstatt/articles",
+        headers=auth_headers(admin_token),
+        json={"item_name": "Bestandsartikel Kiste", "unit": "Stk"},
+    )
+    assert created.status_code == 200, created.text
+    article_id = created.json()["id"]
+
+    customer_id = _customer(client, admin_token, "Kunde Kein Lagerlauf")
+    box = _box(client, admin_token, "Kiste Kein Lagerlauf")
+    packed = client.post(
+        f"/api/werkstatt/boxes/{box['id']}/items",
+        headers=auth_headers(admin_token),
+        json={"item_name": "Bestandsartikel Kiste", "quantity": 4, "article_id": article_id},
+    )
+    assert packed.status_code == 200, packed.text
+
+    with SessionLocal() as db:
+        before = db.query(WerkstattMovement).filter_by(article_id=article_id).count()
+        stock_before = db.get(WerkstattArticle, article_id).stock_available
+
+    _create_task(client, admin_token, customer_id=customer_id, construction_box_id=box["id"])
+
+    with SessionLocal() as db:
+        assert db.query(WerkstattMovement).filter_by(article_id=article_id).count() == before
+        assert db.get(WerkstattArticle, article_id).stock_available == stock_before
+
+
+def test_deselecting_a_box_spares_lines_it_did_not_add(
+    client: TestClient, admin_token: str
+):
+    """Removal is keyed on provenance, not on "everything on this task".
+
+    Nothing in the UI adds a material line by hand yet, so without this the
+    distinction is untested and a later refactor could quietly reduce the
+    removal to "delete all lines" — which would throw away a colleague's
+    additions the first time somebody corrected a wrong crate.
+    """
+
+    from app.core.db import SessionLocal
+    from app.models.entities import TaskMaterial
+
+    customer_id = _customer(client, admin_token, "Kunde Handzeile")
+    box = _box(client, admin_token, "Kiste Handzeile")
+    _pack(client, admin_token, box["id"], "Aus der Kiste", 5)
+
+    task_id = _create_task(
+        client, admin_token, customer_id=customer_id, construction_box_id=box["id"]
+    ).json()["id"]
+
+    with SessionLocal() as db:
+        db.add(
+            TaskMaterial(
+                task_id=task_id,
+                source_box_id=None,  # added by a person, not by a crate
+                item_name="Von Hand ergänzt",
+                quantity=2,
+            )
+        )
+        db.commit()
+
+    assert len(_materials(client, admin_token, task_id)) == 2
+
+    cleared = client.patch(
+        f"/api/tasks/{task_id}",
+        headers=auth_headers(admin_token),
+        json={"construction_box_id": None},
+    )
+    assert cleared.status_code == 200, cleared.text
+
+    rows = _materials(client, admin_token, task_id)
+    assert [r["item_name"] for r in rows] == ["Von Hand ergänzt"]
+
+
+def test_a_reported_line_survives_the_box_being_cleared(
+    client: TestClient, admin_token: str
+):
+    """Once a quantity is reported the line is a record, not a suggestion.
+
+    Deleting it would discard the only structured account of what the job
+    actually consumed — and that account is what decides how much goes back
+    on the shelf.
+    """
+
+    from app.core.db import SessionLocal
+    from app.models.entities import TaskMaterial
+
+    customer_id = _customer(client, admin_token, "Kunde Gemeldet")
+    box = _box(client, admin_token, "Kiste Gemeldet")
+    _pack(client, admin_token, box["id"], "Verbrauchtes Material", 10)
+
+    task_id = _create_task(
+        client, admin_token, customer_id=customer_id, construction_box_id=box["id"]
+    ).json()["id"]
+
+    with SessionLocal() as db:
+        row = db.query(TaskMaterial).filter_by(task_id=task_id).one()
+        row.quantity_used = 6
+        db.commit()
+
+    client.patch(
+        f"/api/tasks/{task_id}",
+        headers=auth_headers(admin_token),
+        json={"construction_box_id": None},
+    )
+
+    rows = _materials(client, admin_token, task_id)
+    assert len(rows) == 1
+    assert rows[0]["quantity_used"] == 6

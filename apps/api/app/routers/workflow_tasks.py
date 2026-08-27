@@ -215,6 +215,8 @@ def create_task(
     task.assignee_id = assignee_ids[0] if assignee_ids else None
     db.add(task)
     db.flush()
+    # After the flush: material lines need the task's id.
+    _sync_task_box_materials(db, task, previous_box_id=None, user_id=current_user.id)
     _sync_task_assignments(db, task, assignee_ids)
     _sync_task_partners(db, task, partner_ids)
     _create_assignment_notifications(db, task, assignee_ids, current_user)
@@ -267,6 +269,9 @@ def update_task(
     existing_partner_ids = _task_partner_map(db, [task]).get(task.id, [])
     added_assignee_ids: list[int] = []
     previous_status = task.status
+    # Captured before any write: the material sync needs to know which crate
+    # the task pointed at, to remove exactly those lines if it changes.
+    previous_box_id = task.construction_box_id
     previous_due_date = task.due_date.isoformat() if task.due_date else None
     previous_start_time = task.start_time.isoformat() if task.start_time else None
     previous_estimated_hours = task.estimated_hours
@@ -449,6 +454,13 @@ def update_task(
     # write time (rather than only filtering at read time) means the row stops
     # being fetched, and gives us an event to push so an open panel updates
     # live instead of showing a task the user just ticked off.
+    # Selecting a different crate (or none) rewrites what the task says it is
+    # taking to site. Placed here, before the commit below, so the list and the
+    # link are written in one transaction and cannot disagree.
+    _sync_task_box_materials(
+        db, task, previous_box_id=previous_box_id, user_id=current_user.id
+    )
+
     resolved_notification_user_ids: list[int] = []
     if task.status != previous_status and task.status == "done":
         resolved_notification_user_ids = _resolve_task_notifications(db, task.id)
@@ -603,6 +615,7 @@ def planning_assign_week(
             )
         db.add(task)
         db.flush()
+        _sync_task_box_materials(db, task, previous_box_id=None, user_id=current_user.id)
         _sync_task_assignments(db, task, assignee_ids)
         _sync_task_partners(db, task, partner_ids)
         _record_project_activity(
