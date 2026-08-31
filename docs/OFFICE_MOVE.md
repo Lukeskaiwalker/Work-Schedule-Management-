@@ -73,53 +73,53 @@ to the server's LAN address:
 Give the server a fixed address while you are in there — **Client Devices ->
 the server -> Settings -> Fixed IP** — so the forwards keep pointing at it.
 
-### 3. Point DuckDNS at the office
+### 3. Point DuckDNS at the office (once)
 
-**First: turn off the DuckDNS task on the Synology.**
+The office line has a **static public IP**, so there is nothing to keep
+updating. The record is set once, by hand, and then left alone.
 
-This is not tidying up, it is a correctness problem. DuckDNS records the source
-IP of whoever calls it. The NAS stays at the house, so it will carry on
-publishing the *house's* address for a machine that is no longer behind it. If
-both it and the server update, the record flaps between the two depending on
-which ran last, and the site works or fails depending on the minute.
+> Log in at <https://www.duckdns.org>, find `smpl-office`, type the office's
+> public IP into the **current ip** box, press **update ip**.
 
-> DSM -> Control Panel -> External Access -> DDNS -> select the DuckDNS entry
-> -> **Delete** (or untick it)
+**Before that, deal with the Synology.** The DuckDNS renewal has been running
+on the NAS, which stays at the house. DuckDNS records whatever address it is
+given, and the NAS will carry on giving it the *house's* — every few minutes,
+forever. A one-time manual entry is overwritten within minutes of setting it,
+and because nothing on the server ever corrects it, the domain points at the
+house permanently.
 
-The same reasoning rules out the Home Assistant instance unless it is at the
-office: an updater on the household network can only ever publish the
-household's address, however it is configured.
+That makes this the one step the whole move depends on. It is also the one with
+no visible symptom until someone tries the site from outside.
 
-**Then install the updater on the server**, which is where it belongs — the
-record exists to reach this host, and if this host is down a stale record costs
-nothing, because there is nothing to reach either way.
+> DSM -> Control Panel -> External Access -> DDNS
 
-```bash
-cd ~/SMPL-all && sudo ./scripts/setup_duckdns.sh
-```
+**Check which hostname that entry manages first.** If it is `smpl-office`,
+delete it. If the NAS uses a different DuckDNS name for its own remote access,
+leave it be — it was never in conflict.
 
-It asks for the subdomain (`smpl-office`) and the token, with the token hidden
-as you type. The token goes to a root-only file — never an argument, so it
-never appears in `ps`, and never in the log. The script then updates once and
-tells you whether DuckDNS accepted it, so you find out immediately rather than
-at the next timer tick.
-
-After that a systemd timer refreshes every five minutes, and 45 seconds after
-every boot — which is exactly when the address is most likely to have changed.
-
-```bash
-systemctl status smpl-duckdns.timer          # is it armed?
-journalctl -u smpl-duckdns.service -n 5      # did the last run work?
-```
-
-Check it took effect from any machine:
+Confirm from any machine, ideally not on the office network:
 
 ```bash
 dig +short smpl-office.duckdns.org
 ```
 
-It should return the office's public IP. Until it does, the domain still points
-at the house and the certificate cannot be issued.
+It must return the office's public IP. If it flips back to the old address
+after a few minutes, the NAS entry is still live.
+
+#### If the address ever does change
+
+A "static" IP is a contract, not a law of physics — ISPs renumber, and lines
+get replaced. If the site goes dark and `dig` shows an address that is not the
+office's, the fix is one command on the server:
+
+```bash
+cd ~/SMPL-all && sudo ./scripts/setup_duckdns.sh
+```
+
+That installs the updater that was deliberately not used here: it asks for the
+token, publishes the current address, and then keeps the record correct every
+five minutes and on every boot. Installing it is also the right move if the
+office is ever renumbered more than once.
 
 ## Order of operations
 
@@ -129,8 +129,8 @@ DNS and ports first, then let the certificate happen.
 2. **The app is usable immediately on the LAN** at `http://<server-ip>/` — no
    DNS, no certificate, no router configuration needed. Use this to confirm
    the move worked before touching anything else.
-3. Set the fixed IP and the two port forwards. Disable DuckDNS on the
-   Synology, then run `sudo ./scripts/setup_duckdns.sh` on the server.
+3. Set the fixed IP and the two port forwards. Remove the `smpl-office`
+   DuckDNS entry from the Synology, then set the record once by hand.
 4. Wait for `dig` to return the office IP.
 5. Within about a minute Caddy gets the certificate and
    `https://smpl-office.duckdns.org` works.
