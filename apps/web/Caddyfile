@@ -136,10 +136,40 @@ http://localhost, http://127.0.0.1, http://[::1] {
 	redir https://{host}{uri}
 }
 
-# Production / fallback HTTP listener. In the prod stack Traefik terminates
-# TLS at the household edge and forwards plain HTTP to us on port 80, so
-# this block carries all real traffic. Locally it's never reached because
-# the localhost block above wins on the Host header.
+# Public site — Caddy obtains and renews the Let's Encrypt certificate itself.
+#
+# Until 2026-08 a shared Traefik at the household edge terminated TLS and
+# forwarded plain HTTP here, and this file had no public site at all. Moving
+# the server to the office leaves that proxy behind, so the TLS termination
+# it was doing has to happen here instead. Caddy needs no configuration for
+# that beyond naming the host: it solves the ACME challenge on :80 ahead of
+# the routes below, and stores the certificate in the caddy_data volume so a
+# restart does not re-issue.
+#
+# The domain is an env var with a default so it can be repointed without
+# rebuilding the image, which matters because the Caddyfile is baked in.
+#
+# Requires ports 80 AND 443 reachable from the internet: 80 for the ACME
+# HTTP-01 challenge, 443 to serve. Until both are forwarded, this host simply
+# has no certificate and the plain-HTTP block below carries LAN traffic.
+{$SMPL_PUBLIC_DOMAIN:smpl-office.duckdns.org} {
+	import spa_routing
+
+	# Set here now that this is the TLS terminator. It used to be a Traefik
+	# label, because a header set behind a proxy on plain HTTP is ignored by
+	# browsers. One year, subdomains included, not preloaded.
+	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+}
+
+# Plain-HTTP listener. Two jobs, and the second one is why it stays.
+#
+#  1. It carried all real traffic under the Traefik setup.
+#  2. It is the local fallback: reaching the server by LAN address over HTTP
+#     serves the app whatever the state of DNS, port forwarding or the
+#     certificate. On a freshly moved machine that is the difference between
+#     "the office can work" and "nobody can do anything until the router is
+#     configured" — and the public name cannot be that fallback, because it
+#     has carried HSTS for a year and browsers will refuse it over HTTP.
 http:// {
 	import spa_routing
 }
