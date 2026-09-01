@@ -727,6 +727,15 @@ export function App() {
   // The drop handler on ProjectFilesTab sets these and opens the modal,
   // which reads + clears them on mount.
   const [fileUploadPendingFiles, setFileUploadPendingFiles] = useState<File[]>([]);
+  // Upload feedback for the dialog. Owned here because uploadFile lives here.
+  // Without it the dialog was silent for the whole transfer: no progress, and
+  // a failure surfaced only in the corner toast while the user was watching a
+  // dialog that had not moved. Mirrors the construction-report submit, which
+  // already had this problem and solved it the same way.
+  const [fileUploadBusy, setFileUploadBusy] = useState(false);
+  const [fileUploadPercent, setFileUploadPercent] = useState<number | null>(null);
+  const [fileUploadPhase, setFileUploadPhase] = useState<"uploading" | "processing" | null>(null);
+  const [fileUploadError, setFileUploadError] = useState<string>("");
   const requestFileUploadWithFiles = useCallback(
     (files: File[]) => {
       if (!files.length) return;
@@ -6875,6 +6884,12 @@ export function App() {
   async function uploadFile(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!activeProjectId) return;
+    // Guard against a second submit while the first is in flight. Twelve
+    // photos take long enough that a silent dialog reads as a missed click,
+    // and the report was people pressing again and uploading everything
+    // twice. The button is disabled too; this is the backstop for a
+    // double-tap or an Enter that lands before the re-render.
+    if (fileUploadBusy) return;
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
     const inlineFolderPath = newProjectFolderPath.trim();
@@ -6882,20 +6897,45 @@ export function App() {
     if (selectedFolder) {
       form.set("folder", selectedFolder);
     }
+    setFileUploadBusy(true);
+    setFileUploadError("");
+    setFileUploadPercent(0);
+    setFileUploadPhase("uploading");
     try {
-      await apiFetch(`/projects/${activeProjectId}/files`, token, { method: "POST", body: form });
+      await apiUploadWithProgress(`/projects/${activeProjectId}/files`, token, form, (progress) => {
+        if (progress.percent != null) {
+          setFileUploadPercent(progress.percent);
+          // The bytes are gone but the request is not done: the server still
+          // has to encrypt and store every file. Saying "processing" beats a
+          // bar that sticks at 100% looking hung.
+          if (progress.percent >= 100) setFileUploadPhase("processing");
+          return;
+        }
+        // No total: show movement rather than a number we cannot compute.
+        if (progress.loaded > 0) setFileUploadPercent((current) => current ?? 1);
+      });
       formElement.reset();
       setFileUploadModalOpen(false);
       if (inlineFolderPath) {
         setFileUploadFolder(inlineFolderPath);
       }
       setNewProjectFolderPath("");
+      setNotice(language === "de" ? "Dateien hochgeladen" : "Files uploaded");
       await loadFiles(activeProjectId);
       await loadProjectFolders(activeProjectId);
       await loadProjectOverview(activeProjectId);
       setOverview(await apiFetch<any[]>("/projects-overview", token));
     } catch (err: any) {
-      setError(err.message ?? "File upload failed");
+      // Shown IN the dialog, which stays open. The corner toast is easy to
+      // miss while looking at a dialog, and keeping it open preserves the
+      // selected files so retrying does not mean picking twelve photos again.
+      const message = err?.message ?? "File upload failed";
+      setFileUploadError(message);
+      setError(message);
+    } finally {
+      setFileUploadBusy(false);
+      setFileUploadPercent(null);
+      setFileUploadPhase(null);
     }
   }
 
@@ -9556,6 +9596,11 @@ export function App() {
     newProjectFolderPath,
     setNewProjectFolderPath,
     fileUploadPendingFiles,
+    fileUploadBusy,
+    fileUploadPercent,
+    fileUploadPhase,
+    fileUploadError,
+    setFileUploadError,
     setFileUploadPendingFiles,
     requestFileUploadWithFiles,
 

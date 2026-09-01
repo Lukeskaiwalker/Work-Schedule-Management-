@@ -431,6 +431,15 @@ export interface AppContextValue {
   // when it opens. Empty array = no files pre-selected (normal click-
   // through path). The modal clears this back to [] on submit / cancel.
   fileUploadPendingFiles: File[];
+  /** True while a project file upload is in flight. Disables re-submit. */
+  fileUploadBusy: boolean;
+  /** 0-100 while uploading, null when idle or when the size is unknown. */
+  fileUploadPercent: number | null;
+  /** "uploading" while bytes are in flight, "processing" once the server has them. */
+  fileUploadPhase: "uploading" | "processing" | null;
+  /** Last upload failure, shown inside the dialog rather than only as a toast. */
+  fileUploadError: string;
+  setFileUploadError: (value: string) => void;
   setFileUploadPendingFiles: (files: File[] | ((current: File[]) => File[])) => void;
   /** Convenience: drop one or more files and open the upload modal pre-
    *  filled. Used by ProjectFilesTab's drag-and-drop handler. */

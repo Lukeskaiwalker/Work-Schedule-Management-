@@ -35519,3 +35519,61 @@ button.time-calendar-cell {
   line-height: 1;
   cursor: pointer;
 }
+
+/* Upload feedback in the file dialog ------------------------------------- */
+
+.file-upload-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0 2px;
+}
+
+.file-upload-progress-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.file-upload-progress-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: var(--accent);
+  /* Eased rather than instant: XHR fires progress in bursts, and an
+     unanimated bar jumps in visible steps that read as stalling. */
+  transition: width 0.18s ease-out;
+}
+
+/* Bytes are sent; the server is still encrypting and storing. The bar is at
+   100% and would otherwise look hung, so it keeps moving instead. */
+.file-upload-progress-fill.is-processing {
+  background: linear-gradient(
+    90deg,
+    var(--accent) 0%,
+    color-mix(in srgb, var(--accent) 45%, #fff) 50%,
+    var(--accent) 100%
+  );
+  background-size: 200% 100%;
+  animation: file-upload-processing 1.1s linear infinite;
+}
+
+@keyframes file-upload-processing {
+  from { background-position: 200% 0; }
+  to { background-position: 0 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .file-upload-progress-fill { transition: none; }
+  .file-upload-progress-fill.is-processing { animation-duration: 3s; }
+}
+
+.file-upload-error {
+  margin: 4px 0 0;
+  padding: 8px 10px;
+  border: 1px solid #e5b4b4;
+  border-radius: 8px;
+  background: #fdf3f3;
+  color: #8f2d2d;
+  font-size: 13px;
+}

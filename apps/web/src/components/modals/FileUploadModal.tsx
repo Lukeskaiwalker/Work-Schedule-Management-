@@ -37,6 +37,11 @@ export function FileUploadModal() {
     uploadFile,
     createProjectFolderFromInput,
     fileUploadPendingFiles,
+    fileUploadBusy,
+    fileUploadPercent,
+    fileUploadPhase,
+    fileUploadError,
+    setFileUploadError,
     setFileUploadPendingFiles,
   } = useAppContext();
 
@@ -115,7 +120,14 @@ export function FileUploadModal() {
   }
 
   return (
-    <div className="modal-backdrop" onClick={() => setFileUploadModalOpen(false)}>
+    <div
+      className="modal-backdrop"
+      onClick={() => {
+        // Not while bytes are moving: closing hides the only progress there
+        // is, and the request carries on regardless.
+        if (!fileUploadBusy) setFileUploadModalOpen(false);
+      }}
+    >
       <div className="card modal-card modal-card-sm" onClick={(event) => event.stopPropagation()}>
         <h3>{de ? "Dateien hochladen" : "Upload files"}</h3>
         <form className="modal-form" onSubmit={handleSubmit}>
@@ -216,17 +228,58 @@ export function FileUploadModal() {
             </ul>
           ) : null}
 
+          {/* The dialog used to say nothing at all for the whole transfer.
+              Twelve photos take a while, so a still dialog read as a missed
+              click and people uploaded everything again. */}
+          {fileUploadBusy ? (
+            <div className="file-upload-progress" role="status" aria-live="polite">
+              <div className="file-upload-progress-bar">
+                <div
+                  className={`file-upload-progress-fill${
+                    fileUploadPhase === "processing" ? " is-processing" : ""
+                  }`}
+                  style={{ width: `${fileUploadPercent ?? 0}%` }}
+                />
+              </div>
+              <small className="muted">
+                {fileUploadPhase === "processing"
+                  ? de
+                    ? "Dateien werden gespeichert…"
+                    : "Saving files…"
+                  : de
+                    ? `Hochladen… ${fileUploadPercent ?? 0}%`
+                    : `Uploading… ${fileUploadPercent ?? 0}%`}
+              </small>
+            </div>
+          ) : null}
+
+          {/* Kept in the dialog, and the dialog stays open, so the selection
+              survives and a retry does not mean picking the files again. */}
+          {fileUploadError && !fileUploadBusy ? (
+            <p className="file-upload-error" role="alert">
+              {fileUploadError}
+            </p>
+          ) : null}
+
           <div className="row wrap">
-            <button type="submit" disabled={selectedFiles.length === 0}>
-              {de
-                ? selectedFiles.length > 1
-                  ? `Hochladen (${selectedFiles.length})`
-                  : "Hochladen"
-                : selectedFiles.length > 1
-                  ? `Upload (${selectedFiles.length})`
-                  : "Upload"}
+            <button type="submit" disabled={selectedFiles.length === 0 || fileUploadBusy}>
+              {fileUploadBusy
+                ? de
+                  ? "Wird hochgeladen…"
+                  : "Uploading…"
+                : de
+                  ? selectedFiles.length > 1
+                    ? `Hochladen (${selectedFiles.length})`
+                    : "Hochladen"
+                  : selectedFiles.length > 1
+                    ? `Upload (${selectedFiles.length})`
+                    : "Upload"}
             </button>
-            <button type="button" onClick={() => setFileUploadModalOpen(false)}>
+            <button
+              type="button"
+              disabled={fileUploadBusy}
+              onClick={() => setFileUploadModalOpen(false)}
+            >
               {de ? "Abbrechen" : "Cancel"}
             </button>
           </div>
