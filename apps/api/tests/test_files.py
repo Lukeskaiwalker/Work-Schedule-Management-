@@ -643,3 +643,89 @@ def test_a_corrupt_pdf_answers_409_not_500(client: TestClient, admin_token: str)
     assert count.status_code == 409, count.text
     page = client.get(f"/api/files/{file_id}/preview-pages/1", headers=auth_headers(admin_token))
     assert page.status_code in (404, 409), page.text
+
+
+def test_uploading_several_files_at_once_to_a_new_folder(
+    client: TestClient, admin_token: str
+):
+    """Twelve photos in one drop must all land.
+
+    The reported failure: selecting more than one image in a project and
+    getting nothing at all. Every file in the batch registers its folder, and
+    the session does not autoflush, so the row added for the first file is
+    still pending and invisible to the lookup the second file does. Each file
+    therefore queued another row for the same folder, and they only collided
+    at commit — a 500 after the bytes had been read, with no partial success
+    and nothing on screen to say why.
+
+    One file worked, which is what made it look like uploads were fine.
+    """
+
+    project_id = _project_for(client, admin_token, "MULTI-1")
+
+    # Strip the default folders, which is the state the reported project was
+    # in: it predates default-folder seeding, so "Bilder" did not exist and
+    # every file in the batch tried to create it. A freshly created project
+    # already has "Bilder" and hides the bug entirely — which is why this
+    # looked like it worked for some projects and not others.
+    from app.models.entities import ProjectFolder
+
+    with SessionLocal() as db:
+        db.query(ProjectFolder).filter_by(project_id=project_id).delete()
+        db.commit()
+
+    response = client.post(
+        f"/api/projects/{project_id}/files",
+        headers=auth_headers(admin_token),
+        files=[
+            ("files", (f"photo-{i}.jpg", f"bytes-{i}".encode(), "image/jpeg"))
+            for i in range(5)
+        ],
+    )
+    assert response.status_code == 200, response.text
+    created = response.json()
+    assert len(created) == 5
+    # All five auto-route to the same folder — which is the whole point.
+    assert {row["folder"] for row in created} == {"Bilder"}
+
+    listed = client.get(
+        f"/api/projects/{project_id}/files", headers=auth_headers(admin_token)
+    ).json()
+    names = {row["file_name"] for row in listed}
+    assert names == {f"photo-{i}.jpg" for i in range(5)}
+
+
+def test_the_folder_is_registered_exactly_once_for_a_batch(
+    client: TestClient, admin_token: str
+):
+    """The folder tree must not gain a row per file.
+
+    Asserted separately from the upload succeeding: a fix that swallowed the
+    integrity error, or one that inserted duplicates the constraint happened
+    to tolerate, would pass the test above while quietly filling the folder
+    list with repeats.
+    """
+
+    from app.models.entities import ProjectFolder
+
+    project_id = _project_for(client, admin_token, "MULTI-2")
+    client.post(
+        f"/api/projects/{project_id}/files",
+        headers=auth_headers(admin_token),
+        data={"folder": "Bilder/Baustelle"},
+        files=[
+            ("files", (f"img-{i}.jpg", f"b{i}".encode(), "image/jpeg"))
+            for i in range(4)
+        ],
+    )
+
+    with SessionLocal() as db:
+        rows = db.query(ProjectFolder).filter_by(project_id=project_id).all()
+        paths = [row.path for row in rows]
+
+    # Not an exact list — the project also has its default folders. The claim
+    # is that four files produced no repeats, and that both levels of the new
+    # path exist exactly once.
+    assert len(paths) == len(set(paths)), f"duplicate folder rows: {sorted(paths)}"
+    assert paths.count("Bilder") == 1
+    assert paths.count("Bilder/Baustelle") == 1

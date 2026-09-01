@@ -21,6 +21,7 @@ from fastapi import Depends, File, Form, HTTPException, Query, Request, UploadFi
 from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from sqlalchemy import case, delete, func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -1278,14 +1279,38 @@ def _register_project_folder(
         ).first()
         if exists:
             continue
-        db.add(
-            ProjectFolder(
-                project_id=project_id,
-                path=path_value,
-                is_protected=_folder_path_is_protected(path_value),
-                created_by=created_by,
-            )
-        )
+        # Insert inside a SAVEPOINT so a row that appears between the check
+        # and the write costs this folder and nothing else.
+        #
+        # The read-then-add above is only safe if the write lands before the
+        # next read, and it did not. Sessions here are autoflush=False, so an
+        # added row stays pending and invisible to the very next SELECT — and
+        # a multi-file upload calls this once per file. Uploading twelve
+        # photos to a project whose "Bilder" folder did not exist yet queued
+        # twelve identical rows, which collided at commit and failed the whole
+        # request with a 500, after the bytes had been read. One file worked,
+        # so uploads looked healthy; projects created before default folders
+        # were seeded were the ones that broke.
+        #
+        # begin_nested() flushes on exit, so the row is visible to the next
+        # iteration's SELECT. The same savepoint covers the other race this
+        # always had: two requests creating the same folder at once, where one
+        # would lose and 500. Now the loser reuses the winner's row.
+        try:
+            with db.begin_nested():
+                db.add(
+                    ProjectFolder(
+                        project_id=project_id,
+                        path=path_value,
+                        is_protected=_folder_path_is_protected(path_value),
+                        created_by=created_by,
+                    )
+                )
+        except IntegrityError:
+            # Somebody else created it first. That is the desired end state,
+            # and the savepoint rolled back only this insert, so the caller's
+            # transaction is intact and the upload carries on.
+            continue
 
 
 def _project_folder_paths_for_user(db: Session, project_id: int, user: User) -> set[str]:
