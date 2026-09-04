@@ -633,6 +633,7 @@ export function WerkstattMaschinenPage() {
           initialParentId={createParentId}
           initialBlueprintArticleId={createBlueprintArticleId}
           busy={busy}
+          canCreateType={canManageWerkstatt}
           onClose={() => setCreateOpen(false)}
           onConfirm={handleCreate}
         />
@@ -900,6 +901,7 @@ export function WerkstattMaschinenPage() {
         initialParentId={createParentId}
         initialBlueprintArticleId={createBlueprintArticleId}
         busy={busy}
+        canCreateType={canManageWerkstatt}
         onClose={() => setCreateOpen(false)}
         onConfirm={handleCreate}
       />

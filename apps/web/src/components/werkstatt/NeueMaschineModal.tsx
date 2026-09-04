@@ -58,6 +58,13 @@ export interface NeueMaschineModalProps {
   /** Pre-selects a blueprint, so "Weitere anlegen" lands on a filled form. */
   initialBlueprintArticleId?: number | null;
   busy?: boolean;
+  /**
+   * Whether this user may create a catalogue article from inside the dialog.
+   * Article creation is a `werkstatt:manage` right; machine creation is not,
+   * so the two can differ. When false, the dead end below at least says
+   * where to go instead of leaving a grey button with no reason on it.
+   */
+  canCreateType?: boolean;
   onClose: () => void;
   onConfirm: (payload: MachineCreatePayload, options: { printLabel: boolean }) => void;
 }
@@ -73,6 +80,7 @@ export function NeueMaschineModal({
   open,
   language,
   token,
+  canCreateType = false,
   parentCandidates,
   blueprintCandidates,
   locations,
@@ -93,6 +101,11 @@ export function NeueMaschineModal({
   const [parentId, setParentId] = useState<number | null>(initialParentId);
   const [locationId, setLocationId] = useState<number | null>(null);
   const [inspectionRequired, setInspectionRequired] = useState(false);
+  // Inline type creation. Separate from `busy` (which the page owns for the
+  // machine POST): this one is the dialog's own request and must not disable
+  // the page's other actions.
+  const [creatingType, setCreatingType] = useState(false);
+  const [createTypeError, setCreateTypeError] = useState<string>("");
   const [intervalDays, setIntervalDays] = useState("365");
   const [lastInspected, setLastInspected] = useState("");
   const [purchased, setPurchased] = useState("");
@@ -213,6 +226,54 @@ export function NeueMaschineModal({
   const resolvedArticleId =
     mode === "blueprint" ? selectedBlueprint?.article_id ?? null : article?.id ?? null;
   const canSubmit = resolvedArticleId !== null && !intervalInvalid && !busy;
+
+  /**
+   * Create the catalogue article for a type that does not exist yet, then
+   * select it — so registering a brand-new tool model is one flow.
+   *
+   * This was the dead end behind "the add button is always grey": a machine
+   * must reference an article, the search found nothing for a new model, and
+   * the only way on was to leave, create the article elsewhere, and come back.
+   * The hint even sent people to the wrong tab ("Katalog" is the supplier
+   * catalogue). Nothing but a name is needed here — creating the machine
+   * against it marks the article serialised itself.
+   */
+  async function createTypeFromSearch() {
+    const name = search.trim();
+    if (!name || creatingType || !canCreateType) return;
+    setCreatingType(true);
+    setCreateTypeError("");
+    try {
+      const created = await apiFetch<ArticleHit & { category_name?: string | null }>(
+        "/werkstatt/articles",
+        token,
+        { method: "POST", body: JSON.stringify({ item_name: name }) },
+      );
+      setArticle({
+        id: created.id,
+        article_number: created.article_number,
+        item_name: created.item_name,
+        manufacturer: created.manufacturer ?? null,
+        category_name: created.category_name ?? null,
+      });
+      setSearch("");
+    } catch (err) {
+      const status = (err as { status?: number })?.status;
+      setCreateTypeError(
+        status === 403
+          ? de
+            ? "Keine Berechtigung, Artikel anzulegen."
+            : "Not allowed to create articles."
+          : err instanceof Error && err.message
+            ? err.message
+            : de
+              ? "Artikel konnte nicht angelegt werden."
+              : "The article could not be created.",
+      );
+    } finally {
+      setCreatingType(false);
+    }
+  }
 
   function submit() {
     if (resolvedArticleId === null || !canSubmit) return;
@@ -413,11 +474,40 @@ export function NeueMaschineModal({
                   </ul>
                 )}
                 {search.trim() && hits.length === 0 && (
-                  <p className="werkstatt-field-hint">
-                    {de
-                      ? "Kein Artikel gefunden. Maschinen brauchen einen Katalog-Artikel — erst im Katalog anlegen."
-                      : "No article found. A machine needs a catalogue article — create it in the catalogue first."}
-                  </p>
+                  <div className="werkstatt-machine-no-type">
+                    <p className="werkstatt-field-hint">
+                      {de
+                        ? "Kein Artikel gefunden. Eine Maschine braucht einen Artikel als Typ."
+                        : "No article found. A machine needs an article as its type."}
+                    </p>
+                    {canCreateType ? (
+                      <button
+                        type="button"
+                        className="werkstatt-card-action"
+                        disabled={creatingType}
+                        onClick={() => void createTypeFromSearch()}
+                      >
+                        {creatingType
+                          ? de
+                            ? "Wird angelegt…"
+                            : "Creating…"
+                          : de
+                            ? `„${search.trim()}“ als neuen Typ anlegen`
+                            : `Create “${search.trim()}” as a new type`}
+                      </button>
+                    ) : (
+                      <p className="werkstatt-field-hint">
+                        {de
+                          ? "Unter Werkstatt → Bestand → „Neuer Artikel“ anlegen, dann hier auswählen."
+                          : "Create it under Workshop → Stock → “New item”, then pick it here."}
+                      </p>
+                    )}
+                    {createTypeError && (
+                      <p className="werkstatt-field-hint werkstatt-machine-hint--warn" role="alert">
+                        {createTypeError}
+                      </p>
+                    )}
+                  </div>
                 )}
               </>
             )}
@@ -592,6 +682,23 @@ export function NeueMaschineModal({
               {busy ? (de ? "Speichere…" : "Saving…") : de ? "Anlegen" : "Create"}
             </button>
           </div>
+          {/* A disabled button with no reason reads as broken — that was the
+              report, verbatim. Name the one thing still missing. */}
+          {!canSubmit && !busy && (
+            <p className="werkstatt-field-hint werkstatt-machine-submit-reason">
+              {resolvedArticleId === null
+                ? mode === "blueprint"
+                  ? de
+                    ? "Bitte zuerst eine Vorlage auswählen."
+                    : "Pick a blueprint first."
+                  : de
+                    ? "Bitte zuerst einen Typ auswählen."
+                    : "Pick a type first."
+                : de
+                  ? "Prüfintervall: 1 bis 3650 Tage."
+                  : "Inspection interval: 1 to 3650 days."}
+            </p>
+          )}
         </footer>
       </div>
     </div>

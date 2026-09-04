@@ -35577,3 +35577,20 @@ button.time-calendar-cell {
   color: #8f2d2d;
   font-size: 13px;
 }
+
+/* Neue Maschine: the way out of "no article for this type" ------------------ */
+
+.werkstatt-machine-no-type {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+/* Sits directly under the disabled primary button and names the one thing
+   still missing — a grey button with no reason reads as broken. */
+.werkstatt-machine-submit-reason {
+  margin: 6px 0 0;
+  text-align: right;
+  color: var(--muted);
+}

@@ -8,6 +8,9 @@
  */
 import { afterEach, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
+// Registers toBeDisabled / toBeInTheDocument / … on expect(), and their
+// types. Without this every test re-derives them from raw DOM properties.
+import "@testing-library/jest-dom/vitest";
 
 afterEach(() => cleanup());
 
