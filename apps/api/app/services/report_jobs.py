@@ -4,6 +4,7 @@ import logging
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -142,14 +143,23 @@ def _register_project_folder_for_report(
         ).first()
         if exists:
             continue
-        db.add(
-            ProjectFolder(
-                project_id=project_id,
-                path=current_path,
-                is_protected=False,
-                created_by=created_by,
-            )
-        )
+        # Same guard as _register_project_folder in workflow_helpers, for the
+        # same reason: sessions are autoflush=False, so a row added here is
+        # invisible to the next SELECT in this transaction, and a concurrent
+        # request creating the same folder would 500 at commit. The savepoint
+        # flushes on exit and an IntegrityError costs this folder, not the job.
+        try:
+            with db.begin_nested():
+                db.add(
+                    ProjectFolder(
+                        project_id=project_id,
+                        path=current_path,
+                        is_protected=False,
+                        created_by=created_by,
+                    )
+                )
+        except IntegrityError:
+            continue
 
 
 def _report_image_attachments(db: Session, report_id: int) -> list[Attachment]:
