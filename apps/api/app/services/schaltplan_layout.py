@@ -319,23 +319,38 @@ def build_topology(document: dict[str, Any]) -> dict[str, Any]:
         device_id for device_id, device in by_id.items() if is_group_device(device)
     }
 
+    # Two passes on purpose. Placement order is physical; ``parent_id`` is
+    # electrical, and the two are allowed to disagree — a circuit may name a
+    # group device that sits to its RIGHT on the rail. A single walk that
+    # indexes a group only on reaching it raised KeyError for exactly that
+    # (an RCBO parented to a Hauptschalter one slot later), and every load of
+    # the panel then failed. Register every group first; then no explicit
+    # reference can be ahead of the index.
     groups: list[dict[str, Any]] = []
     index_by_group_id: dict[str, int] = {}
+    for row, device in iter_devices(document):
+        if not is_group_device(device):
+            continue
+        groups.append({
+            "device": device,
+            "row_label": str(row.get("label") or ""),
+            "children": [],
+        })
+        device_id = str(device.get("id") or "")
+        if device_id:
+            index_by_group_id[device_id] = len(groups) - 1
+
     supply_group: dict[str, Any] = {"device": None, "row_label": "", "children": []}
     current: dict[str, Any] = supply_group
     orphans: list[dict[str, Any]] = []
 
-    for row, device in iter_devices(document):
+    for _row, device in iter_devices(document):
         if is_group_device(device):
-            current = {
-                "device": device,
-                "row_label": str(row.get("label") or ""),
-                "children": [],
-            }
-            groups.append(current)
+            # Implicit parenting still follows physical order: what comes
+            # after this device, without a parent_id of its own, is fed by it.
             device_id = str(device.get("id") or "")
-            if device_id:
-                index_by_group_id[device_id] = len(groups) - 1
+            if device_id in index_by_group_id:
+                current = groups[index_by_group_id[device_id]]
             continue
 
         if not is_circuit_device(device):
@@ -346,11 +361,14 @@ def build_topology(document: dict[str, Any]) -> dict[str, Any]:
 
         explicit = str(device.get("parent_id") or "")
         if explicit:
-            if explicit in valid_parents:
-                groups[index_by_group_id[explicit]]["children"].append(device)
+            target = index_by_group_id.get(explicit) if explicit in valid_parents else None
+            if target is not None:
+                groups[target]["children"].append(device)
             else:
-                # Dangling reference (the FI it named was deleted). Show it as
-                # unprotected so the mistake is on the drawing, not hidden.
+                # Dangling reference (the FI it named was deleted, or a group
+                # device the pre-scan saw but the walk did not). Show it as
+                # unprotected so the mistake is on the drawing, not hidden —
+                # and never let a lookup miss become a failed page load.
                 orphans.append(device)
                 supply_group["children"].append(device)
             continue

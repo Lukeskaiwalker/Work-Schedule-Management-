@@ -181,6 +181,40 @@ def test_explicit_parent_overrides_position_and_dangling_parent_degrades():
     assert [d["id"] for d in topology["orphans"]] == ["c3"]
 
 
+def test_explicit_parent_placed_after_its_child_resolves():
+    """A circuit may name a group device that sits AFTER it on the rail.
+
+    Field crash: an RCBO on Reihe 2 was pointed at a single-pole Hauptschalter
+    placed one slot to its right. The walk indexes a group only when it reaches
+    it, so at the RCBO the parent passed the validity check (built from a full
+    pre-scan) but was not in the position index yet, and the lookup raised
+    KeyError. Every load of that panel then returned 500 — the drawing was
+    unopenable until the code changed.
+
+    Placement order is physical; ``parent_id`` is electrical. The two are
+    allowed to disagree, and the tree must resolve either way.
+    """
+
+    document = _document(
+        [
+            _device("c1", "rcbo", circuit="1", parent_id="hs"),
+            _device("hs", "hauptschalter"),
+            _device("c2", "mcb", circuit="2"),
+        ]
+    )
+    topology = build_topology(document)
+    by_group = {
+        (g["device"]["id"] if g["device"] else None): [c["id"] for c in g["children"]]
+        for g in topology["groups"]
+    }
+    # Fed by the Hauptschalter, wherever it sits.
+    assert by_group["hs"] == ["c1", "c2"]
+    assert topology["orphans"] == []
+    assert None not in by_group, "nothing should fall back to the supply group"
+    # The legend is what actually 500'd; it must build too.
+    assert [row["circuit"] for row in build_legend(document)] == ["1", "2"]
+
+
 def test_rcbo_is_its_own_circuit_not_a_group():
     """An RCBO protects only itself — adopting the next LS would print a
     wrong FI column on the legend an inspector reads."""

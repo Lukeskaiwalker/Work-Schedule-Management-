@@ -52,29 +52,44 @@ export function findRowOf(document: PanelDocument, deviceId: string): string | n
 
 export function buildTopology(document: PanelDocument): PanelGroup[] {
   const devices = allDevices(document);
-  const groupIds = new Set(devices.filter(isGroupDevice).map((device) => device.id));
 
+  // Two passes on purpose. Placement order is physical; `parent_id` is
+  // electrical, and the two may disagree — a circuit can name a group device
+  // that sits to its RIGHT on the rail. A single walk that indexed a group
+  // only on reaching it, plus a `!` on the lookup, turned exactly that case
+  // (an RCBO parented to a Hauptschalter one slot later) into
+  // `undefined.children` mid-render and took the page down. Register every
+  // group first; then no explicit reference can be ahead of the index.
   const groups: PanelGroup[] = [];
   const indexByGroupId = new Map<string, number>();
+  for (const device of devices) {
+    if (!isGroupDevice(device)) continue;
+    groups.push({ device, children: [] });
+    indexByGroupId.set(device.id, groups.length - 1);
+  }
+
   const supplyGroup: PanelGroup = { device: null, children: [] };
   let current: PanelGroup = supplyGroup;
 
   for (const device of devices) {
     if (isGroupDevice(device)) {
-      current = { device, children: [] };
-      groups.push(current);
-      indexByGroupId.set(device.id, groups.length - 1);
+      // Implicit parenting still follows physical order: what comes after
+      // this device, without a parent_id of its own, is fed by it.
+      const index = indexByGroupId.get(device.id);
+      if (index !== undefined) current = groups[index];
       continue;
     }
     if (!isCircuitDevice(device)) continue;
 
     const explicit = device.parent_id;
     if (explicit) {
-      if (groupIds.has(explicit)) {
-        groups[indexByGroupId.get(explicit)!].children.push(device);
+      const index = indexByGroupId.get(explicit);
+      if (index !== undefined) {
+        groups[index].children.push(device);
       } else {
         // The FI it named is gone. Show it as unprotected — visible and
-        // fixable — rather than silently re-homing it.
+        // fixable — rather than silently re-homing it. And never let a
+        // lookup miss become a crashed page.
         supplyGroup.children.push(device);
       }
       continue;
