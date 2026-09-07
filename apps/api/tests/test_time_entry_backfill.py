@@ -107,7 +107,14 @@ def test_employee_can_fill_a_forgotten_day_inside_the_window(
     body = response.json()
     assert body["can_edit"] is True
 
-    listed = client.get("/api/time/entries?period=weekly", headers=auth_headers(token)).json()
+    # Ask for exactly the day that was backfilled. `period=weekly` lists the
+    # CURRENT ISO week, and "yesterday" is not in it on a Monday — so this
+    # assertion passed six days out of seven and failed every Monday, which
+    # is the worst kind of red: unrelated to whatever change was being gated.
+    day = _day_at(1).date().isoformat()
+    listed = client.get(
+        f"/api/time/entries?start_date={day}&end_date={day}", headers=auth_headers(token)
+    ).json()
     assert len(listed) == 1
 
 
