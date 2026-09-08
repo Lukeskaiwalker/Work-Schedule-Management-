@@ -31,6 +31,8 @@ type Props = {
   document: PanelDocument;
   onChange: (patch: Partial<PanelDevice>) => void;
   onDelete: () => void;
+  /** Copy this device into the next slot, with the next free BMK and Stromkreis-Nr. */
+  onDuplicate: () => void;
   onMove: (direction: -1 | 1) => void;
   onClose: () => void;
   readOnly: boolean;
@@ -66,6 +68,7 @@ export function DeviceInspector({
   document,
   onChange,
   onDelete,
+  onDuplicate,
   onMove,
   onClose,
   readOnly,
@@ -340,6 +343,14 @@ export function DeviceInspector({
             </button>
             <button type="button" className="sp-btn" onClick={() => onMove(1)}>
               Nach rechts →
+            </button>
+            <button
+              type="button"
+              className="sp-btn"
+              onClick={onDuplicate}
+              title="Kopie rechts daneben — BMK und Stromkreis-Nr. werden hochgezählt"
+            >
+              Duplizieren
             </button>
             <button
               type="button"

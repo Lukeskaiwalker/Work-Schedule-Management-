@@ -27,6 +27,7 @@ import { NewPanelDialog } from "../components/schaltplan/NewPanelDialog";
 import { PanelDiagram } from "../components/schaltplan/PanelDiagram";
 import { PanelScopePicker } from "../components/schaltplan/PanelScopePicker";
 import { RailEditor } from "../components/schaltplan/RailEditor";
+import { RowTemplateSheet } from "../components/schaltplan/RowTemplateSheet";
 import {
   PANEL_TYPE_LABELS,
   SUPPLY_SYSTEMS,
@@ -35,6 +36,11 @@ import {
   newId,
   nextCircuitNumber,
 } from "../utils/schaltplanDevices";
+import {
+  duplicateDevice as duplicateDeviceInDocument,
+  rowFromTemplate,
+  type RowTemplateId,
+} from "../utils/schaltplanDocumentOps";
 import { buildLegend, findDevice, validateDocument } from "../utils/schaltplanTopology";
 import {
   printPanelLabels,
@@ -116,6 +122,7 @@ export function SchaltplanPage() {
     [panel, labelsPrinting, token, setNotice, setError],
   );
   const [paletteRowId, setPaletteRowId] = useState<string | null>(null);
+  const [templateSheetOpen, setTemplateSheetOpen] = useState(false);
   const [newPanelOpen, setNewPanelOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>("clean");
@@ -322,6 +329,30 @@ export function SchaltplanPage() {
         })),
       }));
       setSelectedDeviceId(null);
+    },
+    [mutate],
+  );
+
+  /**
+   * Copy the device into the next slot. The numbering rules live in
+   * `schaltplanDocumentOps`; here only the selection moves onto the copy, so
+   * the next tap is already on the thing that needs a new name.
+   */
+  const duplicateDevice = useCallback(
+    (deviceId: string) => {
+      if (readOnly || !document) return;
+      const result = duplicateDeviceInDocument(document, deviceId);
+      if (!result.deviceId) return;
+      mutate(() => result.document);
+      setSelectedDeviceId(result.deviceId);
+    },
+    [readOnly, document, mutate],
+  );
+
+  const addRowFromTemplate = useCallback(
+    (templateId: RowTemplateId) => {
+      mutate((current) => ({ ...current, rows: [...current.rows, rowFromTemplate(current, templateId)] }));
+      setTemplateSheetOpen(false);
     },
     [mutate],
   );
@@ -638,6 +669,7 @@ export function SchaltplanPage() {
               readOnly={readOnly}
               onSelectDevice={setSelectedDeviceId}
               onAddDevice={(rowId) => setPaletteRowId(rowId)}
+              onAddRowFromTemplate={() => setTemplateSheetOpen(true)}
               onAddRow={() =>
                 mutate((current) => ({
                   ...current,
@@ -869,6 +901,12 @@ export function SchaltplanPage() {
         onClose={() => setPaletteRowId(null)}
       />
 
+      <RowTemplateSheet
+        open={templateSheetOpen}
+        onPick={addRowFromTemplate}
+        onClose={() => setTemplateSheetOpen(false)}
+      />
+
       {document && (
         <DeviceInspector
           device={selectedDevice}
@@ -876,6 +914,7 @@ export function SchaltplanPage() {
           readOnly={readOnly}
           onChange={(patch) => selectedDevice && patchDevice(selectedDevice.id, patch)}
           onDelete={() => selectedDevice && removeDevice(selectedDevice.id)}
+          onDuplicate={() => selectedDevice && duplicateDevice(selectedDevice.id)}
           onMove={(direction) => selectedDevice && moveDevice(selectedDevice.id, direction)}
           onClose={() => setSelectedDeviceId(null)}
         />

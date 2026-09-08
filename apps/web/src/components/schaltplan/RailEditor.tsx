@@ -25,6 +25,8 @@ type Props = {
   onSelectDevice: (deviceId: string) => void;
   onAddDevice: (rowId: string) => void;
   onAddRow: () => void;
+  /** Open the rail-template chooser (FI + 6 LS and friends). */
+  onAddRowFromTemplate: () => void;
   onRemoveRow: (rowId: string) => void;
   onRenameRow: (rowId: string, label: string) => void;
   onChangeSlots: (rowId: string, slots: number) => void;
@@ -48,7 +50,7 @@ function RailRow({
   row: PanelRow;
   index: number;
   canRemove: boolean;
-} & Omit<Props, "document" | "onAddRow">) {
+} & Omit<Props, "document" | "onAddRow" | "onAddRowFromTemplate">) {
   const used = rowUsedSlots(row);
   const over = used > row.slots;
   const fill = Math.min(100, (used / Math.max(1, row.slots)) * 100);
@@ -161,6 +163,7 @@ export function RailEditor({
   onSelectDevice,
   onAddDevice,
   onAddRow,
+  onAddRowFromTemplate,
   onRemoveRow,
   onRenameRow,
   onChangeSlots,
@@ -185,9 +188,19 @@ export function RailEditor({
         />
       ))}
       {!readOnly && (
-        <button type="button" className="sp-btn sp-btn--ghost sp-add-rail" onClick={onAddRow}>
-          + Reihe hinzufügen
-        </button>
+        <div className="sp-add-rail">
+          <button type="button" className="sp-btn sp-btn--ghost" onClick={onAddRow}>
+            + Reihe hinzufügen
+          </button>
+          <button
+            type="button"
+            className="sp-btn sp-btn--ghost"
+            onClick={onAddRowFromTemplate}
+            title="Fertig bestückte Reihe, z. B. ein FI mit sechs LS"
+          >
+            Reihe aus Vorlage…
+          </button>
+        </div>
       )}
     </div>
   );

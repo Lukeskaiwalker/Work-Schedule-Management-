@@ -34979,6 +34979,9 @@ button.time-calendar-cell {
 }
 
 .sp-add-rail {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   align-self: flex-start;
 }
 
