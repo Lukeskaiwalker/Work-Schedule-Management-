@@ -2,7 +2,7 @@
 
 This module is the single source of truth for what a panel document *means*.
 The React editor mirrors the catalogue in ``apps/web/src/utils/schaltplanDevices.ts``
-and the topology rules in ``apps/web/src/utils/schaltplanLegend.ts`` so the
+and the topology rules in ``apps/web/src/utils/schaltplanTopology.ts`` so the
 on-screen diagram and the printed PDF agree; both files carry a pointer back
 here. When a device kind is added, add it in both places.
 
@@ -40,6 +40,7 @@ The document shape
       "cable": "NYM-J 3x1,5 mm²",
       "phase": "L1",
       "parent_id": null,            # explicit feed override; see below
+      "feeds_following": false,     # fuse only: opens a group like an FI
       "note": ""
     }
 
@@ -58,6 +59,27 @@ a worker never draws connections — the tree is derived from device order:
     self-referential ``parent_id`` is ignored rather than raising: a stale id
     left behind by a deleted FI must degrade to "unprotected" on the drawing,
     which is visible and fixable, not 500 the request.
+
+A fuse as a feeder
+------------------
+A Neozed/NH block is a circuit by catalogue — most of them feed one consumer.
+But an RCBO cannot hang off one through the pre-fuse rule (that rule is for
+FI/SLS/Hauptschalter only), and a row of LS that needs no FI at all could not
+be fed by one either. So a fuse OPENS A GROUP — behaves like an FI in the
+tree — when either
+
+  * it is flagged ``feeds_following``: everything placed after it on the rail
+    hangs off it until the next group opener, exactly like an FI; or
+  * at least one circuit names it via ``parent_id``. Then only those circuits
+    belong to it — a Neozed sitting in a row must not silently steal the
+    row's LS just because one RCBO elsewhere points at it.
+
+``opens_group`` / ``feeder_fuse_ids`` are the single definition of that rule;
+``is_group_device`` stays catalogue-based. A fuse that an FI names as its
+pre-fuse and that ALSO opens a group is drawn twice on purpose: as the plate
+above the FI and as its own group. Only a pre-fuse that opens no group leaves
+the circuit walk. A fuse-headed group never carries a plate of its own, and
+a group head's own ``parent_id`` is ignored — the drawing has two levels.
 
 Rows are the *physical* layout (which rail, which slot). The tree is the
 *electrical* layout. Both come out of the same array, which is why the two
@@ -456,6 +478,67 @@ def is_circuit_device(device: dict[str, Any]) -> bool:
     return bool(_catalog(str(device.get("kind", ""))).get("circuit"))
 
 
+def is_fuse(device: dict[str, Any]) -> bool:
+    return str(device.get("kind", "")) == "fuse"
+
+
+def feeder_fuse_ids(document: dict[str, Any]) -> set[str]:
+    """Ids of every fuse that at least one circuit names as its parent.
+
+    "Circuit" here is the catalogue meaning — ``circuit=True, group=False`` —
+    so an RCBO, an LS or a Schütz counts; an FI naming a fuse does not (that
+    is the pre-fuse rule, not this one), and neither does ANOTHER FUSE: a
+    fuse's own parent_id is never read by the topology, so letting it promote
+    the fuse it names would conjure an empty group out of the ordinary
+    NH → Neozed → FI board and drop the NH's own legend row. Self-references
+    are ignored like everywhere in this module.
+    """
+
+    by_id: dict[str, dict[str, Any]] = {}
+    for _row, device in iter_devices(document):
+        device_id = str(device.get("id") or "")
+        if device_id:
+            by_id[device_id] = device
+
+    ids: set[str] = set()
+    for _row, device in iter_devices(document):
+        if is_group_device(device) or not is_circuit_device(device) or is_fuse(device):
+            continue
+        parent = str(device.get("parent_id") or "")
+        if not parent or parent == str(device.get("id") or ""):
+            continue
+        candidate = by_id.get(parent)
+        if candidate is not None and is_fuse(candidate):
+            ids.add(parent)
+    return ids
+
+
+def feeds_following(device: dict[str, Any]) -> bool:
+    """The positional half of ``opens_group``: a FLAGGED fuse takes the rail after it."""
+
+    return is_fuse(device) and bool(device.get("feeds_following"))
+
+
+def opens_group(
+    device: dict[str, Any],
+    document: dict[str, Any],
+    feeder_ids: set[str] | None = None,
+) -> bool:
+    """Does this fuse head a group of its own? (Never true for any other kind.)
+
+    True when the fuse is flagged ``feeds_following`` or when a circuit names
+    it (see ``feeder_fuse_ids``). ``feeder_ids`` lets a caller that already
+    computed the set pass it in instead of rescanning the document per device.
+    """
+
+    if not is_fuse(device):
+        return False
+    if feeds_following(device):
+        return True
+    ids = feeder_fuse_ids(document) if feeder_ids is None else feeder_ids
+    return str(device.get("id") or "") in ids
+
+
 def device_te(device: dict[str, Any]) -> int:
     """Module width, falling back to the catalogue default.
 
@@ -494,6 +577,10 @@ def build_topology(document: dict[str, Any]) -> dict[str, Any]:
     von der Einspeisung" group holding circuits placed before any FI. It is
     only emitted when it actually has children, so a normally-built board
     shows no phantom group.
+
+    A group's ``device`` is a catalogue group (FI, SLS, Hauptschalter) or a
+    fuse that ``opens_group`` — the input dicts are referenced, never copied
+    or mutated.
     """
 
     by_id: dict[str, dict[str, Any]] = {}
@@ -502,12 +589,10 @@ def build_topology(document: dict[str, Any]) -> dict[str, Any]:
         if device_id:
             by_id[device_id] = device
 
-    # Explicit parents may only point at a *group* device. Pointing a circuit
-    # at another circuit is not a thing a board can do, and letting it through
-    # would build a tree the diagram cannot draw.
-    valid_parents = {
-        device_id for device_id, device in by_id.items() if is_group_device(device)
-    }
+    feeder_ids = feeder_fuse_ids(document)
+
+    def is_head(device: dict[str, Any]) -> bool:
+        return is_group_device(device) or opens_group(device, document, feeder_ids)
 
     # Two passes on purpose. Placement order is physical; ``parent_id`` is
     # electrical, and the two are allowed to disagree — a circuit may name a
@@ -516,34 +601,45 @@ def build_topology(document: dict[str, Any]) -> dict[str, Any]:
     # (an RCBO parented to a Hauptschalter one slot later), and every load of
     # the panel then failed. Register every group first; then no explicit
     # reference can be ahead of the index.
+    #
+    # The index doubles as the set of valid explicit parents: catalogue groups
+    # plus every fuse a circuit names (which is what makes it a head). A
+    # circuit pointing at an LS, or at an id that is gone, finds nothing here
+    # and is treated as dangling below.
     groups: list[dict[str, Any]] = []
     index_by_group_id: dict[str, int] = {}
     for row, device in iter_devices(document):
-        if not is_group_device(device):
+        if not is_head(device):
             continue
         groups.append({
             "device": device,
             "row_label": str(row.get("label") or ""),
             "children": [],
+            "pre_fuse": None,
         })
         device_id = str(device.get("id") or "")
         if device_id:
             index_by_group_id[device_id] = len(groups) - 1
 
-    # A group device may itself name a parent — and that means one thing: the
-    # Neozed/NH block feeding it. The fuse is then a FEEDER of the group, not
-    # one of its loads, so it leaves the circuit walk; on the legend it shows
-    # as the upstream protection of every circuit under that FI. Only kind
-    # "fuse" qualifies: a dangling or wrong-kind parent degrades to "none" and
-    # is reported by validate_document, never raised.
+    # A catalogue group device naming a parent means one thing: the Neozed/NH
+    # block feeding it. That fuse is a FEEDER of the group, not one of its
+    # loads; on the legend it shows as the upstream protection of every
+    # circuit under that FI. It leaves the circuit walk ("consumed") unless
+    # it opens a group of its own — then it is drawn as the plate AND as its
+    # own group, because it really does feed both. Only kind "fuse"
+    # qualifies: a dangling or wrong-kind parent degrades to "none" and is
+    # reported by validate_document, never raised. A fuse-headed group never
+    # has a plate: its own parent_id is not a pre-fuse reference.
     consumed_fuses: set[str] = set()
     for group in groups:
-        group["pre_fuse"] = None
+        if not is_group_device(group["device"]):
+            continue
         parent = str(group["device"].get("parent_id") or "")
         candidate = by_id.get(parent)
-        if candidate is not None and str(candidate.get("kind", "")) == "fuse":
+        if candidate is not None and is_fuse(candidate):
             group["pre_fuse"] = candidate
-            consumed_fuses.add(parent)
+            if not opens_group(candidate, document, feeder_ids):
+                consumed_fuses.add(parent)
 
     supply_group: dict[str, Any] = {
         "device": None, "row_label": "", "children": [], "pre_fuse": None
@@ -552,13 +648,15 @@ def build_topology(document: dict[str, Any]) -> dict[str, Any]:
     orphans: list[dict[str, Any]] = []
 
     for _row, device in iter_devices(document):
-        if str(device.get("id") or "") in consumed_fuses:
+        device_id = str(device.get("id") or "")
+        if device_id in consumed_fuses:
             continue
-        if is_group_device(device):
+        if is_head(device):
             # Implicit parenting still follows physical order: what comes
-            # after this device, without a parent_id of its own, is fed by it.
-            device_id = str(device.get("id") or "")
-            if device_id in index_by_group_id:
+            # after a catalogue group or a FLAGGED fuse, without a parent_id
+            # of its own, is fed by it. A fuse that is a head only because a
+            # circuit names it leaves the rail's derivation alone.
+            if (is_group_device(device) or feeds_following(device)) and device_id in index_by_group_id:
                 current = groups[index_by_group_id[device_id]]
             continue
 
@@ -570,14 +668,14 @@ def build_topology(document: dict[str, Any]) -> dict[str, Any]:
 
         explicit = str(device.get("parent_id") or "")
         if explicit:
-            target = index_by_group_id.get(explicit) if explicit in valid_parents else None
+            target = index_by_group_id.get(explicit)
             if target is not None:
                 groups[target]["children"].append(device)
             else:
-                # Dangling reference (the FI it named was deleted, or a group
-                # device the pre-scan saw but the walk did not). Show it as
-                # unprotected so the mistake is on the drawing, not hidden —
-                # and never let a lookup miss become a failed page load.
+                # Dangling reference (the FI it named was deleted, or it names
+                # something that cannot feed a circuit). Show it as unprotected
+                # so the mistake is on the drawing, not hidden — and never let
+                # a lookup miss become a failed page load.
                 orphans.append(device)
                 supply_group["children"].append(device)
             continue
@@ -635,8 +733,12 @@ def build_legend(document: dict[str, Any]) -> list[dict[str, str]]:
 
     for group in topology["groups"]:
         group_device = group["device"]
+        # A Neozed offers no residual-current protection: "—" unless the
+        # circuit is an RCBO, which then carries its own (below).
         rcd = _rcd_summary(group_device)
-        pre_fuse_label = _pre_fuse_summary(group.get("pre_fuse"))
+        # Under a fuse-headed group the Vorsicherung IS the group head.
+        fuse_head = group_device is not None and is_fuse(group_device)
+        pre_fuse_label = _pre_fuse_summary(group_device if fuse_head else group.get("pre_fuse"))
         group_label = (
             f"{_text(group_device.get('designation'))} {_text(group_device.get('label'))}".strip()
             if group_device
@@ -682,6 +784,7 @@ def document_stats(document: dict[str, Any]) -> dict[str, int]:
     """Counts for the panel cards in the list view — cheap, no layout needed."""
 
     circuits = 0
+    feeder_ids = feeder_fuse_ids(document)
     devices = 0
     rcds = 0
     used = 0
@@ -689,7 +792,7 @@ def document_stats(document: dict[str, Any]) -> dict[str, int]:
     for row, device in iter_devices(document):
         devices += 1
         used += device_te(device)
-        if is_circuit_device(device):
+        if is_circuit_device(device) and not opens_group(device, document, feeder_ids):
             circuits += 1
         if str(device.get("kind")) in {"rcd", "rcbo"}:
             rcds += 1
@@ -737,8 +840,14 @@ def validate_document(document: dict[str, Any]) -> list[dict[str, str]]:
                 }
             )
 
+    # A fuse that heads a group is protection, not a load: it has no legend
+    # row where a Stromkreis-Nr. or a cable could appear, so it is neither
+    # nagged for them nor part of the duplicate count.
+    feeder_ids = feeder_fuse_ids(document)
     seen_circuits: dict[str, int] = {}
     for _row, device in iter_devices(document):
+        if opens_group(device, document, feeder_ids):
+            continue
         circuit = _text(device.get("circuit"))
         if is_circuit_device(device):
             if not circuit:
@@ -773,7 +882,12 @@ def validate_document(document: dict[str, Any]) -> list[dict[str, str]]:
     topology = build_topology(document)
     for group in topology["groups"]:
         device = group["device"]
-        if device is not None and str(device.get("parent_id") or "") and group.get("pre_fuse") is None:
+        if (
+            device is not None
+            and is_group_device(device)
+            and str(device.get("parent_id") or "")
+            and group.get("pre_fuse") is None
+        ):
             findings.append(
                 {
                     "level": "info",
@@ -781,6 +895,24 @@ def validate_document(document: dict[str, Any]) -> list[dict[str, str]]:
                     "message": (
                         f"{_text(device.get('designation')) or 'FI'}: Vorsicherung nicht gefunden "
                         "(die angegebene Sicherung fehlt oder ist keine Sicherung)."
+                    ),
+                }
+            )
+        # The flag claims the rail after the fuse. A circuit naming the fuse from
+        # elsewhere is fed by it anyway, so only positional children (those
+        # without a parent_id of their own) show the flag doing any work.
+        positional = [child for child in group["children"] if not child.get("parent_id")]
+        if device is not None and feeds_following(device) and not positional:
+            # The flag was set and nothing is placed after the fuse before
+            # the next group opener (and nothing names it): the flag is doing
+            # no work, which usually means the LS were meant to follow it.
+            findings.append(
+                {
+                    "level": "info",
+                    "scope": str(device.get("id") or ""),
+                    "message": (
+                        f"{_text(device.get('designation')) or 'Sicherung'}: "
+                        "Vorsicherung speist keine Abgänge"
                     ),
                 }
             )

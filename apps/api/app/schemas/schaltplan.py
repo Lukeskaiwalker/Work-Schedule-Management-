@@ -57,6 +57,11 @@ class PanelDevice(BaseModel):
     cable: str = Field(default="", max_length=96)
     phase: PhaseLabel = "-"
     parent_id: str | None = Field(default=None, max_length=64)
+    # Kind "fuse" only: the Neozed/NH block feeds every device placed after
+    # it on the rail, up to the next FI/SLS/Hauptschalter — it opens a group
+    # the way an FI does. Off, a fuse is a plain circuit unless a circuit
+    # names it via ``parent_id`` (see ``schaltplan_layout.opens_group``).
+    feeds_following: bool = False
     note: str = Field(default="", max_length=500)
     # Real mounted width in mm, when it is not `te` × the module pitch. The
     # BMK strip is cut to this, so a 70 mm Hager FI must not be labelled 72.
@@ -149,6 +154,9 @@ class PanelLegendRow(BaseModel):
     cable: str
     phase: str
     group: str
+    # The Vorsicherung column: the FI's pre-fuse, or the feeder fuse itself
+    # for a circuit hanging off a Neozed block. "—" when there is none.
+    pre_fuse: str = "—"
     note: str
 
 

@@ -27,6 +27,9 @@ from app.services.schaltplan_layout import (
     board_font_size,
     build_legend,
     build_topology,
+    feeder_fuse_ids,
+    is_group_device,
+    opens_group,
     strip_segments,
     validate_document,
 )
@@ -1030,3 +1033,330 @@ def test_pdf_renders_a_pre_fuse(client: TestClient, admin_token: str):
     resp = client.get(f"/api/schaltplan/panels/{panel['id']}/pdf", headers=_auth(admin_token))
     assert resp.status_code == 200, resp.text
     assert resp.content.startswith(b"%PDF")
+
+
+# ── A fuse as a feeder: Neozed → RCBO, Neozed → LS ───────────────────────────
+#
+# The pre-fuse rule above only exists for FI/SLS/Hauptschalter. An RCBO is an
+# RCD too, but it is a *circuit*, so it could not hang off a Neozed block —
+# and a row of LS that needs no FI at all could not be fed by one either. A
+# fuse therefore OPENS A GROUP when it is flagged ``feeds_following`` or when
+# a circuit names it as its parent. Both sides (this module and the editor's
+# schaltplanTopology.ts) implement that rule identically.
+
+
+def _pdf_text(content: bytes) -> bytes:
+    """Every content stream of a PDF, decoded — reportlab writes ASCII85 over Flate."""
+    import base64
+    import re
+    import zlib
+
+    chunks: list[bytes] = []
+    for match in re.finditer(rb"stream\r?\n(.*?)endstream", content, re.S):
+        raw = match.group(1).strip()
+        try:
+            if raw.endswith(b"~>"):
+                raw = base64.a85decode(raw, adobe=True)
+            chunks.append(zlib.decompress(raw))
+        except (ValueError, zlib.error):
+            chunks.append(raw)
+    return b"".join(chunks)
+
+
+def test_an_rcbo_may_name_a_fuse_as_its_feeder():
+    """Neozed → RCBO by ``parent_id`` alone, no flag.
+
+    The fuse becomes a group head with the RCBO under it. It does NOT take
+    over positional derivation: the LS placed after it still belongs to the
+    FI before it, or a Neozed sitting in a row would silently steal the row.
+    """
+
+    document = _document(
+        [
+            _device("f1", "rcd", designation="F1", residual_current="30 mA", rcd_type="A"),
+            _device("f0", "fuse", designation="F0", rating="35 A"),
+            _device(
+                "k1", "rcbo", designation="F0.1", circuit="1", parent_id="f0",
+                residual_current="30 mA", rcd_type="A",
+            ),
+            _device("c1", "mcb", designation="F1.1", circuit="2"),
+        ]
+    )
+    fuse = document["rows"][0]["devices"][1]
+    assert feeder_fuse_ids(document) == {"f0"}
+    assert opens_group(fuse, document) is True
+    assert is_group_device(fuse) is False, "the catalogue is untouched: a fuse stays group=False"
+
+    topology = build_topology(document)
+    by_group = {
+        (g["device"]["id"] if g["device"] else None): [c["id"] for c in g["children"]]
+        for g in topology["groups"]
+    }
+    assert by_group == {"f1": ["c1"], "f0": ["k1"]}
+    assert topology["orphans"] == []
+
+    legend = {row["circuit"]: row for row in build_legend(document)}
+    assert legend["1"]["rcd"] == "30 mA / Typ A", "an RCBO carries its own residual data"
+    assert legend["1"]["pre_fuse"] == "F0 35 A"
+    assert legend["1"]["group"] == "F0"
+    assert legend["2"]["rcd"] == "30 mA / Typ A", "the LS after the Neozed is still under F1"
+    assert legend["2"]["pre_fuse"] == "—"
+
+
+def test_a_flagged_fuse_feeds_the_following_devices_until_the_next_group_opener():
+    document = _document(
+        [
+            _device("f0", "fuse", designation="F0", rating="35 A", feeds_following=True),
+            _device("c1", "mcb", designation="F0.1", circuit="1"),
+            _device("c2", "mcb", designation="F0.2", circuit="2"),
+            _device("c3", "mcb", designation="F0.3", circuit="3"),
+            _device("f1", "rcd", designation="F1", residual_current="30 mA", rcd_type="A"),
+            _device("c4", "mcb", designation="F1.1", circuit="4"),
+        ]
+    )
+    assert feeder_fuse_ids(document) == set(), "nobody names it — the flag alone opens the group"
+    assert opens_group(document["rows"][0]["devices"][0], document) is True
+
+    topology = build_topology(document)
+    assert [g["device"]["id"] for g in topology["groups"]] == ["f0", "f1"]
+    assert [c["id"] for c in topology["groups"][0]["children"]] == ["c1", "c2", "c3"]
+    assert [c["id"] for c in topology["groups"][1]["children"]] == ["c4"]
+    assert topology["groups"][0]["pre_fuse"] is None, "a fuse-headed group has no plate"
+    assert topology["orphans"] == []
+
+    legend = build_legend(document)
+    assert [row["circuit"] for row in legend] == ["1", "2", "3", "4"]
+    assert [row["rcd"] for row in legend[:3]] == ["—", "—", "—"], "a Neozed offers no RCD"
+    assert {row["pre_fuse"] for row in legend[:3]} == {"F0 35 A"}
+    assert legend[3]["rcd"] == "30 mA / Typ A"
+    assert legend[3]["pre_fuse"] == "—"
+
+
+def test_an_unflagged_unreferenced_fuse_stays_a_circuit_and_captures_nothing():
+    """Regression guard for C3: a Neozed in a row is a load until someone says otherwise."""
+
+    document = _document(
+        [
+            _device("f1", "rcd", designation="F1", residual_current="30 mA", rcd_type="A"),
+            _device("f0", "fuse", designation="F0", circuit="9", rating="16 A"),
+            _device("c1", "mcb", designation="F1.1", circuit="1"),
+            _device("c2", "mcb", designation="F1.2", circuit="2"),
+        ]
+    )
+    assert opens_group(document["rows"][0]["devices"][1], document) is False
+
+    topology = build_topology(document)
+    assert [g["device"]["id"] for g in topology["groups"]] == ["f1"]
+    assert [c["id"] for c in topology["groups"][0]["children"]] == ["f0", "c1", "c2"]
+    assert [row["rcd"] for row in build_legend(document)] == ["30 mA / Typ A"] * 3
+    assert {row["pre_fuse"] for row in build_legend(document)} == {"—"}
+
+
+def test_a_fuse_can_be_both_a_pre_fuse_and_a_feeder_group():
+    """F0 feeds the FI F1 (its plate) AND an RCBO directly (its own group)."""
+
+    document = _document(
+        [
+            _device("f0", "fuse", designation="F0", rating="35 A", feeds_following=True),
+            _device(
+                "k1", "rcbo", designation="F0.1", circuit="1",
+                residual_current="30 mA", rcd_type="A",
+            ),
+            _device("f1", "rcd", designation="F1", parent_id="f0", residual_current="30 mA", rcd_type="A"),
+            _device("c1", "mcb", designation="F1.1", circuit="2"),
+        ]
+    )
+    topology = build_topology(document)
+    groups = {g["device"]["id"]: g for g in topology["groups"] if g["device"]}
+    assert list(groups) == ["f0", "f1"]
+    assert [c["id"] for c in groups["f0"]["children"]] == ["k1"]
+    assert groups["f0"]["pre_fuse"] is None
+    assert groups["f1"]["pre_fuse"]["id"] == "f0", "the FI keeps its plate"
+    assert [c["id"] for c in groups["f1"]["children"]] == ["c1"]
+    assert topology["orphans"] == []
+
+    legend = {row["circuit"]: row for row in build_legend(document)}
+    assert legend["1"]["pre_fuse"] == "F0 35 A"
+    assert legend["1"]["rcd"] == "30 mA / Typ A"
+    assert legend["2"]["pre_fuse"] == "F0 35 A"
+    assert legend["2"]["rcd"] == "30 mA / Typ A"
+
+    messages = [f["message"] for f in validate_document(document)]
+    assert not any("speist keine Abgänge" in m for m in messages), messages
+
+
+def test_a_pre_fuse_named_by_a_circuit_is_not_consumed():
+    """Same as above, but the fuse opens its group via a reference, not the flag."""
+
+    document = _document(
+        [
+            _device("f0", "fuse", designation="F0", rating="35 A"),
+            _device("f1", "rcd", designation="F1", parent_id="f0"),
+            _device("c1", "mcb", designation="F1.1", circuit="1"),
+            _device("k1", "rcbo", designation="F0.1", circuit="2", parent_id="f0"),
+        ]
+    )
+    topology = build_topology(document)
+    groups = {g["device"]["id"]: g for g in topology["groups"] if g["device"]}
+    assert [c["id"] for c in groups["f0"]["children"]] == ["k1"]
+    assert groups["f1"]["pre_fuse"]["id"] == "f0"
+    assert [c["id"] for c in groups["f1"]["children"]] == ["c1"]
+
+
+def test_validate_reports_a_flagged_fuse_feeding_nothing_and_a_missing_pre_fuse():
+    document = _document(
+        [
+            _device("f0", "fuse", designation="F0", rating="35 A", feeds_following=True),
+            _device("f1", "rcd", designation="F1", parent_id="ghost"),
+            _device("c1", "mcb", designation="F1.1", circuit="1"),
+        ]
+    )
+    findings = validate_document(document)
+    assert {
+        "level": "info", "scope": "f0", "message": "F0: Vorsicherung speist keine Abgänge"
+    } in findings, findings
+    assert any(
+        f["scope"] == "f1" and "Vorsicherung nicht gefunden" in f["message"] for f in findings
+    ), findings
+    # The flagged fuse's own (ignored) parent must not read as a missing pre-fuse.
+    pointed = _document(
+        [
+            _device("f0", "fuse", designation="F0", rating="35 A", feeds_following=True, parent_id="f1"),
+            _device("f1", "rcd", designation="F1", parent_id="missing"),
+            _device("c1", "mcb", designation="F1.1", circuit="1"),
+        ]
+    )
+    assert not any(
+        f["scope"] == "f0" and "nicht gefunden" in f["message"] for f in validate_document(pointed)
+    )
+
+
+def test_a_fuse_naming_a_fuse_does_not_conjure_an_empty_group():
+    """The ordinary NH → Neozed → FI board: the NH keeps its own circuit row."""
+    from app.services.schaltplan_layout import build_legend, build_topology, feeder_fuse_ids
+
+    document = _document(
+        [
+            _device("f00", "fuse", designation="F00", rating="63 A", circuit="9", label="NH-Abgang"),
+            _device("f0", "fuse", designation="F0", rating="35 A", parent_id="f00"),
+            _device("f1", "rcd", designation="F1", parent_id="f0"),
+            _device("c1", "mcb", designation="F1.1", circuit="1", label="Licht"),
+        ]
+    )
+    assert feeder_fuse_ids(document) == set()
+    groups = build_topology(document)["groups"]
+    heads = [g["device"]["id"] if g["device"] else None for g in groups]
+    assert "f00" not in heads, "a fuse naming a fuse must not become a phantom head"
+    fi = next(g for g in groups if g["device"] and g["device"]["id"] == "f1")
+    assert fi["pre_fuse"]["id"] == "f0"
+    circuits = [row["circuit"] for row in build_legend(document)]
+    assert "9" in circuits, "the NH's own Stromkreis row must survive"
+
+
+def test_a_fuse_heading_a_group_is_not_nagged_like_a_load():
+    from app.services.schaltplan_layout import document_stats
+
+    document = _document(
+        [
+            _device("f0", "fuse", designation="F0", rating="35 A", feeds_following=True),
+            _device("c1", "mcb", designation="F0.1", circuit="1", cable="NYM-J 3x1,5 mm²", label="Heizung"),
+        ]
+    )
+    findings = validate_document(document)
+    assert not any(f["scope"] == "f0" for f in findings), findings
+    assert document_stats(document)["circuit_count"] == 1
+
+
+def test_a_flagged_fuse_fed_only_by_remote_references_still_gets_the_hint():
+    document = _document(
+        [
+            _device("f0", "fuse", designation="F0", rating="35 A", feeds_following=True),
+            _device("f1", "rcd", designation="F1"),
+            _device("c1", "mcb", designation="F1.1", circuit="1"),
+            _device("k1", "rcbo", designation="F0.1", circuit="2", parent_id="f0"),
+        ]
+    )
+    findings = validate_document(document)
+    assert {
+        "level": "info", "scope": "f0", "message": "F0: Vorsicherung speist keine Abgänge"
+    } in findings, findings
+
+
+def test_pdf_renders_fuse_headed_groups_and_carries_the_fuse_in_the_legend(
+    client: TestClient, admin_token: str
+):
+    document = _document(
+        [
+            _device("f0", "fuse", designation="F0", rating="35 A", feeds_following=True),
+            _device("c1", "mcb", designation="F0.1", circuit="1", label="Heizung"),
+            _device("f9", "fuse", designation="F9", rating="20 A"),
+            _device(
+                "k1", "rcbo", designation="F9.1", circuit="2", parent_id="f9",
+                residual_current="30 mA", rcd_type="A", label="Wallbox",
+            ),
+            _device("f1", "rcd", designation="F1", parent_id="f0", residual_current="30 mA", rcd_type="A"),
+            _device("c2", "mcb", designation="F1.1", circuit="3", label="Licht"),
+        ]
+    )
+    customer_id = _customer(client, admin_token, "Neozed Kunde")
+    panel = _create_panel(client, admin_token, customer_id, document=document)
+
+    # The legend the API serves is the one the PDF prints.
+    legend = {row["circuit"]: row for row in panel["legend"]}
+    assert legend["1"]["pre_fuse"] == "F0 35 A" and legend["1"]["rcd"] == "—"
+    assert legend["2"]["pre_fuse"] == "F9 20 A" and legend["2"]["rcd"] == "30 mA / Typ A"
+    assert legend["3"]["pre_fuse"] == "F0 35 A" and legend["3"]["rcd"] == "30 mA / Typ A"
+
+    resp = client.get(f"/api/schaltplan/panels/{panel['id']}/pdf", headers=_auth(admin_token))
+    assert resp.status_code == 200, resp.text
+    assert resp.content.startswith(b"%PDF")
+
+    legend_only = client.get(
+        f"/api/schaltplan/panels/{panel['id']}/pdf?legend_only=true", headers=_auth(admin_token)
+    )
+    assert legend_only.status_code == 200, legend_only.text
+    text = _pdf_text(legend_only.content)
+    assert b"F9 20 A" in text, "the Vorsich. column carries the feeder fuse"
+    assert b"F0 35 A" in text
+
+
+def test_feeds_following_survives_a_round_trip(client: TestClient, admin_token: str):
+    document = _document(
+        [
+            _device("f0", "fuse", designation="F0", rating="35 A", feeds_following=True),
+            _device("c1", "mcb", designation="F0.1", circuit="1"),
+        ]
+    )
+    customer_id = _customer(client, admin_token, "Flag Kunde")
+    panel = _create_panel(client, admin_token, customer_id, document=document)
+    assert panel["document"]["rows"][0]["devices"][0]["feeds_following"] is True
+
+    got = client.get(f"/api/schaltplan/panels/{panel['id']}", headers=_auth(admin_token))
+    assert got.status_code == 200, got.text
+    devices = got.json()["document"]["rows"][0]["devices"]
+    assert devices[0]["feeds_following"] is True
+    # Not sent by the (older) client: defaults to false, never missing.
+    assert devices[1]["feeds_following"] is False
+    assert got.json()["legend"][0]["pre_fuse"] == "F0 35 A"
+
+
+def test_a_circuit_may_name_a_fuse_placed_after_it():
+    """The two-pass rule holds for fuse feeders: the RCBO sits LEFT of its Neozed."""
+
+    document = _document(
+        [
+            _device("k1", "rcbo", circuit="1", parent_id="f0"),
+            _device("f0", "fuse", designation="F0", rating="35 A"),
+            _device("c2", "mcb", circuit="2"),
+        ]
+    )
+    topology = build_topology(document)
+    by_group = {
+        (g["device"]["id"] if g["device"] else None): [c["id"] for c in g["children"]]
+        for g in topology["groups"]
+    }
+    assert by_group["f0"] == ["k1"]
+    # The unflagged Neozed feeds only what names it: c2 is still direct from supply.
+    assert by_group[None] == ["c2"]
+    assert topology["orphans"] == []
+    assert [row["circuit"] for row in build_legend(document)] == ["2", "1"]

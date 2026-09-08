@@ -43,7 +43,7 @@ import {
   type RowTemplateId,
 } from "../utils/schaltplanDocumentOps";
 import { formatFontMm } from "../utils/schaltplanStrip";
-import { buildLegend, findDevice, validateDocument } from "../utils/schaltplanTopology";
+import { buildLegend, findDevice, neighbourDeviceId, validateDocument } from "../utils/schaltplanTopology";
 import {
   printPanelLabels,
   createPanel,
@@ -514,6 +514,15 @@ export function SchaltplanPage() {
   const findings = useMemo(() => (document ? validateDocument(document) : []), [document]);
   const warnings = findings.filter((finding) => finding.level === "warn");
   const selectedDevice = document ? findDevice(document, selectedDeviceId) : null;
+  // Previous/next inside the sheet walks the board in physical order — row
+  // by row, left to right — which is the order a worker reads a rail. The
+  // sheet stays open; only the selection moves.
+  const previousDeviceId = document ? neighbourDeviceId(document, selectedDeviceId, -1) : null;
+  const nextDeviceId = document ? neighbourDeviceId(document, selectedDeviceId, 1) : null;
+  const navigateDevice = (direction: -1 | 1) => {
+    const target = direction < 0 ? previousDeviceId : nextDeviceId;
+    if (target) setSelectedDeviceId(target);
+  };
   const activeRowLabel =
     document?.rows.find((row) => row.id === paletteRowId)?.label ?? "Reihe";
   const customerName = customers.find((customer) => customer.id === customerId)?.name ?? "";
@@ -949,6 +958,9 @@ export function SchaltplanPage() {
           onDuplicate={() => selectedDevice && duplicateDevice(selectedDevice.id)}
           onMove={(direction) => selectedDevice && moveDevice(selectedDevice.id, direction)}
           onClose={() => setSelectedDeviceId(null)}
+          hasPrevious={previousDeviceId !== null}
+          hasNext={nextDeviceId !== null}
+          onNavigate={navigateDevice}
         />
       )}
 

@@ -132,6 +132,7 @@ export function makeDevice(kind: DeviceKind, overrides: Partial<PanelDevice> = {
     cable: "",
     phase: "-",
     parent_id: null,
+    feeds_following: false,
     note: "",
     ...overrides,
   };

@@ -77,6 +77,13 @@ export interface PanelDevice {
   phase: PhaseLabel;
   /** Explicit feed override; null means "derive from position". */
   parent_id: string | null;
+  /**
+   * Kind "fuse" only: this Neozed/NH block feeds the circuits after it on
+   * the rail, up to the next FI/SLS/Hauptschalter — an RCBO row or a row of
+   * MCBs that need no FI. It then heads a group of its own, exactly like an
+   * FI would. See `opensGroup` in `utils/schaltplanTopology.ts`.
+   */
+  feeds_following: boolean;
   note: string;
 }
 

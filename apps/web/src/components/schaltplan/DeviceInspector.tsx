@@ -11,6 +11,10 @@
  * on a phone keyboard is the single slowest thing in this editor, and the
  * eight cables actually used cover nearly every circuit — but the field stays
  * free text, because the ninth cable exists.
+ *
+ * The header carries previous/next. Filling in a rail of twelve breakers is
+ * tap, type, close, tap the next one — twelve times; two arrows in the sheet
+ * make it type, next, type, next.
  */
 import { useEffect, useState } from "react";
 
@@ -24,7 +28,7 @@ import {
   catalogEntry,
 } from "../../utils/schaltplanDevices";
 import { deviceWidthMm, formatMm, widthSuggestionsMm } from "../../utils/schaltplanStrip";
-import { allDevices, buildTopology } from "../../utils/schaltplanTopology";
+import { allDevices, buildTopology, isGroupDevice, opensGroup } from "../../utils/schaltplanTopology";
 import type { PanelDevice, PanelDocument, PhaseLabel } from "../../types/schaltplan";
 
 /** "17.5" / "17,5" / "" → 17.5 / 17.5 / null. Anything that is not a positive number clears the override. */
@@ -33,6 +37,11 @@ function parseWidthMm(raw: string): number | null {
   if (trimmed === "") return null;
   const value = Number(trimmed.replace(",", "."));
   return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+/** "Si F0 35 A — Vorsicherung": how a fuse reads in the "Eingespeist von" list. */
+function fuseOptionLabel(fuse: PanelDevice): string {
+  return `${["Si", fuse.designation || "?", fuse.rating].filter(Boolean).join(" ")} — Vorsicherung`;
 }
 
 type Props = {
@@ -45,6 +54,10 @@ type Props = {
   onMove: (direction: -1 | 1) => void;
   onClose: () => void;
   readOnly: boolean;
+  /** Previous/next device in physical order. Optional: a caller without a board order gets disabled arrows. */
+  hasPrevious?: boolean;
+  hasNext?: boolean;
+  onNavigate?: (direction: -1 | 1) => void;
 };
 
 function Chips({
@@ -72,6 +85,21 @@ function Chips({
   );
 }
 
+function Chevron({ direction }: { direction: -1 | 1 }) {
+  return (
+    <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true" focusable="false">
+      <polyline
+        points={direction < 0 ? "12.5,4 6.5,10 12.5,16" : "7.5,4 13.5,10 7.5,16"}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 export function DeviceInspector({
   device,
   document,
@@ -81,6 +109,9 @@ export function DeviceInspector({
   onMove,
   onClose,
   readOnly,
+  hasPrevious = false,
+  hasNext = false,
+  onNavigate,
 }: Props) {
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -109,10 +140,19 @@ export function DeviceInspector({
   const widthChips = widthSuggestionsMm(device.te);
 
   const entry = catalogEntry(device.kind);
-  const groups = buildTopology(document).filter((group) => group.device !== null);
-  // Neozed/NH blocks anywhere on the board, offered as the Vorsicherung of an
-  // FI/SLS/Hauptschalter. The same parent_id field carries the choice: for a
-  // circuit it names the FI, for a group it names the fuse.
+  // A fuse that feeds circuits directly heads a group of its own. Its
+  // parent_id is then not read at all — neither as "Eingespeist von" (it is
+  // no load any more) nor as a Vorsicherung (a fuse-headed group has no
+  // plate) — so the select is hidden and the head says what the fuse does.
+  const fuseFeedsCircuits = device.kind === "fuse" && opensGroup(device, document);
+  // Only the catalogue groups (FI/SLS/Hauptschalter) — fuses are listed
+  // separately below, so a fuse that already heads a group is not shown twice.
+  const groups = buildTopology(document).filter(
+    (group) => group.device !== null && isGroupDevice(group.device),
+  );
+  // Neozed/NH blocks anywhere on the board. Offered as the Vorsicherung of an
+  // FI/SLS/Hauptschalter, and as the direct feed of an RCBO or LS row. The
+  // same parent_id field carries the choice.
   const fuses = allDevices(document).filter((d) => d.kind === "fuse" && d.id !== device.id);
   const ratingSuggestions = RATING_SUGGESTIONS[device.kind] ?? [];
 
@@ -123,6 +163,12 @@ export function DeviceInspector({
       {hint ? <small className="sp-field-hint">{hint}</small> : null}
     </label>
   );
+
+  const roleNote = entry.group
+    ? " · öffnet eine FI-Gruppe"
+    : fuseFeedsCircuits
+      ? " · Vorsicherung, speist Abgänge"
+      : "";
 
   return (
     <>
@@ -138,13 +184,33 @@ export function DeviceInspector({
               <small>
                 {entry.te === device.te ? `${device.te} TE` : `${device.te} TE (Standard ${entry.te})`}
                 {` · ${formatMm(deviceWidthMm(device))} mm`}
-                {entry.group ? " · öffnet eine FI-Gruppe" : ""}
+                {roleNote}
               </small>
             </div>
           </div>
-          <button type="button" className="sp-sheet-close" onClick={onClose} aria-label="Schließen">
-            ×
-          </button>
+          <div className="sp-sheet-tools">
+            <button
+              type="button"
+              className="sp-sheet-nav"
+              onClick={() => onNavigate?.(-1)}
+              disabled={!hasPrevious || !onNavigate}
+              aria-label="Vorheriges Gerät"
+            >
+              <Chevron direction={-1} />
+            </button>
+            <button
+              type="button"
+              className="sp-sheet-nav"
+              onClick={() => onNavigate?.(1)}
+              disabled={!hasNext || !onNavigate}
+              aria-label="Nächstes Gerät"
+            >
+              <Chevron direction={1} />
+            </button>
+            <button type="button" className="sp-sheet-close" onClick={onClose} aria-label="Schließen">
+              ×
+            </button>
+          </div>
         </div>
 
         <div className="sp-sheet-body">
@@ -219,6 +285,27 @@ export function DeviceInspector({
                 />
               )}
             </>,
+          )}
+
+          {device.kind === "fuse" && (
+            <div className="sp-field">
+              <label className="sp-check">
+                <input
+                  type="checkbox"
+                  checked={device.feeds_following === true}
+                  disabled={readOnly}
+                  onChange={(event) => onChange({ feeds_following: event.target.checked })}
+                />
+                <span className="sp-check-text">
+                  Speist die folgenden Abgänge bis zum nächsten FI/Hauptschalter
+                </span>
+              </label>
+              <small className="sp-field-hint">
+                {fuseFeedsCircuits && !device.feeds_following
+                  ? "Mindestens ein Abgang ist bereits auf diese Sicherung eingestellt — sie bildet deshalb schon eine eigene Gruppe."
+                  : "Für FI/LS-Kombis oder eine LS-Reihe ohne FI: die Sicherung steht dann in der Legende als Vorsicherung dieser Stromkreise."}
+              </small>
+            </div>
           )}
 
           {(device.kind === "rcd" || device.kind === "rcbo") && (
@@ -365,6 +452,7 @@ export function DeviceInspector({
               "Neozed- oder NH-Sicherung, die diesem FI vorgeschaltet ist. Sie erscheint in der Legende bei allen Stromkreisen dieser Gruppe.",
             )}
           {entry.circuit &&
+            !fuseFeedsCircuits &&
             field(
               "Eingespeist von",
               <select
@@ -378,8 +466,16 @@ export function DeviceInspector({
                     {`${group.device!.designation || "?"} ${catalogEntry(group.device!.kind).short}`}
                   </option>
                 ))}
+                {/* A fuse's own feed is not modelled: offering another fuse here
+                    would store a parent the topology never reads. */}
+                {device.kind !== "fuse" &&
+                  fuses.map((fuse) => (
+                    <option key={fuse.id} value={fuse.id}>
+                      {fuseOptionLabel(fuse)}
+                    </option>
+                  ))}
               </select>,
-              "Nur ändern, wenn der Stromkreis nicht von dem FI versorgt wird, der auf der Schiene davor sitzt.",
+              "Nur ändern, wenn der Stromkreis nicht von dem FI davor auf der Schiene versorgt wird — etwa eine FI/LS-Kombi oder ein LS ohne FI direkt hinter einer Sicherung.",
             )}
 
           {field(
@@ -395,7 +491,7 @@ export function DeviceInspector({
         </div>
 
         {!readOnly && (
-          <div className="sp-sheet-actions">
+          <div className="sp-sheet-actions sp-sheet-actions--grid">
             <button type="button" className="sp-btn" onClick={() => onMove(-1)}>
               ← Nach links
             </button>

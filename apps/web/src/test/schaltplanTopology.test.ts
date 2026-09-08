@@ -11,7 +11,15 @@
  */
 import { describe, expect, it } from "vitest";
 import { emptyDocument, makeDevice } from "../utils/schaltplanDevices";
-import { buildLegend, buildTopology, validateDocument } from "../utils/schaltplanTopology";
+import {
+  buildLegend,
+  buildTopology,
+  documentStats,
+  feederFuseIds,
+  neighbourDeviceId,
+  opensGroup,
+  validateDocument,
+} from "../utils/schaltplanTopology";
 import type { PanelDocument } from "../types/schaltplan";
 
 function documentWithParentAfterChild(): PanelDocument {
@@ -117,5 +125,300 @@ describe("schaltplan topology — Vorsicherung", () => {
     expect(fi?.preFuse).toBeNull();
     const messages = validateDocument(document).map((f) => f.message);
     expect(messages.some((m) => m.includes("Vorsicherung") && m.includes("F1"))).toBe(true);
+  });
+});
+
+// ── Sicherung speist Abgänge: Neozed → RCBO / LS ohne FI ─────────────────────
+//
+// A Neozed block may feed an RCBO (which brings its own residual-current
+// protection) or a row of MCBs that need no FI at all. Two ways to say so:
+// point the circuit at the fuse (`parent_id`), or flag the fuse itself
+// (`feeds_following`) so it captures the rail after it like an FI would.
+
+function boardWithFuseFeedingRcbo(): PanelDocument {
+  return {
+    ...emptyDocument(),
+    rows: [
+      {
+        id: "r1",
+        label: "Reihe 1",
+        slots: 12,
+        devices: [
+          makeDevice("fuse", { id: "f0", designation: "F0", rating: "35 A" }),
+          makeDevice("rcbo", {
+            id: "c1",
+            designation: "F0.1",
+            circuit: "1",
+            parent_id: "f0",
+            residual_current: "30 mA",
+            rcd_type: "A",
+          }),
+          makeDevice("rcd", { id: "f1", designation: "F1" }),
+          makeDevice("mcb", { id: "c2", designation: "F1.1", circuit: "2" }),
+        ],
+      },
+    ],
+  };
+}
+
+describe("schaltplan topology — Sicherung speist Abgänge", () => {
+  it("an RCBO may name a Neozed; the fuse then heads its own group", () => {
+    const document = boardWithFuseFeedingRcbo();
+    expect(feederFuseIds(document)).toEqual(new Set(["f0"]));
+    expect(opensGroup(document.rows[0].devices[0], document)).toBe(true);
+
+    const groups = buildTopology(document);
+    const fuseGroup = groups.find((g) => g.device?.id === "f0");
+    expect(fuseGroup).toBeDefined();
+    expect(fuseGroup!.preFuse).toBeNull();
+    expect(fuseGroup!.children.map((d) => d.id)).toEqual(["c1"]);
+    // A group head, not a circuit column anywhere.
+    expect(groups.flatMap((g) => g.children).some((d) => d.id === "f0")).toBe(false);
+    // The FI after it is untouched.
+    expect(groups.find((g) => g.device?.id === "f1")?.children.map((d) => d.id)).toEqual(["c2"]);
+    expect(groups.some((g) => g.device === null)).toBe(false);
+  });
+
+  it("the legend lists the fuse as Vorsicherung and only the RCBO's own RCD", () => {
+    const rows = buildLegend(boardWithFuseFeedingRcbo());
+    const rcbo = rows.find((r) => r.circuit === "1");
+    expect(rcbo?.pre_fuse).toBe("F0 35 A");
+    expect(rcbo?.rcd).toBe("30 mA / Typ A");
+    expect(rcbo?.group).toBe("F0 Si");
+    const underFi = rows.find((r) => r.circuit === "2");
+    expect(underFi?.pre_fuse).toBe("—");
+  });
+
+  it("a flagged fuse captures everything after it until the next FI", () => {
+    const document: PanelDocument = {
+      ...emptyDocument(),
+      rows: [
+        {
+          id: "r1",
+          label: "Reihe 1",
+          slots: 12,
+          devices: [
+            makeDevice("fuse", { id: "f0", designation: "F0", rating: "35 A", feeds_following: true }),
+            makeDevice("mcb", { id: "c1", designation: "F0.1", circuit: "1" }),
+            makeDevice("mcb", { id: "c2", designation: "F0.2", circuit: "2" }),
+            makeDevice("rcd", { id: "f1", designation: "F1" }),
+            makeDevice("mcb", { id: "c3", designation: "F1.1", circuit: "3" }),
+          ],
+        },
+      ],
+    };
+    expect(opensGroup(document.rows[0].devices[0], document)).toBe(true);
+    const groups = buildTopology(document);
+    expect(groups.find((g) => g.device?.id === "f0")?.children.map((d) => d.id)).toEqual(["c1", "c2"]);
+    expect(groups.find((g) => g.device?.id === "f1")?.children.map((d) => d.id)).toEqual(["c3"]);
+    expect(groups.some((g) => g.device === null)).toBe(false);
+
+    const rows = buildLegend(document);
+    expect(rows.find((r) => r.circuit === "1")?.rcd).toBe("—");
+    expect(rows.find((r) => r.circuit === "1")?.pre_fuse).toBe("F0 35 A");
+    expect(rows.find((r) => r.circuit === "3")?.pre_fuse).toBe("—");
+    expect(rows.find((r) => r.circuit === "3")?.rcd).toBe("30 mA / Typ A");
+  });
+
+  it("an unflagged fuse nobody names captures nothing", () => {
+    const document: PanelDocument = {
+      ...emptyDocument(),
+      rows: [
+        {
+          id: "r1",
+          label: "Reihe 1",
+          slots: 12,
+          devices: [
+            makeDevice("fuse", { id: "f0", designation: "F0", rating: "35 A", circuit: "9" }),
+            makeDevice("mcb", { id: "c1", designation: "F1.1", circuit: "1" }),
+          ],
+        },
+      ],
+    };
+    expect(feederFuseIds(document).size).toBe(0);
+    expect(opensGroup(document.rows[0].devices[0], document)).toBe(false);
+    const groups = buildTopology(document);
+    expect(groups.some((g) => g.device?.id === "f0")).toBe(false);
+    expect(groups.find((g) => g.device === null)?.children.map((d) => d.id)).toEqual(["f0", "c1"]);
+  });
+
+  it("a fuse that is Vorsicherung of an FI and feeds an RCBO renders both ways", () => {
+    const document: PanelDocument = {
+      ...emptyDocument(),
+      rows: [
+        {
+          id: "r1",
+          label: "Reihe 1",
+          slots: 12,
+          devices: [
+            makeDevice("fuse", { id: "f0", designation: "F0", rating: "35 A" }),
+            makeDevice("rcbo", { id: "c1", designation: "F0.1", circuit: "1", parent_id: "f0" }),
+            makeDevice("rcd", { id: "f1", designation: "F1", parent_id: "f0" }),
+            makeDevice("mcb", { id: "c2", designation: "F1.1", circuit: "2" }),
+          ],
+        },
+      ],
+    };
+    const groups = buildTopology(document);
+    const fuseGroup = groups.find((g) => g.device?.id === "f0");
+    expect(fuseGroup?.children.map((d) => d.id)).toEqual(["c1"]);
+    const fi = groups.find((g) => g.device?.id === "f1");
+    expect(fi?.preFuse?.id).toBe("f0");
+    expect(fi?.children.map((d) => d.id)).toEqual(["c2"]);
+    expect(groups.flatMap((g) => g.children).some((d) => d.id === "f0")).toBe(false);
+
+    const rows = buildLegend(document);
+    expect(rows.map((r) => r.pre_fuse)).toEqual(["F0 35 A", "F0 35 A"]);
+  });
+
+  it("reports a flagged fuse that feeds nothing, and only that one", () => {
+    const document: PanelDocument = {
+      ...emptyDocument(),
+      rows: [
+        {
+          id: "r1",
+          label: "Reihe 1",
+          slots: 12,
+          devices: [
+            makeDevice("fuse", { id: "f0", designation: "F0", rating: "35 A", feeds_following: true }),
+            makeDevice("rcd", { id: "f1", designation: "F1" }),
+            makeDevice("fuse", { id: "f2", designation: "F2", rating: "20 A", feeds_following: true }),
+            makeDevice("mcb", { id: "c1", designation: "F2.1", circuit: "1", cable: "NYM-J 3x1,5 mm²" }),
+          ],
+        },
+      ],
+    };
+    const findings = validateDocument(document);
+    const idle = findings.filter((f) => f.message.includes("speist keine Abgänge"));
+    expect(idle).toHaveLength(1);
+    expect(idle[0]).toMatchObject({ level: "info", scope: "f0", message: "F0: Vorsicherung speist keine Abgänge" });
+  });
+});
+
+describe("schaltplan topology — a fuse-headed group has no plate", () => {
+  it("ignores a feeder fuse's own parent_id and reports nothing about it", () => {
+    // Backend rule, mirrored: only a catalogue group reads parent_id as a
+    // Vorsicherung. A flagged fuse that still names the FI it used to hang
+    // off is neither that FI's child nor a group with a plate.
+    const document: PanelDocument = {
+      ...emptyDocument(),
+      rows: [
+        {
+          id: "r1",
+          label: "Reihe 1",
+          slots: 12,
+          devices: [
+            makeDevice("rcd", { id: "f1", designation: "F1" }),
+            makeDevice("fuse", { id: "f0", designation: "F0", rating: "35 A", feeds_following: true, parent_id: "f1" }),
+            makeDevice("mcb", { id: "c1", designation: "F0.1", circuit: "1", cable: "NYM-J 3x1,5 mm²" }),
+          ],
+        },
+      ],
+    };
+    const groups = buildTopology(document);
+    const fuseGroup = groups.find((g) => g.device?.id === "f0");
+    expect(fuseGroup?.preFuse).toBeNull();
+    expect(fuseGroup?.children.map((d) => d.id)).toEqual(["c1"]);
+    expect(groups.find((g) => g.device?.id === "f1")?.children).toEqual([]);
+    const messages = validateDocument(document).map((f) => f.message);
+    expect(messages.some((m) => m.includes("Vorsicherung nicht gefunden"))).toBe(false);
+    expect(messages.some((m) => m.includes("speist keine Abgänge"))).toBe(false);
+  });
+});
+
+describe("feeder fuses — review follow-ups", () => {
+  function nhNeozedFi(): PanelDocument {
+    return {
+      ...emptyDocument(),
+      rows: [
+        {
+          id: "r1",
+          label: "Reihe 1",
+          slots: 12,
+          devices: [
+            makeDevice("fuse", { id: "f00", designation: "F00", rating: "63 A", circuit: "9", label: "NH-Abgang" }),
+            makeDevice("fuse", { id: "f0", designation: "F0", rating: "35 A", parent_id: "f00" }),
+            makeDevice("rcd", { id: "f1", designation: "F1", parent_id: "f0" }),
+            makeDevice("mcb", { id: "c1", designation: "F1.1", circuit: "1", label: "Licht" }),
+          ],
+        },
+      ],
+    };
+  }
+
+  it("a fuse naming a fuse does not conjure an empty group (NH → Neozed → FI)", () => {
+    const document = nhNeozedFi();
+    expect([...feederFuseIds(document)]).toEqual([]);
+    const heads = buildTopology(document).map((group) => group.device?.id ?? null);
+    expect(heads).not.toContain("f00");
+    const fi = buildTopology(document).find((group) => group.device?.id === "f1");
+    expect(fi?.preFuse?.id).toBe("f0");
+    expect(buildLegend(document).map((row) => row.circuit)).toContain("9");
+  });
+
+  it("a fuse heading a group is not nagged like a load and is not a circuit", () => {
+    const document: PanelDocument = {
+      ...emptyDocument(),
+      rows: [
+        {
+          id: "r1",
+          label: "Reihe 1",
+          slots: 12,
+          devices: [
+            makeDevice("fuse", { id: "f0", designation: "F0", rating: "35 A", feeds_following: true }),
+            makeDevice("mcb", { id: "c1", designation: "F0.1", circuit: "1", cable: "NYM-J 3x1,5 mm²", label: "Heizung" }),
+          ],
+        },
+      ],
+    };
+    expect(validateDocument(document).filter((finding) => finding.scope === "f0")).toEqual([]);
+    expect(documentStats(document).circuitCount).toBe(1);
+  });
+
+  it("a flagged fuse fed only by remote references still gets the hint", () => {
+    const document: PanelDocument = {
+      ...emptyDocument(),
+      rows: [
+        {
+          id: "r1",
+          label: "Reihe 1",
+          slots: 12,
+          devices: [
+            makeDevice("fuse", { id: "f0", designation: "F0", rating: "35 A", feeds_following: true }),
+            makeDevice("rcd", { id: "f1", designation: "F1" }),
+            makeDevice("mcb", { id: "c1", designation: "F1.1", circuit: "1" }),
+            makeDevice("rcbo", { id: "k1", designation: "F0.1", circuit: "2", parent_id: "f0" }),
+          ],
+        },
+      ],
+    };
+    expect(validateDocument(document)).toContainEqual({
+      level: "info",
+      scope: "f0",
+      message: "F0: Vorsicherung speist keine Abgänge",
+    });
+  });
+});
+
+describe("neighbourDeviceId — the arrows in the device sheet", () => {
+  const twoRows: PanelDocument = {
+    ...emptyDocument(),
+    rows: [
+      { id: "r1", label: "Reihe 1", slots: 12, devices: [makeDevice("rcd", { id: "a" }), makeDevice("mcb", { id: "b" })] },
+      { id: "r2", label: "Reihe 2", slots: 12, devices: [makeDevice("mcb", { id: "c" })] },
+    ],
+  };
+
+  it("walks left to right and crosses the row boundary", () => {
+    expect(neighbourDeviceId(twoRows, "a", 1)).toBe("b");
+    expect(neighbourDeviceId(twoRows, "b", 1)).toBe("c");
+    expect(neighbourDeviceId(twoRows, "c", -1)).toBe("b");
+  });
+
+  it("is null at both ends and for an unknown or missing id", () => {
+    expect(neighbourDeviceId(twoRows, "a", -1)).toBeNull();
+    expect(neighbourDeviceId(twoRows, "c", 1)).toBeNull();
+    expect(neighbourDeviceId(twoRows, "zzz", 1)).toBeNull();
+    expect(neighbourDeviceId(twoRows, null, 1)).toBeNull();
   });
 });
