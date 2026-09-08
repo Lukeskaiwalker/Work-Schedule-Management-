@@ -128,13 +128,25 @@ export const ROW_TEMPLATES: readonly RowTemplate[] = [
   { id: "mcb-12", label: "12 LS", hint: "ohne eigenen FI — hängt am FI der Reihe davor · 12 TE", kinds: times(12, "mcb") },
 ];
 
-/** The designation the last circuit on the board carries — where a bare LS rail continues counting. */
-function lastCircuitDesignation(document: PanelDocument): string {
-  let last = "";
+/**
+ * Where a rail without its own FI continues counting: after the last
+ * designated device in physical order. A breaker continues its own number
+ * ("F1.3" → "F1.4"); an F-numbered group that has no breakers yet opens its
+ * sub-numbering ("F1" → "F1.1"); a group named differently (a Hauptschalter
+ * "Q1") or an empty board starts at "F1".
+ */
+function continuationSeed(document: PanelDocument): string {
+  let seed = "F0";
   for (const device of allDevices(document)) {
-    if (isCircuitDevice(device) && device.designation.trim()) last = device.designation.trim();
+    const designation = device.designation.trim();
+    if (!designation) continue;
+    if (catalogEntry(device.kind).group) {
+      seed = /^F\d/i.test(designation) ? `${designation}.0` : "F0";
+    } else if (isCircuitDevice(device)) {
+      seed = designation;
+    }
   }
-  return last;
+  return seed;
 }
 
 /**
@@ -154,7 +166,7 @@ export function rowFromTemplate(
   const taken = new Set(takenDesignations(document));
   const hasGroup = kinds.some((kind) => catalogEntry(kind).group);
 
-  let previousDesignation = hasGroup ? "" : lastCircuitDesignation(document) || "F0";
+  let previousDesignation = hasGroup ? "" : continuationSeed(document);
   let circuit = Number.parseInt(nextCircuitNumber(document), 10);
   let breakerIndex = 0;
 

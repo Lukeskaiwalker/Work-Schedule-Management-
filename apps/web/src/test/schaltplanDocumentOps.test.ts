@@ -169,6 +169,43 @@ describe("rowFromTemplate", () => {
     expect(row.slots).toBe(12);
   });
 
+  it("hangs a bare LS rail under an FI that has no breakers yet", () => {
+    // Add the FI, then straight away "Reihe aus Vorlage" → 12 LS: the
+    // breakers belong to F1, they are not new top-level groups F2…F13.
+    const board = emptyDocument();
+    const document = {
+      ...board,
+      rows: [{ ...board.rows[0], devices: [makeDevice("rcd", { id: "fi", designation: "F1" })] }],
+    };
+    const row = rowFromTemplate(document, "mcb-12");
+    expect(row.devices[0].designation).toBe("F1.1");
+    expect(row.devices[11].designation).toBe("F1.12");
+  });
+
+  it("continues under the FI placed last, not the breakers before it", () => {
+    const board = panelWithGroup();
+    const document = {
+      ...board,
+      rows: [
+        ...board.rows,
+        { id: "r2", label: "Reihe 2", slots: 12, devices: [makeDevice("rcd", { id: "fi2", designation: "F2" })] },
+      ],
+    };
+    const row = rowFromTemplate(document, "mcb-12");
+    expect(row.devices[0].designation).toBe("F2.1");
+  });
+
+  it("starts at F1 under a group that is not F-numbered", () => {
+    const board = emptyDocument();
+    const document = {
+      ...board,
+      rows: [{ ...board.rows[0], devices: [makeDevice("hauptschalter", { id: "hs", designation: "Q1" })] }],
+    };
+    const row = rowFromTemplate(document, "mcb-12");
+    expect(row.devices[0].designation).toBe("F1");
+    expect(row.devices[1].designation).toBe("F2");
+  });
+
   it("starts at F1 on an empty board", () => {
     const row = rowFromTemplate(emptyDocument(), "rcd-8mcb");
     expect(row.devices[0].designation).toBe("F1");
