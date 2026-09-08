@@ -168,6 +168,10 @@ class TaskMaterial(Base):
     # NULL means "not reported yet", which is different from a reported zero:
     # zero says the item came back untouched, NULL says nobody has said.
     quantity_used: Mapped[int | None] = mapped_column(Integer)
+    # Set when the task was completed and this line's stock movements were
+    # booked (services/task_materials.py). A settled line is a record, not a
+    # plan: it is never moved again and never deleted by unlinking the crate.
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     notes: Mapped[str | None] = mapped_column(Text)
     added_by: Mapped[int | None] = mapped_column(

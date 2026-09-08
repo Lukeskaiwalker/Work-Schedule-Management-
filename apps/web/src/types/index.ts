@@ -345,6 +345,25 @@ export type ProjectTrackedMaterial = {
   last_report_date?: string | null;
 };
 
+/** One material line on a task — imported from the linked Baustellenkiste
+ *  by the server. Read-only in the UI; the report round-trip writes
+ *  `quantity_used` back through `materials_consumed[].task_material_id`. */
+export type TaskMaterial = {
+  id: number;
+  item_name: string;
+  article_no: string | null;
+  ean: string | null;
+  unit: string | null;
+  quantity: number;
+  /** null = nobody reported yet; 0 = came back untouched */
+  quantity_used: number | null;
+  article_id: number | null;
+  source_box_id: number | null;
+  notes: string | null;
+  /** ISO timestamp once the stock movements were booked on task completion */
+  settled_at: string | null;
+};
+
 export type Task = {
   id: number;
   // v2.4.5: a task is anchored to a project, a customer, or both.
@@ -394,6 +413,9 @@ export type Task = {
    *  used. UI hides the resend button + shows a "must call us" hint. */
   customer_confirmation_token_expired?: boolean;
   updated_at?: string | null;
+  /** Box contents imported by the server. Optional: cached task objects
+   *  from before the field existed simply have none. */
+  materials?: TaskMaterial[];
 };
 
 export type TaskOverlap = {
@@ -857,7 +879,7 @@ export type StoredReportDraft = {
   officeNextSteps: string;
   date: string;
   workers: ReportWorker[];
-  materialRows: Pick<ReportMaterialRow, "item" | "qty" | "unit" | "article_no">[];
+  materialRows: Pick<ReportMaterialRow, "item" | "qty" | "unit" | "article_no" | "task_material_id">[];
   officeMaterialRows: Pick<ReportMaterialRow, "item" | "qty" | "unit" | "article_no">[];
   sourceTaskId: number | null;
   savedAt: string;
@@ -874,6 +896,9 @@ export type ReportMaterialRow = {
   qty: string;
   unit: string;
   article_no: string;
+  /** Set when the row was prefilled from a task's box material; the server
+   *  uses it to write `quantity_used` back. Absent/null for hand-typed rows. */
+  task_material_id?: number | null;
 };
 
 /** v2.5.18: the 5 status checkboxes + Bemerkung field for section 8 of the
@@ -960,7 +985,11 @@ export type TaskReportPrefill = {
   report_date: string;
   work_done: string;
   incidents: string;
+  /** Legacy free-text Materialbedarf; used only when `materialRows` is absent. */
   materials: string;
+  /** Structured rows built from the task's box materials (carry
+   *  `task_material_id`). Present only when the task has such rows. */
+  materialRows?: ReportMaterialRow[];
   subtasks: string[];
 };
 
@@ -1101,6 +1130,9 @@ export type TaskEditFormState = {
   customer_confirmation_notes?: string | null;
   customer_confirmation_email_sent_at?: string | null;
   customer_confirmation_token_expired?: boolean;
+  /** Read-only snapshot of the task's box materials, so the edit modal can
+   *  list them without a second fetch. Never part of the PATCH payload. */
+  materials: TaskMaterial[];
 };
 
 export type WorkspaceMode = "construction" | "office";

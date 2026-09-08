@@ -20154,6 +20154,141 @@ td {
   color: #5c7895;
 }
 
+/* Box materials on a task: read-only table + Packliste button. One block
+   shared by the edit modal and the "Meine Aufgaben" card. */
+.task-material-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+}
+
+.task-material-list-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.task-material-list-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #4f657c;
+}
+
+.task-material-list-hint {
+  margin-left: 8px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: normal;
+  text-transform: none;
+  color: #9aaec4;
+}
+
+.task-material-list-toggle {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  padding: 0;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  color: #14293d;
+  cursor: pointer;
+}
+
+.task-material-list-pdf {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid #c9d9ea;
+  border-radius: 8px;
+  background-color: #ffffff;
+  color: #2f70b7;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  min-height: 0;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.task-material-list-pdf:hover {
+  background-color: #edf4ff;
+  border-color: #b7d2ec;
+}
+
+.task-material-list-scroll {
+  overflow-x: auto;
+}
+
+.task-material-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  line-height: 18px;
+  color: #14293d;
+}
+
+.task-material-table th {
+  padding: 4px 8px;
+  text-align: left;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #4f657c;
+  border-bottom: 1px solid #c9d9ea;
+}
+
+.task-material-table td {
+  padding: 6px 8px;
+  vertical-align: top;
+  border-bottom: 1px solid #e6eef7;
+}
+
+.task-material-qty {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.task-material-article {
+  white-space: nowrap;
+  color: #5c7895;
+}
+
+.task-material-status {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.task-material-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 19px;
+  padding: 0 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  background-color: #e2f1d9;
+  color: #1f6a3e;
+  border: 1px solid #c8e6d0;
+}
+
 .task-modal-priority-wrap {
   position: relative;
 }

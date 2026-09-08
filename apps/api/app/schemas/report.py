@@ -35,6 +35,10 @@ class ConstructionReportMaterial(BaseModel):
     article_no: str | None = None
     usage: str | None = None
     note: str | None = None
+    # v2.15: a row prefilled from the source task's material lines carries the
+    # line's id, so the reported ``qty`` can be written back as what was
+    # actually fitted (services/task_materials.py). Hand-typed rows have none.
+    task_material_id: int | None = None
 
 
 class ConstructionReportMaterialNeeded(BaseModel):

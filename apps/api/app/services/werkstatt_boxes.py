@@ -192,6 +192,43 @@ def _emit_box_movements(
     return moved
 
 
+def release_box_after_task(
+    db: Session,
+    box: WerkstattConstructionBox,
+    *,
+    now: datetime | None = None,
+) -> int:
+    """Empty a handed-over crate and put it back on the rack, unassigned.
+
+    Called by the task settlement (services/task_materials.py) once every line
+    has been split into "fitted" and "back on the shelf" and those movements
+    are booked. Deliberately *not* an edge of :func:`transition_box`: the FSM's
+    ``zurueck`` returns every line in full, which is right for a crate that
+    comes back unopened and wrong once the settlement has already returned
+    the remainder — going through it would put the fitted part back on the
+    shelf a second time. Caller commits. Returns the number of lines removed.
+    """
+    stamp = now or utcnow()
+    lines = list(
+        db.scalars(
+            select(WerkstattConstructionBoxItem).where(
+                WerkstattConstructionBoxItem.box_id == box.id
+            )
+        ).all()
+    )
+    for line in lines:
+        db.delete(line)
+    box.status = "offen"
+    box.customer_id = None
+    box.project_id = None
+    box.packed_at = None
+    box.returned_at = stamp
+    box.updated_at = stamp
+    db.add(box)
+    db.flush()
+    return len(lines)
+
+
 def transition_box(
     db: Session,
     box: WerkstattConstructionBox,

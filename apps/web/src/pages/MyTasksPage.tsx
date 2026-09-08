@@ -6,6 +6,7 @@ import { estimateTravelMinutesFromAddresses, projectLocationAddress } from "../u
 import { BackIcon, PenIcon } from "../components/icons";
 import { PartnerTaskChip } from "../components/partners/PartnerTaskChip";
 import { CustomerConfirmationDot } from "../components/tasks/CustomerConfirmationDot";
+import { TaskMaterialList } from "../components/tasks/TaskMaterialList";
 import { taskBoxDisplay } from "../utils/boxes";
 
 export function MyTasksPage() {
@@ -276,6 +277,12 @@ export function MyTasksPage() {
                         ))}
                       </ul>
                     )}
+                    <TaskMaterialList
+                      taskId={task.id}
+                      materials={task.materials}
+                      language={language}
+                      collapsible
+                    />
                     <div className="tasks-page-row-actions">
                       {canManageTasks && (
                         <button

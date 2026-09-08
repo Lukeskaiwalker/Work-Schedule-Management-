@@ -175,6 +175,9 @@ import {
   taskEditPayloadFromForm,
   reportDraftFromProject,
   sameNumberSet,
+  reportRowsFromTaskMaterials,
+  consumedMaterialsPayload,
+  storedMaterialRowSnapshot,
 } from "./utils/reports";
 import {
   projectFinanceToFormState,
@@ -2476,7 +2479,14 @@ export function App() {
     setReportDate(reportTaskPrefill.report_date);
     setReportWorkDone(reportTaskPrefill.work_done);
     setReportIncidents(reportTaskPrefill.incidents);
-    setReportMaterialRows(parseReportMaterialRows(reportTaskPrefill.materials, "materials"));
+    // Box materials arrive as structured rows carrying task_material_id so
+    // the server can write quantity_used back; the free-text parse is only
+    // for tasks without a box.
+    setReportMaterialRows(
+      reportTaskPrefill.materialRows && reportTaskPrefill.materialRows.length > 0
+        ? reportTaskPrefill.materialRows
+        : parseReportMaterialRows(reportTaskPrefill.materials, "materials"),
+    );
     setReportSourceTaskId(reportTaskPrefill.task_id);
     setReportTaskChecklist(buildReportTaskChecklist(reportTaskPrefill.subtasks));
     setReportTaskPrefill(null);
@@ -2533,7 +2543,13 @@ export function App() {
       const v3raw = localStorage.getItem(REPORT_DRAFTS_LS_KEY);
       const parsed: unknown = v3raw ? JSON.parse(v3raw) : null;
       const existing: StoredReportDraft[] = Array.isArray(parsed)
-        ? parsed.filter((d): d is StoredReportDraft => !!d && typeof d === "object" && (d as StoredReportDraft).v === 3 && typeof (d as StoredReportDraft).id === "string")
+        ? parsed.filter(
+            (d): d is StoredReportDraft =>
+              !!d &&
+              typeof d === "object" &&
+              ((d as StoredReportDraft).v === 3 || (d as StoredReportDraft).v === 4) &&
+              typeof (d as StoredReportDraft).id === "string",
+          )
         : [];
 
       const v2raw = localStorage.getItem(REPORT_DRAFT_LS_KEY);
@@ -2586,7 +2602,7 @@ export function App() {
         officeNextSteps: reportOfficeNextSteps,
         date: reportDate,
         workers: reportWorkers,
-        materialRows: reportMaterialRows.map(({ item, qty, unit, article_no }) => ({ item, qty, unit, article_no })),
+        materialRows: storedMaterialRowSnapshot(reportMaterialRows),
         officeMaterialRows: reportOfficeMaterialRows.map(({ item, qty, unit, article_no }) => ({ item, qty, unit, article_no })),
         sourceTaskId: reportSourceTaskId,
         savedAt: new Date().toISOString(),
@@ -2678,7 +2694,7 @@ export function App() {
       officeNextSteps: reportOfficeNextSteps,
       date: reportDate,
       workers: reportWorkers,
-      materialRows: reportMaterialRows.map(({ item, qty, unit, article_no }) => ({ item, qty, unit, article_no })),
+      materialRows: storedMaterialRowSnapshot(reportMaterialRows),
       officeMaterialRows: reportOfficeMaterialRows.map(({ item, qty, unit, article_no }) => ({ item, qty, unit, article_no })),
       sourceTaskId: reportSourceTaskId,
       savedAt,
@@ -6373,6 +6389,10 @@ export function App() {
         ? `${language === "de" ? "Baustellenkiste" : "Construction box"}: ${taskBoxDisplay(task)}`
         : "",
       materials: task.materials_required ?? "",
+      materialRows:
+        task.materials && task.materials.length > 0
+          ? reportRowsFromTaskMaterials(task.materials)
+          : undefined,
       subtasks: task.subtasks ?? [],
     });
     setOverviewShortcutBackVisible(false);
@@ -7524,20 +7544,9 @@ export function App() {
       return;
     }
 
-    const materials = reportMaterialRows
-      .map((row) => ({
-        item: row.item.trim(),
-        qty: row.qty.trim(),
-        unit: row.unit.trim(),
-        article_no: row.article_no.trim(),
-      }))
-      .filter((row) => row.item.length > 0)
-      .map((row) => ({
-        item: row.item,
-        qty: row.qty || null,
-        unit: row.unit || null,
-        article_no: row.article_no || null,
-      }));
+    // Every row carries task_material_id (number or null) so the server can
+    // write quantity_used back onto the task's box materials.
+    const materials = consumedMaterialsPayload(reportMaterialRows);
 
     // v2.5.18: the same rows are also sent as materials_consumed for the
     // new PDF schema. Backend renderer prefers materials_consumed when

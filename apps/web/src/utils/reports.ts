@@ -4,7 +4,9 @@ import type {
   Project,
   ReportDraft,
   ReportMaterialRow,
+  StoredReportDraft,
   Task,
+  TaskMaterial,
   TaskType,
   TaskEditFormState,
   TaskModalState,
@@ -40,7 +42,78 @@ export function createReportMaterialRow(
     qty: values?.qty ?? "",
     unit: values?.unit ?? "",
     article_no: values?.article_no ?? "",
+    task_material_id: values?.task_material_id ?? null,
   };
+}
+
+/**
+ * "Verbrauchtes Material" rows prefilled from a task's box materials.
+ *
+ * One row per material, keyed back to the task line through
+ * `task_material_id` so the server can record what was actually used. The
+ * quantity defaults to what was reported already, else to what was packed —
+ * the crew then corrects it or deletes the row ("not used").
+ */
+export function reportRowsFromTaskMaterials(materials: TaskMaterial[]): ReportMaterialRow[] {
+  return materials.map((material) =>
+    createReportMaterialRow("materials", {
+      item: material.item_name,
+      qty: String(material.quantity_used ?? material.quantity),
+      unit: material.unit ?? "",
+      article_no: material.article_no ?? "",
+      task_material_id: material.id,
+    }),
+  );
+}
+
+export type ConsumedMaterialPayloadRow = {
+  item: string;
+  qty: string | null;
+  unit: string | null;
+  article_no: string | null;
+  task_material_id: number | null;
+};
+
+/**
+ * The `materials` / `materials_consumed` rows of a report submission.
+ *
+ * Rows without an item are dropped (an empty trailing row is the norm);
+ * everything else is trimmed and blanks become null. `task_material_id` is
+ * always present — number or null — so the server can tell a box line
+ * apart from a hand-typed one without guessing.
+ */
+export function consumedMaterialsPayload(rows: ReportMaterialRow[]): ConsumedMaterialPayloadRow[] {
+  return rows
+    .map((row) => ({
+      item: row.item.trim(),
+      qty: row.qty.trim(),
+      unit: row.unit.trim(),
+      article_no: row.article_no.trim(),
+      task_material_id: row.task_material_id ?? null,
+    }))
+    .filter((row) => row.item.length > 0)
+    .map((row) => ({
+      item: row.item,
+      qty: row.qty || null,
+      unit: row.unit || null,
+      article_no: row.article_no || null,
+      task_material_id: row.task_material_id,
+    }));
+}
+
+/** What a draft keeps of a consumed-material row: the fields, not the
+ *  transient row id — but including the task link, or a restored draft
+ *  would lose the write-back. */
+export function storedMaterialRowSnapshot(
+  rows: ReportMaterialRow[],
+): StoredReportDraft["materialRows"] {
+  return rows.map(({ item, qty, unit, article_no, task_material_id }) => ({
+    item,
+    qty,
+    unit,
+    article_no,
+    task_material_id: task_material_id ?? null,
+  }));
 }
 
 export function parseReportMaterialRows(
@@ -213,6 +286,7 @@ export function buildTaskEditFormState(task?: Task | null): TaskEditFormState {
       task?.customer_confirmation_email_sent_at ?? null,
     customer_confirmation_token_expired:
       task?.customer_confirmation_token_expired ?? false,
+    materials: task?.materials ? [...task.materials] : [],
   };
 }
 

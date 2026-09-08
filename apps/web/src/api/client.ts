@@ -1,5 +1,15 @@
 export const API_BASE = "/api";
 
+/**
+ * The server-rendered Packliste for a task (application/pdf, bearer auth).
+ *
+ * A path, not a fetch: it feeds `openServerFile`, which decides per surface
+ * whether that means a new tab or the in-app viewer.
+ */
+export function taskPackingListPath(taskId: number): string {
+  return `${API_BASE}/tasks/${taskId}/packing-list.pdf`;
+}
+
 export class ApiError extends Error {
   status: number;
   detail: unknown;

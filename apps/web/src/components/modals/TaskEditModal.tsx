@@ -14,6 +14,7 @@ import {
 import { formatServerDateTime } from "../../utils/dates";
 import { PartnerMultiSelect } from "../partners/PartnerMultiSelect";
 import { ConstructionBoxPicker } from "../tasks/ConstructionBoxPicker";
+import { TaskMaterialList } from "../tasks/TaskMaterialList";
 
 function priorityLabel(value: TaskPriority, language: "de" | "en"): string {
   if (value === "low") return language === "de" ? "Niedrig" : "Low";
@@ -347,6 +348,18 @@ export function TaskEditModal() {
             </label>
           </section>
 
+          {/* Box materials: imported by the server from the linked box.
+              Read-only here — what was used comes back via the report. */}
+          {taskEditForm.id != null && taskEditForm.materials.length > 0 && (
+            <section className="task-modal-section task-modal-section--stack">
+              <TaskMaterialList
+                taskId={taskEditForm.id}
+                materials={taskEditForm.materials}
+                language={language}
+              />
+            </section>
+          )}
+
           {/* Due date / Start time / Duration / Priority */}
           <section className="task-modal-section task-modal-section--grid4">
             <label className="task-modal-field">
@@ -480,6 +493,11 @@ export function TaskEditModal() {
             <div className="task-modal-section-head">
               <span className="task-modal-section-label">
                 {de ? "MATERIALIEN" : "MATERIALS"}
+                {taskEditForm.materials.length > 0 && (
+                  <span className="task-material-list-hint">
+                    {de ? "zusätzlich zum Kisteninhalt" : "in addition to the box contents"}
+                  </span>
+                )}
               </span>
               <button
                 type="button"

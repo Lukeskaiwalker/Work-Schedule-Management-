@@ -34,7 +34,7 @@
  * Inert in a browser tab — nothing is installed and every link behaves as
  * before.
  */
-import { IS_APP_SURFACE, getServerUrl } from "./shell";
+import { IS_APP_SURFACE, apiUrl, getServerUrl } from "./shell";
 
 export type OpenFileRequest = {
   /** Absolute URL of the file on the configured server. */
@@ -150,6 +150,30 @@ export function installNativeFileOpener(): void {
     },
     true,
   );
+}
+
+/**
+ * Open a server file from a button, the way a link to it would open.
+ *
+ * The interceptor above only sees anchors. A button that wants the same
+ * behaviour goes through here so the two cannot drift: on an app surface the
+ * registered viewer fetches the bytes with the bearer token and shows them
+ * in-app; in a browser tab the file opens in a new tab, same-origin, with the
+ * session cookie riding along exactly as it does for `<a target="_blank">`.
+ *
+ * `path` is the SPA-relative API path (`/api/...`); it is absolutised for the
+ * native shell here, like the href helpers do, because nothing else on the
+ * way to `window.open` would.
+ */
+export function openServerFile(path: string, name: string): void {
+  const url = apiUrl(path);
+  if (IS_APP_SURFACE && handler) {
+    handler({ url, name, intent: "view" });
+    return;
+  }
+  // No viewer registered on an app surface is a programming error, not a
+  // state to design for; falling through still gives the user *something*.
+  window.open(url, "_blank", "noopener,noreferrer");
 }
 
 export type FetchedFile = {

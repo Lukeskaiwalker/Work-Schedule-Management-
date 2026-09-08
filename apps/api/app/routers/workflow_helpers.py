@@ -30,7 +30,11 @@ from app.core.deps import assert_project_access, get_current_user, require_permi
 from app.core.permissions import ALL_ROLES, has_global_project_access, has_permission_for_user
 from app.core.time import utcnow
 from app.models.project import PROJECT_STATUS_AUFTRAG_ANGENOMMEN
-from app.services.task_materials import import_box_into_task, remove_box_from_task
+from app.services.task_materials import (
+    import_box_into_task,
+    record_reported_usage,
+    remove_box_from_task,
+)
 from app.services.project_status import is_won_project_status
 from app.models.entities import (
     Attachment,
@@ -3642,6 +3646,15 @@ async def _create_construction_report_impl(
     )
     db.add(report)
     db.flush()
+
+    # Rows prefilled from the source task carry the task line's id; what the
+    # report says was fitted becomes the line's quantity_used, which the task's
+    # completion then books against the shelf. Hand-typed rows carry no id.
+    record_reported_usage(
+        db,
+        source_task_id=report_payload.get("source_task_id"),
+        rows=list(report_payload.get("materials_consumed") or report_payload.get("materials") or []),
+    )
 
     report_image_rows: list[dict[str, str]] = []
     for image_index, image_file in enumerate(report_images, start=1):

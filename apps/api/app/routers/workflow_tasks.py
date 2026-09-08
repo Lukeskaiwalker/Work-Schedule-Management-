@@ -5,6 +5,7 @@ from fastapi import APIRouter
 from app.core.events import notify
 from app.models.notification import Notification
 from app.routers.workflow_helpers import *  # noqa: F401,F403
+from app.services.task_materials import settle_task_materials
 
 router = APIRouter(prefix="", tags=["tasks"])
 
@@ -247,6 +248,7 @@ def create_task(
         partner_ids=partner_ids,
         partners=[partner_rows[pid] for pid in partner_ids if pid in partner_rows],
         box=_task_box_map(db, [task]).get(task.construction_box_id),
+        materials=_task_materials_map(db, [task]).get(task.id, []),
     )
     notify(db, "task.created", created.model_dump(mode="json"))
     for uid in assignee_ids:
@@ -464,6 +466,19 @@ def update_task(
     resolved_notification_user_ids: list[int] = []
     if task.status != previous_status and task.status == "done":
         resolved_notification_user_ids = _resolve_task_notifications(db, task.id)
+        # The crate's contents are booked now, not at handover: the report has
+        # said what was fitted, the rest goes back on the shelf, and the crate
+        # is freed for the next job. Same transaction as the status change.
+        settlement = settle_task_materials(db, task=task, user_id=current_user.id)
+        if settlement is not None and task.project_id is not None:
+            _record_project_activity(
+                db,
+                project_id=task.project_id,
+                actor_user_id=current_user.id,
+                event_type="task.materials_settled",
+                message=f"Material abgerechnet: {task.title}",
+                details={"task_id": task.id, **settlement.as_details()},
+            )
     if task.status != previous_status or (task.due_date.isoformat() if task.due_date else None) != previous_due_date or (
         task.start_time.isoformat() if task.start_time else None
     ) != previous_start_time or task.estimated_hours != previous_estimated_hours:
@@ -490,6 +505,7 @@ def update_task(
         partner_ids=existing_partner_ids,
         partners=[partner_rows[pid] for pid in existing_partner_ids if pid in partner_rows],
         box=_task_box_map(db, [task]).get(task.construction_box_id),
+        materials=_task_materials_map(db, [task]).get(task.id, []),
     )
     notify(db, "task.updated", updated.model_dump(mode="json"))
     for uid in added_assignee_ids:

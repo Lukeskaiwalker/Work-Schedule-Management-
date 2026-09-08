@@ -249,3 +249,5 @@ class TaskMaterialOut(BaseModel):
     article_id: int | None = None
     source_box_id: int | None = None
     notes: str | None = None
+    # Set once the task was completed and the stock movements were booked.
+    settled_at: datetime | None = None
