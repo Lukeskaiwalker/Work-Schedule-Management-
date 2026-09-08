@@ -109,3 +109,22 @@ export function panelPdfUrl(panelId: number, options: { legendOnly?: boolean } =
   const qs = options.legendOnly ? "?legend_only=true" : "";
   return `${API_BASE}/schaltplan/panels/${panelId}/pdf${qs}`;
 }
+
+export interface PanelLabelsPrintResult {
+  printed: number;
+  skipped_without_bmk: number;
+  printer: string;
+  material: string;
+}
+
+/** Print the board's BMK labels on the 2009-110 strip — the whole board, or one rail. */
+export async function printPanelLabels(
+  token: string | null,
+  panelId: number,
+  options: { rowId?: string | null } = {},
+): Promise<PanelLabelsPrintResult> {
+  return apiFetch<PanelLabelsPrintResult>(`/schaltplan/panels/${panelId}/labels`, token, {
+    method: "POST",
+    body: JSON.stringify({ row_id: options.rowId ?? null }),
+  });
+}

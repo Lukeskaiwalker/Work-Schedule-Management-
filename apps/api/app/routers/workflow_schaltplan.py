@@ -40,6 +40,8 @@ from app.models.entities import Project, User
 from app.models.schaltplan import PanelPlan
 from app.routers.workflow_helpers import _content_disposition
 from app.schemas.schaltplan import (
+    PanelLabelsPrintOut,
+    PanelLabelsPrintRequest,
     DeviceCatalogEntry,
     PanelDocument,
     PanelPlanCreate,
@@ -50,12 +52,14 @@ from app.schemas.schaltplan import (
 from app.services.audit import log_admin_action
 from app.services.runtime_settings import get_company_settings
 from app.services.schaltplan_layout import (
+    iter_devices,
     DEVICE_CATALOG,
     build_legend,
     document_stats,
     empty_document,
     validate_document,
 )
+from app.services import werkstatt_labels
 from app.services.schaltplan_pdf import build_panel_plan_pdf
 
 router = APIRouter(prefix="/schaltplan", tags=["schaltplan"])
@@ -362,6 +366,58 @@ def get_panel(
     plan = _get_plan_or_404(db, plan_id)
     _assert_readable(db, current_user, plan)
     return _detail(db, plan)
+
+
+@router.post("/panels/{plan_id}/labels", response_model=PanelLabelsPrintOut)
+def print_panel_labels(
+    plan_id: int,
+    payload: PanelLabelsPrintRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> PanelLabelsPrintOut:
+    """Print the Betriebsmittelkennzeichen of a board on the 2009-110 strip.
+
+    Anyone who may read the plan may print its labels: the person at the
+    printer is the one building the board, not the one who drew it. Devices
+    are taken in physical order, row by row, so the strip peels off in the
+    order the labels go on. Blindabdeckungen are skipped whatever is typed
+    on them; a Betriebsmittel with no BMK is skipped AND counted, because a
+    missing designation is the thing to fix, not to hide.
+    """
+    plan = _get_plan_or_404(db, plan_id)
+    _assert_readable(db, current_user, plan)
+    document = plan.document or empty_document()
+
+    texts: list[str] = []
+    skipped = 0
+    for row, device in iter_devices(document):
+        if payload.row_id and str(row.get("id") or "") != payload.row_id:
+            continue
+        if str(device.get("kind") or "") == "blank":
+            continue
+        designation = str(device.get("designation") or "").strip()
+        if not designation:
+            skipped += 1
+            continue
+        texts.append(designation)
+
+    if not texts:
+        raise HTTPException(
+            status_code=400,
+            detail="Keine BMK vergeben — erst Betriebsmittelkennzeichen eintragen.",
+        )
+    try:
+        printed, printer = werkstatt_labels.print_marking_strip(db, texts=texts)
+    except werkstatt_labels.LabelPrinterNotConfigured:
+        raise HTTPException(status_code=503, detail="Kein Etikettendrucker konfiguriert")
+    except werkstatt_labels.LabelPrinterUnreachable as exc:
+        raise HTTPException(status_code=502, detail=f"Etikettendrucker nicht erreichbar ({exc})")
+    return PanelLabelsPrintOut(
+        printed=printed,
+        skipped_without_bmk=skipped,
+        printer=printer,
+        material=werkstatt_labels.MARKING_STRIP_MATERIAL_ID,
+    )
 
 
 @router.patch("/panels/{plan_id}", response_model=PanelPlanOut)

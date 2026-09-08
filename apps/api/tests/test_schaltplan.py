@@ -472,3 +472,124 @@ def test_device_catalog_is_served_to_the_client(client: TestClient, admin_token:
     assert kinds["rcd"]["circuit"] is False
     assert kinds["mcb"]["circuit"] is True
     assert kinds["rcbo"]["group"] is False
+
+
+# ── BMK marking strip ─────────────────────────────────────────────────────────
+#
+# One label per Betriebsmittelkennzeichen, on the WAGO 2009-110 strip, in the
+# order the devices sit on the rails — so the strip peels off in the order the
+# electrician walks the board.
+
+
+def _configure_label_printer(client: TestClient, admin_token: str) -> None:
+    resp = client.patch(
+        "/api/admin/settings/label-printer",
+        headers=_auth(admin_token),
+        json={"host": "192.0.2.50", "port": 9100},
+    )
+    assert resp.status_code == 200, resp.text
+
+
+def _capture_label_jobs(monkeypatch) -> list[bytes]:
+    from app.services import werkstatt_labels
+
+    sent: list[bytes] = []
+
+    def fake_send(host: str, port: int, payload: bytes) -> None:
+        sent.append(payload)
+
+    monkeypatch.setattr(werkstatt_labels, "_send_tcp", fake_send)
+    return sent
+
+
+def _two_row_panel(client: TestClient, admin_token: str) -> dict:
+    document = _document([])
+    document["rows"] = [
+        {"id": "r1", "label": "Reihe 1", "slots": 12, "devices": [
+            _device("f1", "rcd", designation="F1"),
+            _device("f2", "mcb", designation="F2", circuit="1"),
+        ]},
+        {"id": "r2", "label": "Reihe 2", "slots": 12, "devices": [
+            _device("f3", "mcb", designation="F3", circuit="2"),
+            # A Blindabdeckung is not a Betriebsmittel, whatever is typed on it.
+            _device("b9", "blank", designation="B9"),
+            # A breaker with no BMK yet: nothing to print, and it must be counted.
+            _device("f4", "mcb", designation="", circuit="3"),
+        ]},
+    ]
+    customer_id = _customer(client, admin_token, "BMK Kunde")
+    return _create_panel(client, admin_token, customer_id, document=document)
+
+
+def test_bmk_labels_print_every_designation_in_physical_order(
+    client: TestClient, admin_token: str, monkeypatch
+):
+    _configure_label_printer(client, admin_token)
+    sent = _capture_label_jobs(monkeypatch)
+    panel = _two_row_panel(client, admin_token)
+
+    resp = client.post(
+        f"/api/schaltplan/panels/{panel['id']}/labels", headers=_auth(admin_token), json={}
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["printed"] == 3
+    assert body["skipped_without_bmk"] == 1
+    assert body["material"] == "wago-2009-110"
+
+    assert len(sent) == 1, "the whole strip goes out in one connection"
+    payload = sent[0]
+    positions = [payload.index(b) for b in (b"F1", b"F2", b"F3")]
+    assert positions == sorted(positions), "labels must follow the rails, row by row"
+    assert b"B9" not in payload, "a Blindabdeckung gets no label"
+
+
+def test_bmk_labels_can_be_limited_to_one_row(
+    client: TestClient, admin_token: str, monkeypatch
+):
+    _configure_label_printer(client, admin_token)
+    sent = _capture_label_jobs(monkeypatch)
+    panel = _two_row_panel(client, admin_token)
+
+    resp = client.post(
+        f"/api/schaltplan/panels/{panel['id']}/labels",
+        headers=_auth(admin_token),
+        json={"row_id": "r2"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["printed"] == 1
+    assert b"F3" in sent[0] and b"F1" not in sent[0]
+
+
+def test_bmk_labels_refuse_when_nothing_carries_a_bmk(
+    client: TestClient, admin_token: str, monkeypatch
+):
+    _configure_label_printer(client, admin_token)
+    _capture_label_jobs(monkeypatch)
+    document = _document([_device("x", "mcb", designation="", circuit="1")])
+    customer_id = _customer(client, admin_token, "Leer Kunde")
+    panel = _create_panel(client, admin_token, customer_id, document=document)
+
+    resp = client.post(
+        f"/api/schaltplan/panels/{panel['id']}/labels", headers=_auth(admin_token), json={}
+    )
+    assert resp.status_code == 400
+    assert "BMK" in resp.json()["detail"]
+
+
+def test_bmk_labels_report_an_unreachable_printer(
+    client: TestClient, admin_token: str, monkeypatch
+):
+    from app.services import werkstatt_labels
+
+    _configure_label_printer(client, admin_token)
+
+    def refuse(host: str, port: int, payload: bytes) -> None:
+        raise OSError("connection refused")
+
+    monkeypatch.setattr(werkstatt_labels, "_send_tcp", refuse)
+    panel = _two_row_panel(client, admin_token)
+    resp = client.post(
+        f"/api/schaltplan/panels/{panel['id']}/labels", headers=_auth(admin_token), json={}
+    )
+    assert resp.status_code == 502

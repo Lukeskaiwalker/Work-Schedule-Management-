@@ -218,6 +218,22 @@ def active_material(db: Session) -> MaterialProfile:
     return by_id[config["active_material_id"]]
 
 
+def material_by_id(db: Session, material_id: str) -> MaterialProfile:
+    """A specific stock, regardless of which one is currently active.
+
+    For jobs that only make sense on one medium — a BMK strip is always the
+    2009-110, whatever nameplate stock is selected for machine labels — the
+    caller names the profile and the layout is computed for it. The operator
+    still has to load that strip; the response says which one.
+    """
+    config = get_label_printer_config(db)
+    by_id = {profile.id: profile for profile in config["materials"]}
+    try:
+        return by_id[material_id]
+    except KeyError as exc:
+        raise MaterialValidationError(f"Unbekanntes Material: {material_id}") from exc
+
+
 def validate_materials(
     materials: list[MaterialProfile], active_material_id: str
 ) -> None:

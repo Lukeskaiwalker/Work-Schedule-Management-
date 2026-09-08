@@ -51,6 +51,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.services.werkstatt_label_materials import (
+    material_by_id,
     TIER_KOMPAKT,
     TIER_VOLL,
     MaterialProfile,
@@ -566,6 +567,36 @@ def print_label_jobs(
     printer = _ship(db, payload)
     logger.info("Label batch sent to %s — %d sheet(s), %d bytes", printer, len(jobs), len(payload))
     return len(jobs), printer
+
+
+MARKING_STRIP_MATERIAL_ID = "wago-2009-110"
+
+
+def print_marking_strip(
+    db: Session, *, texts: list[str], material_id: str = MARKING_STRIP_MATERIAL_ID
+) -> tuple[int, str]:
+    """One continuous-strip label per text, in order, in ONE connection.
+
+    Built for Betriebsmittelkennzeichen: the strip comes off the printer in
+    the order the devices sit on the rails, so it is applied walking the board
+    left to right, row by row, without sorting. Each label is only as long as
+    its text needs (the continuous branch of the mini renderer), which is what
+    makes an 11 mm strip practical for "F1.3".
+
+    Renders for the NAMED material rather than the active one: this job only
+    ever belongs on the marking strip, while the active stock is usually the
+    machine nameplate. Returns (labels_printed, "host:port").
+    """
+    cleaned = [text for text in (_clean(t, 40) for t in texts) if text]
+    if not cleaned:
+        raise ValueError("nothing to print")
+    profile = material_by_id(db, material_id)
+    payload = b""
+    for text in cleaned:
+        payload += ("\r\n".join(_render_mini(profile, text)) + "\r\n").encode(_ENCODING)
+    printer = _ship(db, payload)
+    logger.info("Marking strip sent to %s — %d label(s), %d bytes", printer, len(cleaned), len(payload))
+    return len(cleaned), printer
 
 
 def print_freetext(db: Session, *, text: str, copies: int = 1) -> str:

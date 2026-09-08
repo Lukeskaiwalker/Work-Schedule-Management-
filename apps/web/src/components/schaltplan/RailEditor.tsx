@@ -28,6 +28,8 @@ type Props = {
   onRemoveRow: (rowId: string) => void;
   onRenameRow: (rowId: string, label: string) => void;
   onChangeSlots: (rowId: string, slots: number) => void;
+  /** Print this rail's BMK labels. Optional: the editor also renders where no printer exists. */
+  onPrintRowLabels?: (rowId: string) => void;
 };
 
 function RailRow({
@@ -40,6 +42,7 @@ function RailRow({
   onRemoveRow,
   onRenameRow,
   onChangeSlots,
+  onPrintRowLabels,
   canRemove,
 }: {
   row: PanelRow;
@@ -75,6 +78,17 @@ function RailRow({
               onChange={(event) => onChangeSlots(row.id, Number(event.target.value) || 1)}
             />
           </label>
+          {onPrintRowLabels && (
+            <button
+              type="button"
+              className="sp-rail-print"
+              onClick={() => onPrintRowLabels(row.id)}
+              title="BMK-Etiketten dieser Reihe drucken (WAGO 2009-110)"
+              aria-label={`BMK-Etiketten der Reihe ${index + 1} drucken`}
+            >
+              BMK
+            </button>
+          )}
           {!readOnly && canRemove && (
             <button
               type="button"
@@ -150,6 +164,7 @@ export function RailEditor({
   onRemoveRow,
   onRenameRow,
   onChangeSlots,
+  onPrintRowLabels,
 }: Props) {
   return (
     <div className="sp-rails">
@@ -166,6 +181,7 @@ export function RailEditor({
           onRemoveRow={onRemoveRow}
           onRenameRow={onRenameRow}
           onChangeSlots={onChangeSlots}
+          onPrintRowLabels={onPrintRowLabels}
         />
       ))}
       {!readOnly && (

@@ -37,6 +37,7 @@ import {
 } from "../utils/schaltplanDevices";
 import { buildLegend, findDevice, validateDocument } from "../utils/schaltplanTopology";
 import {
+  printPanelLabels,
   createPanel,
   deletePanel as deletePanelRequest,
   duplicatePanel,
@@ -90,6 +91,30 @@ export function SchaltplanPage() {
   const [document, setDocument] = useState<PanelDocument | null>(null);
   const [tab, setTab] = useState<EditorTab>("plan");
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
+  // BMK strip printing. Its own busy flag: printing must not be mistaken
+  // for a save in progress, and a second tap while the strip is feeding
+  // would print the board twice.
+  const [labelsPrinting, setLabelsPrinting] = useState(false);
+
+  const printLabels = useCallback(
+    async (rowId?: string) => {
+      if (!panel || labelsPrinting) return;
+      setLabelsPrinting(true);
+      try {
+        const result = await printPanelLabels(token, panel.id, { rowId: rowId ?? null });
+        const skipped =
+          result.skipped_without_bmk > 0
+            ? ` — ${result.skipped_without_bmk} Gerät(e) ohne BMK übersprungen`
+            : "";
+        setNotice(`${result.printed} BMK-Etikett(en) auf dem 2009-110-Streifen gedruckt${skipped}`);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "BMK-Etiketten konnten nicht gedruckt werden");
+      } finally {
+        setLabelsPrinting(false);
+      }
+    },
+    [panel, labelsPrinting, token, setNotice, setError],
+  );
   const [paletteRowId, setPaletteRowId] = useState<string | null>(null);
   const [newPanelOpen, setNewPanelOpen] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -524,6 +549,15 @@ export function SchaltplanPage() {
               >
                 Legende drucken
               </a>
+              <button
+                type="button"
+                className="sp-btn"
+                disabled={labelsPrinting}
+                onClick={() => void printLabels()}
+                title="Ein Etikett je Betriebsmittelkennzeichen, in Reihenfolge der Schienen — WAGO 2009-110 einlegen"
+              >
+                {labelsPrinting ? "Drucke…" : "BMK-Etiketten"}
+              </button>
               {canEdit && (
                 <button
                   type="button"
@@ -598,6 +632,7 @@ export function SchaltplanPage() {
 
           {tab === "aufbau" && (
             <RailEditor
+              onPrintRowLabels={(rowId) => void printLabels(rowId)}
               document={document}
               selectedDeviceId={selectedDeviceId}
               readOnly={readOnly}

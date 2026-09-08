@@ -31,6 +31,7 @@ import { OfficeTasksPage } from "../pages/OfficeTasksPage";
 import { ReportsPage } from "../pages/ReportsPage";
 import { MessagesPage } from "../pages/MessagesPage";
 import { PiStationPage } from "../pages/PiStationPage";
+import { SchaltplanPage } from "../pages/SchaltplanPage";
 
 type PageCase = {
   name: string;
@@ -78,6 +79,7 @@ const PAGES: PageCase[] = [
   { name: "Aufgaben (Büro)", Component: OfficeTasksPage, visible: { mainView: "office_tasks" }, hidden: { mainView: "overview" } },
   { name: "Berichte", Component: ReportsPage, visible: { mainView: "reports" }, hidden: { mainView: "overview" } },
   { name: "Chat", Component: MessagesPage, visible: { mainView: "messages" }, hidden: { mainView: "overview" } },
+  { name: "Verteilerpläne", Component: SchaltplanPage, visible: { mainView: "schaltplan" }, hidden: { mainView: "overview" } },
   { name: "Scan-Station", Component: PiStationPage, visible: { mainView: "pi_station" }, hidden: { mainView: "overview" } },
 ];
 

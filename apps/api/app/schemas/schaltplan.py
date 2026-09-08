@@ -205,3 +205,18 @@ class DeviceCatalogEntry(BaseModel):
     circuit: bool
     symbol: str
     rating_hint: str
+
+
+class PanelLabelsPrintRequest(BaseModel):
+    """Print BMK labels for the whole board, or for one rail."""
+
+    row_id: str | None = None
+
+
+class PanelLabelsPrintOut(BaseModel):
+    printed: int
+    # Devices that are Betriebsmittel but carry no BMK yet: silently printing
+    # nothing for them would hide exactly the gap the strip exists to close.
+    skipped_without_bmk: int
+    printer: str
+    material: str

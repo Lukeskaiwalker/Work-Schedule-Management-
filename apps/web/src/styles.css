@@ -35594,3 +35594,17 @@ button.time-calendar-cell {
   text-align: right;
   color: var(--muted);
 }
+
+/* Per-rail BMK print — sits with the rail's other small controls. */
+.sp-rail-print {
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+}
+.sp-rail-print:hover { border-color: var(--ink); }
