@@ -35608,3 +35608,7 @@ button.time-calendar-cell {
   cursor: pointer;
 }
 .sp-rail-print:hover { border-color: var(--ink); }
+
+/* Vorsicherung on the diagram: a small plate on the drop line above the FI. */
+.sp-prefuse-plate { fill: #fff; stroke: var(--ink); stroke-width: 1; }
+.sp-prefuse-text { font-size: 10px; font-weight: 600; fill: var(--ink); }

@@ -340,11 +340,30 @@ def build_topology(document: dict[str, Any]) -> dict[str, Any]:
         if device_id:
             index_by_group_id[device_id] = len(groups) - 1
 
-    supply_group: dict[str, Any] = {"device": None, "row_label": "", "children": []}
+    # A group device may itself name a parent — and that means one thing: the
+    # Neozed/NH block feeding it. The fuse is then a FEEDER of the group, not
+    # one of its loads, so it leaves the circuit walk; on the legend it shows
+    # as the upstream protection of every circuit under that FI. Only kind
+    # "fuse" qualifies: a dangling or wrong-kind parent degrades to "none" and
+    # is reported by validate_document, never raised.
+    consumed_fuses: set[str] = set()
+    for group in groups:
+        group["pre_fuse"] = None
+        parent = str(group["device"].get("parent_id") or "")
+        candidate = by_id.get(parent)
+        if candidate is not None and str(candidate.get("kind", "")) == "fuse":
+            group["pre_fuse"] = candidate
+            consumed_fuses.add(parent)
+
+    supply_group: dict[str, Any] = {
+        "device": None, "row_label": "", "children": [], "pre_fuse": None
+    }
     current: dict[str, Any] = supply_group
     orphans: list[dict[str, Any]] = []
 
     for _row, device in iter_devices(document):
+        if str(device.get("id") or "") in consumed_fuses:
+            continue
         if is_group_device(device):
             # Implicit parenting still follows physical order: what comes
             # after this device, without a parent_id of its own, is fed by it.
@@ -385,6 +404,15 @@ def _text(value: Any) -> str:
     return str(value).strip() if value is not None else ""
 
 
+def _pre_fuse_summary(fuse: dict[str, Any] | None) -> str:
+    """The legend's Vorsicherung column: "F0 35 A" or "—"."""
+
+    if fuse is None:
+        return "—"
+    parts = [p for p in (_text(fuse.get("designation")), _text(fuse.get("rating"))) if p]
+    return " ".join(parts) or "Si"
+
+
 def _rcd_summary(group_device: dict[str, Any] | None) -> str:
     """The legend's FI column: "30 mA / Typ A" for an RCD, "—" without one."""
 
@@ -418,6 +446,7 @@ def build_legend(document: dict[str, Any]) -> list[dict[str, str]]:
     for group in topology["groups"]:
         group_device = group["device"]
         rcd = _rcd_summary(group_device)
+        pre_fuse_label = _pre_fuse_summary(group.get("pre_fuse"))
         group_label = (
             f"{_text(group_device.get('designation'))} {_text(group_device.get('label'))}".strip()
             if group_device
@@ -451,6 +480,7 @@ def build_legend(document: dict[str, Any]) -> list[dict[str, str]]:
                     "cable": _text(device.get("cable")),
                     "phase": _text(device.get("phase")),
                     "group": group_label,
+                    "pre_fuse": pre_fuse_label,
                     "note": _text(device.get("note")),
                 }
             )
@@ -552,6 +582,18 @@ def validate_document(document: dict[str, Any]) -> list[dict[str, str]]:
 
     topology = build_topology(document)
     for group in topology["groups"]:
+        device = group["device"]
+        if device is not None and str(device.get("parent_id") or "") and group.get("pre_fuse") is None:
+            findings.append(
+                {
+                    "level": "info",
+                    "scope": str(device.get("id") or ""),
+                    "message": (
+                        f"{_text(device.get('designation')) or 'FI'}: Vorsicherung nicht gefunden "
+                        "(die angegebene Sicherung fehlt oder ist keine Sicherung)."
+                    ),
+                }
+            )
         if group["device"] is None and group["children"]:
             findings.append(
                 {

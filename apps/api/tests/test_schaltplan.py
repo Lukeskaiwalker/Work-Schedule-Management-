@@ -593,3 +593,81 @@ def test_bmk_labels_report_an_unreachable_printer(
         f"/api/schaltplan/panels/{panel['id']}/labels", headers=_auth(admin_token), json={}
     )
     assert resp.status_code == 502
+
+
+# ── Vorsicherung: a fuse feeding an FI ───────────────────────────────────────
+
+
+def test_a_group_device_can_name_a_fuse_as_its_pre_fuse():
+    """Neozed block -> FI -> the FI's circuits.
+
+    The fuse is a FEEDER of the group, not one of its loads: it must leave the
+    circuit list entirely, and every circuit under that FI must show it as the
+    upstream protection on the legend.
+    """
+
+    document = _document(
+        [
+            _device("f0", "fuse", designation="F0", rating="35 A"),
+            _device("f1", "rcd", designation="F1", parent_id="f0"),
+            _device("c1", "mcb", designation="F1.1", circuit="1"),
+            _device("c2", "mcb", designation="F1.2", circuit="2"),
+        ]
+    )
+    topology = build_topology(document)
+    fi = next(g for g in topology["groups"] if g["device"] and g["device"]["id"] == "f1")
+    assert fi["pre_fuse"]["id"] == "f0"
+    assert [c["id"] for c in fi["children"]] == ["c1", "c2"]
+    everywhere = [c["id"] for g in topology["groups"] for c in g["children"]]
+    assert "f0" not in everywhere, "a pre-fuse is not a circuit"
+    assert topology["orphans"] == []
+
+    legend = build_legend(document)
+    assert [r["circuit"] for r in legend] == ["1", "2"], "the fuse itself is not a legend row"
+    assert {r["pre_fuse"] for r in legend} == {"F0 35 A"}
+
+
+def test_a_fuse_nobody_points_at_stays_a_circuit():
+    """Unchanged: a Neozed feeding a consumer directly is a circuit."""
+
+    document = _document(
+        [
+            _device("f1", "rcd", designation="F1"),
+            _device("f0", "fuse", designation="F0", circuit="9", rating="16 A"),
+        ]
+    )
+    topology = build_topology(document)
+    fi = next(g for g in topology["groups"] if g["device"] and g["device"]["id"] == "f1")
+    assert fi["pre_fuse"] is None
+    assert [c["id"] for c in fi["children"]] == ["f0"]
+    assert build_legend(document)[0]["pre_fuse"] == "—"
+
+
+def test_a_missing_pre_fuse_degrades_and_is_reported():
+    document = _document(
+        [
+            _device("f1", "rcd", designation="F1", parent_id="ghost"),
+            _device("c1", "mcb", designation="F1.1", circuit="1"),
+        ]
+    )
+    topology = build_topology(document)
+    fi = next(g for g in topology["groups"] if g["device"] and g["device"]["id"] == "f1")
+    assert fi["pre_fuse"] is None
+    assert [c["id"] for c in fi["children"]] == ["c1"]
+    messages = [f["message"] for f in validate_document(document)]
+    assert any("Vorsicherung" in m and "F1" in m for m in messages), messages
+
+
+def test_pdf_renders_a_pre_fuse(client: TestClient, admin_token: str):
+    document = _document(
+        [
+            _device("f0", "fuse", designation="F0", rating="35 A"),
+            _device("f1", "rcd", designation="F1", parent_id="f0", residual_current="30 mA", rcd_type="A"),
+            _device("c1", "mcb", designation="F1.1", circuit="1", label="Licht"),
+        ]
+    )
+    customer_id = _customer(client, admin_token, "Vorsicherung Kunde")
+    panel = _create_panel(client, admin_token, customer_id, document=document)
+    resp = client.get(f"/api/schaltplan/panels/{panel['id']}/pdf", headers=_auth(admin_token))
+    assert resp.status_code == 200, resp.text
+    assert resp.content.startswith(b"%PDF")

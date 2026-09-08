@@ -23,7 +23,7 @@ import {
   RESIDUAL_CURRENT_SUGGESTIONS,
   catalogEntry,
 } from "../../utils/schaltplanDevices";
-import { buildTopology } from "../../utils/schaltplanTopology";
+import { allDevices, buildTopology } from "../../utils/schaltplanTopology";
 import type { PanelDevice, PanelDocument, PhaseLabel } from "../../types/schaltplan";
 
 type Props = {
@@ -82,6 +82,10 @@ export function DeviceInspector({
 
   const entry = catalogEntry(device.kind);
   const groups = buildTopology(document).filter((group) => group.device !== null);
+  // Neozed/NH blocks anywhere on the board, offered as the Vorsicherung of an
+  // FI/SLS/Hauptschalter. The same parent_id field carries the choice: for a
+  // circuit it names the FI, for a group it names the fuse.
+  const fuses = allDevices(document).filter((d) => d.kind === "fuse" && d.id !== device.id);
   const ratingSuggestions = RATING_SUGGESTIONS[device.kind] ?? [];
 
   const field = (label: string, node: React.ReactNode, hint?: string) => (
@@ -282,6 +286,23 @@ export function DeviceInspector({
             )}
           </div>
 
+          {entry.group &&
+            field(
+              "Vorsicherung",
+              <select
+                value={device.parent_id ?? ""}
+                disabled={readOnly}
+                onChange={(event) => onChange({ parent_id: event.target.value || null })}
+              >
+                <option value="">Keine (direkt von der Sammelschiene)</option>
+                {fuses.map((fuse) => (
+                  <option key={fuse.id} value={fuse.id}>
+                    {`${fuse.designation || "?"} Si${fuse.rating ? ` · ${fuse.rating}` : ""}`}
+                  </option>
+                ))}
+              </select>,
+              "Neozed- oder NH-Sicherung, die diesem FI vorgeschaltet ist. Sie erscheint in der Legende bei allen Stromkreisen dieser Gruppe.",
+            )}
           {entry.circuit &&
             field(
               "Eingespeist von",

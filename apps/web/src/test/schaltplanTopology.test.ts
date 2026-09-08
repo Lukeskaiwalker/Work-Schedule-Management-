@@ -57,3 +57,65 @@ describe("schaltplan topology — explicit parent placed after its child", () =>
     expect(supply?.children.map((d) => d.id)).toEqual(["c1"]);
   });
 });
+
+// ── Vorsicherung: a fuse feeding an FI ───────────────────────────────────────
+
+function documentWithPreFuse(): PanelDocument {
+  return {
+    ...emptyDocument(),
+    rows: [
+      {
+        id: "r1",
+        label: "Reihe 1",
+        slots: 12,
+        devices: [
+          makeDevice("fuse", { id: "f0", designation: "F0", rating: "35 A" }),
+          makeDevice("rcd", { id: "f1", designation: "F1", parent_id: "f0" }),
+          makeDevice("mcb", { id: "c1", designation: "F1.1", circuit: "1" }),
+          makeDevice("mcb", { id: "c2", designation: "F1.2", circuit: "2" }),
+        ],
+      },
+    ],
+  };
+}
+
+describe("schaltplan topology — Vorsicherung", () => {
+  it("a group device may name a fuse; the fuse feeds it and stops being a circuit", () => {
+    const groups = buildTopology(documentWithPreFuse());
+    const fi = groups.find((g) => g.device?.id === "f1");
+    expect(fi?.preFuse?.id).toBe("f0");
+    expect(fi?.children.map((d) => d.id)).toEqual(["c1", "c2"]);
+    expect(groups.flatMap((g) => g.children).some((d) => d.id === "f0")).toBe(false);
+  });
+
+  it("the legend shows the Vorsicherung on every circuit under that FI", () => {
+    const rows = buildLegend(documentWithPreFuse());
+    expect(rows.map((r) => r.circuit)).toEqual(["1", "2"]);
+    expect(new Set(rows.map((r) => r.pre_fuse))).toEqual(new Set(["F0 35 A"]));
+  });
+
+  it("a fuse nobody points at stays a circuit", () => {
+    // Placed AFTER the FI on the rail, so physical-order parenting puts it
+    // under that FI; a fuse before any FI would sit on the supply group,
+    // which is also correct and is not what this test is about.
+    const document = documentWithPreFuse();
+    document.rows[0].devices = [
+      makeDevice("rcd", { id: "f1", designation: "F1" }),
+      makeDevice("fuse", { id: "f0", designation: "F0", circuit: "9", rating: "16 A" }),
+      makeDevice("mcb", { id: "c1", designation: "F1.1", circuit: "1" }),
+    ];
+    const fi = buildTopology(document).find((g) => g.device?.id === "f1");
+    expect(fi?.preFuse).toBeNull();
+    expect(fi?.children.map((d) => d.id)).toEqual(["f0", "c1"]);
+    expect(buildLegend(document)[0].pre_fuse).toBe("—");
+  });
+
+  it("a missing Vorsicherung degrades and is reported", () => {
+    const document = documentWithPreFuse();
+    document.rows[0].devices[1] = makeDevice("rcd", { id: "f1", designation: "F1", parent_id: "ghost" });
+    const fi = buildTopology(document).find((g) => g.device?.id === "f1");
+    expect(fi?.preFuse).toBeNull();
+    const messages = validateDocument(document).map((f) => f.message);
+    expect(messages.some((m) => m.includes("Vorsicherung") && m.includes("F1"))).toBe(true);
+  });
+});

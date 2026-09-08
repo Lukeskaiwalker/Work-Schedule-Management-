@@ -107,6 +107,8 @@ export interface PanelLegendRow {
   cable: string;
   phase: string;
   group: string;
+  /** "F0 35 A" when the circuit's FI has a Vorsicherung, else "—". */
+  pre_fuse: string;
   note: string;
 }
 
@@ -154,5 +156,7 @@ export interface PanelPlan extends PanelPlanSummary {
 export interface PanelGroup {
   /** null = circuits sitting straight on the busbar with no protection. */
   device: PanelDevice | null;
+  /** The Neozed/NH block feeding this group, when the group device names one. */
+  preFuse: PanelDevice | null;
   children: PanelDevice[];
 }

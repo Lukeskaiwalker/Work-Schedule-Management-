@@ -64,14 +64,31 @@ export function buildTopology(document: PanelDocument): PanelGroup[] {
   const indexByGroupId = new Map<string, number>();
   for (const device of devices) {
     if (!isGroupDevice(device)) continue;
-    groups.push({ device, children: [] });
+    groups.push({ device, preFuse: null, children: [] });
     indexByGroupId.set(device.id, groups.length - 1);
   }
 
-  const supplyGroup: PanelGroup = { device: null, children: [] };
+  // A group device naming a parent means one thing: the Neozed/NH block that
+  // feeds it. That fuse is a FEEDER, not a load — it leaves the circuit walk
+  // and shows on the legend as the upstream protection of the whole group.
+  // Only kind "fuse" qualifies; anything else degrades to none and is
+  // reported by validateDocument.
+  const byId = new Map(devices.map((device) => [device.id, device] as const));
+  const consumedFuses = new Set<string>();
+  for (const group of groups) {
+    const parent = group.device?.parent_id ?? "";
+    const candidate = parent ? byId.get(parent) : undefined;
+    if (candidate && candidate.kind === "fuse") {
+      group.preFuse = candidate;
+      consumedFuses.add(candidate.id);
+    }
+  }
+
+  const supplyGroup: PanelGroup = { device: null, preFuse: null, children: [] };
   let current: PanelGroup = supplyGroup;
 
   for (const device of devices) {
+    if (consumedFuses.has(device.id)) continue;
     if (isGroupDevice(device)) {
       // Implicit parenting still follows physical order: what comes after
       // this device, without a parent_id of its own, is fed by it.
@@ -101,6 +118,12 @@ export function buildTopology(document: PanelDocument): PanelGroup[] {
   return groups;
 }
 
+function preFuseSummary(fuse: PanelDevice | null): string {
+  if (!fuse) return "—";
+  const parts = [fuse.designation.trim(), fuse.rating.trim()].filter(Boolean);
+  return parts.join(" ") || "Si";
+}
+
 function rcdSummary(device: PanelDevice | null): string {
   if (!device) return "—";
   if (device.kind !== "rcd") return "—";
@@ -120,6 +143,7 @@ export function buildLegend(document: PanelDocument): PanelLegendRow[] {
   const rows: PanelLegendRow[] = [];
   for (const group of buildTopology(document)) {
     const inherited = rcdSummary(group.device);
+    const preFuse = preFuseSummary(group.preFuse);
     const groupLabel = group.device
       ? `${group.device.designation} ${catalogEntry(group.device.kind).short}`.trim()
       : "Direkt von Einspeisung";
@@ -135,6 +159,7 @@ export function buildLegend(document: PanelDocument): PanelLegendRow[] {
         cable: device.cable.trim(),
         phase: device.phase === "-" ? "" : device.phase,
         group: groupLabel,
+        pre_fuse: preFuse,
         note: device.note.trim(),
       });
     }
@@ -189,6 +214,13 @@ export function validateDocument(document: PanelDocument): PanelFinding[] {
   }
 
   for (const group of buildTopology(document)) {
+    if (group.device && group.device.parent_id && group.preFuse === null) {
+      findings.push({
+        level: "info",
+        scope: group.device.id,
+        message: `${group.device.designation.trim() || "FI"}: Vorsicherung nicht gefunden (die angegebene Sicherung fehlt oder ist keine Sicherung).`,
+      });
+    }
     if (group.device === null && group.children.length > 0) {
       findings.push({
         level: "warn",

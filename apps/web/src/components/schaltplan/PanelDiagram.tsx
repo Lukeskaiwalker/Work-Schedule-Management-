@@ -207,6 +207,16 @@ function GroupBlock({
   return (
     <g>
       <line x1={cx} y1={Y_BUS} x2={cx} y2={Y_GROUP_TOP} className="sp-wire sp-wire--thick" />
+      {group.preFuse && (
+        /* Where it physically sits: between the busbar and the FI, on the
+           drop line. A cleared plate so the wire does not strike the text. */
+        <g className="sp-prefuse" transform={`translate(${cx}, ${(Y_BUS + Y_GROUP_TOP) / 2})`}>
+          <rect x={-34} y={-9} width={68} height={18} rx={4} className="sp-prefuse-plate" />
+          <text x={0} y={4} textAnchor="middle" className="sp-prefuse-text">
+            {[group.preFuse.designation, group.preFuse.rating].filter(Boolean).join(" ") || "Si"}
+          </text>
+        </g>
+      )}
       <g
         className={
           device === null

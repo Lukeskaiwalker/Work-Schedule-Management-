@@ -38,6 +38,7 @@ export function LegendTable({ rows }: Props) {
             <th scope="col">Gerät</th>
             <th scope="col">Absicherung</th>
             <th scope="col">FI / RCD</th>
+            <th scope="col">Vorsich.</th>
             <th scope="col">Leitung</th>
             <th scope="col">Ph.</th>
           </tr>
@@ -52,6 +53,7 @@ export function LegendTable({ rows }: Props) {
               <td>{row.device}</td>
               <td>{row.rating || "—"}</td>
               <td className={row.rcd === "—" ? "sp-legend-norcd" : undefined}>{row.rcd}</td>
+              <td>{row.pre_fuse}</td>
               <td>{row.cable || "—"}</td>
               <td>{row.phase || "—"}</td>
             </tr>
@@ -81,6 +83,10 @@ export function LegendTable({ rows }: Props) {
               <div>
                 <dt>FI / RCD</dt>
                 <dd className={row.rcd === "—" ? "sp-legend-norcd" : undefined}>{row.rcd}</dd>
+              </div>
+              <div>
+                <dt>Vorsicherung</dt>
+                <dd>{row.pre_fuse}</dd>
               </div>
               <div>
                 <dt>Phase</dt>

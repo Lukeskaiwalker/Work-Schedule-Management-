@@ -372,6 +372,21 @@ def _draw_group(c: pdfcanvas.Canvas, group: dict[str, Any], x: float, dy: float 
     c.setStrokeColor(_BLUE_DEEP)
     c.setLineWidth(1.4)
     c.line(cx, y_bus, cx, y_group_top)
+    # The Vorsicherung sits where it physically is: between the busbar and
+    # the FI, on the drop line. Small, with a cleared background so the wire
+    # does not strike through the text.
+    pre_fuse = group.get("pre_fuse")
+    if pre_fuse and (y_bus - y_group_top) >= 18:
+        text = " ".join(p for p in (_text(pre_fuse.get("designation")), _text(pre_fuse.get("rating"))) if p) or "Si"
+        c.setFont(_FONT_BOLD, 6.5)
+        tw = c.stringWidth(text, _FONT_BOLD, 6.5) + 6
+        ym = (y_bus + y_group_top) / 2
+        c.setFillColor(colors.white)
+        c.setStrokeColor(_BLUE_DEEP)
+        c.setLineWidth(0.6)
+        c.rect(cx - tw / 2, ym - 5, tw, 10, stroke=1, fill=1)
+        c.setFillColor(_INK)
+        c.drawCentredString(cx, ym - 2.5, text)
 
     # Group box — dashed when there is no protective device at all, because
     # "these circuits hang straight off the busbar" is a finding, not a style.
@@ -605,12 +620,15 @@ def _draw_diagram_sheet(
 _LEGEND_COLUMNS: list[tuple[str, str, float]] = [
     ("circuit", "Nr.", 26),
     ("designation", "BMK", 34),
-    ("label", "Verbraucher / Bezeichnung", 132),
+    ("label", "Verbraucher / Bezeichnung", 104),
     ("room", "Raum", 60),
     ("device", "Gerät", 52),
     ("rating", "Absicherung", 52),
     ("rcd", "FI / RCD", 60),
-    ("cable", "Leitung", 92),
+    # Same total width as before: 28 taken from the description, 12 from the
+    # cable column, so the sheet that gets glued in the door keeps its layout.
+    ("pre_fuse", "Vorsich.", 40),
+    ("cable", "Leitung", 80),
     ("phase", "Ph.", 26),
 ]
 
