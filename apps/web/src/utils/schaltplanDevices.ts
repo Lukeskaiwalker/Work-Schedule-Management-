@@ -120,6 +120,7 @@ export function makeDevice(kind: DeviceKind, overrides: Partial<PanelDevice> = {
     id: newId("dev"),
     kind,
     te: entry.te,
+    width_mm: null,
     poles: entry.poles,
     designation: "",
     circuit: "",

@@ -22,6 +22,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAppContext } from "../context/AppContext";
 import { DeviceInspector } from "../components/schaltplan/DeviceInspector";
 import { DevicePalette } from "../components/schaltplan/DevicePalette";
+import { LabelPrintDialog } from "../components/schaltplan/LabelPrintDialog";
 import { LegendTable } from "../components/schaltplan/LegendTable";
 import { NewPanelDialog } from "../components/schaltplan/NewPanelDialog";
 import { PanelDiagram } from "../components/schaltplan/PanelDiagram";
@@ -97,29 +98,48 @@ export function SchaltplanPage() {
   const [document, setDocument] = useState<PanelDocument | null>(null);
   const [tab, setTab] = useState<EditorTab>("plan");
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
-  // BMK strip printing. Its own busy flag: printing must not be mistaken
-  // for a save in progress, and a second tap while the strip is feeding
-  // would print the board twice.
+  // BMK label printing goes through a preview sheet: `rowIds` is what the
+  // sheet opens with — every rail from the toolbar, one from a rail's own
+  // button. Printing keeps its own busy flag: it must not be mistaken for a
+  // save in progress, and a second tap while the strip is feeding would
+  // print the board twice.
+  const [labelDialog, setLabelDialog] = useState<{ open: boolean; rowIds: string[] }>({
+    open: false,
+    rowIds: [],
+  });
   const [labelsPrinting, setLabelsPrinting] = useState(false);
 
+  const openLabelDialog = useCallback((rowIds: string[]) => {
+    setLabelDialog({ open: true, rowIds });
+  }, []);
+
+  const closeLabelDialog = useCallback(() => {
+    setLabelDialog((current) => ({ ...current, open: false }));
+  }, []);
+
   const printLabels = useCallback(
-    async (rowId?: string) => {
+    async (rowIds: string[], materialId: string) => {
       if (!panel || labelsPrinting) return;
       setLabelsPrinting(true);
       try {
-        const result = await printPanelLabels(token, panel.id, { rowId: rowId ?? null });
+        const result = await printPanelLabels(token, panel.id, { rowIds, materialId });
         const skipped =
           result.skipped_without_bmk > 0
             ? ` — ${result.skipped_without_bmk} Gerät(e) ohne BMK übersprungen`
             : "";
-        setNotice(`${result.printed} BMK-Etikett(en) auf dem 2009-110-Streifen gedruckt${skipped}`);
+        const summary =
+          materialId === "wago-210-805"
+            ? `${result.printed} Etiketten (210-805) gedruckt`
+            : `${(result.strips ?? []).length} Streifen gedruckt (${result.printed} BMK)`;
+        setNotice(`${summary}${skipped}`);
+        closeLabelDialog();
       } catch (err) {
         setError(err instanceof Error ? err.message : "BMK-Etiketten konnten nicht gedruckt werden");
       } finally {
         setLabelsPrinting(false);
       }
     },
-    [panel, labelsPrinting, token, setNotice, setError],
+    [panel, labelsPrinting, token, setNotice, setError, closeLabelDialog],
   );
   const [paletteRowId, setPaletteRowId] = useState<string | null>(null);
   const [templateSheetOpen, setTemplateSheetOpen] = useState(false);
@@ -174,6 +194,9 @@ export function SchaltplanPage() {
         setPanel(loaded);
         setDocument(loaded.document);
         setSelectedDeviceId(null);
+        // A print sheet left open would now list the new board's rails with
+        // the old board's selection — nothing ticked, or the wrong rails.
+        setLabelDialog({ open: false, rowIds: [] });
         setSaveState("clean");
         setTab("plan");
       } catch {
@@ -584,8 +607,8 @@ export function SchaltplanPage() {
                 type="button"
                 className="sp-btn"
                 disabled={labelsPrinting}
-                onClick={() => void printLabels()}
-                title="Ein Etikett je Betriebsmittelkennzeichen, in Reihenfolge der Schienen — WAGO 2009-110 einlegen"
+                onClick={() => openLabelDialog(document.rows.map((row) => row.id))}
+                title="Ein Etikett je Betriebsmittelkennzeichen — Reihen und Material in der Vorschau wählen"
               >
                 {labelsPrinting ? "Drucke…" : "BMK-Etiketten"}
               </button>
@@ -663,7 +686,7 @@ export function SchaltplanPage() {
 
           {tab === "aufbau" && (
             <RailEditor
-              onPrintRowLabels={(rowId) => void printLabels(rowId)}
+              onPrintRowLabels={(rowId) => openLabelDialog([rowId])}
               document={document}
               selectedDeviceId={selectedDeviceId}
               readOnly={readOnly}
@@ -917,6 +940,17 @@ export function SchaltplanPage() {
           onDuplicate={() => selectedDevice && duplicateDevice(selectedDevice.id)}
           onMove={(direction) => selectedDevice && moveDevice(selectedDevice.id, direction)}
           onClose={() => setSelectedDeviceId(null)}
+        />
+      )}
+
+      {document && (
+        <LabelPrintDialog
+          open={labelDialog.open}
+          document={document}
+          initialRowIds={labelDialog.rowIds}
+          busy={labelsPrinting}
+          onPrint={(rowIds, materialId) => void printLabels(rowIds, materialId)}
+          onClose={closeLabelDialog}
         />
       )}
 

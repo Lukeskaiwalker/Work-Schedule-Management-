@@ -115,16 +115,26 @@ export interface PanelLabelsPrintResult {
   skipped_without_bmk: number;
   printer: string;
   material: string;
+  /** One entry per rail that went out on the 2009-110 strip; empty for 210-805. */
+  strips: { row_id: string; row_label: string; length_mm: number }[];
 }
 
-/** Print the board's BMK labels on the 2009-110 strip — the whole board, or one rail. */
+/**
+ * Print the board's BMK labels for the chosen rails.
+ *
+ * `materialId` is one of `LABEL_MATERIALS` in `utils/schaltplanStrip.ts`:
+ * the 2009-110 strip gives one cut-marked strip per rail, the 210-805 one
+ * die-cut label per BMK. The preview the dialog shows is computed
+ * client-side from the same width rule the server prints with.
+ */
 export async function printPanelLabels(
   token: string | null,
   panelId: number,
-  options: { rowId?: string | null } = {},
+  options: { rowIds: string[]; materialId: string },
 ): Promise<PanelLabelsPrintResult> {
   return apiFetch<PanelLabelsPrintResult>(`/schaltplan/panels/${panelId}/labels`, token, {
     method: "POST",
-    body: JSON.stringify({ row_id: options.rowId ?? null }),
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ row_ids: options.rowIds, material_id: options.materialId }),
   });
 }

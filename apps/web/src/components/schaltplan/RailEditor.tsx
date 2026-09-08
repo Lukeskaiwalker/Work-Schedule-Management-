@@ -85,7 +85,7 @@ function RailRow({
               type="button"
               className="sp-rail-print"
               onClick={() => onPrintRowLabels(row.id)}
-              title="BMK-Etiketten dieser Reihe drucken (WAGO 2009-110)"
+              title="BMK-Etiketten dieser Reihe drucken — Vorschau und Material im nächsten Schritt"
               aria-label={`BMK-Etiketten der Reihe ${index + 1} drucken`}
             >
               BMK

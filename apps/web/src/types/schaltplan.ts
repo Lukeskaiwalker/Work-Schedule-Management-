@@ -55,8 +55,14 @@ export type DeviceSymbol =
 export interface PanelDevice {
   id: string;
   kind: DeviceKind;
-  /** Width in Teilungseinheiten (1 TE = 18 mm on the rail). */
+  /** Width in Teilungseinheiten (1 TE = 17.5 mm nominal, DIN 43880). */
   te: number;
+  /**
+   * Real mounted width in millimetres; null means "derive from `te`".
+   * Drives the BMK strip: a Hager FI is 70 mm, not the 72 mm that 4 × 18
+   * would give — see `utils/schaltplanStrip.ts`.
+   */
+  width_mm: number | null;
   poles: number;
   /** Betriebsmittelkennzeichen, e.g. "F1.3". */
   designation: string;
