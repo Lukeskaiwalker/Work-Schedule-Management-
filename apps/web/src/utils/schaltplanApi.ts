@@ -111,12 +111,24 @@ export function panelPdfUrl(panelId: number, options: { legendOnly?: boolean } =
 }
 
 export interface PanelLabelsPrintResult {
+  /** Labelled segments (2009-110) or labels (210-805) actually printed. */
   printed: number;
+  /**
+   * Real devices without a BMK on the SELECTED rails — a selected rail with
+   * nothing to print still counts its unnamed devices. A blank cover never counts.
+   */
   skipped_without_bmk: number;
   printer: string;
   material: string;
-  /** One entry per rail that went out on the 2009-110 strip; empty for 210-805. */
+  /** One entry per rail that went out on the 2009-110 strip, blank-free length; empty for 210-805. */
   strips: { row_id: string; row_label: string; length_mm: number }[];
+  /**
+   * The one size every BMK on the board is printed at, in printer dots
+   * (12 dots/mm). Null for die-cut labels, which are fitted one by one.
+   */
+  font_size_dots: number | null;
+  /** BMK texts too long for their segment at that size — printed anyway, running past the cut marks. */
+  overflowing: string[];
 }
 
 /**
@@ -125,7 +137,8 @@ export interface PanelLabelsPrintResult {
  * `materialId` is one of `LABEL_MATERIALS` in `utils/schaltplanStrip.ts`:
  * the 2009-110 strip gives one cut-marked strip per rail, the 210-805 one
  * die-cut label per BMK. The preview the dialog shows is computed
- * client-side from the same width rule the server prints with.
+ * client-side from the same segment and font-size rules the server prints
+ * with (`utils/schaltplanStrip.ts` ↔ `services/schaltplan_layout.py`).
  */
 export async function printPanelLabels(
   token: string | null,

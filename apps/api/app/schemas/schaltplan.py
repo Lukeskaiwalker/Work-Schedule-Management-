@@ -232,6 +232,7 @@ class PanelStripOut(BaseModel):
 
 
 class PanelLabelsPrintOut(BaseModel):
+    # Labelled segments printed: one per BMK, on either material.
     printed: int
     # Devices that are Betriebsmittel but carry no BMK yet: silently printing
     # nothing for them would hide exactly the gap the strip exists to close.
@@ -239,4 +240,12 @@ class PanelLabelsPrintOut(BaseModel):
     printer: str
     material: str
     # One entry per continuous strip that went out; empty for die-cut labels.
+    # Lengths count labelled devices only — blank covers take no strip.
     strips: list[PanelStripOut] = Field(default_factory=list)
+    # The ONE font size (printer dots, 12 per mm) every BMK on the board is
+    # printed at — fitted over the whole board, not just the rails printed now.
+    # None for die-cut labels, which are fitted one by one on their own stock.
+    font_size_dots: int | None = None
+    # BMK texts wider than their segment even at the minimum size: they print
+    # at the clamped size and run past their cut marks, so say so.
+    overflowing: list[str] = Field(default_factory=list)

@@ -50,6 +50,7 @@ from functools import lru_cache
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.services.schaltplan_layout import text_width_em
 from app.services.werkstatt_label_materials import (
     material_by_id,
     TIER_KOMPAKT,
@@ -573,9 +574,20 @@ MARKING_STRIP_MATERIAL_ID = "wago-2009-110"
 
 
 _STRIP_LEAD_MM = 3  # unprintable-ish lead before the start line and after the end line
-_STRIP_TEXT_GAP = 12  # 1 mm between a segment's cut line and its text
 _STRIP_LINE = 1  # divider half-thickness in dots (2 dots total)
 _STRIP_END_LINE = 2  # start/end half-thickness (4 dots total): the rail cut
+_STRIP_TEXT_GUARD = 2  # a text never starts closer than this to its segment's cut line
+
+# Where the capitals sit inside the built-in TTF's em box, as fractions of the
+# font size: the cap band begins CAP_TOP_RATIO below the em top and is
+# CAP_HEIGHT_RATIO tall (Arial: cap height 1467/2048 = 0.716). A BMK is all
+# capitals and digits, so centring that BAND across the strip — not the em
+# box, which carries descender room the text never uses — is what puts "F1.1"
+# visually in the middle of an 11 mm strip. CAP_TOP_RATIO is a calibration
+# constant: if a physical print sits a hair high or low, this is the number
+# to adjust, not the formula.
+CAP_TOP_RATIO = 0.19
+CAP_HEIGHT_RATIO = 0.716
 
 
 def _solid(frame: _Frame, reading_x: int, *, half: int) -> str:
@@ -583,39 +595,63 @@ def _solid(frame: _Frame, reading_x: int, *, half: int) -> str:
     return f"Lo,{frame.xm(frame.h_px)},{frame.ym(reading_x) - half},{frame.xm(0)},{frame.ym(reading_x) + half}"
 
 
-def _render_rail_strip(profile: MaterialProfile, segments: list[tuple[str, float]]) -> list[str]:
-    """One rail on continuous stock: each device's BMK inside its real width.
+def _strip_text_w(text: str, size: int) -> float:
+    """Width of a strip text in dots, from the per-glyph advance table."""
+    return size * text_width_em(text)
+
+
+def _strip_text_top(h_px: int, size: int) -> int:
+    """Reading-frame top edge that centres the text's cap band across the strip."""
+    return max(0, int(round(h_px / 2 - size * (CAP_TOP_RATIO + CAP_HEIGHT_RATIO / 2))))
+
+
+def _render_rail_strip(
+    profile: MaterialProfile, segments: list[tuple[str, float]], *, size: int
+) -> list[str]:
+    """One rail on continuous stock: every labelled device's BMK inside its real width.
 
     The strip is laid along the rail and cut at the marks, so geometry is the
     whole point: segment widths are the devices' mounted widths in mm, a
     divider sits on every boundary, and the rail's start and end carry a
-    heavier line. A segment with no text (blank cover, device without a BMK)
-    stays empty but keeps its width. Three millimetres of lead on either side
-    keep the end marks inside the printable area.
+    heavier line. Every segment carries text — a blank cover or a device
+    without a BMK gets no segment at all (``schaltplan_layout.strip_segments``
+    drops them), so the strip continues with the next labelled device.
+
+    ``size`` is the board-wide font size from ``schaltplan_layout.board_font_size``.
+    Nothing is fitted here: every rail of a board prints at the same size, and
+    each text is centred in its segment both ways — horizontally on its real
+    glyph width, vertically on the capitals' band.
+
+    Three millimetres of lead on either side keep the end marks inside the
+    printable area. The label length includes the material's x-offset as
+    well: the print origin sits that far before the label's edge, so without
+    it the trailing lead shrank by the offset and the end line landed on the
+    tear edge.
     """
     if not segments:
         raise ValueError("a strip needs at least one segment")
+    if size < 1:
+        raise ValueError("font size must be positive")
     h_px = _mm(profile.width_mm) * _DOTS_PER_MM
     lead_px = _STRIP_LEAD_MM * _DOTS_PER_MM
     total_mm = sum(width for _, width in segments)
     w_px = lead_px + int(round(total_mm * _DOTS_PER_MM)) + lead_px
     frame = _frame(profile, w_px=w_px)
-    max_size = max(16, min(h_px - 12, int(h_px * 0.72)))
+    top = _strip_text_top(h_px, size)
 
     lines: list[str] = [_solid(frame, lead_px, half=_STRIP_END_LINE)]
     cursor = float(lead_px)
     for index, (text, width_mm) in enumerate(segments):
         seg_w = width_mm * _DOTS_PER_MM
         if text:
-            budget = max(8, int(seg_w) - 2 * _STRIP_TEXT_GAP)
-            size = _fit_text_size(text, budget, max_size, 16)
-            x = int(round(cursor + (seg_w - _est_text_w(text, size)) / 2))
-            lines.append(_at(frame, max(int(cursor) + 2, x), (h_px - size) // 2, size, text))
+            centred = int(round(cursor + (seg_w - _strip_text_w(text, size)) / 2))
+            left = max(int(cursor) + _STRIP_TEXT_GUARD, centred)
+            lines.append(_at(frame, left, top, size, text))
         cursor += seg_w
         if index < len(segments) - 1:
             lines.append(_solid(frame, int(round(cursor)), half=_STRIP_LINE))
     lines.append(_solid(frame, int(round(cursor)), half=_STRIP_END_LINE))
-    return _sheet(profile, lines, length_mm=w_px / _DOTS_PER_MM)
+    return _sheet(profile, lines, length_mm=(w_px + frame.x_offset_px) / _DOTS_PER_MM)
 
 
 def print_marking_strips(
@@ -623,29 +659,32 @@ def print_marking_strips(
     *,
     strips: list[list[tuple[str, float]]],
     material_id: str = MARKING_STRIP_MATERIAL_ID,
+    size: int,
 ) -> tuple[int, str]:
     """Print the BMK of rails, in ONE connection, on the named material.
 
-    Each inner list is one rail: ``(text, width_mm)`` per device in physical
-    order, text "" for a device that gets no label but still takes up room.
-    On continuous stock every rail becomes one strip with cut marks; on
-    die-cut stock (the 210-805) every labelled device becomes one label and
-    the widths are irrelevant. Either way the output comes off the printer in
-    the order it goes onto the board. Returns (labels_printed, "host:port").
+    Each inner list is one rail: ``(text, width_mm)`` per labelled device in
+    physical order. A segment whose text cleans to nothing is dropped, the
+    same way the layout drops blank covers and unnamed devices. On continuous
+    stock every rail becomes one strip with cut marks and every text prints
+    at the board-wide ``size`` (dots); on die-cut stock (the 210-805) every
+    BMK becomes one label fitted on its own, and the widths and ``size`` are
+    irrelevant. Either way the output comes off the printer in the order it
+    goes onto the board. Returns (labels_printed, "host:port").
     """
     profile = material_by_id(db, material_id)
     jobs: list[list[str]] = []
     printed = 0
     for rail in strips:
         cleaned = [(_clean(text, 40), float(width)) for text, width in rail]
-        labelled = sum(1 for text, _ in cleaned if text)
+        labelled = [(text, width) for text, width in cleaned if text]
         if not labelled:
             continue
-        printed += labelled
+        printed += len(labelled)
         if profile.continuous:
-            jobs.append(_render_rail_strip(profile, cleaned))
+            jobs.append(_render_rail_strip(profile, labelled, size=size))
         else:
-            jobs.extend(_render_mini(profile, text) for text, _ in cleaned if text)
+            jobs.extend(_render_mini(profile, text) for text, _ in labelled)
     if not jobs:
         raise ValueError("nothing to print")
     payload = b"".join(("\r\n".join(job) + "\r\n").encode(_ENCODING) for job in jobs)

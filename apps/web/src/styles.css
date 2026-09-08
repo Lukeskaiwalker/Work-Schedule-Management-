@@ -35644,11 +35644,6 @@ button.time-calendar-cell {
   fill: var(--surface-2);
 }
 
-.sp-strip-blank {
-  fill: var(--surface-2);
-  opacity: 0.6;
-}
-
 /* Cut line between two devices: thin and dashed, like the mark on the strip. */
 .sp-strip-cut {
   stroke: var(--sp-ink);
@@ -35662,10 +35657,12 @@ button.time-calendar-cell {
   stroke-width: 2.5;
 }
 
+/* Set in the printer's face and weight, so the preview's glyph widths are
+   the ones the board font size was computed from. */
 .sp-strip-text {
   fill: var(--sp-ink);
-  font-family: inherit;
-  font-weight: 600;
+  font-family: Arial, "Helvetica Neue", Helvetica, "Liberation Sans", sans-serif;
+  font-weight: 400;
 }
 
 .sp-label-chips {
@@ -35695,6 +35692,19 @@ button.time-calendar-cell {
   margin: 0;
   font-size: 12.5px;
   color: var(--muted);
+}
+
+/* BMKs that run past their cut marks at the board size. A warning, not a
+   block: the strip still prints, and shortening the BMK is the electrician's
+   call — so amber, not the error red. */
+.sp-label-warn {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, #b45309 12%, transparent);
+  color: #92400e;
+  font-size: 12.5px;
+  line-height: 1.35;
 }
 
 /* ── Responsive ──────────────────────────────────────────────────────────── */

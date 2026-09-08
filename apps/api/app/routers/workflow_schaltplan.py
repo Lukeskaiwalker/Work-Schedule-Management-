@@ -53,12 +53,14 @@ from app.schemas.schaltplan import (
 from app.services.audit import log_admin_action
 from app.services.runtime_settings import get_company_settings
 from app.services.schaltplan_layout import (
-    iter_devices,
-    strip_segments,
     DEVICE_CATALOG,
+    board_font_size,
     build_legend,
     document_stats,
     empty_document,
+    iter_devices,
+    strip_segments,
+    unlabelled_device_count,
     validate_document,
 )
 from app.services import werkstatt_labels
@@ -385,14 +387,33 @@ def print_panel_labels(
     2009-110 every rail becomes one continuous strip laid out at the devices'
     real widths with a cut mark on every boundary and a heavier one at both
     ends; on the 210-805 every BMK becomes one 6 × 15 mm label. Rails go out
-    in board order. A Blindabdeckung never gets a label; a Betriebsmittel
-    without a BMK gets none AND is counted, because the missing designation is
-    the thing to fix, not to hide — on the strip it still takes up its width.
+    in board order.
+
+    Only labelled devices get a segment. A Blindabdeckung never does, and a
+    Betriebsmittel without a BMK gets none either — the strip continues with
+    the next labelled device. The unnamed ones ARE counted, because the
+    missing designation is the thing to fix, not to hide.
+
+    The font size is one number for the WHOLE board, not per rail and not per
+    selection: it is fitted over every labelled device of every row, so a rail
+    printed next week matches the ones printed today. BMK that cannot fit
+    their segment even at the minimum size are listed in ``overflowing``.
     """
     plan = _get_plan_or_404(db, plan_id)
     _assert_readable(db, current_user, plan)
     document = plan.document or empty_document()
     material_id = (payload.material_id or werkstatt_labels.MARKING_STRIP_MATERIAL_ID).strip()
+    try:
+        profile = werkstatt_labels.material_by_id(db, material_id)
+    except MaterialValidationError as exc:
+        raise HTTPException(status_code=400, detail=f"Unbekanntes Etikettenmaterial: {exc}")
+    # The board size is a strip concept: die-cut labels (210-805) are fitted
+    # one by one on their own 15 mm, so there is nothing board-wide to report.
+    font_size: int | None
+    if profile.continuous:
+        font_size, overflowing = board_font_size(document, profile.width_mm)
+    else:
+        font_size, overflowing = None, []
 
     wanted = set(payload.row_ids or [])
     if payload.row_id:
@@ -407,10 +428,10 @@ def print_panel_labels(
         row_id = str(row.get("id") or "")
         if wanted and row_id not in wanted:
             continue
+        skipped += unlabelled_device_count(row)
         segments = strip_segments(row)
         if not segments:
             continue
-        skipped += sum(1 for seg in segments if seg.kind != "blank" and not seg.text)
         strips.append([(seg.text, seg.width_mm) for seg in segments])
         strip_meta.append(
             PanelStripOut(
@@ -420,32 +441,28 @@ def print_panel_labels(
             )
         )
 
-    if not any(text for rail in strips for text, _ in rail):
+    if not strips:
         raise HTTPException(
             status_code=400,
             detail="Keine BMK vergeben — erst Betriebsmittelkennzeichen eintragen.",
         )
     try:
         printed, printer = werkstatt_labels.print_marking_strips(
-            db, strips=strips, material_id=material_id
+            db, strips=strips, material_id=material_id, size=font_size
         )
-    except MaterialValidationError as exc:
-        raise HTTPException(status_code=400, detail=f"Unbekanntes Etikettenmaterial: {exc}")
     except werkstatt_labels.LabelPrinterNotConfigured:
         raise HTTPException(status_code=503, detail="Kein Etikettendrucker konfiguriert")
     except werkstatt_labels.LabelPrinterUnreachable as exc:
         raise HTTPException(status_code=502, detail=f"Etikettendrucker nicht erreichbar ({exc})")
 
-    continuous = werkstatt_labels.material_by_id(db, material_id).continuous
-    labelled_rails = [
-        meta for meta, rail in zip(strip_meta, strips) if any(text for text, _ in rail)
-    ]
     return PanelLabelsPrintOut(
         printed=printed,
         skipped_without_bmk=skipped,
         printer=printer,
         material=material_id,
-        strips=labelled_rails if continuous else [],
+        strips=strip_meta if profile.continuous else [],
+        font_size_dots=font_size,
+        overflowing=overflowing,
     )
 
 

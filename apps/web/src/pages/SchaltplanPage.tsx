@@ -42,6 +42,7 @@ import {
   rowFromTemplate,
   type RowTemplateId,
 } from "../utils/schaltplanDocumentOps";
+import { formatFontMm } from "../utils/schaltplanStrip";
 import { buildLegend, findDevice, validateDocument } from "../utils/schaltplanTopology";
 import {
   printPanelLabels,
@@ -127,11 +128,19 @@ export function SchaltplanPage() {
           result.skipped_without_bmk > 0
             ? ` — ${result.skipped_without_bmk} Gerät(e) ohne BMK übersprungen`
             : "";
-        const summary =
-          materialId === "wago-210-805"
-            ? `${result.printed} Etiketten (210-805) gedruckt`
-            : `${(result.strips ?? []).length} Streifen gedruckt (${result.printed} BMK)`;
-        setNotice(`${summary}${skipped}`);
+        const single = materialId === "wago-210-805";
+        const summary = single
+          ? `${result.printed} Etiketten (210-805) gedruckt`
+          : `${(result.strips ?? []).length} Streifen gedruckt (${result.printed} BMK)`;
+        // The strip's board size is worth a glance: it tells the electrician
+        // whether a long BMK dragged the whole board down. Guarded, because
+        // an older server does not send it.
+        const sizeDots = result.font_size_dots;
+        const font =
+          !single && typeof sizeDots === "number" && Number.isFinite(sizeDots) && sizeDots > 0
+            ? ` — Schrift ${formatFontMm(sizeDots)} mm`
+            : "";
+        setNotice(`${summary}${font}${skipped}`);
         closeLabelDialog();
       } catch (err) {
         setError(err instanceof Error ? err.message : "BMK-Etiketten konnten nicht gedruckt werden");

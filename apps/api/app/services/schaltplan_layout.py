@@ -66,8 +66,9 @@ never drift apart.
 
 from __future__ import annotations
 
+import math
+import re
 from dataclasses import dataclass
-
 from typing import Any, Iterator
 
 # ── Device catalogue ────────────────────────────────────────────────────────
@@ -261,34 +262,65 @@ def device_width_mm(device: dict[str, Any]) -> float:
 
 @dataclass(frozen=True)
 class StripSegment:
-    """One device's share of a rail's marking strip."""
+    """One labelled device's share of a rail's marking strip."""
 
     device_id: str
     kind: str
-    text: str  # "" for a blank cover or a device without a BMK
+    text: str  # the BMK — never empty: an unlabelled device gets no segment
     width_mm: float
     start_mm: float
 
 
-def strip_segments(row: dict[str, Any]) -> list[StripSegment]:
-    """The rail as a marking strip: every device, in order, at its real width.
+# What is trimmed off a BMK before it counts as text. Spelled out (rather than
+# str.strip) because the editor's TypeScript twin trims with the same pattern:
+# JS trim() and Python strip() disagree on U+FEFF and the C0 controls, and a
+# designation made only of those must be "ohne BMK" on both sides.
+BMK_EDGE_JUNK = re.compile(r"^[\s\ufeff\x00-\x1f\x7f]+|[\s\ufeff\x00-\x1f\x7f]+$")
 
-    Blank covers and devices that carry no BMK yet still get their segment —
-    an empty one. Leaving them out would shift every label after them off its
-    device, which is the one thing a strip cut to size must never do.
+
+def segment_text(device: dict[str, Any]) -> str:
+    """What a device's segment says: its BMK, or "" for a blank cover / no BMK.
+
+    A Blindabdeckung is not a Betriebsmittel, whatever someone typed on it.
+    """
+    if str(device.get("kind") or "") == "blank":
+        return ""
+    return BMK_EDGE_JUNK.sub("", str(device.get("designation") or ""))
+
+
+def unlabelled_device_count(row: dict[str, Any]) -> int:
+    """Betriebsmittel on the rail that carry no BMK yet. Blank covers never count."""
+    return sum(
+        1
+        for device in row.get("devices") or []
+        if isinstance(device, dict)
+        and str(device.get("kind") or "") != "blank"
+        and not segment_text(device)
+    )
+
+
+def strip_segments(row: dict[str, Any]) -> list[StripSegment]:
+    """The rail as a marking strip: every LABELLED device, in order, at its real width.
+
+    A blank cover or a device without a BMK gets no segment and no width — the
+    strip simply continues with the next labelled device, and its length is
+    the sum of the segments actually emitted. Reserving an empty segment for
+    them (as the first version did) produced runs of blank stubs on the board
+    that had to be cut away by hand; a strip is a row of labels, not a ruler.
     """
     segments: list[StripSegment] = []
     position = 0.0
     for device in row.get("devices") or []:
         if not isinstance(device, dict):
             continue
-        kind = str(device.get("kind") or "")
-        text = "" if kind == "blank" else str(device.get("designation") or "").strip()
+        text = segment_text(device)
+        if not text:
+            continue
         width = device_width_mm(device)
         segments.append(
             StripSegment(
                 device_id=str(device.get("id") or ""),
-                kind=kind,
+                kind=str(device.get("kind") or ""),
                 text=text,
                 width_mm=width,
                 start_mm=position,
@@ -296,6 +328,104 @@ def strip_segments(row: dict[str, Any]) -> list[StripSegment]:
         )
         position += width
     return segments
+
+
+# ── Marking-strip typography ───────────────────────────────────────────────
+#
+# The WAGO 258-5101 prints BMK strips with its built-in TrueType face, whose
+# metrics are Arial's. GLYPH_ADVANCE_EM is Arial's advance width per glyph as
+# a fraction of the em (hmtx advance / 2048 unitsPerEm, rounded to three
+# places): printable ASCII plus the German umlauts, ß, ° and µ — 104 entries.
+# A glyph outside the table falls back to GLYPH_ADVANCE_FALLBACK_EM, the flat
+# average the strip used before it had per-glyph metrics (0.58 × len, which
+# over-estimated "F1.1" by a sixth and under-estimated "WM" badly). The React
+# preview embeds the same table in apps/web/src/utils/schaltplanStrip.ts —
+# keep the two identical, or the preview will centre text the printer does not.
+GLYPH_ADVANCE_EM: dict[str, float] = {
+    ' ': 0.278, '!': 0.278, '"': 0.355, '#': 0.556, '$': 0.556, '%': 0.889,
+    '&': 0.667, "'": 0.191, '(': 0.333, ')': 0.333, '*': 0.389, '+': 0.584,
+    ',': 0.278, '-': 0.333, '.': 0.278, '/': 0.278, '0': 0.556, '1': 0.556,
+    '2': 0.556, '3': 0.556, '4': 0.556, '5': 0.556, '6': 0.556, '7': 0.556,
+    '8': 0.556, '9': 0.556, ':': 0.278, ';': 0.278, '<': 0.584, '=': 0.584,
+    '>': 0.584, '?': 0.556, '@': 1.015, 'A': 0.667, 'B': 0.667, 'C': 0.722,
+    'D': 0.722, 'E': 0.667, 'F': 0.611, 'G': 0.778, 'H': 0.722, 'I': 0.278,
+    'J': 0.500, 'K': 0.667, 'L': 0.556, 'M': 0.833, 'N': 0.722, 'O': 0.778,
+    'P': 0.667, 'Q': 0.778, 'R': 0.722, 'S': 0.667, 'T': 0.611, 'U': 0.722,
+    'V': 0.667, 'W': 0.944, 'X': 0.667, 'Y': 0.667, 'Z': 0.611, '[': 0.278,
+    '\\': 0.278, ']': 0.278, '^': 0.469, '_': 0.556, '`': 0.333, 'a': 0.556,
+    'b': 0.556, 'c': 0.500, 'd': 0.556, 'e': 0.556, 'f': 0.278, 'g': 0.556,
+    'h': 0.556, 'i': 0.222, 'j': 0.222, 'k': 0.500, 'l': 0.222, 'm': 0.833,
+    'n': 0.556, 'o': 0.556, 'p': 0.556, 'q': 0.556, 'r': 0.333, 's': 0.500,
+    't': 0.278, 'u': 0.556, 'v': 0.500, 'w': 0.722, 'x': 0.500, 'y': 0.500,
+    'z': 0.500, '{': 0.334, '|': 0.260, '}': 0.334, '~': 0.584, 'Ä': 0.667,
+    'Ö': 0.778, 'Ü': 0.722, 'ä': 0.556, 'ö': 0.556, 'ü': 0.556, 'ß': 0.611,
+    '°': 0.400, 'µ': 0.576,
+}
+GLYPH_ADVANCE_FALLBACK_EM = 0.58
+
+# The 258-5101's 300 dpi head; the same number as werkstatt_labels._DOTS_PER_MM.
+STRIP_DOTS_PER_MM = 12
+# 1 mm between a segment's cut line and its text, on each side.
+STRIP_SEG_PAD_DOTS = 12
+# 2 mm capitals: below this a BMK is unreadable on a board, so a text that
+# needs less is printed at this size and reported as overflowing instead.
+STRIP_MIN_SIZE_DOTS = 24
+# The ceiling comes from the strip's height: 72 % of it, never closer than
+# 1 mm to the edge, and at least 16 dots on absurdly narrow stock.
+STRIP_MAX_SIZE_RATIO = 0.72
+STRIP_MAX_SIZE_MARGIN_DOTS = 12
+STRIP_MAX_SIZE_FLOOR_DOTS = 16
+
+
+def text_width_em(text: str) -> float:
+    """Advance width of ``text`` in em: the sum of its glyphs' advances."""
+    return sum(GLYPH_ADVANCE_EM.get(ch, GLYPH_ADVANCE_FALLBACK_EM) for ch in text)
+
+
+def strip_max_font_size(strip_width_mm: float) -> int:
+    """The largest size the strip's height allows: 11 mm (132 dots) → 95."""
+    # Whole millimetres first, then dots — the renderer builds its frame as
+    # _mm(width) * 12, and the two must never size against different heights.
+    h_px = int(round(strip_width_mm)) * STRIP_DOTS_PER_MM
+    return max(
+        STRIP_MAX_SIZE_FLOOR_DOTS,
+        min(h_px - STRIP_MAX_SIZE_MARGIN_DOTS, int(h_px * STRIP_MAX_SIZE_RATIO)),
+    )
+
+
+def board_font_size(document: dict[str, Any], strip_width_mm: float) -> tuple[int, list[str]]:
+    """ONE font size for every BMK on the board, and the texts that still overflow.
+
+    For each labelled device of each row, the size at which its BMK exactly
+    fills its segment minus the pads is ``(width_mm × 12 − 2 × pad) / em``.
+    The board prints at the floor of the smallest such fit, clamped to
+    [STRIP_MIN_SIZE_DOTS, strip_max_font_size]. A board without a labelled
+    device gets the maximum.
+
+    Fitted over the whole document, not over the rails being printed: a rail
+    printed next week has to match the ones printed today, and a board with
+    two text sizes on it looks like two boards.
+
+    ``overflowing`` lists the BMK whose own fit is below the minimum: at the
+    clamped size they run past their cut marks. That is for the caller to say
+    out loud — shrinking them further would just make them unreadable.
+    """
+    max_size = strip_max_font_size(strip_width_mm)
+    fits: list[tuple[str, float]] = []
+    for _row, device in iter_devices(document):
+        text = segment_text(device)
+        if not text:
+            continue
+        budget = device_width_mm(device) * STRIP_DOTS_PER_MM - 2 * STRIP_SEG_PAD_DOTS
+        fits.append((text, budget / text_width_em(text)))
+    if not fits:
+        return max_size, []
+    tightest = math.floor(min(fit for _, fit in fits))
+    # The strip's ceiling wins over the readability floor (only matters on
+    # stock under 3 mm, and the twin clamps the same way).
+    size = min(max_size, max(STRIP_MIN_SIZE_DOTS, tightest))
+    overflowing = [text for text, fit in fits if fit < STRIP_MIN_SIZE_DOTS]
+    return size, overflowing
 
 
 def iter_devices(document: dict[str, Any]) -> Iterator[tuple[dict[str, Any], dict[str, Any]]]:

@@ -23,7 +23,13 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from app.services.schaltplan_layout import build_legend, build_topology, validate_document
+from app.services.schaltplan_layout import (
+    board_font_size,
+    build_legend,
+    build_topology,
+    strip_segments,
+    validate_document,
+)
 
 
 def _auth(token: str) -> dict[str, str]:
@@ -609,8 +615,9 @@ def _strip_panel(client: TestClient, admin_token: str) -> dict:
         ]},
         {"id": "r2", "label": "Reihe 2", "slots": 12, "devices": [
             _device("f13", "mcb", designation="F1.3", circuit="3"),
+            # A blank cover gets no segment: the strip simply continues.
             _device("b1", "blank", designation=""),
-            # No BMK yet: still 17.5 mm of rail, so the strip must keep its place.
+            # No BMK yet: no segment either — but it is counted as skipped.
             _device("f14", "mcb", designation="", circuit="4"),
         ]},
     ]
@@ -621,6 +628,23 @@ def _strip_panel(client: TestClient, admin_token: str) -> dict:
 def _jobs(payload: bytes) -> list[bytes]:
     """Split one printer connection into its jobs (each ends with the E command)."""
     return [chunk for chunk in payload.split(b"E\r\n") if chunk.strip()]
+
+
+def _at_sizes(job: bytes) -> list[int]:
+    """The font size of every `AT,x,y,size,size,…` text command in a job."""
+    return [
+        int(line.split(b",")[3])
+        for line in job.split(b"\r\n")
+        if line.startswith(b"AT,")
+    ]
+
+
+def _q_length(job: bytes) -> int:
+    """The `^Q<length>,<gap>` label length of a job, in mm."""
+    for line in job.split(b"\r\n"):
+        if line.startswith(b"^Q"):
+            return int(line[2:].split(b",")[0])
+    raise AssertionError("job has no ^Q line")
 
 
 def test_bmk_strip_is_one_job_per_rail_with_real_widths_and_cut_marks(
@@ -640,23 +664,213 @@ def test_bmk_strip_is_one_job_per_rail_with_real_widths_and_cut_marks(
     assert body["material"] == "wago-2009-110"
     assert body["printed"] == 4
     assert body["skipped_without_bmk"] == 1
-    # 70 (override) + 17.5 (1 TE at the real 17.5 mm pitch) + 18 (override).
-    assert [(s["row_id"], s["length_mm"]) for s in body["strips"]] == [("r1", 105.5), ("r2", 52.5)]
+    # r1: 70 (override) + 17.5 (1 TE at the real 17.5 mm pitch) + 18 (override).
+    # r2: 17.5 only — the blank cover and the unnamed breaker get no segment.
+    assert [(s["row_id"], s["length_mm"]) for s in body["strips"]] == [("r1", 105.5), ("r2", 17.5)]
 
     assert len(sent) == 1, "both strips go out in one connection"
     payload = sent[0]
     assert payload.count(b"^L") == 2, "one continuous job per rail"
     first, second = _jobs(payload)
-    # The label is the rail plus 3 mm of lead on both sides, so the end lines are printable.
-    assert b"^Q112,0" in first or b"^Q111,0" in first
-    assert b"^Q59,0" in second or b"^Q58,0" in second
+    # The label is the rail plus 3 mm of lead on both sides — plus the material's
+    # 2 mm print-origin offset, so the lead AFTER the end line is as long as the
+    # one before the start line: 3 + 105.5 + 3 + 2 = 113.5 and 3 + 17.5 + 3 + 2 = 25.5.
+    assert abs(_q_length(first) - 113.5) <= 1
+    assert abs(_q_length(second) - 25.5) <= 1
     assert b"^W11" in first and b"^W11" in second
     # Cut marks: one divider between neighbours, plus a start and an end line.
-    assert second.count(b"Lo,") == 2 + 2
     assert first.count(b"Lo,") == 2 + 2
+    # A single labelled device: start and end line, no divider.
+    assert second.count(b"Lo,") == 2
     assert b"F1.3" in second and b"F1" in first
-    # The blank cover and the unnamed breaker take their room but print nothing.
+    # Only the labelled breaker prints; the blank and the unnamed one are gone.
     assert second.count(b"AT,") == 1
+
+    # ONE font size across the whole board: every text on every rail carries
+    # the same size, and it is the one the response reports.
+    sizes = _at_sizes(first) + _at_sizes(second)
+    assert len(sizes) == 4
+    assert set(sizes) == {body["font_size_dots"]}
+    assert body["overflowing"] == []
+
+
+def _long_bmk_panel(client: TestClient, admin_token: str) -> dict:
+    """The _strip_panel rails, but r2 carries a BMK that is wider than F1.x."""
+    document = _document([])
+    document["rows"] = [
+        {"id": "r1", "label": "Reihe 1", "slots": 12, "devices": [
+            _device("f1", "rcd", designation="F1", te=4, width_mm=70),
+            _device("f11", "mcb", designation="F1.1", circuit="1"),
+            _device("f12", "mcb", designation="F1.2", circuit="2", width_mm=18),
+        ]},
+        {"id": "r2", "label": "Reihe 2", "slots": 12, "devices": [
+            _device("f110", "mcb", designation="F1.10", circuit="10"),
+        ]},
+    ]
+    customer_id = _customer(client, admin_token, "Lange BMK Kunde")
+    return _create_panel(client, admin_token, customer_id, document=document)
+
+
+def test_bmk_strip_font_size_is_dictated_by_the_whole_board(
+    client: TestClient, admin_token: str, monkeypatch
+):
+    """Printing r1 alone must still use the size the widest BMK on r2 forces.
+
+    On the 11 mm strip (132 dots) a 1 TE segment has 17.5 × 12 − 2 × 12 = 186
+    dots for text. "F1.1" is 0.611 + 0.556 + 0.278 + 0.556 = 2.001 em wide, so
+    it fits at 186 / 2.001 = 92.95 → 92 dots. "F1.10" adds another 0.556 em:
+    186 / 2.557 = 72.74 → 72 dots. The board size is the minimum, 72, and r1
+    gets it even though every BMK on r1 would fit at 92 — a board with two
+    text sizes on it is exactly what the user rejected.
+    """
+    _configure_label_printer(client, admin_token)
+    sent = _capture_label_jobs(monkeypatch)
+    panel = _long_bmk_panel(client, admin_token)
+
+    resp = client.post(
+        f"/api/schaltplan/panels/{panel['id']}/labels",
+        headers=_auth(admin_token),
+        json={"row_ids": ["r1"]},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["font_size_dots"] == 72
+    assert body["overflowing"] == []
+    (job,) = _jobs(sent[0])
+    assert b"F1.10" not in job, "only r1 was asked for"
+    assert _at_sizes(job) == [72, 72, 72]
+
+
+def test_bmk_strip_centres_each_text_in_its_segment(
+    client: TestClient, admin_token: str, monkeypatch
+):
+    """Pinned position of "F1.1" on r1 of the _strip_panel fixture.
+
+    Reading frame (x along the feed, y across the 132-dot strip), size 92:
+      segment start = 3 mm lead (36) + F1's 70 mm (840)            = 876
+      segment width = 17.5 mm                                      = 210
+      text width    = 92 × 2.001 em                                = 184.092
+      left          = round(876 + (210 − 184.092) / 2) = round(888.954) = 889
+      top           = round(132 / 2 − 92 × (0.19 + 0.716 / 2))
+                    = round(66 − 50.416) = round(15.584)           = 16
+    Machine frame: x = 132 − top = 116, y = left + 2 mm offset (24) = 913.
+    """
+    _configure_label_printer(client, admin_token)
+    sent = _capture_label_jobs(monkeypatch)
+    panel = _strip_panel(client, admin_token)
+
+    resp = client.post(
+        f"/api/schaltplan/panels/{panel['id']}/labels",
+        headers=_auth(admin_token),
+        json={"row_ids": ["r1"]},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["font_size_dots"] == 92
+    (job,) = _jobs(sent[0])
+    assert b"\r\nAT,116,913,92,92,0,1E,0,0,F1.1\r\n" in job
+
+
+def test_bmk_strip_reports_a_bmk_that_cannot_fit_at_the_minimum_size(
+    client: TestClient, admin_token: str, monkeypatch
+):
+    """A 23-character BMK on a 1 TE breaker cannot fit even at 24 dots.
+
+    "Q1 Hauptschalter Keller" is 10.615 em; 186 / 10.615 = 17.5 dots, under the
+    24-dot floor. The size is clamped to 24 — smaller would be illegible on the
+    board — and the text is reported so the caller can warn that it will run
+    past its cut marks.
+    """
+    _configure_label_printer(client, admin_token)
+    sent = _capture_label_jobs(monkeypatch)
+    document = _document([])
+    document["rows"] = [
+        {"id": "r1", "label": "Reihe 1", "slots": 12, "devices": [
+            _device("f1", "mcb", designation="F1", circuit="1"),
+            _device("q1", "mcb", designation="Q1 Hauptschalter Keller", circuit="2"),
+        ]},
+    ]
+    customer_id = _customer(client, admin_token, "Überlauf Kunde")
+    panel = _create_panel(client, admin_token, customer_id, document=document)
+
+    resp = client.post(
+        f"/api/schaltplan/panels/{panel['id']}/labels", headers=_auth(admin_token), json={}
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["font_size_dots"] == 24
+    assert body["overflowing"] == ["Q1 Hauptschalter Keller"]
+    assert set(_at_sizes(sent[0])) == {24}
+
+
+# ── Strip geometry and board font size (pure functions) ──────────────────────
+
+
+def test_strip_segments_skip_blank_covers_and_unnamed_devices():
+    row = {
+        "id": "r1",
+        "devices": [
+            _device("f1", "mcb", designation="F1"),
+            _device("b1", "blank", designation="B1"),
+            _device("x", "mcb", designation="  "),
+            _device("f2", "mcb", designation="F2", width_mm=18),
+        ],
+    }
+    segments = strip_segments(row)
+    assert [(s.text, s.start_mm, s.width_mm) for s in segments] == [
+        ("F1", 0.0, 17.5),
+        ("F2", 17.5, 18.0),
+    ]
+    assert sum(s.width_mm for s in segments) == 35.5
+
+
+def test_board_font_size_is_the_maximum_when_nothing_is_labelled():
+    # 11 mm × 12 dots = 132 dots across; the cap is max(16, min(132 − 12, int(0.72 × 132))) = 95.
+    document = _document([
+        _device("x", "mcb", designation=""),
+        # A blank cover never counts, whatever someone typed on it.
+        _device("b1", "blank", designation="WWWWWWWWWWWW"),
+    ])
+    assert board_font_size(document, 11) == (95, [])
+    assert board_font_size({"rows": []}, 11) == (95, [])
+
+
+def test_board_font_size_uses_per_glyph_widths():
+    """The BMK "F1.1" is 2.001 em and fits 92 dots; a flat 0.58 em/char would allow only 80."""
+    document = _document([_device("f11", "mcb", designation="F1.1")])
+    size, overflowing = board_font_size(document, 11)
+    assert size == 92
+    assert overflowing == []
+    assert size > int(186 / (0.58 * 4))
+
+
+def test_board_font_size_is_the_smallest_fit_over_every_row():
+    # The tight BMK sits in the FIRST row and a roomy one follows, so an
+    # implementation that only looked at the last row would answer 92.
+    document = _document([_device("f110", "mcb", designation="F1.10")])
+    document["rows"].append({
+        "id": "row-2", "label": "Reihe 2", "slots": 12,
+        "devices": [_device("f11", "mcb", designation="F1.1")],
+    })
+    assert board_font_size(document, 11) == (72, [])
+
+
+def test_segment_text_trims_the_same_junk_as_the_editor():
+    """A designation of only a BOM or control characters is "ohne BMK" on both sides."""
+    from app.services.schaltplan_layout import segment_text, unlabelled_device_count
+
+    assert segment_text(_device("a", "mcb", designation="\ufeff")) == ""
+    assert segment_text(_device("b", "mcb", designation="\x1f")) == ""
+    assert segment_text(_device("c", "mcb", designation="  F1.2 \t")) == "F1.2"
+    row = {"devices": [_device("a", "mcb", designation="\ufeff"), _device("d", "blank", designation="")]}
+    assert unlabelled_device_count(row) == 1
+
+
+def test_board_font_size_clamps_to_the_minimum_and_reports_the_overflow():
+    document = _document([
+        _device("f1", "mcb", designation="F1"),
+        _device("q1", "mcb", designation="Q1 Hauptschalter Keller"),
+    ])
+    assert board_font_size(document, 11) == (24, ["Q1 Hauptschalter Keller"])
 
 
 def test_bmk_strip_defaults_to_every_rail(client: TestClient, admin_token: str, monkeypatch):
@@ -689,6 +903,9 @@ def test_bmk_on_210_805_prints_one_die_cut_label_per_bmk(
     assert body["printed"] == 4
     assert body["skipped_without_bmk"] == 1
     assert body["strips"] == []
+    # Die-cut labels are fitted one by one: no board size to report.
+    assert body["font_size_dots"] is None
+    assert body["overflowing"] == []
     payload = sent[0]
     assert payload.count(b"^L") == 4, "die-cut stock: one label per BMK"
     assert b"^Q15," in payload and b"^W6" in payload
