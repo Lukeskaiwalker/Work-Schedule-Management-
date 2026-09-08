@@ -58,6 +58,9 @@ class PanelDevice(BaseModel):
     phase: PhaseLabel = "-"
     parent_id: str | None = Field(default=None, max_length=64)
     note: str = Field(default="", max_length=500)
+    # Real mounted width in mm, when it is not `te` × the module pitch. The
+    # BMK strip is cut to this, so a 70 mm Hager FI must not be labelled 72.
+    width_mm: float | None = Field(default=None, gt=0, le=600)
 
     @field_validator("kind")
     @classmethod
@@ -208,9 +211,24 @@ class DeviceCatalogEntry(BaseModel):
 
 
 class PanelLabelsPrintRequest(BaseModel):
-    """Print BMK labels for the whole board, or for one rail."""
+    """Print BMK labels for selected rails, on a chosen marking material.
 
+    ``row_ids`` empty or absent means every rail. ``material_id`` defaults to
+    the 2009-110 strip (one continuous strip per rail, cut marks between the
+    devices); ``wago-210-805`` prints one 6 × 15 mm label per BMK instead.
+    ``row_id`` is the pre-v2.15 single-rail form, still honoured.
+    """
+
+    row_ids: list[str] | None = Field(default=None, max_length=64)
     row_id: str | None = None
+    material_id: str | None = Field(default=None, max_length=64)
+
+
+class PanelStripOut(BaseModel):
+    row_id: str
+    row_label: str
+    # Length of the rail's strip between its start and end cut lines, in mm.
+    length_mm: float
 
 
 class PanelLabelsPrintOut(BaseModel):
@@ -220,3 +238,5 @@ class PanelLabelsPrintOut(BaseModel):
     skipped_without_bmk: int
     printer: str
     material: str
+    # One entry per continuous strip that went out; empty for die-cut labels.
+    strips: list[PanelStripOut] = Field(default_factory=list)

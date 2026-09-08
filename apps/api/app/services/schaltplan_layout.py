@@ -66,6 +66,8 @@ never drift apart.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from typing import Any, Iterator
 
 # ── Device catalogue ────────────────────────────────────────────────────────
@@ -236,6 +238,64 @@ def empty_document() -> dict[str, Any]:
         },
         "rows": [{"id": "row-1", "label": "Reihe 1", "slots": DEFAULT_SLOTS_PER_ROW, "devices": []}],
     }
+
+
+# Real modular devices are 17.5 mm per module (DIN 43880 leaves 18 mm of rail
+# per module; the devices themselves are made 17.5 so a full row still fits).
+# Sit twelve breakers side by side and they span 210 mm, not 216 — a strip cut
+# at 18 mm per device drifts half a module by the end of the rail.
+MODULE_WIDTH_MM = 17.5
+
+
+def device_width_mm(device: dict[str, Any]) -> float:
+    """The width a device takes on the rail: its override, else te × 17.5 mm."""
+    override = device.get("width_mm")
+    if isinstance(override, (int, float)) and not isinstance(override, bool) and override > 0:
+        return float(override)
+    try:
+        te = int(device.get("te") or 1)
+    except (TypeError, ValueError):
+        te = 1
+    return max(1, te) * MODULE_WIDTH_MM
+
+
+@dataclass(frozen=True)
+class StripSegment:
+    """One device's share of a rail's marking strip."""
+
+    device_id: str
+    kind: str
+    text: str  # "" for a blank cover or a device without a BMK
+    width_mm: float
+    start_mm: float
+
+
+def strip_segments(row: dict[str, Any]) -> list[StripSegment]:
+    """The rail as a marking strip: every device, in order, at its real width.
+
+    Blank covers and devices that carry no BMK yet still get their segment —
+    an empty one. Leaving them out would shift every label after them off its
+    device, which is the one thing a strip cut to size must never do.
+    """
+    segments: list[StripSegment] = []
+    position = 0.0
+    for device in row.get("devices") or []:
+        if not isinstance(device, dict):
+            continue
+        kind = str(device.get("kind") or "")
+        text = "" if kind == "blank" else str(device.get("designation") or "").strip()
+        width = device_width_mm(device)
+        segments.append(
+            StripSegment(
+                device_id=str(device.get("id") or ""),
+                kind=kind,
+                text=text,
+                width_mm=width,
+                start_mm=position,
+            )
+        )
+        position += width
+    return segments
 
 
 def iter_devices(document: dict[str, Any]) -> Iterator[tuple[dict[str, Any], dict[str, Any]]]:

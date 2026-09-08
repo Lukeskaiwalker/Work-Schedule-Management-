@@ -572,31 +572,89 @@ def print_label_jobs(
 MARKING_STRIP_MATERIAL_ID = "wago-2009-110"
 
 
-def print_marking_strip(
-    db: Session, *, texts: list[str], material_id: str = MARKING_STRIP_MATERIAL_ID
-) -> tuple[int, str]:
-    """One continuous-strip label per text, in order, in ONE connection.
+_STRIP_LEAD_MM = 3  # unprintable-ish lead before the start line and after the end line
+_STRIP_TEXT_GAP = 12  # 1 mm between a segment's cut line and its text
+_STRIP_LINE = 1  # divider half-thickness in dots (2 dots total)
+_STRIP_END_LINE = 2  # start/end half-thickness (4 dots total): the rail cut
 
-    Built for Betriebsmittelkennzeichen: the strip comes off the printer in
-    the order the devices sit on the rails, so it is applied walking the board
-    left to right, row by row, without sorting. Each label is only as long as
-    its text needs (the continuous branch of the mini renderer), which is what
-    makes an 11 mm strip practical for "F1.3".
 
-    Renders for the NAMED material rather than the active one: this job only
-    ever belongs on the marking strip, while the active stock is usually the
-    machine nameplate. Returns (labels_printed, "host:port").
+def _solid(frame: _Frame, reading_x: int, *, half: int) -> str:
+    """A solid vertical cut mark across the whole strip at reading x."""
+    return f"Lo,{frame.xm(frame.h_px)},{frame.ym(reading_x) - half},{frame.xm(0)},{frame.ym(reading_x) + half}"
+
+
+def _render_rail_strip(profile: MaterialProfile, segments: list[tuple[str, float]]) -> list[str]:
+    """One rail on continuous stock: each device's BMK inside its real width.
+
+    The strip is laid along the rail and cut at the marks, so geometry is the
+    whole point: segment widths are the devices' mounted widths in mm, a
+    divider sits on every boundary, and the rail's start and end carry a
+    heavier line. A segment with no text (blank cover, device without a BMK)
+    stays empty but keeps its width. Three millimetres of lead on either side
+    keep the end marks inside the printable area.
     """
-    cleaned = [text for text in (_clean(t, 40) for t in texts) if text]
-    if not cleaned:
-        raise ValueError("nothing to print")
+    if not segments:
+        raise ValueError("a strip needs at least one segment")
+    h_px = _mm(profile.width_mm) * _DOTS_PER_MM
+    lead_px = _STRIP_LEAD_MM * _DOTS_PER_MM
+    total_mm = sum(width for _, width in segments)
+    w_px = lead_px + int(round(total_mm * _DOTS_PER_MM)) + lead_px
+    frame = _frame(profile, w_px=w_px)
+    max_size = max(16, min(h_px - 12, int(h_px * 0.72)))
+
+    lines: list[str] = [_solid(frame, lead_px, half=_STRIP_END_LINE)]
+    cursor = float(lead_px)
+    for index, (text, width_mm) in enumerate(segments):
+        seg_w = width_mm * _DOTS_PER_MM
+        if text:
+            budget = max(8, int(seg_w) - 2 * _STRIP_TEXT_GAP)
+            size = _fit_text_size(text, budget, max_size, 16)
+            x = int(round(cursor + (seg_w - _est_text_w(text, size)) / 2))
+            lines.append(_at(frame, max(int(cursor) + 2, x), (h_px - size) // 2, size, text))
+        cursor += seg_w
+        if index < len(segments) - 1:
+            lines.append(_solid(frame, int(round(cursor)), half=_STRIP_LINE))
+    lines.append(_solid(frame, int(round(cursor)), half=_STRIP_END_LINE))
+    return _sheet(profile, lines, length_mm=w_px / _DOTS_PER_MM)
+
+
+def print_marking_strips(
+    db: Session,
+    *,
+    strips: list[list[tuple[str, float]]],
+    material_id: str = MARKING_STRIP_MATERIAL_ID,
+) -> tuple[int, str]:
+    """Print the BMK of rails, in ONE connection, on the named material.
+
+    Each inner list is one rail: ``(text, width_mm)`` per device in physical
+    order, text "" for a device that gets no label but still takes up room.
+    On continuous stock every rail becomes one strip with cut marks; on
+    die-cut stock (the 210-805) every labelled device becomes one label and
+    the widths are irrelevant. Either way the output comes off the printer in
+    the order it goes onto the board. Returns (labels_printed, "host:port").
+    """
     profile = material_by_id(db, material_id)
-    payload = b""
-    for text in cleaned:
-        payload += ("\r\n".join(_render_mini(profile, text)) + "\r\n").encode(_ENCODING)
+    jobs: list[list[str]] = []
+    printed = 0
+    for rail in strips:
+        cleaned = [(_clean(text, 40), float(width)) for text, width in rail]
+        labelled = sum(1 for text, _ in cleaned if text)
+        if not labelled:
+            continue
+        printed += labelled
+        if profile.continuous:
+            jobs.append(_render_rail_strip(profile, cleaned))
+        else:
+            jobs.extend(_render_mini(profile, text) for text, _ in cleaned if text)
+    if not jobs:
+        raise ValueError("nothing to print")
+    payload = b"".join(("\r\n".join(job) + "\r\n").encode(_ENCODING) for job in jobs)
     printer = _ship(db, payload)
-    logger.info("Marking strip sent to %s — %d label(s), %d bytes", printer, len(cleaned), len(payload))
-    return len(cleaned), printer
+    logger.info(
+        "Marking strips sent to %s — %d job(s), %d label(s), %d bytes",
+        printer, len(jobs), printed, len(payload),
+    )
+    return printed, printer
 
 
 def print_freetext(db: Session, *, text: str, copies: int = 1) -> str:

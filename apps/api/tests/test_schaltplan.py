@@ -595,6 +595,148 @@ def test_bmk_labels_report_an_unreachable_printer(
     assert resp.status_code == 502
 
 
+# ── BMK strips: real widths, cut marks, two materials ────────────────────────
+
+
+def _strip_panel(client: TestClient, admin_token: str) -> dict:
+    """Two rails as they are built: a 4 TE FI (a Hager, 70 mm by override), then breakers."""
+    document = _document([])
+    document["rows"] = [
+        {"id": "r1", "label": "Reihe 1", "slots": 12, "devices": [
+            _device("f1", "rcd", designation="F1", te=4, width_mm=70),
+            _device("f11", "mcb", designation="F1.1", circuit="1"),
+            _device("f12", "mcb", designation="F1.2", circuit="2", width_mm=18),
+        ]},
+        {"id": "r2", "label": "Reihe 2", "slots": 12, "devices": [
+            _device("f13", "mcb", designation="F1.3", circuit="3"),
+            _device("b1", "blank", designation=""),
+            # No BMK yet: still 17.5 mm of rail, so the strip must keep its place.
+            _device("f14", "mcb", designation="", circuit="4"),
+        ]},
+    ]
+    customer_id = _customer(client, admin_token, "Streifen Kunde")
+    return _create_panel(client, admin_token, customer_id, document=document)
+
+
+def _jobs(payload: bytes) -> list[bytes]:
+    """Split one printer connection into its jobs (each ends with the E command)."""
+    return [chunk for chunk in payload.split(b"E\r\n") if chunk.strip()]
+
+
+def test_bmk_strip_is_one_job_per_rail_with_real_widths_and_cut_marks(
+    client: TestClient, admin_token: str, monkeypatch
+):
+    _configure_label_printer(client, admin_token)
+    sent = _capture_label_jobs(monkeypatch)
+    panel = _strip_panel(client, admin_token)
+
+    resp = client.post(
+        f"/api/schaltplan/panels/{panel['id']}/labels",
+        headers=_auth(admin_token),
+        json={"row_ids": ["r1", "r2"], "material_id": "wago-2009-110"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["material"] == "wago-2009-110"
+    assert body["printed"] == 4
+    assert body["skipped_without_bmk"] == 1
+    # 70 (override) + 17.5 (1 TE at the real 17.5 mm pitch) + 18 (override).
+    assert [(s["row_id"], s["length_mm"]) for s in body["strips"]] == [("r1", 105.5), ("r2", 52.5)]
+
+    assert len(sent) == 1, "both strips go out in one connection"
+    payload = sent[0]
+    assert payload.count(b"^L") == 2, "one continuous job per rail"
+    first, second = _jobs(payload)
+    # The label is the rail plus 3 mm of lead on both sides, so the end lines are printable.
+    assert b"^Q112,0" in first or b"^Q111,0" in first
+    assert b"^Q59,0" in second or b"^Q58,0" in second
+    assert b"^W11" in first and b"^W11" in second
+    # Cut marks: one divider between neighbours, plus a start and an end line.
+    assert second.count(b"Lo,") == 2 + 2
+    assert first.count(b"Lo,") == 2 + 2
+    assert b"F1.3" in second and b"F1" in first
+    # The blank cover and the unnamed breaker take their room but print nothing.
+    assert second.count(b"AT,") == 1
+
+
+def test_bmk_strip_defaults_to_every_rail(client: TestClient, admin_token: str, monkeypatch):
+    _configure_label_printer(client, admin_token)
+    sent = _capture_label_jobs(monkeypatch)
+    panel = _strip_panel(client, admin_token)
+    resp = client.post(
+        f"/api/schaltplan/panels/{panel['id']}/labels", headers=_auth(admin_token), json={}
+    )
+    assert resp.status_code == 200, resp.text
+    assert [s["row_label"] for s in resp.json()["strips"]] == ["Reihe 1", "Reihe 2"]
+    assert sent[0].count(b"^L") == 2
+
+
+def test_bmk_on_210_805_prints_one_die_cut_label_per_bmk(
+    client: TestClient, admin_token: str, monkeypatch
+):
+    _configure_label_printer(client, admin_token)
+    sent = _capture_label_jobs(monkeypatch)
+    panel = _strip_panel(client, admin_token)
+
+    resp = client.post(
+        f"/api/schaltplan/panels/{panel['id']}/labels",
+        headers=_auth(admin_token),
+        json={"row_ids": ["r1", "r2"], "material_id": "wago-210-805"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["material"] == "wago-210-805"
+    assert body["printed"] == 4
+    assert body["skipped_without_bmk"] == 1
+    assert body["strips"] == []
+    payload = sent[0]
+    assert payload.count(b"^L") == 4, "die-cut stock: one label per BMK"
+    assert b"^Q15," in payload and b"^W6" in payload
+    assert b"Lo," not in payload, "single labels need no cut marks"
+
+
+def test_bmk_print_rejects_an_unknown_material(client: TestClient, admin_token: str, monkeypatch):
+    _configure_label_printer(client, admin_token)
+    _capture_label_jobs(monkeypatch)
+    panel = _strip_panel(client, admin_token)
+    resp = client.post(
+        f"/api/schaltplan/panels/{panel['id']}/labels",
+        headers=_auth(admin_token),
+        json={"material_id": "wago-999-000"},
+    )
+    assert resp.status_code == 400
+
+
+def test_bmk_print_refuses_a_selection_without_any_bmk(
+    client: TestClient, admin_token: str, monkeypatch
+):
+    _configure_label_printer(client, admin_token)
+    _capture_label_jobs(monkeypatch)
+    document = _document([])
+    document["rows"] = [
+        {"id": "r1", "label": "Reihe 1", "slots": 12, "devices": [_device("f1", "mcb", designation="F1")]},
+        {"id": "r2", "label": "Reihe 2", "slots": 12, "devices": [_device("x", "mcb", designation="")]},
+    ]
+    customer_id = _customer(client, admin_token, "Leer Reihe Kunde")
+    panel = _create_panel(client, admin_token, customer_id, document=document)
+    resp = client.post(
+        f"/api/schaltplan/panels/{panel['id']}/labels",
+        headers=_auth(admin_token),
+        json={"row_ids": ["r2"]},
+    )
+    assert resp.status_code == 400
+    assert "BMK" in resp.json()["detail"]
+
+
+def test_device_width_override_survives_a_round_trip(client: TestClient, admin_token: str):
+    document = _document([_device("f1", "rcd", designation="F1", te=4, width_mm=70)])
+    customer_id = _customer(client, admin_token, "Breite Kunde")
+    panel = _create_panel(client, admin_token, customer_id, document=document)
+    got = client.get(f"/api/schaltplan/panels/{panel['id']}", headers=_auth(admin_token))
+    assert got.status_code == 200, got.text
+    assert got.json()["document"]["rows"][0]["devices"][0]["width_mm"] == 70
+
+
 # ── Vorsicherung: a fuse feeding an FI ───────────────────────────────────────
 
 

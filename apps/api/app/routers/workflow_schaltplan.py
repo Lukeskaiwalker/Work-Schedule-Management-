@@ -41,6 +41,7 @@ from app.models.schaltplan import PanelPlan
 from app.routers.workflow_helpers import _content_disposition
 from app.schemas.schaltplan import (
     PanelLabelsPrintOut,
+    PanelStripOut,
     PanelLabelsPrintRequest,
     DeviceCatalogEntry,
     PanelDocument,
@@ -53,6 +54,7 @@ from app.services.audit import log_admin_action
 from app.services.runtime_settings import get_company_settings
 from app.services.schaltplan_layout import (
     iter_devices,
+    strip_segments,
     DEVICE_CATALOG,
     build_legend,
     document_stats,
@@ -60,6 +62,7 @@ from app.services.schaltplan_layout import (
     validate_document,
 )
 from app.services import werkstatt_labels
+from app.services.werkstatt_label_materials import MaterialValidationError
 from app.services.schaltplan_pdf import build_panel_plan_pdf
 
 router = APIRouter(prefix="/schaltplan", tags=["schaltplan"])
@@ -375,48 +378,74 @@ def print_panel_labels(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> PanelLabelsPrintOut:
-    """Print the Betriebsmittelkennzeichen of a board on the 2009-110 strip.
+    """Print the Betriebsmittelkennzeichen of selected rails.
 
     Anyone who may read the plan may print its labels: the person at the
-    printer is the one building the board, not the one who drew it. Devices
-    are taken in physical order, row by row, so the strip peels off in the
-    order the labels go on. Blindabdeckungen are skipped whatever is typed
-    on them; a Betriebsmittel with no BMK is skipped AND counted, because a
-    missing designation is the thing to fix, not to hide.
+    printer is the one building the board, not the one who drew it. On the
+    2009-110 every rail becomes one continuous strip laid out at the devices'
+    real widths with a cut mark on every boundary and a heavier one at both
+    ends; on the 210-805 every BMK becomes one 6 × 15 mm label. Rails go out
+    in board order. A Blindabdeckung never gets a label; a Betriebsmittel
+    without a BMK gets none AND is counted, because the missing designation is
+    the thing to fix, not to hide — on the strip it still takes up its width.
     """
     plan = _get_plan_or_404(db, plan_id)
     _assert_readable(db, current_user, plan)
     document = plan.document or empty_document()
+    material_id = (payload.material_id or werkstatt_labels.MARKING_STRIP_MATERIAL_ID).strip()
 
-    texts: list[str] = []
+    wanted = set(payload.row_ids or [])
+    if payload.row_id:
+        wanted.add(payload.row_id)
+
+    strips: list[list[tuple[str, float]]] = []
+    strip_meta: list[PanelStripOut] = []
     skipped = 0
-    for row, device in iter_devices(document):
-        if payload.row_id and str(row.get("id") or "") != payload.row_id:
+    for row in document.get("rows") or []:
+        if not isinstance(row, dict):
             continue
-        if str(device.get("kind") or "") == "blank":
+        row_id = str(row.get("id") or "")
+        if wanted and row_id not in wanted:
             continue
-        designation = str(device.get("designation") or "").strip()
-        if not designation:
-            skipped += 1
+        segments = strip_segments(row)
+        if not segments:
             continue
-        texts.append(designation)
+        skipped += sum(1 for seg in segments if seg.kind != "blank" and not seg.text)
+        strips.append([(seg.text, seg.width_mm) for seg in segments])
+        strip_meta.append(
+            PanelStripOut(
+                row_id=row_id,
+                row_label=str(row.get("label") or ""),
+                length_mm=round(sum(seg.width_mm for seg in segments), 2),
+            )
+        )
 
-    if not texts:
+    if not any(text for rail in strips for text, _ in rail):
         raise HTTPException(
             status_code=400,
             detail="Keine BMK vergeben — erst Betriebsmittelkennzeichen eintragen.",
         )
     try:
-        printed, printer = werkstatt_labels.print_marking_strip(db, texts=texts)
+        printed, printer = werkstatt_labels.print_marking_strips(
+            db, strips=strips, material_id=material_id
+        )
+    except MaterialValidationError as exc:
+        raise HTTPException(status_code=400, detail=f"Unbekanntes Etikettenmaterial: {exc}")
     except werkstatt_labels.LabelPrinterNotConfigured:
         raise HTTPException(status_code=503, detail="Kein Etikettendrucker konfiguriert")
     except werkstatt_labels.LabelPrinterUnreachable as exc:
         raise HTTPException(status_code=502, detail=f"Etikettendrucker nicht erreichbar ({exc})")
+
+    continuous = werkstatt_labels.material_by_id(db, material_id).continuous
+    labelled_rails = [
+        meta for meta, rail in zip(strip_meta, strips) if any(text for text, _ in rail)
+    ]
     return PanelLabelsPrintOut(
         printed=printed,
         skipped_without_bmk=skipped,
         printer=printer,
-        material=werkstatt_labels.MARKING_STRIP_MATERIAL_ID,
+        material=material_id,
+        strips=labelled_rails if continuous else [],
     )
 
 
