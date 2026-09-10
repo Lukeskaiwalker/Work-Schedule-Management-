@@ -86,7 +86,15 @@ fi
 : "${KIOSK_HEALTH_TIMEOUT:=180}"
 : "${KIOSK_OUTPUT_TIMEOUT:=60}"
 : "${KIOSK_RESPAWN_DELAY:=3}"
-: "${KIOSK_FULLSCREEN:=kiosk}"
+: "${KIOSK_FULLSCREEN:=window}"
+# The window titles are how each window is recognised once it is on screen.
+# NOT the WM_CLASS: a Chromium window opened in app mode derives its own
+# WM_CLASS from the URL (measured: "127.0.0.1__regal.Chromium") and ignores
+# the class flag entirely, which is why every identifier-keyed compositor rule
+# silently matched nothing. The titles come from each page's <title> and are
+# static.
+: "${KIOSK_REGAL_TITLE:=Regal}"
+: "${KIOSK_KISTEN_TITLE:=Baustellenkisten}"
 
 log()  { printf 'smpl-kiosk: %s\n' "$*" >&2; }
 die()  { printf 'smpl-kiosk: !! %s\n' "$*" >&2; exit 1; }
@@ -272,6 +280,23 @@ wait_for_health() {
 #   --disable-session-crashed-bubble   (superseded by --hide-crash-restore-bubble)
 #   --disable-translate                (superseded by --disable-features=Translate)
 # ---------------------------------------------------------------------------
+# Chromium's --window-position/--window-size are LOGICAL pixels, and so is
+# every later X move of that window: with --force-device-scale-factor=S the
+# server sees position and size multiplied by S.
+#
+# Measured on this station, on the 4K window at scale 2:
+#   asked for --window-size=3840,2160  ->  X window was 7680x4320
+#   xdotool windowmove ... 1360         ->  landed at 2720
+#   xdotool windowmove ...  680         ->  landed at 1360   (correct)
+#
+# So every physical coordinate is divided by the scale before it is handed to
+# Chromium or to xdotool. This one conversion is what had both pages stacked
+# on a single screen: the 4K window was twice the size of the whole desktop
+# and every attempt to move it was clamped.
+logical() {
+  awk -v v="$1" -v s="$2" 'BEGIN { if (s <= 0) s = 1; printf "%d", int(v / s + 0.5) }'
+}
+
 chromium_argv() {
   ca_label="$1"; ca_url="$2"; ca_scale="$3"
   ca_w="$4"; ca_h="$5"; ca_x="$6"; ca_y="$7"
@@ -289,8 +314,8 @@ chromium_argv() {
 
   # Placement. Under Wayland these are advisory at best - the compositor
   # decides - which is exactly why x11 is the default backend.
-  ca_args="$ca_args --window-position=$ca_x,$ca_y"
-  ca_args="$ca_args --window-size=$ca_w,$ca_h"
+  ca_args="$ca_args --window-position=$(logical "$ca_x" "$ca_scale"),$(logical "$ca_y" "$ca_scale")"
+  ca_args="$ca_args --window-size=$(logical "$ca_w" "$ca_scale"),$(logical "$ca_h" "$ca_scale")"
   if [ "$KIOSK_FULLSCREEN" = "kiosk" ]; then
     ca_args="$ca_args --kiosk"
   fi
@@ -348,6 +373,85 @@ spawn_window() {
   CHILD_PIDS="$CHILD_PIDS $!"
 }
 
+# ---------------------------------------------------------------------------
+# Placement
+#
+# Xwayland here is rootless, so Chromium's window-position flag is advisory:
+# labwc placed BOTH windows on whichever output it felt like, which put two
+# nearly identical dark pages on one screen and left the other on wallpaper.
+#
+# labwc window rules can move a window (MoveToOutput), but they are keyed on
+# app_id/WM_CLASS, which app-mode Chromium makes unusable (see above), and
+# MoveToOutput explicitly refuses to act on a window that is already
+# fullscreen - so the launcher must not pass the kiosk flag either.
+#
+# What does work, deterministically, is placing the window ourselves through
+# EWMH once it exists: un-fullscreen, move to the output's origin, fullscreen
+# again. XWayland exposes both outputs in one X screen (verified:
+# XWAYLAND0 +0+0, XWAYLAND1 +1360+0), so the wlr-randr geometry we already
+# resolved is directly usable as X coordinates.
+#
+# The loop also re-places a window that was respawned after a crash, which is
+# why it keeps running instead of firing once at startup.
+# ---------------------------------------------------------------------------
+window_id_for() {
+  # First window id whose title matches exactly, or empty.
+  #
+  # wmctrl -l prints "<id>  <desktop> <host> <title...>" and pads the id with
+  # TWO spaces, so splitting on single spaces leaves the hostname glued to the
+  # front of the title and nothing ever matches. awk's default field splitting
+  # collapses the run of spaces, which is the whole reason it is used here.
+  wmctrl -l 2>/dev/null | awk -v want="$1" '
+    {
+      id = $1
+      title = ""
+      for (i = 4; i <= NF; i++) title = title (i > 4 ? " " : "") $i
+      if (title == want) { print id; exit }
+    }'
+}
+
+place_window() {
+  # Move the window onto its output, then fullscreen it. Both steps are
+  # needed and the order matters: a window that is already fullscreen cannot
+  # be moved to another output, which is why the launcher does not pass the
+  # kiosk flag (that flag also fullscreens on whatever output the compositor
+  # felt like, ignoring the position entirely - measured).
+  pw_id="$1"; pw_geo="$2"; pw_scale="$3"
+  pw_x="$(logical "$(field 3 "$pw_geo")" "$pw_scale")"
+  pw_y="$(logical "$(field 4 "$pw_geo")" "$pw_scale")"
+
+  wmctrl -i -r "$pw_id" -b remove,fullscreen 2>/dev/null || true
+  sleep 1
+  xdotool windowmove --sync "$pw_id" "$pw_x" "$pw_y" 2>/dev/null || {
+    log "!! could not move window $pw_id"
+    return 1
+  }
+  sleep 1
+  wmctrl -i -r "$pw_id" -b add,fullscreen 2>/dev/null || return 1
+}
+
+placer_loop() {
+  pl_regal_seen=""
+  pl_kisten_seen=""
+  while :; do
+    pl_id="$(window_id_for "$KIOSK_REGAL_TITLE")"
+    if [ -n "$pl_id" ] && [ "$pl_id" != "$pl_regal_seen" ]; then
+      if place_window "$pl_id" "$REGAL_GEO" "$KIOSK_REGAL_SCALE"; then
+        log "placed '$KIOSK_REGAL_TITLE' ($pl_id) on $KIOSK_REGAL_OUTPUT"
+        pl_regal_seen="$pl_id"
+      fi
+    fi
+    pl_id="$(window_id_for "$KIOSK_KISTEN_TITLE")"
+    if [ -n "$pl_id" ] && [ "$pl_id" != "$pl_kisten_seen" ]; then
+      if place_window "$pl_id" "$KISTEN_GEO" "$KIOSK_KISTEN_SCALE"; then
+        log "placed '$KIOSK_KISTEN_TITLE' ($pl_id) on $KIOSK_KISTEN_OUTPUT"
+        pl_kisten_seen="$pl_id"
+      fi
+    fi
+    sleep 4
+  done
+}
+
 shutdown_windows() {
   for sp in $CHILD_PIDS; do
     kill "$sp" 2>/dev/null || true
@@ -361,6 +465,24 @@ shutdown_windows() {
 # ---------------------------------------------------------------------------
 # Run
 # ---------------------------------------------------------------------------
+# One launcher at a time.
+#
+# Two instances is not a theoretical worry: the autostart entry fires on
+# login, and anybody debugging runs the script by hand as well. Both then
+# spawn a browser against the SAME profile directory, the second Chromium
+# hands its URL to the first and exits immediately, the respawn loop treats
+# that as a crash and starts another - and the desktop fills with windows
+# until the Pi is out of memory. Seen it; it is why this is here.
+LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/smpl-kiosk.lock"
+if have flock; then
+  exec 9>"$LOCK_FILE" 2>/dev/null || true
+  if ! flock -n 9 2>/dev/null; then
+    die "another smpl-kiosk.sh is already running (lock: $LOCK_FILE).
+     Stop it first:  pkill -f smpl-kiosk.sh
+     Nothing was launched."
+  fi
+fi
+
 if [ "$DRYRUN" = "1" ]; then
   printf 'backend=%s\n' "$KIOSK_BACKEND"
   printf 'fullscreen=%s\n' "$KIOSK_FULLSCREEN"
@@ -408,6 +530,7 @@ if [ "$DRYRUN" = "1" ]; then
   printf 'window.regal.geometry=%s\n'       "$(geo_str "$REGAL_GEO")"
   printf 'window.regal.url=%s\n'            "$KIOSK_REGAL_URL"
   printf 'window.regal.user_data_dir=%s\n'  "$KIOSK_PROFILE_ROOT/regal"
+  printf 'window.regal.title=%s\n'          "$KIOSK_REGAL_TITLE"
   printf 'window.regal.class=%s\n'          "smpl-kiosk-regal"
   printf 'window.regal.scale=%s\n'          "$KIOSK_REGAL_SCALE"
   printf 'window.regal.argv=%s\n'           "$REGAL_ARGV"
@@ -415,6 +538,7 @@ if [ "$DRYRUN" = "1" ]; then
   printf 'window.kisten.geometry=%s\n'      "$(geo_str "$KISTEN_GEO")"
   printf 'window.kisten.url=%s\n'           "$KIOSK_KISTEN_URL"
   printf 'window.kisten.user_data_dir=%s\n' "$KIOSK_PROFILE_ROOT/kisten"
+  printf 'window.kisten.title=%s\n'         "$KIOSK_KISTEN_TITLE"
   printf 'window.kisten.class=%s\n'         "smpl-kiosk-kisten"
   printf 'window.kisten.scale=%s\n'         "$KIOSK_KISTEN_SCALE"
   printf 'window.kisten.argv=%s\n'          "$KISTEN_ARGV"
@@ -433,10 +557,10 @@ fi
 
 if [ "$KIOSK_BACKEND" = "wayland" ]; then
   log "backend=wayland: Chromium cannot choose its own output on Wayland."
-  log "Placement needs a labwc window rule keyed on the app_id, e.g. in rc.xml:"
-  log "  <windowRule identifier=\"smpl-kiosk-regal\">"
+  log "Placement needs a labwc window rule, and it must be keyed on the TITLE:"
+  log "  <windowRule title=\"$KIOSK_REGAL_TITLE\">"
   log "    <action name=\"MoveToOutput\" output=\"$KIOSK_REGAL_OUTPUT\"/></windowRule>"
-  log "  <windowRule identifier=\"smpl-kiosk-kisten\">"
+  log "  <windowRule title=\"$KIOSK_KISTEN_TITLE\">"
   log "    <action name=\"MoveToOutput\" output=\"$KIOSK_KISTEN_OUTPUT\"/></windowRule>"
   log "This script does not write rc.xml. See docs/PI_STATION.md."
 fi
@@ -445,6 +569,18 @@ trap shutdown_windows INT TERM
 
 spawn_window regal  "$REGAL_ARGV"
 spawn_window kisten "$KISTEN_ARGV"
+
+# Place them once they exist. Without this both windows land on one output.
+if [ "$KIOSK_FULLSCREEN" = "window" ]; then
+  if have wmctrl && have xdotool; then
+    placer_loop &
+    CHILD_PIDS="$CHILD_PIDS $!"
+  else
+    log "!! wmctrl and xdotool are needed to put each page on its own screen."
+    log "!! Without them both pages open on the SAME monitor and the other"
+    log "!! one shows wallpaper. Install: sudo apt-get install -y wmctrl xdotool"
+  fi
+fi
 
 log "regal  -> $KIOSK_REGAL_OUTPUT  $(geo_str "$REGAL_GEO")  $KIOSK_REGAL_URL"
 log "kisten -> $KIOSK_KISTEN_OUTPUT $(geo_str "$KISTEN_GEO") $KIOSK_KISTEN_URL"

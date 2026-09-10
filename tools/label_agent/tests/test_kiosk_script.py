@@ -191,21 +191,49 @@ class TestTwoWindows(unittest.TestCase):
 @unittest.skipUnless(SCRIPT.is_file(), "kiosk script missing")
 class TestGeometryPerOutput(unittest.TestCase):
     def test_each_window_gets_the_geometry_of_its_own_output(self):
+        """The reported geometry is physical; the flags are LOGICAL pixels.
+
+        Chromium multiplies both --window-position and --window-size by
+        --force-device-scale-factor. Measured on the station: asking for
+        3840x2160 at scale 2 produced a 7680x4320 X window - wider than the
+        whole desktop, so every later attempt to move it was clamped and both
+        pages ended up stacked on one screen. Dividing by the scale is what
+        fixed it, so it is pinned here in both places.
+        """
         out = run()
-        # HDMI-A-1 is the 1360x768 Philips, parked at 3840,0 today.
+        # HDMI-A-1 is the 1360x768 Philips, parked at 3840,0 today. Scale 1,
+        # so logical and physical are the same number.
         self.assertEqual(out["window.regal.geometry"], "1360x768+3840+0")
         self.assertEqual(out.flag("regal", "window-position"), "3840,0")
         self.assertEqual(out.flag("regal", "window-size"), "1360,768")
-        # HDMI-A-2 is the 4K Samsung at the origin.
+        # HDMI-A-2 is the 4K Samsung at the origin, at scale 2: half of each.
         self.assertEqual(out["window.kisten.geometry"], "3840x2160+0+0")
         self.assertEqual(out.flag("kisten", "window-position"), "0,0")
-        self.assertEqual(out.flag("kisten", "window-size"), "3840,2160")
+        self.assertEqual(out.flag("kisten", "window-size"), "1920,1080")
+
+    def test_a_scaled_window_is_positioned_in_logical_pixels_too(self):
+        """Position is scaled exactly like size, and it is the half that bit.
+
+        With the 4K at the far side of the desktop, asking for x=1360 at
+        scale 2 put the window at 2720 - one screen too far right, entirely
+        off the visible area, which reads as "that screen is dead".
+        """
+        out = run(
+            KIOSK_REGAL_OUTPUT="HDMI-A-2", KIOSK_KISTEN_OUTPUT="HDMI-A-1",
+            KIOSK_REGAL_SCALE="2", KIOSK_KISTEN_SCALE="2",
+        )
+        # HDMI-A-1 sits at x=3840 physically; at scale 2 Chromium must be
+        # told 1920 so that it lands on 3840.
+        self.assertEqual(out.flag("kisten", "window-position"), "1920,0")
+        self.assertEqual(out.flag("kisten", "window-size"), "680,384")
 
     def test_the_current_mode_is_used_not_the_first_one_listed(self):
         # The fake lists 1920x1080 before the current 3840x2160 for the
         # Samsung; taking the first mode would silently open a 1080p window.
+        # At scale 2 the correct flag for a 3840x2160 output is half of it.
         out = run()
-        self.assertEqual(out.flag("kisten", "window-size"), "3840,2160")
+        self.assertEqual(out["window.kisten.geometry"], "3840x2160+0+0")
+        self.assertEqual(out.flag("kisten", "window-size"), "1920,1080")
 
     def test_scale_follows_the_screen_not_the_page(self):
         out = run()
@@ -291,18 +319,60 @@ class TestAMissingScreen(unittest.TestCase):
 class TestChromiumFlags(unittest.TestCase):
     """Flags checked against this station's own Chromium 136.0.7103.92."""
 
-    def test_windows_are_fullscreen_by_default(self):
+    def test_windows_launch_windowed_so_they_can_still_be_placed(self):
+        """The kiosk flag is deliberately NOT the default any more.
+
+        Measured on the station: Xwayland is rootless, so Chromium's
+        window-position is advisory and labwc put BOTH windows on one output.
+        The fix is to place each window through EWMH after it maps - and a
+        window that is already fullscreen cannot be moved (labwc's
+        MoveToOutput says so outright, and wmctrl's move is ignored too). So
+        the launcher opens them windowed and fullscreens them after placing.
+        """
         out = run()
+        for window in ("regal", "kisten"):
+            self.assertFalse(out.has_flag(window, "kiosk"))
+            self.assertTrue(out.has_flag(window, "window-position"))
+            self.assertTrue(out.has_flag(window, "window-size"))
+
+    def test_the_kiosk_flag_is_still_available_for_a_single_screen_station(self):
+        out = run(KIOSK_FULLSCREEN="kiosk")
         for window in ("regal", "kisten"):
             self.assertTrue(out.has_flag(window, "kiosk"))
 
-    def test_fullscreen_can_be_dropped_for_plain_placed_windows(self):
-        out = run(KIOSK_FULLSCREEN="window")
-        for window in ("regal", "kisten"):
-            self.assertFalse(out.has_flag(window, "kiosk"))
-            # ...but the placement must survive, or the escape hatch is useless.
-            self.assertTrue(out.has_flag(window, "window-position"))
-            self.assertTrue(out.has_flag(window, "window-size"))
+    def test_each_window_reports_the_title_the_placer_will_match_on(self):
+        out = run()
+        self.assertEqual(out.values.get("window.regal.title"), "Regal")
+        self.assertEqual(out.values.get("window.kisten.title"), "Baustellenkisten")
+
+    def test_the_titles_are_configurable_for_a_renamed_page(self):
+        out = run(KIOSK_REGAL_TITLE="Lager", KIOSK_KISTEN_TITLE="Kisten")
+        self.assertEqual(out.values.get("window.regal.title"), "Lager")
+        self.assertEqual(out.values.get("window.kisten.title"), "Kisten")
+
+    def test_only_one_launcher_may_run_at_a_time(self):
+        """Two launchers filled the desktop with windows until it fell over.
+
+        Both spawn a browser against the same profile directory; the second
+        Chromium hands its URL to the first and exits at once, the respawn
+        loop reads that as a crash, and it repeats forever.
+        """
+        body = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("flock", body)
+        self.assertIn("already running", body)
+
+    def test_the_placement_step_is_still_in_the_script(self):
+        """Guard the fix, not the wording.
+
+        Both windows opened on one screen until the script started placing
+        them itself with wmctrl. If this disappears the station regresses to
+        two dark pages stacked on one monitor and wallpaper on the other,
+        which is hard to recognise as a bug from across a workshop.
+        """
+        body = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("placer_loop", body)
+        self.assertIn("wmctrl", body)
+        self.assertIn("add,fullscreen", body)
 
     def test_no_flag_that_chromium_136_removed(self):
         """--disable-session-crashed-bubble is not in this build's binary.

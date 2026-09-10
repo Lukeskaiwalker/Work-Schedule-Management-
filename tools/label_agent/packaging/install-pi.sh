@@ -201,6 +201,12 @@ if [ "$WITH_KIOSK" -eq 1 ]; then
   command -v chromium >/dev/null 2>&1 || command -v chromium-browser >/dev/null 2>&1 || KIOSK_PKGS="$KIOSK_PKGS chromium"
   command -v wlr-randr >/dev/null 2>&1 || KIOSK_PKGS="$KIOSK_PKGS wlr-randr"
   command -v xset >/dev/null 2>&1 || KIOSK_PKGS="$KIOSK_PKGS x11-xserver-utils"
+  # Not niceties. Rootless Xwayland means Chromium cannot put its own window on
+  # a chosen screen, so smpl-kiosk.sh places each one after it maps: xdotool
+  # moves it, wmctrl fullscreens it. Without these two BOTH pages open on the
+  # same monitor and the other shows wallpaper.
+  command -v wmctrl >/dev/null 2>&1 || KIOSK_PKGS="$KIOSK_PKGS wmctrl"
+  command -v xdotool >/dev/null 2>&1 || KIOSK_PKGS="$KIOSK_PKGS xdotool"
   if [ -n "$KIOSK_PKGS" ]; then
     echo "  installing:$KIOSK_PKGS"
     # Older Raspberry Pi OS calls the browser chromium-browser, newer ones
