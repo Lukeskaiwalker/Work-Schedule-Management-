@@ -430,25 +430,64 @@ place_window() {
   wmctrl -i -r "$pw_id" -b add,fullscreen 2>/dev/null || return 1
 }
 
+# Where the window manager thinks a window is, in PHYSICAL pixels.
+#
+# wmctrl reports a scaled window's x multiplied by its scale factor (the 4K
+# window at physical 1360 reports 2720), so the reading has to be divided by
+# the same factor that the move was multiplied by.
+window_physical_x() {
+  wpx_raw="$(wmctrl -lG 2>/dev/null | awk -v i="$1" '$1 == i { print $3; exit }')"
+  [ -n "$wpx_raw" ] || return 1
+  logical "$wpx_raw" "$2"
+}
+
+# Is this window sitting on the output it belongs to?
+#
+# Checked every few seconds rather than only when the window restarts, because
+# the way this station actually loses its placement is a TV being switched
+# off: the compositor drops that output, hands its window to the remaining
+# screen, and switching the TV back on restores the output but NOT the window.
+# Nothing about the window changes, so watching window ids alone never noticed
+# and both pages stayed on one screen until somebody restarted the kiosk.
+window_is_on_output() {
+  wio_x="$(window_physical_x "$1" "$3")" || return 1
+  wio_out_x="$(field 3 "$2")"
+  wio_out_w="$(field 1 "$2")"
+  [ "$wio_x" -ge "$wio_out_x" ] 2>/dev/null || return 1
+  [ "$wio_x" -lt "$(( wio_out_x + wio_out_w ))" ] 2>/dev/null || return 1
+  return 0
+}
+
+# One screen's worth of work: find its window, check it, fix it if needed.
+tend_screen() {
+  ts_title="$1"; ts_output="$2"; ts_scale="$3"; ts_seen="$4"
+  ts_geo="$(geometry_for "$ts_output")"
+  # Output switched off or not yet negotiated: nothing to do but wait.
+  [ -n "$ts_geo" ] || { printf '%s' "$ts_seen"; return 0; }
+  ts_id="$(window_id_for "$ts_title")"
+  [ -n "$ts_id" ] || { printf '%s' "$ts_seen"; return 0; }
+
+  if [ "$ts_id" = "$ts_seen" ] && window_is_on_output "$ts_id" "$ts_geo" "$ts_scale"; then
+    printf '%s' "$ts_seen"
+    return 0
+  fi
+  if place_window "$ts_id" "$ts_geo" "$ts_scale"; then
+    log "placed '$ts_title' ($ts_id) on $ts_output"
+    printf '%s' "$ts_id"
+    return 0
+  fi
+  printf '%s' ""
+}
+
 placer_loop() {
   pl_regal_seen=""
   pl_kisten_seen=""
   while :; do
-    pl_id="$(window_id_for "$KIOSK_REGAL_TITLE")"
-    if [ -n "$pl_id" ] && [ "$pl_id" != "$pl_regal_seen" ]; then
-      if place_window "$pl_id" "$REGAL_GEO" "$KIOSK_REGAL_SCALE"; then
-        log "placed '$KIOSK_REGAL_TITLE' ($pl_id) on $KIOSK_REGAL_OUTPUT"
-        pl_regal_seen="$pl_id"
-      fi
-    fi
-    pl_id="$(window_id_for "$KIOSK_KISTEN_TITLE")"
-    if [ -n "$pl_id" ] && [ "$pl_id" != "$pl_kisten_seen" ]; then
-      if place_window "$pl_id" "$KISTEN_GEO" "$KIOSK_KISTEN_SCALE"; then
-        log "placed '$KIOSK_KISTEN_TITLE' ($pl_id) on $KIOSK_KISTEN_OUTPUT"
-        pl_kisten_seen="$pl_id"
-      fi
-    fi
-    sleep 4
+    pl_regal_seen="$(tend_screen "$KIOSK_REGAL_TITLE" "$KIOSK_REGAL_OUTPUT" \
+                                 "$KIOSK_REGAL_SCALE" "$pl_regal_seen")"
+    pl_kisten_seen="$(tend_screen "$KIOSK_KISTEN_TITLE" "$KIOSK_KISTEN_OUTPUT" \
+                                  "$KIOSK_KISTEN_SCALE" "$pl_kisten_seen")"
+    sleep 5
   done
 }
 
