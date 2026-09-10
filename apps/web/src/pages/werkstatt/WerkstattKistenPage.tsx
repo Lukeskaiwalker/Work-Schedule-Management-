@@ -50,6 +50,15 @@ type BoxItem = {
   notes: string | null;
 };
 
+/** Reply from POST /werkstatt/boxes/{id}/print-label. */
+type BoxLabelPrintResult = {
+  box_id: number;
+  box_number: string;
+  /** "KISTE-<box_number>" — what the DataMatrix on the sticker holds. */
+  code: string;
+  printer: string;
+};
+
 type Box = {
   id: number;
   box_number: string;
@@ -165,6 +174,7 @@ export function WerkstattKistenPage() {
   const [hits, setHits] = useState<SearchHit[]>([]);
   const [assignCustomerId, setAssignCustomerId] = useState<number | null>(null);
   const [cameraOpen, setCameraOpen] = useState(false);
+  const [printing, setPrinting] = useState(false);
   /** Optimistic per-item quantities while their PATCH/DELETE is pending. */
   const [qtyOverrides, setQtyOverrides] = useState<Record<number, number>>({});
   const qtyOverridesRef = useRef<Record<number, number>>({});
@@ -488,6 +498,38 @@ export function WerkstattKistenPage() {
     }
   }
 
+  /**
+   * Print the crate's own label.
+   *
+   * Allowed in every status, locked boxes included: handing a box over freezes
+   * its contents, not its identity, and the crate out on a site is exactly the
+   * one whose sticker gets torn off.
+   *
+   * The server distinguishes "no printer configured" (503) from "printer
+   * unreachable" (502); both arrive as a message worth showing verbatim,
+   * because the fix differs.
+   */
+  async function printLabel() {
+    if (!activeBox || printing) return;
+    setPrinting(true);
+    try {
+      const result = await apiFetch<BoxLabelPrintResult>(
+        `/werkstatt/boxes/${activeBox.id}/print-label`,
+        token,
+        { method: "POST" },
+      );
+      setNotice(
+        de
+          ? `Etikett ${result.code} gedruckt (${result.printer})`
+          : `Printed label ${result.code} (${result.printer})`,
+      );
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPrinting(false);
+    }
+  }
+
   /* ── List view ─────────────────────────────────────────────────────────── */
 
   if (!activeBox) {
@@ -754,6 +796,20 @@ export function WerkstattKistenPage() {
           </p>
         </div>
         <div className="werkstatt-sub-actions">
+          <button
+            type="button"
+            className="werkstatt-action-btn"
+            onClick={() => void printLabel()}
+            disabled={printing}
+          >
+            {printing
+              ? de
+                ? "Druckt…"
+                : "Printing…"
+              : de
+                ? "Etikett drucken"
+                : "Print label"}
+          </button>
           <span className={`kisten-status kisten-status--${activeBox.status}`}>
             {statusLabel(activeBox.status)}
           </span>

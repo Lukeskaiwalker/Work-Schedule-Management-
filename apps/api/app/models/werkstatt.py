@@ -271,6 +271,18 @@ class WerkstattMovement(Base):
         ForeignKey("werkstatt_article_units.id", ondelete="SET NULL"), index=True
     )
 
+    # Set when the row was booked at a wall-mounted scan station rather than by
+    # somebody logged in. ``user_id`` cannot carry that distinction: it is NOT
+    # NULL and a device is not a person, so a station borrows its owner's name
+    # (see ``routers/workflow_station_werkstatt.resolve_station_user_id``) —
+    # which without this column makes a device's booking indistinguishable from
+    # that administrator sitting at their desk booking it. ON DELETE SET NULL:
+    # unpairing the Pi must not take the ledger's history with it, and a row
+    # that has lost its station is still a real movement.
+    station_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stations.id", ondelete="SET NULL"), index=True
+    )
+
     notes: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False, index=True)
 

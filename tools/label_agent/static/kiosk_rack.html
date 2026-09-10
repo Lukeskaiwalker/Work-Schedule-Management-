@@ -1,0 +1,1180 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="robots" content="noindex">
+<title>Regal</title>
+<link rel="stylesheet" href="/static/kiosk.css">
+<style>
+/* ------------------------------------------------------------------ *
+ * Regal-Wandbildschirm - 1360x768 @ Geraeteskalierung 1. Das Panel ist
+ * wirklich klein: der Artikel und die drei Bestandszahlen bekommen den
+ * Platz, alles andere wird kompakt. Token: /static/kiosk.css
+ * ------------------------------------------------------------------ */
+/* Spalte statt Raster: das Stand-Banner darf auftauchen und verschwinden,
+   ohne dass <main> in eine andere Rasterzeile rutscht. */
+body{display:flex; flex-direction:column}
+.khead{gap:8px 10px}
+
+/* ---------- Jetzt laeuft: Eckkarte oben rechts. Klein, ruhig, ---------- *
+ * niemals ein Akzentton - sie darf dem Scan nichts wegnehmen.           */
+#np{
+  flex:0 0 auto;
+  width:clamp(190px, 22vw, 300px);
+  display:flex; align-items:center; gap:9px;
+  padding:6px 9px; border-radius:var(--r-sm);
+  background:var(--surface2); border:1px solid var(--line);
+  opacity:.82;
+}
+#npArt{
+  width:38px; height:38px; flex:0 0 auto; border-radius:5px;
+  object-fit:cover; background:var(--surface3);
+}
+.np-txt{min-width:0; flex:1 1 auto}
+#npTitle{display:block; font-size:.82rem; font-weight:750; color:var(--dim)}
+#npArtist{display:block; font-size:.72rem; font-weight:650; color:var(--dim2); margin-top:1px}
+.np-eq{flex:0 0 auto; display:flex; align-items:flex-end; gap:2px; height:13px}
+.np-eq i{width:2px; background:var(--dim2); height:5px; animation:eq 1.1s ease-in-out infinite}
+.np-eq i:nth-child(2){animation-delay:.22s; height:10px}
+.np-eq i:nth-child(3){animation-delay:.44s; height:7px}
+@keyframes eq{0%,100%{height:4px} 50%{height:13px}}
+@media (prefers-reduced-motion: reduce){ .np-eq i{animation:none} }
+
+/* ---------- Richtung: drei Zustaende, genau einer leuchtet ---------- *
+ * Eine Lieferung als Ausgabe zu buchen ist der teure Fehler, also darf
+ * die Richtung nie "irgendwie markiert" aussehen: die gewaehlte Taste
+ * ist eine gefuellte Flaeche, die beiden anderen treten zurueck. Der
+ * Pfeil sagt dasselbe noch einmal ohne Wort - aus 3 m liest man ihn
+ * zuerst. */
+.dirband{display:grid; grid-template-columns:repeat(3, minmax(0,1fr));
+         gap:10px; padding:10px var(--pad) 0}
+.dirbtn{
+  appearance:none; cursor:pointer; min-width:0;
+  display:flex; align-items:center; justify-content:center; gap:10px;
+  min-height:58px; padding:0 10px; border-radius:var(--r);
+  border:2px solid var(--line); background:transparent;
+  color:var(--dim2); font-family:inherit; opacity:.6;
+  transition:background .12s ease, color .12s ease, border-color .12s ease, opacity .12s ease;
+}
+.dirbtn .arw{font-size:1.55em; line-height:1; font-weight:700; flex:0 0 auto}
+.dirbtn .lab{font-size:clamp(1.05rem, 1.55vw, 1.5rem); font-weight:850;
+             letter-spacing:-.01em; overflow:hidden; text-overflow:ellipsis;
+             white-space:nowrap; min-width:0}
+.dirbtn .sub{font-size:.7rem; letter-spacing:.14em; text-transform:uppercase;
+             font-weight:800; opacity:.75; flex:0 0 auto}
+.dirbtn:hover{border-color:var(--line2); color:var(--dim); opacity:.85}
+.dirbtn.on{opacity:1}
+.dirbtn.on[data-dir="aus"]{background:var(--warn); border-color:var(--warn); color:var(--warn-ink)}
+.dirbtn.on[data-dir="ein"],
+.dirbtn.on[data-dir="wareneingang"]{background:var(--ok); border-color:var(--ok); color:var(--ok-ink)}
+.dirbtn.on .sub{opacity:.62}
+.dirbtn:disabled{cursor:default}
+
+/* ---------- Namen: ohne einen davon keine Ausgabe ---------- *
+ * Die Reihe steht direkt unter der Richtung, weil sie zu ihr gehoert:
+ * "Ausgabe" ohne Namen ist keine Buchung, sondern eine Rueckfrage. */
+.crewband{display:flex; align-items:center; gap:12px; padding:8px var(--pad) 0; min-width:0}
+.crew{display:flex; gap:8px; flex:1 1 auto; min-width:0; padding-bottom:5px}
+/* Ueberlaeuft die Reihe, blendet ihr rechter Rand aus - das sagt "da ist
+   noch mehr" auch dort, wo das System die Bildlaufleiste versteckt.
+   Die Klasse setzt renderCrew(), nur wenn wirklich etwas ueberlaeuft. */
+.crew.more{
+  -webkit-mask-image:linear-gradient(90deg, #000 0, #000 calc(100% - 46px), transparent 100%);
+          mask-image:linear-gradient(90deg, #000 0, #000 calc(100% - 46px), transparent 100%);
+}
+.crewbtn{
+  appearance:none; cursor:pointer; flex:0 0 auto;
+  min-height:52px; padding:0 16px; border-radius:11px;
+  border:2px solid var(--line2); background:var(--surface2); color:var(--fg);
+  font-family:inherit; font-size:clamp(.98rem, 1.15vw, 1.2rem); font-weight:800;
+  display:inline-flex; align-items:center; gap:9px; white-space:nowrap;
+  transition:background .12s ease, color .12s ease, border-color .12s ease;
+}
+.crewbtn:hover{border-color:#4a5a6d; background:var(--surface3)}
+.crewbtn.on{background:var(--ok); border-color:var(--ok); color:var(--ok-ink)}
+.crewbtn .tick{display:none; font-weight:900}
+.crewbtn.on .tick{display:inline}
+.crewbtn:disabled{cursor:default; opacity:.55}
+
+/* Der Hinweis erscheint nur, wenn er etwas aendert - sonst frisst er
+   Platz von der Namensreihe und wiederholt, was die gruene Taste schon
+   sagt. Bei "need" schrumpft er nicht: die Bedingung schlaegt den
+   siebten Namen, zu dem man scrollen kann. */
+.crew-hint{
+  flex:0 1 auto; min-width:0;
+  display:flex; align-items:center; gap:9px;
+  font-size:var(--t-md); font-weight:750; color:var(--dim2);
+}
+.crew-hint .dot{display:none}
+.crew-hint .txt{overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0}
+.crew-hint.need{color:var(--warn); font-weight:850; flex:0 0 auto}
+.crew-hint.need .dot{display:block; background:var(--warn);
+                     animation:kpulse 1.6s ease-in-out infinite}
+@media (prefers-reduced-motion: reduce){ .crew-hint.need .dot{animation:none} }
+
+/* ---------- Artikel ---------- */
+main{flex:1 1 auto; min-height:0; overflow:hidden;
+     display:grid; grid-template-rows:auto auto minmax(0,1fr) auto}
+.art{
+  margin:10px var(--pad) 0;
+  display:grid; grid-template-columns:minmax(0,1fr) auto;
+  align-items:center;          /* 768 px hoch: keine Leere in der Mitte */
+  gap:clamp(14px, 2vw, 28px);
+  padding:14px 18px; min-height:0;
+}
+.art-main{display:flex; flex-direction:column; min-width:0}
+#aName{
+  margin:4px 0 0; font-size:clamp(1.9rem, 3.4vw, 2.9rem); line-height:1.02;
+  font-weight:850; letter-spacing:-.03em;
+  overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical;
+}
+#aName.idle{color:var(--dim2); font-weight:750}
+.art-sub{margin-top:8px; font-size:var(--t-md); color:var(--dim); font-weight:650}
+.art-sub .mono{color:var(--fg)}
+.art-chips{display:flex; flex-wrap:wrap; align-items:center; gap:9px; margin-top:14px}
+
+/* ---------- Maschine statt Artikel ---------- *
+ * Eine Maschine ist ein Stueck mit einer Nummer, kein Bestand. Die
+ * Nummer traegt die Karte, der Bestandsblock verschwindet ganz - drei
+ * Nullen waeren dort keine Information, sondern eine Luege. */
+#aName.unit{font-family:var(--mono); font-size:clamp(2.1rem, 4vw, 3.4rem);
+            letter-spacing:-.02em; overflow-wrap:anywhere}
+#aName.idle.need{color:var(--warn)}
+.mach-name{
+  margin-top:7px; font-size:clamp(1.15rem, 1.9vw, 1.7rem); font-weight:750;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+/* Ein Maschinenscan schlaegt nach, er bucht nicht. Ohne diesen Satz sieht
+   die Karte aus wie jede erledigte Buchung, nur ohne Zahlen - und genau
+   das ist der teure Irrtum: das Werkzeug gilt als ausgegeben, obwohl im
+   Bestand nichts steht. Der Satz traegt deshalb den Warnrahmen und steht
+   im Textfluss unter den Zustandschips, nicht als vierter Chip zwischen
+   ihnen, wo er wie eine weitere Eigenschaft der Maschine laese. */
+.mach-note{
+  margin:12px 0 0; display:flex; align-items:baseline;
+  gap:clamp(8px, .9vw, 12px); min-width:0;
+  padding:9px 13px; border-radius:var(--r-sm);
+  background:var(--warn-bg); border:1px solid var(--warn-line);
+}
+.mach-note .nb{
+  flex:0 0 auto; color:var(--warn); font-weight:850;
+  font-size:var(--t-md); letter-spacing:-.01em; white-space:nowrap;
+}
+/* Dieser Satz wird nie gekuerzt. Er ist kein Beiwerk, das man aus dem
+   Zusammenhang erraten kann - "werden in SMPL gebucht" ist die ganze
+   Anweisung, und die darf nicht hinter einer Ellipse liegen. Er umbricht
+   also frei; Platz dafuer ist da, weil die Maschinenkarte keine
+   Bestandszahlen traegt. */
+.mach-note .nt{min-width:0; color:var(--dim); font-weight:700; font-size:var(--t-sm)}
+.art-hold{
+  display:flex; flex-direction:column; align-items:flex-end; gap:8px;
+  text-align:right; min-width:0;
+  padding-left:clamp(12px, 1.6vw, 24px); border-left:1px solid var(--line);
+}
+.hold-name{
+  font-size:clamp(1.4rem, 2.5vw, 2.2rem); font-weight:850; letter-spacing:-.03em;
+  line-height:1.05; max-width:15ch;
+  /* "Brandtstetter-Wittgenstein" ist ein Wort und breiter als die Spalte.
+     Ohne Umbruch im Wort laeuft es unter den Rand statt in die Ellipse. */
+  overflow-wrap:anywhere;
+  overflow:hidden; display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical;
+}
+.hold-name.out{color:var(--warn)}
+.hold-name.in{color:var(--ok)}
+.art-stock{
+  display:flex; gap:clamp(14px, 2.2vw, 34px); align-items:center;
+  padding-left:clamp(12px, 1.6vw, 24px); border-left:1px solid var(--line);
+}
+.art-stock .stat{align-items:flex-end; text-align:right}
+.art-stock .stat .n{font-size:clamp(2.1rem, 4.2vw, 3.4rem); line-height:1}
+.art-stock .stat .l{margin-top:8px}
+
+/* ---------- Buchungsprotokoll ---------- */
+/* Genau hoch genug fuer die sechs Zeilen, die CFG.logMax zulaesst - die
+   letzte darf nie halb abgeschnitten am Rand kleben. Sechs statt acht,
+   seit die Namensreihe dazugekommen ist: 768 px sind 768 px, und der
+   Scan gewinnt gegen das Protokoll. Die Zeilenhoehe haengt an einer
+   festen 1rem-Schrift, gilt also auf beiden Panelgroessen. */
+.log{margin:10px var(--pad) var(--pad); min-height:0; max-height:226px; padding:10px 14px}
+.log-head{display:flex; align-items:baseline; justify-content:space-between;
+          padding-bottom:6px; border-bottom:1px solid var(--line)}
+#log{list-style:none; margin:0; padding:0; flex:1 1 auto; min-height:0}
+#log li{
+  display:flex; align-items:center; gap:12px;
+  padding:5px 0; border-bottom:1px solid var(--line); font-size:1rem;
+}
+#log li:last-child{border-bottom:0}
+.l-time{flex:0 0 auto; width:8ch; color:var(--dim2); font-weight:650; font-size:.88rem}
+/* 13ch, weil "Wareneingang" hier ungekuerzt stehen muss - es ist das
+   Wort, mit dem man die Buchung gegen die Taste prueft. */
+.l-dir{flex:0 0 auto; width:13ch; font-weight:800; font-size:.88rem; color:var(--dim);
+       overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.l-dir.is-ok{color:var(--ok)}
+.l-dir.is-warn{color:var(--warn)}
+.l-name{flex:1 1 auto; min-width:0; font-weight:700}
+.l-qty{flex:0 0 auto; font-weight:850; font-variant-numeric:tabular-nums}
+</style>
+</head>
+<body>
+
+<header class="khead">
+  <span class="ktitle">Regal<small>SMPL Werkstatt</small></span>
+  <span class="chip" id="chipScan"><span class="dot"></span><b>Scanner</b></span>
+  <span class="chip is-warn armed" id="chipWedge" hidden><span class="dot"></span><b>Tastatur-Modus</b></span>
+  <span class="chip" id="chipUp"><span class="dot"></span><b>SMPL</b><span class="why" id="upWhy"></span></span>
+  <span class="spacer"></span>
+
+  <div id="np" hidden>
+    <img id="npArt" alt="" hidden>
+    <span class="np-txt">
+      <span id="npTitle" class="ell"></span>
+      <span id="npArtist" class="ell"></span>
+    </span>
+    <span class="np-eq" aria-hidden="true"><i></i><i></i><i></i></span>
+  </div>
+</header>
+
+<div class="stale" id="stale" hidden>
+  <span class="dot"></span>
+  Keine Verbindung zum Stations-Agent
+  <span id="staleAge">&ndash; angezeigter Stand ist alt.</span>
+</div>
+
+<main>
+  <div class="dirband" id="dirband">
+    <button class="dirbtn" type="button" data-dir="aus">
+      <span class="arw" aria-hidden="true">&rarr;</span>
+      <span class="lab">Ausgabe</span>
+      <span class="sub">raus</span>
+    </button>
+    <button class="dirbtn" type="button" data-dir="ein">
+      <span class="arw" aria-hidden="true">&larr;</span>
+      <span class="lab">R&uuml;ckgabe</span>
+      <span class="sub">zur&uuml;ck</span>
+    </button>
+    <button class="dirbtn" type="button" data-dir="wareneingang">
+      <span class="arw" aria-hidden="true">&darr;</span>
+      <span class="lab">Wareneingang</span>
+      <span class="sub">Lieferung</span>
+    </button>
+  </div>
+
+  <div class="crewband">
+    <div class="crew scroll-x" id="crew"></div>
+    <div class="crew-hint" id="crewHint">
+      <span class="dot"></span><span class="txt" id="crewHintTxt"></span>
+    </div>
+  </div>
+
+  <section class="art card">
+    <div class="art-main">
+      <span class="kick" id="aKick">Regal</span>
+      <h1 id="aName" class="idle">Bereit &ndash; Artikel scannen</h1>
+      <div class="art-sub" id="aSub"><span class="mono" id="aNo"></span><span id="aLoc"></span></div>
+      <div class="mach-name" id="mName" hidden></div>
+      <div class="art-chips">
+        <span class="chip big" id="aBooked" hidden><b></b></span>
+        <span class="chip big" id="mStatus" hidden><span class="dot"></span><b></b></span>
+        <span class="chip big is-warn armed" id="mOverdue" hidden><span class="dot"></span><b>&uuml;berf&auml;llig</b></span>
+      </div>
+      <p class="mach-note" id="mNote" hidden>
+        <span class="nb">Nicht gebucht</span>
+        <span class="nt">Maschine nur nachgeschlagen &ndash; es wurde keine Bewegung
+          angelegt. Ausgabe und R&uuml;ckgabe dieser Maschine werden in SMPL
+          gebucht.</span>
+      </p>
+    </div>
+    <div class="art-stock" id="aStock">
+      <span class="stat ok"><span class="n num" id="sAvail">&ndash;</span><span class="l">verf&uuml;gbar</span></span>
+      <span class="stat warn"><span class="n num" id="sOut">&ndash;</span><span class="l">ausgegeben</span></span>
+      <span class="stat dim"><span class="n num" id="sTotal">&ndash;</span><span class="l">gesamt</span></span>
+    </div>
+    <div class="art-hold" id="aHold" hidden>
+      <span class="kick" id="mHoldKick">Aktuell</span>
+      <span class="hold-name" id="mHolder">&ndash;</span>
+    </div>
+  </section>
+
+  <div class="log card">
+    <div class="log-head">
+      <span class="kick">Letzte Buchungen</span>
+      <span class="kick" id="logN"></span>
+    </div>
+    <ul id="log" class="scroll"></ul>
+  </div>
+</main>
+
+<div class="flash" id="flash" hidden>
+  <span class="fmark" id="flashMark">&check;</span>
+  <span class="fbody">
+    <span class="ftitle" id="flashTitle"></span>
+    <span class="fdetail" id="flashDetail"></span>
+    <span class="fcode mono" id="flashCode"></span>
+  </span>
+</div>
+
+<input id="sink" class="sink" aria-label="Scanner-Eingabe" autocomplete="off"
+       autocorrect="off" autocapitalize="off" spellcheck="false" inputmode="none">
+
+<noscript><p style="padding:24px;font-size:1.3rem">Dieser Bildschirm ben&ouml;tigt JavaScript.</p></noscript>
+
+<script>
+(function(){
+'use strict';
+
+/* ================================================================== *
+ * Konfiguration
+ * ================================================================== */
+var SCREEN = 'regal';
+var CFG = {
+  pollTimeout:   30000,  /* Server haelt max. 25 s - etwas Luft dazu   */
+  minGapMs:      400,    /* nie durchdrehen                            */
+  backoffMin:    700,
+  backoffMax:    20000,
+  actionTimeout: 5000,
+  npMs:          5000,   /* "Jetzt laeuft" ist Beiwerk - selten holen  */
+  watchdogMs:    350,
+  gapResetMs:    1500,   /* Tastaturpuffer verwerfen                   */
+  maxCodeLen:    128,
+  logMax:        6,      /* so viele Zeilen passen unter die Namensreihe */
+  flashMs:       {ok:3000, warn:4200, error:6000}
+};
+var CTRL_RE = /[\u0000-\u001F\u007F]/g;
+
+/* ================================================================== *
+ * Kleine Helfer
+ * ================================================================== */
+function $(id){ return document.getElementById(id); }
+function num(v, dflt){
+  var n = typeof v === 'number' ? v : parseFloat(v);
+  return (typeof n === 'number' && isFinite(n)) ? n : dflt;
+}
+function str(v){
+  return (typeof v === 'string') ? v : (v === null || v === undefined ? '' : String(v));
+}
+/* Jeder Serverwert geht ueber textContent - niemals innerHTML. */
+function setText(node, v){ if(node) node.textContent = str(v); }
+function show(node, on){ if(node) node.hidden = !on; }
+function clear(node){ while(node && node.firstChild) node.removeChild(node.firstChild); }
+function el(tag, cls, text){
+  var n = document.createElement(tag);
+  if(cls) n.className = cls;
+  if(text !== undefined && text !== null) n.textContent = str(text);
+  return n;
+}
+function nowMs(){ return (window.performance && performance.now) ? performance.now() : Date.now(); }
+function clockOf(d){
+  try{ return d.toLocaleTimeString('de-DE', {hour:'2-digit', minute:'2-digit', second:'2-digit'}); }
+  catch(e){ return ''; }
+}
+function tsToDate(v){
+  var n = num(v, 0);
+  if(!n){
+    if(typeof v === 'string' && v){
+      var t = Date.parse(v);
+      if(!isNaN(t)) return new Date(t);
+    }
+    return null;
+  }
+  return new Date(n > 1e12 ? n : n * 1000);
+}
+
+/* ================================================================== *
+ * Netzwerk - wirft nie, blockiert nie laenger als das Timeout
+ * ================================================================== */
+function api(path, opts){
+  opts = opts || {};
+  var timeout = num(opts.timeout, 8000);
+  if(typeof fetch !== 'function') return Promise.resolve({ok:false, error:'fetch fehlt'});
+
+  var ctrl = null, timer = 0;
+  try{ ctrl = new AbortController(); }catch(e){ ctrl = null; }
+
+  var init = {method: opts.method || 'GET', cache:'no-store'};
+  if(opts.body){
+    init.headers = {'Content-Type':'application/json'};
+    try{ init.body = JSON.stringify(opts.body); }
+    catch(e){ return Promise.resolve({ok:false, error:'Ungültige Anfrage'}); }
+  }
+  if(ctrl){
+    init.signal = ctrl.signal;
+    timer = setTimeout(function(){ try{ ctrl.abort(); }catch(e){} }, timeout);
+  }
+  function done(r){ if(timer) clearTimeout(timer); return r; }
+
+  return fetch(path, init).then(function(res){
+    if(!res.ok) return {ok:false, error:'HTTP ' + res.status};
+    return res.text().then(function(txt){
+      var data = null;
+      try{ data = JSON.parse(txt); }catch(e){ return {ok:false, error:'Antwort ist kein JSON'}; }
+      if(!data || typeof data !== 'object') return {ok:false, error:'Unerwartete Antwort'};
+      return {ok:true, data:data};
+    }, function(){ return {ok:false, error:'Antwort nicht lesbar'}; });
+  }, function(err){
+    var aborted = !!err && err.name === 'AbortError';
+    return {ok:false, error: aborted ? 'Zeitüberschreitung' : 'Agent nicht erreichbar'};
+  }).then(done, function(){ return done({ok:false, error:'Unbekannter Fehler'}); });
+}
+
+/* ================================================================== *
+ * Ton - synthetisiert, wie in station.html. Keine Datei, keine CDN.
+ * ================================================================== */
+var actx = null;
+var TONES = {
+  ok:    [[1150, 0.000, 0.050, 0.24], [1600, 0.055, 0.065, 0.24]],
+  warn:  [[ 560, 0.000, 0.090, 0.28], [ 420, 0.115, 0.150, 0.28]],
+  error: [[ 240, 0.000, 0.260, 0.28]],
+  tick:  [[1500, 0.000, 0.020, 0.10]]
+};
+function ensureAudio(){
+  try{
+    if(!actx){
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if(!AC) return null;
+      actx = new AC();
+    }
+    if(actx.state === 'suspended' && actx.resume) actx.resume()['catch'](function(){});
+    return actx;
+  }catch(e){ return null; }
+}
+function beep(kind){
+  var ctx = ensureAudio();
+  if(!ctx) return;
+  var spec = TONES[kind] || TONES.ok;
+  var t0 = ctx.currentTime + 0.001;
+  try{
+    for(var i = 0; i < spec.length; i++){
+      var s = spec[i];
+      var osc = ctx.createOscillator(), g = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(s[0], t0 + s[1]);
+      g.gain.setValueAtTime(0.0001, t0 + s[1]);
+      g.gain.exponentialRampToValueAtTime(s[3], t0 + s[1] + 0.006);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + s[1] + s[2]);
+      osc.connect(g); g.connect(ctx.destination);
+      osc.start(t0 + s[1]);
+      osc.stop(t0 + s[1] + s[2] + 0.03);
+    }
+  }catch(e){ /* Ton ist niemals kritisch */ }
+}
+
+/* ================================================================== *
+ * Vokabular
+ * ================================================================== */
+/* Richtung -> Bewegung: aus=Ausgabe, ein=Rueckgabe, wareneingang=Lieferung.
+   Gebucht wird serverseitig; hier steht nur, wie die drei heissen. */
+var DIRS = ['aus', 'ein', 'wareneingang'];
+var DIR_LABEL = {aus:'Ausgabe', ein:'Rückgabe', wareneingang:'Wareneingang'};
+/* DIRS ist die einzige Liste, die entscheidet, was eine Richtung ist.
+   Alles andere - eine vierte Richtung aus einer neueren Agent-Version,
+   ein Tippfehler, undefined - faellt auf DIRS[0] zurueck, statt sich als
+   vierter Zustand einzuschleichen, den keine Taste anzeigen kann. */
+function normDir(v){
+  var d = str(v);
+  for(var i = 0; i < DIRS.length; i++){ if(DIRS[i] === d) return d; }
+  return DIRS[0];
+}
+
+/* Maschinenzustaende, wie SMPL sie fuehrt. Unbekanntes wird roh gezeigt -
+   lieber ein fremdes Wort als ein erfundenes. */
+var MSTATE = {
+  verfuegbar:   {label:'Verfügbar',    cls:'is-ok'},
+  ausgegeben:   {label:'Ausgegeben',   cls:'is-warn'},
+  wartung:      {label:'Wartung',      cls:'is-warn'},
+  defekt:       {label:'Defekt',       cls:'is-warn'},
+  ausgemustert: {label:'Ausgemustert', cls:''}
+};
+function machStateOf(raw){
+  var s = MSTATE[str(raw)];
+  return s ? s : {label: str(raw), cls:''};
+}
+
+/* Bewegungsarten, wie SMPL sie fuehrt. "tone" ist KEINE Richtung, sondern
+   nur die Farbe: waechst der Bestand (in) oder schrumpft er (out)? Die
+   beiden Vokabulare fallen absichtlich auseinander - "intake" ist der
+   Wareneingang, also eine eigene Richtung, aber dieselbe Farbe wie eine
+   Rueckgabe. Haette das Feld weiter "dir" geheissen, stuende hier
+   "intake -> ein" und irgendwann prueft jemand die Taste dagegen. */
+var MOVE = {
+  checkout:        {label:'Ausgabe',       tone:'out'},
+  'return':        {label:'Rückgabe',      tone:'in'},
+  intake:          {label:'Wareneingang',  tone:'in'},
+  inventory_plus:  {label:'Korrektur +',   tone:'in'},
+  inventory_minus: {label:'Korrektur −',   tone:'out'},
+  correction:      {label:'Korrektur',     tone:''},
+  repair_out:      {label:'Reparatur',     tone:'out'},
+  repair_back:     {label:'Repar. zurück', tone:'in'}
+};
+function moveOf(raw){
+  var m = MOVE[str(raw)];
+  return m ? m : {label: str(raw) || 'Buchung', tone:''};
+}
+/* Nur zwei Akzente, sonst gar keiner - unbekannte Bewegungen bleiben grau,
+   statt sich eine Farbe auszusuchen. */
+function toneCls(tone){
+  if(tone === 'in')  return 'is-ok';
+  if(tone === 'out') return 'is-warn';
+  return '';
+}
+/* Die Felder heissen je nach Quelle anders (Stations-API vs. Werkstatt-API);
+   beide Schreibweisen werden akzeptiert. */
+function artName(a){ return str(a && (a.item_name || a.name)); }
+function artNo(a){ return str(a && (a.article_number || a.article_no)); }
+function artUnit(a){ return str(a && a.unit) || 'Stk'; }
+
+/* ================================================================== *
+ * Zustand
+ * ================================================================== */
+var snap = null;
+var seq = -1;
+var online = false;
+var lastOkAt = 0;
+var fails = 0;
+var dirBusy = false, assBusy = false;
+var flashKey = '', flashDone = '', flashTimer = 0;
+var logRows = [];          /* lokal fortgeschrieben, siehe renderLog() */
+var npHash = '';
+var crewSig = '';          /* Namensreihe nur neu bauen, wenn sie sich aendert */
+
+/* ---------- Optimistische Anzeige ----------------------------------- *
+ * Auf einer Wand ist eine Taste, die 300 ms lang nichts tut, kaputt.
+ * Der Tastendruck wirkt also sofort; kommt der naechste Schnappschuss
+ * mit demselben Wert, ist er bestaetigt. Kommt er nicht, gewinnt nach
+ * OPT_MS wieder der Server - eine abgelehnte Aenderung bleibt nie
+ * faelschlich stehen. */
+var OPT_MS = 3000;
+var pendDir = null;        /* {value:'aus'|'ein'|'wareneingang', at} */
+var pendAss = null;        /* {value: id-String oder null, at}       */
+var settleTimer = 0;
+
+function idOf(v){ return (v === undefined || v === null || v === '') ? null : String(v); }
+function liveDir(){ return normDir(snap && snap.direction); }
+function liveAss(){ var a = snap && snap.assignee; return a ? idOf(a.id) : null; }
+function curDir(){ return pendDir ? pendDir.value : liveDir(); }
+function curAss(){ return pendAss ? pendAss.value : liveAss(); }
+
+function settle(){
+  var t = nowMs();
+  if(pendDir && (pendDir.value === liveDir() || t - pendDir.at > OPT_MS)) pendDir = null;
+  if(pendAss && (pendAss.value === liveAss() || t - pendAss.at > OPT_MS)) pendAss = null;
+}
+function scheduleSettle(){
+  if(settleTimer) clearTimeout(settleTimer);
+  settleTimer = setTimeout(function(){
+    settleTimer = 0;
+    settle();
+    render();
+  }, OPT_MS + 80);
+}
+
+function crewList(){
+  var c = snap && snap.crew;
+  return (c && typeof c.length === 'number') ? c : [];
+}
+function curAssName(){
+  var id = curAss();
+  if(id === null) return '';
+  var list = crewList();
+  for(var i = 0; i < list.length; i++){
+    if(list[i] && idOf(list[i].id) === id) return str(list[i].name);
+  }
+  var a = snap && snap.assignee;
+  return (a && idOf(a.id) === id) ? str(a.name) : '';
+}
+/* Der Vertrag: eine Ausgabe ohne Namen wird abgewiesen. Das steht deshalb
+   im Bildschirm, nicht erst im Fehlerblitz. */
+function needsName(){ return curDir() === 'aus' && curAss() === null; }
+
+/* ================================================================== *
+ * Darstellung
+ * ================================================================== */
+function wedgeActive(){
+  return !(snap && snap.scanner && snap.scanner.active);
+}
+
+function renderHead(){
+  var sc = snap && snap.scanner ? snap.scanner : null;
+  var up = snap && snap.upstream ? snap.upstream : null;
+
+  var chip = $('chipScan');
+  chip.className = 'chip' + (sc && sc.active ? ' is-ok armed' : ' is-warn');
+  setText(chip.querySelector('b'), sc && sc.active
+    ? (str(sc.device) || 'Scanner')
+    : (str(sc && sc.error) || 'Kein Scanner'));
+
+  renderUpstream(up);
+  show($('chipWedge'), wedgeActive());
+}
+
+/* Ohne SMPL wird kein Scan gebucht. Das ist keine Randnotiz, also ist es
+   auch kein graues Wort: gefuellte Flaeche, Ring, Grund daneben.
+   upstream.ok ist absichtlich dreiwertig - null heisst "noch nie
+   gefragt" und darf nicht wie ein Ausfall aussehen. */
+function renderUpstream(up){
+  var cu = $('chipUp'), why = $('upWhy');
+  var ok = up ? up.ok : null;
+  var err = str(up && up.error);
+
+  if(ok === true){
+    cu.className = 'chip is-ok';
+    setText(cu.querySelector('b'), 'SMPL');
+    setText(why, '');
+    show(why, false);
+    return;
+  }
+  if(ok === false || err){
+    cu.className = 'chip alarm';
+    setText(cu.querySelector('b'), 'SMPL offline');
+    setText(why, err);
+    show(why, !!err);
+    return;
+  }
+  cu.className = 'chip';
+  setText(cu.querySelector('b'), 'SMPL');
+  setText(why, 'noch nicht geprüft');
+  show(why, true);
+}
+
+function renderStale(){
+  show($('stale'), !online);
+  if(!online){
+    setText($('staleAge'), lastOkAt
+      ? '– angezeigter Stand von ' + clockOf(new Date(lastOkAt))
+      : '– noch kein Stand empfangen.');
+  }
+}
+
+var dirBtns = document.querySelectorAll('#dirband .dirbtn');
+
+function renderDirection(){
+  var dir = curDir();
+  for(var i = 0; i < dirBtns.length; i++){
+    var b = dirBtns[i];
+    b.className = 'dirbtn' + (b.getAttribute('data-dir') === dir ? ' on' : '');
+    b.disabled = dirBusy;
+  }
+}
+
+/* Die Namensreihe wird nur neu gebaut, wenn SMPL eine andere Mannschaft
+   liefert - sonst verlieren Tasten bei jedem Poll ihren Druckzustand. */
+function renderCrew(){
+  var list = crewList();
+  var sig = String(list.length);
+  for(var i = 0; i < list.length; i++){
+    sig += '|' + str(list[i] && list[i].id) + ':' + str(list[i] && list[i].name);
+  }
+
+  var row = $('crew');
+  if(sig !== crewSig){
+    crewSig = sig;
+    clear(row);
+    for(var j = 0; j < list.length; j++){
+      var p = list[j] || {};
+      var b = el('button', 'crewbtn');
+      b.type = 'button';
+      b.setAttribute('data-id', str(p.id));
+      b.appendChild(el('span', 'tick', '✓'));
+      b.appendChild(el('span', 'nm', str(p.name) || '–'));
+      row.appendChild(b);
+    }
+  }
+  show(row, list.length > 0);
+  row.className = 'crew scroll-x' +
+    (row.scrollWidth > row.clientWidth + 2 ? ' more' : '');
+
+  var sel = curAss();
+  var kids = row.childNodes;
+  for(var k = 0; k < kids.length; k++){
+    var node = kids[k];
+    if(!node || !node.getAttribute) continue;
+    node.className = 'crewbtn' + (sel !== null && node.getAttribute('data-id') === sel ? ' on' : '');
+    node.disabled = assBusy;
+  }
+  renderCrewHint(list.length > 0, sel);
+}
+
+/* Zwei Faelle sind einen Satz wert: "so geht es nicht weiter" und "die
+   Liste fehlt". Alles andere - Name gewaehlt, Name optional, Name
+   unnoetig - sagt die Reihe selbst, und Wareneingang wird ausdruecklich
+   nicht angemahnt. */
+function renderCrewHint(hasCrew, sel){
+  var hint = $('crewHint'), txt = $('crewHintTxt');
+
+  if(!hasCrew){
+    /* Vor dem ersten Schnappschuss ist nichts bekannt; dann waere
+       "SMPL nicht erreichbar" geraten und bleibt ungesagt. */
+    hint.className = 'crew-hint';
+    setText(txt, snap ? 'Namensliste nicht verfügbar – SMPL nicht erreichbar.' : '');
+    show(hint, !!snap);
+    return;
+  }
+  if(needsName()){
+    hint.className = 'crew-hint need';
+    setText(txt, 'Ausgabe braucht einen Namen');
+    show(hint, true);
+    return;
+  }
+  hint.className = 'crew-hint';
+  setText(txt, '');
+  show(hint, false);
+}
+
+/* Der Buchungschip haengt an der Bewegung, nicht am Artikeltyp - eine
+   Maschine kann genauso gebucht sein wie eine Schraube. */
+function renderBooked(m, unit){
+  var chip = $('aBooked');
+  if(!m){ show(chip, false); return; }
+  var mv = moveOf(m.movement_type || m.type);
+  var q = num(m.quantity, num(m.qty, 0));
+  chip.className = ('chip big ' + toneCls(mv.tone)).replace(/\s+$/, '');
+  /* Ohne Einheit (Maschine) bleibt es beim Wort: ein Stueck zaehlt man nicht. */
+  setText(chip.querySelector('b'), unit ? (mv.label + ': ' + q + ' ' + unit) : mv.label);
+  show(chip, true);
+}
+
+/* Was steht da, solange nichts gescannt wurde? Die Richtung - und bei
+   "aus" die Bedingung, ohne die der naechste Scan abgewiesen wird. */
+function idlePrompt(){
+  var d = curDir();
+  if(d === 'wareneingang') return 'Wareneingang – Artikel scannen';
+  if(d === 'ein') return 'Rückgabe – Artikel scannen';
+  if(curAss() === null) return 'Ausgabe: bitte zuerst Namen antippen';
+  return 'Ausgabe für ' + (curAssName() || 'ausgewählte Person') + ' – Artikel scannen';
+}
+
+/* Felder, die je nach Quelle anders heissen, an einer Stelle einsammeln. */
+function machOf(m){
+  var inner = (m && m.article && typeof m.article === 'object') ? m.article : null;
+  return {
+    unit:    str(m.unit_number || m.machine_number || m.serial_number),
+    name:    str(m.article_name || m.item_name || (inner ? inner.item_name : '')),
+    status:  str(m.status),
+    holder:  str(m.holder_name || m.holder || m.assignee_name),
+    overdue: m.is_overdue === true
+  };
+}
+
+/* Nur einer der beiden rechten Bloecke steht je gleichzeitig: Bestand
+   ODER Standort. Deshalb schaltet jede der drei Ansichten beide. */
+function setRight(mode){        /* 'stock' | 'hold' | 'none' */
+  show($('aStock'), mode === 'stock');
+  show($('aHold'),  mode === 'hold');
+}
+function setMachineBits(on){
+  show($('mName'), on);
+  show($('mStatus'), on);
+  if(!on){ show($('mOverdue'), false); show($('mNote'), false); }
+  show($('aSub'), !on);
+}
+
+function renderIdle(){
+  setText($('aKick'), DIR_LABEL[curDir()] || 'Regal');
+  $('aName').className = 'idle' + (needsName() ? ' need' : '');
+  setText($('aName'), idlePrompt());
+  setText($('aNo'), '');
+  setText($('aLoc'), 'Der letzte Scan erscheint hier.');
+  show($('aBooked'), false);
+  setMachineBits(false);
+  setRight('stock');
+  setText($('sAvail'), '–');
+  setText($('sOut'), '–');
+  setText($('sTotal'), '–');
+}
+
+/* Eine Maschine hat keine Bestandszaehler - sie ist ein Stueck mit einer
+   Nummer. Wer sie hat, ist die Frage, die das Regal beantworten soll.
+   Gebucht wird dabei nichts: der Agent legt keine Bewegung an und blitzt
+   eine WARN-Meldung. Die Karte muss dasselbe sagen, sonst steht das
+   Werkzeug hier wie erledigt und niemand bucht es nach. */
+function renderMachine(raw, movement){
+  var d = machOf(raw);
+  setText($('aKick'), 'Maschine nachgeschlagen');
+  $('aName').className = 'unit num';
+  setText($('aName'), d.unit || '–');
+
+  setMachineBits(true);
+  setText($('mName'), d.name || 'Maschine ohne Artikelnamen');
+
+  var st = machStateOf(d.status);
+  var chip = $('mStatus');
+  chip.className = ('chip big ' + st.cls).replace(/\s+$/, '');
+  setText(chip.querySelector('b'), st.label || 'Zustand unbekannt');
+  show($('mOverdue'), d.overdue);
+
+  /* Genau eins von beiden: der Buchungschip, wenn wirklich eine Bewegung
+     mitkam, sonst der Satz, dass keine entstanden ist. Nie beides und
+     nie keins - eine stumme Karte waere wieder die Zweideutigkeit. */
+  renderBooked(movement, '');
+  show($('mNote'), !movement);
+
+  setRight('hold');
+  setText($('mHoldKick'), d.holder ? 'Aktuell' : 'Standort');
+  var h = $('mHolder');
+  h.className = 'hold-name ' + (d.holder ? 'out' : 'in');
+  setText(h, d.holder ? ('Bei: ' + d.holder) : 'Im Lager');
+}
+
+function renderArticle(a, movement){
+  setText($('aKick'), 'Zuletzt gescannt');
+  $('aName').className = '';
+  setText($('aName'), artName(a) || '–');
+
+  var no = artNo(a);
+  setText($('aNo'), no);
+  var loc = str(a.location_name);
+  setText($('aLoc'), loc ? (no ? '  ·  ' + loc : loc) : '');
+
+  setMachineBits(false);
+  setRight('stock');
+  setText($('sAvail'), num(a.stock_available, 0));
+  setText($('sOut'), num(a.stock_out, 0));
+  setText($('sTotal'), num(a.stock_total, 0));
+
+  renderBooked(movement, artUnit(a));
+}
+
+/* Eine Karte, drei Ansichten. Die Maschine gewinnt: kommt sie mit,
+   waeren die Bestandszahlen des Artikels die Zahlen aller Exemplare -
+   nicht die des Stuecks, das gerade in der Hand liegt. */
+function renderCard(){
+  var last = snap && snap.last;
+  var machine = last && last.machine;
+  var a = last && last.article;
+  var m = last && last.movement;
+
+  if(machine && typeof machine === 'object'){ renderMachine(machine, m); return; }
+  if(a){ renderArticle(a, m); return; }
+  renderIdle();
+}
+
+/* Der Vertrag liefert nur die LETZTE Buchung. Liefert der Agent zusaetzlich
+   eine Liste (recent/movements/history), gewinnt die - sonst wird sie hier
+   aus den einzelnen "last"-Schnappschuessen fortgeschrieben und beim
+   Neuladen der Seite verworfen. Genau das meint "diese Sitzung". */
+function movementKey(m, a){
+  if(!m) return '';
+  var id = (m.id !== undefined && m.id !== null) ? m.id : m.movement_id;
+  if(id !== undefined && id !== null) return 'id:' + str(id);
+  return [str(m.created_at || m.at), str(m.movement_type || m.type),
+          str(m.quantity !== undefined ? m.quantity : m.qty), artNo(a)].join('|');
+}
+function absorbLast(){
+  var last = snap && snap.last;
+  if(!last || !last.movement) return;
+  var key = movementKey(last.movement, last.article);
+  if(!key) return;
+  for(var i = 0; i < logRows.length; i++){ if(logRows[i].key === key) return; }
+  var m = last.movement;
+  /* Unveraenderlich: neue Liste, nie die alte umbauen. */
+  logRows = [{
+    key:  key,
+    at:   tsToDate(m.created_at || m.at) || new Date(),
+    name: artName(last.article) || '–',
+    type: str(m.movement_type || m.type),
+    qty:  num(m.quantity, num(m.qty, 0)),
+    unit: artUnit(last.article)
+  }].concat(logRows).slice(0, CFG.logMax);
+}
+function serverRows(){
+  var src = snap && (snap.recent || snap.movements || snap.history);
+  if(!src || typeof src.length !== 'number') return null;
+  var out = [];
+  for(var i = 0; i < src.length && i < CFG.logMax; i++){
+    var r = src[i] || {};
+    var mv = r.movement || r;
+    var a = r.article || r;
+    out.push({
+      key:  movementKey(mv, a),
+      at:   tsToDate(mv.created_at || mv.at),
+      name: artName(a) || '–',
+      type: str(mv.movement_type || mv.type),
+      qty:  num(mv.quantity, num(mv.qty, 0)),
+      unit: artUnit(a)
+    });
+  }
+  return out;
+}
+function renderLog(){
+  var rows = serverRows();
+  if(rows === null){ absorbLast(); rows = logRows; }
+  else { logRows = rows; }
+
+  var ul = $('log');
+  clear(ul);
+  setText($('logN'), rows.length ? rows.length + ' in dieser Sitzung' : '');
+  if(!rows.length){
+    ul.appendChild(el('li', 'empty', 'Noch nichts gebucht.'));
+    return;
+  }
+  for(var i = 0; i < rows.length; i++){
+    var r = rows[i];
+    var mv = moveOf(r.type);
+    var li = el('li');
+    li.appendChild(el('span', 'l-time mono', r.at ? clockOf(r.at) : '--:--:--'));
+    li.appendChild(el('span', ('l-dir ' + toneCls(mv.tone)).replace(/\s+$/, ''), mv.label));
+    li.appendChild(el('span', 'l-name ell', r.name));
+    li.appendChild(el('span', 'l-qty num', r.qty + ' ' + r.unit));
+    ul.appendChild(li);
+  }
+}
+
+/* ---------- Blitzmeldung ---------- */
+var MARKS = {ok:'✓', warn:'!', error:'✕'};
+function renderFlash(){
+  var f = snap && snap.flash;
+  if(!f){ hideFlash(); return; }
+
+  var lvl = str(f.level);
+  if(lvl !== 'warn' && lvl !== 'error') lvl = 'ok';
+  var key = str(f.at) + '|' + str(f.title) + '|' + str(f.detail) + '|' + str(f.code);
+  if(key === flashDone || key === flashKey) return;
+
+  flashKey = key;
+  var node = $('flash');
+  node.className = 'flash lvl-' + lvl;
+  setText($('flashMark'), MARKS[lvl] || MARKS.ok);
+  setText($('flashTitle'), str(f.title) || (lvl === 'ok' ? 'Gebucht' : 'Nicht gebucht'));
+  setText($('flashDetail'), str(f.detail));
+  show($('flashDetail'), !!str(f.detail));
+  setText($('flashCode'), str(f.code));
+  show($('flashCode'), !!str(f.code));
+  show(node, true);
+  beep(lvl);
+
+  if(flashTimer) clearTimeout(flashTimer);
+  flashTimer = setTimeout(function(){
+    flashDone = flashKey;
+    hideFlash();
+    /* Server aufraeumen lassen; scheitert das, bleibt es lokal versteckt. */
+    api('/screen/action', {method:'POST', timeout: CFG.actionTimeout,
+        body:{screen: SCREEN, action:'dismiss'}});
+  }, num(CFG.flashMs[lvl], 4000));
+}
+function hideFlash(){
+  flashKey = '';
+  if(flashTimer){ clearTimeout(flashTimer); flashTimer = 0; }
+  show($('flash'), false);
+}
+
+function render(){
+  if(!snap) return;
+  settle();
+  renderHead();
+  renderDirection();
+  renderCrew();
+  renderCard();
+  renderLog();
+  renderFlash();
+}
+
+/* ================================================================== *
+ * Aktionen (Funkmaus - selten benutzt, aber vorhanden)
+ * ================================================================== */
+function setDirection(value){
+  if(dirBusy) return;
+  var v = normDir(value);
+  if(v === curDir()) return;
+  dirBusy = true;
+  pendDir = {value: v, at: nowMs()};
+  beep('tick');
+  render();
+  api('/screen/action', {method:'POST', timeout: CFG.actionTimeout,
+      body:{screen: SCREEN, action:'direction', value: v}})
+    .then(function(){ dirBusy = false; render(); });
+  scheduleSettle();
+}
+
+/* Antippen waehlt, nochmal antippen loescht - "value: null" ist im
+   Vertrag genau dafuer vorgesehen. */
+function setAssignee(value){
+  if(assBusy) return;
+  assBusy = true;
+  pendAss = {value: idOf(value), at: nowMs()};
+  beep('tick');
+  render();
+  api('/screen/action', {method:'POST', timeout: CFG.actionTimeout,
+      body:{screen: SCREEN, action:'assignee', value: value}})
+    .then(function(){ assBusy = false; render(); });
+  scheduleSettle();
+}
+
+/* Ereignisse haengen am Band, nicht an den Tasten: die Namensreihe wird
+   neu gebaut, sobald SMPL eine andere Mannschaft schickt. */
+function closestWith(node, attr, cls){
+  while(node && node.getAttribute){
+    if(node.getAttribute(attr) !== null &&
+       String(node.className || '').indexOf(cls) !== -1) return node;
+    node = node.parentNode;
+  }
+  return null;
+}
+$('dirband').addEventListener('click', function(e){
+  var b = closestWith(e.target, 'data-dir', 'dirbtn');
+  if(b) setDirection(b.getAttribute('data-dir'));
+});
+$('crew').addEventListener('click', function(e){
+  var b = closestWith(e.target, 'data-id', 'crewbtn');
+  if(!b || assBusy) return;
+  var raw = b.getAttribute('data-id');
+  if(idOf(raw) === curAss()){ setAssignee(null); return; }
+  var n = num(raw, null);
+  setAssignee(n === null ? raw : n);
+});
+$('flash').addEventListener('click', function(){
+  flashDone = flashKey;
+  hideFlash();
+  api('/screen/action', {method:'POST', timeout: CFG.actionTimeout,
+      body:{screen: SCREEN, action:'dismiss'}});
+});
+
+/* ================================================================== *
+ * Tastatur-Rueckfallmodus
+ *
+ * Laeuft der Scanner-Router im Agent nicht, haengt der Scanner als
+ * Tastatur am Browser. Dann liest diese Seite die Bursts selbst - aber
+ * sie handelt NICHT: jeder vollstaendige Code geht an /scan/route,
+ * damit weiterhin der Server entscheidet, welcher Bildschirm ihn frisst.
+ * Heuristik uebernommen aus station.html.
+ * ================================================================== */
+var buf = '', lastKeyAt = 0;
+
+function sanitizeCode(s){
+  var out = str(s).replace(CTRL_RE, '').trim();
+  return out.length > CFG.maxCodeLen ? out.slice(0, CFG.maxCodeLen) : out;
+}
+function routeCode(code){
+  var c = sanitizeCode(code);
+  if(!c) return;
+  beep('tick');
+  api('/scan/route', {method:'POST', timeout: CFG.actionTimeout,
+      body:{code: c, source:'wedge'}});
+}
+function isTextField(node){
+  if(!node || node === $('sink')) return false;
+  var tag = node.tagName;
+  if(tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true;
+  return node.isContentEditable === true;
+}
+
+document.addEventListener('keydown', function(e){
+  ensureAudio();                       /* erste Taste = Nutzergeste fuer WebAudio */
+  if(isTextField(e.target)) return;
+  if(e.metaKey || e.ctrlKey || e.altKey) return;
+  if(e.key === 'Escape'){ buf = ''; return; }
+
+  var t = nowMs();
+  if(t - lastKeyAt > CFG.gapResetMs) buf = '';
+  lastKeyAt = t;
+
+  if(e.key === 'Enter' || e.key === 'Tab'){
+    var code = buf;
+    buf = '';
+    if(e.key === 'Tab') e.preventDefault();   /* Tab darf den Fokus nicht bewegen */
+    if(code){
+      e.preventDefault();
+      $('sink').value = '';
+      /* Ist der Router aktiv, sieht der Browser vom Scanner ohnehin nichts;
+         dann waere das hier ein Mensch an der Funktastatur - nicht routen. */
+      if(wedgeActive()) routeCode(code);
+    }
+    return;
+  }
+  if(e.key === 'Backspace'){ buf = buf.slice(0, -1); return; }
+  if(typeof e.key === 'string' && e.key.length === 1){
+    buf += e.key;
+    if(buf.length > CFG.maxCodeLen) buf = buf.slice(-CFG.maxCodeLen);
+  }
+}, true);
+
+/* Fokuswaechter: ein Scan darf nie ins Leere gehen. */
+setInterval(function(){
+  var sink = $('sink');
+  if(!sink) return;
+  if(sink.value) sink.value = '';
+  if(document.activeElement === sink) return;
+  if(isTextField(document.activeElement)) return;
+  try{ sink.focus({preventScroll:true}); }catch(e){ try{ sink.focus(); }catch(e2){} }
+}, CFG.watchdogMs);
+
+/* ================================================================== *
+ * "Jetzt laeuft" - Beiwerk. Faellt es aus, faellt nur es aus.
+ * ================================================================== */
+function pollNowPlaying(){
+  api('/now-playing', {timeout: 4000}).then(function(r){
+    var d = (r.ok && r.data) ? r.data : null;
+    var playing = !!(d && d.playing && (str(d.title) || str(d.artist)));
+    show($('np'), playing);
+    if(!playing){ npHash = ''; $('npArt').hidden = true; return; }
+
+    setText($('npTitle'), str(d.title) || '–');
+    var sub = str(d.artist);
+    if(str(d.album) && sub) sub += ' · ' + str(d.album);
+    else if(str(d.album)) sub = str(d.album);
+    setText($('npArtist'), sub);
+
+    var h = str(d.art_hash);
+    if(!h){ npHash = ''; $('npArt').hidden = true; return; }
+    if(h !== npHash){
+      npHash = h;
+      var img = $('npArt');
+      img.onerror = function(){ img.hidden = true; };
+      img.onload = function(){ img.hidden = false; };
+      img.src = '/now-playing/cover.jpg?h=' + encodeURIComponent(h);
+    }
+  });
+}
+
+/* ================================================================== *
+ * Abfrageschleife (Long-Poll) - laeuft ewig, dreht nie durch
+ * ================================================================== */
+var pollTimer = 0;
+function schedule(ms){
+  if(pollTimer) clearTimeout(pollTimer);
+  pollTimer = setTimeout(poll, ms);
+}
+function backoff(){
+  var ms = CFG.backoffMin * Math.pow(2, Math.min(fails, 5));
+  if(ms > CFG.backoffMax) ms = CFG.backoffMax;
+  return ms + Math.floor(Math.random() * 250);
+}
+function poll(){
+  var started = Date.now();
+  api('/screen/state?screen=' + SCREEN + '&since=' + seq, {timeout: CFG.pollTimeout})
+    .then(function(r){
+      if(r.ok && r.data && str(r.data.screen || SCREEN) === SCREEN){
+        fails = 0;
+        online = true;
+        lastOkAt = Date.now();
+        var nextSeq = num(r.data.seq, seq);
+        var changed = nextSeq !== seq;
+        seq = nextSeq;
+        snap = r.data;
+        render();
+        renderStale();
+        /* Kam die Antwort sofort UND ohne neue seq zurueck, kurz warten -
+           sonst frisst ein defekter Server die CPU des Pi. */
+        schedule((!changed && Date.now() - started < 200) ? CFG.minGapMs : 0);
+        return;
+      }
+      fails++;
+      online = false;
+      renderStale();
+      schedule(backoff());
+    });
+}
+
+renderStale();
+renderDirection();
+renderCrew();
+renderIdle();
+renderLog();
+poll();
+pollNowPlaying();
+setInterval(pollNowPlaying, CFG.npMs);
+
+})();
+</script>
+</body>
+</html>

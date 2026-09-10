@@ -11,6 +11,13 @@ them when the network does not:
    Metrel MI 3152 goes into a reader, and its protocols are copied, hashed and
    queued for SMPL before anyone touches a laptop.
 
+Where two monitors are attached it also **shows two pages at once** — the
+storage racks on one screen, the construction boxes on the other, full screen
+from boot, driven by the barcode scanner and a card of command barcodes beside
+it. Two decisions are made at the screen rather than scanned: who an Ausgabe
+goes out to, and whether an arriving pallet is a Wareneingang. That part is
+optional and has its own section: [The two screens](#the-two-screens).
+
 Everything below assumes you are standing in front of the Pi with a keyboard
 or an SSH session. It is written to be followed without asking anybody
 anything.
@@ -30,9 +37,10 @@ detail. This document is the *install and operate* half.
 | Power | The official USB-C supply | An undersized supply is the cause of most "USB device disappears" reports. |
 | Printer | Brother PT-P710BT, USB cable | USB, not Bluetooth. The agent speaks raw raster to `04f9:20af`. |
 | Tape | 12 mm TZe | Anything narrower loses the second line. See the README's tape budget. |
-| Scanner | Any USB HID barcode scanner | It behaves as a keyboard. No driver, no configuration. |
+| Scanner | USB HID barcode scanner — this one is `1a86:5456` | It behaves as a keyboard, and there is no driver. There *is* configuration: the agent finds it by USB id and decodes its scancodes with a German table. See [The scanner types German](#the-scanner-types-german-and-the-agent-knows-it). |
 | **Card reader** | **USB SD/microSD reader** | **Required.** The Pi's own card slot holds the OS — the instrument card cannot go there. |
 | Network | Ethernet preferred | Wi-Fi works. The station is designed to survive losing either. |
+| Screens | Two HDMI monitors, optional | One faces the racks, one faces the boxes. See [The two screens](#the-two-screens). Without them the station is headless and everything else still works. |
 
 A powered USB hub is worth having if the printer, the scanner and the reader
 are all plugged in at once. The printer draws hardest while feeding tape,
@@ -44,15 +52,25 @@ which is exactly when you least want a brownout.
 
 ### 1. Write the OS
 
-Use Raspberry Pi Imager and choose **Raspberry Pi OS (64-bit) Lite**. No
-desktop: the station has no monitor, and the desktop's own automounter
-competes with ours.
+Use Raspberry Pi Imager, and which image depends on whether this station gets
+the two workshop screens:
+
+- **headless station → Raspberry Pi OS (64-bit) Lite.** No desktop, because
+  there is no monitor and the desktop's own automounter competes with ours.
+- **station with the two screens → Raspberry Pi OS (64-bit) with desktop.**
+  The kiosk is two Chromium windows started by a *desktop session*: it needs
+  labwc, `~/.config/autostart` and a logged-in `pi`, none of which exist on
+  Lite. `--with-kiosk` on a Lite box installs files that nothing ever runs.
+  On a desktop image udisks2 automounts cards and our rule stands aside —
+  see [The card reader](#the-card-reader).
 
 In Imager's settings gear, before writing, set:
 
 - hostname: `smpl-station`
 - enable SSH, with your public key
-- username: your own, not `pi`
+- username: your own, not `pi` — but see the note under `--with-kiosk` below
+  if this station gets the two screens, because the kiosk installs into a
+  desktop user's home and defaults to `pi`
 - locale and Wi-Fi if you need them
 
 ### 2. First boot
@@ -81,6 +99,28 @@ sudo ~/smpl/tools/label_agent/packaging/install-pi.sh \
      --smpl-url https://smpl.example.de
 ```
 
+On a station with the two workshop screens, add `--with-kiosk`:
+
+```sh
+sudo ~/smpl/tools/label_agent/packaging/install-pi.sh \
+     --smpl-url https://smpl.example.de --with-kiosk
+```
+
+It is off by default because this installer also provisions headless boxes,
+where Chromium is 300 MB of nothing useful. It is additive: forgetting the
+flag on a later re-run does not remove a kiosk that is already there. Take
+one away deliberately with `--purge-kiosk`.
+
+The kiosk installs into a **desktop user's** home — the autostart entry, the
+kanshi pin and the two Chromium profiles all live there — and that user
+defaults to `pi`. If the account that logs into the desktop is called
+something else, say so, or the installer stops with *„no such user"*:
+
+```sh
+sudo ~/smpl/tools/label_agent/packaging/install-pi.sh \
+     --smpl-url https://smpl.example.de --with-kiosk --kiosk-user <name>
+```
+
 It is idempotent — run it again after any `git pull` and it updates the code,
 the virtualenv, the udev rules and the service without touching the database,
 the token or any staged imports.
@@ -89,7 +129,7 @@ What it does, so you can do it by hand if you ever need to:
 
 | Step | Result |
 |---|---|
-| `apt install` | `libusb-1.0-0`, `python3-venv`, `udisks2`, `rsync` |
+| `apt install` | `python3`, `python3-venv`, `python3-dev`, `libusb-1.0-0`, `udisks2`, `rsync` |
 | creates user | `smpl-station`, a system user with no login, in group `lp` |
 | copies code | `/opt/smpl-station/` |
 | builds venv | `/opt/smpl-station/tools/label_agent/.venv` with pyusb + Pillow |
@@ -98,12 +138,23 @@ What it does, so you can do it by hand if you ever need to:
 | udev | `99-brother-ptouch.rules`, `99-smpl-sd-automount.rules`, `/usr/local/sbin/smpl-sd-mount.sh` |
 | systemd | `smpl-station.service`, enabled and started |
 
+And with `--with-kiosk`, additionally:
+
+| Step | Result |
+|---|---|
+| `apt install` | `chromium`, `wlr-randr`, `x11-xserver-utils` — only what is missing |
+| kiosk script | `/usr/local/bin/smpl-kiosk.sh` |
+| autostart | `~<kiosk user>/.config/autostart/smpl-kiosk.desktop`, owned by that user — `pi` unless `--kiosk-user` says otherwise |
+| screen layout | `~<kiosk user>/.config/kanshi/config` (only if yours is empty or ours) |
+| config | `/etc/smpl-station/kiosk.env`, written once and never again |
+| drop-ins | `smpl-station.service.d/10-nowplaying.conf`, `20-scanner.conf` |
+
 ### 5. Pair the station with SMPL
 
 This is the step that replaces typing a password into a machine with no
-keyboard. Either way works; both produce the same token.
+keyboard. Both ways below produce the same token.
 
-**From the terminal you are already in:**
+**From the terminal you are already in** — the way that always works:
 
 ```sh
 sudo -u smpl-station AGENT_STATE_DIR=/var/lib/smpl-station \
@@ -115,9 +166,28 @@ It prints a short code and waits. Open SMPL in a browser where you are
 already logged in as an admin, approve the code, and the terminal says
 `Paired.`
 
-**From a browser** — a phone works — open `http://smpl-station.local:8765/setup`
-and press *Anmeldung starten*. Same code, same approval, and it is the page to
-send someone who is standing at the station without an SSH session.
+**From a browser on the Pi** — open `http://127.0.0.1:8765/setup` and press
+*Anmeldung starten*. Same code, same approval.
+
+> **Not from a phone any more, and this will catch you.** `/setup` is still
+> reachable across the office LAN, and it still renders: the station's name,
+> whether it is paired, the staged imports. But *starting* a pairing is a
+> `POST /pair/start`, and that route — with `/pair/cancel` and `/pair/forget`
+> beside it — now refuses anything that is not this machine. From a phone the
+> page loads, the button answers `403 this route is local-only`, and nothing
+> is wrong with the network. Pair from the terminal above, from a browser on
+> the Pi's own desktop, or tunnel loopback to your laptop for one minute:
+>
+> ```sh
+> ssh -L 8765:127.0.0.1:8765 <you>@smpl-station.local
+> # then open http://127.0.0.1:8765/setup on the laptop
+> ```
+>
+> The reason is `/pair/forget`, which deletes the station's credential from
+> disk. It is in the same set as the other two because a pairing route
+> reachable from the far side of the workshop is a way for anybody on the LAN
+> to unpair the station. See [Which routes leave the
+> box](#which-routes-leave-the-box).
 
 Pairing is optional. An unpaired station scans, counts, prints and exports
 exactly as it does today; it just cannot look up an article it has never seen,
@@ -137,17 +207,304 @@ Then open `http://smpl-station.local:8765/` and scan something.
 
 ### The scanner
 
-Plug it in. It is an HID keyboard; there is nothing to configure on the Pi.
-
-The scanner types into whatever has focus, which is why the station page
-keeps focus in a hidden input at all times and why the *setup* page is a
-separate URL — a text field on the scan page would swallow scans.
+Plug it in. It is an HID keyboard, and there is no driver to install.
 
 Configure the scanner itself (with the barcodes in its own manual) to:
 
 - send a **carriage return** after each code — this is what commits a scan
 - use no prefix
 - not require a trigger hold
+
+Its *layout* is the one setting that is not obvious and not optional; it has
+its own subsection below.
+
+On this station it appears as `/dev/input/event4`, named `NT USB Keyboard`:
+
+```sh
+ls -l /dev/input/by-id/          # usb-NT_USB_Keyboard-event-kbd -> ../event4
+```
+
+#### The grab, and what it costs you
+
+With two screens and no keyboard at either of them, "types into whatever has
+focus" stops being good enough: there is no correct answer to *which* window
+should receive a scan, and the wrong one is a page that quietly swallows it.
+So the agent opens the scanner's evdev node directly and **grabs** it
+(`EVIOCGRAB`), which takes the device away from the rest of the system and
+routes every scan through the station itself.
+
+That grab is the point, and it is also the thing that will confuse you:
+
+> **While the station is running and holding the grab, the scanner cannot
+> type anywhere else on the Pi.** Not into a terminal, not into the desktop,
+> not into the Chromium windows. It is not broken; it belongs to the agent.
+> `sudo systemctl stop smpl-station` gives it back.
+
+Reading the node needs group `input`, which the service user does not have by
+default. `install-pi.sh --with-kiosk` drops in
+`/etc/systemd/system/smpl-station.service.d/20-scanner.conf` with
+`SupplementaryGroups=input`; the device nodes themselves are already
+`root:input 0660` from the stock `/etc/udev/rules.d/99-com.rules`, so there
+is no new udev rule anywhere in this repository. Check it landed with:
+
+```sh
+id -nG smpl-station              # must include: lp input
+```
+
+The `input` group grants read access to *every* input device, not only the
+scanner — the keyboard and mouse included. There is no narrower group on
+Bookworm, and narrowing it would mean editing a stock OS udev file to give
+the scanner a group of its own. For an appliance in a locked workshop with
+one service account, that trade was not judged worth making. If this Pi ever
+grows a second service, revisit it.
+
+#### The scanner types German, and the agent knows it
+
+This is the least obvious thing in the whole station, so it is written out in
+full rather than left in a comment.
+
+An HID scanner does not send characters. It sends **scancodes**, exactly as a
+keyboard does, and what a scancode *means* is decided by whichever keyboard
+layout the receiver applies. The agent grabs the evdev node (above), so there
+is no receiver: X11, Wayland and the desktop's own XKB map are all on the far
+side of the grab and never see a scan. The agent therefore has to pick a
+layout itself, and picking the wrong one does not fail — it silently returns
+the wrong code.
+
+**What was measured.** The scanner on this Pi is USB `1a86:5456`,
+`NT USB Keyboard`, a 2D imager: it reads both a machine's DataMatrix and an
+SMPL Code label. Two real scans, captured read-only from `/dev/input/event4`
+on 2026-09-10 and decoded with a US keycode table:
+
+```
+label reads M-0062       keycodes 50 53 11 11 7 3                     → "M/0062"
+label reads SMPL-RPJN7H  keycodes 31 50 25 38 53 19 25 36 49 8 35     → "SMPL/RPJN7H"
+both terminated by ENTER (keycode 28); 1-2 ms between keycodes
+```
+
+Both labels carry a **hyphen** where the US table produced a slash. So
+keycode 53 is a hyphen here, and this scanner emits **German** scancodes.
+What that implies for the rest of the alphabet comes from the Pi's own XKB
+data — `/usr/share/X11/xkb/symbols/de` against `.../us`:
+
+| evdev code | XKB key | German | US / GB | how we know |
+|---|---|---|---|---|
+| 53 | `<AB10>` | `-` | `/` | **measured**, twice, off the device |
+| 21 | `<AD06>` | `z` | `y` | inferred from the layout files |
+| 44 | `<AB01>` | `y` | `z` | inferred from the layout files |
+
+That last column is not pedantry, and it is why the safety net below exists:
+neither captured scan contains a Y or a Z, so the letter half of the German
+table is a conclusion drawn from `de` being `de`, not a thing anybody watched
+happen.
+
+**Why the letters matter more than the hyphen.** `CODE_ALPHABET` in
+`apps/api/app/services/werkstatt_internal_codes.py` is
+`0123456789ABCDEFGHJKLMNPQRSTUVWXYZ` — it contains **both Y and Z**, and 14 of
+the 55 coded articles in production carry one of them. Decode with a US table
+and those two letters swap, so roughly a quarter of every article scan
+resolves to the wrong article or to nothing at all — with the label, the
+scanner and the network all provably fine. That is the failure this
+subsection exists to prevent.
+
+So: **the agent decodes with a German table.** Not the Pi's configured layout,
+not `setxkbmap`, not the desktop's — none of those are reachable from behind
+an `EVIOCGRAB`, and the station is meant to work with no desktop at all.
+
+The terminator is **Enter** (keycode 28) — the carriage return the scanner's
+own manual calls a suffix. Keypad Enter and Tab commit a scan too, because a
+wedge can be configured to send either.
+
+**The Y/Z safety net.** Because that half is inferred — and because a layout
+is a fact about a device somebody can replace — the inference is checked
+rather than trusted. A code that comes back **unknown** and that contains a Y
+or a Z is looked up once more with those two letters swapped. If the swapped
+spelling resolves, *that* is the code that gets booked and shown, so the
+operator sees the article on the label rather than the one the keycode table
+guessed.
+
+Three conditions keep it cheap and honest. It fires only on a miss, only for
+a code containing one of the two letters, and only when SMPL actually
+answered — during an outage every lookup is a miss, and doubling the timeout
+on the one path that must stay under five seconds would buy nothing. So it
+costs one extra lookup on codes that were going to fail anyway.
+
+When it does hit, it says so, once per start — repeat it per scan and it
+becomes a message nobody reads:
+
+```
+scanner layout: 'SMPL-RPJY7H' was unknown but 'SMPL-RPJZ7H' resolved — Y and Z
+are swapped, so the scanner is no longer sending de scancodes. Check
+--scanner-layout / SCANNER_LAYOUT (logged once per start).
+```
+
+That line is the whole point of the net. It is a diagnosis, not a fix: a
+scanner that trips it on every second article should have its layout setting
+corrected, not be left leaning on a retry.
+
+**Switching the table** is a setting, not a code change. `input_reader.py`
+carries two tables — `de` (the default, what the office scanner sends) and
+`us` — and the agent picks one:
+
+```sh
+# /etc/smpl-station/agent.env
+SCANNER_LAYOUT=us
+# then: sudo systemctl restart smpl-station
+```
+
+`agent.env` is the unit's `EnvironmentFile`, so that is all it takes;
+`--scanner-layout us` does the same thing when you are running the agent by
+hand. On the command line the only two accepted spellings are `de` and `us`
+and anything else is an argparse error, but a typo *in the env file* is not:
+it falls back to `de` rather than refusing to start, because a misspelled
+setting must never be the reason a workshop has no scanner. Read back the one
+it actually settled on rather than the one you typed — the startup banner
+prints it, and so does `/health`:
+
+```sh
+sudo journalctl -u smpl-station -b | grep 'scanner :'
+curl -s localhost:8765/health | python3 -m json.tool | grep -A8 '"scanner"'
+```
+
+Each table covers only what a code of ours can contain — digits, A–Z, `-`,
+`.`, `/`, space, and the numeric keypad, which means its own digits on every
+layout and so is shared. Everything else a German keyboard puts on those keys
+(ß, ü, ö, ä, ^, #, ´) is deliberately absent: an unmapped key is **dropped,
+never guessed**. One hole is worth knowing about because it looks like an
+omission and is not — the *shifted* digit row is not decoded at all. Shift+7
+on a German layout is `/`, and no code we mint contains one, while a wedge
+that holds shift across a whole numeric barcode is a real thing and would
+turn an EAN's `7` into `/`. A scanner that genuinely must send a slash has
+the keypad slash (evdev 98), which is in both tables.
+
+The other way round is equally valid: configure the scanner itself to send US
+scancodes, with the barcodes in its own manual, and leave the agent on `us`.
+That has the merit that the station and any laptop the scanner is ever
+plugged into agree. What you must not do is both — write down which one this
+station uses, because the two changes cancel out and the second person to
+"fix" it re-breaks it.
+
+#### The command-barcode card
+
+A laminated card of barcodes lives next to the scanner. It is how you drive
+the station with no keyboard: the scanner is the input device that is always
+in somebody's hand, so the verbs have to be scannable too. Two things are
+deliberately *not* on the card and are chosen at the screen instead — who an
+Ausgabe goes to, and the Wareneingang direction. Both are below.
+
+| Barcode | What it does |
+|---|---|
+| `SMPL-CMD-FERTIG` | Closes the open crate. Commits nothing — every line was written to SMPL as it was scanned. |
+| `SMPL-CMD-ABBRUCH` | Undoes the **last** booking on this screen, by writing its opposite to SMPL. Once only. A Wareneingang cannot be undone. |
+| `SMPL-CMD-MENGE-5` | the next scanned article counts as 5, not 1 |
+| `SMPL-CMD-MENGE-10` | …as 10 |
+| `SMPL-CMD-MENGE-50` | …as 50 |
+| `SMPL-CMD-AUS` | Regal: book **Ausgabe** — stock leaves with the person tapped on the screen |
+| `SMPL-CMD-EIN` | Regal: book **Rückgabe** — a borrowed item comes back |
+| `SMPL-CMD-ENTNAHME` | Kiste: switch between packing in and taking back out. Stock is never touched. |
+
+**Wareneingang is not on the card.** A delivery is booked by tapping
+*Wareneingang* on the rack screen — see [The rack screen books three
+directions](#the-rack-screen-books-three-directions). It has no barcode on
+purpose: it is the one direction where a mis-scan is expensive, so it costs a
+deliberate tap.
+
+Four things worth knowing before somebody reports a bug:
+
+- A quantity command applies to **the next article only** and then falls back
+  to 1. It is a modifier, not a mode — nobody has ever wanted to leave a
+  station silently multiplying by 50.
+- `AUS` and `EIN` set the rack's **direction**, and it stays set until it is
+  changed. `FERTIG` does not reset it and closing a crate does not reset it.
+  The direction is on the rack screen in words, in large type, because a
+  direction you cannot see is a direction you will get wrong.
+- `ENTNAHME` sets the crate's **mode**, and that one *does* reset: opening a
+  crate, switching to another crate, `FERTIG`, and the ten-minute idle timeout
+  all put it back to packing in. A crate therefore always starts in the
+  harmless direction. Scanned at the rack `ENTNAHME` books nothing and its
+  message lands on the crate screen — the same mirroring `FERTIG` does.
+- A command shares the `SMPL-` prefix with an article code and can still never
+  be mistaken for one, and the reason is narrower than the prefix: an internal
+  article code is `SMPL-` followed by **exactly six** characters from
+  `0123456789ABCDEFGHJKLMNPQRSTUVWXYZ` — an alphabet with no hyphen in it (and
+  no I and no O, which read back as 1 and 0 off a 4 pt label). Every command
+  has a second hyphen, so it fails that test on the hyphen alone. Do not print
+  anything else with the `SMPL-CMD-` prefix.
+
+`FERTIG` only ever speaks to the crate screen: scanned at the rack it closes
+nothing and simply reports *„Kiste geschlossen"* on the other monitor.
+
+If the card is lost, any Code-128 generator reproduces it: the payload is the
+literal text in the left column, nothing encoded, nothing prefixed. Print it
+big enough to scan from arm's length and laminate it — this card lives on a
+workbench.
+
+##### What `ABBRUCH` really does
+
+It is not "throw the list away" — there is no list. Every scan is written to
+SMPL before the next one is read, so taking one back means **writing a
+compensating request**:
+
+| What this screen did last | What `ABBRUCH` writes |
+|---|---|
+| staged an article SMPL refused | nothing at all — the staged article is dropped |
+| added a line to a crate | removes that line again (`POST …/boxes/<id>/items/remove`) |
+| took a line out of a crate | adds it back (`POST …/boxes/<id>/items`) |
+| booked a stock movement | the opposite movement (`POST …/movements`) — an Ausgabe is compensated with a Rückgabe **onto the same name**, so the loan it created is the loan it clears. A Rückgabe is compensated with an Ausgabe, and that one has a rule of its own — see below. |
+
+Three things it cannot take back:
+
+- **A Wareneingang.** An intake has no honest opposite: "it left again" is a
+  claim about where the goods went, and a wall screen does not know. The
+  screen says *„Ein Wareneingang lässt sich nicht per Abbruch zurücknehmen.
+  Bitte in SMPL korrigieren."* and writes nothing.
+- **Anything older than the last booking.** The station remembers exactly one
+  booking per screen and forgets it in the act of undoing it. A second
+  `ABBRUCH` answers *„Nichts zum Rückgängigmachen"*.
+- **A booking made at the other screen.** The rack and the crate keep separate
+  memories. An `ABBRUCH` scanned while a crate is open takes back the crate
+  line, never the last rack movement — and the other way round. The crate undo
+  also remembers *which* crate the line went into, so switching crates and
+  then scanning `ABBRUCH` cannot quietly take a part out of the wrong job.
+
+Because the undo is itself a booking, it can fail like any other: if SMPL is
+unreachable the screen says *„Abbruch fehlgeschlagen"* and the original
+booking still stands. A failed undo **keeps its record**, so scanning
+`ABBRUCH` again once the network is back still works — one blip must not cost
+the operator the ability to undo at all, and the blip is precisely why the
+screen looks wrong. Only an undo SMPL accepted is forgotten. Either way both
+rows stay in the ledger: SMPL has no "delete a movement" and should not grow
+one — a ledger you can delete from is not a ledger.
+
+##### Undoing a Rückgabe needs a name
+
+`ABBRUCH` on a Rückgabe writes an **Ausgabe**, and an Ausgabe names somebody.
+That rule has no exception, and least of all one reachable by scanning two
+barcodes — a nameless checkout let in through the undo is exactly the tool
+nobody can find. But a Rückgabe is allowed to carry no name, so the booking
+being taken back frequently has none to hand back.
+
+When it does carry one — somebody tapped a name on the way in — that is the
+name the Ausgabe goes back onto, and nothing is asked. When it does not, the
+undo uses the name **tapped on the screen right now**:
+
+- a name is tapped → the Ausgabe is booked onto that person. Whoever is
+  standing at the rack undoing a return is the person the tool is going back
+  out with, which is the honest answer as well as the convenient one, and
+  tapping is still a deliberate human act rather than a guess;
+- nobody is tapped → the undo is **refused**, in the same words as a scanned
+  Ausgabe (*„Bitte zuerst Namen antippen"*), and nothing is written. Tap a
+  name and scan `ABBRUCH` again — the record is still there, because a
+  refused undo is not a spent one.
+
+It is deliberately not a flat refusal. The booking being undone can never grow
+a name it did not have, so refusing outright would make *every* later
+`ABBRUCH` on that Rückgabe fail too, and the row it should have taken back
+would stand forever.
+
+Undoing an **Ausgabe** never asks: it writes a Rückgabe, and a Rückgabe is
+allowed to be anonymous — though this one is not, because it goes back onto
+the name the original checkout carried.
 
 ### The printer
 
@@ -186,6 +543,270 @@ journalctl -u smpl-station -f
 If you are on a Raspberry Pi OS **desktop** image, udisks2 already automounts
 removable media and our rule stands aside (`UDISKS_IGNORE`). Re-run the
 installer with `--no-automount` to remove our rule entirely.
+
+---
+
+## The two screens
+
+The station has two monitors on the Pi's two HDMI outputs, each showing one
+page of the station's own web UI, full screen, from boot, with no browser
+chrome. Almost everything is driven by the scanner. What is left to press is
+mostly on the rack screen — the direction and the names, listed under [The
+rack screen books three
+directions](#the-rack-screen-books-three-directions) — while the crate screen
+keeps its own two: the pack-in/take-out mode and closing a crate. Each button
+belongs to exactly one screen, and `/screen/action` says so:
+
+| Screen | Page | Faces |
+|---|---|---|
+| `HDMI-A-1` — Philips TV, 1360x768 | `http://127.0.0.1:8765/regal` | the storage racks |
+| `HDMI-A-2` — Samsung U28E590, 3840x2160 @ 30 Hz | `http://127.0.0.1:8765/kisten` | the construction boxes |
+
+Both URLs are `127.0.0.1`, and they have to stay that way: the screens keep
+working with the office network unplugged, and every route they use — the
+reads as much as the writes — refuses anything that is not this machine. See
+[Which routes leave the box](#which-routes-leave-the-box).
+
+### The rack screen books three directions
+
+| On screen | What it means | Movement written in SMPL |
+|---|---|---|
+| **Ausgabe** | something leaves the rack with somebody | `checkout` |
+| **Rückgabe** | a borrowed item comes back | `return` |
+| **Wareneingang** | a delivery arrives — this is new stock | `intake` |
+
+`SMPL-CMD-AUS` and `SMPL-CMD-EIN` pick the first two from the command card;
+Wareneingang is picked by tapping it on the screen.
+
+**One word per direction, everywhere.** Those three nouns are the whole
+vocabulary: on the screen, in a flash message, in this document. A direction
+that is called two things is a direction somebody will get wrong reading a
+log next to a wall, so nothing here is ever softened into a synonym —
+*Entnahme* in particular is **not** a word for the rack. It names the crate's
+take-back-out mode (`SMPL-CMD-ENTNAHME`) and nothing else; a rack booking that
+takes stock out is an **Ausgabe**. If you find "Entnahme" on the rack screen
+or in a rack message, that is the bug, not a wording preference.
+
+The third one is the one to get right. Booking a delivery as an Ausgabe does
+not merely point the arithmetic the wrong way: it takes the count *down* by
+what has just arrived, and it hangs the delivery on a person, who then stands
+in SMPL as holding twenty metres of cable they have never touched. Nobody
+notices until somebody goes looking for stock the ledger says is out with a
+colleague. Check the word on the screen before the first scan of a pallet.
+
+SMPL catches only the loud half of that mistake: it refuses a checkout larger
+than the stock it believes is on the shelf, so booking a pallet of something
+rare as an Ausgabe fails with an error somebody reads. A delivery of something
+already well stocked passes straight through and is wrong in silence. The
+guard is a backstop, not the rule.
+
+#### Tap your name first
+
+Before anything goes out, the worker taps their name. The list of names comes
+from SMPL over the station's own token (`GET /api/station/werkstatt/crew`) and
+is cached, so the screen keeps working while the switch reboots; when SMPL has
+never answered, the list is empty and nobody can be selected.
+
+A tap is checked against that cached list, and an id outside it is refused
+with a `400` rather than accepted — the buttons were built from the list, so
+an id that is not on it did not come from a finger. Accepting one published a
+name-less chip on the wall and booked a tool out to somebody the station
+could not name.
+
+- **An Ausgabe needs a name.** With nobody tapped, the scan is refused with
+  *„Bitte zuerst Namen antippen"* and **nothing is written** — not the
+  movement, not a half of it. That refusal is the whole point of the rule: the
+  ledger has to be able to answer "who has the drill".
+- **A Rückgabe may carry one** — the person whose loan it clears — but does
+  not require one. A tool coming back is a tool coming back.
+- **A Wareneingang never carries one.** A delivery belongs to the shelf.
+
+**The rule is one rule, at every door.** There are three ways an Ausgabe can
+reach the ledger from this box, and all three ask the same question through
+the same function (`movement_needs_assignee()` in `scan_router.py`):
+
+| Door | What happens with nobody tapped |
+|---|---|
+| a scanned article, direction *Ausgabe* | refused before anything is consumed — the quantity survives, tap a name and scan again |
+| `POST /rack/movement`, which the screen's own buttons use | `400` with the same sentence, and the screen flashes *„Ausgabe nur mit Namen — nichts gebucht."* |
+| the Ausgabe an `ABBRUCH` re-creates when it takes back a Rückgabe | refused, in those same words — see [Undoing a Rückgabe needs a name](#undoing-a-rückgabe-needs-a-name) |
+
+That third door is the one that was open: the undo used to post a checkout
+with no assignee, which walked past the rule by the back way and left a tool
+out with nobody on it. A rule with two copies is a rule with two behaviours,
+so there is now one copy.
+
+The selected name **clears itself after 120 seconds** of nothing happening, so
+the next person to walk up cannot book onto the last person's name — the rack
+screen says *„Name zurückgesetzt / Bitte vor der Ausgabe wieder antippen."*
+when it goes. Every accepted scan pushes those 120 seconds out again, so the
+clock measures idleness, not the length of a job. While a name is set it is on
+the screen in large type, for the same reason the direction is.
+
+Tapping a name is an action of the **rack** screen and only the rack screen,
+and so is setting the direction; the crate screen owns the mode and closing a
+crate. `/screen/action` checks that the screen a tap claims to come from is
+the one that owns the action, and answers `400` otherwise. (Dismissing a
+message and setting the quantity genuinely belong to both screens, so those
+two are not checked.) It used to take the screen name and ignore it, which
+let the crate screen set the rack's direction or tap a name onto an Ausgabe
+nobody at the rack had asked for.
+
+### How it starts
+
+`~/.config/autostart/smpl-kiosk.desktop` (owned by `pi`) runs
+`/usr/local/bin/smpl-kiosk.sh` when the desktop session comes up. That script:
+
+1. waits for `http://127.0.0.1:8765/health` to answer `200`, so nobody ever
+   sees *"site cannot be reached"* on a wall screen;
+2. asks `wlr-randr` where each named output currently is;
+3. launches one Chromium per screen, positioned on it;
+4. restarts either window, independently and forever, if it dies.
+
+It is an autostart `.desktop` file rather than a systemd unit on purpose: it
+needs the desktop session's `WAYLAND_DISPLAY` and `DISPLAY`, and it should
+die with that session. It is *not* `~/.config/labwc/autostart`, which would
+risk replacing the system autostart that starts `pcmanfm --desktop`,
+`wf-panel-pi` and `kanshi` — a failure nobody would connect to "I added a
+kiosk" when the taskbar disappeared a week later.
+
+### Swapping which screen shows which page
+
+Two lines in `/etc/smpl-station/kiosk.env`:
+
+```sh
+KIOSK_REGAL_OUTPUT=HDMI-A-2
+KIOSK_KISTEN_OUTPUT=HDMI-A-1
+```
+
+(and swap `KIOSK_REGAL_SCALE` / `KIOSK_KISTEN_SCALE` with them, since the
+scale belongs to the panel, not to the page). Log out and back in, or reboot.
+
+**That is the whole procedure.** It is not a code change, there is nothing to
+rebuild, nothing to redeploy, and nothing in the repository knows or cares
+which way round the office is. If somebody ever tells you the screens are
+swapped and the fix is a pull request, they are looking at the wrong file.
+
+Check the mapping before rebooting — this launches nothing:
+
+```sh
+sudo -u pi SMPL_KIOSK_DRYRUN=1 /usr/local/bin/smpl-kiosk.sh
+```
+
+It prints the exact `argv` each window would get, which output each resolved
+to, and the geometry it read. It is also the fastest way to debug a screen
+showing the wrong page while you are standing in front of it.
+
+### Every knob
+
+All of them live in `/etc/smpl-station/kiosk.env`; the installed
+`kiosk.env.example` beside it documents each one at length.
+
+| Variable | Default | What it decides |
+|---|---|---|
+| `KIOSK_REGAL_OUTPUT` | `HDMI-A-1` | which connector shows `/regal` |
+| `KIOSK_KISTEN_OUTPUT` | `HDMI-A-2` | which connector shows `/kisten` |
+| `KIOSK_REGAL_URL` | `http://127.0.0.1:8765/regal` | the racks page |
+| `KIOSK_KISTEN_URL` | `http://127.0.0.1:8765/kisten` | the boxes page |
+| `KIOSK_REGAL_SCALE` | `1` | Chromium device scale factor on that screen |
+| `KIOSK_KISTEN_SCALE` | `2` | ditto — 4K at scale 1 is unreadable across a workshop |
+| `KIOSK_BACKEND` | `x11` | `x11` or `wayland` (see below) |
+| `KIOSK_FULLSCREEN` | `kiosk` | `kiosk` or `window` — the placement escape hatch |
+| `KIOSK_HEALTH_URL` | `http://127.0.0.1:8765/health` | what must answer 200 first |
+| `KIOSK_HEALTH_TIMEOUT` | `180` | seconds to wait for it before opening anyway |
+| `KIOSK_OUTPUT_TIMEOUT` | `60` | seconds to wait for a screen to appear |
+| `KIOSK_RESPAWN_DELAY` | `3` | seconds before a dead window is restarted |
+| `KIOSK_CHROMIUM` | *(auto)* | browser path, if not the first one on `PATH` |
+| `KIOSK_PROFILE_ROOT` | `~/.local/share/smpl-kiosk` | where the two profiles live |
+
+### Why X11 on a Wayland compositor
+
+The compositor here is labwc on Wayland, and the default backend is
+nevertheless `--ozone-platform=x11`. That is deliberate: XWayland presents
+labwc's two outputs as **one** root window spanning both of them (5200x2160
+today), so `--window-position` addresses an absolute desktop coordinate and
+the window lands where it was told. Native Wayland has no mechanism for a
+client to choose its output at all — placement has to come from a compositor
+rule instead.
+
+`KIOSK_BACKEND=wayland` exists and launches each window with a distinct
+`app_id` (`smpl-kiosk-regal`, `smpl-kiosk-kisten`), but it places nothing on
+its own: it needs labwc window rules in `~/.config/labwc/rc.xml`, roughly
+
+```xml
+<windowRule identifier="smpl-kiosk-regal">
+  <action name="MoveToOutput" output="HDMI-A-1"/>
+</windowRule>
+```
+
+The script prints the rules it expects and does **not** write `rc.xml`. This
+path is documented, not delivered — it has never run on this station.
+
+Two traps in this area, both of which have cost time already:
+
+- **Under XWayland the outputs are not called `HDMI-A-1`/`HDMI-A-2`.**
+  `xrandr` calls them `XWAYLAND1` and `XWAYLAND2`, in an order that is not
+  the connector order, and `xrandr --listmonitors` rounds the Philips to
+  1366 px wide where the actual layout gives it 1360. That is why geometry is
+  always read from `wlr-randr` when a Wayland session is present, even though
+  Chromium is then driven through X11: `wlr-randr` is the only tool on the
+  box that knows the name written in `kiosk.env`.
+- **The second Chromium must have its own `--user-data-dir`.** Chromium keeps
+  one browser process per profile, guarded by `SingletonLock`. A second
+  launch against the same profile does not start a second browser — it hands
+  its command line to the first process, that process opens a *tab*, and the
+  second launch exits `0`. One window, on one screen, and a script that
+  believes it succeeded. Each window therefore gets its own profile
+  directory and its own `--class`.
+
+For the same family of reasons the respawn is a plain `while` loop and not
+`/usr/bin/lwrespawn`, which the system autostart uses for the panel:
+`lwrespawn` deduplicates with `pgrep` on the process *name*, so once one
+Chromium is up it refuses to start the second.
+
+### Which monitor is where, pinned
+
+`~/.config/kanshi/config` pins both screens by make and model at fixed
+positions. Before this, that file was zero bytes and the arrangement was
+whatever wlroots decided on that boot — and it genuinely varied. Two probes
+of this Pi weeks apart, with nobody touching a cable:
+
+```
+probe 1:  HDMI-A-1 (Philips) at 0,0       HDMI-A-2 (Samsung) at 1360,0
+probe 2:  HDMI-A-2 (Samsung) at 0,0       HDMI-A-1 (Philips) at 3840,0
+```
+
+The kiosk does not depend on the pin — it re-reads the geometry every start —
+but a pinned layout is what makes "the left screen shows the racks" a fact
+rather than a coincidence. Installing it will move the desktop back to
+Philips-at-origin on the next login, which is a visible one-off change.
+
+Both screens are pinned at compositor scale 1 on purpose. Compositor scaling
+would change the pixel geometry the kiosk reads back and computes positions
+from; the 4K screen is made legible with Chromium's own device scale factor
+(`KIOSK_KISTEN_SCALE=2`) instead, which leaves the window geometry alone.
+
+### When a screen is wrong
+
+| Symptom | Check | Fix |
+|---|---|---|
+| Both pages on one screen | `sudo -u pi SMPL_KIOSK_DRYRUN=1 /usr/local/bin/smpl-kiosk.sh` | if it prints two identical `user_data_dir` values, the profiles collided; if only one window is listed, the other output was not found |
+| Nothing on either screen | `systemctl is-active smpl-station`; `curl -s localhost:8765/health` | the kiosk waits for `/health` — a station that never starts means screens that never open |
+| One screen black, no error | `ls ~/.config/autostart/smpl-kiosk.desktop` | the autostart entry is missing, or was installed root-owned; it must be owned by `pi` |
+| The pages are swapped | | two lines in `/etc/smpl-station/kiosk.env` — see above |
+| A window is on the wrong screen but fullscreen | | set `KIOSK_FULLSCREEN=window` — placement without `--kiosk` is fully deterministic |
+| "output … is not connected" and nothing opened | `wlr-randr` | correct behaviour: a missing screen stops the kiosk rather than stacking both pages on the survivor |
+| A window closes and does not come back | the kiosk logs each restart to the session's stderr — look in `~/.xsession-errors` first, then `journalctl -b \| grep smpl-kiosk` | the respawn loop is unconditional, so silence there means the script itself is not running |
+| Screens blank after a while | | nothing on this box configures blanking (`consoleblank=0`, no swayidle), and the kiosk runs `xset s off s noblank -dpms` as insurance. If they still blank, something new was installed. |
+| The crate list is greyed out and dated | `curl -s localhost:8765/boxes/state` | correct behaviour: the box screen keeps rendering the last list SMPL gave it and marks it stale rather than going blank. `error` in that answer says why the refresh failed, `fetched_at` says how old the rows are. |
+| Nobody can be picked on the rack screen | `curl -s localhost:8765/screen/state?screen=regal` | an empty `crew` means SMPL has never answered `/api/station/werkstatt/crew` — usually an unpaired or revoked station. An Ausgabe stays refused until it is fixed. |
+
+To stop the kiosk for an afternoon without root, rename the autostart entry
+and log out:
+
+```sh
+mv ~/.config/autostart/smpl-kiosk.desktop ~/.config/autostart/smpl-kiosk.desktop.off
+```
 
 ---
 
@@ -272,11 +893,11 @@ survive intact until that decision is made.
 
 ## How data reaches SMPL
 
-Three separate paths, deliberately independent:
+Four separate paths, deliberately independent:
 
 | What | Route | If it breaks |
 |---|---|---|
-| Article lookups | `GET /api/werkstatt/scan/resolve` on each new code | falls back to the local SQLite cache, then to "unknown code". Counting never waits. |
+| Article lookups | `GET /api/station/werkstatt/resolve?code=…` on each new code — both the wall screens and the older scan-and-print page | the two differ. The scan-and-print page falls back to the local SQLite cache and then to "unknown code", so counting never waits. The wall screens have **no** cache: an unresolved code is flashed as *„Code nicht zugeordnet"* and nothing is booked, because a rack booking needs an article id and guessing one would move the wrong stock. |
 | Counted stock | manual export: `GET /export/<session>.csv` or `.json` | the SQLite file is the product; copy it off with `scp` |
 | Test protocols | `POST /api/station/imports` (multipart) | stays staged locally and is retried |
 | Liveness | `POST /api/station/heartbeat` every 2 min | the admin page shows the station as stale; nothing else changes |
@@ -286,6 +907,22 @@ The station authenticates with the paired token, sent as
 `/var/lib/smpl-station/station-token.json`, mode `0600`, in a directory that
 is `0700` and owned by the service user. If SMPL answers `401` or `403`,
 `/health` reports `identity.token_rejected: true` — the fix is to re-pair.
+
+> **The one endpoint that looks right and is not.**
+> `GET /api/werkstatt/scan/resolve` answers the same question and returns the
+> same union, and it is the endpoint a browser uses. It is a *user* endpoint:
+> in `apps/api/app/routers/workflow_werkstatt_mobile.py` it depends on
+> `get_current_user`, i.e. a logged-in person's JWT. A station bearer token
+> presented to it is **rejected**, not accepted-with-fewer-rights — which the
+> agent swallows into "unknown code", because a lookup that fails must never
+> stop a count. So the symptom is a station that resolves nothing at all while
+> a phone standing next to it resolves the same barcode perfectly, and nothing
+> in the log says "credential". Both of the agent's lookup paths — the kiosk's
+> (`smpl_werkstatt.PATHS["resolve"]`) and the scan-and-print page's
+> (`Upstream.resolve` in `server.py`) — must therefore point at
+> `/api/station/werkstatt/resolve`, the only router on the SMPL side that
+> knows what a station token is. If a station ever resolves nothing again,
+> check those two before you check the network.
 
 The heartbeat is what fills in `last_seen_at` and the printer status on SMPL's
 **Scan-Station** admin page. Without it every station on that page reads
@@ -303,6 +940,78 @@ and `imports` all round-trip. The agent's tests include a
 `TestRealSmplContract` case built from SMPL's own schema file, so a later
 change on either side that breaks the handshake fails a test rather than a
 station.
+
+### What a station is allowed to write
+
+The station token is not a login, and the router behind it
+(`apps/api/app/routers/workflow_station_werkstatt.py`) is deliberately narrow.
+Three of its rules are worth knowing while you are standing at the Pi:
+
+- **Every ledger row says which station wrote it.** A movement booked from a
+  screen carries the station's id, and its note begins `Regal-Station <name>`.
+  A note sent from the Pi is added *after* that prefix and can never replace
+  it — a caller that could erase the marker could make a device's booking read
+  like a person's. So "who booked this?" is answerable in SMPL without
+  guessing, and answerable months later.
+- **A device is not a person.** `werkstatt_movements.user_id` is NOT NULL, so
+  the row is booked as the administrator who approved the pairing, or — if
+  that account is gone — the lowest-id active admin. Lowest *id*, because it
+  is stable: "the newest admin" would move the authorship of the ledger
+  between two deploys. If there is no active admin at all the write is
+  refused with a `409` and the German sentence *„Die Station … hat keinen
+  Besitzer, auf den gebucht werden kann"* — a booking that did not happen
+  being the better half of that trade, since a ledger row with a wrong name
+  is a lie somebody acts on. Who *has* the item is a separate field, and that
+  one is the name that was tapped on the screen. Conflating the two is how a
+  tool becomes unfindable, so the API keeps them apart.
+- **Three movement types, and no corrections.** A station may write
+  `checkout`, `return` and `intake` and nothing else — exactly the three
+  directions on the rack screen. Write-offs and repair bookkeeping are
+  refused, and so is a stock-take correction: a correction is the one movement
+  that is *allowed* to disagree with the counters, which means nothing stops
+  it going arbitrarily negative, and a wall screen with no keyboard cannot
+  type the reason such a decision needs. Corrections belong in SMPL's
+  inventory-session flow, where a named person signs for them.
+
+Quantities are bounded twice on the way: the agent's own routes take at most
+9999 per scan, and SMPL refuses anything above 10 000.
+
+### Which routes leave the box
+
+On the Pi the agent binds `0.0.0.0` (`AGENT_HOST` in the unit file), so port
+8765 is reachable from the office LAN. That is deliberate: the station page,
+`/setup` and the older print-and-count API are meant to be usable from a
+laptop or a phone. But *reachable* stopped being the same thing as *trusted*
+the moment a route could move stock — or hand out a customer list — so the
+**whole kiosk** refuses any caller that is not this machine, its reads
+included, under every verb. `GET` and `HEAD` are checked exactly as `POST`
+is; the guard used to live in `do_POST` alone, which left every read open.
+
+| Route | Reachable from the LAN | Why |
+|---|---|---|
+| `POST /scan/route`, `/screen/action` | **no — 403** | they drive the wall screens, and a scan books stock |
+| `POST /box/session`, `/box/item`, `/box/item/remove` | **no — 403** | they change what is in a crate |
+| `POST /rack/movement` | **no — 403** | it writes the ledger |
+| `GET /regal`, `/kisten`, `/screen/state`, `/boxes/state` | **no — 403** | not "they only read": the crate list is the customer, the project and every packed item of every open job, and `/screen/state` is a 25-second long poll on a threaded server — one held thread per caller, which is a lever against the two screens as much as it is a leak |
+| `GET /now-playing`, `/now-playing/cover.jpg` | **no — 403** | the same kiosk furniture, and it says what is playing in the workshop |
+| `POST /pair/start`, `/pair/cancel`, `/pair/forget` | **no — 403** | `/pair/forget` deletes the station credential from disk. A route that unpairs a Pi from the far side of the workshop LAN is not a route, it is a prank |
+| `GET /pair/status` | yes | the readable half of pairing: paired or not, and whether a code is outstanding. It writes nothing and holds no thread |
+| `GET /health`, `/sessions`, `/session/…`, `/export/…` | yes | monitoring, and copying counts off the box |
+| `GET /`, `/setup`, `/preview.png`, `/static/…`, `/imports`, `/imports/<id>` | yes | the two pages somebody opens from a laptop or a phone, and the label preview |
+| `POST /resolve`, `/count`, `/print`, `/imports/rescan`, `/imports/retry` | yes | the older scan-and-print path the README documents `--host 0.0.0.0` for |
+
+Both browsers run on the Pi and talk to `127.0.0.1`, so they never meet the
+lock. There is exactly one way to trip over it: point `KIOSK_REGAL_URL` or
+`KIOSK_KISTEN_URL` at `http://smpl-station.local:8765/…` instead of
+`127.0.0.1`. The request then arrives from the Pi's own LAN address, which is
+not loopback, and the wall shows `403 this route is local-only` where the page
+should be — the page itself is one of the locked routes, so this now fails
+loudly at the first load rather than quietly at the first scan. Keep both
+kiosk URLs on `127.0.0.1`.
+
+The same split is why `/setup` opened from a phone can *show* you the pairing
+state and not start one: the page is LAN-reachable, the button behind it is
+not. See [Pair the station with SMPL](#5-pair-the-station-with-smpl).
 
 ---
 
@@ -339,7 +1048,7 @@ design: the operator cannot stop counting to go find a cable.
 |---|---|
 | Nothing happens on scan | Click the page once — the hidden input needs focus. Check `chipScan` on the station page. |
 | Codes arrive concatenated | The scanner is not sending a carriage return. Fix in the scanner's own manual. |
-| Wrong characters, e.g. `Z`↔`Y` | The scanner is set to a US layout and the Pi to German, or the reverse. Set the scanner to match. |
+| Wrong characters, e.g. `Z`↔`Y` or `-` read as `/` | Not the Pi's layout — the agent grabs the evdev node, so the desktop's keyboard map never touches a scan. The scanner is sending scancodes the agent's table does not expect. See [The scanner types German](#the-scanner-types-german-and-the-agent-knows-it). |
 
 ### The card reader
 
@@ -363,7 +1072,7 @@ and are fine.
 | Symptom | Meaning |
 |---|---|
 | `no station pairing endpoint yet` | SMPL has not shipped it. Not a fault. Use `SMPL_API_TOKEN` in `/etc/smpl-station/agent.env` in the meantime. |
-| `could not reach SMPL` | Network or DNS, not a missing feature. `curl -sI $SMPL_API_URL/api/health` |
+| `could not reach SMPL` | Network or DNS, not a missing feature. `curl -sI $SMPL_API_URL/api/healthz` — that is the API's only health route, and there is no `/api/health` to spell it with. |
 | `denied` | An admin refused the code. Ask them why. |
 | `expired` | Nobody approved in time. Start again. |
 | `token_rejected: true` in `/health` | The token was revoked or expired. Re-pair. |
@@ -419,7 +1128,7 @@ cd /opt/smpl-station/tools/label_agent
 python3 -m unittest discover -s tests
 ```
 
-128 tests, no hardware, no network, no printing.
+The whole suite: no hardware, no network, no printing, no screens.
 
 ---
 
@@ -441,3 +1150,27 @@ are the checklist for the first hour in the office:
 
 Nothing in that list is expected to fail. They are listed because "we tested
 it" should mean something specific, and for these eight it would not.
+
+### And the kiosk
+
+The kiosk was written against a Pi that was probed read-only. No window has
+ever been opened by this script on a real screen, and the tests exercise its
+*decisions* with a fake `wlr-randr`, not its effects. These need a person in
+the office, roughly in this order:
+
+| Step | Why it needs a human | How you know it worked |
+|---|---|---|
+| Decide which physical screen faces the racks and which faces the boxes | Nobody remote can see the room. The defaults are a guess. | Both pages are readable from where the work happens |
+| `sudo install-pi.sh --with-kiosk`, then reboot | First real run | Two full-screen pages, one per monitor |
+| Confirm the mapping, and swap the two lines in `kiosk.env` if it is wrong | The mapping is a fact about furniture | `/regal` on the racks screen |
+| Confirm `--kiosk` fullscreens on the intended monitor | Chromium's interaction between `--kiosk` and `--window-position` could not be tested without two real outputs. If a window fullscreens onto the wrong screen, set `KIOSK_FULLSCREEN=window`. | Neither window has moved after a reboot |
+| Kill the stale Chromium a probe found running as `pi` | It sits on the *default* profile and holds `~/.config/chromium/SingletonLock`. Harmless to the kiosk, which uses its own profiles, but it is a browser nobody has looked at in a long time. Ask the box how long rather than guessing: `ps -o lstart= -p $(pgrep -u pi -o chromium)`. | `pgrep -u pi chromium` shows only the two kiosk windows |
+| Insert an SD card **after** the drop-ins land | `10-nowplaying.conf` sets `PrivateTmp=no`, and the unit's own header warns that its namespace settings are what the card watcher depends on. This loosens rather than tightens, so it should be fine — "should" is why it is on this list. | An import appears in `journalctl -u smpl-station -f` |
+| Scan something, then try to scan into a terminal | Confirms the evdev grab is working and demonstrates its cost | The station registers the scan; the terminal stays empty |
+| Enable shairport-sync metadata, if the now-playing panel is wanted | `/etc/shairport-sync.conf` has no `metadata` block today, so the pipe at `/tmp/shairport-sync-metadata` exists but nothing is fed through it. Turning it on **restarts the AirPlay receiver**, which cuts off whatever is playing in the workshop at that moment. Pick your moment. | The panel shows a track while something is playing |
+| Verify kanshi actually applied the pinned layout | A profile applies only on an exact output-set match; a wrong model string means it silently does nothing | `wlr-randr` shows Philips at `0,0` and Samsung at `1360,0` |
+
+The last one has a specific reason to be checked rather than assumed. Two
+probes of this Pi weeks apart found the two outputs at *opposite* ends of the
+layout with nobody touching a cable. If the pin is not working, that will
+come back.

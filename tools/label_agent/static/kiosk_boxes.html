@@ -1,0 +1,828 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="robots" content="noindex">
+<title>Baustellenkisten</title>
+<link rel="stylesheet" href="/static/kiosk.css">
+<style>
+/* ------------------------------------------------------------------ *
+ * Kisten-Wandbildschirm - 3840x2160 @ Geraeteskalierung 2,
+ * also 1920x1080 CSS-Pixel. Ableseabstand 1-3 m, nie beruehrt.
+ * Token und geteilte Bausteine: /static/kiosk.css
+ * ------------------------------------------------------------------ */
+/* Spalte statt Raster: das Stand-Banner darf auftauchen und verschwinden,
+   ohne dass <main> in eine andere Rasterzeile rutscht. */
+body{display:flex; flex-direction:column}
+
+/* Die Zeilen strecken sich ineinander (align-self:stretch), NICHT ueber
+   height:100% - das waere gegenueber einer 1fr-Zeile zirkulaer und
+   quetscht in Chromium die Kopfleiste zusammen. */
+main{flex:1 1 auto; min-height:0; display:grid; grid-template-rows:minmax(0,1fr)}
+
+/* ---------- Uebersicht: alle Kisten nebeneinander ---------- */
+#idleView{display:grid; grid-template-rows:minmax(0,1fr); min-height:0}
+/* 1fr-Zeilen statt fester Kartenhoehe: der Raster fuellt die Zeile exakt
+   aus, egal wie hoch die Kopfleiste gerade ist. Nichts wird unten
+   abgeschnitten, nichts scrollt ungewollt. */
+.boxgrid{
+  display:grid; gap:var(--gap);
+  grid-template-columns:repeat(auto-fill, minmax(400px, 1fr));
+  grid-auto-rows:minmax(0, 1fr);
+  align-content:stretch;
+  padding:var(--pad);
+  min-height:0;
+}
+/* Der Leersatz ist kein Kartenplatz: er gehoert ueber die ganze Breite,
+   sonst bricht er in der 400-px-Spalte mitten im Satz um. */
+.boxgrid > .empty{grid-column:1 / -1; align-self:start}
+.box{
+  /* Deckel fuer den Fall "nur zwei Kisten" - sonst wuerde eine Karte
+     ueber den ganzen Bildschirm laufen. */
+  max-height:52vh; min-height:190px;
+  padding:14px 16px; gap:8px;
+}
+.box.locked-box{border-color:var(--warn-line)}
+.box-top{display:flex; align-items:center; justify-content:space-between; gap:10px}
+.box-no{
+  font-size:var(--t-2xl); font-weight:850; line-height:1;
+  letter-spacing:-.03em; min-width:0; overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap;
+}
+/* BK-2026-0001 ist dreimal so lang wie K3 und wuerde die Karte sprengen. */
+.box-no.long{font-size:var(--t-lg); line-height:1.1; letter-spacing:-.01em}
+.box-label{font-size:var(--t-lg); font-weight:750; margin-top:2px}
+.box-who{font-size:var(--t-md); font-weight:700; color:var(--dim); min-height:1.2em}
+.box-who .proj{color:var(--dim2); font-weight:600}
+.box-who .none{color:var(--dim2); font-weight:600}
+.box-count{font-size:var(--t-kick); letter-spacing:.14em; text-transform:uppercase;
+           color:var(--dim2); font-weight:800; padding-top:4px;
+           border-top:1px solid var(--line)}
+.box-count b{color:var(--fg); font-size:var(--t-sm); letter-spacing:0}
+
+/* ---------- Positionsliste (in Karte und im Fokus gleich aufgebaut) ---------- */
+.items{list-style:none; margin:0; padding:0; flex:1 1 auto; min-height:0}
+.item{
+  display:flex; align-items:baseline; gap:10px;
+  padding:5px 2px; border-bottom:1px solid var(--line);
+}
+.item:last-child{border-bottom:0}
+.i-qty{
+  flex:0 0 auto; min-width:5.5ch; text-align:right;
+  font-size:var(--t-md); font-weight:850; color:var(--ok);
+  font-variant-numeric:tabular-nums;
+}
+.i-unit{font-size:var(--t-sm); font-weight:700; color:var(--dim2); flex:0 0 auto}
+.i-main{flex:1 1 auto; min-width:0}
+.i-name{display:block; font-size:var(--t-md); font-weight:700}
+.i-art{display:block; font-size:var(--t-sm); color:var(--dim2); font-weight:600; margin-top:1px}
+
+/* ---------- Sitzung: eine Kiste gross, der Rest als Streifen ---------- */
+#sessionView{
+  min-height:0;
+  display:grid; grid-template-rows:minmax(0,1fr) auto;
+  gap:var(--gap); padding:var(--pad);
+}
+.focus{
+  display:grid; grid-template-columns:minmax(0,7fr) minmax(0,9fr);
+  gap:clamp(16px, 2vw, 34px);
+  padding:clamp(16px, 1.8vw, 30px);
+  border-width:2px; border-color:var(--ok);
+}
+.focus.is-locked{border-color:var(--warn)}
+.focus-id{display:flex; flex-direction:column; min-width:0}
+#fBoxNo{font-size:var(--t-3xl); font-weight:850; line-height:.92; letter-spacing:-.045em}
+#fBoxNo.long{font-size:var(--t-xl); line-height:1.05; letter-spacing:-.02em; word-break:break-all}
+#fLabel{font-size:var(--t-xl); font-weight:800; margin-top:6px}
+.f-who{margin-top:12px; font-size:var(--t-lg); font-weight:750; color:var(--fg)}
+.f-proj{font-size:var(--t-md); font-weight:650; color:var(--dim); margin-top:2px}
+.f-chips{display:flex; flex-wrap:wrap; gap:8px; margin-top:14px}
+
+/* Der Bereitschaftshinweis traegt die untere Haelfte der Spalte. */
+.f-ready{
+  margin-top:auto; padding-top:16px;
+  display:flex; flex-direction:column; gap:12px;
+}
+.ready-line{display:flex; align-items:center; gap:14px}
+.ready-dot{
+  width:clamp(14px,1.1vw,20px); height:clamp(14px,1.1vw,20px); border-radius:50%;
+  background:var(--ok); flex:0 0 auto; animation:kpulse 1.6s ease-in-out infinite;
+}
+.ready-text{font-size:var(--t-2xl); font-weight:850; color:var(--ok); letter-spacing:-.03em}
+.focus.is-locked .ready-dot{background:var(--warn); animation:none}
+.focus.is-locked .ready-text{color:var(--warn)}
+.f-mult{
+  display:inline-flex; align-items:baseline; gap:10px;
+  font-size:var(--t-2xl); font-weight:850; color:var(--warn); letter-spacing:-.03em;
+}
+.f-mult .l{font-size:var(--t-kick); letter-spacing:.14em; text-transform:uppercase;
+           color:var(--dim2); font-weight:800}
+.f-actions{display:flex; flex-wrap:wrap; gap:10px; margin-top:4px}
+
+.focus-items{display:flex; flex-direction:column; min-height:0; min-width:0}
+.fi-head{
+  display:flex; align-items:baseline; justify-content:space-between;
+  gap:10px; padding-bottom:8px; border-bottom:1px solid var(--line);
+}
+#fItems .item{padding:8px 2px}
+#fItems .i-qty{font-size:var(--t-lg); min-width:5ch}
+#fItems .i-name{font-size:var(--t-lg)}
+
+/* ---------- Streifen der uebrigen Kisten ---------- */
+.strip{display:flex; gap:var(--gap); overflow-x:auto; padding-bottom:4px; scrollbar-width:thin}
+.mini{
+  flex:0 0 auto; min-width:132px;
+  display:flex; flex-direction:column; gap:4px;
+  padding:9px 13px; border-radius:var(--r-sm);
+  background:var(--surface); border:1px solid var(--line);
+}
+.mini.locked-box{border-color:var(--warn-line)}
+.mini-top{display:flex; align-items:center; gap:8px}
+.mini-no{font-size:var(--t-lg); font-weight:850; letter-spacing:-.02em}
+.mini-lab{font-size:var(--t-sm); color:var(--dim); font-weight:650; max-width:20ch}
+.mini-n{font-size:var(--t-kick); letter-spacing:.12em; text-transform:uppercase;
+        color:var(--dim2); font-weight:800}
+</style>
+</head>
+<body>
+
+<header class="khead">
+  <span class="ktitle">Baustellenkisten<small>SMPL Werkstatt</small></span>
+  <span class="chip" id="chipScan"><span class="dot"></span><b>Scanner</b></span>
+  <span class="chip" id="chipUp"><span class="dot"></span><b>SMPL</b><span class="why" id="upWhy"></span></span>
+  <span class="spacer"></span>
+  <span class="chip" id="chipBoxes"><b id="boxCount">0</b> Kisten</span>
+  <span class="chip mono" id="chipClock">--:--:--</span>
+</header>
+
+<div class="stale" id="stale" hidden>
+  <span class="dot"></span>
+  Keine Verbindung zum Stations-Agent
+  <span id="staleAge">&ndash; angezeigter Stand ist alt.</span>
+</div>
+
+<!-- Zwei verschiedene Ausfaelle, zwei verschiedene Baender: oben steht,
+     dass der Agent schweigt, hier, dass SEIN Kistenstand alt ist. Ohne
+     das zweite Band saehe "keine Kisten" genauso aus wie "SMPL weg". -->
+<div class="stale" id="boxStale" hidden>
+  <span class="dot"></span>
+  <span class="lead" id="boxStaleLead"></span>
+  <span id="boxStaleWhy"></span>
+</div>
+
+<main id="main">
+
+  <section id="idleView">
+    <div class="boxgrid scroll" id="grid"></div>
+  </section>
+
+  <section id="sessionView" hidden>
+    <div class="focus card" id="focus">
+
+      <div class="focus-id">
+        <span class="kick">Kisten-Sitzung</span>
+        <div id="fBoxNo" class="num">&ndash;</div>
+        <div id="fLabel"></div>
+        <div class="f-who" id="fCustomer"></div>
+        <div class="f-proj" id="fProject" hidden></div>
+
+        <div class="f-chips">
+          <span class="chip big" id="fStatus"><span class="dot"></span><b></b></span>
+          <span class="chip big mono" id="fCode"></span>
+          <span class="chip big is-warn armed" id="fCountdown" hidden><span class="dot"></span><b></b></span>
+        </div>
+
+        <div class="f-ready">
+          <div class="locked" id="fLocked" hidden>
+            Inhalt gesperrt
+            <span>Kiste ist beim Kunden &ndash; erst in SMPL auf &raquo;zur&uuml;ck&laquo; buchen, dann wieder scannen.</span>
+          </div>
+
+          <div class="ready-line">
+            <span class="ready-dot"></span>
+            <span class="ready-text" id="fReady">Bereit &ndash; Artikel scannen</span>
+          </div>
+
+          <div class="f-mult" id="fMult" hidden>
+            <span class="l">Menge je Scan</span><span id="fMultN">&times;1</span>
+          </div>
+
+          <div class="f-actions">
+            <button class="btn" id="btnMode" type="button">Modus</button>
+            <button class="btn ghost" id="btnClose" type="button">Sitzung beenden</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="focus-items">
+        <div class="fi-head">
+          <span class="kick">Inhalt</span>
+          <span class="kick" id="fCount">0 Positionen</span>
+        </div>
+        <ul class="items scroll" id="fItems" data-boxscroll="focus"></ul>
+      </div>
+
+    </div>
+
+    <div class="strip scroll" id="strip"></div>
+  </section>
+
+</main>
+
+<div class="flash" id="flash" hidden>
+  <span class="fmark" id="flashMark">&check;</span>
+  <span class="fbody">
+    <span class="ftitle" id="flashTitle"></span>
+    <span class="fdetail" id="flashDetail"></span>
+    <span class="fcode mono" id="flashCode"></span>
+  </span>
+</div>
+
+<noscript><p style="padding:24px;font-size:1.4rem">Dieser Bildschirm ben&ouml;tigt JavaScript.</p></noscript>
+
+<script>
+(function(){
+'use strict';
+
+/* ================================================================== *
+ * Konfiguration
+ * ================================================================== */
+var SCREEN = 'kisten';
+var CFG = {
+  pollTimeout:  30000,  /* Server haelt max. 25 s - etwas Luft dazu       */
+  minGapMs:     400,    /* nie durchdrehen, auch wenn seq staendig kippt  */
+  backoffMin:   700,
+  backoffMax:   20000,
+  actionTimeout: 5000,
+  clockMs:      1000,
+  countdownAt:  90,     /* ab hier wird der Rest der Sitzung angezeigt    */
+  urgentAt:     15,
+  flashMs:      {ok:3200, warn:4800, error:6500}
+};
+
+/* ================================================================== *
+ * Kleine Helfer
+ * ================================================================== */
+function $(id){ return document.getElementById(id); }
+
+function num(v, dflt){
+  var n = typeof v === 'number' ? v : parseFloat(v);
+  return (typeof n === 'number' && isFinite(n)) ? n : dflt;
+}
+function str(v){
+  return (typeof v === 'string') ? v : (v === null || v === undefined ? '' : String(v));
+}
+/* Jeder Serverwert geht ueber textContent - niemals innerHTML. */
+function setText(el, v){ if(el) el.textContent = str(v); }
+function show(el, on){ if(el) el.hidden = !on; }
+function clear(el){ while(el && el.firstChild) el.removeChild(el.firstChild); }
+
+function el(tag, cls, text){
+  var n = document.createElement(tag);
+  if(cls) n.className = cls;
+  if(text !== undefined && text !== null) n.textContent = str(text);
+  return n;
+}
+function nowSec(){ return Date.now() / 1000; }
+function clockOf(d){
+  try{ return d.toLocaleTimeString('de-DE', {hour:'2-digit', minute:'2-digit', second:'2-digit'}); }
+  catch(e){ return ''; }
+}
+function clockHM(d){
+  try{ return d.toLocaleTimeString('de-DE', {hour:'2-digit', minute:'2-digit'}); }
+  catch(e){ return ''; }
+}
+function tsToDate(v){
+  var n = num(v, 0);
+  if(!n) return null;
+  return new Date(n > 1e12 ? n : n * 1000);   /* Sekunden ODER Millisekunden */
+}
+
+/* ================================================================== *
+ * Netzwerk - wirft nie, blockiert nie laenger als das Timeout
+ * ================================================================== */
+function api(path, opts){
+  opts = opts || {};
+  var timeout = num(opts.timeout, 8000);
+  if(typeof fetch !== 'function') return Promise.resolve({ok:false, error:'fetch fehlt'});
+
+  var ctrl = null, timer = 0;
+  try{ ctrl = new AbortController(); }catch(e){ ctrl = null; }
+
+  var init = {method: opts.method || 'GET', cache:'no-store'};
+  if(opts.body){
+    init.headers = {'Content-Type':'application/json'};
+    try{ init.body = JSON.stringify(opts.body); }
+    catch(e){ return Promise.resolve({ok:false, error:'Ungültige Anfrage'}); }
+  }
+  if(ctrl){
+    init.signal = ctrl.signal;
+    timer = setTimeout(function(){ try{ ctrl.abort(); }catch(e){} }, timeout);
+  }
+  function done(r){ if(timer) clearTimeout(timer); return r; }
+
+  return fetch(path, init).then(function(res){
+    if(!res.ok) return {ok:false, error:'HTTP ' + res.status};
+    return res.text().then(function(txt){
+      var data = null;
+      try{ data = JSON.parse(txt); }catch(e){ return {ok:false, error:'Antwort ist kein JSON'}; }
+      if(!data || typeof data !== 'object') return {ok:false, error:'Unerwartete Antwort'};
+      return {ok:true, data:data};
+    }, function(){ return {ok:false, error:'Antwort nicht lesbar'}; });
+  }, function(err){
+    var aborted = !!err && err.name === 'AbortError';
+    return {ok:false, error: aborted ? 'Zeitüberschreitung' : 'Agent nicht erreichbar'};
+  }).then(done, function(){ return done({ok:false, error:'Unbekannter Fehler'}); });
+}
+
+/* ================================================================== *
+ * Ton - synthetisiert, wie in station.html. Keine Datei, keine CDN.
+ * ================================================================== */
+var actx = null;
+var TONES = {
+  ok:    [[1150, 0.000, 0.050, 0.24], [1600, 0.055, 0.065, 0.24]],
+  warn:  [[ 560, 0.000, 0.090, 0.28], [ 420, 0.115, 0.150, 0.28]],
+  error: [[ 240, 0.000, 0.260, 0.28]],
+  tick:  [[1500, 0.000, 0.020, 0.10]]
+};
+function ensureAudio(){
+  try{
+    if(!actx){
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if(!AC) return null;
+      actx = new AC();
+    }
+    if(actx.state === 'suspended' && actx.resume) actx.resume()['catch'](function(){});
+    return actx;
+  }catch(e){ return null; }
+}
+function beep(kind){
+  var ctx = ensureAudio();
+  if(!ctx) return;
+  var spec = TONES[kind] || TONES.ok;
+  var t0 = ctx.currentTime + 0.001;
+  try{
+    for(var i = 0; i < spec.length; i++){
+      var s = spec[i];
+      var osc = ctx.createOscillator(), g = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(s[0], t0 + s[1]);
+      g.gain.setValueAtTime(0.0001, t0 + s[1]);
+      g.gain.exponentialRampToValueAtTime(s[3], t0 + s[1] + 0.006);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + s[1] + s[2]);
+      osc.connect(g); g.connect(ctx.destination);
+      osc.start(t0 + s[1]);
+      osc.stop(t0 + s[1] + s[2] + 0.03);
+    }
+  }catch(e){ /* Ton ist niemals kritisch */ }
+}
+/* Chromium erlaubt WebAudio erst nach einer Nutzergeste. Auf einem Kiosk
+   ohne Bedienung gibt es die selten - jede Maus-/Tastenaktion nutzen. */
+['pointerdown','keydown'].forEach(function(ev){
+  window.addEventListener(ev, function(){ ensureAudio(); }, {once:false, passive:true});
+});
+
+/* ================================================================== *
+ * Zustand
+ * ================================================================== */
+var STATUS = {
+  offen:      {label:'Offen',       cls:''},
+  gepackt:    {label:'Gepackt',     cls:'is-ok'},
+  zugewiesen: {label:'Beim Kunden', cls:'is-warn'},
+  zurueck:    {label:'Zurück', cls:''}
+};
+function statusOf(raw){
+  var s = STATUS[str(raw)];
+  return s ? s : {label: str(raw) || '–', cls:''};
+}
+function isLocked(raw){ return str(raw) === 'zugewiesen'; }
+
+var snap = null;          /* letzter vollstaendiger Schnappschuss */
+var seq = -1;
+var online = false;
+var lastOkAt = 0;
+var fails = 0;
+var flashKey = '';        /* aktuell gezeigter Blitz  */
+var flashDone = '';       /* bereits abgeraeumter Blitz */
+var flashTimer = 0;
+
+/* ================================================================== *
+ * Darstellung
+ * ================================================================== */
+function renderHead(){
+  var sc = snap && snap.scanner ? snap.scanner : null;
+  var up = snap && snap.upstream ? snap.upstream : null;
+
+  var chip = $('chipScan');
+  chip.className = 'chip' + (sc && sc.active ? ' is-ok armed' : ' is-warn');
+  setText(chip.querySelector('b'), sc && sc.active
+    ? (str(sc.device) || 'Scanner')
+    : 'Kein Scanner');
+
+  renderUpstream(up);
+
+  var boxes = (snap && snap.boxes) || [];
+  setText($('boxCount'), boxes.length);
+  /* Eine Zahl, die aus einem alten Stand stammt, sagt das mit. */
+  $('chipBoxes').className = 'chip' + (boxesStale() ? ' is-warn' : '');
+}
+
+/* Ohne SMPL kommt keine Kiste und geht keine Position weg. Das ist kein
+   graues Wort wert, sondern eine gefuellte Flaeche. upstream.ok ist
+   dreiwertig: null heisst "noch nie gefragt" und ist kein Ausfall. */
+function renderUpstream(up){
+  var cu = $('chipUp'), why = $('upWhy');
+  var ok = up ? up.ok : null;
+  var err = str(up && up.error);
+
+  if(ok === true){
+    cu.className = 'chip is-ok';
+    setText(cu.querySelector('b'), 'SMPL');
+    setText(why, '');
+    show(why, false);
+    return;
+  }
+  if(ok === false || err){
+    cu.className = 'chip alarm';
+    setText(cu.querySelector('b'), 'SMPL offline');
+    setText(why, err);
+    show(why, !!err);
+    return;
+  }
+  cu.className = 'chip';
+  setText(cu.querySelector('b'), 'SMPL');
+  setText(why, 'noch nicht geprüft');
+  show(why, true);
+}
+
+/* Der Unterschied, den dieser Bildschirm bisher verschluckt hat:
+   "es gibt keine Kisten" gegen "wir konnten nicht nachsehen". Nur der
+   Server weiss das, also glauben wir ihm - und ohne das Feld (aelterer
+   Agent) bleibt es beim alten Verhalten. */
+function boxesStale(){ return !!(snap && snap.boxes_stale === true); }
+
+function renderBoxStale(){
+  var band = $('boxStale');
+  if(!boxesStale()){ show(band, false); return; }
+
+  var at = tsToDate(snap && snap.boxes_fetched_at);
+  setText($('boxStaleLead'), at
+    ? ('Stand von ' + clockHM(at) + ' – SMPL nicht erreichbar')
+    : 'Noch kein Kistenstand von SMPL');
+  setText($('boxStaleWhy'), str(snap && snap.boxes_error));
+  show(band, true);
+}
+
+function renderStale(){
+  show($('stale'), !online);
+  if(!online){
+    setText($('staleAge'), lastOkAt
+      ? '– angezeigter Stand von ' + clockOf(new Date(lastOkAt))
+      : '– noch kein Stand empfangen.');
+  }
+}
+
+/* ---------- eine Positionszeile ---------- */
+function itemNode(it){
+  var li = el('li', 'item');
+  var q = num(it && it.quantity, 0);
+  li.appendChild(el('span', 'i-qty num', q));
+  li.appendChild(el('span', 'i-unit', str(it && it.unit) || 'Stk'));
+
+  var main = el('span', 'i-main');
+  main.appendChild(el('span', 'i-name ell', str(it && it.item_name) || '–'));
+  var art = str(it && it.article_no);
+  if(art) main.appendChild(el('span', 'i-art mono ell', art));
+  li.appendChild(main);
+  return li;
+}
+function fillItems(ul, items){
+  clear(ul);
+  var list = (items && items.length) ? items : null;
+  if(!list){
+    var li = el('li', 'empty', 'Leer');
+    ul.appendChild(li);
+    return;
+  }
+  for(var i = 0; i < list.length; i++) ul.appendChild(itemNode(list[i]));
+}
+
+function whoNode(box){
+  var wrap = el('span');
+  var cust = str(box && box.customer);
+  var proj = str(box && box.project);
+  if(!cust && !proj){
+    wrap.appendChild(el('span', 'none', 'Niemandem zugeordnet'));
+    return wrap;
+  }
+  wrap.appendChild(el('span', null, cust || '–'));
+  if(proj){
+    wrap.appendChild(el('span', 'proj', ' · ' + proj));
+  }
+  return wrap;
+}
+
+/* ---------- Uebersicht ---------- */
+var scrollMemo = {};
+function rememberScroll(){
+  var uls = document.querySelectorAll('[data-boxscroll]');
+  for(var i = 0; i < uls.length; i++){
+    scrollMemo[uls[i].getAttribute('data-boxscroll')] = uls[i].scrollTop;
+  }
+}
+function restoreScroll(){
+  var uls = document.querySelectorAll('[data-boxscroll]');
+  for(var i = 0; i < uls.length; i++){
+    var v = scrollMemo[uls[i].getAttribute('data-boxscroll')];
+    if(v) uls[i].scrollTop = v;
+  }
+}
+
+function boxCard(box){
+  var st = statusOf(box && box.status);
+  var card = el('article', 'box card' + (isLocked(box && box.status) ? ' locked-box' : ''));
+
+  var top = el('div', 'box-top');
+  var no = str(box && box.box_number) || '–';
+  top.appendChild(el('div', 'box-no num' + (no.length > 5 ? ' long' : ''), no));
+  var chip = el('span', 'chip ' + st.cls);
+  chip.appendChild(el('span', 'dot'));
+  chip.appendChild(el('b', null, st.label));
+  top.appendChild(chip);
+  card.appendChild(top);
+
+  card.appendChild(el('div', 'box-label ell', str(box && box.label)));
+
+  var who = el('div', 'box-who ell');
+  who.appendChild(whoNode(box));
+  card.appendChild(who);
+
+  var cnt = num(box && box.item_count, (box && box.items ? box.items.length : 0));
+  var cline = el('div', 'box-count');
+  cline.appendChild(el('b', null, cnt));
+  cline.appendChild(document.createTextNode(' ' + (cnt === 1 ? 'Position' : 'Positionen')));
+  card.appendChild(cline);
+
+  var ul = el('ul', 'items scroll');
+  ul.setAttribute('data-boxscroll', str(box && box.id));
+  fillItems(ul, box && box.items);
+  card.appendChild(ul);
+  return card;
+}
+
+function renderGrid(){
+  var grid = $('grid');
+  var boxes = (snap && snap.boxes) || [];
+  clear(grid);
+  if(!boxes.length){
+    /* Der freundliche Leerzustand gilt nur, wenn wir wirklich nachgesehen
+       haben. Sonst behauptet er etwas ueber SMPL, das wir nicht wissen. */
+    grid.appendChild(el('div', 'empty', boxesStale()
+      ? 'SMPL nicht erreichbar – es liegt kein Kistenstand vor.'
+      : 'Keine Baustellenkisten angelegt.'));
+    return;
+  }
+  for(var i = 0; i < boxes.length; i++) grid.appendChild(boxCard(boxes[i]));
+}
+
+/* ---------- Sitzung ---------- */
+function boxById(id){
+  var boxes = (snap && snap.boxes) || [];
+  for(var i = 0; i < boxes.length; i++){
+    if(boxes[i] && boxes[i].id === id) return boxes[i];
+  }
+  return null;
+}
+
+function renderSession(){
+  var s = snap.session;
+  var box = boxById(s.box_id) || {};
+  /* Die Sitzung fuehrt: sie kennt den Stand, mit dem der Server arbeitet. */
+  var status = str(s.status) || str(box.status);
+  var locked = isLocked(status);
+  var st = statusOf(status);
+
+  $('focus').className = 'focus card' + (locked ? ' is-locked' : '');
+  var fno = str(s.box_number) || str(box.box_number) || '–';
+  $('fBoxNo').className = 'num' + (fno.length > 5 ? ' long' : '');
+  setText($('fBoxNo'), fno);
+  setText($('fLabel'), str(s.label) || str(box.label));
+
+  var who = $('fCustomer');
+  clear(who);
+  who.appendChild(whoNode({customer: str(s.customer) || str(box.customer), project:''}));
+  var proj = str(s.project) || str(box.project);
+  setText($('fProject'), proj);
+  show($('fProject'), !!proj);
+
+  var chip = $('fStatus');
+  chip.className = 'chip big ' + st.cls;
+  setText(chip.querySelector('b'), st.label);
+
+  var code = str(s.code);
+  setText($('fCode'), code);
+  show($('fCode'), !!code);
+
+  show($('fLocked'), locked);
+  setText($('fReady'), locked
+    ? 'Scans werden abgewiesen'
+    : (str(s.mode) === 'remove' ? 'Bereit – Artikel zum Entfernen scannen'
+                                : 'Bereit – Artikel scannen'));
+
+  var mode = str(s.mode) === 'remove' ? 'remove' : 'add';
+  var bm = $('btnMode');
+  bm.className = 'btn ' + (mode === 'remove' ? 'on-warn' : 'on');
+  setText(bm, mode === 'remove' ? 'Modus: Entfernen' : 'Modus: Hinzufügen');
+  bm.disabled = locked;
+
+  var pend = snap.pending;
+  var mult = num(pend && pend.qty, 1);
+  show($('fMult'), mult !== 1);
+  setText($('fMultN'), '×' + mult);
+
+  var items = box.items || [];
+  var cnt = num(box.item_count, items.length);
+  setText($('fCount'), cnt + (cnt === 1 ? ' Position' : ' Positionen'));
+  fillItems($('fItems'), items);
+
+  renderStrip(s.box_id);
+  renderCountdown();
+}
+
+function renderStrip(activeId){
+  var strip = $('strip');
+  var boxes = (snap && snap.boxes) || [];
+  clear(strip);
+  for(var i = 0; i < boxes.length; i++){
+    var b = boxes[i];
+    if(!b || b.id === activeId) continue;
+    var st = statusOf(b.status);
+    var mini = el('div', 'mini' + (isLocked(b.status) ? ' locked-box' : ''));
+    var top = el('div', 'mini-top');
+    var dot = el('span', 'dot');
+    if(st.cls === 'is-ok') dot.style.background = 'var(--ok)';
+    if(st.cls === 'is-warn') dot.style.background = 'var(--warn)';
+    top.appendChild(dot);
+    top.appendChild(el('span', 'mini-no num', str(b.box_number) || '–'));
+    mini.appendChild(top);
+    mini.appendChild(el('div', 'mini-lab ell', str(b.label)));
+    var n = num(b.item_count, (b.items ? b.items.length : 0));
+    mini.appendChild(el('div', 'mini-n', n + ' Pos. · ' + st.label));
+    strip.appendChild(mini);
+  }
+  show(strip, strip.firstChild !== null);
+}
+
+/* Der Agent laeuft auf demselben Rechner wie dieser Browser, deshalb ist
+   Date.now() direkt mit expires_at vergleichbar - keine Uhrkorrektur noetig. */
+function renderCountdown(){
+  var s = snap && snap.session;
+  var cd = $('fCountdown');
+  if(!s || !s.expires_at){ show(cd, false); return; }
+  var left = Math.round(num(s.expires_at, 0) - nowSec());
+  if(left > CFG.countdownAt){ show(cd, false); return; }
+  if(left < 0) left = 0;
+  show(cd, true);
+  cd.className = 'chip big is-warn' + (left <= CFG.urgentAt ? ' armed' : '');
+  setText(cd.querySelector('b'), 'Sitzung endet in ' + left + ' s');
+}
+
+/* ---------- Blitzmeldung ---------- */
+var MARKS = {ok:'✓', warn:'!', error:'✕'};
+function renderFlash(){
+  var f = snap && snap.flash;
+  if(!f){ hideFlash(); return; }
+
+  var lvl = str(f.level);
+  if(lvl !== 'warn' && lvl !== 'error') lvl = 'ok';
+  var key = str(f.at) + '|' + str(f.title) + '|' + str(f.detail) + '|' + str(f.code);
+  if(key === flashDone) return;              /* schon abgeraeumt */
+  if(key === flashKey) return;               /* laeuft bereits    */
+
+  flashKey = key;
+  var node = $('flash');
+  node.className = 'flash lvl-' + lvl;
+  setText($('flashMark'), MARKS[lvl] || MARKS.ok);
+  setText($('flashTitle'), str(f.title) || (lvl === 'ok' ? 'Gebucht' : 'Nicht gebucht'));
+  setText($('flashDetail'), str(f.detail));
+  show($('flashDetail'), !!str(f.detail));
+  setText($('flashCode'), str(f.code));
+  show($('flashCode'), !!str(f.code));
+  show(node, true);
+  beep(lvl);
+
+  if(flashTimer) clearTimeout(flashTimer);
+  flashTimer = setTimeout(function(){
+    flashDone = flashKey;
+    hideFlash();
+    /* Server aufraeumen lassen; scheitert das, bleibt es lokal versteckt. */
+    api('/screen/action', {method:'POST', timeout: CFG.actionTimeout,
+        body:{screen: SCREEN, action:'dismiss'}});
+  }, num(CFG.flashMs[lvl], 4000));
+}
+function hideFlash(){
+  flashKey = '';
+  if(flashTimer){ clearTimeout(flashTimer); flashTimer = 0; }
+  show($('flash'), false);
+}
+
+function render(){
+  if(!snap) return;
+  rememberScroll();
+  renderHead();
+  renderBoxStale();
+  var inSession = !!(snap.session && snap.session.box_id !== undefined && snap.session.box_id !== null);
+  show($('idleView'), !inSession);
+  show($('sessionView'), inSession);
+  if(inSession) renderSession(); else renderGrid();
+  restoreScroll();
+  renderFlash();
+}
+
+/* ================================================================== *
+ * Aktionen (Maus - selten benutzt, aber vorhanden)
+ * ================================================================== */
+function act(action, value){
+  var body = {screen: SCREEN, action: action};
+  if(value !== undefined) body.value = value;
+  return api('/screen/action', {method:'POST', timeout: CFG.actionTimeout, body: body});
+}
+$('btnMode').addEventListener('click', function(){
+  var s = snap && snap.session;
+  if(!s) return;
+  var next = str(s.mode) === 'remove' ? 'add' : 'remove';
+  this.disabled = true;
+  var self = this;
+  beep('tick');
+  act('mode', next).then(function(){ self.disabled = false; });
+});
+$('btnClose').addEventListener('click', function(){
+  this.disabled = true;
+  var self = this;
+  beep('tick');
+  act('close_session').then(function(){ self.disabled = false; });
+});
+$('flash').addEventListener('click', function(){
+  flashDone = flashKey;
+  hideFlash();
+  act('dismiss');
+});
+
+/* ================================================================== *
+ * Abfrageschleife (Long-Poll) - laeuft ewig, dreht nie durch
+ * ================================================================== */
+var pollTimer = 0;
+function schedule(ms){
+  if(pollTimer) clearTimeout(pollTimer);
+  pollTimer = setTimeout(poll, ms);
+}
+function backoff(){
+  var ms = CFG.backoffMin * Math.pow(2, Math.min(fails, 5));
+  if(ms > CFG.backoffMax) ms = CFG.backoffMax;
+  return ms + Math.floor(Math.random() * 250);
+}
+function poll(){
+  var started = Date.now();
+  api('/screen/state?screen=' + SCREEN + '&since=' + seq, {timeout: CFG.pollTimeout})
+    .then(function(r){
+      if(r.ok && r.data && str(r.data.screen || SCREEN) === SCREEN){
+        fails = 0;
+        online = true;
+        lastOkAt = Date.now();
+        var nextSeq = num(r.data.seq, seq);
+        var changed = nextSeq !== seq;
+        seq = nextSeq;
+        snap = r.data;
+        render();
+        renderStale();
+        /* Kam die Antwort sofort UND ohne neue seq zurueck, kurz warten -
+           sonst wuerde ein defekter Server die CPU auffressen. */
+        schedule((!changed && Date.now() - started < 200) ? CFG.minGapMs : 0);
+        return;
+      }
+      fails++;
+      online = false;
+      renderStale();
+      schedule(backoff());
+    });
+}
+
+/* ================================================================== *
+ * Takte
+ * ================================================================== */
+setInterval(function(){
+  setText($('chipClock'), clockOf(new Date()));
+  if(snap && snap.session) renderCountdown();
+  if(!online) renderStale();
+}, CFG.clockMs);
+
+setText($('chipClock'), clockOf(new Date()));
+renderStale();
+poll();
+
+})();
+</script>
+</body>
+</html>

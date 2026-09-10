@@ -1,0 +1,28 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=SMPL Werkstatt kiosk
+Comment=One Chromium window per screen: /regal on the racks, /kisten on the boxes
+Exec=/usr/local/bin/smpl-kiosk.sh
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true
+
+# Installed to ~/.config/autostart/smpl-kiosk.desktop, owned by the desktop
+# user (pi), NOT to ~/.config/labwc/autostart.
+#
+# Why here and not there
+# ----------------------
+# /etc/xdg/labwc/autostart is what actually starts this desktop, and its last
+# line is `lxsession-xdg-autostart`, which is precisely the thing that reads
+# ~/.config/autostart/*.desktop. So this file is honoured, with no change to
+# any file the OS ships.
+#
+# The alternative, ~/.config/labwc/autostart, is a trap: it is not documented
+# whether labwc merges a user autostart with the system one or replaces it,
+# and replacing it silently drops pcmanfm --desktop, wf-panel-pi and kanshi -
+# three things you would not connect to "I added a kiosk" when the taskbar
+# vanished a week later. Adding a .desktop file cannot have that effect.
+#
+# It also means the ordinary way to stop the kiosk for an afternoon is to
+# rename this file and log out - no root, no systemctl, nothing to remember.

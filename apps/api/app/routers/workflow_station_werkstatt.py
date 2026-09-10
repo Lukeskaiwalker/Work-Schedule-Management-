@@ -1,0 +1,506 @@
+"""The Werkstatt API a paired scan station may reach.
+
+Two screens are going on the workshop wall, both driven by the Raspberry Pi
+that is already paired with SMPL (see ``workflow_station.py`` for the RFC 8628
+device grant that put a token on it):
+
+  * the **box screen** lists the Baustellenkisten with their contents and who
+    they belong to, and lets somebody scan a crate and then scan articles into
+    it;
+  * the **rack screen** books stock in three directions — Ausgabe (checkout),
+    Rückgabe (return) and Wareneingang (intake) — and hands a tool to the
+    person whose name the worker tapped, from the crew list this router also
+    serves.
+
+The obvious way to build that would be a user PAT in the Pi's config file. We
+are not doing that: a wall-mounted box in an unlocked workshop would then hold
+a credential that opens the whole API — projects, customers, files, everything
+that user can see — and revoking it means editing a file on the Pi. The
+station token it already has is the opposite of that: minted by an
+administrator, revocable centrally with one click, and — because of this
+router — able to do exactly six things.
+
+So this router is deliberately thin. It owns no rules of its own; every
+endpoint delegates to the same function the user-facing endpoint calls, so
+"a handed-over box is frozen", "a repeat scan tops up the line" and the
+ledger's stock arithmetic cannot hold on the phone and quietly not hold on the
+wall. What it *does* own is the boundary: who may call (a station, never a
+user), what a station may write (three movement types, not all eight), and
+whose name goes on what it writes.
+
+That last one is the interesting problem. ``werkstatt_movements.user_id`` is
+NOT NULL, and a device is not a person — see ``resolve_station_user_id``. The
+borrowed name is not the whole answer either: a row booked at the wall must
+stay tellable from a row that administrator booked themselves, so every
+station booking also carries ``station_id`` and a note prefix the caller cannot
+remove.
+"""
+
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import case, func, select
+from sqlalchemy.orm import Session
+
+from app.core.db import get_db
+from app.core.permissions import ROLE_ADMIN
+from app.models.entities import (
+    Station,
+    User,
+    WerkstattArticle,
+    WerkstattConstructionBox,
+    WerkstattMovement,
+)
+from app.routers.workflow_helpers import _list_active_assignable_users
+from app.routers.workflow_station import get_current_station
+from app.routers.workflow_werkstatt_boxes import (
+    add_item_to_box,
+    box_code,
+    box_out,
+    ensure_box_unlocked,
+    get_box_or_404,
+    item_out,
+    remove_item_from_box,
+)
+from app.schemas.station import (
+    STATION_MOVEMENT_TYPES,
+    StationCrewMemberOut,
+    StationMovementOut,
+    StationMovementRequest,
+)
+from app.schemas.werkstatt import ScanResolveResult
+from app.schemas.werkstatt_boxes import (
+    WerkstattBoxItemCreate,
+    WerkstattBoxItemOut,
+    WerkstattStationBoxItemCreate,
+    WerkstattStationBoxItemRemove,
+    WerkstattStationBoxItemRemoveOut,
+    WerkstattStationBoxOut,
+)
+from app.services.werkstatt_boxes import ensure_standard_boxes
+from app.services.werkstatt_movements import MovementError, apply_movement
+from app.services.werkstatt_scan import _article_out, resolve_scan
+
+router = APIRouter(prefix="/station/werkstatt", tags=["station-werkstatt"])
+
+
+# ---------------------------------------------------------------------------
+# Attribution — whose name goes on what a device books
+# ---------------------------------------------------------------------------
+
+
+def _station_actor(db: Session, station: Station) -> User | None:
+    """The user a station's writes are attributed to, or ``None``.
+
+    ``werkstatt_movements.user_id`` is NOT NULL, and rightly so: the ledger's
+    whole worth is that every row names somebody who can be asked "why is this
+    drill checked out?". A station is a device, so it has to borrow a person:
+
+      1. ``station.created_by`` — the administrator who approved the pairing.
+         Approving is the act of putting this device in the workshop, so they
+         own what it books. It is also the only person the system can honestly
+         name: nobody logs in at a wall screen.
+      2. Failing that (the account was deleted — the column is ON DELETE SET
+         NULL — or points at a row that is gone), the lowest-id active admin.
+         Lowest id because it is *stable*: a rule like "the most recent admin"
+         would silently move the authorship of the ledger between two deploys.
+      3. Failing that, ``None``. The caller decides what to do about it;
+         ``resolve_station_user_id`` refuses the write, because a ledger row
+         with a wrong name is worse than a booking that did not happen — the
+         first is a lie somebody acts on, the second is an error somebody fixes.
+    """
+    if station.created_by is not None:
+        owner = db.get(User, station.created_by)
+        if owner is not None:
+            return owner
+    return db.scalars(
+        select(User)
+        .where(User.role == ROLE_ADMIN, User.is_active.is_(True))
+        .order_by(User.id.asc())
+    ).first()
+
+
+def _station_notes(station: Station, caller_note: str | None) -> str:
+    """The ledger note for a station booking: marker first, caller's text after.
+
+    A PREFIX, not a default. The note used to be ``caller_note or marker``, so
+    any device that sent a note replaced the only human-readable sign that a
+    machine wrote the row — and the caller is an unattended screen on a wall,
+    which makes "it would not do that" the wrong kind of assurance. Now the
+    marker is always the first thing in the field and the caller's own text, if
+    any, follows it.
+    """
+    marker = f"Regal-Station {station.name}"
+    note = (caller_note or "").strip()
+    return f"{marker} — {note}" if note else marker
+
+
+def resolve_station_user_id(db: Session, station: Station) -> int:
+    """``_station_actor`` where a user is mandatory. 409 when there is none."""
+    actor = _station_actor(db, station)
+    if actor is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Die Station „{station.name}“ hat keinen Besitzer, auf den gebucht werden "
+                "kann. Bitte die Station erneut koppeln oder einen Administrator anlegen."
+            ),
+        )
+    return actor.id
+
+
+# ---------------------------------------------------------------------------
+# The box screen
+# ---------------------------------------------------------------------------
+
+
+def _box_listing_statement():
+    """The rack's own order: permanent boxes first by slot, ad-hoc after.
+
+    Spelled out here rather than borrowed from the user-facing list, which
+    composes the same order inline with filters this screen has no use for.
+    """
+    return select(WerkstattConstructionBox).order_by(
+        WerkstattConstructionBox.slot.is_(None),
+        WerkstattConstructionBox.slot.asc(),
+        WerkstattConstructionBox.created_at.desc(),
+    )
+
+
+@router.get("/boxes", response_model=list[WerkstattStationBoxOut])
+def station_list_boxes(
+    station: Station = Depends(get_current_station),
+    db: Session = Depends(get_db),
+) -> list[WerkstattStationBoxOut]:
+    """Every box, with its contents, its customer and its scannable code.
+
+    Always the whole list with items: the screen is a wall display that
+    re-renders a full snapshot rather than accumulating changes, so there is
+    nothing for a filter or a page size to save it.
+
+    ``ensure_standard_boxes`` runs here for the same reason it runs on the
+    user-facing list — the eight permanent rack boxes are seeded on first read,
+    and the wall screen is quite likely to be the first reader after a reset.
+    """
+    _ = station  # auth enforcement only — a station sees every box
+    ensure_standard_boxes(db)
+    rows = db.scalars(_box_listing_statement()).all()
+    listing: list[WerkstattStationBoxOut] = []
+    for row in rows:
+        base = box_out(db, row, with_items=True)
+        listing.append(
+            WerkstattStationBoxOut(
+                **base.model_dump(),
+                code=box_code(row),
+                customer=base.customer_name,
+                project=base.project_name,
+            )
+        )
+    return listing
+
+
+@router.get("/resolve", response_model=ScanResolveResult)
+def station_resolve(
+    code: str = Query(..., description="Raw scanned code (EAN, SP-Nr, supplier article no, …)"),
+    station: Station = Depends(get_current_station),
+    db: Session = Depends(get_db),
+) -> ScanResolveResult:
+    """The same scan cascade the phone runs, with the same answers.
+
+    Delegated rather than reimplemented so a barcode can never mean one thing
+    at the wall and another in somebody's hand. A crate's own ``KISTE-…`` code
+    is not part of this cascade and resolves to ``not_found``: the station
+    matches those against the box list it already holds, which is what lets it
+    open a crate with no round trip.
+    """
+    _ = station  # auth enforcement only — no per-station filtering
+    return resolve_scan(db, code)
+
+
+def _scanned_article_id(db: Session, code: str) -> int:
+    """Turn a scanned code into a stocked article id, or refuse.
+
+    A wall screen has nobody to type a name, so an unresolvable scan could only
+    become a line called "4006381333931" — a row that looks like data and is
+    not. Refusing is the kinder failure: the screen says so, and somebody adds
+    the article properly. Catalog-only hits are refused for the same reason:
+    they are orderable, not packable.
+    """
+    resolved = resolve_scan(db, code)
+    if resolved.kind == "werkstatt_article":
+        return resolved.article.id
+    raise HTTPException(
+        status_code=400,
+        detail=f"Kein Lagerartikel zum Code „{code}“ gefunden.",
+    )
+
+
+@router.post("/boxes/{box_id}/items", response_model=WerkstattBoxItemOut)
+def station_add_box_item(
+    box_id: int,
+    payload: WerkstattStationBoxItemCreate,
+    station: Station = Depends(get_current_station),
+    db: Session = Depends(get_db),
+) -> WerkstattBoxItemOut:
+    """Scan an article into a box.
+
+    Runs ``add_item_to_box`` — the user endpoint's own body — so the lock on a
+    handed-over box and the top-up-on-repeat-scan rule are literally the same
+    code, not a second implementation that agrees today.
+
+    ``added_by`` is the station's owner where there is one, and NULL where
+    there is not: unlike a ledger row, a packed line does not depend on knowing
+    who put it there, so a station without an owner may still pack.
+    """
+    box = get_box_or_404(db, box_id)
+    # Checked before the code is resolved so a scan into a frozen crate fails
+    # with the reason that matters, not with "unknown article".
+    ensure_box_unlocked(box)
+
+    article_id = payload.article_id
+    if article_id is None:
+        code = (payload.code or "").strip()
+        if not code:
+            raise HTTPException(
+                status_code=400, detail="Entweder „code“ oder „article_id“ ist erforderlich."
+            )
+        article_id = _scanned_article_id(db, code)
+
+    actor = _station_actor(db, station)
+    row = add_item_to_box(
+        db,
+        box,
+        WerkstattBoxItemCreate(article_id=article_id, quantity=payload.quantity),
+        added_by=actor.id if actor is not None else None,
+    )
+    return item_out(row)
+
+
+@router.post("/boxes/{box_id}/items/remove", response_model=WerkstattStationBoxItemRemoveOut)
+def station_remove_box_item(
+    box_id: int,
+    payload: WerkstattStationBoxItemRemove,
+    station: Station = Depends(get_current_station),
+    db: Session = Depends(get_db),
+) -> WerkstattStationBoxItemRemoveOut:
+    """Take a counted amount back out of a box.
+
+    A count rather than a line id alone: at the crate things come out one or
+    two at a time, and the user-facing DELETE (which removes the whole line) is
+    the ``quantity=None`` case of the same shared function.
+    """
+    _ = station  # auth enforcement only
+    box = get_box_or_404(db, box_id)
+    removed = remove_item_from_box(db, box, payload.item_id, quantity=payload.quantity)
+    return WerkstattStationBoxItemRemoveOut(removed=removed)
+
+
+# ---------------------------------------------------------------------------
+# The rack screen
+# ---------------------------------------------------------------------------
+
+
+@router.get("/crew", response_model=list[StationCrewMemberOut])
+def station_crew(
+    station: Station = Depends(get_current_station),
+    db: Session = Depends(get_db),
+) -> list[StationCrewMemberOut]:
+    """The names a tool can be handed to, for the rack screen's name grid.
+
+    A worker taps their name before taking something out, so that "who has the
+    drill" has an answer that is not "the administrator whose account the wall
+    screen books under". This is the one thing the rack screen cannot derive
+    from a barcode, so it is the one list it has to be given.
+
+    The selection is ``_list_active_assignable_users`` — literally the function
+    behind ``GET /api/users/assignable``, which is what the task form and the
+    chat participant picker already offer. Not copied: a second query would
+    drift, and the failure would be silent and one-sided (the wall offers
+    somebody the app does not, or hides somebody it does). Only the projection
+    is narrower: a wall grid renders a button per person, so it takes the id
+    and the display name and has no use for roles, avatars or hour quotas.
+    """
+    _ = station  # auth enforcement only — every station sees the same crew
+    return [
+        StationCrewMemberOut(id=row.id, name=row.display_name)
+        for row in _list_active_assignable_users(db)
+    ]
+
+
+# Movement types that give something back, i.e. that reduce what a borrower is
+# still holding. Spelled exactly as ``services.werkstatt_movements
+# .list_my_checkouts`` spells them, because the two have to agree on what
+# "open" means or this router closes a loan that list still shows.
+_LOAN_CLOSING_TYPES: tuple[str, ...] = ("return", "repair_out", "correction")
+
+
+def _open_loan_for_article(db: Session, article_id: int) -> tuple[int, int | None] | None:
+    """Who is still holding this article, and on which project — or ``None``.
+
+    Returns the ``(assignee_user_id, project_id)`` of the most recent checkout
+    that nothing has balanced yet, using the *same* definition of "open" as
+    ``list_my_checkouts``: a row belongs to whoever it names, or — when it
+    names nobody — to whoever booked it (hence the ``coalesce``); a checkout
+    adds to that borrower's balance and a return / repair_out / correction
+    subtracts from it; and the balance is kept per ``(borrower, project)``
+    because that is the tuple the "My checkouts" list groups by. A borrower
+    whose balance is still positive is still holding something.
+
+    **Why this lives in the station router and not in the shared service.**
+    ``apply_movement`` is the one write path the phone, the tablet's delivery
+    flow and the box handover all go through, and every one of those callers
+    has a logged-in person in the request: a missing assignee there means "the
+    caller means themselves", and guessing a different borrower would silently
+    rewrite bookings somebody made deliberately. A station is the one caller
+    that structurally cannot name anybody — a wall screen has no session, so
+    its ``user_id`` is the *borrowed* name of the administrator who approved
+    the pairing, and a missing assignee means "nobody tapped a name", not "the
+    admin took it". Only here are those two facts both true, so only here is
+    the guess sound. Reading the ledger is also the only fix available: a
+    Rückgabe at the rack is a bare button press, so without it the borrower's
+    loan has no later event that would ever clear it.
+    """
+    # Whoever the row is charged to — the tapped name, else the booker.
+    borrower = func.coalesce(
+        WerkstattMovement.assignee_user_id, WerkstattMovement.user_id
+    )
+    signed_qty = case(
+        (WerkstattMovement.movement_type == "checkout", WerkstattMovement.quantity),
+        (WerkstattMovement.movement_type.in_(_LOAN_CLOSING_TYPES), -WerkstattMovement.quantity),
+        else_=0,
+    )
+    # Ordering is by the group's newest checkout — "the loan that was opened
+    # last" is the best available answer to "which of these did this crate
+    # just come back from", and the ledger does not link a return to a
+    # checkout. The row id breaks a tie so two checkouts in the same clock
+    # tick still resolve the same way on every run.
+    last_checkout_at = func.max(
+        case(
+            (WerkstattMovement.movement_type == "checkout", WerkstattMovement.created_at),
+            else_=None,
+        )
+    )
+    last_checkout_id = func.max(
+        case(
+            (WerkstattMovement.movement_type == "checkout", WerkstattMovement.id),
+            else_=None,
+        )
+    )
+
+    row = db.execute(
+        select(borrower.label("borrower_id"), WerkstattMovement.project_id.label("project_id"))
+        .where(WerkstattMovement.article_id == article_id)
+        .group_by(borrower, WerkstattMovement.project_id)
+        .having(func.coalesce(func.sum(signed_qty), 0) > 0)
+        .order_by(last_checkout_at.desc(), last_checkout_id.desc())
+        .limit(1)
+    ).first()
+    if row is None or row.borrower_id is None:
+        return None
+    # The name has to still exist to go on a row: ``assignee_user_id`` is a FK.
+    if db.get(User, int(row.borrower_id)) is None:
+        return None
+    return int(row.borrower_id), (int(row.project_id) if row.project_id is not None else None)
+
+
+@router.post("/movements", response_model=StationMovementOut)
+def station_movement(
+    payload: StationMovementRequest,
+    station: Station = Depends(get_current_station),
+    db: Session = Depends(get_db),
+) -> StationMovementOut:
+    """Book stock out or in from the rack screen.
+
+    Four gates, in the order that gives the most useful error *and* leaks the
+    least: the movement type must be one a wall screen is allowed to write, the
+    article must exist and not be archived, the assignee — if one was tapped —
+    must be somebody a tool can be handed to, and the station must have
+    somebody to book as. Only then does ``apply_movement`` — the one
+    authoritative implementation of the ledger — run, and the recomputed
+    article snapshot goes back so the screen renders the server's arithmetic
+    rather than its own.
+
+    The assignee is checked *last of the payload* and answers 400, never 404.
+    A field that distinguishes "this user id exists and is active" from "it
+    does not" by status code is a user-id enumeration oracle, and the caller
+    here is a box on a wall that anybody in the workshop can reach: walk the
+    integers, learn the shape of the staff list. Unknown and inactive are the
+    same sentence, and both come after the checks that have nothing to do with
+    people.
+
+    One thing this endpoint does decide for itself: a ``return`` that names
+    nobody is charged to the open loan it must have closed — see
+    ``_open_loan_for_article``.
+    """
+    if payload.movement_type not in STATION_MOVEMENT_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Buchungsart „{payload.movement_type}“ ist an einer Station nicht erlaubt. "
+                f"Möglich sind: {', '.join(STATION_MOVEMENT_TYPES)}."
+            ),
+        )
+
+    article = db.get(WerkstattArticle, payload.article_id)
+    if article is None:
+        raise HTTPException(status_code=404, detail="Artikel nicht gefunden")
+    if bool(article.is_archived):
+        raise HTTPException(
+            status_code=400, detail="Artikel ist archiviert — keine Buchungen möglich"
+        )
+
+    if payload.assignee_user_id is not None:
+        assignee = db.get(User, payload.assignee_user_id)
+        if assignee is None or not assignee.is_active:
+            raise HTTPException(
+                status_code=400,
+                detail="Empfänger nicht verfügbar — bitte Namen erneut antippen.",
+            )
+
+    user_id = resolve_station_user_id(db, station)
+
+    # A Rückgabe is one button press with nobody's name on it — and a station
+    # row is booked as the station's owner, so an unnamed return used to be
+    # charged to that administrator while the borrower's loan stayed open with
+    # nothing left to close it. Resolve whose loan the article is coming back
+    # from and put that name (and its project) on the return instead. Only
+    # when nobody tapped one: a name that *was* tapped is a fact, and a
+    # colleague may well bring back a tool that is not on their own list.
+    assignee_user_id = payload.assignee_user_id
+    project_id: int | None = None
+    if payload.movement_type == "return" and assignee_user_id is None:
+        loan = _open_loan_for_article(db, article.id)
+        if loan is not None:
+            assignee_user_id, project_id = loan
+
+    try:
+        movement = apply_movement(
+            db,
+            article=article,
+            movement_type=payload.movement_type,
+            quantity=payload.quantity,
+            user_id=user_id,
+            assignee_user_id=assignee_user_id,
+            project_id=project_id,
+            notes=_station_notes(station, payload.notes),
+        )
+    except MovementError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Stamped here rather than inside ``apply_movement``: that service is the
+    # shared ledger implementation every user-facing path also runs, and it
+    # knows nothing about stations — this router is the only caller that has
+    # one in hand. ``apply_movement`` flushes but deliberately does not commit,
+    # so the INSERT and this UPDATE are one transaction and no reader can ever
+    # observe a station's row without its ``station_id``.
+    movement.station_id = station.id
+    db.add(movement)
+
+    movement_id = movement.id
+    db.commit()
+    db.refresh(article)
+    # ``_article_out`` is the projection the scan cascade already returns, so a
+    # movement result and a scan result describe an article identically — the
+    # rack screen renders both with one piece of code.
+    return StationMovementOut(article=_article_out(db, article), movement_id=movement_id)

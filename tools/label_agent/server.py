@@ -59,11 +59,111 @@ DEFAULT_SESSION = "default"
 
 # /resolve must answer inside the operator's patience, not the network's.
 UPSTREAM_TIMEOUT_S = float(os.environ.get("SMPL_TIMEOUT", "1.5"))
+# The two upstream paths this module speaks, spelled once. Both are the
+# *station* side of the API: this agent carries a station bearer, and the user
+# routes answer one with 403.
+RESOLVE_PATH = "/api/station/werkstatt/resolve"
+# The API's only health route. There is no /api/health.
+HEALTH_PATH = "/api/healthz"
 # A cached article older than this is still served instantly, but revalidated
 # in the background so the catalog does not drift forever.
 CACHE_REVALIDATE_S = 3600.0
 MAX_BODY_BYTES = 64 * 1024
 PRINT_BUDGET_MS = 5000
+
+SCREEN_RACK = "regal"
+SCREEN_BOXES = "kisten"
+SCREENS = (SCREEN_RACK, SCREEN_BOXES)
+
+# Which screen each /screen/action belongs to. "dismiss" and "qty" are absent
+# because they genuinely belong to both: dismiss clears the calling screen's
+# own flash, and a quantity is shown on both. Everything else is one screen's
+# buttons, and a request from the other one is a bug in a page, not a tap.
+ACTION_SCREEN = {
+    "direction": SCREEN_RACK,
+    "assignee": SCREEN_RACK,
+    "mode": SCREEN_BOXES,
+    "close_session": SCREEN_BOXES,
+}
+
+# The screens render state; they never accumulate events. So every poll
+# answers with a whole snapshot and a sequence number, and a screen that was
+# unplugged for an hour is correct one request after it comes back.
+SCREEN_POLL_MAX_S = 25.0
+KIOSK_TICK_S = 1.0
+BOX_REFRESH_S = 10.0
+# The crew changes when somebody is hired, not while a crate is packed.
+CREW_REFRESH_S = 60.0
+SESSION_IDLE_S = float(os.environ.get("STATION_SESSION_IDLE_S", "600"))
+# Which keyboard layout the barcode scanner is configured for. The office
+# scanner sends German scancodes — measured off /dev/input, see the module
+# docstring of input_reader — so "de" is the default and "us" is available for
+# a replacement device. A typo here is the default, never a dead scanner.
+SCANNER_LAYOUT = os.environ.get("SCANNER_LAYOUT", "de")
+# The safety net under that setting. Which of Y and Z a German keycode table
+# produces is the one half of it that was *inferred* from the layout files
+# rather than measured off the wire, and it is the expensive half: the code
+# alphabet (apps/api/.../werkstatt_internal_codes.py) contains both letters,
+# so a wrong table turns a real article into "SMPL does not know this code"
+# with nothing on any screen that says why.
+_YZ_SWAP = str.maketrans("YZyz", "ZYzy")
+
+# The kiosk is loopback-only, in both directions and under every verb.
+#
+# The two screens are Chromium windows running ON this Pi, so nothing here
+# ever needs to cross the LAN. Reads are in the set as well as writes: /kisten
+# and /screen/state hand out the whole crate list — customer, project, every
+# packed item — and /screen/state is a 25-second long poll on a threaded
+# server, which is a thread-exhaustion lever against the two screens as much
+# as it is a leak. Pairing is in the set because /pair/forget deletes the
+# station credential from disk, and a route that unpairs a Pi from the far
+# side of the workshop LAN is not a route, it is a prank.
+#
+# What deliberately stays LAN-reachable, and why: /health (monitoring),
+# /static/ and /setup (the setup page a phone opens), and the phone-driven
+# /print and /count the README documents --host 0.0.0.0 for. Quietly breaking
+# those would be a worse surprise than the lock is a win.
+LOOPBACK_ONLY = frozenset((
+    # writes
+    "/scan/route", "/box/session", "/box/item", "/box/item/remove",
+    "/rack/movement", "/screen/action",
+    "/pair/start", "/pair/cancel", "/pair/forget",
+    # kiosk reads
+    "/regal", "/kisten", "/screen/state", "/boxes/state",
+    "/now-playing", "/now-playing/cover.jpg",
+))
+
+# One word per direction, everywhere: the screens, the flashes and
+# docs/PI_STATION.md all say Ausgabe. "Entnahme" is the crate's take-back-out
+# mode (SMPL-CMD-ENTNAHME) and nothing else — a rack booking that takes stock
+# out is an Ausgabe, and a direction called two things is a direction somebody
+# gets wrong reading a log next to a wall.
+DIRECTION_LABEL = {"aus": "Ausgabe", "ein": "Rückgabe", "wareneingang": "Wareneingang"}
+
+# What a machine scan at the rack is, in the screen's own words: kiosk_rack.html
+# shows "Nicht gebucht — Maschine nur nachgeschlagen" beside the tool whenever
+# the state carries no movement, and the flash must not contradict it.
+MSG_MACHINE_LOOKUP_ONLY = "Maschine nur nachgeschlagen"
+MSG_MACHINE_NOT_BOOKED = (
+    "Nichts gebucht — Ausgabe und Rückgabe dieser Maschine werden in SMPL gebucht."
+)
+
+
+def is_loopback(address: str) -> bool:
+    """True for this machine talking to itself, in every spelling of it."""
+    text = (address or "").strip()
+    if text.startswith("::ffff:"):
+        text = text[len("::ffff:"):]
+    if text in ("::1", "localhost"):
+        return True
+    parts = text.split(".")
+    if len(parts) != 4:
+        return False
+    try:
+        octets = [int(part) for part in parts]
+    except ValueError:
+        return False
+    return octets[0] == 127 and all(0 <= octet <= 255 for octet in octets)
 
 SESSION_NAME_RE = re.compile(r"^[A-Za-z0-9._ -]{1,64}$")
 # Import ids are minted by the agent as "<UTC timestamp>-<6 hex>"; constraining
@@ -413,11 +513,16 @@ class Upstream:
         A 401 from SMPL is the one upstream failure a person can actually fix,
         and the fix ("re-pair the station") is not guessable from "HTTP 401",
         so it is worth carrying all the way to /health.
+
+        A **403 is not that failure**. It means the token is genuine and the
+        route is not for it — a user-only endpoint, a scope this station does
+        not have — and telling the operator to re-pair a perfectly valid
+        station sends them to the Pi with a phone for nothing.
         """
         station = getattr(self, "station", None)
         if station is None:
             return
-        if status in (401, 403):
+        if status == 401:
             station.note_rejection(status)
         elif status < 400:
             station.note_success()
@@ -437,11 +542,16 @@ class Upstream:
         return json.loads(raw.decode("utf-8"))
 
     def resolve(self, code: str) -> dict | None:
-        """Return the parsed upstream answer, or None on any failure."""
+        """Return the parsed upstream answer, or None on any failure.
+
+        The *station* resolver, not the user one: this agent carries a station
+        bearer, and ``/api/werkstatt/scan/resolve`` answers a station token
+        with 403 — which used to be reported as "re-pair me".
+        """
         if not self.configured:
             return None
         try:
-            payload = self._get("/api/werkstatt/scan/resolve", {"code": code})
+            payload = self._get(RESOLVE_PATH, {"code": code})
         except urllib.error.HTTPError as exc:
             # 404 is a real answer ("unknown code"), not an outage.
             self._note(exc.code < 500, f"HTTP {exc.code}")
@@ -456,13 +566,20 @@ class Upstream:
         return payload
 
     def probe(self) -> bool | None:
-        """Cheap reachability check used by /health; never raises."""
+        """Cheap reachability check used by /health; never raises.
+
+        ``/api/healthz`` is the only health route the API has (see
+        ``apps/api/app/routers/workflow_system.py``), and a **404 counts as
+        down**: on the health path it means the base URL is wrong, which is
+        exactly the outage this probe exists to catch. Scoring it green is how
+        a station points at nothing at all and says so in green.
+        """
         if not self.configured:
             return None
         try:
-            self._get("/api/health")
+            self._get(HEALTH_PATH)
         except urllib.error.HTTPError as exc:
-            ok = exc.code not in (401, 403) and exc.code < 500
+            ok = exc.code not in (401, 403, 404) and exc.code < 500
             self._note(ok, "" if ok else f"HTTP {exc.code}")
             self._note_auth(exc.code)
             return ok
@@ -722,7 +839,10 @@ class Agent:
     """Everything the request handlers need, assembled once at startup."""
 
     def __init__(self, store: Store, printer: Printer, upstream: Upstream,
-                 station=None) -> None:
+                 station=None, *, scanner_enabled: bool = False,
+                 now_playing_enabled: bool = False,
+                 scanner_layout: str = SCANNER_LAYOUT,
+                 session_idle_s: float = SESSION_IDLE_S, clock=time.time) -> None:
         self.store = store
         self.printer = printer
         self.upstream = upstream
@@ -735,9 +855,109 @@ class Agent:
         self._stop = threading.Event()
         self._probe_thread: threading.Thread | None = None
 
+        # The kiosk is the same kind of optional as the station: four sibling
+        # modules, all stdlib, none of which may stop the agent booting.
+        # Hardware and D-Bus are opt-in, because a bench Mac has neither.
+        self.scanner_enabled = bool(scanner_enabled)
+        self.now_playing_enabled = bool(now_playing_enabled)
+        # Which keycode table the scanner is read through. The office scanner
+        # sends German scancodes (measured — see input_reader); a replacement
+        # may not, so it is a setting rather than a constant.
+        self.scanner_layout = scanner_layout
+        # The Y/Z warning is latched: see _warn_layout_swapped.
+        self._layout_warned = False
+        # One time base for the whole kiosk. A snapshot that mixes two of them
+        # counts down from a deadline it did not set.
+        self._clock = clock
+        self.kiosk_error = ""
+        self._sr = None
+        self._sw = None
+        self.router = None
+        self.werkstatt = None
+        self.now_playing = None
+        self.scanner = None
+        self.kiosk = None
+        self._boxes_at = 0.0
+        self._crew_at = 0.0
+        self._tick_thread: threading.Thread | None = None
+        self._build_kiosk(session_idle_s, clock)
+
+    def _build_kiosk(self, session_idle_s: float, clock) -> None:
+        modules = {name: module(name) for name in
+                   ("scan_router", "smpl_werkstatt", "now_playing", "input_reader")}
+        missing = [name for name, mod in modules.items() if mod is None]
+        if missing:
+            self.kiosk_error = "; ".join(module_error(name) for name in missing)
+            return
+        self._sr = modules["scan_router"]
+        self._sw = modules["smpl_werkstatt"]
+        try:
+            self.router = self._sr.ScanRouter(
+                clock=clock, idle_timeout_s=session_idle_s,
+                # Three threads reach the router: this agent's tick, the
+                # scanner's dispatch thread and every HTTP handler. The module
+                # imports no threading on purpose (its rules stay testable in
+                # microseconds), so the lock is handed to it from here. It has
+                # to be re-entrant: a public read may call another one.
+                lock=threading.RLock(),
+            )
+            self.werkstatt = self._sw.WerkstattClient(
+                self.upstream.base_url,
+                token_provider=self.station.token if self.station is not None else None,
+                on_auth=self._note_station_auth,
+                user_agent=f"smpl-label-agent/{VERSION}",
+                clock=clock,
+            )
+            self.now_playing = modules["now_playing"].NowPlaying(log=self._log)
+            self.scanner = modules["input_reader"].ScannerReader(
+                self._on_scanned, log=self._log,
+                layout=modules["input_reader"].resolve_layout(self.scanner_layout),
+            )
+            self.kiosk = Kiosk(
+                self.router, idle_timeout_s=session_idle_s,
+                scanner_status=self.scanner.status,
+                # The chip on the wall says whether the screens can talk to
+                # SMPL, so it has to be the client the screens actually use.
+                # Wiring it to the label agent's own Upstream meant revoking
+                # the station token left both screens green while every crate
+                # request came back 401.
+                upstream_status=self._werkstatt_chip,
+                clock=clock,
+            )
+        except Exception as exc:  # noqa: BLE001 - a broken kiosk is not a broken agent
+            self.kiosk_error = f"{type(exc).__name__}: {exc}"
+            self.kiosk = None
+
+    def _note_station_auth(self, status: int) -> None:
+        """A 401 means re-pair. A 403 means this route is not for a station."""
+        if self.station is None:
+            return
+        if status == 401:
+            self.station.note_rejection(status)
+        elif status < 400:
+            self.station.note_success()
+
+    def _werkstatt_chip(self) -> dict:
+        """The screens' own upstream health, for the chip on the wall."""
+        status = self.werkstatt.status()
+        return {"ok": status.get("last_ok"), "error": status.get("last_error")}
+
+    @staticmethod
+    def _log(message: str) -> None:
+        sys.stderr.write("%s %s\n" % (time.strftime("%H:%M:%S"), message))
+
     def start_background(self) -> None:
         if self.station is not None:
             self.station.start()
+        if self.kiosk is not None:
+            if self.scanner_enabled:
+                self.scanner.start()
+            if self.now_playing_enabled:
+                self.now_playing.start()
+            self._tick_thread = threading.Thread(
+                target=self._tick_loop, name="kiosk-tick", daemon=True
+            )
+            self._tick_thread.start()
         if not self.upstream.configured:
             return
         self._probe_thread = threading.Thread(
@@ -750,8 +970,41 @@ class Agent:
             self.upstream.probe()
             self._stop.wait(30.0)
 
+    def _tick_loop(self) -> None:
+        """Expire idle sessions and keep the box list warm. Never raises."""
+        while not self._stop.is_set():
+            try:
+                self.tick_once()
+            except Exception as exc:  # noqa: BLE001
+                self._log(f"kiosk tick failed: {type(exc).__name__}: {exc}")
+            self._stop.wait(KIOSK_TICK_S)
+
+    def tick_once(self) -> None:
+        """One pass of the kiosk clock. Separate from the loop so it can be
+        driven by hand: "the name clears itself after two minutes" is a rule
+        nobody exercises in the workshop and everything downstream trusts.
+        """
+        if self.router.tick():
+            self.kiosk.flash(SCREEN_BOXES, "warn", "Kiste automatisch geschlossen",
+                             "Zu lange nichts gescannt.")
+        if self.router.expire_assignee():
+            # Whoever tapped their name has walked away; the next
+            # Ausgabe asks again rather than booking onto them.
+            self.kiosk.flash(SCREEN_RACK, "warn", "Name zurückgesetzt",
+                             "Bitte vor der Ausgabe wieder antippen.")
+        if time.monotonic() - self._boxes_at >= BOX_REFRESH_S:
+            self._refresh_boxes()
+        if time.monotonic() - self._crew_at >= CREW_REFRESH_S:
+            self._refresh_crew()
+
     def shutdown(self) -> None:
         self._stop.set()
+        if self.scanner is not None:
+            self.scanner.stop()
+        if self.now_playing is not None:
+            self.now_playing.stop()
+        if self.kiosk is not None:
+            self.kiosk.close()
         if self.station is not None:
             self.station.shutdown()
         self.printer.close()
@@ -780,7 +1033,30 @@ class Agent:
             payload.update(self.station.health())
         else:
             payload["identity"] = {"paired": False, "disabled": True}
+        payload.update(self._kiosk_health())
         return payload
+
+    def _kiosk_health(self) -> dict:
+        """What the screens, the scanner and the AirPlay widget are doing.
+
+        Reported even when the kiosk failed to build, because "why is the
+        scanner dead" is exactly the question /health exists to answer.
+        """
+        if self.kiosk is None:
+            reason = self.kiosk_error or "kiosk not built"
+            return {
+                "scan_router": {"available": False, "error": reason},
+                "scanner": {"active": False, "device": None, "error": reason},
+                "now_playing": {"running": False, "playing": False, "error": reason},
+            }
+        return {
+            "scan_router": dict(self.router.snapshot(),
+                                available=True,
+                                commands=list(self._sr.COMMAND_CODES)),
+            "scanner": dict(self.scanner.status(), enabled=self.scanner_enabled),
+            "now_playing": dict(self.now_playing.status(), enabled=self.now_playing_enabled),
+            "werkstatt": self.werkstatt.status(),
+        }
 
     def resolve(self, code: str) -> dict:
         """Identify a scanned code in well under two seconds, network or not.
@@ -922,6 +1198,764 @@ class Agent:
             writer.writerow(row)
         return buffer.getvalue().encode("utf-8-sig")  # BOM so Excel reads UTF-8
 
+    # -- the kiosk screens ------------------------------------------------
+
+    def movement_types(self):
+        """The movement vocabulary SMPL accepts, for validating a request."""
+        return self._sw.MOVEMENT_TYPES if self._sw is not None else frozenset()
+
+    def require_kiosk(self):
+        """The kiosk, or a 503 that says which module is missing."""
+        if self.kiosk is None:
+            raise ApiError(503, "the kiosk screens are unavailable: "
+                                + (self.kiosk_error or "not built"))
+        return self.kiosk
+
+    def boxes_state(self) -> dict:
+        """The crate list in the shape the contract promises, never an error."""
+        self.require_kiosk()
+        snapshot = self.werkstatt.boxes()
+        self.kiosk.set_boxes(snapshot)
+        self._boxes_at = time.monotonic()
+        return snapshot
+
+    def _refresh_boxes(self, *, force: bool = False) -> None:
+        if self.kiosk is None:
+            return
+        snapshot = self.werkstatt.boxes(force=force)
+        self.kiosk.set_boxes(snapshot)
+        self._boxes_at = time.monotonic()
+
+    def _refresh_crew(self, *, force: bool = False) -> None:
+        """Keep the name buttons warm, off the request path.
+
+        The snapshot does no I/O — a screen holding a 25-second poll must
+        never be the reason a network call is in flight — so the crew is
+        fetched here and handed to the kiosk, exactly like the box list.
+        """
+        if self.kiosk is None:
+            return
+        self.kiosk.set_crew(self.werkstatt.crew(force=force))
+        self._crew_at = time.monotonic()
+
+    # -- a scan -----------------------------------------------------------
+
+    def _on_scanned(self, code: str) -> None:
+        """The scanner thread's entry point. Swallows everything."""
+        try:
+            self.route_scan(code, source="evdev")
+        except Exception as exc:  # noqa: BLE001 - the reader must not learn about HTTP
+            self._log(f"scan routing failed: {type(exc).__name__}: {exc}")
+
+    def route_scan(self, code: str, source: str = "wedge") -> dict:
+        """Decide which screen owns this scan, then do what it means.
+
+        The arrival time is taken **first** and threaded all the way into the
+        router. Two readers deliver the same trigger pull about 20 ms apart,
+        and the de-dupe window is 150 ms — but resolving an unknown code
+        against SMPL is allowed four seconds. Judging the echo after that call
+        measured the network instead of the scanner, and one pull of the
+        trigger booked stock twice.
+        """
+        self.require_kiosk()
+        text = (code or "").strip()
+        if not text:
+            raise ApiError(400, "'code' must not be empty")
+        arrived = self._clock()
+        resolved = None
+        # An echo is dropped before it costs a round trip, not after.
+        if not self.router.is_duplicate(text, arrived) and self.router.needs_resolution(text):
+            text, resolved = self._resolve_scan(text)
+        decision = self.router.route(text, source=source,
+                                     kind=self._sw.kind_of(resolved), at=arrived)
+        try:
+            self._apply(decision, resolved)
+        except Exception as exc:  # noqa: BLE001 - a screen update is not worth a 500
+            self._log(f"applying a scan failed: {type(exc).__name__}: {exc}")
+            self.kiosk.flash(decision.screen or SCREEN_RACK, "error",
+                             "Unerwarteter Fehler", str(exc)[:200], code=text)
+        return {
+            "ok": decision.ok,
+            "routed_to": decision.screen,
+            "action": decision.action,
+            "duplicate": decision.duplicate,
+            "code": decision.code,
+            "qty": decision.qty,
+            "error": decision.error,
+        }
+
+    def _resolve_scan(self, text: str):
+        """Ask SMPL what a code is, with one Y/Z retry behind the answer.
+
+        Returns ``(code, resolved)`` — the code that actually resolved, so a
+        swapped hit books and displays the article on the label rather than
+        the one the keycode table guessed.
+
+        The retry exists because the German table's Y/Z swap is inferred from
+        the XKB layout files rather than measured (neither captured scan
+        contains either letter), and a wrong guess is invisible: the article
+        simply "does not exist". It fires at most once, only for a code that
+        contains a Y or a Z, and only when SMPL actually answered — during an
+        outage every miss is a miss, and doubling the timeout on the one path
+        that has to stay under five seconds would buy nothing.
+
+        Routing the *swapped* spelling is deliberate: two readers deliver the
+        same trigger pull, both take this same deterministic path, and the
+        router's own de-dupe window then sees two identical codes. Routing the
+        raw one instead would leave the echo looking like a different scan.
+        """
+        resolved = self.werkstatt.resolve(text)
+        if not self._is_a_miss(resolved):
+            return text, resolved
+        swapped = text.translate(_YZ_SWAP)
+        if swapped == text or not self.werkstatt.status().get("last_ok"):
+            return text, resolved
+        second = self.werkstatt.resolve(swapped)
+        if self._is_a_miss(second):
+            return text, resolved
+        self._warn_layout_swapped(text, swapped)
+        return swapped, second
+
+    def _is_a_miss(self, resolved) -> bool:
+        """True when SMPL has nothing for this code (or said nothing at all)."""
+        if resolved is None:
+            return True
+        return self._sw.kind_of(resolved) in (None, "not_found")
+
+    def _warn_layout_swapped(self, text: str, swapped: str) -> None:
+        """One line, once per process — the same rule the reader logs by.
+
+        Once per process rather than once per scan: with a wrong layout every
+        second article scan would hit this, and a message repeated a hundred
+        times an hour is a message nobody reads.
+        """
+        if self._layout_warned:
+            return
+        self._layout_warned = True
+        self._log(
+            "scanner layout: %r was unknown but %r resolved — Y and Z are swapped, "
+            "so the scanner is no longer sending %s scancodes. Check "
+            "--scanner-layout / SCANNER_LAYOUT (logged once per start)."
+            % (text, swapped, self.scanner_layout)
+        )
+
+    def _apply(self, decision, resolved) -> None:
+        handler = _APPLY.get(decision.action)
+        if handler is not None:
+            handler(self, decision, resolved)
+
+    # -- what each decision costs -----------------------------------------
+
+    def _applied_session(self, decision, _resolved) -> None:
+        detail = {"open_session": "Kiste offen",
+                  "switch_session": "Kiste gewechselt",
+                  "keep_session": "Kiste bleibt offen"}[decision.action]
+        self.kiosk.flash(SCREEN_BOXES, "ok", "Kiste %s" % (decision.box_number or "?"), detail,
+                         code=decision.code)
+        self._refresh_boxes(force=True)
+
+    def _applied_close(self, decision, _resolved) -> None:
+        self.kiosk.flash(SCREEN_BOXES, "ok", "Kiste geschlossen",
+                         decision.previous_code or "", code=decision.code)
+
+    def _applied_qty(self, decision, _resolved) -> None:
+        # The pending quantity shows on both screens, so both must be woken.
+        other = SCREEN_BOXES if decision.screen == SCREEN_RACK else SCREEN_RACK
+        self.kiosk.flash(decision.screen or SCREEN_RACK, "ok", "Menge %d" % decision.qty,
+                         "gilt für den nächsten Scan", code=decision.code)
+        self.kiosk.bump(other)
+
+    def _applied_direction(self, decision, _resolved) -> None:
+        self.kiosk.flash(SCREEN_RACK, "ok",
+                         DIRECTION_LABEL.get(self.router.direction, self.router.direction),
+                         "Richtung geändert", code=decision.code)
+
+    def _applied_mode(self, decision, _resolved) -> None:
+        label = "Entnahme aus der Kiste" if self.router.mode == "remove" else "Einpacken"
+        self.kiosk.flash(SCREEN_BOXES, "ok", label, "Modus geändert", code=decision.code)
+
+    def _applied_note(self, decision, _resolved) -> None:
+        titles = {"clear_pending": "Verworfen",
+                  "nothing_to_undo": "Nichts zum Rückgängigmachen",
+                  "cannot_undo": "Abbruch nicht möglich"}
+        level = "ok" if decision.ok else "warn"
+        self.kiosk.flash(decision.screen or SCREEN_RACK, level,
+                         titles.get(decision.action, decision.action),
+                         decision.error or "", code=decision.code)
+
+    def _applied_needs_assignee(self, decision, _resolved) -> None:
+        """Refused before anything was written, in the operator's own words.
+
+        The ledger has to be able to answer "who has the drill", so an Ausgabe
+        with nobody tapped is not booked anonymously and not queued — it is
+        refused, the quantity survives, and the screen says what to do.
+        """
+        self.kiosk.flash(SCREEN_RACK, "error", decision.error or "Bitte zuerst Namen antippen",
+                         "Ausgabe nur mit Namen — nichts gebucht.", code=decision.code)
+
+    def _applied_machine(self, decision, resolved) -> None:
+        """Show the tool, say that showing it is all that happened.
+
+        A machine has a unit number, a state and a holder; it has no stock
+        counters at all. Projecting it into ``last.article`` showed a dash for
+        the name and 0/0/0 for the counters of a drill somebody was holding.
+        ``article`` is null on purpose, so the counters are *absent* rather
+        than zero and the page renders the machine card instead.
+        """
+        self.kiosk.set_last({"article": None,
+                             "machine": self._sw.machine_of(resolved),
+                             # Null, and it has to stay null: the rack screen
+                             # shows its "Nicht gebucht" note exactly when the
+                             # state carries no movement, and nothing here
+                             # writes a ledger row for a tool.
+                             "movement": None})
+        if decision.ok:
+            # Not "ok". Scanning a tool at the rack books *nothing* — machine
+            # ausgabe and rückgabe live in SMPL — and a green tick under a
+            # drill's name is read across a workshop as "it is booked out to
+            # me". A worker walked off with a tool the ledger never saw.
+            self.kiosk.flash(SCREEN_RACK, "warn", MSG_MACHINE_LOOKUP_ONLY,
+                             MSG_MACHINE_NOT_BOOKED, code=decision.code)
+            return
+        # Refused during a crate session: the message belongs on the screen the
+        # operator is standing at, the scan itself belongs on the rack.
+        self.kiosk.flash(SCREEN_BOXES, "error", "Maschine gehört nicht in die Kiste",
+                         decision.error or "", code=decision.code)
+        self.kiosk.flash(SCREEN_RACK, "warn", "Maschine gescannt",
+                         "vom Kisten-Bildschirm umgeleitet", code=decision.code)
+
+    def _applied_add(self, decision, resolved) -> None:
+        box_id = self._session_box_id()
+        if box_id is None:
+            self.kiosk.flash(SCREEN_BOXES, "error", "Kiste unbekannt",
+                             "SMPL kennt die Kiste %s nicht." % (decision.box_number or "?"),
+                             code=decision.code)
+            return
+        article_id = self._sw.article_id_of(resolved)
+        result = self.werkstatt.add_item(
+            box_id, code="" if article_id else decision.code,
+            article_id=article_id, quantity=decision.qty,
+        )
+        if not result.ok:
+            self.router.note_pending(self._article_from(resolved, decision.code), decision.qty)
+            self.kiosk.flash(SCREEN_BOXES, "error", "Nicht eingebucht", result.error or "",
+                             code=decision.code)
+            return
+        line = result.data if isinstance(result.data, dict) else {}
+        self.router.note_commit(screen=SCREEN_BOXES, action="add_item", box_id=box_id,
+                                item_id=line.get("id"), article_id=article_id, qty=decision.qty)
+        self.kiosk.flash(SCREEN_BOXES, "ok",
+                         line.get("item_name") or decision.code,
+                         "+%d in Kiste %s" % (decision.qty, decision.box_number or "?"),
+                         code=decision.code)
+        self._refresh_boxes(force=True)
+
+    def _applied_remove(self, decision, resolved) -> None:
+        box_id = self._session_box_id()
+        box = self.kiosk.find_box(box_id=box_id) if box_id is not None else None
+        if box is None:
+            self.kiosk.flash(SCREEN_BOXES, "error", "Kiste unbekannt",
+                             "SMPL kennt die Kiste %s nicht." % (decision.box_number or "?"),
+                             code=decision.code)
+            return
+        line = _match_line(box, self._sw.article_id_of(resolved), decision.code)
+        if line is None:
+            self.kiosk.flash(SCREEN_BOXES, "warn", "Nicht in der Kiste",
+                             "%s liegt nicht in Kiste %s." % (decision.code,
+                                                              decision.box_number or "?"),
+                             code=decision.code)
+            return
+        result = self.werkstatt.remove_item(box_id, line.get("id"), decision.qty)
+        if not result.ok:
+            self.kiosk.flash(SCREEN_BOXES, "error", "Nicht ausgebucht", result.error or "",
+                             code=decision.code)
+            return
+        self.router.note_commit(screen=SCREEN_BOXES, action="remove_item", box_id=box_id,
+                                item_id=line.get("id"),
+                                article_id=line.get("article_id"), qty=decision.qty)
+        self.kiosk.flash(SCREEN_BOXES, "ok", line.get("item_name") or decision.code,
+                         "-%d aus Kiste %s" % (decision.qty, decision.box_number or "?"),
+                         code=decision.code)
+        self._refresh_boxes(force=True)
+
+    def _applied_movement(self, decision, resolved) -> None:
+        article_id = self._sw.article_id_of(resolved)
+        if article_id is None:
+            self.router.note_pending(self._article_from(resolved, decision.code), decision.qty)
+            detail = ("SMPL ist nicht erreichbar." if self.werkstatt.configured
+                      else "Diese Station ist nicht mit SMPL verbunden.")
+            self.kiosk.flash(SCREEN_RACK, "error", "Code nicht zugeordnet", detail,
+                             code=decision.code)
+            return
+        result = self.werkstatt.movement(article_id, decision.movement_type, decision.qty,
+                                         assignee_user_id=decision.assignee_user_id)
+        if not result.ok:
+            self.router.note_pending(self._article_from(resolved, decision.code), decision.qty)
+            self.kiosk.flash(SCREEN_RACK, "error", "Nicht gebucht", result.error or "",
+                             code=decision.code)
+            return
+        self._record_movement(decision, resolved, article_id, result, decision.movement_type)
+
+    def _record_movement(self, decision, resolved, article_id, result, movement_type) -> None:
+        data = result.data if isinstance(result.data, dict) else {}
+        article = data.get("article") if isinstance(data.get("article"), dict) else None
+        self.router.note_commit(screen=SCREEN_RACK, action="movement", article_id=article_id,
+                                movement_type=movement_type, qty=decision.qty,
+                                assignee_user_id=decision.assignee_user_id)
+        self.kiosk.set_last({
+            "article": article or self._article_from(resolved, decision.code),
+            "machine": None,
+            "movement": {"movement_type": movement_type, "qty": decision.qty,
+                         "movement_id": data.get("movement_id"), "at": self._clock()},
+        })
+        name = (article or {}).get("item_name") or decision.code
+        self.kiosk.flash(SCREEN_RACK, "ok", name,
+                         "%s %d" % (DIRECTION_LABEL.get(self.router.direction, movement_type),
+                                    decision.qty),
+                         code=decision.code)
+
+    # -- undo -------------------------------------------------------------
+
+    def _applied_undo_item(self, decision, _resolved) -> None:
+        undo = decision.undo or {}
+        result = self.werkstatt.remove_item(undo.get("box_id"), undo.get("item_id"),
+                                            undo.get("qty", 1))
+        self._flash_undo(SCREEN_BOXES, result, decision, "Position zurückgenommen")
+
+    def _applied_undo_remove(self, decision, _resolved) -> None:
+        undo = decision.undo or {}
+        result = self.werkstatt.add_item(undo.get("box_id"), article_id=undo.get("article_id"),
+                                         quantity=undo.get("qty", 1))
+        self._flash_undo(SCREEN_BOXES, result, decision, "Entnahme zurückgenommen")
+
+    def _applied_undo_movement(self, decision, _resolved) -> None:
+        undo = decision.undo or {}
+        result = self.werkstatt.movement(undo.get("article_id"), undo.get("movement_type", ""),
+                                         undo.get("qty", 1),
+                                         assignee_user_id=undo.get("assignee_user_id"))
+        self._flash_undo(SCREEN_RACK, result, decision, "Buchung zurückgenommen")
+
+    def _flash_undo(self, screen: str, result, decision, title: str) -> None:
+        """Only a *landed* inverse forgets what it undid.
+
+        The router describes the inverse and keeps the record; it is cleared
+        here, once SMPL accepted it. One ABBRUCH during a network blip must
+        not cost the operator the ability to undo at all — the blip is
+        precisely why the screen looks wrong.
+        """
+        if result.ok:
+            self.router.confirm_undo(screen)
+            self.kiosk.flash(screen, "ok", title, "", code=decision.code)
+            self._refresh_boxes(force=True)
+        else:
+            self.kiosk.flash(screen, "error", "Abbruch fehlgeschlagen", result.error or "",
+                             code=decision.code)
+
+    # -- helpers ----------------------------------------------------------
+
+    def _session_box_id(self):
+        session = self.router.session
+        if session is None:
+            return None
+        box = self.kiosk.find_box(code=session.code, box_number=session.box_number)
+        return box.get("id") if box else None
+
+    @staticmethod
+    def _article_from(resolved, code: str) -> dict:
+        if isinstance(resolved, dict):
+            article = resolved.get("article")
+            if isinstance(article, dict):
+                return article
+            items = resolved.get("catalog_items")
+            if isinstance(items, list) and items and isinstance(items[0], dict):
+                return items[0]
+        return {"code": code, "item_name": None}
+
+    # -- routes the screens call directly ---------------------------------
+
+    def open_box_session(self, box_id: int) -> dict:
+        self.require_kiosk()
+        self._refresh_boxes()
+        box = self.kiosk.find_box(box_id=box_id)
+        if box is None:
+            return {"ok": False, "error": "SMPL kennt keine Kiste mit der Nummer %d." % box_id}
+        code = str(box.get("code") or "").strip() or "KISTE-%s" % (box.get("box_number") or "")
+        self.router.open_session(code)
+        self.kiosk.flash(SCREEN_BOXES, "ok", "Kiste %s" % (box.get("box_number") or box_id),
+                         "Kiste offen", code=code)
+        return {"ok": True, "box_id": box_id, "code": code}
+
+    def close_box_session(self) -> dict:
+        self.require_kiosk()
+        self.router.close_session()
+        self.kiosk.flash(SCREEN_BOXES, "ok", "Kiste geschlossen", "")
+        return {"ok": True}
+
+    def add_box_item(self, box_id: int, code: str, article_id, qty: int) -> dict:
+        self.require_kiosk()
+        result = self.werkstatt.add_item(box_id, code=code, article_id=article_id, quantity=qty)
+        if result.ok:
+            line = result.data if isinstance(result.data, dict) else {}
+            self.router.note_commit(screen=SCREEN_BOXES, action="add_item", box_id=box_id,
+                                    item_id=line.get("id"), article_id=article_id, qty=qty)
+            self.kiosk.flash(SCREEN_BOXES, "ok", line.get("item_name") or code or "Position",
+                             "+%d" % qty, code=code)
+            self._refresh_boxes(force=True)
+        else:
+            self.kiosk.flash(SCREEN_BOXES, "error", "Nicht eingebucht", result.error or "",
+                             code=code)
+        return {"ok": result.ok, "item": result.data if result.ok else None,
+                "error": result.error}
+
+    def remove_box_item(self, box_id: int, item_id: int, qty: int) -> dict:
+        self.require_kiosk()
+        result = self.werkstatt.remove_item(box_id, item_id, qty)
+        if result.ok:
+            self.router.note_commit(screen=SCREEN_BOXES, action="remove_item", box_id=box_id,
+                                    item_id=item_id, qty=qty)
+            self.kiosk.flash(SCREEN_BOXES, "ok", "Position entfernt", "-%d" % qty)
+            self._refresh_boxes(force=True)
+        else:
+            self.kiosk.flash(SCREEN_BOXES, "error", "Nicht ausgebucht", result.error or "")
+        return {"ok": result.ok, "removed": result.data if result.ok else None,
+                "error": result.error}
+
+    def rack_movement(self, article_id: int, movement_type: str, qty: int,
+                      assignee_user_id=None) -> dict:
+        """Book one movement from the rack screen's own buttons.
+
+        The rule about names lives here rather than in the HTTP handler
+        because this is the *second* door onto the ledger: a scan is refused
+        by the router before it ever gets this far, and an anonymous checkout
+        posted through this one would leave a tool out with nobody on it — the
+        one question the ledger exists to answer.
+        """
+        self.require_kiosk()
+        if self._sr.movement_needs_assignee(movement_type, assignee_user_id):
+            self.kiosk.flash(SCREEN_RACK, "error", self._sr.MSG_NEEDS_ASSIGNEE,
+                             "Ausgabe nur mit Namen — nichts gebucht.")
+            raise ApiError(400, self._sr.MSG_NEEDS_ASSIGNEE)
+        result = self.werkstatt.movement(article_id, movement_type, qty,
+                                         assignee_user_id=assignee_user_id)
+        if not result.ok:
+            self.kiosk.flash(SCREEN_RACK, "error", "Nicht gebucht", result.error or "")
+            return {"ok": False, "article": None, "error": result.error}
+        data = result.data if isinstance(result.data, dict) else {}
+        article = data.get("article") if isinstance(data.get("article"), dict) else None
+        self.router.note_commit(screen=SCREEN_RACK, action="movement", article_id=article_id,
+                                movement_type=movement_type, qty=qty,
+                                assignee_user_id=assignee_user_id)
+        self.kiosk.set_last({"article": article, "machine": None,
+                             "movement": {"movement_type": movement_type, "qty": qty,
+                                          "movement_id": data.get("movement_id"),
+                                          "at": self._clock()}})
+        self.kiosk.flash(SCREEN_RACK, "ok", (article or {}).get("item_name") or "Gebucht",
+                         "%s %d" % (movement_type, qty))
+        return {"ok": True, "article": article, "error": None}
+
+    def screen_action(self, screen: str, action: str, value) -> dict:
+        """One tap from one screen. The screen it claims has to be its own.
+
+        ``screen`` used to be validated (it is one of the two) and then
+        ignored, so the box screen could set the rack's direction or tap a
+        name onto an Ausgabe nobody at the rack had asked for. Each action
+        belongs to the screen whose buttons produce it; the two that belong to
+        both say so in :data:`ACTION_SCREEN`.
+        """
+        self.require_kiosk()
+        allowed = ACTION_SCREEN.get(action)
+        if allowed is not None and screen != allowed:
+            raise ApiError(400, "'%s' is an action of the %s screen, not %s"
+                                % (action, allowed, screen))
+        if action == "direction":
+            if value not in self._sr.DIRECTIONS:
+                raise ApiError(400, "'value' must be one of %s"
+                                    % ", ".join(self._sr.DIRECTIONS))
+            self.router.set_direction(value)
+            self.kiosk.bump(SCREEN_RACK)
+        elif action == "assignee":
+            self._set_assignee(value)
+        elif action == "mode":
+            if value not in ("add", "remove"):
+                raise ApiError(400, "'value' must be 'add' or 'remove'")
+            self.router.set_mode(value)
+            self.kiosk.bump(SCREEN_BOXES)
+        elif action == "dismiss":
+            self.kiosk.clear_flash(screen)
+        elif action == "close_session":
+            self.router.close_session()
+            self.kiosk.bump(SCREEN_BOXES)
+        elif action == "qty":
+            self.router.set_qty(require_int({"qty": value}, "qty", 1, 1, 9999))
+            self.kiosk.bump(*SCREENS)
+        else:
+            raise ApiError(400, "unknown screen action '%s'" % action)
+        return {"ok": True, "action": action}
+
+    def _set_assignee(self, value) -> None:
+        """Tap a name, or clear it with a null.
+
+        The id has to be somebody in the cached crew, because the buttons the
+        operator pressed were built from that very list. Accepting an id from
+        outside it published ``{"id": 7, "name": null}`` — which breaks the
+        screen contract's ``name: string``, shows a nameless chip on the wall,
+        and books a tool out to a person the station cannot name.
+
+        The cached list and never a fetch: a tap has to land instantly, and
+        the tick keeps the list warm off the request path.
+        """
+        if value in (None, ""):
+            self.router.set_assignee(None)
+            self.kiosk.bump(SCREEN_RACK)
+            return
+        user_id = require_int({"assignee": value}, "assignee", 0, 1, 2 ** 31 - 1)
+        person = next((row for row in self.kiosk.crew() if row.get("id") == user_id), None)
+        if person is None:
+            raise ApiError(400, "no crew member with id %d — the name buttons are "
+                                "built from the crew list, so this id is not one "
+                                "of them" % user_id)
+        self.router.set_assignee({"id": user_id, "name": person.get("name")})
+        self.kiosk.bump(SCREEN_RACK)
+
+
+# What each routing decision costs, in one table rather than one long chain.
+_APPLY = {
+    "open_session": Agent._applied_session,
+    "switch_session": Agent._applied_session,
+    "keep_session": Agent._applied_session,
+    "close_session": Agent._applied_close,
+    "qty": Agent._applied_qty,
+    "direction": Agent._applied_direction,
+    "mode": Agent._applied_mode,
+    "clear_pending": Agent._applied_note,
+    "nothing_to_undo": Agent._applied_note,
+    "cannot_undo": Agent._applied_note,
+    "needs_assignee": Agent._applied_needs_assignee,
+    "machine": Agent._applied_machine,
+    "refused": Agent._applied_machine,
+    "add_item": Agent._applied_add,
+    "remove_item": Agent._applied_remove,
+    "movement": Agent._applied_movement,
+    "undo_item": Agent._applied_undo_item,
+    "undo_remove": Agent._applied_undo_remove,
+    "undo_movement": Agent._applied_undo_movement,
+}
+
+
+def _match_line(box: dict, article_id, code: str):
+    """The line in a crate that a scanned code refers to, or None.
+
+    Matching on the article id first matters: two lines can carry the same
+    printed code if one was added from the catalogue and one from stock, and
+    the id is the only thing that is unambiguous.
+    """
+    wanted = (code or "").strip().upper()
+    for line in (box.get("items") or []):
+        if not isinstance(line, dict):
+            continue
+        if article_id is not None and line.get("article_id") == article_id:
+            return line
+    for line in (box.get("items") or []):
+        if not isinstance(line, dict):
+            continue
+        for key in ("article_no", "code", "internal_code"):
+            if wanted and str(line.get(key) or "").strip().upper() == wanted:
+                return line
+    return None
+
+
+# --------------------------------------------------------------------------
+# The kiosk screens
+# --------------------------------------------------------------------------
+
+class Kiosk:
+    """The two screens' shared view, and the long poll that feeds them.
+
+    Everything a screen needs is assembled here from three sources that are
+    each allowed to be absent: the routing state machine, the last box list
+    SMPL gave us, and the hardware status. Nothing in :meth:`snapshot` does
+    I/O — a screen holding a 25-second poll open must never be the reason a
+    network call is in flight, and a network call must never be the reason a
+    screen waits.
+    """
+
+    def __init__(self, router, *, idle_timeout_s: float = SESSION_IDLE_S,
+                 scanner_status=None, upstream_status=None,
+                 clock=time.time) -> None:
+        self._router = router
+        self._idle_timeout_s = float(idle_timeout_s)
+        self._scanner_status = scanner_status or (lambda: {})
+        self._upstream_status = upstream_status or (lambda: {})
+        self._clock = clock
+        self._cond = threading.Condition()
+        self._seq = {screen: 1 for screen in SCREENS}
+        self._flash = {screen: None for screen in SCREENS}
+        self._last = None
+        self._boxes = {"boxes": [], "fetched_at": None, "stale": True, "error": None}
+        self._crew: list = []
+        self._closed = False
+
+    # -- writes -----------------------------------------------------------
+
+    def bump(self, *screens: str) -> None:
+        with self._cond:
+            for screen in (screens or SCREENS):
+                if screen in self._seq:
+                    self._seq[screen] += 1
+            self._cond.notify_all()
+
+    def flash(self, screen: str, level: str, title: str, detail: str = "",
+              code: str = "") -> None:
+        """One line of feedback, which the screen shows and then forgets."""
+        with self._cond:
+            self._flash[screen] = {
+                "level": level, "title": title, "detail": detail,
+                "code": code, "at": self._clock(),
+            }
+            self._seq[screen] += 1
+            self._cond.notify_all()
+
+    def clear_flash(self, screen: str) -> None:
+        with self._cond:
+            self._flash[screen] = None
+            self._seq[screen] += 1
+            self._cond.notify_all()
+
+    def set_last(self, payload) -> None:
+        """The last thing that happened, which both screens now render.
+
+        Both, because a machine scanned at a crate is refused there and
+        mirrored to the rack: the box screen has to be able to show what it
+        just turned away.
+        """
+        with self._cond:
+            self._last = payload
+            for screen in SCREENS:
+                self._seq[screen] += 1
+            self._cond.notify_all()
+
+    def set_crew(self, people) -> None:
+        """The name buttons. Only wakes the rack screen when they changed."""
+        rows = [dict(person) for person in (people or []) if isinstance(person, dict)]
+        with self._cond:
+            if rows == self._crew:
+                return
+            self._crew = rows
+            self._seq[SCREEN_RACK] += 1
+            self._cond.notify_all()
+
+    def crew(self) -> list:
+        with self._cond:
+            return [dict(person) for person in self._crew]
+
+    def set_boxes(self, snapshot: dict) -> None:
+        """Store the box list; wake the box screen only if it actually moved."""
+        with self._cond:
+            changed = _fingerprint(snapshot) != _fingerprint(self._boxes)
+            self._boxes = snapshot
+            if changed:
+                self._seq[SCREEN_BOXES] += 1
+                self._cond.notify_all()
+
+    def boxes(self) -> dict:
+        with self._cond:
+            return self._boxes
+
+    def close(self) -> None:
+        """Wake every waiting poll so shutdown does not take 25 seconds."""
+        with self._cond:
+            self._closed = True
+            self._cond.notify_all()
+
+    # -- reads ------------------------------------------------------------
+
+    def wait(self, screen: str, since, timeout: float) -> dict:
+        """Block until this screen's sequence moves, or the timeout expires."""
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        with self._cond:
+            while not self._closed and since is not None and self._seq[screen] == since:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                self._cond.wait(remaining)
+            return self._snapshot_locked(screen)
+
+    def snapshot(self, screen: str) -> dict:
+        with self._cond:
+            return self._snapshot_locked(screen)
+
+    def _snapshot_locked(self, screen: str) -> dict:
+        scanner = self._scanner_status() or {}
+        upstream = self._upstream_status() or {}
+        payload = {
+            "seq": self._seq[screen],
+            "screen": screen,
+            "scanner": {
+                "active": bool(scanner.get("active")),
+                "device": scanner.get("device"),
+                "error": scanner.get("error"),
+            },
+            "upstream": {"ok": upstream.get("ok"), "error": upstream.get("error")},
+            "flash": self._flash[screen],
+            "session": self._session_payload(),
+            "pending": self._router.pending() if self._router else None,
+        }
+        payload["last"] = self._last
+        if screen == SCREEN_BOXES:
+            payload["boxes"] = list(self._boxes.get("boxes") or [])
+            # Whether the list is trustworthy is part of the list. Without
+            # these three the crate screen cannot tell "no crates are open"
+            # from "nobody could be asked", and shows the first while meaning
+            # the second.
+            payload["boxes_stale"] = bool(self._boxes.get("stale"))
+            payload["boxes_error"] = self._boxes.get("error")
+            payload["boxes_fetched_at"] = self._boxes.get("fetched_at")
+        else:
+            payload["direction"] = self._router.direction if self._router else "aus"
+            payload["crew"] = [dict(person) for person in self._crew]
+            payload["assignee"] = self._router.assignee if self._router else None
+        return payload
+
+    def _session_payload(self):
+        session = self._router.session if self._router else None
+        if session is None:
+            return None
+        box = self.find_box(code=session.code, box_number=session.box_number) or {}
+        return {
+            "box_id": box.get("id"),
+            "box_number": session.box_number,
+            "code": session.code,
+            "label": box.get("label"),
+            "customer": box.get("customer"),
+            "project": box.get("project"),
+            "status": box.get("status"),
+            "opened_at": session.opened_at,
+            "expires_at": session.last_at + self._idle_timeout_s,
+            "mode": self._router.mode,
+        }
+
+    def find_box(self, *, box_id=None, code: str = "", box_number: str = ""):
+        """One box out of the last snapshot, by id, code or number."""
+        wanted_code = (code or "").strip().upper()
+        wanted_number = (box_number or "").strip().upper()
+        for box in (self._boxes.get("boxes") or []):
+            if not isinstance(box, dict):
+                continue
+            if box_id is not None and box.get("id") == box_id:
+                return box
+            if wanted_code and str(box.get("code") or "").strip().upper() == wanted_code:
+                return box
+            if wanted_number and str(box.get("box_number") or "").strip().upper() == wanted_number:
+                return box
+        return None
+
+
+def _fingerprint(snapshot) -> str:
+    try:
+        return json.dumps(snapshot, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        return repr(snapshot)
+
 
 # --------------------------------------------------------------------------
 # HTTP layer
@@ -1016,8 +2050,19 @@ class Handler(BaseHTTPRequestHandler):
             "/pair/status": lambda q: self._json(200, self._station().pair_status()),
             "/imports": lambda q: self._json(200, self._station().imports(
                 require_int(q, "limit", 50, 1, 500))),
+            "/regal": lambda q: self._get_screen_page("kiosk_rack.html"),
+            "/kisten": lambda q: self._get_screen_page("kiosk_boxes.html"),
+            "/screen/state": self._get_screen_state,
+            "/boxes/state": lambda q: self._json(200, self.agent.boxes_state()),
+            "/now-playing": self._get_now_playing,
+            "/now-playing/cover.jpg": self._get_cover,
         }
-        self._guard(lambda: self._dispatch(table, parsed.path, query))
+
+        def run() -> None:
+            self._require_local_if_needed(parsed.path)
+            self._dispatch(table, parsed.path, query)
+
+        self._guard(run)
 
     def do_HEAD(self) -> None:  # noqa: N802
         self.do_GET()
@@ -1033,8 +2078,37 @@ class Handler(BaseHTTPRequestHandler):
             "/pair/forget": lambda q: self._json(200, self._station().unpair()),
             "/imports/rescan": lambda q: self._json(200, self._station().rescan()),
             "/imports/retry": lambda q: self._json(200, self._station().retry_uploads()),
+            "/scan/route": lambda q: self._post_scan_route(),
+            "/box/session": lambda q: self._post_box_session(),
+            "/box/item": lambda q: self._post_box_item(),
+            "/box/item/remove": lambda q: self._post_box_item_remove(),
+            "/rack/movement": lambda q: self._post_rack_movement(),
+            "/screen/action": lambda q: self._post_screen_action(),
         }
-        self._guard(lambda: self._dispatch(table, parsed.path, {}))
+
+        def run() -> None:
+            self._require_local_if_needed(parsed.path)
+            self._dispatch(table, parsed.path, {})
+
+        self._guard(run)
+
+    def _require_local_if_needed(self, path: str) -> None:
+        if path in LOOPBACK_ONLY:
+            self._require_local()
+
+    def _require_local(self) -> None:
+        """The kiosk is two browsers on this very machine, reads included.
+
+        The agent binds 0.0.0.0 on the Pi so a phone can open the station
+        page, which means "reachable" and "trusted" stopped being the same
+        thing the moment these routes could move stock — or hand out every
+        customer, project and packed item on the crate screen, which a plain
+        GET used to do to anybody on the workshop LAN.
+        """
+        address = self.client_address[0] if self.client_address else ""
+        if not is_loopback(address):
+            raise ApiError(403, "this route is local-only; %s is not this machine"
+                                % (address or "the caller"))
 
     # -- GET handlers -----------------------------------------------------
 
@@ -1081,6 +2155,141 @@ class Handler(BaseHTTPRequestHandler):
             code, (query.get("title") or "").strip(), (query.get("subtitle") or "").strip(), tape_mm
         )
         self._send(200, "image/png", png)
+
+    # -- kiosk GET handlers -----------------------------------------------
+
+    def _get_screen_page(self, filename: str) -> None:
+        """Serve one of the two kiosk pages, or say which file is missing.
+
+        The pages are another agent's files and may not exist yet. A 404 that
+        names the file is more use than a blank screen on a wall.
+        """
+        page = STATIC_DIR / filename
+        if not page.is_file():
+            self._send(
+                404, "text/plain; charset=utf-8",
+                ("static/%s does not exist yet.\n"
+                 "The kiosk API is up: try /screen/state?screen=regal, /boxes/state,\n"
+                 "/now-playing and /health.\n" % filename).encode("utf-8"),
+            )
+            return
+        self._send(200, "text/html; charset=utf-8", page.read_bytes())
+
+    def _get_screen_state(self, query: dict) -> None:
+        """The long poll. Answers at once on a changed sequence, else waits.
+
+        The server is a ``ThreadingHTTPServer``, so a waiting screen occupies
+        one thread and blocks nothing else - the wait is real, not a
+        short-poll pretending. ``wait`` shortens the timeout (tests, and a
+        screen that would rather poll quickly); it can never lengthen it.
+        """
+        screen = (query.get("screen") or "").strip()
+        if screen not in SCREENS:
+            raise ApiError(400, "'screen' must be one of %s" % ", ".join(SCREENS))
+        since = query.get("since")
+        parsed_since = None
+        if since not in (None, ""):
+            try:
+                parsed_since = int(since)
+            except (TypeError, ValueError):
+                raise ApiError(400, "'since' must be a whole number") from None
+        wait = query.get("wait")
+        timeout = SCREEN_POLL_MAX_S
+        if wait not in (None, ""):
+            try:
+                timeout = max(0.0, min(SCREEN_POLL_MAX_S, float(wait)))
+            except (TypeError, ValueError):
+                raise ApiError(400, "'wait' must be a number of seconds") from None
+        self._json(200, self.agent.require_kiosk().wait(screen, parsed_since, timeout))
+
+    def _get_now_playing(self, _query: dict) -> None:
+        self.agent.require_kiosk()
+        self._json(200, self.agent.now_playing.snapshot())
+
+    def _get_cover(self, _query: dict) -> None:
+        self.agent.require_kiosk()
+        blob, art_hash = self.agent.now_playing.cover()
+        if not blob or not art_hash:
+            self._send(404, "text/plain; charset=utf-8",
+                       b"no cover art for the current track\n")
+            return
+        etag = '"%s"' % art_hash
+        if self.headers.get("If-None-Match") == etag:
+            self.send_response(304)
+            self.send_header("ETag", etag)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        # Not `no-store` like the rest of the API: the whole point of the hash
+        # is that a screen can keep the bytes until the track changes.
+        self.send_response(200)
+        self.send_header("Content-Type", "image/jpeg")
+        self.send_header("Content-Length", str(len(blob)))
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("ETag", etag)
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(blob)
+
+    # -- kiosk POST handlers ----------------------------------------------
+
+    def _post_scan_route(self) -> None:
+        payload = self._read_json()
+        code = require_str(payload, "code", max_len=256)
+        source = require_str(payload, "source", max_len=32, required=False) or "wedge"
+        self._json(200, self.agent.route_scan(code, source))
+
+    def _post_box_session(self) -> None:
+        payload = self._read_json()
+        if payload.get("box_id") in (None, ""):
+            self._json(200, self.agent.close_box_session())
+            return
+        box_id = require_int(payload, "box_id", 0, 1, 2 ** 31 - 1)
+        self._json(200, self.agent.open_box_session(box_id))
+
+    def _post_box_item(self) -> None:
+        payload = self._read_json()
+        box_id = require_int(payload, "box_id", 0, 1, 2 ** 31 - 1)
+        code = require_str(payload, "code", max_len=256, required=False)
+        article_id = None
+        if payload.get("article_id") not in (None, ""):
+            article_id = require_int(payload, "article_id", 0, 1, 2 ** 31 - 1)
+        if not code and article_id is None:
+            raise ApiError(400, "one of 'code' or 'article_id' is required")
+        qty = require_int(payload, "qty", 1, 1, 9999)
+        self._json(200, self.agent.add_box_item(box_id, code, article_id, qty))
+
+    def _post_box_item_remove(self) -> None:
+        payload = self._read_json()
+        box_id = require_int(payload, "box_id", 0, 1, 2 ** 31 - 1)
+        item_id = require_int(payload, "item_id", 0, 1, 2 ** 31 - 1)
+        qty = require_int(payload, "qty", 1, 1, 9999)
+        self._json(200, self.agent.remove_box_item(box_id, item_id, qty))
+
+    def _post_rack_movement(self) -> None:
+        payload = self._read_json()
+        if payload.get("article_id") in (None, ""):
+            raise ApiError(400, "'article_id' is required")
+        article_id = require_int(payload, "article_id", 0, 1, 2 ** 31 - 1)
+        movement_type = require_str(payload, "movement_type", max_len=32)
+        self.agent.require_kiosk()
+        allowed = self.agent.movement_types()
+        if movement_type not in allowed:
+            raise ApiError(400, "'movement_type' must be one of %s"
+                                % ", ".join(sorted(allowed)))
+        qty = require_int(payload, "qty", 1, 1, 9999)
+        assignee = None
+        if payload.get("assignee_user_id") not in (None, ""):
+            assignee = require_int(payload, "assignee_user_id", 0, 1, 2 ** 31 - 1)
+        self._json(200, self.agent.rack_movement(article_id, movement_type, qty, assignee))
+
+    def _post_screen_action(self) -> None:
+        payload = self._read_json()
+        screen = require_str(payload, "screen", max_len=16)
+        if screen not in SCREENS:
+            raise ApiError(400, "'screen' must be one of %s" % ", ".join(SCREENS))
+        action = require_str(payload, "action", max_len=32)
+        self._json(200, self.agent.screen_action(screen, action, payload.get("value")))
 
     def _dispatch_dynamic(self, path: str) -> bool:
         """Routes with a name embedded in the path: /session/x, /export/x.csv."""
@@ -1212,7 +2421,32 @@ def build_parser() -> argparse.ArgumentParser:
                         help="seconds between checks of the mount table")
     parser.add_argument("--make-fixtures", metavar="DIR",
                         help="write sample instrument cards into DIR and exit, for --sd-simulate")
+    parser.add_argument("--no-scanner", action="store_true",
+                        help="do not read the USB barcode scanner from /dev/input "
+                             "(the browser wedge and POST /scan/route still work)")
+    parser.add_argument("--scanner-device", default=os.environ.get("SCANNER_DEVICE", ""),
+                        help="an explicit /dev/input node, instead of finding "
+                             f"USB {input_reader_ids()} by itself")
+    parser.add_argument("--scanner-layout", default=SCANNER_LAYOUT,
+                        choices=("de", "us"),
+                        help="the keyboard layout the scanner is configured for "
+                             "(default de: the office scanner sends German scancodes, "
+                             "so evdev 53 is a hyphen and Y/Z are swapped)")
+    parser.add_argument("--no-now-playing", action="store_true",
+                        help="do not read the AirPlay receiver's MPRIS properties over D-Bus")
+    parser.add_argument("--session-idle", type=float,
+                        default=float(os.environ.get("STATION_SESSION_IDLE_S", "600")),
+                        help="seconds a box-filling session stays open with no scan "
+                             "(default 600)")
     return parser
+
+
+def input_reader_ids() -> str:
+    """The scanner's USB ids, for --help, without importing at module scope."""
+    mod = module("input_reader")
+    if mod is None:
+        return "1a86:5456"
+    return "%s:%s" % (mod.VENDOR_ID, mod.PRODUCT_ID)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1275,7 +2509,15 @@ def main(argv: list[str] | None = None) -> int:
         base_url, env_token,
         token_provider=station.token if station is not None else None,
     )
-    agent = Agent(store, printer, upstream, station=station)
+    agent = Agent(
+        store, printer, upstream, station=station,
+        scanner_enabled=not args.no_scanner,
+        now_playing_enabled=not args.no_now_playing,
+        scanner_layout=args.scanner_layout,
+        session_idle_s=args.session_idle,
+    )
+    if agent.scanner is not None and args.scanner_device:
+        agent.scanner.set_device(args.scanner_device)
     agent.start_background()
 
     if not args.no_printer:
@@ -1306,6 +2548,20 @@ def main(argv: list[str] | None = None) -> int:
         if not identity["token_file_secure"]:
             print("  !! the station token file is readable by other users; "
                   "fix with chmod 600")
+    if agent.kiosk is None:
+        print(f"  screens : unavailable ({agent.kiosk_error})")
+    else:
+        print(f"  screens : {url}regal and {url}kisten")
+        scanner = agent.scanner.status()
+        if not args.no_scanner:
+            print("  scanner : %s (%s layout)"
+                  % (scanner.get("device") or
+                     "searching for USB %s" % input_reader_ids(),
+                     scanner.get("layout") or args.scanner_layout))
+        else:
+            print("  scanner : disabled (--no-scanner); the browser wedge still types")
+        print("  airplay : %s" % ("off (--no-now-playing)" if args.no_now_playing
+                                  else "reading MPRIS over the system bus"))
     if args.host not in ("127.0.0.1", "localhost", "::1"):
         print(f"  !! bound to {args.host}: the agent has no authentication of its "
               "own, so anything that can reach this port can print and count.")

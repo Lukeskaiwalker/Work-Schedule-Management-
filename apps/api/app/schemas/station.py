@@ -21,6 +21,8 @@ from typing import Any, Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
+from app.schemas.werkstatt import WerkstattArticleOut
+
 # The five states a polling device can be told about. ``expired`` and
 # ``claimed`` are derived at read time rather than stored, so they can never
 # disagree with the row they describe.
@@ -202,3 +204,99 @@ class StationHeartbeatOut(BaseModel):
     ok: bool = True
     station: StationOut
     server_time: datetime
+
+
+# ---------------------------------------------------------------------------
+# Station-scoped Werkstatt API (the wall-mounted scan station)
+# ---------------------------------------------------------------------------
+
+# What a station may write into the movement ledger — the three directions the
+# rack screen offers and nothing else: Ausgabe, Rückgabe, Wareneingang.
+#
+# A strict subset of ``services/werkstatt_movements.ALLOWED_MOVEMENT_TYPES``.
+# ``correction``, ``repair_out`` and ``repair_back`` are write-offs and repair
+# bookkeeping — decisions with a person and a reason behind them, not
+# something a barcode on a wall screen should be able to trigger.
+#
+# ``inventory_plus``/``inventory_minus`` are deliberately absent too, and for a
+# sharper reason than "a station should not". A stock-take correction is the
+# one movement ``apply_movement`` cannot sanity-check: checkout, return and
+# repair_* are each bounded by a counter, but an inventory correction is by
+# definition allowed to disagree with the snapshot, so nothing stops it going
+# arbitrarily negative. The recompute then clamps the *snapshot* at 0 while the
+# ledger keeps the hole, and every later delivery disappears into it — the
+# article reads 0 forever until somebody edits the ledger by hand. That is a
+# decision that needs a typed reason, and a wall screen with no keyboard cannot
+# supply one. Corrections belong in the inventory-session flow
+# (``services/werkstatt_inventory.py``), where a named person signs for them.
+STATION_MOVEMENT_TYPES: tuple[str, ...] = (
+    "checkout",
+    "return",
+    "intake",
+)
+
+
+# Upper bound on every quantity a station may put on the wire. See the note on
+# ``StationMovementRequest.quantity``: the point is not plausibility, it is that
+# an integer wider than the column must never reach ``db.flush()``.
+STATION_MAX_QUANTITY = 10_000
+
+
+class StationMovementRequest(BaseModel):
+    """Body for POST /api/station/werkstatt/movements.
+
+    ``movement_type`` is a plain string rather than a ``Literal``, and carries
+    no ``min_length``, on purpose: the whitelist is enforced in the router so
+    that *every* rejected value — unknown, empty, or hostile — comes back as
+    the same 400 with a German sentence a workshop can read, rather than some
+    as a 422 listing the permitted enum members.
+    """
+
+    article_id: int
+    movement_type: str = Field(default="", max_length=32)
+    # Bounded at both ends. ``ge=1`` is the obvious half; ``le`` is the half
+    # that was missing: ``intake`` has no counter to fast-fail against, so an
+    # unbounded value reached ``db.flush()`` and came back as an
+    # OverflowError/DataError — past the ``except MovementError`` handler, with
+    # no rollback, as an unhandled 500. 10 000 is far past anything a hand
+    # scanner in front of a rack can mean and far short of a 64-bit column.
+    quantity: int = Field(default=1, ge=1, le=STATION_MAX_QUANTITY)
+    # Who *receives* the tool. Distinct from the ledger's ``user_id``, which
+    # stays the station's owner: conflating "who booked it" with "who has it"
+    # is how a tool becomes unfindable.
+    assignee_user_id: int | None = None
+    # Free text from the device. It never *replaces* the station marker on the
+    # ledger row — see the note-prefix rule in the router — because a caller
+    # that can erase the marker can make a device's booking read like a
+    # person's.
+    notes: str | None = Field(default=None, max_length=500)
+
+
+class StationMovementOut(BaseModel):
+    """The article as it now stands, plus the ledger row that moved it.
+
+    The screen re-renders from ``article`` rather than from its own arithmetic:
+    the counters are recomputed from the whole ledger server-side, so anything
+    the Pi calculated locally would be a guess at what the server just did.
+    """
+
+    article: WerkstattArticleOut
+    movement_id: int
+
+
+class StationCrewMemberOut(BaseModel):
+    """One tappable name on the rack screen.
+
+    A worker taps their name before taking a tool out, so the ledger can answer
+    "who has the drill". Two fields only: the screen renders a grid of buttons
+    and has no room — or use — for a role, an avatar or a nickname.
+
+    The rows come from ``_list_active_assignable_users`` — the same selection
+    and the same ordering behind ``GET /api/users/assignable``, so the wall
+    cannot offer somebody the app does not (or hide somebody it does).
+    ``name`` is that helper's ``display_name``: the string every other screen
+    in SMPL already calls this person.
+    """
+
+    id: int
+    name: str

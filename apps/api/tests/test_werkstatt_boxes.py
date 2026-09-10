@@ -100,6 +100,92 @@ def test_manual_item_can_be_added_and_updated(client: TestClient, admin_token: s
     assert removed.status_code == 204
 
 
+def test_packing_zero_of_something_is_refused_rather_than_rounded_up_to_one(
+    client: TestClient, admin_token: str
+):
+    """``int(payload.quantity or 1)`` mapped 0 to 1 before the ``<= 0`` guard
+    below it could ever see it, so a client that sent 0 — a cleared spinner, a
+    scanner that reported nothing — silently packed one unit into the crate.
+
+    The guard sees the 0 now. Both callers of ``add_item_to_box`` run this same
+    line, so the station path is pinned by the twin of this test in
+    tests/test_station_werkstatt.py.
+    """
+    article = _article(client, admin_token, "Wago 221-412", 10)
+    box = _box(client, admin_token, "Kiste Null")
+
+    refused = client.post(
+        f"/api/werkstatt/boxes/{box['id']}/items",
+        headers=auth_headers(admin_token),
+        json={"article_id": article["id"], "quantity": 0},
+    )
+    assert refused.status_code == 400, refused.text
+    assert "quantity" in refused.json()["detail"]
+
+    assert (
+        client.get(
+            f"/api/werkstatt/boxes/{box['id']}/items", headers=auth_headers(admin_token)
+        ).json()
+        == []
+    )
+
+    # A negative count was already refused; it must stay refused by the same line.
+    negative = client.post(
+        f"/api/werkstatt/boxes/{box['id']}/items",
+        headers=auth_headers(admin_token),
+        json={"article_id": article["id"], "quantity": -3},
+    )
+    assert negative.status_code == 400, negative.text
+
+
+def test_packing_an_unbounded_quantity_is_refused_before_it_reaches_the_column(
+    client: TestClient, admin_token: str
+):
+    """The two station bodies were bounded; this one — what a phone posts — was not.
+
+    ``quantity`` was a bare ``int``, so a value wider than the column reached
+    ``db.flush()`` and came back as an OverflowError/DataError: an unhandled
+    500 raised *past* the endpoint's own error handling, with the session left
+    dirty and nothing rolled back. The bound is on the wire now, so an absurd
+    count never opens a transaction at all.
+
+    Bounded above only, on purpose. Zero and negatives stay the business
+    rule's own 400 from ``add_item_to_box`` — the line the phone and the wall
+    both run — rather than becoming a 422 that says something different on the
+    two paths. The PATCH that corrects a line had the identical hole and is
+    pinned here too.
+    """
+    article = _article(client, admin_token, "Kabelkanal 60x60", 5)
+    box = _box(client, admin_token, "Kiste Menge")
+    url = f"/api/werkstatt/boxes/{box['id']}/items"
+    head = auth_headers(admin_token)
+
+    at_the_bound = client.post(
+        url, headers=head, json={"article_id": article["id"], "quantity": 10_000}
+    )
+    assert at_the_bound.status_code == 200, at_the_bound.text
+    assert at_the_bound.json()["quantity"] == 10_000
+
+    for over in (10_001, 10**20):
+        refused = client.post(
+            url, headers=head, json={"article_id": article["id"], "quantity": over}
+        )
+        assert refused.status_code == 422, f"{over}: {refused.status_code} {refused.text}"
+
+    zero = client.post(url, headers=head, json={"article_id": article["id"], "quantity": 0})
+    assert zero.status_code == 400, zero.text
+    assert "quantity" in zero.json()["detail"]
+
+    # Correcting a line writes the number into the same column, so the PATCH
+    # body carries the same bound — and the same 400 below it.
+    line_id = at_the_bound.json()["id"]
+    corrected = client.patch(f"{url}/{line_id}", headers=head, json={"quantity": 10**20})
+    assert corrected.status_code == 422, corrected.text
+
+    items = client.get(url, headers=head).json()
+    assert [row["quantity"] for row in items] == [10_000], "only the meant line was packed"
+
+
 def test_rescanning_same_article_merges_into_one_line(client: TestClient, admin_token: str):
     article = _article(client, admin_token, "NYM-J 3x1.5", 100)
     box = _box(client, admin_token, "Kiste Kabel")

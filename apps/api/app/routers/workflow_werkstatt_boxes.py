@@ -51,12 +51,14 @@ from app.schemas.werkstatt_boxes import (
     WerkstattBoxItemCreate,
     WerkstattBoxItemOut,
     WerkstattBoxItemUpdate,
+    WerkstattBoxLabelPrintOut,
     WerkstattBoxOut,
     WerkstattBoxSelectableOut,
     WerkstattBoxStatusPayload,
     WerkstattBoxUpdate,
     WerkstattItemSearchHit,
 )
+from app.services import werkstatt_labels
 from app.services.werkstatt_boxes import (
     ensure_standard_boxes,
     next_box_number,
@@ -70,7 +72,7 @@ customer_boxes_router = APIRouter(prefix="", tags=["werkstatt-boxes"])
 # ── Serialisation ─────────────────────────────────────────────────────────────
 
 
-def _item_out(row: WerkstattConstructionBoxItem) -> WerkstattBoxItemOut:
+def item_out(row: WerkstattConstructionBoxItem) -> WerkstattBoxItemOut:
     return WerkstattBoxItemOut(
         id=row.id,
         box_id=row.box_id,
@@ -86,7 +88,7 @@ def _item_out(row: WerkstattConstructionBoxItem) -> WerkstattBoxItemOut:
     )
 
 
-def _box_out(db: Session, box: WerkstattConstructionBox, *, with_items: bool) -> WerkstattBoxOut:
+def box_out(db: Session, box: WerkstattConstructionBox, *, with_items: bool) -> WerkstattBoxOut:
     customer = db.get(Customer, box.customer_id) if box.customer_id is not None else None
     project = db.get(Project, box.project_id) if box.project_id is not None else None
     item_count = int(
@@ -104,7 +106,7 @@ def _box_out(db: Session, box: WerkstattConstructionBox, *, with_items: bool) ->
             .where(WerkstattConstructionBoxItem.box_id == box.id)
             .order_by(WerkstattConstructionBoxItem.id.asc())
         ).all()
-        items = [_item_out(row) for row in rows]
+        items = [item_out(row) for row in rows]
     return WerkstattBoxOut(
         id=box.id,
         box_number=box.box_number,
@@ -125,11 +127,171 @@ def _box_out(db: Session, box: WerkstattConstructionBox, *, with_items: bool) ->
     )
 
 
-def _get_box_or_404(db: Session, box_id: int) -> WerkstattConstructionBox:
+def get_box_or_404(db: Session, box_id: int) -> WerkstattConstructionBox:
     box = db.get(WerkstattConstructionBox, box_id)
     if box is None:
         raise HTTPException(status_code=404, detail="Construction box not found")
     return box
+
+
+# ── The scannable identity of a box ───────────────────────────────────────────
+
+# What goes into the DataMatrix on the box's label. Prefixed rather than bare
+# so a scanner reading "K3" off a crate cannot collide with an article number,
+# and so the string is self-describing to anything that sees it later.
+BOX_CODE_PREFIX = "KISTE-"
+
+
+def box_code(box: WerkstattConstructionBox) -> str:
+    """The string printed on the box's label, and reported as ``code``.
+
+    One function rather than an f-string at each site: the printer and the
+    station's box list have to agree exactly, and two literals in two files is
+    how they would stop agreeing.
+    """
+    return f"{BOX_CODE_PREFIX}{box.box_number}"
+
+
+# ── Packing rules, shared with the station-scoped router ──────────────────────
+#
+# The wall-mounted scan station packs boxes through ``/api/station/werkstatt``
+# with a device token rather than a login. These three functions are what both
+# paths run, so "a handed-over box is frozen" and "a repeat scan tops up the
+# line" cannot hold on one path and not the other.
+
+
+def ensure_box_unlocked(box: WerkstattConstructionBox) -> None:
+    """A box handed to a customer is a closed record. Refuse content changes."""
+    if box.status == "zugewiesen":
+        raise HTTPException(
+            status_code=400, detail="Cannot change the contents of a box that is handed over"
+        )
+
+
+def add_item_to_box(
+    db: Session,
+    box: WerkstattConstructionBox,
+    payload: WerkstattBoxItemCreate,
+    *,
+    added_by: int | None,
+) -> WerkstattConstructionBoxItem:
+    """Add (or top up) a line in the box.
+
+    Identity is snapshotted at pack time. When an article is referenced its
+    master data wins; otherwise we take what the caller scanned/typed. Adding
+    the same article twice increments the existing line rather than creating a
+    duplicate — on a phone, and on a wall screen, that is what a second scan
+    means.
+
+    ``added_by`` is nullable: a station has no user behind it, and inventing
+    one to fill the column would be worse than leaving it empty (nothing about
+    a packed line depends on knowing who scanned it).
+    """
+    ensure_box_unlocked(box)
+
+    # NOT ``payload.quantity or 1``: that maps an explicit 0 to 1 before the
+    # guard below can ever see it, so a cleared spinner or a scanner that
+    # reported nothing silently packed one unit into the crate. Only a missing
+    # value defaults.
+    quantity = int(payload.quantity if payload.quantity is not None else 1)
+    if quantity <= 0:
+        raise HTTPException(status_code=400, detail="quantity must be positive")
+
+    item_name = (payload.item_name or "").strip()
+    article_no = payload.article_no
+    ean = payload.ean
+    unit = payload.unit
+    source = payload.source or "manual"
+
+    if payload.article_id is not None:
+        article = db.get(WerkstattArticle, payload.article_id)
+        if article is None:
+            raise HTTPException(status_code=400, detail=f"Unknown article id: {payload.article_id}")
+        source = "article"
+        item_name = item_name or (article.item_name or "")
+        article_no = article_no or article.article_number
+        ean = ean or article.ean
+        unit = unit or article.unit
+
+    if not item_name:
+        raise HTTPException(status_code=400, detail="item_name is required")
+
+    # Merge a repeat scan of the same article into the existing line.
+    if payload.article_id is not None:
+        existing = db.scalars(
+            select(WerkstattConstructionBoxItem).where(
+                WerkstattConstructionBoxItem.box_id == box.id,
+                WerkstattConstructionBoxItem.article_id == payload.article_id,
+            )
+        ).first()
+        if existing is not None:
+            existing.quantity = int(existing.quantity or 0) + quantity
+            existing.updated_at = utcnow()
+            db.add(existing)
+            db.commit()
+            db.refresh(existing)
+            return existing
+
+    row = WerkstattConstructionBoxItem(
+        box_id=box.id,
+        source=source,
+        article_id=payload.article_id,
+        catalog_external_key=payload.catalog_external_key,
+        item_name=item_name,
+        article_no=article_no,
+        ean=ean,
+        unit=unit,
+        quantity=quantity,
+        notes=payload.notes,
+        added_by=added_by,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def remove_item_from_box(
+    db: Session,
+    box: WerkstattConstructionBox,
+    item_id: int,
+    *,
+    quantity: int | None,
+) -> int:
+    """Take ``quantity`` off a line — ``None`` means the whole line. Returns
+    how many were actually removed.
+
+    Asking for more than the line holds empties it rather than failing: the
+    screen doing the asking can be one scan out of date, and "take it out" is
+    unambiguous either way.
+    """
+    ensure_box_unlocked(box)
+
+    row = db.get(WerkstattConstructionBoxItem, item_id)
+    if row is None or row.box_id != box.id:
+        raise HTTPException(status_code=404, detail="Box item not found")
+
+    held = int(row.quantity or 0)
+    if quantity is None:
+        # "The line goes" — unconditional, so a row that somehow holds zero is
+        # still removable rather than being rejected by the positive check.
+        db.delete(row)
+        db.commit()
+        return held
+
+    wanted = int(quantity)
+    if wanted <= 0:
+        raise HTTPException(status_code=400, detail="quantity must be positive")
+
+    removed = min(wanted, held)
+    if removed >= held:
+        db.delete(row)
+    else:
+        row.quantity = held - removed
+        row.updated_at = utcnow()
+        db.add(row)
+    db.commit()
+    return removed
 
 
 # ── Boxes ─────────────────────────────────────────────────────────────────────
@@ -167,7 +329,7 @@ def list_boxes(
         WerkstattConstructionBox.slot.asc(),
         WerkstattConstructionBox.created_at.desc(),
     ).limit(limit)
-    return [_box_out(db, row, with_items=False) for row in db.scalars(stmt).all()]
+    return [box_out(db, row, with_items=False) for row in db.scalars(stmt).all()]
 
 
 # NOTE: must stay ABOVE ``/boxes/{box_id}`` — FastAPI matches in declaration
@@ -241,7 +403,7 @@ def list_selectable_boxes(
     if not kept:
         return []
 
-    # Batched lookups — one query each, rather than _box_out's per-row gets.
+    # Batched lookups — one query each, rather than box_out's per-row gets.
     box_ids = [box.id for box in kept]
     counts = dict(
         db.execute(
@@ -296,7 +458,7 @@ def get_box(
     _: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    return _box_out(db, _get_box_or_404(db, box_id), with_items=True)
+    return box_out(db, get_box_or_404(db, box_id), with_items=True)
 
 
 @router.post("/boxes", response_model=WerkstattBoxOut)
@@ -323,7 +485,7 @@ def create_box(
     db.add(box)
     db.commit()
     db.refresh(box)
-    return _box_out(db, box, with_items=True)
+    return box_out(db, box, with_items=True)
 
 
 @router.patch("/boxes/{box_id}", response_model=WerkstattBoxOut)
@@ -333,7 +495,7 @@ def update_box(
     _: User = Depends(require_permission("werkstatt:manage")),
     db: Session = Depends(get_db),
 ):
-    box = _get_box_or_404(db, box_id)
+    box = get_box_or_404(db, box_id)
     data = payload.model_dump(exclude_unset=True)
     for field in ("label", "notes", "project_id"):
         if field in data:
@@ -342,7 +504,7 @@ def update_box(
     db.add(box)
     db.commit()
     db.refresh(box)
-    return _box_out(db, box, with_items=True)
+    return box_out(db, box, with_items=True)
 
 
 @router.delete("/boxes/{box_id}", status_code=204)
@@ -351,7 +513,7 @@ def delete_box(
     _: User = Depends(require_permission("werkstatt:manage")),
     db: Session = Depends(get_db),
 ):
-    box = _get_box_or_404(db, box_id)
+    box = get_box_or_404(db, box_id)
     if box.slot is not None:
         raise HTTPException(
             status_code=400,
@@ -373,11 +535,11 @@ def set_box_status(
     db: Session = Depends(get_db),
 ):
     """Drive the box lifecycle. Assignment/return emit stock movements."""
-    box = _get_box_or_404(db, box_id)
+    box = get_box_or_404(db, box_id)
     transition_box(db, box, target_status=payload.status, user_id=current_user.id)
     db.commit()
     db.refresh(box)
-    return _box_out(db, box, with_items=True)
+    return box_out(db, box, with_items=True)
 
 
 @router.post("/boxes/{box_id}/assign", response_model=WerkstattBoxOut)
@@ -392,7 +554,7 @@ def assign_box(
     Setting the customer and moving to ``zugewiesen`` together is what the UI
     actually does, and it keeps the stock checkout atomic with the assignment.
     """
-    box = _get_box_or_404(db, box_id)
+    box = get_box_or_404(db, box_id)
     if db.get(Customer, payload.customer_id) is None:
         raise HTTPException(status_code=400, detail=f"Unknown customer id: {payload.customer_id}")
     box.customer_id = payload.customer_id
@@ -413,7 +575,7 @@ def assign_box(
     transition_box(db, box, target_status="zugewiesen", user_id=current_user.id)
     db.commit()
     db.refresh(box)
-    return _box_out(db, box, with_items=True)
+    return box_out(db, box, with_items=True)
 
 
 # ── Items ─────────────────────────────────────────────────────────────────────
@@ -425,13 +587,13 @@ def list_box_items(
     _: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    _get_box_or_404(db, box_id)
+    get_box_or_404(db, box_id)
     rows = db.scalars(
         select(WerkstattConstructionBoxItem)
         .where(WerkstattConstructionBoxItem.box_id == box_id)
         .order_by(WerkstattConstructionBoxItem.id.asc())
     ).all()
-    return [_item_out(row) for row in rows]
+    return [item_out(row) for row in rows]
 
 
 @router.post("/boxes/{box_id}/items", response_model=WerkstattBoxItemOut)
@@ -441,75 +603,10 @@ def add_box_item(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Add (or top up) a line in the box.
-
-    Identity is snapshotted at pack time. When an article is referenced its
-    master data wins; otherwise we take what the caller scanned/typed. Adding
-    the same article twice increments the existing line rather than creating a
-    duplicate — on a phone that is what a second scan means.
-    """
-    box = _get_box_or_404(db, box_id)
-    if box.status == "zugewiesen":
-        raise HTTPException(
-            status_code=400, detail="Cannot change the contents of a box that is handed over"
-        )
-
-    quantity = int(payload.quantity or 1)
-    if quantity <= 0:
-        raise HTTPException(status_code=400, detail="quantity must be positive")
-
-    item_name = (payload.item_name or "").strip()
-    article_no = payload.article_no
-    ean = payload.ean
-    unit = payload.unit
-    source = payload.source or "manual"
-
-    if payload.article_id is not None:
-        article = db.get(WerkstattArticle, payload.article_id)
-        if article is None:
-            raise HTTPException(status_code=400, detail=f"Unknown article id: {payload.article_id}")
-        source = "article"
-        item_name = item_name or (article.item_name or "")
-        article_no = article_no or article.article_number
-        ean = ean or article.ean
-        unit = unit or article.unit
-
-    if not item_name:
-        raise HTTPException(status_code=400, detail="item_name is required")
-
-    # Merge a repeat scan of the same article into the existing line.
-    if payload.article_id is not None:
-        existing = db.scalars(
-            select(WerkstattConstructionBoxItem).where(
-                WerkstattConstructionBoxItem.box_id == box_id,
-                WerkstattConstructionBoxItem.article_id == payload.article_id,
-            )
-        ).first()
-        if existing is not None:
-            existing.quantity = int(existing.quantity or 0) + quantity
-            existing.updated_at = utcnow()
-            db.add(existing)
-            db.commit()
-            db.refresh(existing)
-            return _item_out(existing)
-
-    row = WerkstattConstructionBoxItem(
-        box_id=box_id,
-        source=source,
-        article_id=payload.article_id,
-        catalog_external_key=payload.catalog_external_key,
-        item_name=item_name,
-        article_no=article_no,
-        ean=ean,
-        unit=unit,
-        quantity=quantity,
-        notes=payload.notes,
-        added_by=current_user.id,
-    )
-    db.add(row)
-    db.commit()
-    db.refresh(row)
-    return _item_out(row)
+    """Add (or top up) a line in the box — see ``add_item_to_box``, which the
+    station-scoped router runs too."""
+    box = get_box_or_404(db, box_id)
+    return item_out(add_item_to_box(db, box, payload, added_by=current_user.id))
 
 
 @router.patch("/boxes/{box_id}/items/{item_id}", response_model=WerkstattBoxItemOut)
@@ -520,11 +617,8 @@ def update_box_item(
     _: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    box = _get_box_or_404(db, box_id)
-    if box.status == "zugewiesen":
-        raise HTTPException(
-            status_code=400, detail="Cannot change the contents of a box that is handed over"
-        )
+    box = get_box_or_404(db, box_id)
+    ensure_box_unlocked(box)
     row = db.get(WerkstattConstructionBoxItem, item_id)
     if row is None or row.box_id != box_id:
         raise HTTPException(status_code=404, detail="Box item not found")
@@ -541,7 +635,7 @@ def update_box_item(
     db.add(row)
     db.commit()
     db.refresh(row)
-    return _item_out(row)
+    return item_out(row)
 
 
 @router.delete("/boxes/{box_id}/items/{item_id}", status_code=204)
@@ -551,16 +645,11 @@ def delete_box_item(
     _: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    box = _get_box_or_404(db, box_id)
-    if box.status == "zugewiesen":
-        raise HTTPException(
-            status_code=400, detail="Cannot change the contents of a box that is handed over"
-        )
-    row = db.get(WerkstattConstructionBoxItem, item_id)
-    if row is None or row.box_id != box_id:
-        raise HTTPException(status_code=404, detail="Box item not found")
-    db.delete(row)
-    db.commit()
+    """Remove a whole line — the ``quantity=None`` case of the shared
+    ``remove_item_from_box``, which the station's box screen calls with a
+    count because it takes items out one scan at a time."""
+    box = get_box_or_404(db, box_id)
+    remove_item_from_box(db, box, item_id, quantity=None)
 
 
 @router.delete("/boxes/{box_id}/items", response_model=WerkstattBoxOut)
@@ -575,11 +664,8 @@ def clear_box_items(
     can never be deleted — emptying is their equivalent of "throw it away", and
     doing it line-by-line from a phone would be one request per position.
     """
-    box = _get_box_or_404(db, box_id)
-    if box.status == "zugewiesen":
-        raise HTTPException(
-            status_code=400, detail="Cannot change the contents of a box that is handed over"
-        )
+    box = get_box_or_404(db, box_id)
+    ensure_box_unlocked(box)
     rows = db.scalars(
         select(WerkstattConstructionBoxItem).where(WerkstattConstructionBoxItem.box_id == box_id)
     ).all()
@@ -587,7 +673,54 @@ def clear_box_items(
         db.delete(row)
     db.commit()
     db.refresh(box)
-    return _box_out(db, box, with_items=True)
+    return box_out(db, box, with_items=True)
+
+
+# ── Label ─────────────────────────────────────────────────────────────────────
+
+
+@router.post("/boxes/{box_id}/print-label", response_model=WerkstattBoxLabelPrintOut)
+def print_box_label(
+    box_id: int,
+    _: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> WerkstattBoxLabelPrintOut:
+    """Print the sticker that makes a crate scannable.
+
+    Authenticated rather than manage-only, and allowed on a handed-over box —
+    the same reasoning as the article and machine labels: the person standing
+    next to the unlabelled crate is rarely the person with manage rights, and
+    the box most likely to have lost its sticker is the one out on a site. A
+    label that is awkward to print is a crate that stays unscannable.
+
+    Nothing is written. Unlike an article, a box already has an identity —
+    ``box_number`` — so the printed code is derived rather than minted, and a
+    failed print leaves nothing behind to clean up.
+    """
+    box = get_box_or_404(db, box_id)
+    code = box_code(box)
+    try:
+        printer = werkstatt_labels.print_machine_label(
+            db,
+            werkstatt_labels.LabelContent(
+                unit_number=code,
+                article_name=box.label,
+                serial_number=box.box_number,
+            ),
+        )
+    except werkstatt_labels.LabelFormatUnsupported as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except werkstatt_labels.LabelPrinterNotConfigured:
+        raise HTTPException(status_code=503, detail="Kein Etikettendrucker konfiguriert")
+    except werkstatt_labels.LabelPrinterUnreachable as exc:
+        raise HTTPException(status_code=502, detail=f"Etikettendrucker nicht erreichbar ({exc})")
+
+    return WerkstattBoxLabelPrintOut(
+        box_id=box.id,
+        box_number=box.box_number,
+        code=code,
+        printer=printer,
+    )
 
 
 # ── Customer-scoped read (customer page) ──────────────────────────────────────
@@ -621,7 +754,7 @@ def list_customer_boxes(
         WerkstattConstructionBox.assigned_at.desc().nullslast(),
         WerkstattConstructionBox.id.desc(),
     ).limit(limit)
-    return [_box_out(db, row, with_items=False) for row in db.scalars(stmt).all()]
+    return [box_out(db, row, with_items=False) for row in db.scalars(stmt).all()]
 
 
 # ── Unified item search (article DB + Datanorm catalog) ───────────────────────

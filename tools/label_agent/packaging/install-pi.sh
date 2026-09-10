@@ -4,10 +4,16 @@
 #
 #   sudo ./packaging/install-pi.sh
 #   sudo ./packaging/install-pi.sh --smpl-url https://smpl.example.de
+#   sudo ./packaging/install-pi.sh --with-kiosk     # + two screens at boot
+#   sudo ./packaging/install-pi.sh --purge-kiosk    # take the screens away
 #
 # Idempotent: run it again after a `git pull` to update the code, the venv,
 # the udev rules and the unit without touching the database, the token or any
 # staged imports.
+#
+# --with-kiosk is off by default because this installer also provisions
+# headless boxes, where chromium is 300 MB of nothing useful. It is additive:
+# leaving it off on a re-run does not remove a kiosk that is already there.
 #
 # What it does NOT do
 # -------------------
@@ -23,6 +29,11 @@ STATE_DIR="/var/lib/smpl-station"
 CONFIG_DIR="/etc/smpl-station"
 SMPL_URL=""
 SKIP_AUTOMOUNT=0
+WITH_KIOSK=0
+PURGE_KIOSK=0
+# The kiosk runs in a desktop session, so it belongs to a human's account, not
+# to the service account. On Raspberry Pi OS that is 'pi'.
+KIOSK_USER="${KIOSK_USER:-pi}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -30,10 +41,18 @@ while [ $# -gt 0 ]; do
     --smpl-url=*) SMPL_URL="${1#*=}"; shift ;;
     --user) STATION_USER="${2:?--user needs a value}"; shift 2 ;;
     --no-automount) SKIP_AUTOMOUNT=1; shift ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    --with-kiosk) WITH_KIOSK=1; shift ;;
+    --purge-kiosk) PURGE_KIOSK=1; shift ;;
+    --kiosk-user) KIOSK_USER="${2:?--kiosk-user needs a value}"; shift 2 ;;
+    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
+
+if [ "$WITH_KIOSK" -eq 1 ] && [ "$PURGE_KIOSK" -eq 1 ]; then
+  echo "!! --with-kiosk and --purge-kiosk contradict each other. Pick one." >&2
+  exit 2
+fi
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "!! run this with sudo" >&2
@@ -137,6 +156,111 @@ udevadm control --reload-rules
 udevadm trigger --subsystem-match=usb --subsystem-match=block || true
 
 # ---------------------------------------------------------------------------
+# Kiosk: two Chromium windows, one per HDMI output. Opt-in, and additive - a
+# run without --with-kiosk leaves an existing kiosk alone rather than removing
+# it, because "I forgot the flag" should not blank two screens in the
+# workshop. Remove it deliberately with --purge-kiosk.
+# ---------------------------------------------------------------------------
+if [ "$PURGE_KIOSK" -eq 1 ]; then
+  say "kiosk (removing)"
+  KIOSK_HOME="$(getent passwd "$KIOSK_USER" 2>/dev/null | cut -d: -f6 || true)"
+  rm -f /usr/local/bin/smpl-kiosk.sh
+  if [ -n "$KIOSK_HOME" ]; then
+    rm -f "$KIOSK_HOME/.config/autostart/smpl-kiosk.desktop"
+  fi
+  rm -f /etc/systemd/system/smpl-station.service.d/10-nowplaying.conf
+  rm -f /etc/systemd/system/smpl-station.service.d/20-scanner.conf
+  rmdir /etc/systemd/system/smpl-station.service.d 2>/dev/null || true
+  # kiosk.env and the kanshi config are left: they are configuration somebody
+  # decided on, and neither does anything on its own once the script is gone.
+  echo "  removed the script, the autostart entry and both drop-ins"
+  echo "  kept $CONFIG_DIR/kiosk.env and the kanshi config"
+  echo "  ! the windows stay up until the desktop session restarts"
+fi
+
+if [ "$WITH_KIOSK" -eq 1 ]; then
+  say "kiosk"
+  KIOSK_SRC="$HERE/packaging/kiosk"
+
+  if ! id -u "$KIOSK_USER" >/dev/null 2>&1; then
+    echo "!! no such user '$KIOSK_USER' - the kiosk runs in a desktop session and"
+    echo "!! needs one. Re-run with --kiosk-user <name>."
+    exit 1
+  fi
+  KIOSK_HOME="$(getent passwd "$KIOSK_USER" | cut -d: -f6)"
+  if [ -z "$KIOSK_HOME" ] || [ ! -d "$KIOSK_HOME" ]; then
+    echo "!! user '$KIOSK_USER' has no home directory; cannot install an autostart entry."
+    exit 1
+  fi
+  # Do not assume user 'pi' is in group 'pi'; ask.
+  KIOSK_GROUP="$(id -gn "$KIOSK_USER")"
+
+  # Only fetch what is actually missing: chromium is a ~300 MB download and
+  # this script is expected to be re-run casually after a git pull.
+  KIOSK_PKGS=""
+  command -v chromium >/dev/null 2>&1 || command -v chromium-browser >/dev/null 2>&1 || KIOSK_PKGS="$KIOSK_PKGS chromium"
+  command -v wlr-randr >/dev/null 2>&1 || KIOSK_PKGS="$KIOSK_PKGS wlr-randr"
+  command -v xset >/dev/null 2>&1 || KIOSK_PKGS="$KIOSK_PKGS x11-xserver-utils"
+  if [ -n "$KIOSK_PKGS" ]; then
+    echo "  installing:$KIOSK_PKGS"
+    # Older Raspberry Pi OS calls the browser chromium-browser, newer ones
+    # chromium. Try the modern name, fall back to the old one, and say so
+    # rather than dying with apt's own wording.
+    # shellcheck disable=SC2086
+    if ! apt-get install -y --no-install-recommends $KIOSK_PKGS; then
+      KIOSK_PKGS_ALT="$(printf '%s' "$KIOSK_PKGS" | sed 's/ chromium$/ chromium-browser/; s/ chromium / chromium-browser /')"
+      # shellcheck disable=SC2086
+      if ! apt-get install -y --no-install-recommends $KIOSK_PKGS_ALT; then
+        echo "!! could not install:$KIOSK_PKGS"
+        echo "!! the kiosk needs a browser and wlr-randr. Nothing else was changed."
+        exit 1
+      fi
+    fi
+  fi
+
+  install -m 0755 "$KIOSK_SRC/smpl-kiosk.sh" /usr/local/bin/smpl-kiosk.sh
+
+  # Autostart entry, owned by the desktop user: /etc/xdg/labwc/autostart ends
+  # with lxsession-xdg-autostart, which is what reads this directory.
+  install -d -o "$KIOSK_USER" -g "$KIOSK_GROUP" -m 0755 "$KIOSK_HOME/.config/autostart"
+  install -o "$KIOSK_USER" -g "$KIOSK_GROUP" -m 0644 \
+    "$KIOSK_SRC/smpl-kiosk.desktop" "$KIOSK_HOME/.config/autostart/smpl-kiosk.desktop"
+
+  # kanshi pins which monitor sits where. Ours goes in only if there is not
+  # already a real one - an empty file (the Raspberry Pi OS default) counts as
+  # absent, a hand-written one does not.
+  install -d -o "$KIOSK_USER" -g "$KIOSK_GROUP" -m 0755 "$KIOSK_HOME/.config/kanshi"
+  KANSHI="$KIOSK_HOME/.config/kanshi/config"
+  if [ ! -s "$KANSHI" ] || cmp -s "$KIOSK_SRC/kanshi.config" "$KANSHI"; then
+    install -o "$KIOSK_USER" -g "$KIOSK_GROUP" -m 0644 "$KIOSK_SRC/kanshi.config" "$KANSHI"
+  else
+    install -o "$KIOSK_USER" -g "$KIOSK_GROUP" -m 0644 \
+      "$KIOSK_SRC/kanshi.config" "$KANSHI.smpl-example"
+    echo "  ! $KANSHI is not ours and was left alone."
+    echo "  ! Ours is beside it as config.smpl-example - merge by hand."
+  fi
+
+  # Which screen shows which page is a local decision. Written once, then
+  # never touched again by this installer.
+  if [ ! -f "$CONFIG_DIR/kiosk.env" ]; then
+    install -m 0644 "$KIOSK_SRC/kiosk.env.example" "$CONFIG_DIR/kiosk.env"
+    echo "  wrote $CONFIG_DIR/kiosk.env (defaults; edit to swap the screens)"
+  else
+    echo "  kept $CONFIG_DIR/kiosk.env"
+  fi
+  install -m 0644 "$KIOSK_SRC/kiosk.env.example" "$CONFIG_DIR/kiosk.env.example"
+
+  # Two loosenings of the service unit, each with its reason in its own file.
+  install -d -m 0755 /etc/systemd/system/smpl-station.service.d
+  install -m 0644 "$KIOSK_SRC/10-nowplaying.conf" \
+    /etc/systemd/system/smpl-station.service.d/10-nowplaying.conf
+  install -m 0644 "$KIOSK_SRC/20-scanner.conf" \
+    /etc/systemd/system/smpl-station.service.d/20-scanner.conf
+  echo "  drop-ins: PrivateTmp=no (AirPlay metadata), SupplementaryGroups=input (scanner)"
+  echo "  ! re-test an SD-card import after this - see the unit's own header"
+fi
+
+# ---------------------------------------------------------------------------
 say "service"
 install -m 0644 "$HERE/packaging/smpl-station.service" \
   /etc/systemd/system/smpl-station.service
@@ -164,6 +288,15 @@ if systemctl is-active --quiet smpl-station; then
   echo "       ...and approve the code in SMPL."
   echo "    2. Open the station page and scan something."
   echo "    3. Insert a test-instrument card and watch: journalctl -u smpl-station -f"
+  if [ "$WITH_KIOSK" -eq 1 ]; then
+    echo
+    echo "  Kiosk installed. It starts with the desktop session, so:"
+    echo "    4. Check the mapping first (this launches nothing):"
+    echo "         sudo -u $KIOSK_USER SMPL_KIOSK_DRYRUN=1 /usr/local/bin/smpl-kiosk.sh"
+    echo "    5. Reboot, and check that /regal and /kisten are on the screens"
+    echo "       you meant. If they are swapped, swap the two output lines in"
+    echo "       $CONFIG_DIR/kiosk.env - it is a config edit, not a code change."
+  fi
 else
   echo "!! the service did not start. What it said:"
   journalctl -u smpl-station -n 30 --no-pager || true
