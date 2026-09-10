@@ -80,9 +80,11 @@ main{flex:1 1 auto; min-height:0; display:grid; grid-template-rows:minmax(0,1fr)
 .i-art{display:block; font-size:var(--t-sm); color:var(--dim2); font-weight:600; margin-top:1px}
 
 /* ---------- Sitzung: eine Kiste gross, der Rest als Streifen ---------- */
+/* Drei Zeilen: die Kiste, der Streifen der uebrigen Kisten, die Befehle.
+   Nur die erste dehnt sich - die Kiste bleibt das Grosse auf der Wand. */
 #sessionView{
   min-height:0;
-  display:grid; grid-template-rows:minmax(0,1fr) auto;
+  display:grid; grid-template-rows:minmax(0,1fr) auto auto;
   gap:var(--gap); padding:var(--pad);
 }
 .focus{
@@ -144,6 +146,87 @@ main{flex:1 1 auto; min-height:0; display:grid; grid-template-rows:minmax(0,1fr)
 .mini-lab{font-size:var(--t-sm); color:var(--dim); font-weight:650; max-width:20ch}
 .mini-n{font-size:var(--t-kick); letter-spacing:.12em; text-transform:uppercase;
         color:var(--dim2); font-weight:800}
+
+/* ---------- Befehlsstreifen: der Bildschirm als Tastatur ---------- *
+ * An diesem Panel haengt weder Maus noch Tastatur - die Tastatur steht
+ * drei Meter weiter am Regal. Die einzige Eingabe hier ist der Handscanner,
+ * also stehen die Befehle als Code 128 auf dem Bildschirm und werden von
+ * dort abgescannt. Nur waehrend einer Sitzung: in der Uebersicht gibt es
+ * nichts zu befehlen, und Codes, die nichts tun, gehoeren nicht an die Wand.
+ */
+/* Ein Riegel, keine Gestaltung. Wie breit ein Code wird, entscheidet der
+   Endpunkt ueber seine Modulbreite (m=), nicht diese Seite - CSS darf das
+   Bild nicht kleiner rechnen, sonst verwaschen die Balken und der Scanner
+   gibt auf.
+
+   Groessen, nachgemessen auf diesem Panel: ein CSS-Pixel sind zwei
+   Geraetepixel, also rund 0,32 mm - NICHT 0,7 mm, wie hier frueher stand.
+   Mit m=2 ist ein Modul rund 0,65 mm breit; das liest der Imager bequem vom
+   Glas. Die drei Codes werden dann 400-444 px breit, stehen zusammen in
+   einer Reihe und lassen dem Kistenfeld den Platz, der ihm gehoert.
+
+   Warum nur drei: bei fuenf Codes passt die Reihe nicht mehr in eine Zeile,
+   sie bricht um, und abgeschnittene Befehle sind schlimmer als gar keine.
+   Menge 5/10/50 stehen deshalb auf der gedruckten Karte neben dem Regal,
+   nicht auf dem Bildschirm. */
+.cmds{
+  /* No max-height and no overflow:hidden. An earlier version clipped the
+     strip to 26vh, and because the codes were drawn three times wider than
+     planned the row wrapped and three of the five commands were silently
+     cut off the bottom of the wall - including the mode toggle. A command
+     that is on the glass but unreachable is worse than one that was never
+     offered, so the strip now sizes to its content and the crate panel above
+     it gives way instead (its row is the only one that stretches). */
+  display:flex; flex-direction:column; gap:7px; min-width:0;
+}
+.cmd-row{
+  display:flex; flex-wrap:wrap; justify-content:center; align-items:flex-start;
+  gap:clamp(9px, 1.2vw, 22px);
+  min-width:0;
+}
+.cmd{
+  flex:0 0 auto;
+  display:flex; flex-direction:column; align-items:center; gap:4px;
+  padding:7px 9px 5px;
+  border:1px solid var(--line); border-radius:var(--r-sm);
+  background:var(--surface);
+}
+.cmd-cap{
+  font-size:var(--t-sm); font-weight:800; color:var(--fg);
+  white-space:nowrap; line-height:1.2;
+}
+/* Die Zeile steht in JEDER Karte, auch leer: sonst rutschen die Codes
+   gegeneinander, sobald der Umschalter seinen Zustand anzeigt. */
+.cmd-now{
+  font-size:var(--t-kick); letter-spacing:.13em; text-transform:uppercase;
+  font-weight:800; color:var(--dim2); min-height:1.15em; line-height:1.15;
+}
+/* Der weisse Grund und das Polster gehoeren zum Code: schwarze Balken auf
+   dunklem Blau liest kein Scanner, und ohne Ruhezone bricht Code 128 ab.
+   Das Bild behaelt seine Naturgroesse - herunterskalierte Balken
+   verwaschen genau so weit, bis der Scanner aufgibt. */
+.cmd-img{
+  display:block; flex:none; max-width:none;
+  background:#fff; border-radius:4px; padding:8px 12px;
+}
+.cmd-code{font-size:var(--t-kick); color:var(--dim2); font-weight:700; letter-spacing:.04em}
+.cmd-fail{
+  font-size:var(--t-sm); font-weight:800; color:var(--warn);
+  padding:26px 12px; text-align:center;
+}
+
+/* Umschalter: der eine Code, dessen Wirkung vom Zustand abhaengt. Im
+   Entnahme-Modus traegt die ganze Karte die Warnfarbe - aus drei Metern
+   sieht man dann, dass ein Scan etwas herausnimmt statt hineinzulegen. */
+.cmd.is-toggle-on{border-color:var(--warn); background:var(--warn-bg)}
+.cmd.is-toggle-on .cmd-cap{color:var(--warn)}
+.cmd.is-toggle-on .cmd-now{color:var(--warn)}
+
+/* Die Blitzmeldung klebt unten am Bildschirm und wuerde die Befehle
+   verdecken - drei Sekunden lang waere die Kiste dann nicht schliessbar.
+   Also hebt sie sich um die gemessene Hoehe des Streifens an. */
+:root{--flash-lift:0px}
+.flash{bottom:var(--flash-lift)}
 </style>
 </head>
 <body>
@@ -227,6 +310,46 @@ main{flex:1 1 auto; min-height:0; display:grid; grid-template-rows:minmax(0,1fr)
     </div>
 
     <div class="strip scroll" id="strip"></div>
+
+    <!-- Die Befehle stehen fest im Dokument, nicht im Renderer: diese
+         fuenf Codes aendern sich nie, und ein Neuaufbau bei jedem
+         Zustandswechsel wuerde die Bilder flackern lassen. Der Renderer
+         fasst nur den Umschalter an. MENGE-50 kennt der scan_router zwar,
+         aber eine sechste Karte drueckt die Kiste nach oben, ohne dass
+         jemand danach gefragt haette. Die Hoehe von 140 px liefert der
+         Endpunkt, sie wird nicht in CSS nachgerechnet. -->
+    <section class="cmds" id="cmds">
+      <span class="kick">Befehle &ndash; diese Codes vom Bildschirm scannen</span>
+      <div class="cmd-row">
+
+        <div class="cmd">
+          <span class="cmd-cap">Zur&uuml;ck zur &Uuml;bersicht</span>
+          <span class="cmd-now"></span>
+          <img class="cmd-img" alt="" src="/barcode.svg?text=SMPL-CMD-FERTIG&amp;h=140&amp;m=2">
+          <span class="cmd-fail" hidden>Barcode nicht verf&uuml;gbar</span>
+          <span class="cmd-code mono">SMPL-CMD-FERTIG</span>
+        </div>
+
+        <div class="cmd">
+          <span class="cmd-cap">Letzte Position zur&uuml;cknehmen</span>
+          <span class="cmd-now"></span>
+          <img class="cmd-img" alt="" src="/barcode.svg?text=SMPL-CMD-ABBRUCH&amp;h=140&amp;m=2">
+          <span class="cmd-fail" hidden>Barcode nicht verf&uuml;gbar</span>
+          <span class="cmd-code mono">SMPL-CMD-ABBRUCH</span>
+        </div>
+
+        <div class="cmd" id="cmdToggle">
+          <span class="cmd-cap">Entnehmen / Einlagern umschalten</span>
+          <span class="cmd-now" id="cmdToggleNow"></span>
+          <img class="cmd-img" alt="" src="/barcode.svg?text=SMPL-CMD-ENTNAHME&amp;h=140&amp;m=2">
+          <span class="cmd-fail" hidden>Barcode nicht verf&uuml;gbar</span>
+          <span class="cmd-code mono">SMPL-CMD-ENTNAHME</span>
+        </div>
+
+        
+        
+      </div>
+    </section>
   </section>
 
 </main>
@@ -647,6 +770,7 @@ function renderSession(){
   setText($('fCount'), cnt + (cnt === 1 ? ' Position' : ' Positionen'));
   fillItems($('fItems'), items);
 
+  renderCommands(mode);
   renderStrip(s.box_id);
   renderCountdown();
 }
@@ -674,6 +798,54 @@ function renderStrip(activeId){
   }
   show(strip, strip.firstChild !== null);
 }
+
+/* ---------- Befehlsstreifen ---------- *
+ * Die Codes selbst sind Konstanten und stehen im Dokument. Hier wird nur
+ * der eine Code angefasst, dessen Wirkung vom Zustand abhaengt: ENTNAHME
+ * ist ein Umschalter, und wer nicht weiss, in welche Richtung er gerade
+ * schaltet, raeumt die Kiste versehentlich leer. */
+function renderCommands(mode){
+  var remove = mode === 'remove';
+  $('cmdToggle').className = 'cmd' + (remove ? ' is-toggle-on' : '');
+  setText($('cmdToggleNow'), remove ? 'Jetzt: Entnehmen' : 'Jetzt: Einlagern');
+}
+
+/* Die Blitzmeldung klebt unten am Bildschirm und wuerde die Befehle
+   verdecken. Sie hier zu messen statt zu schaetzen ist der einzige Weg,
+   der auch dann stimmt, wenn der Streifen einmal umbricht. */
+function syncFlashLift(){
+  var box = $('cmds');
+  var h = (box && !box.hidden && box.offsetHeight) || 0;
+  document.documentElement.style.setProperty(
+    '--flash-lift', h ? (h + 12) + 'px' : '0px');
+}
+
+/* Ohne den Agenten gibt es keine Bilder. Ein zerbrochenes Bildsymbol an der
+   Wand hilft niemandem - der Klartext darunter dagegen laesst sich von der
+   gedruckten Karte scannen oder vorlesen. */
+(function wireCommandImages(){
+  var imgs = document.querySelectorAll('.cmd-img');
+  for(var i = 0; i < imgs.length; i++){
+    (function(img){
+      img.addEventListener('error', function(){
+        img.hidden = true;
+        var fail = img.parentNode.querySelector('.cmd-fail');
+        if(fail) fail.hidden = false;
+        syncFlashLift();
+      });
+      img.addEventListener('load', syncFlashLift);
+      /* The <img> tags start loading while this inline script is still being
+         parsed, so one that has already failed by now would never fire the
+         listener above and would sit on the wall as a broken-image glyph. */
+      if(img.complete && !img.naturalWidth){
+        img.hidden = true;
+        var settled = img.parentNode.querySelector('.cmd-fail');
+        if(settled) settled.hidden = false;
+        syncFlashLift();
+      }
+    })(imgs[i]);
+  }
+})();
 
 /* Der Agent laeuft auf demselben Rechner wie dieser Browser, deshalb ist
    Date.now() direkt mit expires_at vergleichbar - keine Uhrkorrektur noetig. */
@@ -738,6 +910,7 @@ function render(){
   show($('sessionView'), inSession);
   if(inSession) renderSession(); else renderGrid();
   restoreScroll();
+  syncFlashLift();
   renderFlash();
 }
 

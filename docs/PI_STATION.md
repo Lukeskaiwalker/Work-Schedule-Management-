@@ -567,6 +567,84 @@ working with the office network unplugged, and every route they use — the
 reads as much as the writes — refuses anything that is not this machine. See
 [Which routes leave the box](#which-routes-leave-the-box).
 
+### The box screen is worked with the scanner alone
+
+There is one mouse and one keyboard on this station and both are at the rack
+screen. Nothing is plugged in at the box screen: it is a monitor on a wall
+above the crates, and everything it is ever told arrives through the scanner
+in somebody's hand.
+
+Two consequences, both of which look like faults if you do not know:
+
+**The buttons on the crate page cannot be pressed from where it hangs.** The
+two actions that belong to that screen — the pack-in/take-out mode and closing
+a crate — are on the page as barcodes as well, drawn by the station itself and
+big enough to scan off the glass at arm's length, next to the quantity
+commands. Same codes as [the laminated card](#the-command-barcode-card) and
+the same handler behind them; the card is the copy that travels, the screen is
+the copy that is always there. Those barcodes are served from `/barcode.svg`
+on the station itself, which is refused to every caller that is not this
+machine — a command barcode reachable from the office network is a command
+barcode somebody can print at their desk.
+
+**The mouse pointer does not stay on the rack screen by itself**, which is
+what the pointer guard is for.
+
+#### The pointer guard
+
+Both monitors are one X desktop — a single coordinate space, 5200x2160 today —
+so a mouse pushed a hand's width too far to the right leaves the rack screen,
+lands on the box screen and stays there, an arrow parked on a page with
+nothing at it to pick it up again. `smpl-kiosk.sh` runs a small loop that
+walks it back: it reads the pointer a few times a second and, when it is
+outside the rectangle of `KIOSK_REGAL_OUTPUT`, warps it to the nearest point
+just inside that rectangle.
+
+Only the axis that went too far moves. Push the mouse hard to the right and
+the pointer stops at the right-hand edge, at the height you left it, the way
+it stops at the edge of a single screen. Pulling it to the middle instead
+would be a fight with the hand that is still moving the mouse.
+
+Measured on the station with the guard running, racks on the Philips at 0,0:
+
+| pointer put at | where it is a moment later |
+|---|---|
+| `3000 400` | `1359 400` — back to the edge, same height |
+| `1400 700` | `1359 700` — one pixel across the border is still across |
+| `5199 2159` | `1359 767` — the far corner of the box screen, so both axes |
+| `500 300` | `500 300` — already on the rack screen, left alone |
+
+Two knobs, both in `/etc/smpl-station/kiosk.env`:
+
+| Variable | Default | What it decides |
+|---|---|---|
+| `KIOSK_POINTER_GUARD` | `on` | `on` or `off` — whether the pointer is fenced at all |
+| `KIOSK_POINTER_INTERVAL` | `0.4` | seconds between checks |
+
+Set `KIOSK_POINTER_GUARD=off` and log back in if somebody needs a mouse on the
+box screen, or while debugging that screen from a chair. Plugging a second
+mouse in at the box screen is not a way round it: X has one pointer for the
+whole desktop and the guard applies to that one.
+
+The guard follows `KIOSK_REGAL_OUTPUT`, so [swapping the two
+screens](#swapping-which-screen-shows-which-page) takes the mouse with it —
+there is no second line to remember. The rectangle is re-read on every pass
+rather than once at startup, for the same reason the window placer re-reads
+it: a TV switched off and on comes back, and not always in the same position.
+A guard holding a stale rectangle does not fail quietly, it drags the pointer
+somewhere nobody asked for twice a second. While that output is missing
+altogether the guard does nothing at all.
+
+One trap for anybody working on that loop. The pointer lives in **unscaled**
+desktop coordinates and no window's `--force-device-scale-factor` touches it.
+Window coordinates are the opposite: everything handed to Chromium or to
+`xdotool windowmove` is divided by that window's scale, which is what
+`logical()` in the script is for. Measured with the Samsung at scale 2 —
+`xdotool mousemove 2000 1500` reads back as `x:2000 y:1500`, while that same
+window sits physically at x=1360 and is reported by `wmctrl` at 2720. Reusing
+`logical()` here would fence the pointer into a quarter of the wrong
+rectangle.
+
 ### The rack screen books three directions
 
 | On screen | What it means | Movement written in SMPL |
@@ -711,11 +789,13 @@ All of them live in `/etc/smpl-station/kiosk.env`; the installed
 | `KIOSK_REGAL_SCALE` | `1` | Chromium device scale factor on that screen |
 | `KIOSK_KISTEN_SCALE` | `2` | ditto — 4K at scale 1 is unreadable across a workshop |
 | `KIOSK_BACKEND` | `x11` | `x11` or `wayland` (see below) |
-| `KIOSK_FULLSCREEN` | `kiosk` | `kiosk` or `window` — the placement escape hatch |
+| `KIOSK_FULLSCREEN` | `window` | `window` or `kiosk` — see [Swapping which screen shows which page](#swapping-which-screen-shows-which-page) |
 | `KIOSK_HEALTH_URL` | `http://127.0.0.1:8765/health` | what must answer 200 first |
 | `KIOSK_HEALTH_TIMEOUT` | `180` | seconds to wait for it before opening anyway |
 | `KIOSK_OUTPUT_TIMEOUT` | `60` | seconds to wait for a screen to appear |
 | `KIOSK_RESPAWN_DELAY` | `3` | seconds before a dead window is restarted |
+| `KIOSK_POINTER_GUARD` | `on` | keep the mouse pointer on the rack screen |
+| `KIOSK_POINTER_INTERVAL` | `0.4` | seconds between pointer checks |
 | `KIOSK_CHROMIUM` | *(auto)* | browser path, if not the first one on `PATH` |
 | `KIOSK_PROFILE_ROOT` | `~/.local/share/smpl-kiosk` | where the two profiles live |
 
@@ -797,6 +877,7 @@ from; the 4K screen is made legible with Chromium's own device scale factor
 | A window is on the wrong screen but fullscreen | | set `KIOSK_FULLSCREEN=window` — placement without `--kiosk` is fully deterministic |
 | "output … is not connected" and nothing opened | `wlr-randr` | correct behaviour: a missing screen stops the kiosk rather than stacking both pages on the survivor |
 | A window closes and does not come back | the kiosk logs each restart to the session's stderr — look in `~/.xsession-errors` first, then `journalctl -b \| grep smpl-kiosk` | the respawn loop is unconditional, so silence there means the script itself is not running |
+| The mouse will not go onto the box screen | | working as intended — see [The pointer guard](#the-pointer-guard). `KIOSK_POINTER_GUARD=off` in `/etc/smpl-station/kiosk.env`, then log out and back in |
 | Screens blank after a while | | nothing on this box configures blanking (`consoleblank=0`, no swayidle), and the kiosk runs `xset s off s noblank -dpms` as insurance. If they still blank, something new was installed. |
 | The crate list is greyed out and dated | `curl -s localhost:8765/boxes/state` | correct behaviour: the box screen keeps rendering the last list SMPL gave it and marks it stale rather than going blank. `error` in that answer says why the refresh failed, `fetched_at` says how old the rows are. |
 | Nobody can be picked on the rack screen | `curl -s localhost:8765/screen/state?screen=regal` | an empty `crew` means SMPL has never answered `/api/station/werkstatt/crew` — usually an unpaired or revoked station. An Ausgabe stays refused until it is fixed. |

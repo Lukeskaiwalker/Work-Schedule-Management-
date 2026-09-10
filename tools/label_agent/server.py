@@ -92,6 +92,32 @@ ACTION_SCREEN = {
 SCREEN_POLL_MAX_S = 25.0
 KIOSK_TICK_S = 1.0
 BOX_REFRESH_S = 10.0
+
+# /barcode.svg, the box screen's only input device.
+#
+# That screen has no mouse and no keyboard - the keyboard is bolted to the
+# rack screen on the other wall - so the way back to the overview is a Code
+# 128 of SMPL-CMD-FERTIG drawn on the glass, which the worker scans off the
+# screen with the handheld. The codes never change, so the answer is cacheable
+# for a day; 48 characters is well past the longest thing the vocabulary or a
+# crate id will ever hold, and short enough that no request can ask the agent
+# to draw a metre of bars.
+BARCODE_MAX_CHARS = 48
+BARCODE_DEFAULT_H = 120
+# Under 40px tall a handheld struggles to find the symbol at arm's length;
+# over 400 it is taller than the panel and only wastes bytes.
+BARCODE_MIN_H = 40
+BARCODE_MAX_H = 400
+#: Width of one barcode module ("X dimension") in CSS pixels. The page asks
+#: for this: a code is only scannable if its narrowest bar is wide enough on
+#: the glass, and only fits on the wall if it is not wider than it needs to
+#: be. On the 4K box panel one CSS pixel is two device pixels, about 0.32 mm,
+#: so m=2 gives a 0.65 mm bar - comfortable for the imager on the bench and
+#: still narrow enough for three codes side by side.
+BARCODE_DEFAULT_M = 3
+BARCODE_MIN_M = 1
+BARCODE_MAX_M = 6
+BARCODE_MAX_AGE_S = 86400
 # The crew changes when somebody is hired, not while a crate is packed.
 CREW_REFRESH_S = 60.0
 SESSION_IDLE_S = float(os.environ.get("STATION_SESSION_IDLE_S", "600"))
@@ -131,6 +157,12 @@ LOOPBACK_ONLY = frozenset((
     # kiosk reads
     "/regal", "/kisten", "/screen/state", "/boxes/state",
     "/now-playing", "/now-playing/cover.jpg",
+    # /barcode.svg is drawn *for* the crate screen and embedded by it, so it
+    # belongs on the same footing as the page that embeds it. Nothing outside
+    # this Pi has a reason to ask the agent to draw a command code, and a
+    # command barcode reachable from the LAN is a command barcode somebody can
+    # print out and carry to the wrong screen.
+    "/barcode.svg",
 ))
 
 # One word per direction, everywhere: the screens, the flashes and
@@ -2056,6 +2088,7 @@ class Handler(BaseHTTPRequestHandler):
             "/boxes/state": lambda q: self._json(200, self.agent.boxes_state()),
             "/now-playing": self._get_now_playing,
             "/now-playing/cover.jpg": self._get_cover,
+            "/barcode.svg": self._get_barcode,
         }
 
         def run() -> None:
@@ -2230,6 +2263,97 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(blob)
+
+    def _get_barcode(self, query: dict) -> None:
+        """Draw a Code 128 for the crate screen to be scanned off.
+
+        The screen facing the construction boxes has no keyboard and no mouse,
+        so the page embeds these as plain ``<img>`` tags and the worker points
+        the handheld at the glass to get back to the overview or take back the
+        last item.
+
+        The errors are plain text on purpose. This route is only ever an image
+        source, and a JSON body in an ``<img src>`` is invisible - whereas a
+        developer who opens the URL to find out why the barcode is a broken
+        image gets a sentence saying which character the agent refused.
+        """
+        barcode = module("barcode128")
+        if barcode is None:
+            self._plain(503, "barcode128 is unavailable: %s" % module_error("barcode128"))
+            return
+
+        text = (query.get("text") or "").strip()
+        if not text:
+            self._plain(400, "'text' query parameter is required")
+            return
+        if len(text) > BARCODE_MAX_CHARS:
+            self._plain(400, "'text' is %d characters; the limit is %d"
+                             % (len(text), BARCODE_MAX_CHARS))
+            return
+
+        # A quantity is clamped, but a character the symbology cannot carry is
+        # refused: silently dropping it would draw a barcode that scans as a
+        # code nothing in scan_router recognises, which is a worse afternoon
+        # than a broken image.
+        try:
+            body = barcode.svg(
+                text,
+                height_px=self._barcode_height(query),
+                module_px=self._barcode_module(query),
+            ).encode("utf-8")
+        except ValueError as exc:
+            self._plain(400, str(exc))
+            return
+
+        # Deliberately not the API's ``no-store``: these six codes are fixed
+        # for the life of the vocabulary, and a wall screen that redraws them
+        # on every reload is asking the Pi for work that never changes.
+        self.send_response(200)
+        self.send_header("Content-Type", "image/svg+xml")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "public, max-age=%d" % BARCODE_MAX_AGE_S)
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    @staticmethod
+    def _barcode_height(query: dict) -> int:
+        """``h`` in pixels: clamped, never refused.
+
+        A height out of range is a page asking for a size, not a code the
+        agent cannot draw, so it gets the nearest one it can. Only the text
+        can turn this route into a 400.
+        """
+        raw = (query.get("h") or "").strip()
+        height = BARCODE_DEFAULT_H
+        if raw:
+            try:
+                height = int(float(raw))
+            except ValueError:
+                height = BARCODE_DEFAULT_H
+        return max(BARCODE_MIN_H, min(BARCODE_MAX_H, height))
+
+    @staticmethod
+    def _barcode_module(query: dict) -> int:
+        """``m``, the module width in pixels: clamped, never refused.
+
+        Same rule as ``h`` - a size out of range is a page asking for
+        something, not a code that cannot be drawn. It matters more than it
+        looks: leaving this at the default drew every command code three
+        times wider than the crate page had laid out for, and three of the
+        five cards were clipped off the bottom of the wall screen.
+        """
+        raw = (query.get("m") or "").strip()
+        module = BARCODE_DEFAULT_M
+        if raw:
+            try:
+                module = int(float(raw))
+            except ValueError:
+                module = BARCODE_DEFAULT_M
+        return max(BARCODE_MIN_M, min(BARCODE_MAX_M, module))
+
+    def _plain(self, status: int, reason: str) -> None:
+        self._send(status, "text/plain; charset=utf-8", (reason + "\n").encode("utf-8"))
 
     # -- kiosk POST handlers ----------------------------------------------
 

@@ -18,6 +18,7 @@ other way round on the same Pi with nobody touching a cable.
 from __future__ import annotations
 
 import os
+import re
 import stat
 import subprocess
 import tempfile
@@ -152,6 +153,37 @@ def run(
             env=env, capture_output=True, text=True, timeout=30,
         )
     return KioskRun(result.returncode, result.stdout, result.stderr)
+
+
+def shell_function(name: str) -> str:
+    """The source of one function of the script, on its own.
+
+    The pointer guard's arithmetic is the one part of this script that is
+    worth calling directly: it decides where a pointer that wandered onto the
+    other screen is put back, and exercising it through the real launcher
+    would need two monitors, a compositor and a mouse. Lifting the function
+    out and running it under /bin/sh needs none of those.
+    """
+    body = SCRIPT.read_text(encoding="utf-8")
+    match = re.search(r"^%s\(\) \{\n.*?^\}$" % re.escape(name), body, re.S | re.M)
+    if match is None:
+        raise AssertionError("%s() is not in %s" % (name, SCRIPT.name))
+    return match.group(0)
+
+
+def clamp_point(px: int, py: int, geometry: tuple[int, int, int, int]) -> tuple[int, int]:
+    """Run the script's own clamp_point() and parse its "<x> <y>"."""
+    script = "set -eu\n%s\nclamp_point %s\n" % (
+        shell_function("clamp_point"),
+        " ".join(str(n) for n in (px, py) + tuple(geometry)),
+    )
+    result = subprocess.run(
+        ["/bin/sh", "-c", script], capture_output=True, text=True, timeout=30,
+    )
+    if result.returncode != 0:
+        raise AssertionError(result.stderr)
+    x, y = result.stdout.split()
+    return int(x), int(y)
 
 
 @unittest.skipUnless(SCRIPT.is_file(), "kiosk script missing")
@@ -448,6 +480,140 @@ class TestConfigValidation(unittest.TestCase):
         out = run(KIOSK_KISTEN_SCALE="zwei")
         self.assertNotEqual(out.returncode, 0)
         self.assertIn("KIOSK_KISTEN_SCALE", out.stderr)
+
+
+@unittest.skipUnless(SCRIPT.is_file(), "kiosk script missing")
+class TestPointerGuard(unittest.TestCase):
+    """The mouse and keyboard are at the rack screen; the box screen is not.
+
+    One desktop spans both monitors, so the pointer can be pushed onto the box
+    screen and abandoned there - on a page that is worked with a barcode
+    scanner and has no way to send it home. The guard walks it back.
+    """
+
+    # The rack screen as it stands on the station today: the 1360x768 Philips
+    # at the origin, with the 4K Samsung occupying x >= 1360.
+    RACK = (1360, 768, 0, 0)
+    # ...and with the two screens swapped, which is a kiosk.env edit away.
+    RACK_ON_THE_RIGHT = (1360, 768, 3840, 0)
+
+    def test_the_guard_is_on_by_default(self):
+        out = run()
+        self.assertEqual(out["pointer_guard"], "on")
+
+    def test_the_interval_has_a_default_and_is_reported(self):
+        out = run()
+        self.assertEqual(out["pointer_interval"], "0.4")
+
+    def test_the_guard_reports_which_screen_it_fences_the_pointer_to(self):
+        """It follows KIOSK_REGAL_OUTPUT, so swapping the screens moves it."""
+        out = run()
+        self.assertEqual(out["pointer_output"], "HDMI-A-1")
+        swapped = run(
+            KIOSK_REGAL_OUTPUT="HDMI-A-2", KIOSK_KISTEN_OUTPUT="HDMI-A-1",
+            KIOSK_REGAL_SCALE="2", KIOSK_KISTEN_SCALE="1",
+        )
+        self.assertEqual(swapped["pointer_output"], "HDMI-A-2")
+
+    def test_the_guard_can_be_switched_off(self):
+        out = run(KIOSK_POINTER_GUARD="off")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(out["pointer_guard"], "off")
+
+    def test_the_interval_can_be_changed(self):
+        out = run(KIOSK_POINTER_INTERVAL="2")
+        self.assertEqual(out["pointer_interval"], "2")
+
+    def test_a_guard_setting_that_is_neither_on_nor_off_is_refused(self):
+        out = run(KIOSK_POINTER_GUARD="yes")
+        self.assertNotEqual(out.returncode, 0)
+        self.assertIn("KIOSK_POINTER_GUARD", out.stderr)
+
+    def test_an_interval_of_zero_is_refused(self):
+        """Zero is not "as fast as possible", it is a loop with no sleep."""
+        out = run(KIOSK_POINTER_INTERVAL="0")
+        self.assertNotEqual(out.returncode, 0)
+        self.assertIn("KIOSK_POINTER_INTERVAL", out.stderr)
+
+    def test_a_nonsense_interval_is_refused(self):
+        out = run(KIOSK_POINTER_INTERVAL="halbe")
+        self.assertNotEqual(out.returncode, 0)
+        self.assertIn("KIOSK_POINTER_INTERVAL", out.stderr)
+
+    def test_a_pointer_already_on_the_rack_screen_is_left_alone(self):
+        for point in ((0, 0), (300, 300), (1359, 767)):
+            self.assertEqual(clamp_point(*point, self.RACK), point)
+
+    def test_a_pointer_to_the_right_comes_back_to_the_right_edge(self):
+        """And at the height it was left at, not at the middle of the screen.
+
+        Warping to the centre would fight the hand holding the mouse: it
+        pushes right, the pointer jumps left, it pushes harder. Clamping the
+        one axis that went too far feels like the edge of a desk.
+        """
+        self.assertEqual(clamp_point(1400, 100, self.RACK), (1359, 100))
+        self.assertEqual(clamp_point(5199, 640, self.RACK), (1359, 640))
+
+    def test_a_pointer_below_or_above_comes_back_inside(self):
+        # The 4K screen is 2160 tall against the Philips' 768, so the bottom
+        # two thirds of the desktop are off the rack screen entirely.
+        self.assertEqual(clamp_point(700, 2000, self.RACK), (700, 767))
+        self.assertEqual(clamp_point(700, -20, self.RACK), (700, 0))
+
+    def test_a_pointer_diagonally_outside_comes_back_to_the_corner(self):
+        self.assertEqual(clamp_point(5000, 2000, self.RACK), (1359, 767))
+
+    def test_the_rectangle_is_the_output_s_own_not_the_desktop_origin(self):
+        """With the screens swapped the rack screen starts at x=3840.
+
+        A guard that assumed the rack screen was the one at the origin would
+        do the exact opposite of its job here: it would push the pointer off
+        the rack screen and hold it on the box screen.
+        """
+        self.assertEqual(clamp_point(100, 100, self.RACK_ON_THE_RIGHT), (3840, 100))
+        self.assertEqual(clamp_point(4000, 400, self.RACK_ON_THE_RIGHT), (4000, 400))
+        self.assertEqual(clamp_point(5300, 900, self.RACK_ON_THE_RIGHT), (5199, 767))
+
+    def test_the_guard_does_not_scale_pointer_coordinates(self):
+        """The pointer is in one unscaled coordinate space for the desktop.
+
+        Window coordinates are not: everything handed to Chromium or to
+        `xdotool windowmove` is divided by that window's device scale factor,
+        which is why logical() exists. Measured on the station with the
+        Samsung at scale 2 - `xdotool mousemove 2000 1500` reads back as
+        x:2000 y:1500, not 1000/750 or 4000/3000. Reusing logical() here
+        would fence the pointer into a quarter of the wrong rectangle.
+        """
+        self.assertNotIn("logical", shell_function("pointer_guard_loop"))
+        self.assertNotIn("logical", shell_function("clamp_point"))
+
+    def test_the_guard_re_reads_the_geometry_every_cycle(self):
+        """A screen switched off and on can come back somewhere else.
+
+        The placer re-reads for the same reason. A guard holding a rectangle
+        from startup does not fail quietly - it drags the pointer somewhere
+        nobody asked for, several times a second.
+        """
+        loop = shell_function("pointer_guard_loop")
+        self.assertIn('geometry_for "$KIOSK_REGAL_OUTPUT"', loop)
+
+    def test_the_guard_costs_one_xdotool_call_while_the_pointer_behaves(self):
+        """This is a Pi running two browsers, checking a few times a second."""
+        loop = shell_function("pointer_guard_loop")
+        self.assertEqual(loop.count("xdotool getmouselocation"), 1)
+        # The move is the only other one, and it is behind the clamp check.
+        self.assertEqual(loop.count("xdotool mousemove"), 1)
+
+    def test_a_failing_xdotool_cannot_take_the_launcher_down(self):
+        loop = shell_function("pointer_guard_loop")
+        for call in ("xdotool getmouselocation", "xdotool mousemove"):
+            line = next(l for l in loop.splitlines() if call in l)
+            self.assertIn("|| true", line, line)
+
+    def test_the_guard_is_started_next_to_the_placer(self):
+        body = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("pointer_guard_loop &", body)
+        self.assertIn('CHILD_PIDS="$CHILD_PIDS $!"', body)
 
 
 @unittest.skipUnless(SCRIPT.is_file(), "kiosk script missing")

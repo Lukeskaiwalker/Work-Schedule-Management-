@@ -47,6 +47,15 @@
 # concept of a client choosing its output; placement has to come from a
 # compositor rule instead. See KIOSK_BACKEND in kiosk.env.example.
 #
+# Why the mouse pointer is fenced onto one screen
+# ------------------------------------------------
+# The two screens are one desktop, so the pointer crosses from the rack screen
+# onto the box screen the moment somebody pushes the mouse a hand's width too
+# far - and it stays there, an arrow parked on a page that is worked with a
+# barcode scanner and has no mouse of its own. A background loop walks it back.
+# See the pointer guard section below, and KIOSK_POINTER_GUARD in
+# kiosk.env.example.
+#
 # One trap worth stating out loud: under XWayland the outputs are NOT called
 # HDMI-A-1/HDMI-A-2. `xrandr` calls them XWAYLAND1/XWAYLAND2, in an order
 # that is not the connector order. That is why geometry is resolved from
@@ -96,6 +105,12 @@ fi
 : "${KIOSK_REGAL_TITLE:=Regal}"
 : "${KIOSK_KISTEN_TITLE:=Baustellenkisten}"
 
+# The mouse and the keyboard are physically at the rack screen; the box screen
+# is operated with the scanner alone. on|off, and how often the pointer is
+# checked. See the pointer guard section further down.
+: "${KIOSK_POINTER_GUARD:=on}"
+: "${KIOSK_POINTER_INTERVAL:=0.4}"
+
 log()  { printf 'smpl-kiosk: %s\n' "$*" >&2; }
 die()  { printf 'smpl-kiosk: !! %s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -130,6 +145,16 @@ check_scale() {
   esac
 }
 
+# An interval of 0 is not "as fast as possible": it is a shell loop with no
+# sleep in it, on a Pi that is already running two browsers.
+check_seconds() {
+  case "$2" in
+    ''|*[!0-9.]*|*.*.*) die "$1 must be a number of seconds like 0.4, got: '$2'" ;;
+  esac
+  awk -v v="$2" 'BEGIN { exit (v > 0) ? 0 : 1 }' \
+    || die "$1 must be greater than 0, got: '$2'"
+}
+
 check_url   KIOSK_HEALTH_URL  "$KIOSK_HEALTH_URL"
 check_url   KIOSK_REGAL_URL   "$KIOSK_REGAL_URL"
 check_url   KIOSK_KISTEN_URL  "$KIOSK_KISTEN_URL"
@@ -137,6 +162,7 @@ check_token KIOSK_REGAL_OUTPUT  "$KIOSK_REGAL_OUTPUT"
 check_token KIOSK_KISTEN_OUTPUT "$KIOSK_KISTEN_OUTPUT"
 check_scale KIOSK_REGAL_SCALE  "$KIOSK_REGAL_SCALE"
 check_scale KIOSK_KISTEN_SCALE "$KIOSK_KISTEN_SCALE"
+check_seconds KIOSK_POINTER_INTERVAL "$KIOSK_POINTER_INTERVAL"
 
 case "$KIOSK_BACKEND" in
   x11|wayland) ;;
@@ -146,6 +172,11 @@ esac
 case "$KIOSK_FULLSCREEN" in
   kiosk|window) ;;
   *) die "KIOSK_FULLSCREEN must be kiosk or window, got: '$KIOSK_FULLSCREEN'" ;;
+esac
+
+case "$KIOSK_POINTER_GUARD" in
+  on|off) ;;
+  *) die "KIOSK_POINTER_GUARD must be on or off, got: '$KIOSK_POINTER_GUARD'" ;;
 esac
 
 if [ "$KIOSK_REGAL_OUTPUT" = "$KIOSK_KISTEN_OUTPUT" ]; then
@@ -468,6 +499,14 @@ tend_screen() {
   [ -n "$ts_id" ] || { printf '%s' "$ts_seen"; return 0; }
 
   if [ "$ts_id" = "$ts_seen" ] && window_is_on_output "$ts_id" "$ts_geo" "$ts_scale"; then
+    # On the right screen, so do not move it - but make sure it is still
+    # fullscreen. Setting a state a window already has is a no-op, and this
+    # is the cheap way to cover the case that has no reliable signal: a
+    # browser that died and respawned often gets the SAME X window id back,
+    # so "the id has not changed" does not mean "nothing happened". Without
+    # this the page comes back sitting under the desktop panel, shifted down
+    # by its height, which on a wall screen just looks broken.
+    wmctrl -i -r "$ts_id" -b add,fullscreen 2>/dev/null || true
     printf '%s' "$ts_seen"
     return 0
   fi
@@ -488,6 +527,113 @@ placer_loop() {
     pl_kisten_seen="$(tend_screen "$KIOSK_KISTEN_TITLE" "$KIOSK_KISTEN_OUTPUT" \
                                   "$KIOSK_KISTEN_SCALE" "$pl_kisten_seen")"
     sleep 5
+  done
+}
+
+# ---------------------------------------------------------------------------
+# Pointer guard
+#
+# Both screens are one X desktop, so the pointer walks from the rack screen
+# onto the box screen as soon as the mouse is pushed a hand's width too far.
+# The box screen is worked with the barcode scanner alone - no mouse, no
+# keyboard - so an arrow left sitting on it is there until somebody at the
+# other screen notices and drags it back. This loop keeps it on the rack side.
+#
+# THE TRAP, and it is the one thing here that is easy to get wrong: the
+# pointer lives in ONE X coordinate space for the whole desktop, and NO
+# window's device scale factor touches it. That is the opposite of the window
+# geometry above, where every coordinate handed to Chromium or to `xdotool
+# windowmove` has to be divided by that window's --force-device-scale-factor
+# (see logical()). Using logical() here would halve every coordinate on the
+# 4K screen and fence the pointer into a quarter of the wrong rectangle.
+#
+# Measured on the station, with the Samsung at --force-device-scale-factor=2
+# and sitting at physical x=1360 (wmctrl reports that window's x as 2720, i.e.
+# scaled; the pointer is not):
+#
+#   mousemove  300  300  ->  x:300  y:300     (Philips, the rack screen)
+#   mousemove 1359  767  ->  x:1359 y:767     (its far corner, still inside)
+#   mousemove 1400  100  ->  x:1400 y:100     (Samsung, one pixel across)
+#   mousemove 2000 1500  ->  x:2000 y:1500
+#   mousemove 5300 2300  ->  x:5199 y:2159    (X clamps to the 5200x2160 desktop)
+#
+# Every reading came back exactly as asked. Had the pointer been scaled the
+# way the windows are, 2000 would have read back as 1000 or as 4000.
+# ---------------------------------------------------------------------------
+
+# Is this an integer? Pointer readings are parsed out of xdotool's output, and
+# an empty or garbled one must not reach shell arithmetic.
+is_int() {
+  case "${1#-}" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+  return 0
+}
+
+# The nearest point inside a rectangle, each axis clamped on its own.
+#
+#   clamp_point <px> <py> <w> <h> <ox> <oy>  ->  "<nx> <ny>"
+#
+# The other axis is deliberately left exactly where it was. Warping to the
+# centre of the screen instead would be a fight with whoever is holding the
+# mouse - they push right, the pointer jumps left, they push harder. Clamping
+# one axis feels like the edge of a desk, which is what was asked for.
+#
+# Plain shell arithmetic, no awk: this runs a few times a second, forever.
+clamp_point() {
+  cp_nx="$1"; cp_ny="$2"
+  cp_ox="$5"; cp_oy="$6"
+  cp_xmax=$(( cp_ox + $3 - 1 ))
+  cp_ymax=$(( cp_oy + $4 - 1 ))
+  [ "$cp_nx" -ge "$cp_ox" ]   || cp_nx="$cp_ox"
+  [ "$cp_nx" -le "$cp_xmax" ] || cp_nx="$cp_xmax"
+  [ "$cp_ny" -ge "$cp_oy" ]   || cp_ny="$cp_oy"
+  [ "$cp_ny" -le "$cp_ymax" ] || cp_ny="$cp_ymax"
+  printf '%s %s' "$cp_nx" "$cp_ny"
+}
+
+pointer_guard_loop() {
+  pg_warned=0
+  pg_said=0
+  while :; do
+    # Re-read the rectangle every cycle, exactly as the placer does. The way
+    # this station loses a screen is a TV being switched off: the output
+    # disappears and comes back, and not always in the same position. A
+    # rectangle read once at startup would eventually be fiction - and a guard
+    # holding a wrong rectangle does not sit quietly, it drags the pointer
+    # somewhere nobody asked for, several times a second.
+    pg_geo="$(geometry_for "$KIOSK_REGAL_OUTPUT" 2>/dev/null || true)"
+    # shellcheck disable=SC2086
+    set -- $pg_geo
+    # Output switched off, or not yet negotiated: do nothing at all.
+    if [ "$#" -eq 4 ]; then
+      # One xdotool call per cycle. Everything after it is builtins, so the
+      # common case - pointer already where it belongs - costs exactly this.
+      pg_loc="$(xdotool getmouselocation 2>/dev/null || true)"
+      # "x:1400 y:100 screen:0 window:8388612", split without forking.
+      pg_x="${pg_loc#x:}";   pg_x="${pg_x%% *}"
+      pg_y="${pg_loc#* y:}"; pg_y="${pg_y%% *}"
+      if is_int "$pg_x" && is_int "$pg_y"; then
+        pg_warned=0
+        pg_want="$(clamp_point "$pg_x" "$pg_y" "$1" "$2" "$3" "$4")"
+        if [ "$pg_want" != "$pg_x $pg_y" ]; then
+          # shellcheck disable=SC2086
+          xdotool mousemove $pg_want 2>/dev/null || true
+          if [ "$pg_said" = 0 ]; then
+            log "pointer guard: pointer walked off $KIOSK_REGAL_OUTPUT and was put back."
+            log "  Set KIOSK_POINTER_GUARD=off in $KIOSK_ENV_FILE to allow it across."
+            pg_said=1
+          fi
+        fi
+      elif [ "$pg_warned" = 0 ]; then
+        # No X server, no xdotool, or output in a shape we do not know. Say so
+        # once and keep going: this loop may never take the launcher with it.
+        log "!! pointer guard: xdotool could not read the pointer position."
+        log "!! Idling; the pointer is not being fenced onto $KIOSK_REGAL_OUTPUT."
+        pg_warned=1
+      fi
+    fi
+    sleep "$KIOSK_POINTER_INTERVAL" 2>/dev/null || sleep 1
   done
 }
 
@@ -528,6 +674,9 @@ if [ "$DRYRUN" = "1" ]; then
   printf 'chromium=%s\n' "$KIOSK_CHROMIUM"
   printf 'health_url=%s\n' "$KIOSK_HEALTH_URL"
   printf 'profile_root=%s\n' "$KIOSK_PROFILE_ROOT"
+  printf 'pointer_guard=%s\n' "$KIOSK_POINTER_GUARD"
+  printf 'pointer_interval=%s\n' "$KIOSK_POINTER_INTERVAL"
+  printf 'pointer_output=%s\n' "$KIOSK_REGAL_OUTPUT"
 else
   wait_for_health || log "starting the windows anyway; the page will retry itself"
 fi
@@ -618,6 +767,21 @@ if [ "$KIOSK_FULLSCREEN" = "window" ]; then
     log "!! wmctrl and xdotool are needed to put each page on its own screen."
     log "!! Without them both pages open on the SAME monitor and the other"
     log "!! one shows wallpaper. Install: sudo apt-get install -y wmctrl xdotool"
+  fi
+fi
+
+# Fence the pointer onto the rack screen. Started alongside the placer but
+# independent of it: the pointer wanders in kiosk mode too, and this needs
+# xdotool only, not wmctrl.
+if [ "$KIOSK_POINTER_GUARD" = "on" ]; then
+  if have xdotool; then
+    pointer_guard_loop &
+    CHILD_PIDS="$CHILD_PIDS $!"
+    log "pointer guard: on, every ${KIOSK_POINTER_INTERVAL}s, fenced to $KIOSK_REGAL_OUTPUT"
+  else
+    log "!! KIOSK_POINTER_GUARD=on but xdotool is not installed, so the mouse"
+    log "!! pointer can still be pushed onto the box screen and left there."
+    log "!! Install: sudo apt-get install -y xdotool"
   fi
 fi
 

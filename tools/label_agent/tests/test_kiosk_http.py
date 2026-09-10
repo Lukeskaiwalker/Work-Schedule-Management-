@@ -13,11 +13,14 @@ with something a human can act on when it is not.
 from __future__ import annotations
 
 import json
+import pathlib
+import re
 import socket
 import sys
 import tempfile
 import threading
 import time
+import urllib.parse
 import unittest
 import urllib.error
 import urllib.request
@@ -30,6 +33,11 @@ sys.path.insert(0, str(HERE))
 import scan_router  # noqa: E402
 import server  # noqa: E402
 import smpl_werkstatt  # noqa: E402
+# The barcode decoder lives with the encoder's own tests, where it is built
+# out of an independent transcription of the symbology. Borrowing it here is
+# what lets /barcode.svg be tested for what it actually serves - a symbol that
+# scans back as the command - rather than for merely being well-formed XML.
+from test_barcode128 import decode_svg  # noqa: E402
 from test_smpl_werkstatt import StubSmpl  # noqa: E402
 from test_station_http import QuietHandler, RunningAgent, StationHttpCase  # noqa: E402
 
@@ -236,9 +244,14 @@ class TestLoopbackOnly(KioskCase):
     # The kiosk's reads. /kisten and /screen/state hand out the whole crate
     # list — customer, project, every packed item — and /screen/state is an
     # unauthenticated 25-second long poll on a threaded server.
+    # /barcode.svg is in the list because it is drawn for the crate screen and
+    # embedded by it: it belongs on the same footing as the page it appears
+    # on, and a command barcode the whole workshop LAN can render is one
+    # somebody can print and carry to the wrong screen.
     KIOSK_READS = (
         "/regal", "/kisten", "/screen/state?screen=regal&wait=0",
         "/boxes/state", "/now-playing", "/now-playing/cover.jpg",
+        "/barcode.svg?text=SMPL-CMD-FERTIG&h=140",
     )
 
     def test_loopback_reaches_every_mutating_route(self):
@@ -403,6 +416,113 @@ class TestNowPlaying(KioskCase):
                                      headers={"If-None-Match": headers["ETag"]})
         self.assertEqual(status, 304)
         self.assertEqual(body, b"")
+
+
+# --------------------------------------------------------------------------
+# The command barcodes the crate screen is operated with
+# --------------------------------------------------------------------------
+
+
+class TestBarcodeSvg(KioskCase):
+    """The one route the screen with no keyboard depends on.
+
+    The barcode itself is proven in test_barcode128, by decoding. What is
+    under test here is the HTTP contract the page relies on: the content type
+    an ``<img>`` needs, the caching the Pi wants, and the difference between a
+    size it should clamp and a code it must refuse.
+    """
+
+    COMMANDS = (
+        "SMPL-CMD-FERTIG", "SMPL-CMD-ABBRUCH", "SMPL-CMD-ENTNAHME",
+        "SMPL-CMD-MENGE-5", "SMPL-CMD-MENGE-10", "SMPL-CMD-MENGE-50",
+    )
+
+    def fetch(self, query: str):
+        return get(self.base() + "/barcode.svg?" + query)
+
+    def test_it_serves_an_svg_with_the_content_type_an_img_tag_needs(self):
+        status, body, headers = self.fetch("text=SMPL-CMD-FERTIG&h=140")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "image/svg+xml")
+        markup = body.decode("utf-8")
+        self.assertTrue(markup.startswith("<svg "))
+        self.assertTrue(markup.endswith("</svg>"))
+
+    def test_what_it_serves_scans_back_as_the_command(self):
+        # End to end: through the socket, out of the query string, and back
+        # through the decoder that reads the drawn bars. A route that served a
+        # well-formed SVG of the wrong code would pass every other test here.
+        for code in self.COMMANDS:
+            _status, body, _headers = self.fetch("text=" + code)
+            self.assertEqual(decode_svg(body.decode("utf-8")), code, code)
+
+    def test_the_codes_are_cacheable_for_a_day(self):
+        # They never change, and the wall screens reload.
+        _status, _body, headers = self.fetch("text=SMPL-CMD-FERTIG")
+        self.assertEqual(headers["Cache-Control"], "public, max-age=86400")
+
+    def test_a_character_the_symbology_cannot_carry_is_a_400(self):
+        for text in ("Gr%C3%B6%C3%9Fe", "SMPL%09CMD", "K%C3%84STEN"):
+            status, body, headers = self.fetch("text=" + text)
+            self.assertEqual(status, 400, text)
+            self.assertTrue(headers["Content-Type"].startswith("text/plain"), text)
+            self.assertTrue(body.decode("utf-8").strip(), "a 400 must say why")
+
+    def test_an_over_long_text_is_a_400(self):
+        status, body, _headers = self.fetch("text=" + "K" * 49)
+        self.assertEqual(status, 400)
+        self.assertIn("48", body.decode("utf-8"))
+        # And the character right on the limit is not.
+        status, _body, _headers = self.fetch("text=" + "K" * 48)
+        self.assertEqual(status, 200)
+
+    def test_an_empty_text_is_a_400(self):
+        for query in ("text=", "", "h=140", "text=%20%20"):
+            status, _body, _headers = self.fetch(query)
+            self.assertEqual(status, 400, query)
+
+    def test_the_400_is_plain_text_not_json(self):
+        # This route is only ever an <img> source. A JSON body is invisible
+        # there; a sentence is at least readable to whoever opens the URL.
+        status, body, headers = self.fetch("text=")
+        self.assertEqual(status, 400)
+        self.assertTrue(headers["Content-Type"].startswith("text/plain"))
+        with self.assertRaises(ValueError):
+            json.loads(body.decode("utf-8"))
+
+    def test_the_height_is_clamped_rather_than_refused(self):
+        # A size out of range is a page asking for a size, not a code the
+        # agent cannot draw.
+        for asked, expected in ((10, 40), (39, 40), (40, 40), (140, 140),
+                                (400, 400), (401, 400), (99999, 400), (-20, 40)):
+            status, body, _headers = self.fetch("text=SMPL-CMD-FERTIG&h=%d" % asked)
+            self.assertEqual(status, 200, asked)
+            self.assertIn('height="%d"' % expected, body.decode("utf-8"), asked)
+
+    def test_the_default_height_is_120(self):
+        for query in ("text=SMPL-CMD-FERTIG", "text=SMPL-CMD-FERTIG&h=",
+                      "text=SMPL-CMD-FERTIG&h=hoch"):
+            status, body, _headers = self.fetch(query)
+            self.assertEqual(status, 200, query)
+            self.assertIn('height="120"', body.decode("utf-8"), query)
+
+    def test_the_svg_carries_no_reference_off_the_pi(self):
+        # The kiosk browser has no route to the internet and should not need
+        # one to draw a barcode.
+        _status, body, _headers = self.fetch("text=SMPL-CMD-ABBRUCH")
+        rest = body.decode("utf-8").replace('xmlns="http://www.w3.org/2000/svg"', "")
+        for forbidden in ("http://", "https://", "<script", "<image", "xlink:href"):
+            self.assertNotIn(forbidden, rest, forbidden)
+
+    def test_a_head_request_answers_without_a_body(self):
+        # The page uses <img>, but a browser or a probe may still HEAD it, and
+        # the shared verb table means one handler answers both.
+        request = urllib.request.Request(
+            self.base() + "/barcode.svg?text=SMPL-CMD-FERTIG", method="HEAD")
+        with urllib.request.urlopen(request, timeout=10) as handle:
+            self.assertEqual(handle.status, 200)
+            self.assertEqual(handle.headers["Content-Type"], "image/svg+xml")
+            self.assertEqual(handle.read(), b"")
 
 
 # --------------------------------------------------------------------------
@@ -1552,6 +1672,57 @@ class TestTheNameExpiresThroughTheRealTick(unittest.TestCase):
         now[0] += 100
         agent.tick_once()
         self.assertEqual(agent.router.assignee["id"], 4)
+
+
+
+class TestTheCommandCodesFitTheWall(unittest.TestCase):
+    """The box screen is scanner-only, so a clipped command is a dead end.
+
+    The five codes it first showed were drawn at the endpoint's default
+    module width, wrapped onto three rows, and were cut off by the strip's
+    own max-height: the mode toggle and both quantity codes never reached
+    the glass. This pins the arithmetic that stopped it happening again -
+    what the page asks for, and whether it fits the panel it is shown on.
+    """
+
+    PANEL_CSS_WIDTH = 1920  # 3840 device px at --force-device-scale-factor=2
+    PAGE = pathlib.Path(__file__).resolve().parents[1] / "static" / "kiosk_boxes.html"
+
+    def _requested(self):
+        html = self.PAGE.read_text(encoding="utf-8")
+        out = []
+        for src in re.findall(r'src="(/barcode\.svg\?[^"]+)"', html):
+            query = urllib.parse.parse_qs(src.split("?", 1)[1].replace("&amp;", "&"))
+            out.append((query["text"][0], int(query["m"][0]), int(query["h"][0])))
+        return out
+
+    def test_every_command_image_asks_for_an_explicit_module_width(self):
+        asked = self._requested()
+        self.assertTrue(asked, "the box page shows no command barcodes at all")
+        for text, module, _height in asked:
+            self.assertGreaterEqual(module, 2, "%s would be too fine to scan" % text)
+
+    def test_they_fit_across_the_panel_in_one_row(self):
+        import barcode128
+
+        asked = self._requested()
+        total = sum(barcode128.module_width(t) * m for t, m, _ in asked)
+        # Leave room for the gaps and padding around each card.
+        self.assertLess(
+            total, self.PANEL_CSS_WIDTH * 0.8,
+            "the command codes need %d px of a %d px panel; they will wrap and be clipped"
+            % (total, self.PANEL_CSS_WIDTH),
+        )
+
+    def test_each_one_is_a_command_the_router_actually_implements(self):
+        source = (pathlib.Path(__file__).resolve().parents[1] / "scan_router.py").read_text(
+            encoding="utf-8"
+        )
+        for text, _m, _h in self._requested():
+            self.assertIn(
+                text, source,
+                "the box screen offers %s but scan_router never mentions it" % text,
+            )
 
 
 if __name__ == "__main__":
