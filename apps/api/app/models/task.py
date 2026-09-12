@@ -67,7 +67,23 @@ class Task(Base):
     class_template_id: Mapped[int | None] = mapped_column(
         ForeignKey("project_class_templates.id", ondelete="SET NULL"), index=True
     )
+    # Execution progress: one of routers/workflow_helpers.TASK_STATUSES
+    # ("open" | "in_progress" | "on_hold" | "done"), plus the legacy stored
+    # "overdue". "done" is load-bearing (views, material settlement,
+    # notifications), so nothing else may be folded into this column.
     status: Mapped[str] = mapped_column(String(64), default="open", nullable=False)
+    # ── Three independent axes, never to be folded together ────────────
+    #   status                        — execution progress (above).
+    #   customer_confirmation_status  — did the EXTERNAL customer say yes to
+    #                                   the date (token, email, evidence).
+    #   planning_status               — has OUR planner finalised the date.
+    # ``planning_status`` is purely internal and shown as a small label:
+    #   "tentative"  → "in Planung"  (roughly placed, not yet certain)
+    #   "confirmed"  → "bestätigt"   (the planner has settled it)
+    #   NULL         → nothing to say; an ordinary task.
+    # It does not drive overdue, the open/done views, the done transition,
+    # or the customer-confirmation reset on a due_date change.
+    planning_status: Mapped[str | None] = mapped_column(String(16))
     due_date: Mapped[date | None] = mapped_column(Date)
     start_time: Mapped[time | None] = mapped_column(Time)
     estimated_hours: Mapped[float | None] = mapped_column(Float)

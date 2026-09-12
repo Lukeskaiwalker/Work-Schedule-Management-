@@ -9,12 +9,15 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+  TASK_EDIT_PATCH_KEYS,
+  buildTaskEditFormState,
   consumedMaterialsPayload,
   createReportMaterialRow,
   reportRowsFromTaskMaterials,
   storedMaterialRowSnapshot,
+  taskEditPayloadFromForm,
 } from "../utils/reports";
-import type { TaskMaterial } from "../types";
+import type { Task, TaskMaterial } from "../types";
 
 function material(overrides: Partial<TaskMaterial> = {}): TaskMaterial {
   return {
@@ -120,5 +123,66 @@ describe("draft snapshot round-trip", () => {
     const legacy = { item: "Alt", qty: "1", unit: "Stk", article_no: "" };
     const restored = { ...createReportMaterialRow("materials"), ...legacy };
     expect(consumedMaterialsPayload([restored])[0]?.task_material_id).toBeNull();
+  });
+});
+
+/**
+ * Internal planning certainty through the edit form.
+ *
+ * The select stores "" for "not set" like the form's other optional selects;
+ * the PATCH must turn that back into an explicit null (the contract reads
+ * null as "clear", omitted as "unchanged"). And the dirty-diff key list in
+ * saveTaskEdit is the gate every field has to pass — a key missing there is
+ * inert on save, which is exactly what happened to the customer-confirmation
+ * checkbox for a while.
+ */
+function taskRow(overrides: Partial<Task> = {}): Task {
+  return { id: 1, project_id: 1, title: "Zählerschrank", status: "open", ...overrides };
+}
+
+describe("buildTaskEditFormState / planning_status", () => {
+  it("seeds '' when the task has no planning status", () => {
+    expect(buildTaskEditFormState(taskRow({ planning_status: null })).planning_status).toBe("");
+    expect(buildTaskEditFormState(taskRow()).planning_status).toBe("");
+    expect(buildTaskEditFormState(null).planning_status).toBe("");
+  });
+
+  it("seeds the stored value", () => {
+    expect(buildTaskEditFormState(taskRow({ planning_status: "tentative" })).planning_status).toBe("tentative");
+    expect(buildTaskEditFormState(taskRow({ planning_status: "confirmed" })).planning_status).toBe("confirmed");
+  });
+
+  it("seeds a legacy status spelling as its canonical key so the Status select has a match", () => {
+    expect(buildTaskEditFormState(taskRow({ status: "Offen" })).status).toBe("open");
+    expect(buildTaskEditFormState(taskRow({ status: "completed" })).status).toBe("done");
+  });
+});
+
+describe("taskEditPayloadFromForm / planning_status", () => {
+  it("emits null for the empty select and the value otherwise", () => {
+    const base = buildTaskEditFormState(taskRow());
+    expect(taskEditPayloadFromForm(base, null).planning_status).toBeNull();
+    expect(taskEditPayloadFromForm({ ...base, planning_status: "confirmed" }, null).planning_status).toBe("confirmed");
+    expect(taskEditPayloadFromForm({ ...base, planning_status: "tentative" }, null).planning_status).toBe("tentative");
+  });
+
+  it("does not register a change when the form was merely opened and closed", () => {
+    const form = buildTaskEditFormState(taskRow({ status: "Offen", planning_status: "tentative" }));
+    const before = taskEditPayloadFromForm(form, null);
+    const after = taskEditPayloadFromForm({ ...form }, null);
+    expect(after.planning_status).toBe(before.planning_status);
+    expect(after.status).toBe(before.status);
+  });
+});
+
+describe("TASK_EDIT_PATCH_KEYS", () => {
+  it("routes the planning status and the customer-confirmation checkbox into the PATCH", () => {
+    expect(TASK_EDIT_PATCH_KEYS).toContain("planning_status");
+    expect(TASK_EDIT_PATCH_KEYS).toContain("request_customer_confirmation");
+  });
+
+  it("only names keys the payload actually produces", () => {
+    const payload = taskEditPayloadFromForm(buildTaskEditFormState(taskRow()), null);
+    TASK_EDIT_PATCH_KEYS.forEach((key) => expect(payload).toHaveProperty(key));
   });
 });

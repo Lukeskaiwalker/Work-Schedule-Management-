@@ -26,6 +26,12 @@ class TaskCreate(BaseModel):
     task_type: str = "construction"
     class_template_id: int | None = None
     status: str = "open"
+    # Internal planning certainty — a third axis next to ``status``
+    # (execution) and the customer confirmation (external yes/no):
+    # "tentative" shows as "in Planung", "confirmed" as "bestätigt", None is
+    # an ordinary task. Manager-only; the weekly-plan bulk create reuses
+    # this schema, so it carries the field too.
+    planning_status: Literal["tentative", "confirmed"] | None = None
     due_date: date | None = None
     start_time: time | None = None
     estimated_hours: float | None = None
@@ -80,6 +86,10 @@ class TaskUpdate(BaseModel):
     task_type: str | None = None
     class_template_id: int | None = None
     status: str | None = None
+    # Absent = unchanged; an explicit null clears it. The router reads
+    # ``model_fields_set`` to tell the two apart, as it does for every other
+    # nullable field here. Not in the employee allow-list: managers only.
+    planning_status: Literal["tentative", "confirmed"] | None = None
     due_date: date | None = None
     start_time: time | None = None
     estimated_hours: float | None = None
@@ -127,6 +137,8 @@ class TaskOut(BaseModel):
     task_type: str = "construction"
     class_template_id: int | None = None
     status: str
+    # "tentative" | "confirmed" | None — see Task.planning_status.
+    planning_status: str | None = None
     is_overdue: bool = False
     due_date: date | None = None
     start_time: time | None = None

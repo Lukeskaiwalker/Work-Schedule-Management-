@@ -193,6 +193,8 @@ def create_task(
             "request_customer_confirmation",
         }
     )
+    # ``planning_status`` rides along in ``task_data``: the schema already
+    # pinned it to "tentative" | "confirmed" | None, so nothing to normalise.
     task = Task(**task_data)
     # Validated AFTER the anchor checks above, because the mismatch rule needs
     # the task's resolved customer. Linking never drives the box FSM, so no
@@ -212,7 +214,7 @@ def create_task(
     task.class_template_id = class_template.id if class_template else None
     if class_template and not (task.materials_required or "").strip():
         task.materials_required = _class_template_materials_text(class_template) or None
-    task.status = _normalize_task_status(payload.status, default="open")
+    task.status = _task_status_from_input(payload.status, default="open")
     task.assignee_id = assignee_ids[0] if assignee_ids else None
     db.add(task)
     db.flush()
@@ -308,7 +310,9 @@ def update_task(
         illegal_fields = payload.model_fields_set.difference(ALLOWED_EMPLOYEE_FIELDS)
         if illegal_fields:
             raise HTTPException(status_code=403, detail="Assigned employees can only mark tasks complete")
-        normalized_status = _normalize_task_status(payload.status, default="")
+        # Fold the spelling first so "Erledigt" counts as done; an unknown
+        # spelling is a 400 here, a known non-done one stays the 403 below.
+        normalized_status = _task_status_from_input(payload.status, default="")
         if normalized_status != "done":
             raise HTTPException(status_code=403, detail="Assigned employees can only set status to done")
         task.status = "done"
@@ -351,7 +355,13 @@ def update_task(
                 if "materials_required" not in payload.model_fields_set and not (task.materials_required or "").strip():
                     task.materials_required = _class_template_materials_text(class_template) or None
         if "status" in payload.model_fields_set:
-            task.status = _normalize_task_status(payload.status, default=task.status)
+            task.status = _task_status_from_input(payload.status, default=task.status)
+        # Internal planning certainty. Only touched when the payload names
+        # it (explicit null clears). Deliberately NOT part of the due_date
+        # handling below: moving the date resets the CUSTOMER's yes, not
+        # whether our planner has settled the slot.
+        if "planning_status" in payload.model_fields_set:
+            task.planning_status = payload.planning_status
         if "due_date" in payload.model_fields_set:
             task.due_date = payload.due_date
         if "start_time" in payload.model_fields_set:
@@ -588,6 +598,8 @@ def planning_assign_week(
                     "overlaps": overlaps,
                 },
             )
+        # ``planning_status`` is not excluded, so it reaches ``Task(...)``
+        # through ``assignment_data`` exactly as on the single-create path.
         assignment_data = assignment.model_dump(
             exclude={
                 "week_start",
@@ -609,7 +621,7 @@ def planning_assign_week(
         task = Task(
             **assignment_data,
             subtasks=_normalize_task_subtasks(assignment.subtasks),
-            status=_normalize_task_status(assignment.status, default="open"),
+            status=_task_status_from_input(assignment.status, default="open"),
             task_type=_normalize_task_type(assignment.task_type, default="construction"),
             class_template_id=class_template.id if class_template else None,
             due_date=due_date,

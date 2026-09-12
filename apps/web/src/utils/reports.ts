@@ -1,6 +1,7 @@
 import { EMPTY_REPORT_DRAFT } from "../constants";
 import type {
   Language,
+  PlanningStatus,
   Project,
   ReportDraft,
   ReportMaterialRow,
@@ -13,7 +14,19 @@ import type {
   ProjectTaskFormState,
 } from "../types";
 import { normalizeWeekStartISO } from "./dates";
-import { parseTaskSubtasks, subtasksToTextareaValue, normalizeTaskTypeValue, formatTaskStartTime, parseListLines } from "./tasks";
+import {
+  parseTaskSubtasks,
+  subtasksToTextareaValue,
+  normalizeTaskTypeValue,
+  formatTaskStartTime,
+  parseListLines,
+  canonicalTaskStatus,
+} from "./tasks";
+
+/** Narrow whatever the server sent to the two values the form select knows. */
+function planningStatusFormValue(value: unknown): "" | PlanningStatus {
+  return value === "tentative" || value === "confirmed" ? value : "";
+}
 
 let _rowCounter = 0;
 
@@ -228,6 +241,7 @@ export function buildTaskModalFormState(defaults?: {
     start_time: "",
     estimated_hours: "",
     priority: "normal",
+    planning_status: "",
     assignee_query: "",
     assignee_ids: [],
     partner_ids: [],
@@ -262,11 +276,15 @@ export function buildTaskEditFormState(task?: Task | null): TaskEditFormState {
     construction_box_number: task?.construction_box_number ?? null,
     task_type: normalizeTaskTypeValue(task?.task_type),
     class_template_id: task?.class_template_id != null ? String(task.class_template_id) : "",
-    status: task?.status ?? "open",
+    // Seeded canonical so a legacy "Offen"/"completed" row lands on a real
+    // option in the Status select. Base and edited form both go through
+    // here, so this never registers as a change on its own.
+    status: canonicalTaskStatus(task?.status) || "open",
     due_date: task?.due_date ?? "",
     start_time: task?.start_time ? formatTaskStartTime(task.start_time) : "",
     estimated_hours: task?.estimated_hours != null ? String(task.estimated_hours) : "",
     priority: "normal",
+    planning_status: planningStatusFormValue(task?.planning_status),
     assignee_query: "",
     assignee_ids: assigneeIds,
     partner_ids: partnerIds,
@@ -310,13 +328,17 @@ export function taskEditPayloadFromForm(form: TaskEditFormState, normalizedStart
     construction_box_id: form.construction_box_id ? Number(form.construction_box_id) : null,
     task_type: form.task_type,
     class_template_id: classTemplateId,
-    status: form.status.trim() || "open",
+    status: canonicalTaskStatus(form.status) || "open",
     due_date: dueDate,
     start_time: normalizedStartTime,
     estimated_hours: estimatedHours,
     assignee_ids: form.assignee_ids,
     partner_ids: form.partner_ids,
     week_start: weekStartValue,
+    // Internal planning certainty. "" (the select's empty option) becomes an
+    // explicit null so a PATCH can clear it; the contract treats omitted as
+    // "unchanged", and saveTaskEdit only includes the key when it differs.
+    planning_status: form.planning_status || null,
     // v2.5.0: surface the checkbox state in the PATCH payload only
     // when it changed from the initial value (driven by the
     // status-was-non-null heuristic). The caller decides whether to
@@ -324,6 +346,34 @@ export function taskEditPayloadFromForm(form: TaskEditFormState, normalizedStart
     request_customer_confirmation: form.request_customer_confirmation,
   };
 }
+
+export type TaskEditPayload = ReturnType<typeof taskEditPayloadFromForm>;
+
+/**
+ * Keys saveTaskEdit diffs between the opened form and the edited form; only
+ * changed keys reach the PATCH. A field missing from this list is silently
+ * inert on save — request_customer_confirmation was, for a while, which is
+ * why the list lives here where a test can pin it.
+ */
+export const TASK_EDIT_PATCH_KEYS: readonly (keyof TaskEditPayload)[] = [
+  "title",
+  "description",
+  "subtasks",
+  "materials_required",
+  "storage_box_number",
+  "construction_box_id",
+  "task_type",
+  "class_template_id",
+  "status",
+  "due_date",
+  "start_time",
+  "estimated_hours",
+  "assignee_ids",
+  "partner_ids",
+  "week_start",
+  "planning_status",
+  "request_customer_confirmation",
+];
 
 export function reportDraftFromProject(project: Project | null): ReportDraft {
   if (!project) return { ...EMPTY_REPORT_DRAFT };

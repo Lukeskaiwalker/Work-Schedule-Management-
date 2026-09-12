@@ -14003,6 +14003,35 @@ li {
   border: 1px solid #c8e6d0;
 }
 
+/* Internal planning certainty (PlanningStatusBadge). Mixed-case label, so
+   the tracking of the shouting badges above is dialled back. */
+.tasks-page-row-badge--planning {
+  text-transform: none;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+/* "in Planung": provisional — amber and dashed, like a pencilled-in entry. */
+.tasks-page-row-badge--planning-tentative {
+  background-color: #fef3c7;
+  color: #92400e;
+  border: 1px dashed #d97706;
+}
+
+/* "bestätigt": the planner fixed the date — same green as ERLEDIGT. */
+.tasks-page-row-badge--planning-confirmed {
+  background-color: #e2f1d9;
+  color: #1f6a3e;
+  border: 1px solid #c8e6d0;
+}
+
+/* Inside a title <b> (planning cards, project task list) the pill needs its
+   own breathing room; in the flex title rows the row gap already spaces it. */
+b > .tasks-page-row-badge--planning {
+  margin-left: 6px;
+}
+
 .tasks-page-row-meta {
   font-family: "Source Sans 3", system-ui, sans-serif;
   font-size: 12px;

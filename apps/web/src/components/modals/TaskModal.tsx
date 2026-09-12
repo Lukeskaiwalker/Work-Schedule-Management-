@@ -1,13 +1,14 @@
 import { useState } from "react";
 import { useAppContext } from "../../context/AppContext";
 import { HHMM_PATTERN } from "../../constants";
-import type { TaskPriority } from "../../types";
+import type { PlanningStatus, TaskPriority } from "../../types";
 import {
   taskTypeLabel,
   normalizeTaskTypeValue,
   formatTimeInputForTyping,
   formatTimeInputForBlur,
   addMinutesToHHMM,
+  planningStatusLabel,
 } from "../../utils/tasks";
 import { PartnerMultiSelect } from "../partners/PartnerMultiSelect";
 import { ConstructionBoxPicker } from "../tasks/ConstructionBoxPicker";
@@ -57,6 +58,7 @@ export function TaskModal() {
     assignableUsers,
     projects,
     canCreateProject,
+    canManageTasks,
     closeTaskModal,
     createWeeklyPlanTask,
     updateTaskModalField,
@@ -250,6 +252,32 @@ export function TaskModal() {
               </div>
             </label>
           </section>
+
+          {/* Planungsstand — internal planning certainty, manager-only (the
+              api answers 403 to an employee token that sends the field). */}
+          {canManageTasks && (
+            <section className="task-modal-section task-modal-section--grid2">
+              <label className="task-modal-field">
+                <span className="task-modal-field-label">{de ? "Planungsstand" : "Planning status"}</span>
+                <select
+                  className="task-modal-input task-modal-select"
+                  value={taskModalForm.planning_status}
+                  onChange={(event) =>
+                    updateTaskModalField("planning_status", event.target.value as "" | PlanningStatus)
+                  }
+                >
+                  <option value="">—</option>
+                  <option value="tentative">{planningStatusLabel("tentative", language)}</option>
+                  <option value="confirmed">{planningStatusLabel("confirmed", language)}</option>
+                </select>
+                <span className="task-modal-field-hint">
+                  {de
+                    ? "Intern: ist der Termin schon fix? Unabhängig von der Kundenbestätigung."
+                    : "Internal: is the date fixed yet? Independent of the customer confirmation."}
+                </span>
+              </label>
+            </section>
+          )}
 
           {/* Project picker — kept for non-project-scoped openings */}
           <section className="task-modal-section task-modal-section--stack">

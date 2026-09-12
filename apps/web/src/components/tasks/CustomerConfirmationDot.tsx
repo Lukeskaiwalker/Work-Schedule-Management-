@@ -30,10 +30,10 @@ export function CustomerConfirmationDot({ task, language }: Props) {
   const de = language === "de";
   const palette =
     status === "confirmed"
-      ? { bg: "#22c55e", label: de ? "Bestätigt" : "Confirmed" }
+      ? { bg: "#22c55e", label: de ? "Kunde hat bestätigt" : "Customer confirmed" }
       : status === "declined"
         ? { bg: "#dc2626", label: de ? "Abgelehnt" : "Declined" }
-        : { bg: "#f59e0b", label: de ? "Wartet auf Bestätigung" : "Awaiting confirmation" };
+        : { bg: "#f59e0b", label: de ? "Wartet auf Kundenbestätigung" : "Awaiting customer confirmation" };
 
   // Build a rich tooltip with method + actor + timestamp so hovering
   // is enough to answer "did the customer confirm?" without opening

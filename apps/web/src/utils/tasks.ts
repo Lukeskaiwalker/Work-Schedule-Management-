@@ -1,5 +1,69 @@
 import { HHMM_REGEX } from "../constants";
-import type { Language, Task, TaskType, ReportTaskChecklistItem } from "../types";
+import type { Language, PlanningStatus, Task, TaskType, ReportTaskChecklistItem } from "../types";
+
+/**
+ * Canonical task statuses in display order. Every label, done-check and
+ * dropdown goes through canonicalTaskStatus() first, so a legacy row that
+ * stored "Offen" or "completed" cannot produce a second "Offen"/"Erledigt"
+ * entry next to the canonical one.
+ */
+export const TASK_STATUS_ORDER: readonly string[] = ["open", "in_progress", "on_hold", "done"];
+
+/** Legacy spellings the backend maps too — kept in sync with apps/api. */
+const TASK_STATUS_ALIASES: Readonly<Record<string, string>> = {
+  offen: "open",
+  todo: "open",
+  to_do: "open",
+  new: "open",
+  in_arbeit: "in_progress",
+  in_bearbeitung: "in_progress",
+  inprogress: "in_progress",
+  pausiert: "on_hold",
+  onhold: "on_hold",
+  paused: "on_hold",
+  erledigt: "done",
+  fertig: "done",
+  abgeschlossen: "done",
+  completed: "done",
+  complete: "done",
+  finished: "done",
+  closed: "done",
+};
+
+/**
+ * Strip, lower-case, collapse spaces/hyphens to "_" and resolve the known
+ * aliases. "overdue" and the canonical values pass through unchanged; an
+ * unknown value comes back cleaned (so it still dedupes case-insensitively).
+ */
+export function canonicalTaskStatus(value: string | null | undefined): string {
+  const cleaned = String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_");
+  if (!cleaned) return "";
+  return TASK_STATUS_ALIASES[cleaned] ?? cleaned;
+}
+
+/**
+ * Deduplicated canonical option keys in a fixed order: open, in_progress,
+ * on_hold, done, then "overdue" when requested, then any unknown leftovers
+ * alphabetically. Blank inputs are dropped.
+ */
+export function buildTaskStatusOptions(
+  values: Iterable<string | null | undefined>,
+  options: { includeOverdue?: boolean } = {},
+): string[] {
+  const canonical = new Set<string>();
+  for (const value of values) {
+    const key = canonicalTaskStatus(value);
+    if (key) canonical.add(key);
+  }
+  const ordered = TASK_STATUS_ORDER.filter((key) => canonical.has(key));
+  const withOverdue = options.includeOverdue ? [...ordered, "overdue"] : ordered;
+  const known = new Set<string>([...TASK_STATUS_ORDER, "overdue"]);
+  const leftovers = [...canonical].filter((key) => !known.has(key)).sort((a, b) => a.localeCompare(b));
+  return [...withOverdue, ...leftovers];
+}
 
 export function parseListLines(value: string) {
   return value
@@ -154,38 +218,42 @@ export function formatTimeInputForBlur(value?: string | null) {
 }
 
 export function taskDisplayStatus(task: Task, referenceIsoDate: string) {
-  return isTaskOverdue(task, referenceIsoDate) ? "overdue" : String(task.status || "").trim();
+  return isTaskOverdue(task, referenceIsoDate) ? "overdue" : canonicalTaskStatus(task.status);
 }
 
 export function isTaskDoneStatus(value: string | null | undefined) {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase();
-  return normalized === "done" || normalized === "completed";
+  return canonicalTaskStatus(value) === "done";
 }
 
 export function isTaskOverdue(task: Task, referenceIsoDate: string) {
   if (task.is_overdue === true) return true;
-  const rawStatus = String(task.status || "")
-    .trim()
-    .toLowerCase();
-  if (rawStatus === "overdue") return true;
-  if (isTaskDoneStatus(rawStatus)) return false;
+  const status = canonicalTaskStatus(task.status);
+  if (status === "overdue") return true;
+  if (isTaskDoneStatus(status)) return false;
   const dueDate = String(task.due_date || "").trim();
   if (!dueDate) return false;
   return dueDate < referenceIsoDate;
 }
 
 export function taskStatusLabel(value: string, language: Language) {
-  const normalized = String(value || "")
-    .trim()
-    .toLowerCase();
-  if (normalized === "open") return language === "de" ? "Offen" : "Open";
-  if (normalized === "in_progress") return language === "de" ? "In Arbeit" : "In progress";
-  if (normalized === "overdue") return language === "de" ? "Überfällig" : "Overdue";
-  if (normalized === "done" || normalized === "completed") return language === "de" ? "Erledigt" : "Done";
-  if (normalized === "on_hold") return language === "de" ? "Pausiert" : "On hold";
+  const status = canonicalTaskStatus(value);
+  if (status === "open") return language === "de" ? "Offen" : "Open";
+  if (status === "in_progress") return language === "de" ? "In Arbeit" : "In progress";
+  if (status === "overdue") return language === "de" ? "Überfällig" : "Overdue";
+  if (status === "done") return language === "de" ? "Erledigt" : "Done";
+  if (status === "on_hold") return language === "de" ? "Pausiert" : "On hold";
   return String(value || "").trim() || "-";
+}
+
+/**
+ * Label for the internal planning certainty. Deliberately lower-case
+ * ("in Planung" / "bestätigt") — it is a small pill next to the title, not
+ * a heading. "" for null so callers can render it unconditionally.
+ */
+export function planningStatusLabel(value: PlanningStatus | null | undefined, language: Language) {
+  if (value === "tentative") return language === "de" ? "in Planung" : "tentative";
+  if (value === "confirmed") return language === "de" ? "bestätigt" : "confirmed";
+  return "";
 }
 
 export function taskTypeLabel(taskType: TaskType, language: Language) {
@@ -225,6 +293,7 @@ export function taskNotificationDigest(rows: Task[]) {
         task.id,
         task.project_id,
         task.status || "",
+        task.planning_status || "",
         task.due_date || "",
         task.start_time || "",
         task.end_time || "",

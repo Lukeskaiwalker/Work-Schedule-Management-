@@ -1,9 +1,18 @@
 import { useMemo, useState } from "react";
 import { useAppContext } from "../context/AppContext";
-import { taskDisplayStatus, isTaskOverdue, taskStatusLabel, taskTypeLabel, normalizeTaskTypeValue, formatTaskTimeRange } from "../utils/tasks";
+import {
+  taskDisplayStatus,
+  isTaskOverdue,
+  taskStatusLabel,
+  taskTypeLabel,
+  normalizeTaskTypeValue,
+  formatTaskTimeRange,
+  canonicalTaskStatus,
+} from "../utils/tasks";
 import { taskMaterialsDisplay } from "../utils/reports";
 import { PenIcon } from "../components/icons";
 import { PartnerTaskChip } from "../components/partners/PartnerTaskChip";
+import { PlanningStatusBadge } from "../components/tasks/PlanningStatusBadge";
 import { taskBoxDisplay } from "../utils/boxes";
 
 export function OfficeTasksPage() {
@@ -235,10 +244,10 @@ export function OfficeTasksPage() {
           const de = language === "de";
           const isMine = isTaskAssignedToCurrentUser(task);
           const isOverdue = isTaskOverdue(task, todayIso);
-          const rawStatus = String(task.status || "open").toLowerCase().trim();
+          const status = canonicalTaskStatus(task.status) || "open";
           const displayStatus = taskDisplayStatus(task, todayIso);
-          const isDone = rawStatus === "done" || rawStatus === "completed";
-          const isInProgress = rawStatus === "in_progress";
+          const isDone = status === "done";
+          const isInProgress = status === "in_progress";
           // Unassigned: no assignees at all (neither array nor single field)
           const assigneeIds = task.assignee_ids ?? [];
           const hasAssignees = assigneeIds.length > 0 || task.assignee_id != null;
@@ -275,6 +284,7 @@ export function OfficeTasksPage() {
               <div className="tasks-page-office-row-body">
                 <div className="tasks-page-row-title-line">
                   <span className="tasks-page-row-title">{task.title}</span>
+                  <PlanningStatusBadge status={task.planning_status} language={language} />
                   <span className={`tasks-page-status-pill tasks-page-status-pill--${pillState}`}>
                     {pillLabel}
                   </span>

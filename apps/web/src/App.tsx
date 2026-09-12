@@ -145,6 +145,9 @@ import {
   isTaskOverdue,
   formatTaskStartTime,
   formatTaskTimeRange,
+  canonicalTaskStatus,
+  buildTaskStatusOptions,
+  TASK_STATUS_ORDER,
 } from "./utils/tasks";
 import {
   normalizeMaterialNeedStatus,
@@ -173,6 +176,7 @@ import {
   buildTaskModalFormState,
   buildTaskEditFormState,
   taskEditPayloadFromForm,
+  TASK_EDIT_PATCH_KEYS,
   reportDraftFromProject,
   sameNumberSet,
   reportRowsFromTaskMaterials,
@@ -1399,26 +1403,23 @@ export function App() {
     [projects, reportProjectId],
   );
   const planningWeekInfo = useMemo(() => isoWeekInfo(planningWeekStart), [planningWeekStart]);
-  const taskStatusOptions = useMemo(() => {
-    const values = new Set<string>(["open", "in_progress", "done", "on_hold"]);
-    tasks.forEach((task) => {
-      const status = String(task.status ?? "").trim();
-      if (status) values.add(status);
-    });
-    const current = taskEditForm.status.trim();
-    if (current) values.add(current);
-    return Array.from(values);
-  }, [tasks, taskEditForm.status]);
+  // Both option lists are built from CANONICAL status keys (see
+  // canonicalTaskStatus): a legacy "Offen" or "completed" row folds into
+  // "open"/"done" instead of rendering a second "Offen"/"Erledigt" entry.
+  const taskStatusOptions = useMemo(
+    () =>
+      buildTaskStatusOptions([
+        ...TASK_STATUS_ORDER,
+        ...tasks.map((task) => task.status),
+        taskEditForm.status,
+      ]),
+    [tasks, taskEditForm.status],
+  );
 
-  const officeTaskStatusOptions = useMemo(() => {
-    const values = new Set<string>();
-    values.add("overdue");
-    tasks.forEach((task) => {
-      const status = String(task.status ?? "").trim();
-      if (status) values.add(status);
-    });
-    return Array.from(values).sort((left, right) => left.localeCompare(right, language === "de" ? "de" : "en"));
-  }, [tasks, language]);
+  const officeTaskStatusOptions = useMemo(
+    () => buildTaskStatusOptions(tasks.map((task) => task.status), { includeOverdue: true }),
+    [tasks],
+  );
 
   const officeTaskAssigneeOptions = useMemo(() => {
     const ids = new Set<number>();
@@ -1506,9 +1507,9 @@ export function App() {
       if (officeTaskStatusFilter !== "all") {
         if (officeTaskStatusFilter === "overdue") {
           if (!isTaskOverdue(task, referenceTodayIso)) return false;
-        } else {
-          const taskStatus = String(task.status || "").trim();
-          if (taskStatus !== officeTaskStatusFilter) return false;
+        } else if (canonicalTaskStatus(task.status) !== canonicalTaskStatus(officeTaskStatusFilter)) {
+          // Canonical on both sides so "Offen" also matches a legacy "Offen" row.
+          return false;
         }
       }
       if (officeTaskAssigneeFilter !== "all") {
@@ -6196,6 +6197,9 @@ export function App() {
           estimated_hours: estimatedHours,
           week_start: targetWeekStart,
           confirm_overlap: confirmOverlap,
+          // Manager-only field: the api answers 403 to an employee token that
+          // sends it at all, so the key is omitted (not nulled) when unset.
+          ...(taskModalForm.planning_status ? { planning_status: taskModalForm.planning_status } : {}),
         }),
       });
       console.info("[task-create] task created successfully");
@@ -6271,25 +6275,7 @@ export function App() {
     );
     const basePayload = taskEditPayloadFromForm(taskEditFormBase ?? taskEditForm, baseStartTime);
     const patchPayload: Record<string, unknown> = {};
-    (
-      [
-        "title",
-        "description",
-        "subtasks",
-        "materials_required",
-        "storage_box_number",
-        "construction_box_id",
-        "task_type",
-        "class_template_id",
-        "status",
-        "due_date",
-        "start_time",
-        "estimated_hours",
-        "assignee_ids",
-        "partner_ids",
-        "week_start",
-      ] as (keyof typeof nextPayload)[]
-    ).forEach((key) => {
+    TASK_EDIT_PATCH_KEYS.forEach((key) => {
       if (key === "assignee_ids") {
         if (!sameNumberSet(nextPayload.assignee_ids, basePayload.assignee_ids)) {
           patchPayload[key] = nextPayload[key];

@@ -364,6 +364,14 @@ export type TaskMaterial = {
   settled_at: string | null;
 };
 
+/**
+ * Internal planning certainty — a third axis next to Task.status (work
+ * progress) and customer_confirmation_status (did the CUSTOMER say yes).
+ * "tentative" = the planner pencilled the date in but it is not fixed yet;
+ * "confirmed" = our planner finalised it. Null = not tracked.
+ */
+export type PlanningStatus = "tentative" | "confirmed";
+
 export type Task = {
   id: number;
   // v2.4.5: a task is anchored to a project, a customer, or both.
@@ -386,6 +394,9 @@ export type Task = {
   class_template_id?: number | null;
   status: string;
   is_overdue?: boolean | null;
+  /** Internal planning certainty (manager-set). Optional so cached task
+   *  objects from before the field existed still type-check. */
+  planning_status?: PlanningStatus | null;
   due_date?: string | null;
   start_time?: string | null;
   estimated_hours?: number | null;
@@ -1080,6 +1091,8 @@ export type TaskModalState = {
   start_time: string;
   estimated_hours: string;
   priority: TaskPriority;
+  /** Internal planning certainty; "" = none (like the other optional selects). */
+  planning_status: "" | PlanningStatus;
   assignee_query: string;
   assignee_ids: number[];
   /** IDs of Partner rows (external firms) attached to this task. */
@@ -1109,6 +1122,8 @@ export type TaskEditFormState = {
   start_time: string;
   estimated_hours: string;
   priority: TaskPriority;
+  /** Internal planning certainty; "" = none (like the other optional selects). */
+  planning_status: "" | PlanningStatus;
   assignee_query: string;
   assignee_ids: number[];
   /** IDs of Partner rows (external firms) attached to this task. */

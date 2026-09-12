@@ -189,6 +189,55 @@ TASK_TYPE_ALIASES = {
     "kundentermine": "customer_appointment",
     "termin": "customer_appointment",
 }
+# ── Task.status vocabulary ─────────────────────────────────────────────
+# The office task page builds its Status dropdown from the DISTINCT raw
+# ``tasks.status`` strings, so every spelling that ever reached the column
+# becomes its own filter entry: a stored "Offen" next to "open" renders the
+# German label "Offen" twice. Input is therefore folded onto this closed
+# vocabulary before it is written, and anything outside it is rejected.
+#
+# "overdue" is deliberately NOT in TASK_STATUSES: it is a legacy stored value
+# that ``_task_is_overdue`` still honours, accepted as-is but never offered.
+TASK_STATUSES: tuple[str, ...] = ("open", "in_progress", "on_hold", "done")
+TASK_STATUS_OVERDUE = "overdue"
+# German labels in vocabulary order, for the 400 detail.
+TASK_STATUS_LABELS_DE = {
+    "open": "offen",
+    "in_progress": "in Arbeit",
+    "on_hold": "pausiert",
+    "done": "erledigt",
+}
+# Keys are what ``_normalize_task_status`` produces AFTER stripping,
+# lower-casing and collapsing whitespace/hyphens to "_" — so "In Arbeit",
+# "in-arbeit" and "in_arbeit" all arrive here as "in_arbeit". Only spellings
+# with no separator at all ("inprogress", "onhold") need their own row.
+TASK_STATUS_ALIASES = {
+    # canonical
+    "open": "open",
+    "in_progress": "in_progress",
+    "on_hold": "on_hold",
+    "done": "done",
+    # German labels
+    "offen": "open",
+    "in_arbeit": "in_progress",
+    "in_bearbeitung": "in_progress",
+    "pausiert": "on_hold",
+    "erledigt": "done",
+    "fertig": "done",
+    "abgeschlossen": "done",
+    # English variants
+    "todo": "open",
+    "to_do": "open",
+    "new": "open",
+    "inprogress": "in_progress",
+    "onhold": "on_hold",
+    "paused": "on_hold",
+    "completed": "done",
+    "complete": "done",
+    "finished": "done",
+    "closed": "done",
+}
+TASK_STATUS_SEPARATOR_RE = re.compile(r"[\s\-]+")
 MAX_TASK_SUBTASKS = 100
 MAX_TASK_SUBTASK_LENGTH = 220
 PROJECT_SITE_ACCESS_OPTIONS = {
@@ -2123,18 +2172,49 @@ def _general_report_folder_paths(db: Session) -> set[str]:
     return paths
 
 
+def _unknown_task_status_detail(raw_status: str) -> str:
+    allowed = ", ".join(TASK_STATUS_LABELS_DE[status] for status in TASK_STATUSES)
+    return f"Unbekannter Status '{raw_status}' — erlaubt: {allowed}"
+
+
 def _normalize_task_status(raw_status: str | None, *, default: str = "open") -> str:
+    """Fold any spelling of a task status onto ``TASK_STATUSES``.
+
+    Empty input returns ``default`` untouched (callers pass the stored value
+    on update so "unset" means "unchanged"). Anything else is stripped,
+    lower-cased, has runs of whitespace/hyphens collapsed to "_", and is
+    looked up in ``TASK_STATUS_ALIASES``. ``"overdue"`` passes through as-is.
+    A spelling that maps to nothing raises ``ValueError`` with the German
+    detail; the input paths turn that into a 400 via
+    ``_task_status_from_input``.
+    """
     status = (raw_status or "").strip().lower()
     if not status:
         return default
-    if status in {"completed", "complete"}:
-        return "done"
-    return status
+    key = TASK_STATUS_SEPARATOR_RE.sub("_", status)
+    mapped = TASK_STATUS_ALIASES.get(key, key)
+    if mapped in TASK_STATUSES or mapped == TASK_STATUS_OVERDUE:
+        return mapped
+    raise ValueError(_unknown_task_status_detail((raw_status or "").strip()))
+
+
+def _task_status_from_input(raw_status: str | None, *, default: str = "open") -> str:
+    """``_normalize_task_status`` for request payloads: unknown → 400."""
+    try:
+        return _normalize_task_status(raw_status, default=default)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _task_is_overdue(task: Task, *, today: date | None = None) -> bool:
-    normalized_status = _normalize_task_status(task.status, default="open")
-    if normalized_status == "overdue":
+    try:
+        normalized_status = _normalize_task_status(task.status, default="open")
+    except ValueError:
+        # A stored row may predate the vocabulary and hold any spelling. It
+        # is neither "overdue" nor "done" as far as we can tell, so the date
+        # decides — reading a list must never fail on one legacy row.
+        normalized_status = "open"
+    if normalized_status == TASK_STATUS_OVERDUE:
         return True
     if normalized_status == "done":
         return False
@@ -2968,6 +3048,7 @@ def _task_out(
         task_type=task.task_type,
         class_template_id=task.class_template_id,
         status=task.status,
+        planning_status=task.planning_status,
         is_overdue=_task_is_overdue(task),
         due_date=task.due_date,
         start_time=task.start_time,

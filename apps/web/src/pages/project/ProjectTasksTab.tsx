@@ -5,6 +5,7 @@ import { taskMaterialsDisplay } from "../../utils/reports";
 import { PenIcon } from "../../components/icons";
 import { PartnerTaskChip } from "../../components/partners/PartnerTaskChip";
 import { CustomerConfirmationDot } from "../../components/tasks/CustomerConfirmationDot";
+import { PlanningStatusBadge } from "../../components/tasks/PlanningStatusBadge";
 import { taskBoxDisplay } from "../../utils/boxes";
 
 export function ProjectTasksTab() {
@@ -149,6 +150,7 @@ export function ProjectTasksTab() {
                     <b>
                       {task.title}
                       <CustomerConfirmationDot task={task} language={language} />
+                      <PlanningStatusBadge status={task.planning_status} language={language} />
                     </b>
                     <span
                       className={[

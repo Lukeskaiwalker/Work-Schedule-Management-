@@ -2,7 +2,7 @@ import { useState } from "react";
 import { apiFetch } from "../../api/client";
 import { useAppContext } from "../../context/AppContext";
 import { HHMM_PATTERN } from "../../constants";
-import type { Task, TaskPriority } from "../../types";
+import type { PlanningStatus, Task, TaskPriority } from "../../types";
 import {
   taskTypeLabel,
   normalizeTaskTypeValue,
@@ -10,6 +10,7 @@ import {
   formatTimeInputForBlur,
   addMinutesToHHMM,
   taskStatusLabel,
+  planningStatusLabel,
 } from "../../utils/tasks";
 import { formatServerDateTime } from "../../utils/dates";
 import { PartnerMultiSelect } from "../partners/PartnerMultiSelect";
@@ -430,6 +431,33 @@ export function TaskEditModal() {
               </div>
             </label>
           </section>
+
+          {/* Planungsstand — internal planning certainty, manager-only.
+              The api answers 403 to an employee token that sends the field,
+              so the control is not offered to them at all. */}
+          {canManageTasks && (
+            <section className="task-modal-section task-modal-section--grid2">
+              <label className="task-modal-field">
+                <span className="task-modal-field-label">{de ? "Planungsstand" : "Planning status"}</span>
+                <select
+                  className="task-modal-input task-modal-select"
+                  value={taskEditForm.planning_status}
+                  onChange={(event) =>
+                    updateTaskEditField("planning_status", event.target.value as "" | PlanningStatus)
+                  }
+                >
+                  <option value="">—</option>
+                  <option value="tentative">{planningStatusLabel("tentative", language)}</option>
+                  <option value="confirmed">{planningStatusLabel("confirmed", language)}</option>
+                </select>
+                <span className="task-modal-field-hint">
+                  {de
+                    ? "Intern: ist der Termin schon fix? Unabhängig von der Kundenbestätigung."
+                    : "Internal: is the date fixed yet? Independent of the customer confirmation."}
+                </span>
+              </label>
+            </section>
+          )}
 
           {/* Status + Last edited */}
           <section className="task-modal-section task-modal-section--grid2">

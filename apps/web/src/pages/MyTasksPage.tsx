@@ -6,6 +6,7 @@ import { estimateTravelMinutesFromAddresses, projectLocationAddress } from "../u
 import { BackIcon, PenIcon } from "../components/icons";
 import { PartnerTaskChip } from "../components/partners/PartnerTaskChip";
 import { CustomerConfirmationDot } from "../components/tasks/CustomerConfirmationDot";
+import { PlanningStatusBadge } from "../components/tasks/PlanningStatusBadge";
 import { TaskMaterialList } from "../components/tasks/TaskMaterialList";
 import { taskBoxDisplay } from "../utils/boxes";
 
@@ -197,6 +198,7 @@ export function MyTasksPage() {
                         {task.title}
                         <CustomerConfirmationDot task={task} language={language} />
                       </span>
+                      <PlanningStatusBadge status={task.planning_status} language={language} />
                       {displayStatus === "overdue" && (
                         <span className="tasks-page-row-badge tasks-page-row-badge--overdue">
                           {de ? "ÜBERFÄLLIG" : "OVERDUE"}
