@@ -436,17 +436,6 @@ button[type="submit"] {
   }
 }
 
-/* v2.5.0 customer-confirmation dot. The pending variant reuses the
-   sse-pulse keyframe to avoid a second 60fps animation — same visual
-   language as the SSE-reconnecting indicator. */
-.customer-confirmation-dot {
-  cursor: help;
-}
-
-.customer-confirmation-dot--pending {
-  animation: sse-pulse 1.5s ease-in-out infinite;
-}
-
 /* Notification bell — selectors are scoped to .sidebar-footer so they beat
    the .sidebar button rule (specificity 0,1,1) with 0,2,0 specificity. */
 .sidebar-footer .notif-bell-wrap {
@@ -14003,33 +13992,74 @@ li {
   border: 1px solid #c8e6d0;
 }
 
-/* Internal planning certainty (PlanningStatusBadge). Mixed-case label, so
-   the tracking of the shouting badges above is dialled back. */
-.tasks-page-row-badge--planning {
+/* ── Termin pill (components/tasks/TerminBadge) ──────────────────────────────
+   One pill for both date axes: our planning certainty and the customer's
+   answer. Mixed-case label, so the tracking of the shouting badges above is
+   dialled back.
+
+   Deliberately NOT white-space: nowrap. The merged label runs up to
+   "in Planung · Kunde abgesagt", and the planning week grid is only
+   --planning-col-min (164px) wide — nowrap would push the pill out of its
+   column and clip it. The label breaks at its spaces instead, which needs the
+   fixed 19px height of the base badge relaxed to a min-height. */
+.tasks-page-row-badge--termin {
+  height: auto;
+  min-height: 19px;
+  padding: 1px 8px;
+  max-width: 100%;
   text-transform: none;
   letter-spacing: 0.02em;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: break-word;
+  line-height: 15px;
   vertical-align: middle;
+  cursor: help;
 }
 
-/* "in Planung": provisional — amber and dashed, like a pencilled-in entry. */
-.tasks-page-row-badge--planning-tentative {
+/* Settled: green — but its OWN green, not the ERLEDIGT one. A row where the
+   date is fixed and a row where the work is finished are different facts, and
+   sharing a colour was half the reason the old row read as ambiguous. */
+.tasks-page-row-badge--termin-confirmed {
+  background-color: #cfeee1;
+  color: #0a6349;
+  border: 1px solid #6fcfad;
+}
+
+/* Provisional: amber and dashed, like a pencilled-in entry. */
+.tasks-page-row-badge--termin-tentative {
   background-color: #fef3c7;
   color: #92400e;
   border: 1px dashed #d97706;
 }
 
-/* "bestätigt": the planner fixed the date — same green as ERLEDIGT. */
-.tasks-page-row-badge--planning-confirmed {
-  background-color: #e2f1d9;
-  color: #1f6a3e;
-  border: 1px solid #c8e6d0;
+/* The customer said no. Pale red — ÜBERFÄLLIG is the solid red shout, and this
+   must not compete with it on the same row. */
+.tasks-page-row-badge--termin-declined {
+  background-color: #fee2e2;
+  color: #991b1b;
+  border: 1px solid #fca5a5;
 }
 
-/* Inside a title <b> (planning cards, project task list) the pill needs its
-   own breathing room; in the flex title rows the row gap already spaces it. */
-b > .tasks-page-row-badge--planning {
+/* Inside a title <b> (planning cards, project task list) or the customer
+   card's title <span>, the pill sits inline after the text and needs its own
+   breathing room. In .tasks-page-row-title-line it is a flex child and the
+   row's `gap` already spaces it — adding a margin there would double it. */
+b > .tasks-page-row-badge--termin,
+span > .tasks-page-row-badge--termin {
   margin-left: 6px;
+}
+
+/* Touch: the pill is the only place the customer's answer is visible in a
+   list, and a title tooltip never opens on a phone — so give it a little more
+   tap-friendly height and keep the text at a legible size rather than letting
+   it shrink with the row. */
+@media (max-width: 720px) {
+  .tasks-page-row-badge--termin {
+    min-height: 22px;
+    padding: 3px 9px;
+    font-size: 11px;
+    line-height: 16px;
+  }
 }
 
 .tasks-page-row-meta {
@@ -15885,6 +15915,14 @@ b > .tasks-page-row-badge--planning {
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
+}
+
+/* The title <b> carries the Termin pill inline, and the pill is much wider
+   than the dot it replaced. Without min-width:0 a flex item refuses to shrink
+   below its content, which would push the task-type pill off the right edge on
+   a narrow project column. */
+.task-list-title-row > b {
+  min-width: 0;
 }
 
 .task-list-main small {
@@ -20692,6 +20730,17 @@ td {
 
 .project-modal-access-note-input:focus {
   outline: none;
+}
+
+/* Hairline between the two halves of the merged "TERMIN & KUNDENBESTÄTIGUNG"
+   block: above it is our own planning status, below it the customer's answer.
+   Same block on purpose — a planner needs both answers at once — but they are
+   still two independent facts and the rule keeps them from reading as one. */
+.task-modal-termin-split {
+  width: 100%;
+  margin: 2px 0 0;
+  border: 0;
+  border-top: 1px solid #edf4ff;
 }
 
 /* Small hint text under an input (format explanation) */

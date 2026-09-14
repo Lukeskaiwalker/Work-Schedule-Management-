@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { apiFetch } from "../../api/client";
 import { useAppContext } from "../../context/AppContext";
 import { HHMM_PATTERN } from "../../constants";
@@ -57,7 +57,14 @@ export function TaskEditModal() {
     taskEditBoxesLoading,
     taskEditCustomerId,
     taskEditAssigneeSuggestions,
+    taskEditFormBase,
+    setTaskEditFormBase,
     taskEditExpectedUpdatedAt,
+    // v2.14.x: the two confirmation endpoints below commit server-side and
+    // bump Task.updated_at, which invalidates the timestamp captured when
+    // the modal opened. Without refreshing it here the operator's next Save
+    // 409s on a change they made themselves.
+    setTaskEditExpectedUpdatedAt,
     assignableUsers,
     projects,
     taskStatusOptions,
@@ -101,35 +108,161 @@ export function TaskEditModal() {
   // operator can't double-click + spam the customer's inbox.
   const [emailSubmitting, setEmailSubmitting] = useState(false);
 
+  /**
+   * Which task this modal is editing right now, readable from inside an async
+   * continuation.
+   *
+   * TaskEditModal is mounted for the whole session — it renders null when
+   * closed rather than unmounting — so a POST that is still in flight when the
+   * operator closes this task and opens the next one keeps running, and every
+   * setter after its `await` would write THIS task's answer onto whatever task
+   * is now on screen: its updated_at, its confirmation snapshot, its diff
+   * baseline. The handler's own props cannot detect that; they were frozen at
+   * the render that started the request. A ref, written after every commit,
+   * can.
+   */
+  const activeTaskRef = useRef<{ open: boolean; id: number | null }>({
+    open: taskEditModalOpen,
+    id: taskEditForm.id ?? null,
+  });
+  useEffect(() => {
+    activeTaskRef.current = { open: taskEditModalOpen, id: taskEditForm.id ?? null };
+  });
+
+  /** True while the modal is still showing the task a request was fired for. */
+  function stillEditing(taskId: number): boolean {
+    return activeTaskRef.current.open && activeTaskRef.current.id === taskId;
+  }
+
+  /**
+   * Both endpoints below persist a confirmation flow server-side. The
+   * "Kundenbestätigung anfordern" checkbox that asked for one is, from that
+   * moment, no longer a pending change — and leaving it looking like one is a
+   * live data-loss path: saveTaskEdit diffs the form against the snapshot
+   * taken when the modal opened, so an unsaved tick still reaches the api as
+   * request_customer_confirmation:true, and the api answers that with
+   * set_task_confirmation_pending(reset_status=True). The operator's Save
+   * would then undo the confirmation they had just recorded by phone, or mint
+   * a new token and kill the link they had just emailed.
+   *
+   * Recording a phone confirmation on a task with no flow yet REQUIRES ticking
+   * that box first (it is what puts the buttons on screen), so this is the
+   * ordinary path through this panel, not a corner case. Align the form and
+   * the diff baseline with what the server now holds; the checkbox stays
+   * ticked, and it is simply no longer a change.
+   *
+   * Takes the task id its caller fired the request for and checks it against
+   * the ref above: writing a baseline for a task the operator has already left
+   * would tell the NEXT task's save that its own untouched checkbox is not a
+   * change, which is the same data loss one task over.
+   */
+  function markCustomerConfirmationFlowPersisted(taskId: number) {
+    if (!stillEditing(taskId)) return;
+    setTaskEditForm((current) => ({
+      ...current,
+      request_customer_confirmation: true,
+    }));
+    if (taskEditFormBase) {
+      setTaskEditFormBase({
+        ...taskEditFormBase,
+        request_customer_confirmation: true,
+      });
+    }
+  }
+
   async function submitCustomerConfirmationEmail() {
     if (emailSubmitting) return;
-    if (taskEditForm.id == null) return;
+    const taskId = taskEditForm.id;
+    if (taskId == null) return;
+    // Read BEFORE the await for the same reason taskId is: it is the version
+    // this modal believes in, and the failure branch below needs it to tell
+    // "the server left the task alone" from "the reset stands".
+    const expectedBeforeSend = taskEditExpectedUpdatedAt;
     setEmailSubmitting(true);
     try {
       const result = await apiFetch<{
         sent: boolean;
         sent_at: string | null;
         error_detail: string | null;
-      }>(`/tasks/${taskEditForm.id}/customer-confirmation/email`, token, {
+        // The task's version after the call. Optional only so an older api
+        // build degrades to "drop the lock" instead of throwing; when it is
+        // there, both branches below adopt it.
+        updated_at?: string | null;
+      }>(`/tasks/${taskId}/customer-confirmation/email`, token, {
         method: "POST",
       });
+      const serverUpdatedAt = result.updated_at ?? null;
       if (result.sent) {
-        setTaskEditForm((current) => ({
-          ...current,
-          customer_confirmation_status: "pending",
-          customer_confirmation_email_sent_at: result.sent_at,
-          // Token may have rotated server-side; clear stale FE-only
-          // timestamps so the panel reflects the fresh state.
-          customer_confirmation_at: null,
-          customer_confirmation_method: null,
-          customer_confirmation_by_display_name: null,
-        }));
+        if (stillEditing(taskId)) {
+          setTaskEditForm((current) => ({
+            ...current,
+            customer_confirmation_status: "pending",
+            customer_confirmation_email_sent_at: result.sent_at,
+            // Token may have rotated server-side; clear stale FE-only
+            // timestamps so the panel reflects the fresh state.
+            customer_confirmation_at: null,
+            customer_confirmation_method: null,
+            customer_confirmation_by_display_name: null,
+          }));
+          // The send committed and bumped Task.updated_at, so the expectation
+          // captured when the modal opened is stale and the next Save would
+          // 409 against the operator's own click, losing every other edit in
+          // this modal. Adopt the version the endpoint reports; falling back
+          // to null leaves this one save unguarded, which is still better
+          // than leaving it guaranteed to fail.
+          setTaskEditExpectedUpdatedAt(serverUpdatedAt);
+          // A save that re-sent request_customer_confirmation:true here would
+          // mint a second token and leave the customer holding a dead link.
+          markCustomerConfirmationFlowPersisted(taskId);
+        }
         setNotice(
           language === "de"
             ? "Bestätigungs-E-Mail gesendet"
             : "Confirmation email sent",
         );
       } else {
+        // A failed send is not a no-op. dispatch_customer_confirmation_email
+        // resets the round BEFORE it talks to SMTP and commits either way, so
+        // "sent: false" covers two opposite server states, and the reported
+        // version is what tells them apart:
+        //
+        //   version unchanged — the server rolled the round back, or never
+        //     touched it at all: no address on file, no SMTP host, or a
+        //     failure the api proved never reached the wire (a rejected
+        //     login, a refused MAIL FROM). Note a refused *connection* is
+        //     NOT in that group — it surfaces as "network", which the api
+        //     conservatively treats as possibly-delivered, so it lands in
+        //     the "version moved" case below. The panel is still right;
+        //     leave it alone. Blanking
+        //     the verdict here would re-create by hand exactly the data loss
+        //     the api goes out of its way to avoid — and "kein Kunden-E-Mail"
+        //     is the failure this office actually hits, on tasks whose
+        //     confirmation was taken by phone.
+        //
+        //   version moved — the reset stands: status is "pending" again, the
+        //     verdict and the send timestamp are gone server-side, and the
+        //     panel is showing an answer the database no longer holds.
+        if (stillEditing(taskId)) {
+          setTaskEditExpectedUpdatedAt(serverUpdatedAt);
+          const roundWasReset =
+            serverUpdatedAt !== null &&
+            expectedBeforeSend !== null &&
+            serverUpdatedAt !== expectedBeforeSend;
+          if (roundWasReset) {
+            setTaskEditForm((current) => ({
+              ...current,
+              customer_confirmation_status: "pending",
+              customer_confirmation_at: null,
+              customer_confirmation_method: null,
+              customer_confirmation_by_display_name: null,
+              // Per-round, and this round's link never made it out.
+              customer_confirmation_email_sent_at: null,
+              // customer_confirmation_notes is NOT cleared: the api keeps it
+              // across a reset, and the panel labels it "vorherige Runde".
+            }));
+            markCustomerConfirmationFlowPersisted(taskId);
+          }
+        }
         // Backend surfaced a clean reason — typically "no customer
         // email on record" or an SMTP issue. Show it verbatim so the
         // operator knows what to fix.
@@ -148,11 +281,14 @@ export function TaskEditModal() {
 
   async function submitManualConfirmation(action: "confirm" | "decline") {
     if (manualConfirmSubmitting) return;
-    if (taskEditForm.id == null) return;
+    // Captured before the await, and checked again after it: by the time this
+    // POST answers, the operator may be looking at a different task.
+    const taskId = taskEditForm.id;
+    if (taskId == null) return;
     setManualConfirmSubmitting(true);
     try {
       const updated = await apiFetch<Task>(
-        `/tasks/${taskEditForm.id}/customer-confirmation/manual`,
+        `/tasks/${taskId}/customer-confirmation/manual`,
         token,
         {
           method: "POST",
@@ -163,32 +299,41 @@ export function TaskEditModal() {
           }),
         },
       );
-      // Mirror the new state back into the form so the status panel
-      // shows the recorded confirmation without closing the modal.
-      // The eventual save-button click still works because all the
-      // other form fields are untouched.
-      setTaskEditForm((current) => ({
-        ...current,
-        customer_confirmation_status: updated.customer_confirmation_status ?? null,
-        customer_confirmation_at: updated.customer_confirmation_at ?? null,
-        customer_confirmation_method: updated.customer_confirmation_method ?? null,
-        customer_confirmation_by_display_name:
-          updated.customer_confirmation_by_display_name ?? null,
-        customer_confirmation_notes: updated.customer_confirmation_notes ?? null,
-        customer_confirmation_email_sent_at:
-          updated.customer_confirmation_email_sent_at ?? null,
-        customer_confirmation_token_expired:
-          updated.customer_confirmation_token_expired ?? false,
-      }));
-      setManualConfirmNotes("");
+      if (stillEditing(taskId)) {
+        // Mirror the new state back into the form so the status panel
+        // shows the recorded confirmation without closing the modal.
+        // The eventual save-button click still works because all the
+        // other form fields are untouched.
+        setTaskEditForm((current) => ({
+          ...current,
+          customer_confirmation_status: updated.customer_confirmation_status ?? null,
+          customer_confirmation_at: updated.customer_confirmation_at ?? null,
+          customer_confirmation_method: updated.customer_confirmation_method ?? null,
+          customer_confirmation_by_display_name:
+            updated.customer_confirmation_by_display_name ?? null,
+          customer_confirmation_notes: updated.customer_confirmation_notes ?? null,
+          customer_confirmation_email_sent_at:
+            updated.customer_confirmation_email_sent_at ?? null,
+          customer_confirmation_token_expired:
+            updated.customer_confirmation_token_expired ?? false,
+        }));
+        // Same stale-lock problem as the email path, with a better answer:
+        // this endpoint returns the full TaskOut, so the modal can adopt the
+        // new updated_at and the operator's pending edits still save cleanly.
+        setTaskEditExpectedUpdatedAt(updated.updated_at ?? null);
+        // A save that re-sent request_customer_confirmation:true here would
+        // reset the round and throw away the verdict recorded one line above.
+        markCustomerConfirmationFlowPersisted(taskId);
+        setManualConfirmNotes("");
+      }
       setNotice(
         language === "de"
           ? action === "confirm"
-            ? "Manuell als bestätigt markiert"
-            : "Manuell als abgelehnt markiert"
+            ? "Zusage des Kunden erfasst"
+            : "Absage des Kunden erfasst"
           : action === "confirm"
-            ? "Manually marked as confirmed"
-            : "Manually marked as declined",
+            ? "Customer agreement recorded"
+            : "Customer decline recorded",
       );
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
@@ -202,6 +347,50 @@ export function TaskEditModal() {
   const de = language === "de";
   const priorityOptions: TaskPriority[] = ["low", "normal", "high", "urgent"];
   const activePriority = taskEditForm.priority ?? "normal";
+
+  // ── Kundenbestätigung: who may record one, and is there anybody to ask? ──
+  // Three conditions, all load-bearing:
+  //
+  //   canManageTasks — the endpoint behind the confirm/decline buttons
+  //   requires tasks:manage, exactly like the Planungsstand select above it,
+  //   so an employee's click can only ever come back 403.
+  //
+  //   a customer — 535 of the 562 tasks in this database are construction or
+  //   office work with no customer at all. A full-width green "Kunde hat
+  //   zugesagt" under a plain Baustellenaufgabe invites one click that records
+  //   an agreement nobody ever made. This is the actual customer signal, and
+  //   it is the same one the box picker uses: the task's own customer, else
+  //   its project's.
+  //
+  //   a flow — the ticked request, or a status from a round that already ran
+  //   (including one reset to pending by a moved date, which is why the
+  //   controls survive the request flag being unticked afterwards).
+  //
+  // The flow alone used to stand in for the customer, and the hint below then
+  // told the operator to tick "Kundenbestätigung anfordern" to unlock the
+  // buttons — advice that, on a customerless task, walks them straight into
+  // recording a confirmation for a customer that does not exist.
+  const taskHasCustomer = taskEditCustomerId != null;
+  const customerConfirmationFlowExists =
+    Boolean(taskEditForm.customer_confirmation_status) ||
+    taskEditForm.request_customer_confirmation;
+  const canRecordCustomerConfirmation =
+    canManageTasks &&
+    taskEditForm.id != null &&
+    taskHasCustomer &&
+    customerConfirmationFlowExists;
+  const customerConfirmationAnswered =
+    taskEditForm.customer_confirmation_status === "confirmed" ||
+    taskEditForm.customer_confirmation_status === "declined";
+  const customerConfirmationPending =
+    taskEditForm.customer_confirmation_status === "pending";
+  // Per-round truth, straight from the column: the api clears
+  // customer_confirmation_email_sent_at whenever it mints a new token, so a
+  // timestamp here always belongs to the round on screen. (It used to survive
+  // the reset, which is why this was a session-lived Set of "task ids we
+  // emailed" — a Set that never expired and so kept vouching for rounds that
+  // had long since been replaced.)
+  const emailSentThisRound = Boolean(taskEditForm.customer_confirmation_email_sent_at);
 
   // Resolve the current project to show its label in the eyebrow, falling back
   // to the task's project_id lookup when no selected project helper exists.
@@ -431,33 +620,6 @@ export function TaskEditModal() {
               </div>
             </label>
           </section>
-
-          {/* Planungsstand — internal planning certainty, manager-only.
-              The api answers 403 to an employee token that sends the field,
-              so the control is not offered to them at all. */}
-          {canManageTasks && (
-            <section className="task-modal-section task-modal-section--grid2">
-              <label className="task-modal-field">
-                <span className="task-modal-field-label">{de ? "Planungsstand" : "Planning status"}</span>
-                <select
-                  className="task-modal-input task-modal-select"
-                  value={taskEditForm.planning_status}
-                  onChange={(event) =>
-                    updateTaskEditField("planning_status", event.target.value as "" | PlanningStatus)
-                  }
-                >
-                  <option value="">—</option>
-                  <option value="tentative">{planningStatusLabel("tentative", language)}</option>
-                  <option value="confirmed">{planningStatusLabel("confirmed", language)}</option>
-                </select>
-                <span className="task-modal-field-hint">
-                  {de
-                    ? "Intern: ist der Termin schon fix? Unabhängig von der Kundenbestätigung."
-                    : "Internal: is the date fixed yet? Independent of the customer confirmation."}
-                </span>
-              </label>
-            </section>
-          )}
 
           {/* Status + Last edited */}
           <section className="task-modal-section task-modal-section--grid2">
@@ -726,47 +888,114 @@ export function TaskEditModal() {
             />
           </section>
 
-          {/* v2.5.0 customer-confirmation section. Bound to a single
-              checkbox that controls "is confirmation status non-null?".
-              When checked + saved, the backend flips status to "pending"
-              and (if customer email exists) auto-sends the email. When
-              unchecked + saved, the backend clears the whole flow.
-              The status panel renders read-only from the snapshot
-              embedded in the form state. */}
+          {/* Termin & Kundenbestätigung — the two date axes, in one block.
+              They are still two independent columns (see
+              utils/terminBadge.ts), but a planner answering "is this date
+              settled?" needs both answers in front of them: until v2.14.x the
+              Planungsstand select sat ~300 lines up the modal and the customer
+              controls down here, and the planner had to hunt.
+
+              Top half = ours. Bottom half = the customer's, bound to a single
+              checkbox that controls "is confirmation status non-null?". When
+              checked + saved, the backend flips status to "pending" and mints
+              a token; when unchecked + saved it clears the whole flow.
+
+              Every CONTROL in here is manager-only, both halves: the api
+              answers 403 to an employee token that sends planning_status or
+              request_customer_confirmation at all, and a 403 takes the whole
+              PATCH — every other edit in the modal — down with it. What an
+              employee gets is the read-only status panel, which renders from
+              the snapshot embedded in the form state. */}
           <section className="task-modal-section task-modal-section--stack">
             <div className="task-modal-section-head">
               <span className="task-modal-section-label">
-                {de ? "KUNDENBESTÄTIGUNG" : "CUSTOMER CONFIRMATION"}
+                {de ? "TERMIN & KUNDENBESTÄTIGUNG" : "APPOINTMENT & CUSTOMER CONFIRMATION"}
               </span>
               <span className="task-modal-section-hint">
                 {de ? "Optional" : "Optional"}
               </span>
             </div>
-            <label
-              // v2.5.4: reuse the same CSS pattern as the storage-box
-              // checkbox so the layout matches its siblings. The
-              // v2.5.1 version used inline-flex which let the label
-              // grow past the modal column; this class is width:100%
-              // with bounded flex children so the text stays inside
-              // the section regardless of label length.
-              className="task-modal-storage-box-toggle"
-            >
-              <input
-                type="checkbox"
-                checked={taskEditForm.request_customer_confirmation}
-                onChange={(event) =>
-                  updateTaskEditField(
-                    "request_customer_confirmation",
-                    event.target.checked,
-                  )
-                }
-              />
-              <span>
-                {de
-                  ? "Kundenbestätigung anfordern"
-                  : "Request customer confirmation"}
-              </span>
-            </label>
+            {canManageTasks && (
+              <>
+                <label className="task-modal-field">
+                  <span className="task-modal-field-label">{de ? "Planungsstand" : "Planning status"}</span>
+                  <select
+                    className="task-modal-input task-modal-select"
+                    value={taskEditForm.planning_status}
+                    onChange={(event) =>
+                      updateTaskEditField("planning_status", event.target.value as "" | PlanningStatus)
+                    }
+                  >
+                    <option value="">—</option>
+                    <option value="tentative">{planningStatusLabel("tentative", language)}</option>
+                    <option value="confirmed">{planningStatusLabel("confirmed", language)}</option>
+                  </select>
+                  <span className="task-modal-field-hint">
+                    {de
+                      ? "Intern: ist der Termin für uns schon fix? Unabhängig davon, was der Kunde sagt."
+                      : "Internal: is the date fixed for us? Independent of what the customer says."}
+                  </span>
+                </label>
+                {/* Separates the two halves, so it belongs to the same
+                    manager-only block they both live in. */}
+                <hr className="task-modal-termin-split" />
+              </>
+            )}
+            {/* Manager-only, like the Planungsstand select above it:
+                request_customer_confirmation is not in the api's
+                ALLOWED_EMPLOYEE_FIELDS (status / expected_updated_at /
+                confirm_overlap), so an employee who ticks it does not get a
+                rejected checkbox — the whole PATCH comes back 403 and every
+                other edit in the modal dies with it. The read-only status
+                panel below stays visible to everyone. */}
+            {canManageTasks && (
+              <>
+                <label
+                  // v2.5.4: reuse the same CSS pattern as the storage-box
+                  // checkbox so the layout matches its siblings. The
+                  // v2.5.1 version used inline-flex which let the label
+                  // grow past the modal column; this class is width:100%
+                  // with bounded flex children so the text stays inside
+                  // the section regardless of label length.
+                  className="task-modal-storage-box-toggle"
+                >
+                  <input
+                    type="checkbox"
+                    checked={taskEditForm.request_customer_confirmation}
+                    // Enabled in every state, including after the customer has
+                    // answered. It was disabled there for one round, to stop a
+                    // tick from calling
+                    // set_task_confirmation_pending(reset_status=True) and
+                    // voiding the verdict — but that also removed the only way
+                    // to clear a confirmation recorded on the wrong task, and
+                    // an answered task whose flag is off cannot be tidied at
+                    // all. The api now makes the dangerous half a no-op: a
+                    // tick on an already-answered task changes nothing. The
+                    // useful half is unchanged — unticking still clears the
+                    // flow, note included, which is exactly what undoing a
+                    // mistaken entry means.
+                    onChange={(event) =>
+                      updateTaskEditField(
+                        "request_customer_confirmation",
+                        event.target.checked,
+                      )
+                    }
+                  />
+                  <span>
+                    {de
+                      ? "Kundenbestätigung anfordern"
+                      : "Request customer confirmation"}
+                  </span>
+                </label>
+                {customerConfirmationAnswered && (
+                  <small className="muted" style={{ display: "block", marginTop: 4 }}>
+                    {de
+                      ? "Der Kunde hat bereits geantwortet. Erneutes Ankreuzen ändert daran nichts — eine neue Runde startet von selbst, sobald der Termin verschoben wird. Wurde die Rückmeldung versehentlich erfasst: Häkchen entfernen und speichern, das löscht die Kundenbestätigung samt Notiz."
+                      : "The customer has already answered. Ticking this again changes nothing — a fresh round starts on its own when the date moves. If the reply was recorded by mistake, untick and save: that clears the customer confirmation and its note."}
+                  </small>
+                )}
+              </>
+            )}
             {taskEditForm.customer_confirmation_status && (
               <div
                 style={{
@@ -781,11 +1010,21 @@ export function TaskEditModal() {
               >
                 <div>
                   <b>{de ? "Status: " : "Status: "}</b>
+                  {/* Same split the row pill makes (utils/terminBadge.ts):
+                      "pending" with no email ever sent is not the customer
+                      being slow, it is us not having asked. Saying "wartet
+                      auf Rückmeldung" there would contradict the "Kunde
+                      fragen" pill on the board and point the operator at the
+                      wrong person. */}
                   {taskEditForm.customer_confirmation_status === "confirmed"
-                    ? de ? "Bestätigt ✓" : "Confirmed ✓"
+                    ? de ? "Kunde hat zugesagt ✓" : "Customer agreed ✓"
                     : taskEditForm.customer_confirmation_status === "declined"
-                      ? de ? "Abgelehnt ✕" : "Declined ✕"
-                      : de ? "Wartet auf Bestätigung…" : "Awaiting confirmation…"}
+                      ? de ? "Kunde hat abgesagt ✕" : "Customer declined ✕"
+                      : emailSentThisRound
+                        ? de ? "Wartet auf Rückmeldung des Kunden…" : "Awaiting the customer's reply…"
+                        : de
+                          ? "Noch nicht gefragt — es ging keine Bestätigungs-E-Mail raus"
+                          : "Not asked yet — no confirmation email has gone out"}
                 </div>
                 {taskEditForm.customer_confirmation_at && (
                   <div>
@@ -812,11 +1051,36 @@ export function TaskEditModal() {
                     {taskEditForm.customer_confirmation_by_display_name}
                   </div>
                 )}
+                {/* The note survives a reset by design — it is the only
+                    record of what was agreed, and destroying it on a routine
+                    reschedule was the bug that put it here. It therefore
+                    describes the round that just ENDED whenever the status is
+                    back to pending, and saying so is this panel's job:
+                    presenting "Telefonat 14:32, Hr. Schmidt bestätigt" as the
+                    current state of a task nobody has asked about the new date
+                    is how an operator stops making the call. A note can only
+                    be written by a manual confirm/decline, which leaves the
+                    status answered — so a note seen next to "pending" is
+                    always from before. (The api's other half of that rule: a
+                    later verdict recorded without a note clears the old one,
+                    so a note never silently attaches itself to an answer it
+                    was not about.) */}
                 {taskEditForm.customer_confirmation_notes && (
                   <div style={{ marginTop: 4, fontStyle: "italic" }}>
+                    {customerConfirmationPending && (
+                      <span className="muted" style={{ fontStyle: "normal" }}>
+                        {de ? "vorherige Runde: " : "previous round: "}
+                      </span>
+                    )}
                     "{taskEditForm.customer_confirmation_notes}"
                   </div>
                 )}
+                {/* No such qualifier on the send timestamp: unlike the note it
+                    is per-round. A reset mints a new token, which kills the
+                    link the old timestamp described, so the api clears the
+                    timestamp with it — and the one exception, a send that
+                    provably never left, is restored wholesale. Whatever stands
+                    here is about the round on screen. */}
                 {taskEditForm.customer_confirmation_email_sent_at && (
                   <div className="muted" style={{ fontSize: 12, marginTop: 4 }}>
                     {de ? "E-Mail zuletzt gesendet: " : "Email last sent: "}
@@ -826,8 +1090,13 @@ export function TaskEditModal() {
                     )}
                   </div>
                 )}
+                {/* token_expired is a plain `today >= due_date` check on the
+                    server, true for every overdue pending task — so it needs
+                    the send timestamp beside it, or an overdue task nobody
+                    ever emailed would be told its (non-existent) link died. */}
                 {taskEditForm.customer_confirmation_token_expired &&
-                  taskEditForm.customer_confirmation_status === "pending" && (
+                  customerConfirmationPending &&
+                  emailSentThisRound && (
                     <div style={{ color: "#a16207", marginTop: 6, fontSize: 12 }}>
                       {de
                         ? "Link abgelaufen — bitte den Kunden anrufen oder die Aufgabe verschieben."
@@ -836,7 +1105,10 @@ export function TaskEditModal() {
                   )}
               </div>
             )}
-            {taskEditForm.request_customer_confirmation &&
+            {/* Describes what the checkbox above will do on save, so it is
+                pointless to anyone who cannot see the checkbox. */}
+            {canManageTasks &&
+              taskEditForm.request_customer_confirmation &&
               !taskEditForm.customer_confirmation_status && (
                 <small className="muted" style={{ display: "block", marginTop: 4 }}>
                   {de
@@ -845,35 +1117,30 @@ export function TaskEditModal() {
                 </small>
               )}
             {/*
-              v2.5.1: manual confirm / decline controls. Only shown when
-              the task is in a non-terminal confirmation state (pending
-              or just-saved with the checkbox on) AND the row already
-              exists (taskEditForm.id != null — manual confirm needs a
-              persisted task). The operator types optional notes
-              ("called Mr. Schmidt at 14:32 — agreed") and clicks one
-              of two buttons; the api endpoint records timestamp +
-              method=phone + by_user_id and burns the email token so a
-              stale link can't undo the manual entry.
+              v2.5.5: explicit email-send button. The checkbox above sets up
+              the pending state on save; the actual email only goes out when
+              the operator clicks here. Label flips to "erneut senden" /
+              "Resend" once an email has been recorded so the operator knows
+              nudging is safe.
+
+              Gated to a manager (the endpoint requires tasks:manage, so an
+              employee's click is a guaranteed 403) on a persisted task that is
+              asking for confirmation and has not answered yet: re-mailing a
+              customer who already answered is the one thing this button should
+              not make easy.
             */}
-            {taskEditForm.id != null &&
+            {canManageTasks &&
+              taskEditForm.id != null &&
               taskEditForm.request_customer_confirmation &&
-              taskEditForm.customer_confirmation_status !== "confirmed" &&
-              taskEditForm.customer_confirmation_status !== "declined" && (
+              !customerConfirmationAnswered && (
                 <div style={{ marginTop: 12 }}>
-                  {/*
-                    v2.5.5: explicit email-send button. The checkbox above
-                    sets up the pending state on save; the actual email
-                    only goes out when the operator clicks here. Label
-                    flips to "erneut senden" / "Resend" once an email
-                    has been recorded so the operator knows nudging is
-                    safe.
-                  */}
                   <button
                     type="button"
                     disabled={emailSubmitting || manualConfirmSubmitting}
                     onClick={() => void submitCustomerConfirmationEmail()}
                     style={{
                       width: "100%",
+                      minHeight: 40,
                       padding: "8px 14px",
                       fontSize: 14,
                       fontWeight: 600,
@@ -895,81 +1162,141 @@ export function TaskEditModal() {
                   >
                     {emailSubmitting
                       ? de ? "Sende…" : "Sending…"
-                      : taskEditForm.customer_confirmation_email_sent_at
+                      : emailSentThisRound
                         ? de ? "E-Mail erneut senden" : "Resend email"
                         : de ? "Bestätigungs-E-Mail senden" : "Send confirmation email"}
                   </button>
-                  <label
-                    style={{
-                      display: "block",
-                      fontSize: 12,
-                      color: "#475569",
-                      marginBottom: 4,
-                    }}
-                  >
-                    {de
-                      ? "Notiz zur manuellen Bestätigung (optional)"
-                      : "Note for manual confirmation (optional)"}
-                  </label>
-                  <input
-                    type="text"
-                    value={manualConfirmNotes}
-                    onChange={(event) => setManualConfirmNotes(event.target.value)}
-                    placeholder={
-                      de
-                        ? "z.B. Telefonat um 14:32, Herr Schmidt bestätigt"
-                        : "e.g. Phone call at 14:32, Mr. Schmidt confirmed"
-                    }
-                    disabled={manualConfirmSubmitting}
-                    style={{
-                      width: "100%",
-                      padding: "6px 8px",
-                      fontSize: 13,
-                      border: "1px solid #cbd5e1",
-                      borderRadius: 4,
-                    }}
-                  />
-                  <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                    <button
-                      type="button"
-                      disabled={manualConfirmSubmitting}
-                      onClick={() => void submitManualConfirmation("confirm")}
-                      style={{
-                        flex: "1 1 auto",
-                        padding: "8px 14px",
-                        fontSize: 14,
-                        fontWeight: 600,
-                        color: "#fff",
-                        background: "#16a34a",
-                        border: "none",
-                        borderRadius: 6,
-                        cursor: manualConfirmSubmitting ? "wait" : "pointer",
-                      }}
-                    >
-                      {manualConfirmSubmitting
-                        ? de ? "Speichere…" : "Saving…"
-                        : de ? "Manuell bestätigen" : "Manually confirm"}
-                    </button>
-                    <button
-                      type="button"
-                      disabled={manualConfirmSubmitting}
-                      onClick={() => void submitManualConfirmation("decline")}
-                      style={{
-                        flex: "0 0 auto",
-                        padding: "8px 14px",
-                        fontSize: 14,
-                        color: "#991b1b",
-                        background: "#fff",
-                        border: "1px solid #fca5a5",
-                        borderRadius: 6,
-                        cursor: manualConfirmSubmitting ? "wait" : "pointer",
-                      }}
-                    >
-                      {de ? "Manuell ablehnen" : "Manually decline"}
-                    </button>
-                  </div>
                 </div>
               )}
+            {/*
+              Manual confirm / decline. Available in EVERY confirmation state —
+              pending, confirmed AND declined — because the api writes the
+              confirmation columns directly and no pending round is required.
+
+              These used to vanish the moment the status became "confirmed" or
+              "declined", which made the most ordinary event of the week — the
+              customer rings up and cancels an appointment they had already
+              confirmed — impossible to record except by unticking the checkbox
+              above, and unticking it clears every confirmation column
+              including the phone note that proves what was agreed. That part
+              stays.
+
+              What they are gated on is WHO is looking and WHETHER there is a
+              customer to record an answer FROM (canRecordCustomerConfirmation):
+              manage rights because the endpoint answers 403 without them, a
+              resolved customer because 535 of the 562 tasks here have nobody
+              to ask, and a started flow because that is what says somebody
+              means to ask them.
+
+              They deliberately do NOT depend on the customer having an e-mail
+              address on file: the customers you phone are precisely the ones
+              without one — all three confirmations in production came in by
+              phone. Only the "E-Mail senden" button above cares.
+
+              The operator types an optional note ("Telefonat um 14:32, Herr
+              Schmidt bestätigt") and clicks one of the two buttons; the api
+              records timestamp + method=phone + by_user_id and burns the email
+              token so a stale link can't undo the manual entry.
+            */}
+            {/* Why the buttons are not there. Two different reasons, and only
+                one of them has a next step: telling the operator of a
+                customerless Baustellenaufgabe to tick the box above would walk
+                them into recording an agreement for a customer that does not
+                exist. Order matters — no customer is the more fundamental
+                fact, so it wins when both are true. */}
+            {canManageTasks &&
+              taskEditForm.id != null &&
+              !canRecordCustomerConfirmation && (
+                <small className="muted" style={{ display: "block", marginTop: 8 }}>
+                  {!taskHasCustomer
+                    ? de
+                      ? "Diese Aufgabe hat keinen Kunden — eine Zu- oder Absage kann nicht erfasst werden."
+                      : "This task has no customer — an agreement or a decline cannot be recorded."
+                    : de
+                      ? "Für diese Aufgabe läuft keine Kundenbestätigung. Zum Erfassen einer Zu- oder Absage zuerst oben 'Kundenbestätigung anfordern' ankreuzen."
+                      : "No customer confirmation is running for this task. To record an agreement or a decline, tick 'Request customer confirmation' above first."}
+                </small>
+              )}
+            {canRecordCustomerConfirmation && (
+              <div style={{ marginTop: 12 }}>
+                <label
+                  style={{
+                    display: "block",
+                    fontSize: 12,
+                    color: "#475569",
+                    marginBottom: 4,
+                  }}
+                >
+                  {de
+                    ? "Notiz zur Rückmeldung des Kunden (optional)"
+                    : "Note on the customer's reply (optional)"}
+                </label>
+                <input
+                  className="task-modal-input"
+                  type="text"
+                  value={manualConfirmNotes}
+                  onChange={(event) => setManualConfirmNotes(event.target.value)}
+                  placeholder={
+                    de
+                      ? "z.B. Telefonat um 14:32, Herr Schmidt bestätigt"
+                      : "e.g. Phone call at 14:32, Mr. Schmidt confirmed"
+                  }
+                  disabled={manualConfirmSubmitting}
+                />
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8 }}>
+                  <button
+                    type="button"
+                    disabled={manualConfirmSubmitting}
+                    onClick={() => void submitManualConfirmation("confirm")}
+                    style={{
+                      flex: "1 1 auto",
+                      minHeight: 40,
+                      padding: "8px 14px",
+                      fontSize: 14,
+                      fontWeight: 600,
+                      color: "#fff",
+                      background: "#16a34a",
+                      border: "none",
+                      borderRadius: 6,
+                      cursor: manualConfirmSubmitting ? "wait" : "pointer",
+                    }}
+                    title={
+                      de
+                        ? "Erfasst eine Zusage des Kunden (Telefon / persönlich). Ändert den Planungsstand nicht."
+                        : "Records the customer agreeing (phone / in person). Does not change the planning status."
+                    }
+                  >
+                    {manualConfirmSubmitting
+                      ? de ? "Speichere…" : "Saving…"
+                      : de ? "Kunde hat zugesagt" : "Customer agreed"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={manualConfirmSubmitting}
+                    onClick={() => void submitManualConfirmation("decline")}
+                    style={{
+                      flex: "1 1 auto",
+                      minHeight: 40,
+                      padding: "8px 14px",
+                      fontSize: 14,
+                      fontWeight: 600,
+                      color: "#991b1b",
+                      background: "#fff",
+                      border: "1px solid #fca5a5",
+                      borderRadius: 6,
+                      cursor: manualConfirmSubmitting ? "wait" : "pointer",
+                    }}
+                    title={
+                      de
+                        ? "Erfasst eine Absage des Kunden (Telefon / persönlich). Ändert den Planungsstand nicht."
+                        : "Records the customer declining (phone / in person). Does not change the planning status."
+                    }
+                  >
+                    {de ? "Kunde hat abgesagt" : "Customer declined"}
+                  </button>
+                </div>
+              </div>
+            )}
           </section>
 
           {taskEditOverlapWarning && (

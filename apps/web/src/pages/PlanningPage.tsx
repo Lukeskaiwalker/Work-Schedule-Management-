@@ -3,8 +3,7 @@ import { useAppContext } from "../context/AppContext";
 import { addDaysISO, normalizeWeekStartISO, formatDayLabel, isoWeekdayMondayFirst } from "../utils/dates";
 import { sortTasksByDueTime, formatTaskTimeRange } from "../utils/tasks";
 import { PenIcon } from "../components/icons";
-import { CustomerConfirmationDot } from "../components/tasks/CustomerConfirmationDot";
-import { PlanningStatusBadge } from "../components/tasks/PlanningStatusBadge";
+import { TerminBadge } from "../components/tasks/TerminBadge";
 import type { Language, Task } from "../types";
 
 /** Weekly board rendering mode. */
@@ -660,8 +659,7 @@ export function PlanningPage() {
                           >
                             <b>
                               {task.title}
-                              <CustomerConfirmationDot task={task} language={language} />
-                              <PlanningStatusBadge status={task.planning_status} language={language} />
+                              <TerminBadge task={task} language={language} />
                             </b>
                             <small>
                               <button
@@ -803,8 +801,7 @@ export function PlanningPage() {
                   >
                     <b>
                       {task.title}
-                      <CustomerConfirmationDot task={task} language={language} />
-                      <PlanningStatusBadge status={task.planning_status} language={language} />
+                      <TerminBadge task={task} language={language} />
                     </b>
                     <small>
                       {/* A customer can run several projects in one day — the

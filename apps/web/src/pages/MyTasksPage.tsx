@@ -5,8 +5,7 @@ import { taskMaterialsDisplay } from "../utils/reports";
 import { estimateTravelMinutesFromAddresses, projectLocationAddress } from "../utils/projects";
 import { BackIcon, PenIcon } from "../components/icons";
 import { PartnerTaskChip } from "../components/partners/PartnerTaskChip";
-import { CustomerConfirmationDot } from "../components/tasks/CustomerConfirmationDot";
-import { PlanningStatusBadge } from "../components/tasks/PlanningStatusBadge";
+import { TerminBadge } from "../components/tasks/TerminBadge";
 import { TaskMaterialList } from "../components/tasks/TaskMaterialList";
 import { taskBoxDisplay } from "../utils/boxes";
 
@@ -194,11 +193,8 @@ export function MyTasksPage() {
                 >
                   <div className="tasks-page-row-title-block">
                     <div className="tasks-page-row-title-line">
-                      <span className="tasks-page-row-title">
-                        {task.title}
-                        <CustomerConfirmationDot task={task} language={language} />
-                      </span>
-                      <PlanningStatusBadge status={task.planning_status} language={language} />
+                      <span className="tasks-page-row-title">{task.title}</span>
+                      <TerminBadge task={task} language={language} />
                       {displayStatus === "overdue" && (
                         <span className="tasks-page-row-badge tasks-page-row-badge--overdue">
                           {de ? "ÜBERFÄLLIG" : "OVERDUE"}

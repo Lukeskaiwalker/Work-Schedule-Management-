@@ -181,7 +181,13 @@ class CustomerConfirmationManualRequest(BaseModel):
 
     ``action`` is required so the same endpoint handles both confirm and
     decline. ``notes`` is optional context the operator wants to record
-    alongside the timestamp (e.g. "Sprach mit Hr. Schmidt, kommt um 8")."""
+    alongside the timestamp (e.g. "Sprach mit Hr. Schmidt, kommt um 8").
+
+    A note belongs to the verdict it was written for. Omitting ``notes``
+    (or sending it empty) records this verdict WITHOUT a note and clears
+    whatever the previous round left behind — a "Passt nicht" from a
+    decline must not end up attached to the later "zugesagt". Sending a
+    note replaces the stored one."""
 
     action: Literal["confirm", "decline"]
     method: Literal["phone", "manual"] = "phone"
@@ -194,6 +200,13 @@ class CustomerConfirmationEmailResult(BaseModel):
     sent: bool
     sent_at: datetime | None = None
     error_detail: str | None = None
+    # The send writes and commits — a success mints a token and stamps
+    # the send time, a failure keeps the fresh round — so the task's
+    # optimistic-lock token generally moves. Handing the task's current
+    # value back lets the still-open modal keep its
+    # ``expected_updated_at`` in step instead of 409-ing on the
+    # operator's next Save. Response-only — no column behind it.
+    updated_at: datetime | None = None
 
 
 class PublicCustomerConfirmationOut(BaseModel):

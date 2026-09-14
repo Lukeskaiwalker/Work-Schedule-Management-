@@ -4,8 +4,7 @@ import { taskDisplayStatus, isTaskOverdue, taskStatusLabel, formatTaskTimeRange 
 import { taskMaterialsDisplay } from "../../utils/reports";
 import { PenIcon } from "../../components/icons";
 import { PartnerTaskChip } from "../../components/partners/PartnerTaskChip";
-import { CustomerConfirmationDot } from "../../components/tasks/CustomerConfirmationDot";
-import { PlanningStatusBadge } from "../../components/tasks/PlanningStatusBadge";
+import { TerminBadge } from "../../components/tasks/TerminBadge";
 import { taskBoxDisplay } from "../../utils/boxes";
 
 export function ProjectTasksTab() {
@@ -149,8 +148,7 @@ export function ProjectTasksTab() {
                   <div className="task-list-title-row">
                     <b>
                       {task.title}
-                      <CustomerConfirmationDot task={task} language={language} />
-                      <PlanningStatusBadge status={task.planning_status} language={language} />
+                      <TerminBadge task={task} language={language} />
                     </b>
                     <span
                       className={[

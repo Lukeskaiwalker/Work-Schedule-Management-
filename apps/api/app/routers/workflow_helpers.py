@@ -3139,21 +3139,113 @@ def set_task_confirmation_pending(task: Task, *, reset_status: bool = True) -> N
     ``/tasks/{id}/customer-confirmation/email`` endpoint, so the
     create / patch / due-date-change paths now just set up the state.
 
-    When ``reset_status=True`` the token is regenerated and all
-    confirmation timestamps are cleared (the "fresh round" case —
-    new task, date changed). ``reset_status=False`` is the lazy
-    initialisation case: a token is minted only if one doesn't
-    already exist."""
+    When ``reset_status=True`` the token is regenerated and the previous
+    round's *verdict* is cleared (the "fresh round" case — new task,
+    date changed). ``reset_status=False`` is the lazy initialisation
+    case: a token is minted only if one doesn't already exist.
+
+    The two kinds of confirmation evidence are treated OPPOSITELY here,
+    and that asymmetry is the whole point of this function. Do not
+    "tidy" the two branches into agreement:
+
+      - ``customer_confirmation_notes`` SURVIVES the reset. It is a
+        record of what a human agreed ("Frau Weber: kommt um 8,
+        Schlüssel bei der Nachbarin"), not a fact about a link. The
+        due-date path calls this helper, so clearing here would make an
+        ordinary reschedule — the most routine action in the office —
+        permanently delete that note with no audit trail. Every
+        confirmation recorded in production so far came in by phone, so
+        those are exactly the rows that carry notes. (A note must also
+        not silently follow a human agreement into a LATER, different
+        verdict; that is enforced where verdicts are written, in
+        ``workflow_tasks.py``, not here.)
+      - ``customer_confirmation_email_sent_at`` is CLEARED by the reset.
+        It is a fact about ONE round's link, not about the task. The
+        reset mints a new token, which kills the old link, so the old
+        timestamp describes a round that no longer exists — a burnt
+        link's send time has no operational use and reads on screen as
+        "we already asked them", about a link that can no longer be
+        answered. It is per-round, and it dies with its round.
+
+    This does not lose the proof that a send once succeeded: the
+    pre-wire restore in ``dispatch_customer_confirmation_email`` puts
+    this column back (it is in ``_CONFIRMATION_ROUND_COLUMNS``) whenever
+    a send provably never left the process, which is the only case where
+    the previous round is still the live one."""
     if reset_status:
         task.customer_confirmation_token = generate_customer_confirmation_token()
         task.customer_confirmation_status = "pending"
         task.customer_confirmation_at = None
         task.customer_confirmation_method = None
         task.customer_confirmation_by_user_id = None
+        # Per-round, dies with its round — see the docstring. The new
+        # token above just invalidated the link this timestamp describes.
+        task.customer_confirmation_email_sent_at = None
     elif not task.customer_confirmation_token:
         task.customer_confirmation_token = generate_customer_confirmation_token()
         if task.customer_confirmation_status is None:
             task.customer_confirmation_status = "pending"
+
+
+# Columns ``set_task_confirmation_pending(reset_status=True)`` overwrites.
+# Kept next to it so the snapshot below can never drift from the reset.
+_CONFIRMATION_ROUND_COLUMNS = (
+    "customer_confirmation_token",
+    "customer_confirmation_status",
+    "customer_confirmation_at",
+    "customer_confirmation_method",
+    "customer_confirmation_by_user_id",
+    # The reset clears this one too, so the restore has to carry it:
+    # a send that never left the process leaves the OLD link alive, and
+    # its send time is then still a fact about the current round.
+    "customer_confirmation_email_sent_at",
+)
+
+# Send failures that provably never put a message on the wire. These are
+# the ``error_type`` tags ``app/services/emailer.py`` actually returns —
+# not a guess:
+#   - "not_configured": returned before the EmailMessage is even built,
+#     because there is no SMTP host or no sender address. No socket.
+#   - "connect": SMTPConnectError ONLY — raised while opening the
+#     session, so no SMTP conversation exists and no DATA was sent.
+#     Note this tag used to be shared with the emailer's generic OSError
+#     handler, which can fire after ``send_message`` wrote the body;
+#     that handler now returns "network" precisely so this set cannot
+#     restore a confirmation while a live link sits in an inbox.
+#   - "auth": SMTPAuthenticationError, raised out of ``client.login()``.
+#     Login precedes MAIL FROM, which precedes RCPT TO and DATA, so no
+#     message can have been offered, let alone accepted. With SMTP
+#     unconfigured in production this is the most likely FIRST real
+#     failure once somebody fills the settings in with a wrong password
+#     or a non-app password — exactly the moment an operator must not
+#     also lose the phone confirmation they just recorded.
+#   - "sender": SMTPSenderRefused — the server rejected MAIL FROM, which
+#     is offered before any recipient or body.
+# Everything else the emailer can return — "recipient", "helo", "tls",
+# "smtp", "timeout", "network", "unknown" — is treated as
+# possibly-delivered and keeps the reset. "network" is the important one:
+# a broken pipe or a reset connection says nothing about whether the
+# server already accepted the message. The cost of being wrong is
+# asymmetric — wrongly keeping a reset costs one re-click, wrongly
+# restoring a confirmation while a live token sits in the customer's
+# inbox is not repairable from any screen. Only widen this set for a kind
+# that provably cannot reach DATA.
+PRE_WIRE_EMAIL_ERROR_TYPES = frozenset(
+    {"not_configured", "connect", "auth", "sender"}
+)
+
+
+def _snapshot_confirmation_round(task: Task) -> dict[str, object]:
+    """Copy the confirmation columns a reset overwrites, so a send that
+    never reached the wire can be undone exactly. Returns a new dict;
+    the task is not touched."""
+    return {name: getattr(task, name) for name in _CONFIRMATION_ROUND_COLUMNS}
+
+
+def _restore_confirmation_round(task: Task, snapshot: dict[str, object]) -> None:
+    """Put a ``_snapshot_confirmation_round`` result back on the task."""
+    for name, value in snapshot.items():
+        setattr(task, name, value)
 
 
 def dispatch_customer_confirmation_email(
@@ -3175,8 +3267,8 @@ def dispatch_customer_confirmation_email(
 
     Pre-conditions checked here:
       - the task has a resolvable customer with a non-empty email
-      - if either is missing, returns ``(False, "no customer email")``
-        and the caller leaves status as "pending" but no email goes out.
+      - if either is missing, returns ``(False, "no customer email …")``
+        WITHOUT touching a single confirmation column — see below.
     """
     from app.services.customer_confirmation_email import send_customer_confirmation_email
     from app.services.runtime_settings import get_company_settings
@@ -3184,17 +3276,29 @@ def dispatch_customer_confirmation_email(
     customer = _resolve_task_customer_for_email(db, task)
     customer_email = (customer.email or "").strip() if customer else ""
 
+    if not customer_email:
+        # Resolve the address BEFORE any mutation. Previously the state
+        # reset ran first, so an operator who clicked "E-Mail senden" on a
+        # customer with no address on record got an error message *and*
+        # silently lost the phone confirmation they had just recorded —
+        # the one case that actually occurs in production (every recorded
+        # confirmation so far came in by phone). No send is even attempted
+        # here, so there is nothing to make the old round void: leave the
+        # task exactly as it was and let the operator fix the address.
+        return False, "no customer email on record"
+
     if assignee_ids is None:
         assignee_ids = _task_assignee_map(db, [task]).get(task.id, [])
     worker_names = _worker_display_names_for_task(db, task, assignee_ids)
 
+    # Snapshot BEFORE the reset: a send that never reaches the wire has
+    # to be undoable exactly, and this is the only moment the previous
+    # round is still readable.
+    previous_round = _snapshot_confirmation_round(task)
+
     # Defer state setup to the shared helper so the combined path and
     # the pure-state-prepare path can't drift.
     set_task_confirmation_pending(task, reset_status=reset_status)
-
-    if not customer_email:
-        # Status stays "pending" but no email goes out — operator path only.
-        return False, "no customer email on record"
 
     company = get_company_settings(db)
     company_name = str(company.get("company_name") or "SMPL")
@@ -3217,6 +3321,46 @@ def dispatch_customer_confirmation_email(
     if result.ok:
         task.customer_confirmation_email_sent_at = utcnow()
         return True, None
+
+    # A failed send is NOT one situation, and the two halves deserve
+    # opposite treatment. The dividing question is whether a message
+    # carrying the freshly minted token could be sitting in the
+    # customer's inbox right now.
+    if (result.error_type or "unknown") in PRE_WIRE_EMAIL_ERROR_TYPES:
+        # Provably not. SMTP was never configured, the host was never
+        # reached, the login was rejected, or the server refused MAIL
+        # FROM — in every one of these the message never left this
+        # process (none of them gets as far as DATA), so nothing has
+        # happened that could make the previous round void. Put the
+        # task back exactly as it was: an existing confirmation, its
+        # method, its operator and its still-valid token all survive.
+        # Without this, an operator clicking "E-Mail senden" against a
+        # misconfigured SMTP — the state this deployment has been in for
+        # its entire life, zero successful sends — silently destroyed
+        # the phone confirmation they had just recorded, and got only an
+        # error toast to show for it.
+        _restore_confirmation_round(task, previous_round)
+    # The other half — timeouts, post-DATA errors, anything unknown —
+    # KEEPS the reset:
+    #   1. The operator asked for a fresh round and a send was attempted;
+    #      a failed attempt is a failed round, not a cancelled one.
+    #   2. ``ok=False`` is not proof of non-delivery. A timeout or a
+    #      dropped connection after DATA leaves a message the server may
+    #      well have accepted — with a live token in it. Restoring the
+    #      previous "confirmed" while that token sits in the customer's
+    #      inbox would show the board a settled appointment the customer
+    #      can still flip from under it.
+    #   3. The damage is asymmetric and so is the repair. A reset round
+    #      is one click to re-record ("confirmed by phone" in the modal);
+    #      a stored state that contradicts a live link is not repairable
+    #      from the UI at all.
+    # An unexpected RAISE out of the send call is handled by not handling
+    # it: it propagates, the endpoint's ``db.commit()`` never runs, and
+    # the session is discarded on close, so the task keeps its old
+    # confirmation. That is the right outcome — a crash before the wire
+    # has made nothing void. Do not wrap this call in a bare ``except``
+    # that returns a tuple; that would convert a pre-send crash into a
+    # committed wipe.
     return False, result.error_detail or result.error_type or "send failed"
 
 

@@ -19,10 +19,18 @@ MAIL_FROM_ENFORCED = "technik@smpl-energy.de"
 @dataclass(frozen=True)
 class EmailSendResult:
     """Outcome of a send attempt. `ok=True` means SMTP accepted the message
-    end-to-end. On failure, `error_type` is a short kind tag ("not_configured",
-    "auth", "connect", "tls", "recipient", "timeout", "unknown") and
-    `error_detail` is a human-readable string safe to surface in an admin UI.
-    We never include passwords or full stack traces in the detail."""
+    end-to-end. On failure, `error_type` is a short kind tag — one of
+    "not_configured", "auth", "recipient", "sender", "connect", "helo",
+    "tls", "smtp", "timeout", "network", "unknown" — and `error_detail`
+    is a human-readable string safe to surface in an admin UI. We never
+    include passwords or full stack traces in the detail.
+
+    The tags are not cosmetic: callers key off them to decide whether a
+    failure could have put a message on the wire (see
+    ``PRE_WIRE_EMAIL_ERROR_TYPES`` in ``app/routers/workflow_helpers.py``).
+    "connect" and "network" are deliberately separate for exactly that
+    reason — the first can only fire before a session exists, the second
+    can fire at any point, including after the body was written."""
 
     ok: bool
     error_type: str | None = None
@@ -256,9 +264,17 @@ def send_email_detailed(
             error_detail=f"Timed out connecting to {cfg['host']}:{cfg['port']}.",
         )
     except OSError as exc:
+        # NOT "connect". This is the catch-all for socket-level failures —
+        # broken pipe, connection reset, DNS going away mid-session — and
+        # every one of those can fire AFTER ``send_message`` has written
+        # the body, i.e. with a message the server may already have
+        # accepted. ``SMTPConnectError`` above is the only failure that
+        # provably predates any SMTP session, so it keeps "connect" to
+        # itself; callers treat "connect" as pre-wire and must not be
+        # handed a post-DATA failure wearing that tag.
         return EmailSendResult(
             ok=False,
-            error_type="connect",
+            error_type="network",
             error_detail=f"Network error talking to {cfg['host']}:{cfg['port']}: {exc}",
         )
     except Exception as exc:  # pragma: no cover - defensive

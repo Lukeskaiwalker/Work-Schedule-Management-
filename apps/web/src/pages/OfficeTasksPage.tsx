@@ -12,7 +12,7 @@ import {
 import { taskMaterialsDisplay } from "../utils/reports";
 import { PenIcon } from "../components/icons";
 import { PartnerTaskChip } from "../components/partners/PartnerTaskChip";
-import { PlanningStatusBadge } from "../components/tasks/PlanningStatusBadge";
+import { TerminBadge } from "../components/tasks/TerminBadge";
 import { taskBoxDisplay } from "../utils/boxes";
 
 export function OfficeTasksPage() {
@@ -284,7 +284,7 @@ export function OfficeTasksPage() {
               <div className="tasks-page-office-row-body">
                 <div className="tasks-page-row-title-line">
                   <span className="tasks-page-row-title">{task.title}</span>
-                  <PlanningStatusBadge status={task.planning_status} language={language} />
+                  <TerminBadge task={task} language={language} />
                   <span className={`tasks-page-status-pill tasks-page-status-pill--${pillState}`}>
                     {pillLabel}
                   </span>

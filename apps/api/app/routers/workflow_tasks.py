@@ -281,6 +281,10 @@ def update_task(
     previous_estimated_hours = task.estimated_hours
     previous_due_date_value = task.due_date
     previous_confirmation_status = task.customer_confirmation_status
+    # Set by the request_customer_confirmation branch below when the toggle
+    # actually did something. A toggle that resolved to a no-op leaves this
+    # False so the due-date reset further down still applies.
+    confirmation_toggle_handled = False
     can_manage = has_permission_for_user(current_user.id, current_user.role, "tasks:manage")
     if not can_manage and current_user.id not in existing_assignee_ids:
         raise HTTPException(status_code=403, detail="Task access denied")
@@ -374,10 +378,32 @@ def update_task(
             and payload.request_customer_confirmation is not None
         ):
             if payload.request_customer_confirmation:
-                # v2.5.5: set state to pending + mint token, but do NOT
-                # send email here. Operator pushes "E-Mail senden" in
-                # the modal to trigger the actual email.
-                set_task_confirmation_pending(task, reset_status=True)
+                if task.customer_confirmation_status in {"confirmed", "declined"}:
+                    # NO-OP. The customer has already answered, and a
+                    # ticked checkbox is not a request to un-answer them.
+                    # The modal sends this flag on every Save (it reflects
+                    # "this task wants a confirmation", which stays true
+                    # after the yes), so starting a fresh round here meant
+                    # editing an unrelated field on a confirmed task
+                    # silently destroyed the verdict, its timestamp, its
+                    # method and its operator. A genuine re-ask goes
+                    # through the explicit controls — "E-Mail senden" or
+                    # the manual record — where the operator is asking for
+                    # exactly that.
+                    #
+                    # Deliberately NOT marked as handled: if this same
+                    # PATCH also moved the due_date, the date-change reset
+                    # below still runs and still voids the verdict. That
+                    # is the v2.5.0 rule and a no-op here must not suppress
+                    # it — the date moving is what makes the yes void, not
+                    # the checkbox.
+                    confirmation_toggle_handled = False
+                else:
+                    # v2.5.5: set state to pending + mint token, but do NOT
+                    # send email here. Operator pushes "E-Mail senden" in
+                    # the modal to trigger the actual email.
+                    set_task_confirmation_pending(task, reset_status=True)
+                    confirmation_toggle_handled = True
             else:
                 # Clear all confirmation columns — operator opted out.
                 task.customer_confirmation_status = None
@@ -387,6 +413,11 @@ def update_task(
                 task.customer_confirmation_notes = None
                 task.customer_confirmation_token = None
                 task.customer_confirmation_email_sent_at = None
+                # Unticking IS an explicit "this task does not need a
+                # customer confirmation", including when one was recorded
+                # in error — it is the only escape hatch from a wrong
+                # verdict, so it keeps clearing everything.
+                confirmation_toggle_handled = True
         if "estimated_hours" in payload.model_fields_set:
             task.estimated_hours = payload.estimated_hours
         if "week_start" in payload.model_fields_set:
@@ -438,28 +469,39 @@ def update_task(
 
     db.add(task)
     # v2.5.0: auto-resend confirmation email when due_date changed AND
-    # the task was already in a confirmation flow (pending or confirmed)
-    # AND the user didn't already explicitly toggle the request flag in
-    # this same PATCH (which would have handled the email itself).
+    # the task was already in a confirmation flow (pending, confirmed or
+    # declined) AND the user didn't already explicitly toggle the request
+    # flag in this same PATCH (which would have handled the email itself).
     due_date_changed = (
         can_manage
         and "due_date" in payload.model_fields_set
         and payload.due_date != previous_due_date_value
     )
-    already_handled_via_toggle = (
-        "request_customer_confirmation" in payload.model_fields_set
-        and payload.request_customer_confirmation is not None
-    )
+    # Only a toggle that actually wrote something counts as having handled
+    # the confirmation state. Ticking the box on an already-answered task
+    # is a no-op (see above), and a no-op must not stand in for the
+    # date-change reset — otherwise a reschedule saved together with the
+    # checkbox already ticked would carry the customer's yes for date X
+    # over to date Y.
+    already_handled_via_toggle = confirmation_toggle_handled
     if (
         due_date_changed
         and not already_handled_via_toggle
-        and previous_confirmation_status in {"pending", "confirmed"}
+        and previous_confirmation_status in {"pending", "confirmed", "declined"}
     ):
         # v2.5.5: when the date moves, the customer's previous "yes for
         # date X" is no longer valid for the new date. Reset to pending
         # so the operator knows to re-send. The actual email send is
         # still operator-driven — they click "E-Mail senden" once the
         # new schedule is locked.
+        #
+        # "declined" belongs in that set and used to be missing, which
+        # made a no from the customer permanent: the decline burns the
+        # token, so a task the customer turned down and the office then
+        # rescheduled sat at "declined" with no token and no way back
+        # into the flow. Moving the date after a no is precisely the
+        # moment the appointment deserves to be asked again — the
+        # customer declined date X, and nobody has asked about date Y.
         set_task_confirmation_pending(task, reset_status=True)
     # A completed task is no longer actionable, so the "X assigned you to …"
     # entries pointing at it must leave the assignees' panels. Resolving at
@@ -727,10 +769,27 @@ def send_task_customer_confirmation_email(
     sent, error = dispatch_customer_confirmation_email(db, task=task, reset_status=True)
     db.commit()
     db.refresh(task)
+    updated = _tasks_out(db, [task])[0]
+    # Both branches commit: success mints a token and stamps sent_at,
+    # failure keeps the fresh round (a pre-wire failure restores the
+    # previous one, which may leave the row byte-identical and so may not
+    # bump anything — the point is that the caller cannot tell which
+    # happened). Whenever the row does change, ``updated_at`` moves, and
+    # the modal that fired this request is still open holding the old
+    # value: without handing the new one back, the operator's next Save
+    # 409s on a conflict our own button caused. Reporting the task's
+    # actual current token covers both outcomes.
+    #
+    # It also flips the confirmation pill on every open board (to pending,
+    # or back to what it was), which nobody else is watching for — so fire
+    # the same full-TaskOut ``task.updated`` the manual and public paths
+    # fire, for the same reason.
+    notify(db, "task.updated", updated.model_dump(mode="json"))
     return CustomerConfirmationEmailResult(
         sent=sent,
         sent_at=task.customer_confirmation_email_sent_at if sent else None,
         error_detail=error,
+        updated_at=updated.updated_at,
     )
 
 
@@ -760,13 +819,30 @@ def record_task_customer_confirmation_manual(
     task.customer_confirmation_at = utcnow()
     task.customer_confirmation_method = payload.method
     task.customer_confirmation_by_user_id = current_user.id
-    if payload.notes is not None:
-        task.customer_confirmation_notes = (payload.notes or "").strip() or None
+    # A note records what a human agreed, and it belongs to THAT agreement.
+    # It survives a reset (a reschedule must not delete the only record of
+    # the call) but it must not follow the task into a later, different
+    # verdict: customer declines Tuesday with "Passt nicht", office
+    # reschedules and rings back, customer agrees, operator clicks "Kunde
+    # hat zugesagt" and leaves the note box empty — the row would read
+    # "zugesagt" with "Passt nicht" attached as its evidence. So recording
+    # a verdict without a note CLEARS the old one; supplying one replaces
+    # it, exactly as before. Unconditional assignment is the whole fix:
+    # ``notes=None`` and ``notes=""`` both mean "no note for this verdict".
+    task.customer_confirmation_notes = (payload.notes or "").strip() or None
     # Burn the email link so it can't override the manual entry.
     task.customer_confirmation_token = None
     db.commit()
     db.refresh(task)
-    return _tasks_out(db, [task])[0]
+    updated = _tasks_out(db, [task])[0]
+    # Same event the PATCH path fires, with the same full-TaskOut payload:
+    # a confirmation recorded here changes the pill on every open planning
+    # board, and without this the board kept showing the old state until
+    # somebody reloaded. Tasks with no project_id carry ``project_id: null``
+    # and reach admins only — exactly how create/update/delete already
+    # behave for customer-only tasks.
+    notify(db, "task.updated", updated.model_dump(mode="json"))
+    return updated
 
 
 # ── v2.5.0 public (no-auth) confirmation surface ────────────────────────
@@ -869,8 +945,23 @@ def submit_public_customer_confirmation(
     task.customer_confirmation_at = utcnow()
     task.customer_confirmation_method = "email"
     task.customer_confirmation_by_user_id = None  # customer self-served
+    # This path never supplies a note, so it always clears: the customer
+    # clicking a link says nothing about the phone call that produced the
+    # previous round's note, and leaving that note in place would present
+    # it as evidence for THIS verdict. Same rule as the manual endpoint —
+    # a note belongs to the agreement it was written for.
+    task.customer_confirmation_notes = None
     # Burn the token so the link can only be used once.
     task.customer_confirmation_token = None
     db.commit()
     db.refresh(task)
+    # The customer answering from their own browser is the one write path
+    # with nobody logged in to notice it. Push the same ``task.updated``
+    # the authenticated paths push — the internal TaskOut payload, not the
+    # trimmed public view, because the subscribers are office boards and
+    # the SSE layer filters it by project membership on the way out.
+    # A task with no project_id sends ``project_id: null``, which
+    # ``_should_deliver`` routes to admins only; that is the established
+    # behaviour for customer-only tasks and is left as it is.
+    notify(db, "task.updated", _tasks_out(db, [task])[0].model_dump(mode="json"))
     return _public_task_view(db, task)
