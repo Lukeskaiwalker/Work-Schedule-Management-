@@ -53,18 +53,29 @@ services:
     # the next morning with no restart attempt.
     #
     # With mem_limit, the kernel kills inside the api cgroup ONLY
-    # when this container exceeds 1.5GB. Docker tracks that as
+    # when this container exceeds the cap. Docker tracks that as
     # OOMKilled=true, restart: unless-stopped fires, and the api
-    # comes back automatically. 1.5GB is well above steady-state
-    # (typically ~300-500MB for 2 uvicorn workers + uploads
-    # cache) but leaves room for occasional spikes (PDF reports,
-    # large project lookups).
-    mem_limit: 1500m
+    # comes back automatically.
+    #
+    # Why 2.5GB, not the 1.5GB it was (2026-09-16): the workers GROW.
+    # Measured on prod: a fresh container starts near 300MB and had
+    # reached 974MB after nine hours, with the cgroup's memory.peak at
+    # exactly the old limit; dmesg showed six worker kills in ten days
+    # (anon-rss 730-935MB per worker, two workers). A kill of a single
+    # uvicorn worker is invisible here — the master respawns it, so
+    # RestartCount stays 0 and OOMKilled stays false — but the request
+    # that worker was serving dies with it, which reaches the user as
+    # "Network request failed" mid-upload. The Dockerfile now recycles
+    # workers every N requests so the growth is bounded; this cap is
+    # the second line, sized so two workers plus an upload spike fit
+    # with room, while db + api_worker + the rest still fit in the
+    # host's 7.8GB alongside it.
+    mem_limit: 2500m
     # Match memswap_limit to mem_limit so the container cannot
     # spill into host swap and prolong the unhealthy state. Without
     # this, Docker defaults to mem_limit*2 of swap, which would let
     # the api thrash for many seconds before being killed.
-    memswap_limit: 1500m
+    memswap_limit: 2500m
     env_file:
       # Layering order matters: .env.example provides defaults (committed,
       # schema-only — every value is empty/placeholder), .env provides the

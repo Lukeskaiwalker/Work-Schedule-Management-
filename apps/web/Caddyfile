@@ -10,6 +10,21 @@
 (spa_routing) {
 	encode gzip
 
+	# Access log to the container's stdout, one JSON line per request.
+	# Added 2026-09-16 after a user's "Network request failed" on a report
+	# upload could not be investigated: the api had never seen the request
+	# and this proxy kept no record either, so whether it was rejected here,
+	# reset mid-body, or never arrived was unknowable. Caddy redacts
+	# Authorization and Cookie values by default (log_credentials is off),
+	# so bearer tokens do not land in `docker logs`. Note the log lives
+	# with the container: a `--force-recreate` swap starts a fresh one, so
+	# dump it (docker logs smpl-all-web-1 > file) BEFORE deploying if it is
+	# needed as evidence.
+	log {
+		output stdout
+		format json
+	}
+
 	# Maintenance mode: when /srv/maintenance/.flag exists, every request
 	# is served the maintenance page with no-store cache headers and a
 	# Retry-After hint so well-behaved clients back off.

@@ -7805,7 +7805,20 @@ export function App() {
         );
       }
     } catch (err: any) {
-      setError(err.message ?? "Failed to submit report");
+      // status 0 is the XHR's own verdict: the connection dropped before any
+      // response arrived — a mobile link on site, or the proxy container being
+      // recreated by a deploy. It is NOT a server rejection, and the raw
+      // "Network request failed" reads like one to somebody standing on a
+      // Baustelle. Nothing was cleared (the form only resets on success), so
+      // the honest instruction is simply: try again.
+      const connectionDropped = err?.status === 0;
+      setError(
+        connectionDropped
+          ? language === "de"
+            ? "Verbindung unterbrochen — der Bericht wurde nicht gesendet. Deine Eingaben sind noch da: bitte kurz die Verbindung prüfen und erneut auf Senden tippen."
+            : "Connection lost — the report was not sent. Your entries are still here: check the connection and tap Send again."
+          : (err?.message ?? (language === "de" ? "Bericht konnte nicht gesendet werden" : "Failed to submit report")),
+      );
     } finally {
       setReportSubmitting(false);
       setReportUploadPercent(null);

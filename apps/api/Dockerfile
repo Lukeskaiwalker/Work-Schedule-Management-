@@ -50,4 +50,11 @@ RUN if [ ! -s /app/.release.env ] || ! grep -qE "^APP_RELEASE_VERSION=.+" /app/.
     fi
 
 EXPOSE 8000
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${API_WORKERS:-2} --timeout-keep-alive 75"]
+# --limit-max-requests: a worker that has served N requests shuts down
+# gracefully (in-flight requests complete) and the master spawns a fresh
+# one. The workers grow — ~75MB/h across two on prod, until the cgroup cap
+# killed one mid-request roughly every other day (see mem_limit in
+# docker-compose.yml). The compose healthcheck alone is ~4300 requests
+# per worker per day, so 2000 recycles each worker a few times a day,
+# long before growth matters. Overridable per host via API_MAX_REQUESTS.
+CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${API_WORKERS:-2} --timeout-keep-alive 75 --limit-max-requests ${API_MAX_REQUESTS:-2000} --timeout-graceful-shutdown 30"]
