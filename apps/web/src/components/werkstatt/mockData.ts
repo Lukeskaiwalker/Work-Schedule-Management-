@@ -99,6 +99,21 @@ export type MockInventoryRow = {
   in_transit_label: string | null;
   /** Numeric article id, for calls that act on the article itself. */
   article_id: number;
+  /** The counters behind `stock_label`, unformatted.
+   *
+   * The row is otherwise label-shaped, but the dialogs this row opens do
+   * arithmetic on stock and cap their inputs against it. They used to be
+   * handed the constants 3 and 4, so every article in the workshop claimed to
+   * hold four — which is what "the displayed number is not always true to what
+   * the edit dialog says" was. Both figures travel together because they mean
+   * different things: `stock_label` prints AVAILABLE, an adjustment moves
+   * TOTAL, and a checkout can only take what is available. */
+  stock_available: number;
+  stock_total: number;
+  /** The article's own unit ("Stk", "m", "Rolle"), null when it has none.
+   *  Travels with the counters so the row and the dialog it opens cannot end
+   *  up quoting the same article in two different units. */
+  unit: string | null;
   /** Whether anything on this article can be scanned. Drives the label button:
    *  a false here is stock you cannot find with a scanner. */
   scannable: boolean;

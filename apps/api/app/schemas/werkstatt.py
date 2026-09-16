@@ -38,7 +38,14 @@ from app.schemas.werkstatt_machines import MachineOut
 WerkstattStockStatus = Literal["available", "low", "empty", "out", "unavailable"]
 
 WerkstattMovementType = Literal[
-    "checkout", "return", "intake", "correction", "repair_out", "repair_back"
+    "checkout", "return", "intake", "correction", "repair_out", "repair_back",
+    # Stock-take reconciliation. These have always existed in the ledger
+    # (``services/werkstatt_movements._DELTAS``) and ``services/werkstatt_inventory``
+    # has always written them — they were merely missing from this Literal, so
+    # every movement-list response that happened to include one raised a
+    # ValidationError and surfaced as a 500. The manual stock-adjust endpoint
+    # (``routers/workflow_werkstatt_article_stock``) makes them common.
+    "inventory_plus", "inventory_minus",
 ]
 
 WerkstattOrderStatus = Literal[
@@ -293,6 +300,11 @@ class WerkstattArticleLiteOut(_OrmBase):
     manufacturer: str | None
     category_name: str | None
     location_name: str | None
+    # The article's own unit abbreviation ("Stk", "m", "Pak"). Carried on the
+    # lite row because the list and the stock dialog both print a quantity for
+    # the same article, and a row that has to guess prints a different unit
+    # from the dialog beside it — for the same shelf.
+    unit: str | None = None
     stock_available: int
     stock_total: int
     stock_status: WerkstattStockStatus
@@ -1021,3 +1033,52 @@ class WerkstattArticleLabelPrintOut(BaseModel):
     internal_code: str
     minted: bool  # False when the article already had a code and this is a reprint
     printer: str
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# §12  Manual stock adjustment  (Desktop "Bestand anpassen" dialog)
+# ──────────────────────────────────────────────────────────────────────────
+
+# The three kinds the dialog offers, and the ledger movement each maps to:
+#
+#   intake     "Wareneingang"      → movement_type ``intake``          (+total, +available)
+#   defect     "Schwund / Defekt"  → movement_type ``inventory_minus`` (−total, −available)
+#   inventory  "Inventur-Korrektur"→ ``inventory_plus`` / ``inventory_minus``
+#                                    for the difference to ``target_total``
+#
+# ``correction`` is deliberately NOT reachable from here: it also decrements
+# ``stock_out``, which is right only for "a checked-out item is confirmed lost"
+# and wrong for a delivery or a shelf count — neither of which can see what is
+# checked out. That one stays on the mobile return flow, where the item is
+# physically in someone's hands.
+WerkstattStockAdjustKind = Literal["intake", "defect", "inventory"]
+
+
+class WerkstattStockAdjustPayload(BaseModel):
+    """Body for ``POST /api/werkstatt/articles/{article_id}/movements``.
+
+    Two shapes in one model, because the dialog has two shapes:
+
+    - ``intake`` / ``defect`` are *relative*: send ``quantity`` (> 0).
+    - ``inventory`` is *absolute*: send ``target_total`` (>= 0), the number
+      the counter actually counted. The server derives the signed delta from
+      the article's current ``stock_total``. ``quantity`` is ignored.
+
+    ``reason`` is required and must be non-empty after trimming — the dialog
+    marks "Begründung / Beleg" with a ``*``, and a stock correction with no
+    reason on it is exactly the ledger row nobody can explain a year later.
+
+    ``expected_total`` is the optional optimistic lock: pass the
+    ``stock_total`` the dialog displayed and the server answers 409 if the
+    article has moved since. Omit it to adjust against whatever the current
+    state is.
+    """
+
+    kind: WerkstattStockAdjustKind
+    # Relative kinds. Bounds are enforced in the router so the message is
+    # German prose rather than a pydantic error envelope.
+    quantity: int | None = None
+    # Absolute kind.
+    target_total: int | None = None
+    reason: str
+    expected_total: int | None = None

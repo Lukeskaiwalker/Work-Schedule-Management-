@@ -152,6 +152,7 @@ def article_lite_out(
         manufacturer=article.manufacturer,
         category_name=category_name,
         location_name=location_name,
+        unit=article.unit,
         stock_available=article.stock_available,
         stock_total=article.stock_total,
         stock_status=stock_status(article),  # type: ignore[arg-type]

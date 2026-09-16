@@ -26401,6 +26401,15 @@ button.time-calendar-cell {
 .werkstatt-new-stock-pill b {
   font-size: 20px;
 }
+/* "9 im Regal + 3 unterwegs" under the previewed total: the field above holds
+   a shelf count, and the pill has to show its arithmetic rather than a total
+   that looks like it came from nowhere. */
+.werkstatt-new-stock-pill-split {
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 15px;
+  color: #2f7d52;
+}
 .werkstatt-pill-row {
   display: flex;
   flex-wrap: wrap;
@@ -28293,6 +28302,70 @@ button.time-calendar-cell {
 .werkstatt-stepper-input:focus-visible {
   outline: 2px solid rgba(37, 99, 190, 0.35);
   outline-offset: -1px;
+}
+
+.werkstatt-stepper-btn:disabled,
+.werkstatt-stepper-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* The sign glyph sits inside the frame, left of the number, so the control
+   reads as one figure — "+5", "−5", "= 12". Not focusable, not editable: the
+   direction comes from the adjustment card, never from what is typed. */
+.werkstatt-stepper-sign {
+  display: grid;
+  place-items: center;
+  padding-inline: 10px 0;
+  border-inline-start: 1px solid rgba(33, 51, 82, 0.12);
+  font-size: 14px;
+  font-weight: 700;
+  color: #5c7895;
+  background: #ffffff;
+  user-select: none;
+}
+
+/* Only inputs that have a sign in front of them. The sign already carries the
+   dividing border, and the number sits flush against it rather than centred in
+   its own box, so the two read as one figure instead of two labels. Sized in
+   ch so it tracks the font size of whichever variant it is in. */
+.werkstatt-stepper-sign + .werkstatt-stepper-input {
+  width: 5.5ch;
+  border-inline-start: 0;
+  padding-inline: 3px 8px;
+  text-align: left;
+}
+
+/* Big variant — "Bestand anpassen". Sized for a gloved tap on a workshop
+   tablet; the numbers here are the point of the dialog. The height override
+   matters: the shared .werkstatt-stepper pins 40px, which would crop these
+   children and leave the sign 6px shorter than the number beside it. */
+.werkstatt-stepper--big {
+  height: auto;
+}
+.werkstatt-stepper--big .werkstatt-stepper-btn {
+  width: 44px;
+  height: 44px;
+  font-size: 20px;
+}
+.werkstatt-stepper--big .werkstatt-stepper-sign {
+  font-size: 22px;
+  padding-inline: 14px 0;
+}
+.werkstatt-stepper--big .werkstatt-stepper-input {
+  height: 44px;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+/* Second line of the dialog hero's stock figure: the available count, named,
+   under the total. Two numbers that mean different things must not look
+   interchangeable. */
+.werkstatt-modal-hero-stock-split {
+  font-size: 11px;
+  line-height: 15px;
+  color: #5c7895;
+  white-space: nowrap;
 }
 
 /* Compact page subtitle used in the header (complements werkstatt-sub-*) */

@@ -24,6 +24,8 @@ Movement types and their effect on the four counters:
                   (clamped at zero for both counters)
     repair_out  : out      -= qty, repair   += qty      (total unchanged)
     repair_back : repair   -= qty, available += qty     (total unchanged)
+    inventory_plus  : total += qty, available += qty    (stock-take: counted more)
+    inventory_minus : total -= qty, available -= qty    (stock-take: counted less)
 """
 
 from __future__ import annotations
@@ -75,6 +77,51 @@ _DELTAS: dict[str, dict[str, int]] = {
 }
 
 ALLOWED_MOVEMENT_TYPES: frozenset[str] = frozenset(_DELTAS.keys())
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Serialising concurrent stock writes
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def load_article_for_update(db: Session, article_id: int) -> WerkstattArticle | None:
+    """Load one article with its row locked until the caller's transaction ends.
+
+    Every stock write is a read-then-write: the caller loads the article, the
+    guards in ``apply_movement`` compare the requested quantity against the
+    snapshot counters, and only then is the ledger row appended. A plain
+    ``db.get`` leaves that sequence unserialised, so two tablets booking a
+    write-off of 5 against ``stock_available`` 8 both read 8, both pass the
+    guard, and the ledger ends at −2. The same window swallows the
+    ``expected_total`` optimistic check, which reads the very counter the
+    other request is about to change.
+
+    ``SELECT … FOR UPDATE`` closes it: the second transaction blocks until the
+    first commits and then re-reads the row it locked (PostgreSQL follows the
+    update chain in READ COMMITTED), so its guard sees 3 and refuses. Callers
+    must therefore hold this in the same transaction as the ``apply_movement``
+    and commit it — which routers do, one session per request.
+
+    On SQLite (the test database) ``FOR UPDATE`` does not exist and is skipped
+    entirely, following the pattern in ``services/report_jobs.py`` — so no test
+    can prove this lock. It is the guards that tests can pin; the serialisation
+    itself only exists in production.
+
+    Returns ``None`` when there is no such article — the caller owns the 404,
+    because the wording differs per surface.
+    """
+
+    stmt = (
+        select(WerkstattArticle)
+        .where(WerkstattArticle.id == int(article_id))
+        # Act on what the lock returned, not on a copy this session may already
+        # hold from an earlier read in the same request.
+        .execution_options(populate_existing=True)
+    )
+    dialect_name = str(db.bind.dialect.name if db.bind is not None else "").lower()
+    if dialect_name != "sqlite":
+        stmt = stmt.with_for_update()
+    return db.scalars(stmt).first()
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -134,6 +181,21 @@ def apply_movement(
         raise MovementError(
             f"repair_back quantity {quantity} exceeds stock_repair "
             f"{article.stock_repair} for article {article.article_number}"
+        )
+    # The one movement that used to be unbounded. `inventory_minus` decrements
+    # `total` and `available` together, so `stock_available` is the binding
+    # limit: taking more off the shelf than is on it leaves the LEDGER negative
+    # while `recompute_article_stock` clamps the SNAPSHOT at zero — and every
+    # later delivery then disappears into that hole, so the article reads 0
+    # forever until somebody edits the ledger by hand. Clamping is not a
+    # remedy, it is how the damage hides, so refuse the write instead.
+    # (Checked here rather than only in the router because this function is the
+    # single write path; a stock-take that counts the shelf can never exceed
+    # `stock_available` by construction, so no existing caller is affected.)
+    if movement_type == "inventory_minus" and quantity > int(article.stock_available or 0):
+        raise MovementError(
+            f"inventory_minus quantity {quantity} exceeds stock_available "
+            f"{article.stock_available} for article {article.article_number}"
         )
 
     now = utcnow()
@@ -202,9 +264,10 @@ def recompute_article_stock(db: Session, article: WerkstattArticle) -> None:
     leave a negative snapshot.
     """
 
-    # Sum ± qty per counter using a CASE per movement_type. Six types × four
-    # counters is small and readable; a SQL aggregate is cheaper than loading
-    # every row into Python.
+    # Sum ± qty per counter using a CASE per movement_type, built from
+    # ``_DELTAS`` so a movement type added there is aggregated here without
+    # anyone remembering to. Eight types × four counters is small and readable;
+    # a SQL aggregate is cheaper than loading every row into Python.
     def _sum(counter: str) -> func.coalesce:
         branches: list = []
         for mv_type, deltas in _DELTAS.items():

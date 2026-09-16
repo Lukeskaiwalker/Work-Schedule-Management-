@@ -1,15 +1,27 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAppContext } from "../../context/AppContext";
+import { ApiError } from "../../api/client";
 import { useBarcodeScanner } from "../../hooks/useBarcodeScanner";
+import { useKeptRow } from "../../hooks/useKeptRow";
+import { unitLabel } from "../../components/werkstatt/unitLabel";
 import { NeuerArtikelModal } from "../../components/werkstatt/NeuerArtikelModal";
 import { EntnehmenModal } from "../../components/werkstatt/EntnehmenModal";
 import { BestandAnpassenModal } from "../../components/werkstatt/BestandAnpassenModal";
 import { type MockInventoryRow, type MockStockTone } from "../../components/werkstatt/mockData";
 import {
+  adjustArticleStock,
+  checkoutArticle,
   listArticles,
   printArticleLabel,
+  type StockAdjustmentInput,
   type WerkstattArticleLite,
+  type WerkstattArticleStockSnapshot,
 } from "../../utils/werkstattArticlesApi";
+import {
+  staleStockMessage,
+  stockAdjustmentNotice,
+} from "../../components/werkstatt/stockNotices";
+import { expectedReturnIso } from "../../utils/werkstattReturnDates";
 
 /**
  * WerkstattInventarPage — full inventory list. Ported from Paper 7RO-0
@@ -36,7 +48,15 @@ type FilterDef = {
 };
 
 export function WerkstattInventarPage() {
-  const { mainView, language, werkstattTab, projects, setNotice, token } = useAppContext();
+  const { mainView, language, werkstattTab, projects, setNotice, setError, token, user } =
+    useAppContext();
+
+  /* The movements endpoint is gated on `werkstatt:manage`. Offering the
+   * dialog to everyone meant an apprentice could pick a kind, type a count and
+   * write a Beleg number, and learn only from a 403 that none of it was ever
+   * going to be booked. Mirrors the server's gate exactly, `?? []` so an
+   * unloaded user is treated as holding nothing rather than everything. */
+  const canManageStock = (user?.effective_permissions ?? []).includes("werkstatt:manage");
 
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState<string>("all");
@@ -51,12 +71,32 @@ export function WerkstattInventarPage() {
   const [neuerArtikelOpen, setNeuerArtikelOpen] = useState(false);
   const [printingId, setPrintingId] = useState<number | null>(null);
   const [labelNotice, setLabelNotice] = useState<string>("");
-  const [entnehmenRow, setEntnehmenRow] = useState<MockInventoryRow | null>(null);
-  const [bestandRow, setBestandRow] = useState<MockInventoryRow | null>(null);
+  /* The dialogs remember an ARTICLE ID, not a captured row. The row itself is
+   * looked up from the current list on every render, so a refresh — after a
+   * booking, or after a 409 saying the stock moved while the dialog was open —
+   * flows straight into the open dialog. A captured row would keep showing the
+   * figure the server has just told us is wrong. */
+  const [entnehmenId, setEntnehmenId] = useState<number | null>(null);
+  const [bestandId, setBestandId] = useState<number | null>(null);
+  /* Both dialogs book real stock, so both need the in-flight/failed pair:
+   * `saving` disables the confirm button (a double-tap would book twice), and
+   * the error keeps the dialog open with the user's input intact. */
+  const [saving, setSaving] = useState(false);
+  const [entnehmenError, setEntnehmenError] = useState<string | null>(null);
+  const [bestandError, setBestandError] = useState<string | null>(null);
 
   // TODO(werkstatt): replace stub with real /api/werkstatt/scan/resolve call.
   useBarcodeScanner({
-    enabled: mainView === "werkstatt" && werkstattTab === "inventar",
+    /* Disarmed while a dialog is open. The scanner is armed for the whole tab
+     * and a stray scan lands in the search box, which refetches the list — so
+     * a scanner nudged on the bench could rewrite the list under a dialog
+     * somebody was mid-way through filling in. Nothing on either dialog reads
+     * a scan anyway, so listening for one there buys nothing. */
+    enabled:
+      mainView === "werkstatt" &&
+      werkstattTab === "inventar" &&
+      entnehmenId === null &&
+      bestandId === null,
     onScan: (code) => {
       // Placeholder: route the scan to the search box so users see a signal.
       setSearch(code);
@@ -99,6 +139,10 @@ export function WerkstattInventarPage() {
     () =>
       articles.map((a) => {
         const out = Math.max(0, a.stock_total - a.stock_available);
+        // One abbreviation for this article, used by the row and by every
+        // dialog the row opens. The row used to print a hard-coded "Stk" while
+        // the dialog printed "St." — same article, two units, two numbers.
+        const unit = unitLabel(a.unit, language === "de");
         const tone: MockStockTone =
           a.stock_status === "unavailable" ? "empty" : (a.stock_status as MockStockTone);
         return {
@@ -108,10 +152,18 @@ export function WerkstattInventarPage() {
           sub_meta: [a.manufacturer, a.ean].filter(Boolean).join(" · "),
           category: a.category_name ?? "—",
           location: a.location_name ?? "—",
-          stock_label: `${a.stock_available} Stk`,
+          stock_label: `${a.stock_available} ${unit}`,
+          stock_available: a.stock_available,
+          stock_total: a.stock_total,
+          unit: a.unit ?? null,
           stock_tone: tone,
           out_initials: null,
-          out_label: out > 0 ? `${out} unterwegs` : null,
+          out_label:
+            out > 0
+              ? language === "de"
+                ? `${out} unterwegs`
+                : `${out} out`
+              : null,
           in_transit_label: a.next_expected_delivery_at
             ? new Date(a.next_expected_delivery_at).toLocaleDateString(
                 language === "de" ? "de-DE" : "en-US",
@@ -159,6 +211,27 @@ export function WerkstattInventarPage() {
     });
   }, [allRows, search, category, location, activeFilter]);
 
+  /* Looked up by id on every render so a booking's new counters flow straight
+   * into the open dialog — and kept alive across a refetch that no longer
+   * contains the article (a search narrowed by a stray scan, a colleague
+   * archiving the row), because unmounting a dialog mid-edit throws away the
+   * typed amount, the reason and the error message explaining why it failed.
+   * Live numbers when there are any, the last ones seen otherwise. */
+  const entnehmenRow = useKeptRow(
+    useMemo(
+      () => allRows.find((row) => row.article_id === entnehmenId) ?? null,
+      [allRows, entnehmenId],
+    ),
+    entnehmenId,
+  );
+  const bestandRow = useKeptRow(
+    useMemo(
+      () => allRows.find((row) => row.article_id === bestandId) ?? null,
+      [allRows, bestandId],
+    ),
+    bestandId,
+  );
+
   // Everything below is a hook, so it must sit ABOVE the early return.
   // React counts hooks per render: one extra on the renders where this
   // tab is active crashes the page the moment you navigate to it.
@@ -194,6 +267,158 @@ export function WerkstattInventarPage() {
       }
     },
     [token, printingId, de, reload],
+  );
+
+  /**
+   * Fold a write's response back into the list.
+   *
+   * Both endpoints answer with the article as it now stands, recomputed from
+   * the movement ledger. Patching from that — rather than adding the delta the
+   * browser previewed — means the number the user sees after booking is the
+   * number the server holds, even if a colleague booked against the same
+   * article a second earlier. Immutable: a new array of new rows.
+   */
+  const applyStockSnapshot = useCallback((snapshot: WerkstattArticleStockSnapshot) => {
+    setArticles((prev) =>
+      prev.map((a) =>
+        a.id === snapshot.id
+          ? {
+              ...a,
+              stock_total: snapshot.stock_total,
+              stock_available: snapshot.stock_available,
+              stock_status: snapshot.stock_status,
+            }
+          : a,
+      ),
+    );
+  }, []);
+
+  /** Check stock out of the workshop. Closes the dialog only on success. */
+  const handleCheckout = useCallback(
+    async (
+      row: MockInventoryRow,
+      payload: {
+        quantity: number;
+        project_id: string | null;
+        expected_return: Parameters<typeof expectedReturnIso>[0];
+        notes: string;
+      },
+    ) => {
+      if (saving) return;
+      setSaving(true);
+      setEntnehmenError(null);
+      try {
+        const projectId = payload.project_id ? Number(payload.project_id) : null;
+        const snapshot = await checkoutArticle(token, {
+          articleId: row.article_id,
+          quantity: payload.quantity,
+          projectId: projectId !== null && Number.isFinite(projectId) ? projectId : null,
+          expectedReturnAt: expectedReturnIso(payload.expected_return, new Date()),
+          notes: payload.notes.trim() || null,
+        });
+        applyStockSnapshot(snapshot);
+        setEntnehmenId(null);
+        setNotice(
+          de
+            ? `${payload.quantity}× ${row.item_name} entnommen — ${snapshot.stock_available} von ${snapshot.stock_total} noch verfügbar`
+            : `Checked out ${payload.quantity}× ${row.item_name} — ${snapshot.stock_available} of ${snapshot.stock_total} still available`,
+        );
+      } catch (err) {
+        // Stays in the dialog: "more than available" and "article archived"
+        // are both 400s the user can act on, and re-entering the form to read
+        // the reason would lose what they picked.
+        setEntnehmenError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setSaving(false);
+      }
+    },
+    [saving, token, applyStockSnapshot, setNotice, de],
+  );
+
+  /** Book a manual stock adjustment. Closes the dialog only on success. */
+  const handleAdjustStock = useCallback(
+    async (
+      row: MockInventoryRow,
+      payload: {
+        kind: "intake" | "defect" | "inventory";
+        amount: number;
+        /** The total the entry implies. For a stock-take that is the counted
+         *  shelf figure plus everything out or in repair — the dialog collects
+         *  the shelf, the endpoint wants the total. */
+        new_total: number;
+        reason: string;
+      },
+    ) => {
+      if (saving) return;
+      setSaving(true);
+      setBestandError(null);
+      try {
+        // Relative kinds send a positive quantity; a stock-take sends the
+        // TARGET total its count implies and lets the server derive the delta,
+        // so a checkout booked while the dialog was open cannot compound
+        // with it.
+        //
+        // `expectedTotal` goes with the stock-take ALONE. A count is a
+        // statement about one observed total, so it has to be refused when the
+        // total moved under it. A Wareneingang is not: three boxes arrived
+        // whatever the shelf did in the meantime. This list is fetched on
+        // mount and on search — no polling, no SSE — so a tablet left open on
+        // this page all morning holds figures that are hours old, and sending
+        // them as a lock turned every perfectly valid delivery into a 409.
+        const request: StockAdjustmentInput =
+          payload.kind === "inventory"
+            ? {
+                kind: "inventory",
+                targetTotal: payload.new_total,
+                reason: payload.reason,
+                expectedTotal: row.stock_total,
+              }
+            : {
+                kind: payload.kind,
+                quantity: payload.amount,
+                reason: payload.reason,
+              };
+        const snapshot = await adjustArticleStock(token, row.article_id, request);
+        applyStockSnapshot(snapshot);
+        setBestandId(null);
+        /* Read off the request that was actually sent, not off `row`: the lock
+         * is the only thing that makes a before-figure worth anything here.
+         * A 200 on a request carrying `expectedTotal` means the server
+         * compared it with its own `stock_total` and found them equal — so it
+         * is the server's before-figure too, and after − before is a real
+         * delta. Without the lock there is no before-figure at all, and the
+         * notice says what was booked instead of subtracting a number that
+         * may be hours old. */
+        const confirmedTotalBefore = request.expectedTotal ?? null;
+        setNotice(
+          stockAdjustmentNotice(
+            {
+              kind: payload.kind,
+              itemName: row.item_name,
+              amount: payload.amount,
+              confirmedTotalBefore,
+              totalAfter: snapshot.stock_total,
+              availableAfter: snapshot.stock_available,
+            },
+            de,
+          ),
+        );
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        // A 409 means the article moved while the dialog was open, so the
+        // numbers it is showing are the ones the server just called stale.
+        // Refetching puts the truth in front of the user, in the still-open
+        // dialog, next to the message explaining it — which is also why the
+        // server's "please reopen the dialog" cannot be passed through as it
+        // stands: nothing here closes anything. See `staleStockMessage`.
+        const stale = err instanceof ApiError && err.status === 409;
+        setBestandError(stale ? staleStockMessage(detail, de) : detail);
+        if (stale) await reload();
+      } finally {
+        setSaving(false);
+      }
+    },
+    [saving, token, applyStockSnapshot, setNotice, de, reload],
   );
 
   if (mainView !== "werkstatt" || werkstattTab !== "inventar") return null;
@@ -334,7 +559,8 @@ export function WerkstattInventarPage() {
                 // checkbox / overflow button / other interactive children.
                 const target = event.target as HTMLElement;
                 if (target.closest("input, button")) return;
-                setEntnehmenRow(row);
+                setEntnehmenError(null);
+                setEntnehmenId(row.article_id);
               }}
             >
               <span className="werkstatt-col werkstatt-col-checkbox">
@@ -398,15 +624,24 @@ export function WerkstattInventarPage() {
                 >
                   {printingId === row.article_id ? "…" : "⎙"}
                 </button>
-                <button
-                  type="button"
-                  className="werkstatt-row-overflow"
-                  aria-label={de ? "Bestand anpassen" : "Adjust stock"}
-                  title={de ? "Bestand anpassen" : "Adjust stock"}
-                  onClick={() => setBestandRow(row)}
-                >
-                  …
-                </button>
+                {/* Hidden without `werkstatt:manage`: the endpoint behind it
+                    requires that permission, and a button that can only end
+                    in a 403 is worse than no button — it costs a filled-in
+                    dialog to find out. */}
+                {canManageStock && (
+                  <button
+                    type="button"
+                    className="werkstatt-row-overflow"
+                    aria-label={de ? "Bestand anpassen" : "Adjust stock"}
+                    title={de ? "Bestand anpassen" : "Adjust stock"}
+                    onClick={() => {
+                      setBestandError(null);
+                      setBestandId(row.article_id);
+                    }}
+                  >
+                    …
+                  </button>
+                )}
               </span>
             </li>
           ))}
@@ -442,66 +677,70 @@ export function WerkstattInventarPage() {
         onClose={() => setNeuerArtikelOpen(false)}
         language={language}
         onSave={(payload) => {
-          setNeuerArtikelOpen(false);
-          setNotice(
-            de
-              ? `Artikel "${payload.item_name || "Neuer Artikel"}" gespeichert (API folgt)`
-              : `Article "${payload.item_name || "New item"}" saved (API pending)`,
-          );
           // TODO(werkstatt): POST /api/werkstatt/articles.
+          //
+          // Until that exists, this saves NOTHING — and says so. It used to
+          // report "gespeichert (API folgt)" in the green success toast, which
+          // next to two dialogs that now really do book stock is a lie the
+          // user has no way to catch. The error toast is the honest channel:
+          // they pressed save and nothing was stored. The dialog stays open so
+          // what they typed is still there to copy out.
+          setError(
+            de
+              ? `Neue Artikel können noch nicht angelegt werden — "${payload.item_name || "Neuer Artikel"}" wurde NICHT gespeichert.`
+              : `Creating articles is not wired up yet — "${payload.item_name || "New item"}" was NOT saved.`,
+          );
         }}
       />
 
+      {/* Both dialogs are handed the row's REAL counters. They used to get the
+          constants 3 and 4, which is why every article in the workshop opened
+          claiming to hold four. */}
       {entnehmenRow && (
         <EntnehmenModal
           open={true}
-          onClose={() => setEntnehmenRow(null)}
+          onClose={() => {
+            setEntnehmenId(null);
+            setEntnehmenError(null);
+          }}
           language={language}
           article={{
             item_name: entnehmenRow.item_name,
             article_number: entnehmenRow.article_no,
             location_name: entnehmenRow.location,
-            stock_available: 3, // TODO(werkstatt): derive from row
-            stock_total: 4,
+            stock_available: entnehmenRow.stock_available,
+            stock_total: entnehmenRow.stock_total,
           }}
           projects={projects.map((p) => ({
             id: String(p.id),
             number: p.project_number,
             title: p.name,
           }))}
-          onConfirm={(payload) => {
-            setEntnehmenRow(null);
-            setNotice(
-              de
-                ? `${payload.quantity}× ${entnehmenRow.item_name} entnommen (API folgt)`
-                : `Checked out ${payload.quantity}× ${entnehmenRow.item_name} (API pending)`,
-            );
-            // TODO(werkstatt): POST /api/werkstatt/mobile/checkout.
-          }}
+          submitting={saving}
+          error={entnehmenError}
+          onConfirm={(payload) => void handleCheckout(entnehmenRow, payload)}
         />
       )}
 
       {bestandRow && (
         <BestandAnpassenModal
           open={true}
-          onClose={() => setBestandRow(null)}
+          onClose={() => {
+            setBestandId(null);
+            setBestandError(null);
+          }}
           language={language}
           article={{
             item_name: bestandRow.item_name,
             article_number: bestandRow.article_no,
             category_name: bestandRow.category,
-            stock_total: 4,
-            unit: null,
+            stock_total: bestandRow.stock_total,
+            stock_available: bestandRow.stock_available,
+            unit: bestandRow.unit,
           }}
-          onConfirm={(payload) => {
-            setBestandRow(null);
-            setNotice(
-              de
-                ? `Bestand ${payload.delta >= 0 ? "+" : ""}${payload.delta} für ${bestandRow.item_name} gebucht (API folgt)`
-                : `Stock adjusted by ${payload.delta} for ${bestandRow.item_name} (API pending)`,
-            );
-            // TODO(werkstatt): POST /api/werkstatt/articles/{id}/movements.
-          }}
+          submitting={saving}
+          error={bestandError}
+          onConfirm={(payload) => void handleAdjustStock(bestandRow, payload)}
         />
       )}
     </section>

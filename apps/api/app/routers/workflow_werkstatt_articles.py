@@ -12,6 +12,9 @@ Endpoints:
 - POST   /werkstatt/articles/from-catalog         { catalog_item_id, ... }
 
 Supplier-link CRUD for articles lives in `workflow_werkstatt_article_suppliers.py`.
+Manual stock adjustment (`POST /werkstatt/articles/{id}/movements` — the only
+write path from here into the movement ledger) lives in
+`workflow_werkstatt_article_stock.py`.
 Mapping helpers (row → Out) live in `workflow_werkstatt_article_mappers.py`.
 """
 

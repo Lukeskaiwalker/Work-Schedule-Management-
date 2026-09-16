@@ -37,6 +37,12 @@ const MOVEMENT_LABELS: Record<string, { de: string; en: string }> = {
   intake: { de: "Zugang", en: "Intake" },
   repair_out: { de: "Zur Reparatur", en: "To repair" },
   repair_back: { de: "Aus Reparatur", en: "Back from repair" },
+  // Booked by "Bestand anpassen" — a stock-take that found more or less than
+  // the system believed, or a Schwund/Defekt write-off. Named after what the
+  // count did rather than after the ledger's verb, because that is what the
+  // row has to explain to whoever reads the log afterwards.
+  inventory_plus: { de: "Inventur-Zugang", en: "Stock-take increase" },
+  inventory_minus: { de: "Inventur-Abgang", en: "Stock-take decrease" },
 };
 
 /** Statuses a machine can come back in. `ausgemustert` is not a return. */

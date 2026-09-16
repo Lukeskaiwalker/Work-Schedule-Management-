@@ -30,7 +30,14 @@ export type WerkstattMovementType =
   | "intake"
   | "correction"
   | "repair_out"
-  | "repair_back";
+  | "repair_back"
+  // Written by the "Bestand anpassen" dialog on every stock-take and every
+  // Schwund booking. They move `total` and `available` together and never
+  // touch `out`/`repair`, which is what makes them the right pair for a figure
+  // somebody read off a shelf. See `_DELTAS` in
+  // apps/api/app/services/werkstatt_movements.py.
+  | "inventory_plus"
+  | "inventory_minus";
 
 export type WerkstattOrderStatus =
   | "draft"

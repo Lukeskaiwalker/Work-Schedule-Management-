@@ -19,6 +19,7 @@ single file grows past ~400 lines:
   workflow_werkstatt_taxonomy.py  — categories + locations
   workflow_werkstatt_suppliers.py — suppliers CRUD
   workflow_werkstatt_articles.py  — articles + article-supplier links
+  workflow_werkstatt_article_stock.py — manual stock adjustment (ledger write)
   workflow_werkstatt_datanorm.py  — Datanorm upload + commit + history
   workflow_werkstatt_catalog.py   — Werkstatt-shaped catalog search
   workflow_werkstatt_bedarfe.py   — Projekt-Bedarfe read-through
@@ -37,6 +38,7 @@ from fastapi import APIRouter, Depends
 from app.core.db import get_db
 from app.core.deps import get_current_user
 from app.models.entities import User
+from app.routers.workflow_werkstatt_article_stock import router as article_stock_router
 from app.routers.workflow_werkstatt_article_suppliers import router as article_suppliers_router
 from app.routers.workflow_werkstatt_articles import router as articles_router
 from app.routers.workflow_werkstatt_bedarfe import router as bedarfe_router
@@ -59,6 +61,7 @@ router = APIRouter(prefix="/werkstatt", tags=["werkstatt-desktop"])
 router.include_router(taxonomy_router)
 router.include_router(suppliers_router)
 router.include_router(articles_router)
+router.include_router(article_stock_router)
 router.include_router(article_suppliers_router)
 router.include_router(datanorm_router)
 router.include_router(catalog_router)

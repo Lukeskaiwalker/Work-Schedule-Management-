@@ -31,6 +31,11 @@ export interface WerkstattArticleLite {
   stock_status: WerkstattStockStatus;
   image_url: string | null;
   next_expected_delivery_at: string | null;
+  /** How this article is counted: "Stk", "m", "Rolle", "Pack". Every place
+   *  that prints one of its counters prints this beside it, so a drum of cable
+   *  is not silently quoted in pieces. Null for articles that carry no unit;
+   *  see `unitLabel` for the per-language fallback. */
+  unit: string | null;
 }
 
 export interface ArticleListOptions {
@@ -57,6 +62,137 @@ export async function listArticles(
   if (options.limit != null) params.set("limit", String(options.limit));
   const qs = params.toString();
   return apiFetch<WerkstattArticleLite[]>(`/werkstatt/articles${qs ? `?${qs}` : ""}`, token);
+}
+
+
+/* ─────────────────────────────────────────────────────────────────────
+   Stock write paths
+   ──────────────────────────────────────────────────────────────────── */
+
+/**
+ * The article snapshot both write paths return.
+ *
+ * Deliberately narrower than the endpoints' real response bodies: checkout
+ * answers with `WerkstattArticleOut` (~30 fields) and the movements endpoint
+ * with the updated article too. Typing only what this UI reads back means a
+ * field being added or renamed elsewhere in that payload cannot break the
+ * build, and the counters — the part that has to be right — stay checked.
+ *
+ * Every counter here is DERIVED by the server from the movement ledger. The
+ * browser must never compute a new stock figure and store it; it displays what
+ * came back, or it refetches.
+ */
+export interface WerkstattArticleStockSnapshot {
+  id: number;
+  stock_total: number;
+  stock_available: number;
+  stock_status: WerkstattStockStatus;
+  /** Present on `WerkstattArticleOut` (checkout), absent from the list-row
+   *  payload the movements endpoint answers with. */
+  unit?: string | null;
+}
+
+/** The three adjustments "Bestand anpassen" offers. */
+export type StockAdjustmentKind = "intake" | "defect" | "inventory";
+
+/**
+ * Mirrors `WerkstattStockAdjustPayload` in apps/api/app/schemas/werkstatt.py.
+ *
+ * Two shapes, because the dialog has two. `intake` and `defect` are RELATIVE
+ * and send a positive `quantity`; `inventory` is ABSOLUTE and sends
+ * `target_total`, the number somebody actually counted on the shelf. The
+ * server subtracts the article's current total itself, so a checkout booked
+ * while the dialog was open cannot compound with a delta the browser worked
+ * out from a stale figure. A union rather than one optional-everything object:
+ * sending `quantity` for a stock-take is then not expressible.
+ */
+export type StockAdjustmentInput =
+  | {
+      kind: "intake" | "defect";
+      /** Pieces that arrived or were written off. Always positive — the kind
+       *  carries the direction. */
+      quantity: number;
+      reason: string;
+      expectedTotal?: number;
+    }
+  | {
+      kind: "inventory";
+      /** The counted total, not a delta. */
+      targetTotal: number;
+      reason: string;
+      expectedTotal?: number;
+    };
+
+/**
+ * Book a manual stock adjustment — the single entry point for the
+ * "Bestand anpassen" dialog.
+ *
+ * The server maps `kind` onto a ledger movement (`intake`, `inventory_plus`,
+ * `inventory_minus`) and recomputes the article's counters from the ledger.
+ * The UI neither chooses the movement type nor stores the arithmetic it
+ * previews: the row that comes back is the truth.
+ *
+ * `expectedTotal` is the opt-in optimistic lock. Passing the total the dialog
+ * displayed turns "somebody moved this stock while you were typing" into a
+ * 409 naming both numbers, instead of a booking against a figure the user
+ * never saw — which is the failure the workshop reported from the other side.
+ *
+ * Kept as ONE function on purpose: this is the only place the request shape of
+ * `POST /werkstatt/articles/{id}/movements` is written down, so a contract
+ * change is a single edit.
+ */
+export async function adjustArticleStock(
+  token: string | null,
+  articleId: number,
+  input: StockAdjustmentInput,
+): Promise<WerkstattArticleStockSnapshot> {
+  const body =
+    input.kind === "inventory"
+      ? { kind: input.kind, target_total: input.targetTotal, reason: input.reason }
+      : { kind: input.kind, quantity: input.quantity, reason: input.reason };
+  return apiFetch<WerkstattArticleStockSnapshot>(
+    `/werkstatt/articles/${articleId}/movements`,
+    token,
+    {
+      method: "POST",
+      body: JSON.stringify(
+        input.expectedTotal == null ? body : { ...body, expected_total: input.expectedTotal },
+      ),
+    },
+  );
+}
+
+export interface CheckoutInput {
+  articleId: number;
+  /** Pieces to take out; the server rejects more than `stock_available`. */
+  quantity: number;
+  projectId: number | null;
+  /** ISO 8601, or null when no return date was picked. */
+  expectedReturnAt: string | null;
+  notes: string | null;
+}
+
+/**
+ * Check stock out of the workshop.
+ *
+ * Mirrors `CheckoutPayload` in apps/api/app/schemas/werkstatt.py. `assignee_user_id`
+ * is omitted, which the endpoint reads as "the caller is taking it themselves" —
+ * the desktop inventory list has no one else to assign to.
+ */
+export async function checkoutArticle(
+  token: string | null,
+  input: CheckoutInput,
+): Promise<WerkstattArticleStockSnapshot> {
+  return apiFetch<WerkstattArticleStockSnapshot>("/werkstatt/mobile/checkout", token, {
+    method: "POST",
+    body: JSON.stringify({
+      article_id: input.articleId,
+      quantity: input.quantity,
+      project_id: input.projectId,
+      expected_return_at: input.expectedReturnAt,
+      notes: input.notes,
+    }),
+  });
 }
 
 

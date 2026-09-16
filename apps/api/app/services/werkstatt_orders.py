@@ -6,8 +6,8 @@ This module is responsible for:
   - Generating human-readable order numbers (``BST-{YYYY}-{NNNN}``)
   - Enforcing the order status machine
   - Computing expected delivery from lead time
-  - Finalising a delivery (creating intake movements + refreshing stock
-    counters)
+  - Finalising a delivery (booking intake movements through the canonical
+    ``apply_movement``, which recomputes the stock snapshot from the ledger)
 
 Everything is written as pure functions that take a SQLAlchemy session.
 No FastAPI primitives are imported so the services stay unit-testable in
@@ -19,17 +19,20 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from fastapi import HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.time import utcnow
 from app.models.entities import (
-    WerkstattArticle,
     WerkstattArticleSupplier,
-    WerkstattMovement,
     WerkstattOrder,
     WerkstattOrderLine,
     WerkstattSupplier,
+)
+from app.services.werkstatt_movements import (
+    MovementError,
+    apply_movement,
+    load_article_for_update,
 )
 
 
@@ -235,90 +238,6 @@ def recompute_expected_delivery(db: Session, order: WerkstattOrder) -> None:
 # ──────────────────────────────────────────────────────────────────────────
 
 
-def _refresh_article_counters(db: Session, article_id: int) -> None:
-    """Recompute ``stock_total`` + ``stock_available`` from the movement
-    ledger. Minimal inline implementation — Mobile BE owns the canonical
-    ``apply_movement`` helper (see ``services/werkstatt_movements.py``);
-    switch to it once it exists.
-
-    TODO(tablet-be): switch to Mobile BE's apply_movement once it lands.
-    """
-
-    # Summed signed deltas per movement type.
-    pos_types = ("intake", "return", "repair_back", "correction")
-    neg_types = ("checkout", "repair_out")
-
-    in_sum = (
-        db.scalar(
-            select(func.coalesce(func.sum(WerkstattMovement.quantity), 0)).where(
-                WerkstattMovement.article_id == article_id,
-                WerkstattMovement.movement_type.in_(pos_types),
-            )
-        )
-        or 0
-    )
-    out_sum = (
-        db.scalar(
-            select(func.coalesce(func.sum(WerkstattMovement.quantity), 0)).where(
-                WerkstattMovement.article_id == article_id,
-                WerkstattMovement.movement_type.in_(neg_types),
-            )
-        )
-        or 0
-    )
-
-    article = db.get(WerkstattArticle, article_id)
-    if article is None:
-        return
-
-    # Stock buckets tracked separately.
-    stock_out_sum = (
-        db.scalar(
-            select(func.coalesce(func.sum(WerkstattMovement.quantity), 0)).where(
-                WerkstattMovement.article_id == article_id,
-                WerkstattMovement.movement_type == "checkout",
-            )
-        )
-        or 0
-    )
-    stock_return_sum = (
-        db.scalar(
-            select(func.coalesce(func.sum(WerkstattMovement.quantity), 0)).where(
-                WerkstattMovement.article_id == article_id,
-                WerkstattMovement.movement_type == "return",
-            )
-        )
-        or 0
-    )
-    stock_repair_out_sum = (
-        db.scalar(
-            select(func.coalesce(func.sum(WerkstattMovement.quantity), 0)).where(
-                WerkstattMovement.article_id == article_id,
-                WerkstattMovement.movement_type == "repair_out",
-            )
-        )
-        or 0
-    )
-    stock_repair_back_sum = (
-        db.scalar(
-            select(func.coalesce(func.sum(WerkstattMovement.quantity), 0)).where(
-                WerkstattMovement.article_id == article_id,
-                WerkstattMovement.movement_type == "repair_back",
-            )
-        )
-        or 0
-    )
-
-    article.stock_total = max(int(in_sum) - int(out_sum), 0)
-    article.stock_out = max(int(stock_out_sum) - int(stock_return_sum), 0)
-    article.stock_repair = max(int(stock_repair_out_sum) - int(stock_repair_back_sum), 0)
-    article.stock_available = max(
-        article.stock_total - article.stock_out - article.stock_repair, 0
-    )
-    article.updated_at = utcnow()
-    db.add(article)
-
-
 def finalize_delivery(
     db: Session,
     order: WerkstattOrder,
@@ -326,19 +245,38 @@ def finalize_delivery(
     actor_id: int,
 ) -> None:
     """Create intake movements for every line that still has unreceived
-    quantity, stamp line bookkeeping, and refresh the affected articles'
-    stock counters.
+    quantity and stamp line bookkeeping.
 
     Idempotent: rerunning for a fully-received order creates no new
     movements because each line is skipped when ``quantity_received ==
     quantity_ordered``.
+
+    The intake goes through ``apply_movement`` — the single write path shared
+    with the phone, the station and the desktop stock dialog — which appends
+    the ledger row and rebuilds the four snapshot counters from the WHOLE
+    ledger via ``recompute_article_stock``.
+
+    This module used to carry its own inline aggregation instead
+    (``_refresh_article_counters``), and a second recompute is not a
+    duplicate, it is a second opinion: it had never heard of
+    ``inventory_plus`` / ``inventory_minus``, gave ``correction`` the sign of
+    an arrival, and subtracted ``checkout`` from ``total`` — so marking an
+    order delivered rewrote the snapshot from a partial reading of the ledger
+    and silently reversed whatever the workshop had booked in between. There
+    is deliberately only one implementation of "what does a movement type do
+    to a counter" left, in ``services/werkstatt_movements.py::_DELTAS``.
     """
 
+    # Ordered by article so concurrent deliveries take the per-article row
+    # locks below in the same sequence. Two multi-line orders sharing two
+    # articles and grabbing them in opposite orders is a deadlock; the buyer
+    # sees it as a failed "Als geliefert markieren" for no visible reason.
     lines = db.scalars(
-        select(WerkstattOrderLine).where(WerkstattOrderLine.order_id == order.id)
+        select(WerkstattOrderLine)
+        .where(WerkstattOrderLine.order_id == order.id)
+        .order_by(WerkstattOrderLine.article_id.asc(), WerkstattOrderLine.id.asc())
     ).all()
     now = utcnow()
-    touched_articles: set[int] = set()
 
     for line in lines:
         remaining = max(line.quantity_ordered - line.quantity_received, 0)
@@ -364,26 +302,49 @@ def finalize_delivery(
             db.add(line)
             continue
 
-        movement = WerkstattMovement(
-            article_id=line.article_id,
-            movement_type="intake",
-            quantity=remaining,
-            user_id=actor_id,
-            related_order_line_id=line.id,
-            notes=f"Wareneingang {order.order_number}",
-            created_at=now,
-        )
-        db.add(movement)
+        # Locked, like every other writer of the snapshot: ``apply_movement``
+        # rebuilds the four counters from the ledger, and two transactions
+        # recomputing at once each miss the row the other has not committed
+        # yet, so the later commit writes a snapshot that is short of a
+        # movement. The ledger stays right either way; the counters would not.
+        article = load_article_for_update(db, line.article_id)
+        if article is None:
+            # Unreachable while the FK holds (``article_id`` is ON DELETE
+            # RESTRICT), so this is a corrupt-data guard, not a flow: refuse
+            # the delivery rather than book goods against nothing or, worse,
+            # stamp the line received and drop the stock on the floor.
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Artikel {line.article_id} zu Position {line.id} existiert nicht mehr — "
+                    "Wareneingang nicht möglich"
+                ),
+            )
+
+        try:
+            apply_movement(
+                db,
+                article=article,
+                movement_type="intake",
+                quantity=remaining,
+                user_id=actor_id,
+                related_order_line_id=line.id,
+                notes=f"Wareneingang {order.order_number}",
+            )
+        except MovementError as exc:
+            # ``intake`` has no balance guard to trip, so reaching here means
+            # the line itself is nonsense (a non-positive remaining quantity
+            # that ``max()`` above should have filtered). Surface it instead of
+            # stamping the line complete on a movement that was never written.
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Wareneingang für Position {line.id} nicht möglich: {exc}",
+            ) from exc
 
         line.quantity_received = line.quantity_ordered
         line.line_status = "complete"
         line.received_at = now
         line.updated_at = now
         db.add(line)
-        touched_articles.add(line.article_id)
 
-    # Flush so the SUM over movements picks up our new intake rows.
     db.flush()
-
-    for article_id in touched_articles:
-        _refresh_article_counters(db, article_id)

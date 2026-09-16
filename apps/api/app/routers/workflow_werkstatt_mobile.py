@@ -51,6 +51,7 @@ from app.services.werkstatt_movements import (
     apply_movement,
     build_movement_out_rows,
     list_my_checkouts,
+    load_article_for_update,
 )
 from app.services.werkstatt_scan import _article_out, resolve_scan
 
@@ -98,7 +99,15 @@ def _resolve_acting_user_id(
 
 
 def _load_article_or_404(db: Session, article_id: int) -> WerkstattArticle:
-    article = db.get(WerkstattArticle, int(article_id))
+    """Load the article for a checkout / return, row locked.
+
+    Both callers are read-then-write: ``apply_movement`` compares the
+    requested quantity against the counters this read returned. Without the
+    lock two phones returning the same tool at the same moment each see
+    ``stock_out`` 1, both pass, and the ledger says the tool came back twice.
+    See ``load_article_for_update`` — no-op on SQLite, so no test can prove it.
+    """
+    article = load_article_for_update(db, int(article_id))
     if article is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
