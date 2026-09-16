@@ -55,6 +55,28 @@ apt-get install -y --no-install-recommends \
   python3 python3-venv python3-dev libusb-1.0-0 udisks2 rsync
 
 # ---------------------------------------------------------------------------
+say "timezone"
+# Raspberry Pi OS images ship Europe/London, and nothing in a headless install
+# ever changes it. The absolute clock is still right -- NTP sees to that -- so
+# the box looks healthy while every *rendered* timestamp sits an hour off local
+# wall-clock time: `journalctl`, `date`, and the agent's own request log, which
+# stamps with time.strftime() and therefore reads /etc/localtime.
+#
+# Only display is affected (the agent speaks UTC on the wire, always), but an
+# ops box whose log disagrees with the clock on the wall costs somebody an hour
+# of confusion exactly once, and then again on the next Pi.
+#
+# STATION_TZ overrides for a station in another zone.
+STATION_TZ="${STATION_TZ:-Europe/Berlin}"
+current_tz="$(timedatectl show -p Timezone --value 2>/dev/null || true)"
+if [ "$current_tz" != "$STATION_TZ" ]; then
+  echo "   ${current_tz:-unknown} -> $STATION_TZ"
+  timedatectl set-timezone "$STATION_TZ"
+else
+  echo "   already $STATION_TZ"
+fi
+
+# ---------------------------------------------------------------------------
 say "service user"
 if ! id -u "$STATION_USER" >/dev/null 2>&1; then
   # --system: no password, no ageing, no home in /home. The station user is
