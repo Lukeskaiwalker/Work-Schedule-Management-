@@ -480,33 +480,6 @@
   font-variant-numeric: tabular-nums;
 }
 
-.pi-station-url {
-  margin: 0;
-  width: 100%;
-  padding: 8px 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background-color: var(--surface);
-  color: var(--muted);
-  overflow-wrap: anywhere;
-}
-
-.pi-station-qr {
-  /* inline-flex, not flex: the white plate must hug the code, not stretch to
-     the width of the card. */
-  display: inline-flex;
-  padding: 10px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  background-color: #ffffff;
-}
-
-.pi-station-qr svg {
-  display: block;
-  width: 168px;
-  height: 168px;
-}
-
 /* ── Setup block ───────────────────────────────────────────────────────── */
 
 .pi-station-pre {

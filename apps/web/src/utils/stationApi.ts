@@ -19,13 +19,14 @@
 //   POST   /station/stations/{id}/restart                 → StationActionResult
 //   GET    /station/stations/{id}/sessions                → StationSessionListResponse
 //   POST   /station/stations/{id}/sessions/{name}/import  → StationImportResult
-//   POST   /station/pairing                               → StationPairing
-//   GET    /station/pairing/{code}                        → StationPairing
-//   DELETE /station/pairing/{code}                        → 204 (revoke)
+//   POST   /station/pair/start                            → device grant (Pi)
+//   GET    /station/pair/pending                          → StationPairingRequest[]
+//   POST   /station/pair/approve                          → { station: Station }
+//   POST   /station/pair/deny                             → 204
 //   GET    /station/setup                                 → StationSetup
 //
 // The collection is `/station/stations` and not `/station/{id}` on purpose:
-// `/station/pairing` and `/station/setup` would otherwise collide with an int
+// `/station/pair/...` and `/station/setup` would otherwise collide with an int
 // path parameter, and FastAPI answers that collision with a 422 rather than
 // falling through to the next route.
 //
@@ -155,29 +156,6 @@ export interface StationActionResult {
   detail: string;
   /** Round trip in milliseconds, when the agent measured it. */
   ms: number | null;
-}
-
-/**
- * A short-lived pairing code.
- *
- * The point of the whole mechanism: an operator standing at the Pi types eight
- * characters instead of looking up an admin password. The code is single-use
- * and expires in minutes, so shoulder-surfing it is worthless a moment later.
- * `enroll_url` is what the QR encodes, for a Pi with a camera or a phone
- * relaying it.
- */
-export interface StationPairing {
-  code: string;
-  expires_at: string;
-  expires_in_seconds: number;
-  enroll_url: string;
-  claimed: boolean;
-  claimed_station: Station | null;
-}
-
-export interface StationPairingPayload {
-  name?: string;
-  location?: string;
 }
 
 export interface StationPatchPayload {
