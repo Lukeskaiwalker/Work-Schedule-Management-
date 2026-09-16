@@ -514,3 +514,235 @@ def test_a_real_barcode_is_still_filed_as_an_ean(client: TestClient, admin_token
         "/api/werkstatt/scan/resolve?code=4064827281024", headers=auth_headers(admin_token)
     ).json()
     assert scanned["matched_by"] == "ean", "a digits-only code is a manufacturer barcode"
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# A stock-take lands on the counted number, whatever the snapshot said
+# ──────────────────────────────────────────────────────────────────────────
+#
+# ``finalize_session`` used to read its comparison basis — ``stock_available``
+# — off the stored snapshot, subtract it from the count, and hand that delta to
+# ``apply_movement``, which then rebuilt the snapshot from the LEDGER. While
+# the two agree the difference is invisible. When they ever diverge it is
+# exactly backwards: the count lands on ``counted ± drift``, so the one
+# operation whose whole purpose is to end a discrepancy doubles it. These
+# tests manufacture the disagreement and pin the property that matters: after
+# a stock-take, ``stock_available`` IS what was counted.
+#
+# The same fix, for the same reason, is pinned for the desktop dialog in
+# test_werkstatt_article_stock.py.
+
+
+def _force_snapshot(article_id: int, *, total: int, available: int) -> None:
+    """Make the stored snapshot disagree with the ledger.
+
+    Assigning a stock counter directly is the one thing production code may
+    never do — ``werkstatt_movements`` is the source of truth and the four
+    ``stock_*`` columns are derived from it, so the only legal way to change
+    one is to append a movement. That is precisely why the write belongs in a
+    fixture and nowhere else: there is no legitimate route into the drifted
+    state, and finalize still has to behave correctly once something has put
+    the database there (a half-finished migration, a hand-edited row, a future
+    write path that forgets to recompute).
+    """
+    from app.core.db import SessionLocal
+    from app.models.entities import WerkstattArticle
+
+    with SessionLocal() as db:
+        row = db.get(WerkstattArticle, article_id)
+        row.stock_total = total
+        row.stock_available = available
+        db.add(row)
+        db.commit()
+
+
+def _movements(article_id: int) -> list[tuple[str, int]]:
+    """(movement_type, quantity) for one article, oldest first."""
+    from sqlalchemy import select
+
+    from app.core.db import SessionLocal
+    from app.models.entities import WerkstattMovement
+
+    with SessionLocal() as db:
+        rows = list(
+            db.scalars(
+                select(WerkstattMovement)
+                .where(WerkstattMovement.article_id == article_id)
+                .order_by(WerkstattMovement.id.asc())
+            ).all()
+        )
+        return [(r.movement_type, int(r.quantity)) for r in rows]
+
+
+def _stored_expected(session_id: int, article_id: int) -> int | None:
+    """The ``expected_qty`` finalize wrote onto the count row.
+
+    Not reachable through the API: the session detail endpoint recomputes a
+    live preview of ``expected``/``delta`` for the counting screen, so only the
+    row itself says what the booking was actually measured against.
+    """
+    from sqlalchemy import select
+
+    from app.core.db import SessionLocal
+    from app.models.entities import WerkstattInventoryCount
+
+    with SessionLocal() as db:
+        row = db.scalars(
+            select(WerkstattInventoryCount).where(
+                WerkstattInventoryCount.session_id == session_id,
+                WerkstattInventoryCount.article_id == article_id,
+            )
+        ).first()
+        return None if row is None else row.expected_qty
+
+
+def _count(client: TestClient, admin_token: str, session_id: int, *, code: str, name: str, qty: int) -> None:
+    """Record a counted quantity, the way a session counted offline arrives."""
+    resp = client.post(
+        f"/api/werkstatt/inventory/sessions/{session_id}/import",
+        headers=auth_headers(admin_token),
+        json={"counts": [{"code": code, "item_name": name, "counted_qty": qty, "scan_count": qty}]},
+    )
+    assert resp.status_code == 200, resp.text
+
+
+def _finalize(client: TestClient, admin_token: str, session_id: int) -> dict:
+    resp = client.post(
+        f"/api/werkstatt/inventory/sessions/{session_id}/finalize",
+        headers=auth_headers(admin_token),
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def _assert_invariant(snapshot: dict) -> None:
+    assert snapshot["stock_total"] == (
+        snapshot["stock_available"] + snapshot["stock_out"] + snapshot["stock_repair"]
+    ), f"invariant broken: {snapshot}"
+
+
+def test_finalize_lands_on_the_counted_number_when_the_snapshot_reads_low(
+    client: TestClient, admin_token: str
+) -> None:
+    ean = "4017111000011"
+    article = _article(client, admin_token, "Wago 2273-204 Inventur", stock=10, ean=ean)
+    _force_snapshot(article["id"], total=7, available=7)  # the ledger still says 10
+
+    session = _session(client, admin_token, "Inventur Drift 1")
+    _count(client, admin_token, session["id"], code=ean, name="Wago 2273-204 Inventur", qty=6)
+    summary = _finalize(client, admin_token, session["id"])
+
+    # Counted 6, so the shelf holds 6. Measuring against the stale 7 would have
+    # booked −1 against a ledger of 10 and left the article sitting on 9.
+    after = _get(client, admin_token, article["id"])
+    assert after["stock_available"] == 6, "a stock-take must land on the counted figure"
+    assert after["stock_total"] == 6
+    _assert_invariant(after)
+
+    assert _movements(article["id"])[-1] == ("inventory_minus", 4)
+    assert summary["units_removed"] == 4
+    assert summary["adjusted"] == 1
+    assert _stored_expected(session["id"], article["id"]) == 10, (
+        "expected_qty must record the ledger figure the delta was measured against"
+    )
+
+
+def test_finalize_lands_on_the_counted_number_when_the_snapshot_reads_high(
+    client: TestClient, admin_token: str
+) -> None:
+    """The same in the other direction — and the sign of the movement flips
+    with it. Against the stale 14 the count of 12 looks like shrinkage; against
+    the ledger's 10 it is a find."""
+
+    ean = "4017111000028"
+    article = _article(client, admin_token, "Wago 2273-208 Inventur", stock=10, ean=ean)
+    _force_snapshot(article["id"], total=14, available=14)
+
+    session = _session(client, admin_token, "Inventur Drift 2")
+    _count(client, admin_token, session["id"], code=ean, name="Wago 2273-208 Inventur", qty=12)
+    summary = _finalize(client, admin_token, session["id"])
+
+    after = _get(client, admin_token, article["id"])
+    assert after["stock_available"] == 12
+    assert after["stock_total"] == 12
+    _assert_invariant(after)
+
+    assert _movements(article["id"])[-1] == ("inventory_plus", 2)
+    assert summary["units_added"] == 2
+    assert _stored_expected(session["id"], article["id"]) == 10
+
+
+def test_finalize_counts_the_shelf_without_disturbing_out_or_repair(
+    client: TestClient, admin_token: str
+) -> None:
+    """Twenty exist, five are out on a van, two are at the repair bench, and
+    the snapshot has drifted away from all of it.
+
+    ``stock_available`` is the basis precisely because a shelf count cannot see
+    the other two columns — so the count must land on ``available`` exactly,
+    leave ``out`` and ``repair`` where they were, and let ``total`` follow.
+    """
+    from sqlalchemy import select
+
+    from app.core.db import SessionLocal
+    from app.models.entities import User, WerkstattArticle
+    from app.services.werkstatt_movements import apply_movement
+
+    ean = "4017111000035"
+    article = _article(client, admin_token, "Bosch GSR 12V Inventur", stock=20, ean=ean)
+    with SessionLocal() as db:
+        row = db.get(WerkstattArticle, article["id"])
+        admin = db.scalars(select(User).where(User.email == "admin@example.com")).first()
+        apply_movement(db, article=row, movement_type="checkout", quantity=5, user_id=admin.id)
+        apply_movement(db, article=row, movement_type="repair_out", quantity=2, user_id=admin.id)
+        db.commit()
+
+    before = _get(client, admin_token, article["id"])
+    assert (before["stock_total"], before["stock_available"], before["stock_out"],
+            before["stock_repair"]) == (20, 15, 3, 2)
+
+    # A drifted snapshot need not even satisfy the invariant — that is the
+    # state a forgotten recompute leaves behind.
+    _force_snapshot(article["id"], total=16, available=11)
+
+    session = _session(client, admin_token, "Inventur Drift 3")
+    _count(client, admin_token, session["id"], code=ean, name="Bosch GSR 12V Inventur", qty=13)
+    _finalize(client, admin_token, session["id"])
+
+    after = _get(client, admin_token, article["id"])
+    # Against the deflated 11 the count of 13 read as a find of 2 and would
+    # have pushed the shelf to 17 — four more than anyone counted.
+    assert after["stock_available"] == 13, "the shelf holds what was counted on it"
+    assert after["stock_out"] == 3, "a shelf count must not touch checked-out stock"
+    assert after["stock_repair"] == 2, "a shelf count must not touch repair stock"
+    assert after["stock_total"] == 18
+    _assert_invariant(after)
+
+    assert _movements(article["id"])[-1] == ("inventory_minus", 2)
+
+
+def test_a_count_that_agrees_with_the_ledger_repairs_the_snapshot_and_books_nothing(
+    client: TestClient, admin_token: str
+) -> None:
+    """The no-op path still has something to do: the count confirms the ledger,
+    so there is nothing to book — but the drifted snapshot must not survive the
+    finalize, or it is simply the next stock-take's wrong basis."""
+
+    ean = "4017111000042"
+    article = _article(client, admin_token, "Aderendhülsen 2.5 Inventur", stock=10, ean=ean)
+    _force_snapshot(article["id"], total=7, available=7)
+    before = _movements(article["id"])
+
+    session = _session(client, admin_token, "Inventur Drift 4")
+    _count(client, admin_token, session["id"], code=ean, name="Aderendhülsen 2.5 Inventur", qty=10)
+    summary = _finalize(client, admin_token, session["id"])
+
+    assert summary["adjusted"] == 0
+    assert summary["unchanged"] == 1
+    assert _movements(article["id"]) == before, "a matching count must write nothing"
+
+    after = _get(client, admin_token, article["id"])
+    assert (after["stock_total"], after["stock_available"]) == (10, 10), (
+        "the repaired snapshot must be committed, not just computed"
+    )
+    _assert_invariant(after)

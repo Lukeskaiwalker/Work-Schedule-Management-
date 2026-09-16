@@ -28,7 +28,11 @@ from app.models.entities import (
     WerkstattInventorySession,
 )
 from app.services.werkstatt_article_numbers import next_article_number
-from app.services.werkstatt_movements import apply_movement
+from app.services.werkstatt_movements import (
+    apply_movement,
+    load_article_for_update,
+    recompute_article_stock,
+)
 from app.services.werkstatt_scan import resolve_scan
 
 
@@ -286,10 +290,38 @@ def finalize_session(db: Session, *, session: WerkstattInventorySession, user: U
     """Turn counts into ledger movements, in one transaction.
 
     Each counted article gets ONE movement for the difference between what was
-    counted and what the snapshot says is on the shelf. ``stock_available`` is
-    the comparison basis, not ``stock_total``: a shelf count cannot see items
-    that are checked out or away for repair, so reconciling against the total
-    would book their absence as shrinkage.
+    counted and what is on the shelf. ``stock_available`` is the comparison
+    basis, not ``stock_total``: a shelf count cannot see items that are checked
+    out or away for repair, so reconciling against the total would book their
+    absence as shrinkage.
+
+    That basis is read from the LEDGER, not from the stored snapshot, and the
+    reconcile below is what makes the difference. ``werkstatt_movements`` is
+    the source of truth and the four ``stock_*`` columns are derived from it —
+    ``apply_movement`` ends by rewriting all four — so a delta measured against
+    the stored counter is measured against a number the write is about to
+    overrule. While the two agree that is invisible; when they ever diverge it
+    is precisely backwards: the count lands on ``counted ± drift``, and the one
+    operation whose entire purpose is to END a discrepancy compounds it
+    instead. A stock-take is a statement about the physical world, so
+    afterwards ``stock_available`` must BE the counted figure, whatever any
+    snapshot said. Each article is therefore loaded with its row locked and its
+    snapshot brought into agreement with the ledger first, by the same
+    canonical recompute the write path uses — race-free inside the lock, where
+    the recompute and the movement it informs are one serialised unit. The
+    desktop "Bestand anpassen" dialog books the same maths the same way; see
+    ``routers/workflow_werkstatt_article_stock.py``.
+
+    The lock earns its keep twice over here, because a stock-take is the write
+    that touches many articles at once and it runs while the workshop keeps
+    picking. ``load_article_for_update`` serialises each read-then-write
+    against a concurrent checkout, and every lock is held to the single commit
+    at the end, so the session books entirely or not at all. (On SQLite it is a
+    no-op, so no test can prove it — see ``load_article_for_update``.)
+
+    An article whose count agrees with the ledger still books nothing, but its
+    repaired snapshot is committed all the same: a drifted row left behind is
+    just the next finalize's wrong basis.
     """
 
     rows = list(
@@ -303,10 +335,14 @@ def finalize_session(db: Session, *, session: WerkstattInventorySession, user: U
     adjusted = unchanged = 0
     total_plus = total_minus = 0
     for row in rows:
-        article = db.get(WerkstattArticle, row.article_id)
+        article = load_article_for_update(db, int(row.article_id))
         if article is None:
             continue
+        # Ledger truth before anything reads a counter — see the docstring.
+        recompute_article_stock(db, article)
         expected = int(article.stock_available or 0)
+        # Record the figure the delta was actually measured against, so the
+        # finalized session reads back as the arithmetic that was performed.
         row.expected_qty = expected
         db.add(row)
 
