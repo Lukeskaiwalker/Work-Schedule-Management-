@@ -53,6 +53,7 @@ PATHS = {
     "resolve": BASE + "/resolve",
     "movements": BASE + "/movements",
     "crew": BASE + "/crew",
+    "from_catalog": BASE + "/articles/from-catalog",
 }
 
 #: The movement vocabulary SMPL accepts. Checked here so a typo in a screen
@@ -471,6 +472,28 @@ class WerkstattClient:
         if notes:
             payload["notes"] = str(notes)[:500]
         return self._write(PATHS["movements"], payload)
+
+    def stock_from_catalog(self, catalog_item_id: Any, quantity: int = 1, *,
+                           notes: str = "") -> Result:
+        """Create the article a catalogue hit describes and book the delivery.
+
+        Only ever called with an id that came back from ``/resolve`` moments
+        earlier: the station names a wholesaler's row and the server copies
+        every field off it, so nothing this box sends can invent a product.
+        The server answers with the same ``{article, movement_id}`` shape a
+        movement does — plus ``created``, which is how the screen knows whether
+        to say "angelegt und eingebucht" or just "eingebucht".
+        """
+        item = _as_id(catalog_item_id)
+        qty = _as_qty(quantity)
+        if item is None:
+            return Result(False, error="Ungültiger Katalog-Eintrag.")
+        if qty is None:
+            return Result(False, error="Ungültige Menge.")
+        payload: Dict[str, Any] = {"catalog_item_id": item, "quantity": qty}
+        if notes:
+            payload["notes"] = str(notes)[:500]
+        return self._write(PATHS["from_catalog"], payload)
 
     def _write(self, path: str, payload: Dict[str, Any]) -> Result:
         if not self.configured:

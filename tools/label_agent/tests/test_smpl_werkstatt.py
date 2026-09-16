@@ -773,3 +773,88 @@ class TestNothingEscapes(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --------------------------------------------------------------------------
+# Stocking a catalogue hit — the Wareneingang path
+#
+# A supplier EAN resolves to `catalog_match`: SMPL knows the product, the
+# workshop has never stocked it, and `article_id_of` therefore finds nothing.
+# That used to be a dead end reported as an outage. The station now names the
+# catalogue row and the server builds the article from it.
+# --------------------------------------------------------------------------
+
+
+class TestStockFromCatalog(ClientCase):
+    routes = {
+        ("GET", P["boxes"]): ok_boxes,
+        ("POST", "/api/station/werkstatt/articles/from-catalog"):
+            lambda p, q, h: (200, {"article": {"id": 77, "item_name": "HAGER ZU37KS"},
+                                   "movement_id": 5150, "created": True}),
+    }
+
+    def test_it_sends_the_catalogue_id_and_the_quantity(self):
+        result = self.client.stock_from_catalog(6617633, 4)
+        self.assertTrue(result.ok)
+        method, path, _headers, payload = self.stub.requests[-1]
+        self.assertEqual((method, path),
+                         ("POST", "/api/station/werkstatt/articles/from-catalog"))
+        self.assertEqual(payload, {"catalog_item_id": 6617633, "quantity": 4})
+
+    def test_the_answer_carries_created_so_the_screen_can_say_which(self):
+        result = self.client.stock_from_catalog(6617633, 1)
+        self.assertTrue(result.data["created"])
+        self.assertEqual(result.data["movement_id"], 5150)
+
+    def test_a_note_rides_along_and_is_capped(self):
+        self.client.stock_from_catalog(6617633, 1, notes="x" * 900)
+        self.assertEqual(len(self.stub.requests[-1][3]["notes"]), 500)
+
+    def test_rubbish_ids_and_quantities_never_reach_the_network(self):
+        before = len(self.stub.requests)
+        for bad in (None, "", "abc", -1):
+            self.assertFalse(self.client.stock_from_catalog(bad, 1).ok)
+        for bad_qty in (0, -3, "many"):
+            self.assertFalse(self.client.stock_from_catalog(6617633, bad_qty).ok)
+        self.assertEqual(len(self.stub.requests), before)
+
+    def test_stocking_invalidates_the_box_cache_like_any_other_write(self):
+        self.client.boxes()
+        fresh = len(self.stub.requests)
+        self.client.stock_from_catalog(6617633, 1)
+        self.client.boxes()
+        # The cache was dropped, so the second boxes() went to the network.
+        self.assertGreater(len(self.stub.requests), fresh + 1)
+
+
+class TestStockFromCatalogUnconfigured(unittest.TestCase):
+    def test_an_unpaired_station_says_so_rather_than_calling(self):
+        client = smpl_werkstatt.WerkstattClient("", token_provider=lambda: None)
+        result = client.stock_from_catalog(6617633, 1)
+        self.assertFalse(result.ok)
+        self.assertIsNotNone(result.error)
+
+
+class TestACatalogueRowCarriesNoArticleId(unittest.TestCase):
+    """The precise condition the Wareneingang path exists to handle.
+
+    Pinned because it reads like a bug otherwise: `article_id_of` returning
+    None for a perfectly good resolve is the *signal*, not a failure. The
+    catalogue row's own `id` is a catalogue id and must never be mistaken for
+    an article id — booking a movement against it would hit somebody else's
+    article.
+    """
+
+    payload = {
+        "kind": "catalog_match",
+        "matched_by": "catalog_ean",
+        "catalog_items": [{"id": 6617633, "supplier_name": "Unielektro",
+                           "article_no": "01408573", "ean": "3250617811163",
+                           "item_name": "HAGER ZU37KS - Einbausatz"}],
+    }
+
+    def test_no_article_id_is_found(self):
+        self.assertIsNone(smpl_werkstatt.article_id_of(self.payload))
+
+    def test_the_catalogue_id_is_not_mistaken_for_one(self):
+        self.assertNotEqual(smpl_werkstatt.article_id_of(self.payload), 6617633)

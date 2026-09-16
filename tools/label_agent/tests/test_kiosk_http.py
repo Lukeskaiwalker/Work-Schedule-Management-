@@ -1727,3 +1727,172 @@ class TestTheCommandCodesFitTheWall(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+# --------------------------------------------------------------------------
+# A code SMPL answered, for something the workshop does not stock
+#
+# The field report: scanning a supplier EAN at Wareneingang said "Code nicht
+# zugeordnet. SMPL ist nicht erreichbar." The server had answered in under
+# 200 ms with the wholesaler's catalogue row. The old branch picked that
+# sentence on whether an upstream was *configured*, never on whether it had
+# replied, so a healthy server was reported as an outage and people went and
+# checked the network.
+# --------------------------------------------------------------------------
+
+
+CATALOG_HIT = {
+    "kind": "catalog_match",
+    "matched_by": "catalog_ean",
+    "catalog_items": [{
+        "id": 6617633, "supplier_id": 1, "supplier_name": "Unielektro",
+        "article_no": "01408573", "item_name": "HAGER ZU37KS - Einbausatz",
+        "ean": "3250617811163", "manufacturer": "HAGER", "unit": "ST",
+        "price_text": "328.20 EUR",
+    }],
+}
+
+
+class _FakeWerkstatt:
+    """Stands in for WerkstattClient: configured, and records what it was asked."""
+
+    def __init__(self, result=None):
+        self.configured = True
+        self.calls = []
+        self._result = result
+
+    def stock_from_catalog(self, catalog_item_id, qty, notes=""):
+        self.calls.append((catalog_item_id, qty))
+        return self._result
+
+    def status(self):
+        """The upstream chip the rack renders beside the flash.
+
+        Healthy on purpose: these tests are about what the screen says when the
+        server ANSWERED, so a stub that reported an outage would hide the very
+        regression they pin.
+        """
+        return {"last_ok": True, "last_error": None}
+
+
+class TestACatalogueHitAtWareneingang(KioskCase):
+    def _decision(self, qty=1):
+        from scan_router import Decision
+
+        return Decision(code="3250617811163", screen="regal", action="movement",
+                        qty=qty, movement_type="intake")
+
+    def _arrange(self, result, direction="wareneingang"):
+        import smpl_werkstatt
+
+        agent = self.agent
+        fake = _FakeWerkstatt(result)
+        agent.werkstatt = fake
+        agent.router.set_direction(direction)
+        return agent, fake, smpl_werkstatt
+
+    def flash(self):
+        """The rack's flash, read off the kiosk rather than over HTTP.
+
+        ``/screen/state`` also renders the upstream chip, which asks the real
+        client for fields the stub here has no reason to grow. The flash is
+        what these tests are about, and this is where it lands.
+        """
+        return self.agent.kiosk.snapshot("regal")["flash"]
+
+    def test_the_catalogue_row_id_is_read_off_the_payload(self):
+        self.assertEqual(server.Agent._catalog_item_id(CATALOG_HIT), 6617633)
+
+    def test_a_non_catalogue_payload_has_no_catalogue_id(self):
+        for other in ({"kind": "not_found", "code": "x"},
+                      {"kind": "werkstatt_article", "article": {"id": 5}},
+                      None, "nonsense"):
+            self.assertIsNone(server.Agent._catalog_item_id(other))
+
+    def test_it_stocks_the_hit_and_says_the_article_was_created(self):
+        import smpl_werkstatt
+
+        result = smpl_werkstatt.Result(True, data={
+            "article": {"id": 77, "item_name": "HAGER ZU37KS - Einbausatz"},
+            "movement_id": 5150, "created": True})
+        agent, fake, _ = self._arrange(result)
+
+        agent._unstocked(self._decision(qty=4), CATALOG_HIT)
+
+        self.assertEqual(fake.calls, [(6617633, 4)])
+        state = {"flash": self.flash()}
+        self.assertEqual(state["flash"]["level"], "ok")
+        self.assertIn("angelegt", state["flash"]["detail"])
+        self.assertIn("HAGER", state["flash"]["title"])
+
+    def test_a_top_up_does_not_claim_to_have_created_anything(self):
+        import smpl_werkstatt
+
+        result = smpl_werkstatt.Result(True, data={
+            "article": {"id": 77, "item_name": "HAGER ZU37KS - Einbausatz"},
+            "movement_id": 5151, "created": False})
+        agent, _fake, _ = self._arrange(result)
+
+        agent._unstocked(self._decision(qty=2), CATALOG_HIT)
+
+        state = {"flash": self.flash()}
+        self.assertEqual(state["flash"]["level"], "ok")
+        self.assertNotIn("angelegt", state["flash"]["detail"])
+        self.assertIn("Wareneingang", state["flash"]["detail"])
+
+    def test_the_network_is_never_blamed_for_a_catalogue_hit(self):
+        """The regression this whole path exists for.
+
+        Whatever else the screen says, it must not report an outage when the
+        server answered — in any direction, and whether the write succeeds.
+        """
+        import smpl_werkstatt
+
+        for direction, result in (
+            ("wareneingang", smpl_werkstatt.Result(False, error="HTTP 400")),
+            ("aus", None),
+            ("ein", None),
+        ):
+            agent, _fake, _ = self._arrange(result, direction=direction)
+            agent._unstocked(self._decision(), CATALOG_HIT)
+            state = {"flash": self.flash()}
+            self.assertNotIn("nicht erreichbar", json.dumps(state["flash"]),
+                             "direction=%s blamed the network" % direction)
+
+    def test_ausgabe_names_the_product_instead_of_conjuring_an_article(self):
+        """Handing out stock that does not exist is not a thing a wall may do.
+
+        Wareneingang is the one direction where creating an article is honest:
+        somebody is holding the delivery. For Ausgabe and Rückgabe the screen
+        says what SMPL recognised and what is missing, and writes nothing.
+        """
+        agent, fake, _ = self._arrange(None, direction="aus")
+
+        agent._unstocked(self._decision(), CATALOG_HIT)
+
+        self.assertEqual(fake.calls, [], "Ausgabe created an article")
+        state = {"flash": self.flash()}
+        self.assertEqual(state["flash"]["level"], "error")
+        self.assertIn("HAGER", state["flash"]["title"])
+        self.assertIn("kein Artikel", state["flash"]["detail"])
+
+    def test_an_unpaired_station_is_the_one_case_that_says_not_connected(self):
+        agent, _fake, _ = self._arrange(None)
+        agent.werkstatt.configured = False
+
+        agent._unstocked(self._decision(), CATALOG_HIT)
+
+        state = {"flash": self.flash()}
+        self.assertEqual(state["flash"]["level"], "error")
+        self.assertIn("nicht mit SMPL verbunden", state["flash"]["detail"])
+
+    def test_a_code_smpl_does_not_know_says_exactly_that(self):
+        agent, fake, _ = self._arrange(None)
+
+        agent._unstocked(self._decision(), {"kind": "not_found", "code": "3250617811163"})
+
+        self.assertEqual(fake.calls, [])
+        state = {"flash": self.flash()}
+        self.assertEqual(state["flash"]["level"], "error")
+        self.assertIn("kennt diesen Code nicht", state["flash"]["detail"])
