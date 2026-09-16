@@ -10,7 +10,10 @@ device grant that put a token on it):
   * the **rack screen** books stock in three directions — Ausgabe (checkout),
     Rückgabe (return) and Wareneingang (intake) — and hands a tool to the
     person whose name the worker tapped, from the crew list this router also
-    serves.
+    serves. A Wareneingang may also meet a product the workshop has never
+    stocked, which is the seventh endpoint: the wholesaler's catalogue already
+    describes it, so the article is built from that row rather than left as a
+    dead end in front of somebody holding the delivery.
 
 The obvious way to build that would be a user PAT in the Pi's config file. We
 are not doing that: a wall-mounted box in an unlocked workshop would then hold
@@ -18,7 +21,7 @@ a credential that opens the whole API — projects, customers, files, everything
 that user can see — and revoking it means editing a file on the Pi. The
 station token it already has is the opposite of that: minted by an
 administrator, revocable centrally with one click, and — because of this
-router — able to do exactly six things.
+router — able to do exactly seven things.
 
 So this router is deliberately thin. It owns no rules of its own; every
 endpoint delegates to the same function the user-facing endpoint calls, so
@@ -45,6 +48,7 @@ from sqlalchemy.orm import Session
 from app.core.db import get_db
 from app.core.permissions import ROLE_ADMIN
 from app.models.entities import (
+    MaterialCatalogItem,
     Station,
     User,
     WerkstattArticle,
@@ -53,6 +57,7 @@ from app.models.entities import (
 )
 from app.routers.workflow_helpers import _list_active_assignable_users
 from app.routers.workflow_station import get_current_station
+from app.routers.workflow_werkstatt_articles import build_article_from_catalog_item
 from app.routers.workflow_werkstatt_boxes import (
     add_item_to_box,
     box_code,
@@ -64,6 +69,8 @@ from app.routers.workflow_werkstatt_boxes import (
 )
 from app.schemas.station import (
     STATION_MOVEMENT_TYPES,
+    StationArticleFromCatalogOut,
+    StationArticleFromCatalogRequest,
     StationCrewMemberOut,
     StationMovementOut,
     StationMovementRequest,
@@ -78,7 +85,11 @@ from app.schemas.werkstatt_boxes import (
     WerkstattStationBoxOut,
 )
 from app.services.werkstatt_boxes import ensure_standard_boxes
-from app.services.werkstatt_movements import MovementError, apply_movement
+from app.services.werkstatt_movements import (
+    MovementError,
+    apply_movement,
+    book_opening_stock,
+)
 from app.services.werkstatt_scan import _article_out, resolve_scan
 
 router = APIRouter(prefix="/station/werkstatt", tags=["station-werkstatt"])
@@ -504,3 +515,116 @@ def station_movement(
     # movement result and a scan result describe an article identically — the
     # rack screen renders both with one piece of code.
     return StationMovementOut(article=_article_out(db, article), movement_id=movement_id)
+
+
+# ---------------------------------------------------------------------------
+# Wareneingang for something the workshop has never stocked
+# ---------------------------------------------------------------------------
+
+
+@router.post("/articles/from-catalog", response_model=StationArticleFromCatalogOut)
+def station_article_from_catalog(
+    payload: StationArticleFromCatalogRequest,
+    station: Station = Depends(get_current_station),
+    db: Session = Depends(get_db),
+) -> StationArticleFromCatalogOut:
+    """Stock a wholesaler catalogue hit and book the delivery that brought it.
+
+    The gap this closes, from a field report: an operator scans a supplier EAN
+    at Wareneingang, ``/resolve`` answers ``catalog_match`` in under 200 ms —
+    the Datanorm row is right there, with the name, the manufacturer and the
+    unit — and the rack could do nothing with it, because booking stock needs
+    an *article* and nobody had ever made one. The screen said "Code nicht
+    zugeordnet. SMPL ist nicht erreichbar", which was true in its first half
+    and false in its second, and sent people to check the network.
+
+    So this is the seventh thing a station may do, and it is a wider power than
+    the other six: those move quantities between columns, this one adds a row
+    to the stock list. Four things keep it narrow.
+
+    **The device cannot describe the product.** It sends a catalogue id, not a
+    name — every field on the new article is copied from the Datanorm row by
+    the shared builder. A station cannot invent an article for something no
+    wholesaler sells, which is the failure mode that would matter: a stock
+    list quietly filling with typos from a wall screen nobody is watching.
+
+    **A repeat is a top-up, not a refusal.** The user-facing endpoint answers
+    400 "an article with this EAN already exists" — right for a person filling
+    in a form, wrong for somebody holding the second box of the same thing.
+    Refusing here would put the operator back at the dead end this endpoint
+    exists to remove, so an existing EAN is booked onto instead. The choice
+    lives in each caller rather than in the shared builder for exactly that
+    reason.
+
+    **The row names a person and keeps the marker.** Same rule as
+    ``station_movement``: ``resolve_station_user_id`` or a 409, plus
+    ``station_id`` and a note prefix the caller cannot erase. It matters more
+    here than for a movement, because this row is the birth of an article and
+    "who decided this exists" has to stay answerable.
+
+    **One transaction.** The builder deliberately does not commit, so the
+    article INSERT, the intake movement and the ``station_id`` stamp land
+    together — no reader can observe a station's booking without its station.
+    """
+    catalog_item = db.get(MaterialCatalogItem, payload.catalog_item_id)
+    if catalog_item is None:
+        raise HTTPException(status_code=404, detail="Katalog-Eintrag nicht gefunden")
+
+    user_id = resolve_station_user_id(db, station)
+    notes = _station_notes(station, payload.notes)
+
+    # An eanless Datanorm row is common (~10% carry none) and must not dedupe:
+    # `WHERE ean IS NULL` would make every one of them the same product.
+    ean = (catalog_item.ean or "").strip() or None
+    existing = (
+        db.scalar(select(WerkstattArticle).where(WerkstattArticle.ean == ean)) if ean else None
+    )
+
+    try:
+        if existing is not None:
+            if bool(existing.is_archived):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"„{existing.item_name}“ ist archiviert — bitte im SMPL reaktivieren, "
+                        "bevor eine Lieferung darauf gebucht wird."
+                    ),
+                )
+            article = existing
+            movement = book_opening_stock(
+                db, article, payload.quantity, user_id=user_id, notes=notes
+            )
+            created = False
+        else:
+            article, movement = build_article_from_catalog_item(
+                db,
+                catalog_item=catalog_item,
+                user_id=user_id,
+                stock_total=payload.quantity,
+                opening_notes=notes,
+            )
+            created = True
+    except MovementError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Stamped here for the same reason ``station_movement`` stamps it here:
+    # ``apply_movement`` is the shared ledger implementation and knows nothing
+    # about stations, and it flushes without committing, so this UPDATE joins
+    # the same transaction.
+    # ``quantity`` is ge=1, so the opening booking always wrote a row. Assert
+    # rather than tolerate: a None here would mean the quantity bound had been
+    # loosened, and silently returning a movement-less "booked" to the rack is
+    # the one outcome an operator cannot detect.
+    assert movement is not None, "station intake booked no movement"
+    movement.station_id = station.id
+    db.add(movement)
+
+    movement_id = movement.id
+    db.commit()
+    db.refresh(article)
+    return StationArticleFromCatalogOut(
+        article=_article_out(db, article),
+        movement_id=movement_id,
+        created=created,
+    )

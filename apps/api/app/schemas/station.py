@@ -300,3 +300,34 @@ class StationCrewMemberOut(BaseModel):
 
     id: int
     name: str
+
+
+class StationArticleFromCatalogRequest(BaseModel):
+    """A delivery arriving for something the workshop has never stocked.
+
+    The rack screen sends this only after ``/resolve`` answered
+    ``catalog_match``: the wholesaler's Datanorm row is the identity, so the
+    device names the row rather than describing the product. It cannot invent
+    an item_name, an EAN or a manufacturer — everything that ends up on the
+    article comes from the catalogue, which is what keeps an unattended screen
+    from writing a product into the stock list that no supplier sells.
+    """
+
+    catalog_item_id: int
+    # Same cap and the same reason as StationMovementRequest.quantity: intake
+    # has no counter to fast-fail against, so an unbounded value reaches
+    # db.flush() and returns as an unhandled 500.
+    quantity: int = Field(default=1, ge=1, le=STATION_MAX_QUANTITY)
+    notes: str | None = Field(default=None, max_length=500)
+
+
+class StationArticleFromCatalogOut(StationMovementOut):
+    """The stocked article, the ledger row, and which of the two just happened.
+
+    ``created`` exists because the screen's sentence differs: "Artikel angelegt
+    und eingebucht" is a bigger claim than "eingebucht", and an operator who
+    scans the same pallet twice should be able to see that the second scan
+    topped up rather than duplicated.
+    """
+
+    created: bool
