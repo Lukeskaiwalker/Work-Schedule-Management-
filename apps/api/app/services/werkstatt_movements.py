@@ -228,7 +228,7 @@ def book_opening_stock(
     *,
     user_id: int | None = None,
     notes: str | None = None,
-) -> None:
+) -> WerkstattMovement | None:
     """Record an article's starting quantity as a real ``intake`` movement.
 
     Article creation used to assign ``stock_total``/``stock_available`` as
@@ -236,11 +236,17 @@ def book_opening_stock(
     movement called ``recompute_article_stock`` — which rebuilds every counter
     from the ledger alone — and silently reset that opening quantity to zero.
     Anything that creates an article with stock must come through here.
+
+    Returns the row it wrote, or ``None`` for a zero opening quantity. Callers
+    that only want the side effect can keep ignoring it; the station intake
+    path needs the row itself, because a station's bookings carry a
+    ``station_id`` that is stamped on the movement after this returns and
+    inside the same transaction.
     """
 
     if quantity <= 0:
-        return
-    apply_movement(
+        return None
+    return apply_movement(
         db,
         article=article,
         movement_type="intake",

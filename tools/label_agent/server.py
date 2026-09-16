@@ -1513,11 +1513,7 @@ class Agent:
     def _applied_movement(self, decision, resolved) -> None:
         article_id = self._sw.article_id_of(resolved)
         if article_id is None:
-            self.router.note_pending(self._article_from(resolved, decision.code), decision.qty)
-            detail = ("SMPL ist nicht erreichbar." if self.werkstatt.configured
-                      else "Diese Station ist nicht mit SMPL verbunden.")
-            self.kiosk.flash(SCREEN_RACK, "error", "Code nicht zugeordnet", detail,
-                             code=decision.code)
+            self._unstocked(decision, resolved)
             return
         result = self.werkstatt.movement(article_id, decision.movement_type, decision.qty,
                                          assignee_user_id=decision.assignee_user_id)
@@ -1527,6 +1523,104 @@ class Agent:
                              code=decision.code)
             return
         self._record_movement(decision, resolved, article_id, result, decision.movement_type)
+
+    def _unstocked(self, decision, resolved) -> None:
+        """A scan SMPL answered, for something the workshop does not stock.
+
+        This used to be one line — "Code nicht zugeordnet. SMPL ist nicht
+        erreichbar." — chosen on nothing but whether an upstream was
+        *configured*, never on whether it had answered. It had: the catalogue
+        match comes back in under 200 ms. So the screen reported an outage
+        while the server was healthy, and people went to check the network.
+
+        Three genuinely different situations, told apart and said plainly:
+
+        **No upstream.** This station has never been paired, or the token is
+        gone. The only case where "not connected" is the truth.
+
+        **A catalogue hit at Wareneingang.** The wholesaler's Datanorm row
+        matched, which means SMPL knows exactly what is in the operator's
+        hand and simply has no article for it — and a delivery is the one
+        moment where that is fixable on the spot, by somebody holding the
+        item. Create it and book the delivery in one call.
+
+        **A catalogue hit in any other direction.** Ausgabe and Rückgabe move
+        stock that must already exist; conjuring an article to hand out is a
+        different and much less defensible act than recording an arrival. Name
+        the product so the operator can see SMPL recognised it, and say what
+        is missing.
+        """
+        self.router.note_pending(self._article_from(resolved, decision.code), decision.qty)
+
+        if not self.werkstatt.configured:
+            self.kiosk.flash(SCREEN_RACK, "error", "Code nicht zugeordnet",
+                             "Diese Station ist nicht mit SMPL verbunden.",
+                             code=decision.code)
+            return
+
+        catalog_id = self._catalog_item_id(resolved)
+        if catalog_id is None:
+            self.kiosk.flash(SCREEN_RACK, "error", "Code nicht zugeordnet",
+                             "SMPL kennt diesen Code nicht.", code=decision.code)
+            return
+
+        name, hint, _kind = parse_resolution(resolved)
+        label = name or decision.code
+        if self.router.direction != "wareneingang":
+            detail = "%s — noch kein Artikel im Bestand. Bitte im Wareneingang einbuchen." % (
+                hint or "Im Lieferantenkatalog gefunden")
+            self.kiosk.flash(SCREEN_RACK, "error", label, detail, code=decision.code)
+            return
+
+        result = self.werkstatt.stock_from_catalog(catalog_id, decision.qty)
+        if not result.ok:
+            self.kiosk.flash(SCREEN_RACK, "error", "Nicht angelegt", result.error or "",
+                             code=decision.code)
+            return
+
+        data = result.data if isinstance(result.data, dict) else {}
+        article = data.get("article") if isinstance(data.get("article"), dict) else None
+        article_id = self._sw.article_id_of(data) or (article or {}).get("id")
+        self.router.note_commit(screen=SCREEN_RACK, action="movement", article_id=article_id,
+                                movement_type="intake", qty=decision.qty,
+                                assignee_user_id=None)
+        self.kiosk.set_last({
+            "article": article or self._article_from(resolved, decision.code),
+            "machine": None,
+            "movement": {"movement_type": "intake", "qty": decision.qty,
+                         "movement_id": data.get("movement_id"), "at": self._clock()},
+        })
+        created = bool(data.get("created"))
+        self.kiosk.flash(
+            SCREEN_RACK, "ok", (article or {}).get("item_name") or label,
+            ("Artikel angelegt, Wareneingang %d" if created else "Wareneingang %d")
+            % decision.qty,
+            code=decision.code)
+
+    @staticmethod
+    def _catalog_item_id(resolved) -> "int | None":
+        """The first catalogue row's own id, or None if this is not one.
+
+        ``article_id_of`` deliberately looks for an ``article_id`` *inside* a
+        catalogue row and finds none — that is the whole condition this path
+        handles. What the row does carry is its own ``id``, which is what the
+        station sends back so the server can copy the product's identity from
+        it rather than trust anything this box says about it.
+
+        Reads ``kind`` straight off the payload rather than through
+        ``smpl_werkstatt.kind_of``: that module is loaded dynamically onto
+        ``self._sw`` and may legitimately be absent, and a helper this small
+        should not be the reason an import turns into an AttributeError.
+        """
+        if not isinstance(resolved, dict) or resolved.get("kind") != "catalog_match":
+            return None
+        items = resolved.get("catalog_items")
+        if not isinstance(items, list):
+            return None
+        for item in items:
+            if isinstance(item, dict) and isinstance(item.get("id"), int):
+                return item["id"]
+        return None
 
     def _record_movement(self, decision, resolved, article_id, result, movement_type) -> None:
         data = result.data if isinstance(result.data, dict) else {}

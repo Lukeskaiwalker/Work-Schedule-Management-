@@ -1296,3 +1296,250 @@ def test_the_agents_fallback_ping_path_does_not_exist(
     here, so anything that makes the first candidate answer 404/405 lands the
     agent on the permanent "no heartbeat endpoint" verdict."""
     assert client.post("/api/station/ping", headers=auth_headers(station_token)).status_code == 404
+
+
+# --------------------------------------------------------------------------
+# Wareneingang for a code SMPL knows but the workshop does not stock yet
+#
+# The field report this pins: an operator scans a supplier EAN at the rack,
+# the wholesaler's Datanorm row matches, and the rack screen answers "Code
+# nicht zugeordnet — SMPL ist nicht erreichbar". The server was reachable the
+# whole time; it had answered `catalog_match` in under 200 ms. What it could
+# not answer was the only question that mattered — *which article* — because
+# nobody had turned that catalogue row into one, and a station had no way to.
+#
+# The endpoint below closes that: the one moment you meet a product SMPL has
+# never stocked is the moment it arrives, which is exactly when somebody is
+# standing at the rack with it in their hand.
+# --------------------------------------------------------------------------
+
+
+def _catalog_item(
+    *, ean: str | None, name: str = "HAGER ZU37KS - Einbausatz", article_no: str = "01408573"
+) -> int:
+    """One wholesaler Datanorm row, the shape `catalog_match` resolves to."""
+    from app.models.materials import MaterialCatalogItem
+
+    with SessionLocal() as db:
+        item = MaterialCatalogItem(
+            external_key=f"test-{ean or article_no}-{name}"[:128],
+            source_file="test.datanorm",
+            source_line=1,
+            article_no=article_no,
+            item_name=name,
+            unit="ST",
+            manufacturer="HAGER",
+            ean=ean,
+            price_text="328.20 EUR",
+            search_text=f"{name} {ean or ''}",
+        )
+        db.add(item)
+        db.commit()
+        return item.id
+
+
+def test_station_stocks_a_catalogue_hit_and_books_the_delivery(
+    client: TestClient, admin_token: str, station_token: str
+) -> None:
+    """The whole point: scan an unknown EAN at Wareneingang, walk away stocked.
+
+    The article must come out carrying the catalogue's identity (that is the
+    reason to scan a wholesaler barcode at all rather than type a name), and
+    the quantity must arrive as a real ledger row — not as a counter someone
+    set, which the next recompute would erase.
+    """
+    item_id = _catalog_item(ean="3250617811163")
+
+    created = client.post(
+        f"{BASE}/articles/from-catalog",
+        headers=auth_headers(station_token),
+        json={"catalog_item_id": item_id, "quantity": 4},
+    )
+    assert created.status_code == 200, created.text
+    body = created.json()
+
+    assert body["created"] is True
+    article = body["article"]
+    assert article["item_name"] == "HAGER ZU37KS - Einbausatz"
+    assert article["ean"] == "3250617811163"
+    assert article["manufacturer"] == "HAGER"
+    assert article["unit"] == "ST"
+    # Stock is the ledger's answer, not the payload's.
+    assert article["stock_total"] == 4
+    assert article["stock_available"] == 4
+
+    movements = _movements(article["id"])
+    assert [m.movement_type for m in movements] == ["intake"]
+
+
+def test_the_delivery_row_is_tellable_from_a_persons(
+    client: TestClient, admin_token: str, station_token: str
+) -> None:
+    """A wall screen's row carries the station and a marker it cannot erase.
+
+    Same rule the movement endpoint already keeps. It matters more here, not
+    less: this row is the birth of an article, so "who decided this exists"
+    has to survive in the ledger.
+    """
+    item_id = _catalog_item(ean="4011195656273", name="Gira 028600 Wippschalter")
+
+    created = client.post(
+        f"{BASE}/articles/from-catalog",
+        headers=auth_headers(station_token),
+        json={"catalog_item_id": item_id, "quantity": 2, "notes": "Palette 3"},
+    )
+    assert created.status_code == 200, created.text
+
+    movement = _movements(created.json()["article"]["id"])[0]
+    assert movement.station_id is not None
+    assert movement.notes.startswith("Regal-Station ")
+    assert "Palette 3" in movement.notes
+    # A device is not a person; the row still names one.
+    assert movement.user_id is not None
+
+
+def test_a_second_delivery_tops_up_instead_of_refusing(
+    client: TestClient, admin_token: str, station_token: str
+) -> None:
+    """The same EAN arriving twice is a delivery, not a mistake.
+
+    The user-facing endpoint answers 400 "an article with this EAN already
+    exists", which is right for a person filling in a form and wrong for a
+    rack: the operator is holding a box of the thing. Refusing would put them
+    back at the dead end this endpoint exists to remove, so the second scan
+    books intake against the article the first one created.
+    """
+    item_id = _catalog_item(ean="4011195656274", name="Gira 028601 Wippschalter")
+    head = auth_headers(station_token)
+    body = {"catalog_item_id": item_id, "quantity": 3}
+
+    first = client.post(f"{BASE}/articles/from-catalog", headers=head, json=body)
+    assert first.status_code == 200, first.text
+    assert first.json()["created"] is True
+
+    second = client.post(f"{BASE}/articles/from-catalog", headers=head, json=body)
+    assert second.status_code == 200, second.text
+    assert second.json()["created"] is False
+
+    assert first.json()["article"]["id"] == second.json()["article"]["id"]
+    assert second.json()["article"]["stock_total"] == 6
+    assert [m.movement_type for m in _movements(first.json()["article"]["id"])] == [
+        "intake",
+        "intake",
+    ]
+
+
+def test_a_catalogue_row_without_an_ean_still_stocks(
+    client: TestClient, admin_token: str, station_token: str
+) -> None:
+    """No EAN is not an error — Datanorm rows carry one only ~90% of the time.
+
+    Without this the dedupe lookup (``WHERE ean = NULL``) decides every
+    eanless row is the same product as every other eanless row.
+    """
+    first_id = _catalog_item(ean=None, name="Sonderposten A", article_no="99001")
+    second_id = _catalog_item(ean=None, name="Sonderposten B", article_no="99002")
+    head = auth_headers(station_token)
+
+    a = client.post(
+        f"{BASE}/articles/from-catalog", headers=head, json={"catalog_item_id": first_id}
+    )
+    b = client.post(
+        f"{BASE}/articles/from-catalog", headers=head, json={"catalog_item_id": second_id}
+    )
+    assert a.status_code == 200, a.text
+    assert b.status_code == 200, b.text
+    assert a.json()["created"] is True
+    assert b.json()["created"] is True
+    assert a.json()["article"]["id"] != b.json()["article"]["id"]
+    assert a.json()["article"]["item_name"] == "Sonderposten A"
+    assert b.json()["article"]["item_name"] == "Sonderposten B"
+
+
+def test_an_unknown_catalogue_row_is_404(client: TestClient, station_token: str) -> None:
+    resp = client.post(
+        f"{BASE}/articles/from-catalog",
+        headers=auth_headers(station_token),
+        json={"catalog_item_id": 987654321, "quantity": 1},
+    )
+    assert resp.status_code == 404, resp.text
+
+
+def test_a_user_token_cannot_use_the_station_intake(
+    client: TestClient, admin_token: str
+) -> None:
+    """The boundary holds in both directions, as it does for every other route."""
+    item_id = _catalog_item(ean="4011195656275", name="Gira 028602")
+    resp = client.post(
+        f"{BASE}/articles/from-catalog",
+        headers=auth_headers(admin_token),
+        json={"catalog_item_id": item_id, "quantity": 1},
+    )
+    assert resp.status_code in (401, 403), resp.text
+
+
+def test_the_quantity_is_bounded(client: TestClient, station_token: str) -> None:
+    """Same cap as a movement: intake has no counter to fast-fail against.
+
+    An unbounded value used to reach db.flush() and come back as an unhandled
+    500 — see STATION_MAX_QUANTITY. A birth row must not reopen that.
+    """
+    item_id = _catalog_item(ean="4011195656276", name="Gira 028603")
+    head = auth_headers(station_token)
+    for bad in (0, -1, 10_001):
+        resp = client.post(
+            f"{BASE}/articles/from-catalog",
+            headers=head,
+            json={"catalog_item_id": item_id, "quantity": bad},
+        )
+        assert resp.status_code == 422, f"quantity={bad} -> {resp.status_code}"
+
+
+def test_a_revoked_station_cannot_stock_anything(
+    client: TestClient, admin_token: str
+) -> None:
+    item_id = _catalog_item(ean="4011195656277", name="Gira 028604")
+    token, station = _pair(client, admin_token)
+    revoked = client.post(
+        f"/api/station/stations/{station['id']}/revoke", headers=auth_headers(admin_token)
+    )
+    assert revoked.status_code == 200, revoked.text
+
+    resp = client.post(
+        f"{BASE}/articles/from-catalog",
+        headers=auth_headers(token),
+        json={"catalog_item_id": item_id, "quantity": 1},
+    )
+    assert resp.status_code == 401, resp.text
+
+
+def test_a_delivery_onto_an_archived_article_is_refused_with_a_reason(
+    client: TestClient, admin_token: str, station_token: str
+) -> None:
+    """Archived means "no longer stocked", so a top-up would silently revive it.
+
+    Creating is not the answer either — the EAN is taken, so a new article
+    would be a duplicate of the one somebody deliberately retired. The screen
+    is told which article and what to do, because at a rack "refused" without
+    a name is indistinguishable from the dead end this endpoint removed.
+    """
+    item_id = _catalog_item(ean="4011195656278", name="Altbestand Klemme")
+    head = auth_headers(station_token)
+    body = {"catalog_item_id": item_id, "quantity": 1}
+
+    first = client.post(f"{BASE}/articles/from-catalog", headers=head, json=body)
+    assert first.status_code == 200, first.text
+    article_id = first.json()["article"]["id"]
+
+    archived = client.patch(
+        f"/api/werkstatt/articles/{article_id}",
+        headers=auth_headers(admin_token),
+        json={"is_archived": True},
+    )
+    assert archived.status_code == 200, archived.text
+
+    refused = client.post(f"{BASE}/articles/from-catalog", headers=head, json=body)
+    assert refused.status_code == 400, refused.text
+    assert "Altbestand Klemme" in refused.json()["detail"]
+    # And nothing was written: the ledger still holds only the first delivery.
+    assert len(_movements(article_id)) == 1

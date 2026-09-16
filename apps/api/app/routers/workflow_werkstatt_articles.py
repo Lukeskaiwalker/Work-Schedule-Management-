@@ -20,6 +20,8 @@ Mapping helpers (row → Out) live in `workflow_werkstatt_article_mappers.py`.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -36,6 +38,7 @@ from app.models.entities import (
     WerkstattArticleSupplier,
     WerkstattCategory,
     WerkstattLocation,
+    WerkstattMovement,
     WerkstattSupplier,
 )
 from app.routers.workflow_werkstatt_article_mappers import (
@@ -422,6 +425,92 @@ def link_article_to_catalog(
     return article_full_out(db, article)
 
 
+def build_article_from_catalog_item(
+    db: Session,
+    *,
+    catalog_item: MaterialCatalogItem,
+    user_id: int,
+    stock_total: int = 0,
+    stock_min: int = 0,
+    category_id: int | None = None,
+    location_id: int | None = None,
+    notes: str | None = None,
+    supplier_links: Sequence[WerkstattArticleSupplierCreate] = (),
+    opening_notes: str | None = None,
+) -> tuple[WerkstattArticle, WerkstattMovement | None]:
+    """Turn one wholesaler catalogue row into a stocked article. No commit.
+
+    Extracted from the endpoint below so the station router can reach the same
+    code: that router is deliberately thin and owns no rules of its own, and
+    "a new article carries its catalogue's identity, its supplier link and its
+    same-EAN siblings" is emphatically a rule. Two implementations of it would
+    drift, and the one on the wall would be the one nobody reads.
+
+    Deliberately does not commit, matching ``apply_movement``: the station path
+    has to stamp ``station_id`` on the opening movement, and that UPDATE must
+    land in the same transaction as the INSERT or a reader can observe a
+    station's row without its station.
+
+    The EAN-uniqueness check is NOT here. It is a question about what the
+    caller should do when the product already exists, and the two callers
+    answer it differently — a person filling in a form is told to go and find
+    the existing article, while a rack holding a delivery books onto it.
+    """
+    article = WerkstattArticle(
+        article_number=next_article_number(db),
+        ean=(catalog_item.ean or "").strip() or None,
+        item_name=catalog_item.item_name,
+        manufacturer=catalog_item.manufacturer,
+        category_id=category_id,
+        location_id=location_id,
+        unit=catalog_item.unit,
+        image_url=catalog_item.image_url,
+        image_source=("catalog" if catalog_item.image_url else None),
+        image_checked_at=utcnow() if catalog_item.image_url else None,
+        source_catalog_item_id=catalog_item.id,
+        # Counters start at zero and are derived from the ledger; the opening
+        # quantity is booked as an `intake` movement below. Setting them here
+        # would be undone by the first recompute.
+        stock_total=0,
+        stock_available=0,
+        stock_out=0,
+        stock_repair=0,
+        stock_min=stock_min,
+        currency="EUR",
+        notes=(notes or None),
+        created_by=user_id,
+    )
+    db.add(article)
+    db.flush()
+    movement = book_opening_stock(
+        db, article, stock_total, user_id=user_id, notes=opening_notes
+    )
+
+    # Auto-link the catalog row's own supplier_id if the caller didn't provide
+    # their own link for that supplier.
+    supplied_ids = {link.supplier_id for link in supplier_links}
+    explicit_links = list(supplier_links)
+    if catalog_item.supplier_id is not None and catalog_item.supplier_id not in supplied_ids:
+        explicit_links.append(
+            WerkstattArticleSupplierCreate(
+                supplier_id=catalog_item.supplier_id,
+                supplier_article_no=catalog_item.article_no,
+                source_catalog_item_id=catalog_item.id,
+                is_preferred=len(explicit_links) == 0,
+            )
+        )
+    for link_payload in explicit_links:
+        _add_supplier_link(db, article_id=article.id, payload=link_payload)
+
+    # Auto-fold the OTHER suppliers' Datanorm rows for this same EAN. Without
+    # this the article knows only the wholesaler whose catalog row it was
+    # created from, and the identical product from a second Datanorm stays a
+    # disconnected duplicate. EAN is a global product id, so an exact match is
+    # safe to apply without review.
+    link_catalog_duplicates(db, article)
+    return article, movement
+
+
 @router.post("/articles/from-catalog", response_model=WerkstattArticleOut)
 def create_article_from_catalog(
     payload: WerkstattArticleFromCatalogCreate,
@@ -445,56 +534,17 @@ def create_article_from_catalog(
                 detail="An article with this EAN already exists",
             )
 
-    article = WerkstattArticle(
-        article_number=next_article_number(db),
-        ean=ean,
-        item_name=catalog_item.item_name,
-        manufacturer=catalog_item.manufacturer,
+    article, _ = build_article_from_catalog_item(
+        db,
+        catalog_item=catalog_item,
+        user_id=current_user.id,
+        stock_total=payload.stock_total,
+        stock_min=payload.stock_min,
         category_id=payload.category_id,
         location_id=payload.location_id,
-        unit=catalog_item.unit,
-        image_url=catalog_item.image_url,
-        image_source=("catalog" if catalog_item.image_url else None),
-        image_checked_at=utcnow() if catalog_item.image_url else None,
-        source_catalog_item_id=catalog_item.id,
-        # Counters start at zero and are derived from the ledger; the opening
-        # quantity is booked as an `intake` movement below. Setting them here
-        # would be undone by the first recompute.
-        stock_total=0,
-        stock_available=0,
-        stock_out=0,
-        stock_repair=0,
-        stock_min=payload.stock_min,
-        currency="EUR",
-        notes=(payload.notes or None),
-        created_by=current_user.id,
+        notes=payload.notes,
+        supplier_links=payload.supplier_links,
     )
-    db.add(article)
-    db.flush()
-    book_opening_stock(db, article, payload.stock_total, user_id=current_user.id)
-
-    # Auto-link the catalog row's own supplier_id if the caller didn't provide
-    # their own link for that supplier.
-    supplied_ids = {link.supplier_id for link in payload.supplier_links}
-    explicit_links = list(payload.supplier_links)
-    if catalog_item.supplier_id is not None and catalog_item.supplier_id not in supplied_ids:
-        explicit_links.append(
-            WerkstattArticleSupplierCreate(
-                supplier_id=catalog_item.supplier_id,
-                supplier_article_no=catalog_item.article_no,
-                source_catalog_item_id=catalog_item.id,
-                is_preferred=len(explicit_links) == 0,
-            )
-        )
-    for link_payload in explicit_links:
-        _add_supplier_link(db, article_id=article.id, payload=link_payload)
-
-    # Auto-fold the OTHER suppliers' Datanorm rows for this same EAN. Without
-    # this the article knows only the wholesaler whose catalog row it was
-    # created from, and the identical product from a second Datanorm stays a
-    # disconnected duplicate. EAN is a global product id, so an exact match is
-    # safe to apply without review.
-    link_catalog_duplicates(db, article)
 
     db.commit()
     db.refresh(article)
