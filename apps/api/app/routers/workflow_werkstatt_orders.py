@@ -33,6 +33,7 @@ from app.schemas.werkstatt import (
     WerkstattOrderSummaryOut,
     WerkstattOrderUpdatePayload,
 )
+from app.services.material_needs import sync_needs_for_order
 from app.services.werkstatt_order_lines import build_order_line, create_draft_order
 from app.services.werkstatt_orders import (
     recompute_expected_delivery,
@@ -278,6 +279,9 @@ def mark_order_delivered(
     except HTTPException:
         db.rollback()
         raise
+    # The material is here: any Projekt-Bedarf that rode along on this order
+    # is now "Verfügbar" (services/material_needs.py owns that rule).
+    sync_needs_for_order(db, order, "delivered", actor_user_id=current_user.id)
     db.commit()
     db.refresh(order)
     return load_order_full(db, order)
@@ -302,6 +306,8 @@ def cancel_order(
     except HTTPException:
         db.rollback()
         raise
+    # Nothing was bought after all — the needs go back on the shopping list.
+    sync_needs_for_order(db, order, "cancelled", actor_user_id=current_user.id)
     db.commit()
     db.refresh(order)
     return load_order_full(db, order)

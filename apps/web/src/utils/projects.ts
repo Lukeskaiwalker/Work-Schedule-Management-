@@ -108,6 +108,16 @@ export function activityEventLabel(eventType: string, language: Language) {
     "report.created": { de: "Bericht erstellt", en: "Report created" },
     "material.created": { de: "Materialbedarf erstellt", en: "Material need created" },
     "material.status_updated": { de: "Materialstatus aktualisiert", en: "Material status updated" },
+    "material.updated": { de: "Materialbedarf bearbeitet", en: "Material need edited" },
+    "material.deleted": { de: "Materialbedarf gelöscht", en: "Material need deleted" },
+    // The bulk events carry a count instead of one entry per row — eighty
+    // needs completed on a Friday would otherwise bury the rest of the feed.
+    "material.bulk_status_updated": {
+      de: "Materialbedarfe aktualisiert",
+      en: "Material needs updated",
+    },
+    "material.bulk_deleted": { de: "Materialbedarfe gelöscht", en: "Material needs deleted" },
+    "material.ordered": { de: "Materialbedarf bestellt", en: "Material need ordered" },
     "finance.updated": { de: "Finanzen aktualisiert", en: "Finances updated" },
   };
   return map[eventType] ? (language === "de" ? map[eventType].de : map[eventType].en) : eventType;

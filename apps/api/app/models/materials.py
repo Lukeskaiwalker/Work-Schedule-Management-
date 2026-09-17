@@ -64,8 +64,27 @@ class ProjectMaterialNeed(Base):
     article_no: Mapped[str | None] = mapped_column(String(160))
     unit: Mapped[str | None] = mapped_column(String(64))
     quantity: Mapped[str | None] = mapped_column(String(64))
+    # order | ordered | on_the_way | available | completed — normalised in the
+    # app layer (routers/workflow_helpers.py::MATERIAL_NEED_STATUS_ALIASES).
+    # `ordered` means "sits on a Werkstatt order", which is what the three
+    # columns below record; it is set by the hand-off and cleared when that
+    # order is cancelled.
     status: Mapped[str] = mapped_column(String(32), default="order", nullable=False, index=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # Where this need went. The LINE is the precise link — a line is what was
+    # actually bought — while the order id survives a line deletion so the row
+    # can still name the order. Both SET NULL: cancelling an order puts its
+    # needs back on the list rather than deleting them with it.
+    werkstatt_order_id: Mapped[int | None] = mapped_column(
+        ForeignKey("werkstatt_orders.id", ondelete="SET NULL"), index=True
+    )
+    werkstatt_order_line_id: Mapped[int | None] = mapped_column(
+        ForeignKey("werkstatt_order_lines.id", ondelete="SET NULL"), index=True
+    )
+    # Stamped at hand-off, not derived from the order: a need moved between
+    # drafts still says when it left the Bedarfe view.
+    ordered_at: Mapped[datetime | None] = mapped_column(DateTime)
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
     updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)

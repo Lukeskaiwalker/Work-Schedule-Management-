@@ -261,9 +261,58 @@ POST /api/werkstatt/datanorm/upload                 multipart: file + supplier_i
 POST /api/werkstatt/datanorm/commit                 { import_token } → apply preview
 GET  /api/werkstatt/datanorm/history
 
-GET  /api/werkstatt/bedarfe                         (read-through to ProjectMaterialNeed)
+GET  /api/werkstatt/bedarfe                         ?status=order,ordered&project_id=&supplier_id=&q=
+                                                    &include_completed=&orderable_only=
+                                                    `status=` + `include_completed=true` are additive
+                                                    (chips AND finished rows); an unknown status or
+                                                    supplier value is a 400, never a wider list
+                                                    `supplier_id=none` → rows with no catalogue supplier
+                                                    (the exact inverse of orderable_only)
+                                                    ProjectMaterialNeed + catalogue context per row:
+                                                    { supplier_id, supplier_name, catalog_item_name,
+                                                      manufacturer, ean, orderable, source,
+                                                      werkstatt_order_id, werkstatt_order_number,
+                                                      werkstatt_order_line_id, ordered_at }
+                                                    `orderable` = has a catalogue match whose supplier is
+                                                    known; NOT a statement about a webshop connection
+POST /api/werkstatt/bedarfe/bulk                    { ids[≤500], status?, notes? } → updated rows
+                                                    403 lists the ids the caller may not see; one activity
+                                                    per project, not per row
+POST /api/werkstatt/bedarfe/bulk-delete             { ids[≤500] } → { deleted }
+POST /api/werkstatt/bedarfe/create-order            (werkstatt:manage)
+                                                    { need_ids[], supplier_id?, order_id?, title? }
+                                                    → { orders[], added[{need_id, order_id, line_id,
+                                                        quantity_warning}], skipped[{need_id, reason,
+                                                        order_number}] }
+                                                    one DRAFT per supplier — never sent; the pre-send
+                                                    resolution gate above still applies
+                                                    skip reasons: already_ordered | completed |
+                                                    no_catalog_item | no_supplier | other_supplier
+                                                    lines are built by services/werkstatt_order_lines.py,
+                                                    the same builder the drawer uses
 GET  /api/werkstatt/catalog/search                  (search material_catalog_items)
+
+DELETE /api/materials/{id}                          204; an order line it reached is kept (the line is what
+                                                    was bought) — the need is only unlinked
+PATCH  /api/materials/{id}                          status | notes | item | quantity | unit | article_no |
+                                                    material_catalog_item_id
+                                                    explicit null: unlinks the catalogue row / clears
+                                                    the note; an omitted key keeps what is stored
+POST   /api/materials                               + notes (a manual need carries its reason from the
+                                                    start rather than in a second PATCH)
 ```
+
+**Need status ladder** (v2.15): `order` → `ordered` → `on_the_way` → `available` → `completed`.
+`ordered` is set by the hand-off above and cleared when that order is cancelled or its line deleted;
+marking the order delivered advances its needs to `available`. The rule lives in
+`apps/api/app/services/material_needs.py::sync_needs_for_order`, called from the order lifecycle
+routers — never duplicated at a call site.
+
+**Merging a draft** is the fourth event on that rule. `POST /orders/{id}/merge` retires the source
+without going through `cancel_order`, so the router pairs `capture_merge_links` (before) with
+`sync_needs_for_merge` (after): a need whose line was re-parented now points at the target — where
+"geliefert" will reach it — and a need whose line was folded into a duplicate goes back to
+`order` with its links cleared.
 
 ### 3.4 Reorder + Orders (owned by Tablet BE)
 

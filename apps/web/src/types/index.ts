@@ -276,7 +276,15 @@ export type ProjectWeather = {
   days: ProjectWeatherDay[];
 };
 
-export type MaterialNeedStatus = "order" | "on_the_way" | "available" | "completed";
+// The ladder a need climbs. "ordered" (v2.15) means a buyer has acted and
+// the row sits on a Werkstatt order — the state the office used to track
+// on paper, which is how the same material got ordered twice.
+export type MaterialNeedStatus =
+  | "order"
+  | "ordered"
+  | "on_the_way"
+  | "available"
+  | "completed";
 
 export type ProjectMaterialNeed = {
   id: number;

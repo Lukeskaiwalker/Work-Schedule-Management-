@@ -2,6 +2,11 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useAppContext } from "../../context/AppContext";
 import { NeuerArtikelModal } from "../../components/werkstatt/NeuerArtikelModal";
 import {
+  NeuerBedarfModal,
+  type NeuerBedarfSubmit,
+} from "../../components/werkstatt/bedarfe/NeuerBedarfModal";
+import { createNeed } from "../../utils/werkstattBedarfeApi";
+import {
   MOCK_SUPPLIERS,
   type MockCatalogEntry,
 } from "../../components/werkstatt/mockData";
@@ -38,11 +43,19 @@ export function WerkstattKatalogPage() {
     uploadMaterialCatalogImage,
     deleteMaterialCatalogImage,
     setNotice,
+    token,
+    activeProjects,
   } = useAppContext();
 
   const [activeSupplier, setActiveSupplier] = useState<string | null>(null);
   const [neuerArtikelOpen, setNeuerArtikelOpen] = useState(false);
   const [neuerArtikelSeed, setNeuerArtikelSeed] = useState<MockCatalogEntry | null>(null);
+  // "Zum Projekt-Bedarf": the catalogue is where somebody realises a site is
+  // short of something, and until now the only way to record that was to wait
+  // for a fitter to file a report.
+  const [bedarfSeed, setBedarfSeed] = useState<MaterialCatalogItem | null>(null);
+  const [bedarfBusy, setBedarfBusy] = useState(false);
+  const [bedarfError, setBedarfError] = useState<string | null>(null);
   const [imageUploadingKeys, setImageUploadingKeys] = useState<Set<string>>(new Set());
   const imageFileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
@@ -65,6 +78,26 @@ export function WerkstattKatalogPage() {
     }
     return map;
   }, [materialCatalogRows]);
+
+  async function submitBedarf(input: NeuerBedarfSubmit) {
+    setBedarfBusy(true);
+    setBedarfError(null);
+    try {
+      await createNeed(token, input);
+      setBedarfSeed(null);
+      setNotice(de ? "Zum Projekt-Bedarf hinzugefügt" : "Added to the project needs");
+    } catch (err) {
+      setBedarfError(
+        err instanceof Error && err.message
+          ? err.message
+          : de
+            ? "Bedarf konnte nicht angelegt werden."
+            : "The need could not be created.",
+      );
+    } finally {
+      setBedarfBusy(false);
+    }
+  }
 
   async function handleCatalogImageUpload(externalKey: string, file: File) {
     setImageUploadingKeys((current) => {
@@ -420,6 +453,25 @@ export function WerkstattKatalogPage() {
                   )}
                   <button
                     type="button"
+                    className="werkstatt-action-btn"
+                    disabled={!sourceRow}
+                    title={
+                      sourceRow
+                        ? undefined
+                        : de
+                          ? "Für diese Zeile ist kein Katalog-Eintrag geladen."
+                          : "No catalogue row is loaded for this entry."
+                    }
+                    onClick={() => {
+                      if (!sourceRow) return;
+                      setBedarfError(null);
+                      setBedarfSeed(sourceRow);
+                    }}
+                  >
+                    {de ? "Zum Projekt-Bedarf" : "To project needs"}
+                  </button>
+                  <button
+                    type="button"
                     className="werkstatt-action-btn werkstatt-action-btn--primary"
                     onClick={() => {
                       setNeuerArtikelSeed(entry);
@@ -493,6 +545,18 @@ export function WerkstattKatalogPage() {
           // TODO(werkstatt): POST /api/werkstatt/articles/from-catalog with
           //   { catalog_item_id: neuerArtikelSeed.catalog_item_id, supplier_links[] }
         }}
+      />
+
+      <NeuerBedarfModal
+        open={bedarfSeed != null}
+        language={language}
+        token={token}
+        projects={activeProjects}
+        seedCatalogItem={bedarfSeed}
+        busy={bedarfBusy}
+        error={bedarfError}
+        onSubmit={(input) => void submitBedarf(input)}
+        onClose={() => setBedarfSeed(null)}
       />
     </section>
   );

@@ -1,304 +1,534 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAppContext } from "../../context/AppContext";
-import { formatDayLabel } from "../../utils/dates";
+import { BedarfBulkBar } from "../../components/werkstatt/bedarfe/BedarfBulkBar";
+import { BedarfOrderModal } from "../../components/werkstatt/bedarfe/BedarfOrderModal";
+import { BedarfProjectGroup } from "../../components/werkstatt/bedarfe/BedarfProjectGroup";
+import { BedarfToolbar } from "../../components/werkstatt/bedarfe/BedarfToolbar";
+import { KatalogZuordnenModal } from "../../components/werkstatt/bedarfe/KatalogZuordnenModal";
 import {
-  normalizeMaterialNeedStatus,
-  materialNeedStatusLabel,
-  materialNeedStatusClass,
-  nextMaterialNeedStatus,
-} from "../../utils/materials";
+  NeuerBedarfModal,
+  type NeuerBedarfSubmit,
+} from "../../components/werkstatt/bedarfe/NeuerBedarfModal";
+import { useBedarfeData } from "../../hooks/useBedarfeData";
+import { useBedarfeFilters } from "../../hooks/useBedarfeFilters";
+import { useBedarfeSelection } from "../../hooks/useBedarfeSelection";
+import { useCollapsedGroups } from "../../hooks/useCollapsedGroups";
+import "../../styles/bedarfe.css";
+import type { MaterialNeedStatus } from "../../types";
+import type {
+  MaterialNeedOrderResult,
+  MaterialNeedPatch,
+  MaterialNeedRow,
+} from "../../types/materialNeeds";
+import type { WerkstattSupplier } from "../../types/werkstatt";
+import { canOrderNeed, needSkipReason } from "../../utils/bedarfeOrdering";
+import { needSkipSummary, normalizeMaterialNeedStatus } from "../../utils/materials";
 import { formatProjectTitleParts } from "../../utils/projects";
-import type { ProjectMaterialNeed } from "../../types";
+import {
+  bulkDeleteNeeds,
+  bulkUpdateNeeds,
+  createNeed,
+  createOrderFromNeeds,
+  deleteNeed,
+  updateNeed,
+} from "../../utils/werkstattBedarfeApi";
+import { listSuppliers } from "../../utils/werkstattSuppliersApi";
+
+const COLLAPSED_STORAGE_KEY = "smpl.bedarfe.collapsedProjects";
 
 /**
- * WerkstattBedarfePage — the "Projekt-Bedarfe" panel. Relocated from the
- * legacy MaterialsPage: rows grouped by project, collapsible headers, inline
- * status pills. Same data source (`materialNeedRows`) and same AppContext
- * mutators — no new BE surface, just a new home under Werkstatt.
+ * Werkstatt › Projekt-Bedarfe — what is missing, where, and can it be bought.
  *
- * Sort order inherits the legacy behaviour: by project number ascending
- * (numeric-aware localeCompare).
+ * The screen this replaces was one flat list with a cycling status pill: no
+ * filters, no search, no multi-select, no way to correct a quantity, and no
+ * route from "we need this" to an actual order. Working through ten sites of
+ * eight items meant eighty individual clicks, and every one of those items
+ * was then retyped into the wholesaler's basket by hand.
+ *
+ * So the page owns its data (server-side filters), groups by building site,
+ * edits in place, and hands a selection to `POST /werkstatt/bedarfe/
+ * create-order`, which drafts one order per supplier.
  */
 export function WerkstattBedarfePage() {
   const {
     mainView,
     language,
     werkstattTab,
-    materialNeedRows,
-    materialNeedUpdating,
-    projectsById,
+    token,
+    user,
+    activeProjects,
     setActiveProjectId,
     setProjectTab,
     setProjectBackView,
     setMainView,
-    loadMaterialNeeds,
-    updateMaterialNeedState,
-    updateMaterialNeedNote,
+    setWerkstattTab,
+    setNotice,
+    setError,
   } = useAppContext();
 
-  const [editingNoteId, setEditingNoteId] = useState<number | null>(null);
-  const [pendingNotes, setPendingNotes] = useState<Record<number, string>>({});
-  const [collapsedGroups, setCollapsedGroups] = useState<ReadonlySet<number>>(new Set());
+  const de = language === "de";
+  const active = mainView === "werkstatt" && werkstattTab === "bedarfe";
 
-  const needGroups = useMemo(() => {
-    const map = new Map<
+  const filterState = useBedarfeFilters();
+  const groupFolding = useCollapsedGroups(COLLAPSED_STORAGE_KEY);
+  const [suppliers, setSuppliers] = useState<WerkstattSupplier[]>([]);
+  const [busyIds, setBusyIds] = useState<ReadonlySet<number>>(() => new Set<number>());
+  const [bulkBusy, setBulkBusy] = useState(false);
+
+  const [orderModalOpen, setOrderModalOpen] = useState(false);
+  const [orderResult, setOrderResult] = useState<MaterialNeedOrderResult | null>(null);
+  // The rows the confirmation was built from. The result panel names the
+  // skipped ones, and by the time it renders the selection is already cleared
+  // (and the list reloaded) — without this snapshot it could only print ids,
+  // which is exactly the row the buyer has to go and do something about.
+  const [confirmedRows, setConfirmedRows] = useState<readonly MaterialNeedRow[]>([]);
+  const [orderError, setOrderError] = useState<string | null>(null);
+  const [newOpen, setNewOpen] = useState(false);
+  const [newError, setNewError] = useState<string | null>(null);
+  const [newBusy, setNewBusy] = useState(false);
+  const [linkRow, setLinkRow] = useState<MaterialNeedRow | null>(null);
+
+  const { rows, loading, error, reload, applyRow, applyRows, removeRows } = useBedarfeData(
+    token,
+    active,
+    filterState.filters,
+  );
+  const selection = useBedarfeSelection();
+
+  useEffect(() => {
+    if (!active) return;
+    let cancelled = false;
+    void listSuppliers(token)
+      .then((found) => {
+        if (!cancelled) setSuppliers(found);
+      })
+      .catch(() => {
+        // The filter simply stays on "alle" — not worth interrupting the page.
+        if (!cancelled) setSuppliers([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [active, token]);
+
+  // A selection may not outlive the rows it names: filters change, another
+  // person deletes a row, a reload drops it.
+  useEffect(() => {
+    selection.retain(rows.map((row) => row.id));
+  }, [rows, selection]);
+
+  const groups = useMemo(() => {
+    const byProject = new Map<
       number,
-      {
-        projectId: number;
-        projectNumber: string;
-        projectTitle: string;
-        projectSubtitle: string | null;
-        items: ProjectMaterialNeed[];
-      }
+      { projectId: number; projectNumber: string; projectTitle: string; rows: MaterialNeedRow[] }
     >();
-    for (const entry of materialNeedRows) {
-      if (!map.has(entry.project_id)) {
-        const parts = formatProjectTitleParts(
-          entry.project_number,
-          entry.customer_name ?? null,
-          entry.project_name,
-          entry.project_id,
-        );
-        map.set(entry.project_id, {
-          projectId: entry.project_id,
-          projectNumber: entry.project_number,
-          projectTitle: parts.title,
-          projectSubtitle: parts.subtitle ?? null,
-          items: [],
-        });
+    for (const row of rows) {
+      const existing = byProject.get(row.project_id);
+      if (existing) {
+        existing.rows = [...existing.rows, row];
+        continue;
       }
-      const bucket = map.get(entry.project_id);
-      if (bucket) bucket.items = [...bucket.items, entry];
+      const parts = formatProjectTitleParts(
+        row.project_number,
+        row.customer_name ?? null,
+        row.project_name,
+        row.project_id,
+      );
+      byProject.set(row.project_id, {
+        projectId: row.project_id,
+        projectNumber: row.project_number,
+        projectTitle: parts.subtitle ?? parts.title,
+        rows: [row],
+      });
     }
-    return Array.from(map.values()).sort((a, b) =>
+    return Array.from(byProject.values()).sort((a, b) =>
       a.projectNumber.localeCompare(b.projectNumber, undefined, { numeric: true }),
     );
-  }, [materialNeedRows]);
+  }, [rows]);
 
-  function toggleGroup(projectId: number) {
-    setCollapsedGroups((prev) => {
-      const next = new Set(prev);
-      if (next.has(projectId)) next.delete(projectId);
-      else next.add(projectId);
+  const counts = useMemo(() => {
+    let open = 0;
+    let orderable = 0;
+    let ordered = 0;
+    for (const row of rows) {
+      const status = normalizeMaterialNeedStatus(row.status);
+      if (status === "order") open += 1;
+      if (status === "ordered") ordered += 1;
+      if (row.orderable && status === "order") orderable += 1;
+    }
+    return { open, orderable, ordered };
+  }, [rows]);
+
+  const selectedRows = useMemo(
+    () => rows.filter((row) => selection.selected.has(row.id)),
+    [rows, selection.selected],
+  );
+  // Exactly what the confirmation modal will list, so the count on the button
+  // and the positions in the dialog can never disagree.
+  const orderableSelected = selectedRows.filter(canOrderNeed).length;
+  // Why the rest would not go: the bulk bar says so per reason rather than
+  // blaming "ohne Katalog-Artikel" for a row that is simply already ordered.
+  const selectedSkipReasons = useMemo(
+    () =>
+      selectedRows
+        .map(needSkipReason)
+        .filter((reason): reason is NonNullable<typeof reason> => reason !== null),
+    [selectedRows],
+  );
+  const canCreateOrder = (user?.effective_permissions ?? []).includes("werkstatt:manage");
+
+  const markBusy = useCallback((id: number, busy: boolean) => {
+    setBusyIds((current) => {
+      const next = new Set(current);
+      if (busy) next.add(id);
+      else next.delete(id);
       return next;
     });
+  }, []);
+
+  const failed = useCallback(
+    (err: unknown, fallback: string) => {
+      setError(err instanceof Error && err.message ? err.message : fallback);
+    },
+    [setError],
+  );
+
+  const patchRow = useCallback(
+    async (id: number, patch: MaterialNeedPatch) => {
+      markBusy(id, true);
+      try {
+        applyRow(await updateNeed(token, id, patch));
+      } catch (err) {
+        failed(err, de ? "Bedarf konnte nicht gespeichert werden." : "Could not save the need.");
+        reload();
+      } finally {
+        markBusy(id, false);
+      }
+    },
+    [applyRow, de, failed, markBusy, reload, token],
+  );
+
+  const removeRow = useCallback(
+    async (row: MaterialNeedRow) => {
+      const confirmed = window.confirm(
+        de ? `„${row.item}" löschen?` : `Delete "${row.item}"?`,
+      );
+      if (!confirmed) return;
+      markBusy(row.id, true);
+      try {
+        await deleteNeed(token, row.id);
+        removeRows([row.id]);
+        setNotice(de ? "Bedarf gelöscht" : "Need deleted");
+      } catch (err) {
+        failed(err, de ? "Bedarf konnte nicht gelöscht werden." : "Could not delete the need.");
+      } finally {
+        markBusy(row.id, false);
+      }
+    },
+    [de, failed, markBusy, removeRows, setNotice, token],
+  );
+
+  async function runBulkStatus(status: MaterialNeedStatus) {
+    const ids = selectedRows.map((row) => row.id);
+    if (ids.length === 0) return;
+    setBulkBusy(true);
+    try {
+      const updated = await bulkUpdateNeeds(token, ids, { status });
+      applyRows(updated);
+      setNotice(
+        de ? `${updated.length} Bedarfe aktualisiert` : `${updated.length} needs updated`,
+      );
+      // A status the current filter excludes must not leave ghosts behind.
+      reload();
+    } catch (err) {
+      failed(err, de ? "Massenänderung fehlgeschlagen." : "The bulk change failed.");
+    } finally {
+      setBulkBusy(false);
+    }
   }
 
-  function startEditNote(itemId: number, currentNote: string | null | undefined) {
-    setEditingNoteId(itemId);
-    setPendingNotes((prev) => ({ ...prev, [itemId]: currentNote ?? "" }));
+  async function runBulkDelete() {
+    const ids = selectedRows.map((row) => row.id);
+    if (ids.length === 0) return;
+    const confirmed = window.confirm(
+      de ? `${ids.length} Bedarfe löschen?` : `Delete ${ids.length} needs?`,
+    );
+    if (!confirmed) return;
+    setBulkBusy(true);
+    try {
+      const { deleted } = await bulkDeleteNeeds(token, ids);
+      removeRows(ids);
+      selection.clear();
+      setNotice(de ? `${deleted} Bedarfe gelöscht` : `${deleted} needs deleted`);
+    } catch (err) {
+      failed(err, de ? "Löschen fehlgeschlagen." : "Deleting failed.");
+    } finally {
+      setBulkBusy(false);
+    }
   }
 
-  function cancelEditNote(itemId: number) {
-    setEditingNoteId(null);
-    setPendingNotes((prev) => {
-      const next = { ...prev };
-      delete next[itemId];
-      return next;
-    });
+  async function confirmOrder(input: {
+    supplierId: number | null;
+    orderId: number | null;
+    title: string | null;
+  }) {
+    setBulkBusy(true);
+    setOrderError(null);
+    const rowsInFlight = selectedRows;
+    try {
+      const result = await createOrderFromNeeds(token, {
+        need_ids: rowsInFlight.map((row) => row.id),
+        supplier_id: input.supplierId,
+        order_id: input.orderId,
+        title: input.title,
+      });
+      setConfirmedRows(rowsInFlight);
+      setOrderResult(result);
+      selection.clear();
+      reload();
+      if (result.orders.length === 0) {
+        // Nothing was bought. The server skips rows the browser cannot see
+        // ahead (an archived supplier, a second person who ordered the same
+        // selection seconds earlier), and a green "… erstellt (0 Positionen)"
+        // with a blank order number is how that goes unnoticed.
+        const why = needSkipSummary(
+          result.skipped.map((entry) => entry.reason),
+          language,
+        );
+        const count = result.skipped.length;
+        setError(
+          de
+            ? `Keine Bestellung erstellt – ${count === 1 ? "die Zeile wurde" : `alle ${count} Zeilen wurden`} übersprungen${why ? ` (${why})` : ""}`
+            : `No order created – ${count === 1 ? "the row was" : `all ${count} rows were`} skipped${why ? ` (${why})` : ""}`,
+        );
+      } else {
+        setNotice(
+          de
+            ? `${result.orders.map((order) => order.order_number).join(", ")} erstellt (${result.added.length} Positionen)`
+            : `${result.orders.map((order) => order.order_number).join(", ")} created (${result.added.length} lines)`,
+        );
+      }
+    } catch (err) {
+      setOrderError(
+        err instanceof Error && err.message
+          ? err.message
+          : de
+            ? "Bestellung konnte nicht erstellt werden."
+            : "The order could not be created.",
+      );
+    } finally {
+      setBulkBusy(false);
+    }
   }
 
-  async function commitNote(itemId: number) {
-    const note = pendingNotes[itemId] ?? "";
-    setEditingNoteId(null);
-    await updateMaterialNeedNote(itemId, note);
-    setPendingNotes((prev) => {
-      const next = { ...prev };
-      delete next[itemId];
-      return next;
-    });
+  async function submitNewNeed(input: NeuerBedarfSubmit) {
+    setNewBusy(true);
+    setNewError(null);
+    try {
+      await createNeed(token, input);
+      setNewOpen(false);
+      reload();
+      setNotice(de ? "Bedarf angelegt" : "Need created");
+    } catch (err) {
+      setNewError(
+        err instanceof Error && err.message
+          ? err.message
+          : de
+            ? "Bedarf konnte nicht angelegt werden."
+            : "The need could not be created.",
+      );
+    } finally {
+      setNewBusy(false);
+    }
   }
 
-  if (mainView !== "werkstatt" || werkstattTab !== "bedarfe") return null;
+  function openProject(id: number) {
+    setActiveProjectId(id);
+    setProjectTab("overview");
+    setProjectBackView(null);
+    setMainView("project");
+  }
 
-  const de = language === "de";
+  const allCollapsed =
+    groups.length > 0 && groups.every((group) => groupFolding.isCollapsed(group.projectId));
+
+  if (!active) return null;
 
   return (
-    <section className="werkstatt-tab-page">
+    <section className="werkstatt-tab-page bedarfe-page">
       <header className="werkstatt-sub-head">
         <div className="werkstatt-sub-head-text">
           <span className="werkstatt-sub-breadcrumb">
             {de ? "WERKSTATT › PROJEKT-BEDARFE" : "WORKSHOP › PROJECT NEEDS"}
           </span>
-          <h1 className="werkstatt-sub-title">
-            {de ? "Materialbedarf" : "Material needs"}
-          </h1>
+          <h1 className="werkstatt-sub-title">{de ? "Materialbedarf" : "Material needs"}</h1>
           <p className="werkstatt-sub-subtitle">
             {de
-              ? "Offener Bedarf aus den Projekten — nach Projekt gruppiert."
-              : "Open material needs from projects — grouped by project."}
+              ? `${counts.open} offen · ${counts.orderable} bestellbar · ${counts.ordered} bestellt`
+              : `${counts.open} open · ${counts.orderable} orderable · ${counts.ordered} ordered`}
           </p>
         </div>
         <div className="werkstatt-sub-actions">
           <button
             type="button"
-            className="werkstatt-action-btn"
-            onClick={() => void loadMaterialNeeds()}
+            className="werkstatt-action-btn werkstatt-action-btn--primary"
+            onClick={() => {
+              setNewError(null);
+              setNewOpen(true);
+            }}
           >
+            {de ? "+ Bedarf" : "+ Need"}
+          </button>
+          <button type="button" className="werkstatt-action-btn" onClick={reload}>
             {de ? "Aktualisieren" : "Refresh"}
+          </button>
+          <button
+            type="button"
+            className="werkstatt-action-btn"
+            onClick={() =>
+              groupFolding.setAll(
+                groups.map((group) => group.projectId),
+                !allCollapsed,
+              )
+            }
+          >
+            {allCollapsed
+              ? de
+                ? "Alle ausklappen"
+                : "Expand all"
+              : de
+                ? "Alle einklappen"
+                : "Collapse all"}
           </button>
         </div>
       </header>
 
-      <div className="werkstatt-card materials-page-needs">
-        <div className="materials-page-needs-list">
-          {needGroups.length === 0 && (
-            <div className="materials-page-empty muted">
-              {de
+      <BedarfToolbar
+        language={language}
+        query={filterState.queryInput}
+        onQueryChange={filterState.setQueryInput}
+        statuses={filterState.statuses}
+        onToggleStatus={filterState.toggleStatus}
+        includeCompleted={filterState.includeCompleted}
+        onToggleIncludeCompleted={filterState.setIncludeCompleted}
+        orderableOnly={filterState.orderableOnly}
+        onToggleOrderableOnly={filterState.setOrderableOnly}
+        projectId={filterState.projectId}
+        onProjectChange={filterState.setProjectId}
+        projects={activeProjects}
+        supplierId={filterState.supplierId}
+        onSupplierChange={filterState.setSupplierId}
+        suppliers={suppliers}
+        onResetFilters={filterState.reset}
+        hasActiveFilters={filterState.hasActiveFilters}
+      />
+
+      <div className="werkstatt-card bedarfe-list">
+        {error && <p className="bedarfe-hint bedarfe-hint--warn">{error}</p>}
+        {loading && rows.length === 0 && (
+          <p className="bedarfe-empty muted">{de ? "Lädt…" : "Loading…"}</p>
+        )}
+        {!loading && groups.length === 0 && (
+          <p className="bedarfe-empty muted">
+            {filterState.hasActiveFilters
+              ? de
+                ? "Keine Bedarfe passen zu den Filtern."
+                : "No needs match the filters."
+              : de
                 ? "Kein offener Materialbedarf gefunden."
                 : "No open material needs found."}
-            </div>
-          )}
-
-          {needGroups.map((group) => {
-            const isCollapsed = collapsedGroups.has(group.projectId);
-            const project = projectsById.get(group.projectId) ?? null;
-            return (
-              <div key={`group-${group.projectId}`} className="materials-page-group">
-                <button
-                  type="button"
-                  className="materials-page-group-header"
-                  onClick={() => toggleGroup(group.projectId)}
-                  aria-expanded={!isCollapsed}
-                >
-                  <span className="materials-page-group-chevron" aria-hidden="true">
-                    {isCollapsed ? "▸" : "▾"}
-                  </span>
-                  <span
-                    className="materials-page-group-title"
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      if (!project) return;
-                      setActiveProjectId(project.id);
-                      setProjectTab("overview");
-                      setProjectBackView(null);
-                      setMainView("project");
-                    }}
-                  >
-                    {group.projectNumber} · {group.projectTitle}
-                  </span>
-                  <span className="materials-page-group-count">
-                    {group.items.length}{" "}
-                    {de
-                      ? group.items.length === 1
-                        ? "Eintrag"
-                        : "Einträge"
-                      : group.items.length === 1
-                        ? "item"
-                        : "items"}
-                  </span>
-                </button>
-
-                {!isCollapsed && (
-                  <ul className="materials-page-items">
-                    {group.items.map((entry) => {
-                      const normalizedStatus = normalizeMaterialNeedStatus(entry.status);
-                      const statusVariant = materialNeedStatusClass(normalizedStatus);
-                      const isUpdating = Boolean(materialNeedUpdating[entry.id]);
-                      const metaParts: string[] = [];
-                      if (entry.quantity) {
-                        metaParts.push(
-                          `${de ? "Menge" : "Qty"}: ${entry.quantity}${entry.unit ? ` ${entry.unit}` : ""}`,
-                        );
-                      }
-                      if (entry.report_date) {
-                        metaParts.push(
-                          `${de ? "Hinzugefügt" : "Added"}: ${formatDayLabel(entry.report_date, language)}`,
-                        );
-                      }
-                      return (
-                        <li key={`material-need-${entry.id}`} className="materials-page-item">
-                          <div className="materials-page-item-main">
-                            <span className="materials-page-item-title">{entry.item}</span>
-                            {metaParts.length > 0 && (
-                              <span className="materials-page-item-meta">
-                                {metaParts.join(" · ")}
-                                {entry.article_no ? ` · ${entry.article_no}` : ""}
-                              </span>
-                            )}
-                            {editingNoteId === entry.id ? (
-                              <input
-                                type="text"
-                                className="materials-page-note-input"
-                                autoFocus
-                                value={pendingNotes[entry.id] ?? ""}
-                                placeholder={de ? "Notiz hinzufügen…" : "Add a note…"}
-                                onChange={(event) =>
-                                  setPendingNotes((prev) => ({
-                                    ...prev,
-                                    [entry.id]: event.target.value,
-                                  }))
-                                }
-                                onKeyDown={(event) => {
-                                  if (event.key === "Enter") {
-                                    event.preventDefault();
-                                    void commitNote(entry.id);
-                                  }
-                                  if (event.key === "Escape") cancelEditNote(entry.id);
-                                }}
-                                onBlur={() => void commitNote(entry.id)}
-                              />
-                            ) : entry.notes ? (
-                              <button
-                                type="button"
-                                className="materials-page-note"
-                                onClick={() => startEditNote(entry.id, entry.notes)}
-                                title={de ? "Notiz bearbeiten" : "Edit note"}
-                              >
-                                {entry.notes}
-                              </button>
-                            ) : (
-                              <button
-                                type="button"
-                                className="materials-page-note-add"
-                                onClick={() => startEditNote(entry.id, null)}
-                              >
-                                {de ? "+ Notiz" : "+ Note"}
-                              </button>
-                            )}
-                          </div>
-                          <div className="materials-page-item-actions">
-                            <button
-                              type="button"
-                              className={`materials-page-status-pill materials-page-status-pill--${statusVariant}`}
-                              disabled={isUpdating}
-                              onClick={() =>
-                                void updateMaterialNeedState(
-                                  entry.id,
-                                  nextMaterialNeedStatus(normalizedStatus),
-                                )
-                              }
-                              title={
-                                de
-                                  ? `Status wechseln zu: ${materialNeedStatusLabel(nextMaterialNeedStatus(normalizedStatus), language)}`
-                                  : `Change status to: ${materialNeedStatusLabel(nextMaterialNeedStatus(normalizedStatus), language)}`
-                              }
-                            >
-                              {materialNeedStatusLabel(normalizedStatus, language)}
-                            </button>
-                            {normalizedStatus === "available" && (
-                              <button
-                                type="button"
-                                className="materials-page-complete-btn"
-                                disabled={isUpdating}
-                                onClick={() =>
-                                  void updateMaterialNeedState(entry.id, "completed")
-                                }
-                              >
-                                {de ? "Erledigt" : "Complete"}
-                              </button>
-                            )}
-                          </div>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
-              </div>
-            );
-          })}
-        </div>
+          </p>
+        )}
+        {groups.map((group) => (
+          <BedarfProjectGroup
+            key={`bedarfe-group-${group.projectId}`}
+            projectId={group.projectId}
+            projectNumber={group.projectNumber}
+            projectTitle={group.projectTitle}
+            rows={group.rows}
+            language={language}
+            collapsed={groupFolding.isCollapsed(group.projectId)}
+            onToggleCollapsed={groupFolding.toggle}
+            onOpenProject={openProject}
+            selected={selection.selected}
+            busyIds={busyIds}
+            onToggleSelect={selection.toggle}
+            onSetGroupSelected={selection.setGroup}
+            onPatch={(id, patch) => void patchRow(id, patch)}
+            onDelete={(row) => void removeRow(row)}
+            onLinkCatalog={setLinkRow}
+            onOpenOrder={() => setWerkstattTab("orders")}
+          />
+        ))}
       </div>
+
+      <BedarfBulkBar
+        language={language}
+        count={selection.count}
+        orderableCount={orderableSelected}
+        skipReasons={selectedSkipReasons}
+        canCreateOrder={canCreateOrder}
+        busy={bulkBusy}
+        onSetStatus={(status) => void runBulkStatus(status)}
+        onCreateOrder={() => {
+          setOrderResult(null);
+          setConfirmedRows([]);
+          setOrderError(null);
+          setOrderModalOpen(true);
+        }}
+        onDelete={() => void runBulkDelete()}
+        onClear={selection.clear}
+      />
+
+      <BedarfOrderModal
+        open={orderModalOpen}
+        language={language}
+        token={token}
+        rows={orderResult ? confirmedRows : selectedRows}
+        busy={bulkBusy}
+        result={orderResult}
+        error={orderError}
+        onConfirm={(input) => void confirmOrder(input)}
+        onClose={() => {
+          setOrderModalOpen(false);
+          setOrderResult(null);
+          setConfirmedRows([]);
+          setOrderError(null);
+        }}
+        onOpenOrders={() => {
+          setOrderModalOpen(false);
+          setOrderResult(null);
+          setWerkstattTab("orders");
+        }}
+      />
+
+      <NeuerBedarfModal
+        open={newOpen}
+        language={language}
+        token={token}
+        projects={activeProjects}
+        defaultProjectId={filterState.projectId}
+        busy={newBusy}
+        error={newError}
+        onSubmit={(input) => void submitNewNeed(input)}
+        onClose={() => setNewOpen(false)}
+      />
+
+      <KatalogZuordnenModal
+        row={linkRow}
+        language={language}
+        token={token}
+        busy={linkRow != null && busyIds.has(linkRow.id)}
+        onPick={(row, item) => {
+          setLinkRow(null);
+          void patchRow(row.id, { material_catalog_item_id: item.id });
+        }}
+        onUnlink={(row) => {
+          setLinkRow(null);
+          void patchRow(row.id, { material_catalog_item_id: null });
+        }}
+        onClose={() => setLinkRow(null)}
+      />
     </section>
   );
 }

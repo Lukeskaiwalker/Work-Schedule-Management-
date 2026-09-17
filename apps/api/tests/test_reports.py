@@ -287,3 +287,217 @@ def test_customer_reports_endpoint_unions_direct_and_project_reports(
 def test_customer_reports_endpoint_404_for_unknown_customer(client: TestClient, admin_token: str):
     resp = client.get("/api/customers/999999/construction-reports", headers=auth_headers(admin_token))
     assert resp.status_code == 404
+
+
+# ── Report-born material needs (v2.15) ───────────────────────────────────────
+#
+# A need written on a building site used to arrive in the office as one string
+# — "NYM-J 5x6 - 25 m - ArtNr 11102138" in the `item` column, no quantity, no
+# unit, no catalogue link — so every one of them had to be retyped before it
+# could be ordered. These pin the parse that makes them orderable as filed.
+
+
+def _seed_catalog_row(article_no: str, *, name: str, unit: str | None = "m") -> int:
+    from app.core.db import SessionLocal
+    from app.models.entities import MaterialCatalogItem
+
+    with SessionLocal() as db:
+        row = MaterialCatalogItem(
+            external_key=f"report-{article_no}",
+            source_file="test.csv",
+            source_line=1,
+            article_no=article_no,
+            item_name=name,
+            unit=unit,
+            search_text=f"{article_no} {name}".lower(),
+        )
+        db.add(row)
+        db.commit()
+        return row.id
+
+
+def test_report_material_needs_carry_quantity_unit_and_catalog_link(
+    client: TestClient, admin_token: str
+):
+    catalog_id = _seed_catalog_row("11102138", name="NYM-J 5x6", unit="m")
+    project = client.post(
+        "/api/projects",
+        headers=auth_headers(admin_token),
+        json={"project_number": "2026-5200", "name": "Bedarf aus Bericht", "status": "active"},
+    )
+    assert project.status_code == 200, project.text
+    project_id = project.json()["id"]
+
+    report = client.post(
+        f"/api/projects/{project_id}/construction-reports",
+        headers=auth_headers(admin_token),
+        json={
+            "report_date": "2026-03-02",
+            "send_telegram": False,
+            "payload": {
+                "work_done": "Leitungen gezogen",
+                # `note` is what the web puts the form's ART.NR column in
+                # (App.tsx: `note: row.article_no.trim()`), a repurposing that
+                # predates this parser — so that is what the test sends.
+                "materials_needed": [
+                    {"item": "NYM-J 5x6", "qty": "25", "unit": "m", "note": "11102138"},
+                    {"item": "Kabelbinder", "qty": "1", "unit": "Pack"},
+                ],
+                # The serialised twin is the only place the article number is.
+                "office_material_need": (
+                    "NYM-J 5x6 - 25 m - ArtNr 11102138\nKabelbinder - 1 Pack"
+                ),
+            },
+        },
+    )
+    assert report.status_code == 200, report.text
+
+    needs = client.get("/api/materials", headers=auth_headers(admin_token)).json()
+    rows = {row["item"]: row for row in needs if row["project_id"] == project_id}
+    assert set(rows) == {"NYM-J 5x6", "Kabelbinder"}
+
+    cable = rows["NYM-J 5x6"]
+    assert cable["quantity"] == "25"
+    assert cable["unit"] == "m"
+    assert cable["article_no"] == "11102138"
+    assert cable["material_catalog_item_id"] == catalog_id
+    # NOT "11102138": the number is already in `article_no` and in the meta
+    # line under the title. Repeating it as the Notiz put a bare number on
+    # every report-born row and on every wholesaler order line built from one.
+    assert cable["notes"] is None
+
+    # No article number, no link — and that is fine: the row is still a need.
+    assert rows["Kabelbinder"]["quantity"] == "1"
+    assert rows["Kabelbinder"]["unit"] == "Pack"
+    assert rows["Kabelbinder"]["material_catalog_item_id"] is None
+
+
+def test_report_note_survives_when_it_is_not_the_article_number(
+    client: TestClient, admin_token: str
+):
+    """Only the duplicate is dropped. A note that says something is kept."""
+
+    project = client.post(
+        "/api/projects",
+        headers=auth_headers(admin_token),
+        json={"project_number": "2026-5203", "name": "Mit Notiz", "status": "active"},
+    )
+    project_id = project.json()["id"]
+
+    report = client.post(
+        f"/api/projects/{project_id}/construction-reports",
+        headers=auth_headers(admin_token),
+        json={
+            "report_date": "2026-03-05",
+            "send_telegram": False,
+            "payload": {
+                "materials_needed": [
+                    {"item": "Rohr M20", "qty": "12", "unit": "Stk", "note": "für Halle 2"}
+                ],
+                "office_material_need": "Rohr M20 - 12 Stk - ArtNr UE-77",
+            },
+        },
+    )
+    assert report.status_code == 200, report.text
+
+    needs = client.get("/api/materials", headers=auth_headers(admin_token)).json()
+    row = next(entry for entry in needs if entry["project_id"] == project_id)
+    assert row["article_no"] == "UE-77"
+    assert row["notes"] == "für Halle 2"
+
+
+def test_report_material_needs_fall_back_to_the_serialised_text(
+    client: TestClient, admin_token: str
+):
+    """Older clients send only `office_material_need` — it still has to parse."""
+
+    project = client.post(
+        "/api/projects",
+        headers=auth_headers(admin_token),
+        json={"project_number": "2026-5201", "name": "Nur Text", "status": "active"},
+    )
+    project_id = project.json()["id"]
+
+    report = client.post(
+        f"/api/projects/{project_id}/construction-reports",
+        headers=auth_headers(admin_token),
+        json={
+            "report_date": "2026-03-03",
+            "send_telegram": False,
+            "payload": {
+                "work_done": "Dose gesetzt",
+                "office_material_need": "Schalterdose tief - 10 Stk - ArtNr XY-9",
+            },
+        },
+    )
+    assert report.status_code == 200, report.text
+
+    needs = client.get("/api/materials", headers=auth_headers(admin_token)).json()
+    row = next(entry for entry in needs if entry["project_id"] == project_id)
+    assert row["item"] == "Schalterdose tief"
+    assert row["quantity"] == "10"
+    assert row["unit"] == "Stk"
+    assert row["article_no"] == "XY-9"
+
+
+def test_report_material_needs_are_born_ready_to_order(client: TestClient, admin_token: str):
+    """The point of the parse: the row can go straight into a Bestellung."""
+
+    supplier = client.post(
+        "/api/werkstatt/suppliers", headers=auth_headers(admin_token), json={"name": "Unielektro"}
+    )
+    assert supplier.status_code == 200, supplier.text
+    supplier_id = supplier.json()["id"]
+
+    from app.core.db import SessionLocal
+    from app.models.entities import MaterialCatalogItem
+
+    with SessionLocal() as db:
+        catalog_row = MaterialCatalogItem(
+            external_key="report-order-UE-77",
+            source_file="test.csv",
+            source_line=1,
+            article_no="UE-77",
+            item_name="Rohr M20",
+            unit="Stk",
+            supplier_id=supplier_id,
+            search_text="ue-77 rohr m20",
+        )
+        db.add(catalog_row)
+        db.commit()
+
+    project = client.post(
+        "/api/projects",
+        headers=auth_headers(admin_token),
+        json={"project_number": "2026-5202", "name": "Direkt bestellbar", "status": "active"},
+    )
+    project_id = project.json()["id"]
+
+    report = client.post(
+        f"/api/projects/{project_id}/construction-reports",
+        headers=auth_headers(admin_token),
+        json={
+            "report_date": "2026-03-04",
+            "send_telegram": False,
+            "payload": {
+                "materials_needed": [{"item": "Rohr M20", "qty": "12", "unit": "Stk"}],
+                "office_material_need": "Rohr M20 - 12 Stk - ArtNr UE-77",
+            },
+        },
+    )
+    assert report.status_code == 200, report.text
+
+    rows = client.get("/api/werkstatt/bedarfe", headers=auth_headers(admin_token)).json()
+    need = next(row for row in rows if row["project_id"] == project_id)
+    assert need["orderable"] is True
+    assert need["source"] == "report"
+
+    ordered = client.post(
+        "/api/werkstatt/bedarfe/create-order",
+        headers=auth_headers(admin_token),
+        json={"need_ids": [need["id"]]},
+    )
+    assert ordered.status_code == 200, ordered.text
+    line = ordered.json()["orders"][0]["lines"][0]
+    assert line["supplier_article_no"] == "UE-77"
+    assert line["quantity_ordered"] == 12

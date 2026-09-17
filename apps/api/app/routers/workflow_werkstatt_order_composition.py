@@ -41,6 +41,11 @@ from app.schemas.werkstatt_procurement import (
     OrderMergePayload,
     OrderSaveTemplatePayload,
 )
+from app.services.material_needs import (
+    capture_merge_links,
+    sync_needs_for_merge,
+    sync_needs_for_order,
+)
 from app.services.werkstatt_order_composition import (
     apply_template,
     merge_orders,
@@ -176,6 +181,10 @@ def delete_order_line(
     line = db.get(WerkstattOrderLine, line_id)
     if line is None or line.order_id != order.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Position nicht gefunden")
+    # Before the delete: ON DELETE SET NULL would erase the link the needs are
+    # found by, and the Bedarf would stay "Bestellt" for an order line that no
+    # longer exists.
+    sync_needs_for_order(db, order, "line_deleted", line_id=line.id)
     db.delete(line)
     db.flush()
     recompute_total(db, order)
@@ -203,6 +212,12 @@ def merge_into_order(
     if target is None or source is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Bestellung nicht gefunden")
 
+    # Captured BEFORE the merge: it retires the source without going through
+    # cancel_order, and a folded duplicate line takes its id (and with it the
+    # need's link) away. Without this the Bedarfe of a merged draft would keep
+    # pointing at a cancelled order — never delivered, never re-orderable.
+    merge_links = capture_merge_links(db, source)
+
     try:
         merge_orders(
             db,
@@ -215,6 +230,9 @@ def merge_into_order(
         db.rollback()
         raise
 
+    sync_needs_for_merge(
+        db, source, target, merge_links, actor_user_id=current_user.id
+    )
     db.commit()
     db.refresh(target)
     return load_order_full(db, target)

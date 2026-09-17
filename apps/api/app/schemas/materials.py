@@ -55,15 +55,52 @@ class ProjectMaterialNeedOut(BaseModel):
     image_source: str | None = None
     notes: str | None = None
     status: str
+    # Who touched the row and when. Older clients read these (and the web type
+    # declares them non-null), so they stay on the response even though the
+    # Bedarfe screen does not render them.
     created_by: int | None = None
     updated_by: int | None = None
     created_at: datetime
     updated_at: datetime
+    # ── Catalogue context ───────────────────────────────────────────────
+    # Snapshotted from the linked MaterialCatalogItem on every read rather
+    # than copied onto the row: a Datanorm re-import changes the supplier's
+    # name and number, and a stale copy would order the wrong thing.
+    supplier_id: int | None = None
+    supplier_name: str | None = None
+    catalog_item_name: str | None = None
+    manufacturer: str | None = None
+    ean: str | None = None
+    # True when this row can become an order line: it has a catalogue match
+    # AND that match names a supplier to address. Nothing to do with whether
+    # that supplier has a webshop — a CSV/e-mail supplier is orderable too.
+    orderable: bool = False
+    # "report" when a Bautagesbericht created it, "manual" otherwise.
+    source: str = "manual"
+    # ── Order hand-off ──────────────────────────────────────────────────
+    werkstatt_order_id: int | None = None
+    werkstatt_order_number: str | None = None
+    werkstatt_order_line_id: int | None = None
+    ordered_at: datetime | None = None
 
 
 class ProjectMaterialNeedUpdate(BaseModel):
+    """Patch one need. Unset fields are left alone.
+
+    Explicit-null semantics matter for ``material_catalog_item_id`` and
+    ``notes``: sending ``null`` unlinks the catalogue row (the recovery path
+    after a Datanorm re-import nulls it) or clears the note, while omitting
+    the key keeps what is stored. The router reads ``model_fields_set`` to
+    tell the two apart.
+    """
+
     status: str | None = Field(default=None, min_length=1, max_length=32)
     notes: str | None = None
+    item: str | None = Field(default=None, min_length=1, max_length=500)
+    quantity: str | None = Field(default=None, max_length=64)
+    unit: str | None = Field(default=None, max_length=64)
+    article_no: str | None = Field(default=None, max_length=160)
+    material_catalog_item_id: int | None = None
 
 
 class ProjectMaterialNeedCreate(BaseModel):
@@ -73,6 +110,10 @@ class ProjectMaterialNeedCreate(BaseModel):
     article_no: str | None = Field(default=None, max_length=160)
     unit: str | None = Field(default=None, max_length=64)
     quantity: str | None = Field(default=None, max_length=64)
+    # Why this is needed ("Rest vom Freitag reicht nicht"). Writable at
+    # creation because the reason is known when the row is written — asking
+    # for it in a second PATCH is how it ends up never being recorded.
+    notes: str | None = None
     status: str = Field(default="order", min_length=1, max_length=32)
 
 

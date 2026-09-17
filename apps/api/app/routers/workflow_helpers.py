@@ -71,6 +71,8 @@ from app.models.entities import (
     User,
     VacationRequest,
     WerkstattConstructionBox,
+    WerkstattOrder,
+    WerkstattSupplier,
     WikiPage,
 )
 from app.schemas.task import TASK_DATE_RANGE_DETAIL
@@ -146,6 +148,11 @@ from app.services.report_jobs import (
     report_processing_payload,
 )
 from app.services.runtime_settings import get_openweather_api_key
+from app.services.material_need_rows import (
+    match_catalog_item,
+    parse_quantity_text,
+    report_material_need_rows,
+)
 from app.services.material_catalog import (
     ensure_material_catalog_item_image,
     get_material_catalog_image_status,
@@ -265,11 +272,17 @@ IMAGE_UPLOAD_EXTENSIONS = {
 }
 HEIC_IMAGE_EXTENSIONS = {"heic", "heif"}
 HEIC_CONTENT_TYPES = {"image/heic", "image/heif"}
+# v2.15: "ordered" is its own rung, no longer an alias of "order".
+#
+# The office could not say "a buyer has acted on this" — a need sat on
+# "Bestellen" from the moment it was written until the van arrived, so the
+# same material was ordered twice. Safe to redefine: strict normalisation has
+# always written canonical values, so no stored row says "ordered" today.
 MATERIAL_NEED_STATUS_ALIASES = {
     "order": "order",
-    "ordered": "order",
     "bestellen": "order",
-    "bestellt": "order",
+    "ordered": "ordered",
+    "bestellt": "ordered",
     "on_the_way": "on_the_way",
     "on-the-way": "on_the_way",
     "on the way": "on_the_way",
@@ -1665,22 +1678,9 @@ def _normalize_report_material_text(raw_value: object) -> str:
 
 
 def _parse_report_material_quantity(raw_value: object) -> Decimal | None:
-    raw = str(raw_value or "").strip()
-    if not raw:
-        return None
-    compact = raw.replace(" ", "")
-    if "," in compact and "." in compact:
-        if compact.rfind(",") > compact.rfind("."):
-            compact = compact.replace(".", "")
-            compact = compact.replace(",", ".")
-        else:
-            compact = compact.replace(",", "")
-    elif "," in compact:
-        compact = compact.replace(",", ".")
-    try:
-        return Decimal(compact)
-    except (InvalidOperation, ValueError):
-        return None
+    # One implementation, in the service the order hand-off also uses: a
+    # quantity that reads as 2.5 here and 25 there is how a basket goes wrong.
+    return parse_quantity_text(raw_value)
 
 
 def _normalize_material_need_status(raw_value: str | None, *, default: str = "order", strict: bool = False) -> str:
@@ -1695,28 +1695,6 @@ def _normalize_material_need_status(raw_value: str | None, *, default: str = "or
     return default
 
 
-def _parse_office_material_need_items(raw_value: object) -> list[str]:
-    raw = str(raw_value or "").replace("\r", "\n")
-    if not raw.strip():
-        return []
-
-    items: list[str] = []
-    seen: set[str] = set()
-    for line in raw.split("\n"):
-        cleaned_line = re.sub(r"\s{2,}", " ", line).strip().strip("-*•")
-        if not cleaned_line:
-            continue
-        item = re.sub(r"\s{2,}", " ", cleaned_line).strip().strip("-*•")
-        if not item:
-            continue
-        key = item.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        items.append(item)
-    return items
-
-
 def _create_material_needs_from_report_payload(
     db: Session,
     *,
@@ -1725,16 +1703,35 @@ def _create_material_needs_from_report_payload(
     payload: dict,
     actor_user_id: int | None,
 ) -> int:
-    items = _parse_office_material_need_items(payload.get("office_material_need"))
-    if not items:
+    """Turn a report's Materialbedarf into rows the office can act on.
+
+    Was: one need per line of free text, everything in `item`. A fitter who
+    wrote "NYM-J 5x6 - 25 m - ArtNr 11102138" produced a row with no quantity,
+    no unit, no number and no catalogue link — unorderable by construction,
+    which is why every one of them had to be retyped in the office.
+
+    Now the structured rows carry the quantity and unit, the serialised text
+    contributes the article number, and a number that matches exactly one
+    catalogue row links the need to it. That link is what makes
+    "Bestellung erstellen" work on a need nobody in the office typed.
+    """
+
+    rows = report_material_need_rows(payload)
+    if not rows:
         return 0
     created_count = 0
-    for item in items:
+    for row in rows:
+        catalog_item = match_catalog_item(db, row.article_no)
         db.add(
             ProjectMaterialNeed(
                 project_id=project_id,
                 construction_report_id=report_id,
-                item=item,
+                item=row.item[:500],
+                material_catalog_item_id=catalog_item.id if catalog_item else None,
+                article_no=(row.article_no or (catalog_item.article_no if catalog_item else None) or None),
+                unit=(row.unit or (catalog_item.unit if catalog_item else None) or None),
+                quantity=row.quantity,
+                notes=row.notes,
                 status="order",
                 created_by=actor_user_id,
                 updated_by=actor_user_id,
@@ -1750,6 +1747,8 @@ def _project_material_need_out(
     project: Project,
     report: ConstructionReport | None,
     catalog_item: MaterialCatalogItem | None = None,
+    supplier: WerkstattSupplier | None = None,
+    order: WerkstattOrder | None = None,
 ) -> ProjectMaterialNeedOut:
     return ProjectMaterialNeedOut(
         id=row.id,
@@ -1768,6 +1767,20 @@ def _project_material_need_out(
         image_source=(catalog_item.image_source if catalog_item else None),
         notes=row.notes,
         status=_normalize_material_need_status(row.status),
+        supplier_id=(catalog_item.supplier_id if catalog_item else None),
+        supplier_name=(supplier.name if supplier else None),
+        catalog_item_name=(catalog_item.item_name if catalog_item else None),
+        manufacturer=(catalog_item.manufacturer if catalog_item else None),
+        ean=(catalog_item.ean if catalog_item else None),
+        # Orderable means "we know who sells it and what they call it". A
+        # supplier without a webshop is still orderable — the order is
+        # exported as CSV or e-mailed.
+        orderable=bool(catalog_item is not None and catalog_item.supplier_id is not None),
+        source=("report" if row.construction_report_id is not None else "manual"),
+        werkstatt_order_id=row.werkstatt_order_id,
+        werkstatt_order_number=(order.order_number if order else None),
+        werkstatt_order_line_id=row.werkstatt_order_line_id,
+        ordered_at=row.ordered_at,
         created_by=row.created_by,
         updated_by=row.updated_by,
         created_at=row.created_at,

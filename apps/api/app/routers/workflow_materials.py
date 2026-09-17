@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, BackgroundTasks, File, UploadFile
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response
 
 from app.core.config import get_settings
 from app.core.db import SessionLocal
@@ -60,12 +60,15 @@ def list_project_material_needs(
         return []
     visible_project_ids = [project.id for project in visible_projects]
     projects_by_id = {project.id: project for project in visible_projects}
+    # Same ladder as workflow_werkstatt_bedarfe.py::_STATUS_RANK — the two
+    # lists show the same rows and must not disagree about their order.
     status_rank = case(
         (ProjectMaterialNeed.status == "order", 0),
-        (ProjectMaterialNeed.status == "on_the_way", 1),
-        (ProjectMaterialNeed.status == "available", 2),
-        (ProjectMaterialNeed.status == "completed", 3),
-        else_=4,
+        (ProjectMaterialNeed.status == "ordered", 1),
+        (ProjectMaterialNeed.status == "on_the_way", 2),
+        (ProjectMaterialNeed.status == "available", 3),
+        (ProjectMaterialNeed.status == "completed", 4),
+        else_=5,
     )
     rows = db.execute(
         select(ProjectMaterialNeed, ConstructionReport, MaterialCatalogItem)
@@ -337,6 +340,9 @@ def create_project_material_need(
         article_no=normalized_article or None,
         unit=normalized_unit or None,
         quantity=normalized_quantity or None,
+        # Not run through _normalize_report_material_text: a note may be
+        # several lines, and collapsing them is not this field's business.
+        notes=(payload.notes or "").strip() or None,
         status=normalized_status,
         created_by=current_user.id,
         updated_by=current_user.id,
@@ -366,13 +372,11 @@ def create_project_material_need(
         catalog_item=selected_catalog_item,
     )
 
-@router.patch("/materials/{material_need_id}", response_model=ProjectMaterialNeedOut)
-def update_project_material_need(
-    material_need_id: int,
-    payload: ProjectMaterialNeedUpdate,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
+def _load_visible_material_need(
+    db: Session, current_user: User, material_need_id: int
+) -> tuple[ProjectMaterialNeed, Project]:
+    """The need and its project, or the reason the caller may not have them."""
+
     row = db.get(ProjectMaterialNeed, material_need_id)
     if not row:
         raise HTTPException(status_code=404, detail="Material item not found")
@@ -382,6 +386,74 @@ def update_project_material_need(
     project = db.get(Project, row.project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
+    return row, project
+
+
+def _apply_material_need_edits(
+    db: Session, row: ProjectMaterialNeed, payload: ProjectMaterialNeedUpdate
+) -> list[str]:
+    """Write the edited fields onto the row. Returns which ones changed.
+
+    ``material_catalog_item_id`` and ``notes`` use explicit-null semantics:
+    sending null unlinks the catalogue row (the recovery path after a Datanorm
+    re-import) or clears the note, while omitting the key keeps what is there.
+    A newly linked row fills EMPTY article number and unit from the catalogue —
+    the same rule creation uses — and never overwrites what a fitter typed.
+    """
+
+    changed: list[str] = []
+    fields_set = payload.model_fields_set
+
+    if "material_catalog_item_id" in fields_set:
+        catalog_item: MaterialCatalogItem | None = None
+        if payload.material_catalog_item_id is not None:
+            catalog_item = db.get(MaterialCatalogItem, payload.material_catalog_item_id)
+            if catalog_item is None:
+                raise HTTPException(status_code=404, detail="Katalogeintrag nicht gefunden")
+        if row.material_catalog_item_id != (catalog_item.id if catalog_item else None):
+            row.material_catalog_item_id = catalog_item.id if catalog_item else None
+            changed.append("material_catalog_item_id")
+        if catalog_item is not None:
+            if not (row.article_no or "").strip():
+                row.article_no = _normalize_report_material_text(catalog_item.article_no) or None
+            if not (row.unit or "").strip():
+                row.unit = _normalize_report_material_text(catalog_item.unit) or None
+
+    if "item" in fields_set and payload.item is not None:
+        item_text = _normalize_report_material_text(payload.item)
+        if not item_text:
+            raise HTTPException(status_code=400, detail="Bezeichnung darf nicht leer sein")
+        if item_text != row.item:
+            row.item = item_text
+            changed.append("item")
+
+    for field in ("quantity", "unit", "article_no"):
+        if field not in fields_set:
+            continue
+        value = _normalize_report_material_text(getattr(payload, field)) or None
+        if value != getattr(row, field):
+            setattr(row, field, value)
+            changed.append(field)
+
+    # `model_fields_set`, not `is not None`: the row editor clears a note by
+    # sending an explicit null, and an is-not-None guard would silently put
+    # the old text back — with a 200 and the unchanged row as proof.
+    if "notes" in fields_set:
+        notes = (payload.notes or "").strip() or None
+        if notes != row.notes:
+            row.notes = notes
+            changed.append("notes")
+    return changed
+
+
+@router.patch("/materials/{material_need_id}", response_model=ProjectMaterialNeedOut)
+def update_project_material_need(
+    material_need_id: int,
+    payload: ProjectMaterialNeedUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    row, project = _load_visible_material_need(db, current_user, material_need_id)
 
     previous_status = _normalize_material_need_status(row.status)
     if payload.status is not None:
@@ -389,8 +461,8 @@ def update_project_material_need(
         row.status = next_status
     else:
         next_status = previous_status
-    if payload.notes is not None:
-        row.notes = payload.notes.strip() or None
+
+    changed_fields = _apply_material_need_edits(db, row, payload)
     row.updated_by = current_user.id
     row.updated_at = utcnow()
     db.add(row)
@@ -403,11 +475,65 @@ def update_project_material_need(
             message=f"Material status updated ({row.item[:80]})",
             details={"material_need_id": row.id, "item": row.item, "from": previous_status, "to": next_status},
         )
+    if changed_fields:
+        _record_project_activity(
+            db,
+            project_id=row.project_id,
+            actor_user_id=current_user.id,
+            event_type="material.updated",
+            message=f"Material need updated ({row.item[:80]})",
+            details={"material_need_id": row.id, "item": row.item, "fields": changed_fields},
+        )
     db.commit()
     db.refresh(row)
     report = db.get(ConstructionReport, row.construction_report_id) if row.construction_report_id is not None else None
     catalog_item = db.get(MaterialCatalogItem, row.material_catalog_item_id) if row.material_catalog_item_id else None
-    return _project_material_need_out(row, project=project, report=report, catalog_item=catalog_item)
+    supplier = (
+        db.get(WerkstattSupplier, catalog_item.supplier_id)
+        if catalog_item is not None and catalog_item.supplier_id is not None
+        else None
+    )
+    order = db.get(WerkstattOrder, row.werkstatt_order_id) if row.werkstatt_order_id else None
+    return _project_material_need_out(
+        row,
+        project=project,
+        report=report,
+        catalog_item=catalog_item,
+        supplier=supplier,
+        order=order,
+    )
+
+
+@router.delete("/materials/{material_need_id}", status_code=204)
+def delete_project_material_need(
+    material_need_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Remove one need. An order it reached keeps its line.
+
+    Deleting the need is a statement about the Bedarfe list, not about the
+    wholesaler: the line is what was actually bought and somebody will have
+    to receive it either way. So this unlinks and stops there.
+    """
+
+    row, _ = _load_visible_material_need(db, current_user, material_need_id)
+    item_label = row.item
+    _record_project_activity(
+        db,
+        project_id=row.project_id,
+        actor_user_id=current_user.id,
+        event_type="material.deleted",
+        message=f"Material need deleted ({item_label[:80]})",
+        details={
+            "material_need_id": row.id,
+            "item": item_label,
+            "werkstatt_order_id": row.werkstatt_order_id,
+        },
+    )
+    db.delete(row)
+    db.commit()
+    return Response(status_code=204)
 
 @router.get("/project-class-templates", response_model=list[ProjectClassTemplateOut])
 def list_project_class_templates(

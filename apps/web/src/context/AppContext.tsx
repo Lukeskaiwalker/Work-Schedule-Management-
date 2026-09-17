@@ -1192,7 +1192,13 @@ export interface AppContextValue {
   saveTaskEdit: (confirmOverlap?: boolean) => Promise<void>;
   markTaskDone: (task: Task, options?: { openReportFromTask?: Task; reportBackView?: MainView | null }) => Promise<void>;
   /** The one PATCH that completes a task; markTaskDone and the post-report
-   *  completion both go through it so a later wrapper can insert a dialog. */
+   *  completion both go through it.
+   *
+   *  It may open the "was ist mit dem Rest passiert?" dialog first. Closing
+   *  that dialog RESOLVES this promise without completing the task — it is a
+   *  decision, not a failure — so a caller cannot read success out of it, and
+   *  should reload the task it asked about rather than assume it is done.
+   *  Rejections are real failures and carry a message worth showing. */
   completeTask: (taskId: number, extraPatch?: Record<string, unknown>) => Promise<void>;
   deleteTaskFromEdit: () => Promise<void>;
   exportTaskCalendar: (task: Task) => Promise<void>;
