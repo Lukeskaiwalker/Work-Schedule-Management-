@@ -1,7 +1,7 @@
 from __future__ import annotations
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
@@ -27,10 +27,21 @@ class ConstructionReport(Base):
       is no project. It is deliberately NOT re-scoped to the customer: issued
       numbers are already baked into rendered PDFs, PDF filenames and dispatched
       Telegram messages, so renumbering would invalidate existing artefacts.
+
+    ``idempotency_key`` makes a lost-response retry safe: the client mints a key
+    per submission attempt and sends it as the ``Idempotency-Key`` header, the
+    row keeps it, and a later request from the same user with the same key is
+    answered with this row instead of a second report. The unique index on
+    ``(user_id, idempotency_key)`` is what holds under concurrency — a retry
+    racing the original collides on it rather than slipping past a SELECT.
+    NULL keys are distinct, so reports created without the header are exempt.
     """
 
     __tablename__ = "construction_reports"
-    __table_args__ = (UniqueConstraint("project_id", "report_number", name="uq_construction_report_project_number"),)
+    __table_args__ = (
+        UniqueConstraint("project_id", "report_number", name="uq_construction_report_project_number"),
+        Index("ix_construction_reports_user_idempotency_key", "user_id", "idempotency_key", unique=True),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     customer_id: Mapped[int | None] = mapped_column(
@@ -47,6 +58,7 @@ class ConstructionReport(Base):
     processing_error: Mapped[str | None] = mapped_column(Text)
     processed_at: Mapped[datetime | None] = mapped_column(DateTime)
     pdf_file_name: Mapped[str | None] = mapped_column(String(255))
+    idempotency_key: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 

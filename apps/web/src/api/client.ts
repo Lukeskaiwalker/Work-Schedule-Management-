@@ -10,16 +10,38 @@ export function taskPackingListPath(taskId: number): string {
   return `${API_BASE}/tasks/${taskId}/packing-list.pdf`;
 }
 
+/**
+ * Why a request failed before the server answered. Absent whenever there IS
+ * an HTTP status: a 4xx or 5xx is the server's answer, not a transport failure.
+ *
+ * - "network": the connection dropped (status 0). The outcome is UNKNOWN — the
+ *   server may have processed the request and only the response was lost —
+ *   which is why retrying such a failure needs an idempotency key.
+ * - "abort": the client cancelled the request itself.
+ *
+ * A code rather than the message, so a caller deciding whether to retry never
+ * compares prose that a later edit may reword.
+ */
+export type ApiErrorCode = "network" | "abort";
+
 export class ApiError extends Error {
   status: number;
   detail: unknown;
   body: unknown;
+  code?: ApiErrorCode;
 
-  constructor(message: string, status: number, detail: unknown = null, body: unknown = null) {
+  constructor(
+    message: string,
+    status: number,
+    detail: unknown = null,
+    body: unknown = null,
+    code?: ApiErrorCode,
+  ) {
     super(message);
     this.status = status;
     this.detail = detail;
     this.body = body;
+    this.code = code;
   }
 }
 
@@ -128,18 +150,31 @@ export async function apiFetch<T>(
   return {} as T;
 }
 
+export type UploadRequestOptions = {
+  /** Extra request headers, e.g. the `Idempotency-Key` of a retryable submission. */
+  headers?: Record<string, string>;
+};
+
 export async function apiUploadWithProgress<T>(
   path: string,
   token: string | null,
   body: FormData,
   onProgress?: (progress: UploadProgress) => void,
   method = "POST",
+  options: UploadRequestOptions = {},
 ): Promise<T> {
   return new Promise((resolve, reject) => {
     const request = new XMLHttpRequest();
+    // Deliberately no `request.timeout`: a report with photos over a rural
+    // link can legitimately take minutes (see utils/imageCompression.ts), and
+    // the browser's own network error is the only honest signal that the
+    // bytes are not going to arrive.
     request.open(method, `${API_BASE}${path}`, true);
     request.withCredentials = true;
     if (token) request.setRequestHeader("Authorization", `Bearer ${token}`);
+    for (const [name, value] of Object.entries(options.headers ?? {})) {
+      request.setRequestHeader(name, value);
+    }
 
     request.upload.onprogress = (event) => {
       if (!onProgress) return;
@@ -148,11 +183,15 @@ export async function apiUploadWithProgress<T>(
       onProgress({ loaded: event.loaded, total, percent });
     };
 
+    // Both are status 0 — no answer arrived — but they mean different things
+    // to a retry: a dropped connection may be retried under an idempotency
+    // key, an abort was the user's decision. The messages stay as they are;
+    // App.tsx maps status 0 to its "Verbindung unterbrochen" text.
     request.onerror = () => {
-      reject(new ApiError("Network request failed", 0));
+      reject(new ApiError("Network request failed", 0, null, null, "network"));
     };
     request.onabort = () => {
-      reject(new ApiError("Upload aborted", 0));
+      reject(new ApiError("Upload aborted", 0, null, null, "abort"));
     };
     request.onload = () => {
       const status = request.status;

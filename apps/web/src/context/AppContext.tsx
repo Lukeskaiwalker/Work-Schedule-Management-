@@ -8,6 +8,7 @@ import type {
   Language,
   TaskView,
   TaskType,
+  ReportUploadPhase,
   User,
   Project,
   ProjectClassTaskTemplate,
@@ -499,8 +500,8 @@ export interface AppContextValue {
   setReportSubmitting: (submitting: boolean) => void;
   reportUploadPercent: number | null;
   setReportUploadPercent: (percent: number | null | ((current: number | null) => number | null)) => void;
-  reportUploadPhase: "uploading" | "processing" | null;
-  setReportUploadPhase: (phase: "uploading" | "processing" | null) => void;
+  reportUploadPhase: ReportUploadPhase | null;
+  setReportUploadPhase: (phase: ReportUploadPhase | null) => void;
   reportWorkers: ReportWorker[];
   setReportWorkers: (workers: ReportWorker[] | ((current: ReportWorker[]) => ReportWorker[])) => void;
 

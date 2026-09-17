@@ -5,6 +5,7 @@ import type {
   Project,
   ReportDraft,
   ReportMaterialRow,
+  ReportUploadPhase,
   StoredReportDraft,
   Task,
   TaskMaterial,
@@ -393,4 +394,29 @@ export function sameNumberSet(left: number[], right: number[]) {
   const sortedLeft = [...left].sort((a, b) => a - b);
   const sortedRight = [...right].sort((a, b) => a - b);
   return sortedLeft.every((value, index) => value === sortedRight[index]);
+}
+
+/**
+ * The line under the progress bar while a report is being sent.
+ *
+ * A phase of null reads as "uploading": the bar is only rendered while
+ * `reportSubmitting` is true, and it must never go blank between the tap on
+ * "Senden" and the first progress event.
+ */
+export function reportUploadProgressText(
+  phase: ReportUploadPhase | null,
+  percent: number | null,
+  de: boolean,
+): string {
+  if (phase === "processing") {
+    return de ? "Upload abgeschlossen, Bericht wird verarbeitet…" : "Upload complete, report is being processed…";
+  }
+  const progress = percent != null ? `: ${percent}%` : null;
+  if (typeof phase === "object" && phase !== null) {
+    const attempt = `${phase.attempt}/${phase.maxAttempts}`;
+    return de
+      ? `Verbindung unterbrochen — erneuter Versuch ${attempt}${progress ?? " …"}`
+      : `Connection lost — retrying ${attempt}${progress ?? " …"}`;
+  }
+  return de ? `Upload läuft${progress ?? "…"}` : `Uploading${progress ?? "…"}`;
 }

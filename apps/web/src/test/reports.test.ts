@@ -14,6 +14,7 @@ import {
   consumedMaterialsPayload,
   createReportMaterialRow,
   reportRowsFromTaskMaterials,
+  reportUploadProgressText,
   storedMaterialRowSnapshot,
   taskEditPayloadFromForm,
 } from "../utils/reports";
@@ -184,5 +185,40 @@ describe("TASK_EDIT_PATCH_KEYS", () => {
   it("only names keys the payload actually produces", () => {
     const payload = taskEditPayloadFromForm(buildTaskEditFormState(taskRow()), null);
     TASK_EDIT_PATCH_KEYS.forEach((key) => expect(payload).toHaveProperty(key));
+  });
+});
+
+describe("reportUploadProgressText", () => {
+  const retrying = { kind: "retrying", attempt: 2, maxAttempts: 3 } as const;
+
+  it("shows the upload percentage, or movement when there is no total", () => {
+    expect(reportUploadProgressText("uploading", 57, true)).toBe("Upload läuft: 57%");
+    expect(reportUploadProgressText("uploading", 57, false)).toBe("Uploading: 57%");
+    expect(reportUploadProgressText("uploading", null, true)).toBe("Upload läuft…");
+    expect(reportUploadProgressText("uploading", null, false)).toBe("Uploading…");
+  });
+
+  it("says the bytes are through while the server still works", () => {
+    expect(reportUploadProgressText("processing", 100, true)).toBe(
+      "Upload abgeschlossen, Bericht wird verarbeitet…",
+    );
+    expect(reportUploadProgressText("processing", 100, false)).toBe(
+      "Upload complete, report is being processed…",
+    );
+  });
+
+  it("names the retry attempt after a dropped connection, with the new attempt's percentage once it moves", () => {
+    expect(reportUploadProgressText(retrying, null, true)).toBe(
+      "Verbindung unterbrochen — erneuter Versuch 2/3 …",
+    );
+    expect(reportUploadProgressText(retrying, null, false)).toBe("Connection lost — retrying 2/3 …");
+    expect(reportUploadProgressText(retrying, 35, true)).toBe(
+      "Verbindung unterbrochen — erneuter Versuch 2/3: 35%",
+    );
+    expect(reportUploadProgressText(retrying, 35, false)).toBe("Connection lost — retrying 2/3: 35%");
+  });
+
+  it("treats no phase like the plain upload, so the bar never goes blank mid-submit", () => {
+    expect(reportUploadProgressText(null, 12, true)).toBe("Upload läuft: 12%");
   });
 });

@@ -3771,6 +3771,110 @@ def _create_follow_up_task_for_open_subtasks(
     return follow_up_task
 
 
+IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
+IDEMPOTENCY_KEY_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,64}")
+IDEMPOTENCY_KEY_INVALID_DETAIL = (
+    "Ungültiger Idempotency-Key: erlaubt sind 1 bis 64 Zeichen aus A-Z, a-z, 0-9, '-' und '_'."
+)
+REPORT_IMAGE_FOLDER = "Bilder"
+FOLLOW_UP_TASK_EVENT_TYPE = "task.created"
+
+
+def _parse_idempotency_key(request: Request) -> str | None:
+    """Return the validated ``Idempotency-Key`` header, or None when it is absent.
+
+    Absent means today's behaviour: no replay, no key on the row. Present but
+    malformed is a 400 — a client that sends the header is opting into the
+    retry contract, and a key that cannot be stored cannot protect it.
+    """
+    raw_key = request.headers.get(IDEMPOTENCY_KEY_HEADER)
+    if raw_key is None:
+        return None
+    if not IDEMPOTENCY_KEY_PATTERN.fullmatch(raw_key):
+        raise HTTPException(status_code=400, detail=IDEMPOTENCY_KEY_INVALID_DETAIL)
+    return raw_key
+
+
+def _find_idempotent_report(db: Session, *, user_id: int, idempotency_key: str) -> ConstructionReport | None:
+    """The report this user already filed under this key, if any."""
+    return db.scalars(
+        select(ConstructionReport)
+        .where(
+            ConstructionReport.user_id == user_id,
+            ConstructionReport.idempotency_key == idempotency_key,
+        )
+        .limit(1)
+    ).first()
+
+
+def _construction_report_image_rows(db: Session, report_id: int) -> list[dict[str, str]]:
+    """The photos stored for a report, in upload order.
+
+    Photos are the report's attachments in the ``Bilder`` folder; the PDFs the
+    worker renders later land in ``Berichte`` and must not show up here.
+    """
+    rows = db.scalars(
+        select(Attachment)
+        .where(
+            Attachment.construction_report_id == report_id,
+            Attachment.folder_path == REPORT_IMAGE_FOLDER,
+        )
+        .order_by(Attachment.id.asc())
+    ).all()
+    return [{"id": str(row.id), "file_name": row.file_name, "content_type": row.content_type} for row in rows]
+
+
+def _construction_report_follow_up(db: Session, report: ConstructionReport) -> tuple[int | None, int]:
+    """(follow_up_task_id, follow_up_subtask_count) exactly as the create answered them.
+
+    The follow-up task carries no column pointing back at the report. The one
+    persisted link is the ``task.created`` project activity written in the same
+    transaction, whose details name the report, the task and the number of
+    open subtasks at that moment — the two values the original response held.
+    """
+    if report.project_id is None:
+        return None, 0
+    activities = db.scalars(
+        select(ProjectActivity)
+        .where(
+            ProjectActivity.project_id == report.project_id,
+            ProjectActivity.event_type == FOLLOW_UP_TASK_EVENT_TYPE,
+            ProjectActivity.created_at >= report.created_at,
+        )
+        .order_by(ProjectActivity.id.asc())
+    ).all()
+    for activity in activities:
+        details = activity.details if isinstance(activity.details, dict) else {}
+        if details.get("source_report_id") != report.id:
+            continue
+        task_id = details.get("task_id")
+        return (int(task_id) if task_id is not None else None), int(details.get("subtask_count") or 0)
+    return None, 0
+
+
+def _construction_report_response(db: Session, report: ConstructionReport) -> dict:
+    """The create endpoint's response, built from persisted state only.
+
+    Used for a fresh create and for an idempotent replay alike, so the two can
+    never answer with different shapes.
+    """
+    follow_up_task_id, follow_up_subtask_count = _construction_report_follow_up(db, report)
+    return {
+        "id": report.id,
+        "project_id": report.project_id,
+        "report_number": report.report_number,
+        "customer_id": report.customer_id,
+        "telegram_sent": report.telegram_sent,
+        "telegram_mode": report.telegram_mode,
+        "attachment_file_name": report.pdf_file_name,
+        "report_images": _construction_report_image_rows(db, report.id),
+        "processing_status": report.processing_status,
+        "processing_error": report.processing_error,
+        "follow_up_task_id": follow_up_task_id,
+        "follow_up_subtask_count": follow_up_subtask_count,
+    }
+
+
 async def _create_construction_report_impl(
     request: Request,
     current_user: User,
@@ -3779,6 +3883,14 @@ async def _create_construction_report_impl(
     forced_project_id: int | None,
     forced_customer_id: int | None = None,
 ) -> dict:
+    # A retry after a lost response is answered from the report it already
+    # created — before the body is read, so a replay costs no upload at all.
+    idempotency_key = _parse_idempotency_key(request)
+    if idempotency_key is not None:
+        replayed = _find_idempotent_report(db, user_id=current_user.id, idempotency_key=idempotency_key)
+        if replayed is not None:
+            return _construction_report_response(db, replayed)
+
     content_type = request.headers.get("content-type", "")
     report_images: list[UploadFile] = []
     requested_project_id: int | None = None
@@ -3868,9 +3980,25 @@ async def _create_construction_report_impl(
         telegram_mode="pending" if (send_telegram and telegram_configured) else "stub",
         processing_status="queued",
         pdf_file_name=report_file_name,
+        idempotency_key=idempotency_key,
     )
     db.add(report)
-    db.flush()
+    try:
+        # Nothing has touched the disk yet, and nothing may until this flush
+        # has succeeded: it is where a retry racing the original request
+        # collides on ix_construction_reports_user_idempotency_key (Postgres
+        # blocks until the first commits, then raises). The loser rolls back
+        # having created nothing and replays the winner.
+        db.flush()
+    except IntegrityError:
+        if idempotency_key is None:
+            raise
+        db.rollback()
+        replayed = _find_idempotent_report(db, user_id=current_user.id, idempotency_key=idempotency_key)
+        if replayed is None:
+            # Some other constraint failed; that is not ours to hide.
+            raise
+        return _construction_report_response(db, replayed)
 
     # Rows prefilled from the source task carry the task line's id; what the
     # report says was fitted becomes the line's quantity_used, which the task's
@@ -3881,7 +4009,6 @@ async def _create_construction_report_impl(
         rows=list(report_payload.get("materials_consumed") or report_payload.get("materials") or []),
     )
 
-    report_image_rows: list[dict[str, str]] = []
     for image_index, image_file in enumerate(report_images, start=1):
         raw_image = await image_file.read()
         if not raw_image:
@@ -3889,19 +4016,18 @@ async def _create_construction_report_impl(
         file_name = _report_image_filename(report, image_file, image_index)
         extension = _report_image_extension(file_name, image_file.content_type)
         stored_path = store_encrypted_file(raw_image, extension)
-        image_folder = "Bilder"
         if target_project_id is not None:
             _register_project_folder(
                 db,
                 project_id=target_project_id,
-                folder_path=image_folder,
+                folder_path=REPORT_IMAGE_FOLDER,
                 created_by=current_user.id,
             )
         row = Attachment(
             project_id=target_project_id,
             construction_report_id=report.id,
             uploaded_by=current_user.id,
-            folder_path=image_folder,
+            folder_path=REPORT_IMAGE_FOLDER,
             file_name=file_name,
             content_type=image_file.content_type or "application/octet-stream",
             stored_path=stored_path,
@@ -3909,7 +4035,6 @@ async def _create_construction_report_impl(
         )
         db.add(row)
         db.flush()
-        report_image_rows.append({"id": str(row.id), "file_name": row.file_name, "content_type": row.content_type})
 
     job = queue_construction_report_job(
         db,
@@ -3920,7 +4045,6 @@ async def _create_construction_report_impl(
 
     report_worker_hours = _construction_report_worker_hours(report_payload)
     material_need_items_count = 0
-    follow_up_task: Task | None = None
     if target_project_id is not None:
         material_need_items_count = _create_material_needs_from_report_payload(
             db,
@@ -3946,7 +4070,9 @@ async def _create_construction_report_impl(
                 "material_need_items": material_need_items_count,
             },
         )
-        follow_up_task = _create_follow_up_task_for_open_subtasks(
+        # The response reads the follow-up back from the task.created activity
+        # this writes, the same way a replay does.
+        _create_follow_up_task_for_open_subtasks(
             db,
             current_user=current_user,
             report=report,
@@ -3958,20 +4084,7 @@ async def _create_construction_report_impl(
         if inline_job and inline_job.status == "queued":
             await process_construction_report_job(db, inline_job.id)
     db.refresh(report)
-    return {
-        "id": report.id,
-        "project_id": report.project_id,
-        "report_number": report.report_number,
-        "customer_id": report.customer_id,
-        "telegram_sent": report.telegram_sent,
-        "telegram_mode": report.telegram_mode,
-        "attachment_file_name": report.pdf_file_name,
-        "report_images": report_image_rows,
-        "processing_status": report.processing_status,
-        "processing_error": report.processing_error,
-        "follow_up_task_id": follow_up_task.id if follow_up_task else None,
-        "follow_up_subtask_count": len(follow_up_task.subtasks) if follow_up_task else 0,
-    }
+    return _construction_report_response(db, report)
 
 
 def _latest_report_pdf_attachment_for_report(db: Session, report_id: int) -> Attachment | None:

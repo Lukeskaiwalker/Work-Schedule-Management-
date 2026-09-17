@@ -3,6 +3,7 @@ import { useAppContext } from "../context/AppContext";
 import { IMAGE_INPUT_ACCEPT } from "../constants";
 import { formatTimeInputForTyping, formatTimeInputForBlur } from "../utils/tasks";
 import { formatProjectTitle } from "../utils/projects";
+import { reportUploadProgressText } from "../utils/reports";
 import { WorkerNameCombobox } from "../components/shared/WorkerNameCombobox";
 import { SignaturePad } from "../components/shared/SignaturePad";
 import { CustomerCombobox } from "../components/customers/CustomerCombobox";
@@ -1190,15 +1191,7 @@ export function ConstructionPage() {
                 style={{ width: `${Math.max(0, Math.min(100, reportUploadPercent ?? 4))}%` }}
               />
             </div>
-            <small className="muted">
-              {reportUploadPhase === "processing"
-                ? de
-                  ? "Upload abgeschlossen, Bericht wird verarbeitet…"
-                  : "Upload complete, report is being processed…"
-                : de
-                  ? `Upload läuft${reportUploadPercent != null ? `: ${reportUploadPercent}%` : "…"}`
-                  : `Uploading${reportUploadPercent != null ? `: ${reportUploadPercent}%` : "…"}`}
-            </small>
+            <small className="muted">{reportUploadProgressText(reportUploadPhase, reportUploadPercent, de)}</small>
           </div>
         )}
 

@@ -6,6 +6,8 @@ import { ApiError, apiFetch, apiUploadWithProgress, setUnauthorizedHandler } fro
 import { apiUrl } from "./native/shell";
 import { taskBoxDisplay } from "./utils/boxes";
 import { compressReportImages } from "./utils/imageCompression";
+import { formDataFingerprint, sendUnderSubmissionKey, uploadWithIdempotentRetry } from "./utils/idempotentRetry";
+import type { SubmissionKey } from "./utils/idempotentRetry";
 import type {
   Language,
   TaskView,
@@ -68,6 +70,7 @@ import type {
   ReportSignature,
   ConstructionReportCreateResponse,
   ConstructionReportProcessingResponse,
+  ReportUploadPhase,
   RecentConstructionReport,
   ReportImageSelection,
   TaskReportPrefill,
@@ -715,7 +718,19 @@ export function App() {
   const [reportImageFiles, setReportImageFiles] = useState<ReportImageSelection[]>([]);
   const [reportSubmitting, setReportSubmitting] = useState(false);
   const [reportUploadPercent, setReportUploadPercent] = useState<number | null>(null);
-  const [reportUploadPhase, setReportUploadPhase] = useState<"uploading" | "processing" | null>(null);
+  const [reportUploadPhase, setReportUploadPhase] = useState<ReportUploadPhase | null>(null);
+  // The idempotency key of the report submission on the form, with a
+  // fingerprint of the contents it was minted for. A ref, not state: nothing
+  // renders it, and the submit handler needs it synchronously across its
+  // retries. Minted on the first "Senden" for these contents, kept across the
+  // automatic retries, across a manual re-send of the same unsent form and
+  // across EVERY failure whatever its status (an attempt that succeeded
+  // server-side with the answer lost, or a 500 from after the commit, must be
+  // replayed by the re-send, not filed again — see sendUnderSubmissionKey).
+  // Ends only on success or when the form is reset. NOT the draft id: that
+  // one identifies the draft for its whole life, and a draft edited and
+  // re-sent a day later must file a new report, not replay yesterday's.
+  const reportSubmissionKeyRef = useRef<SubmissionKey | null>(null);
   // Controlled state for previously-uncontrolled report form fields (enables autosave + restore)
   const [reportWorkDone, setReportWorkDone] = useState("");
   const [reportIncidents, setReportIncidents] = useState("");
@@ -7328,6 +7343,8 @@ export function App() {
   /** Shared form-reset helper used by startNewReportDraft and deleteReportDraft.
    *  Mirrors the cleanup done after a successful submit. */
   function resetReportFormFields() {
+    // A reset ends the submission the idempotency key belonged to.
+    reportSubmissionKeyRef.current = null;
     setReportDraft({ ...EMPTY_REPORT_DRAFT });
     setReportWorkDone("");
     setReportIncidents("");
@@ -7628,22 +7645,46 @@ export function App() {
       setReportUploadPercent(0);
       setReportUploadPhase("uploading");
       const reportEndpoint = targetProjectId ? `/projects/${targetProjectId}/construction-reports` : "/construction-reports";
-      const createdReport = await apiUploadWithProgress<ConstructionReportCreateResponse>(
-        reportEndpoint,
-        token,
-        multipart,
-        (progress) => {
-          if (progress.percent != null) {
-            setReportUploadPercent(progress.percent);
-            if (progress.percent >= 100) {
-              setReportUploadPhase("processing");
-            }
-            return;
-          }
-          if (progress.loaded > 0) {
-            setReportUploadPercent((current) => current ?? 1);
-          }
-        },
+      // The key belongs to the SUBMISSION, not the tap: the same one goes on
+      // every automatic retry and on a manual re-send of these exact contents,
+      // a changed form gets a new one, and only success (or a form reset)
+      // spends it — sendUnderSubmissionKey says why every failure keeps it.
+      const createdReport = await sendUnderSubmissionKey(
+        reportSubmissionKeyRef,
+        formDataFingerprint(multipart),
+        (key) =>
+          uploadWithIdempotentRetry<ConstructionReportCreateResponse>({
+            key,
+            // Fires before the backoff, so the line under the bar already
+            // reads "erneuter Versuch 2/3" while the app waits — and the bar
+            // starts over for the new attempt instead of sitting at the old
+            // percentage.
+            onAttempt: ({ attempt, maxAttempts }) => {
+              if (attempt === 1) return;
+              setReportUploadPercent(null);
+              setReportUploadPhase({ kind: "retrying", attempt, maxAttempts });
+            },
+            upload: (headers) =>
+              apiUploadWithProgress<ConstructionReportCreateResponse>(
+                reportEndpoint,
+                token,
+                multipart,
+                (progress) => {
+                  if (progress.percent != null) {
+                    setReportUploadPercent(progress.percent);
+                    if (progress.percent >= 100) {
+                      setReportUploadPhase("processing");
+                    }
+                    return;
+                  }
+                  if (progress.loaded > 0) {
+                    setReportUploadPercent((current) => current ?? 1);
+                  }
+                },
+                "POST",
+                { headers },
+              ),
+          }),
       );
 
       // If this report was linked to a task via "Create report from task", mark
@@ -7805,6 +7846,17 @@ export function App() {
         );
       }
     } catch (err: any) {
+      // The submission key is deliberately NOT cleared here, whatever the
+      // status. A replay can never be a bad or stale answer — the server only
+      // replays a report it actually created — so keeping the key costs
+      // nothing, while dropping it on the 500 that comes AFTER the commit
+      // (processing runs inline after db.commit; a Telegram or PDF step can
+      // fail there) would make the next Send of the unchanged form file the
+      // report a second time: exactly the duplicate the key exists to
+      // prevent. After a 4xx the user changes something, which changes the
+      // fingerprint and mints a new key anyway. Only success and a form reset
+      // end a key (sendUnderSubmissionKey / resetReportFormFields).
+      //
       // status 0 is the XHR's own verdict: the connection dropped before any
       // response arrived — a mobile link on site, or the proxy container being
       // recreated by a deploy. It is NOT a server rejection, and the raw

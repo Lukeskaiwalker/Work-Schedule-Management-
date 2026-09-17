@@ -941,6 +941,17 @@ export type ReportSignature = {
   image_base64: string;
 };
 
+/**
+ * Where the report submission is, for the line under the progress bar.
+ * `retrying` carries the counter that line shows ("erneuter Versuch 2/3"):
+ * the connection dropped and the same submission is being sent again under
+ * its idempotency key.
+ */
+export type ReportUploadPhase =
+  | "uploading"
+  | "processing"
+  | { kind: "retrying"; attempt: number; maxAttempts: number };
+
 export type ConstructionReportCreateResponse = {
   id: number;
   project_id: number | null;
