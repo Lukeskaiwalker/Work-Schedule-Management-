@@ -1,207 +1,154 @@
+import { useMemo } from "react";
 import { useAppContext } from "../../context/AppContext";
-import { WerkstattKpiChip } from "../../components/werkstatt/WerkstattKpiChip";
-import { WerkstattMovementRow } from "../../components/werkstatt/WerkstattMovementRow";
-import { WerkstattReorderRow } from "../../components/werkstatt/WerkstattReorderRow";
-import { WerkstattProjectGroup } from "../../components/werkstatt/WerkstattProjectGroup";
-import { WerkstattMaintenanceRow } from "../../components/werkstatt/WerkstattMaintenanceRow";
+import { DashboardKpiStrip } from "../../components/werkstatt/dashboard/DashboardKpiStrip";
+import { DashboardMaintenanceCard } from "../../components/werkstatt/dashboard/DashboardMaintenanceCard";
+import { DashboardMovementsCard } from "../../components/werkstatt/dashboard/DashboardMovementsCard";
+import { DashboardOnSiteCard } from "../../components/werkstatt/dashboard/DashboardOnSiteCard";
+import { DashboardReorderCard } from "../../components/werkstatt/dashboard/DashboardReorderCard";
+import { WerkstattLoadError } from "../../components/werkstatt/dashboard/WerkstattLoadError";
+import { blockPhaseFor } from "../../components/werkstatt/dashboard/WerkstattBlockState";
+import { useWerkstattOverview } from "../../hooks/useWerkstattOverview";
 import {
-  MOCK_REORDER,
-  MOCK_MOVEMENTS,
-  MOCK_CHECKOUT_GROUPS,
-  MOCK_MAINTENANCE,
-} from "../../components/werkstatt/mockData";
+  fetchWerkstattDashboard,
+  listOnSiteGroups,
+} from "../../utils/werkstattDashboardApi";
+import { listReorderSuggestions } from "../../utils/werkstattReorderApi";
+import {
+  onSitePreviewFrom,
+  reorderPreviewFrom,
+} from "../../utils/werkstattDashboardPreview";
+import "../../styles/werkstatt-overview.css";
 
 /**
- * WerkstattDashboardPage — Werkstatt dashboard. Ported from Paper artboard
- * 7DK-0 "Werkstatt — Dashboard". This is the default tab of the Werkstatt
- * main view.
+ * WerkstattDashboardPage — the landing screen of the Werkstatt area.
+ *
+ * Every number here used to be a literal in the JSX: 412 articles, 14 below
+ * minimum, 27 out on site, 3 unavailable, over four lists of fixtures that had
+ * since been emptied. A workshop reads this screen to decide whether to order
+ * cable and whether a tool is missing, so invented figures are worse than no
+ * screen at all.
+ *
+ * Three requests, not one. `/werkstatt/dashboard` carries the KPIs, the recent
+ * movements and the inspection list, and its own preview blocks for the other
+ * two cards — but those previews are built by different queries than the pages
+ * their buttons open, so they contradicted the destination. Both cards now read
+ * the destination's own endpoint and slice it here
+ * (`utils/werkstattDashboardPreview.ts`), which makes each card a genuine
+ * sample of the screen behind it and lets the footers say exactly what is left
+ * out.
+ *
+ * Each block owns its load state. A card whose request failed says so on the
+ * card; nothing on this page ever renders a zero, or an "everything is fine",
+ * that it did not receive.
  *
  * Self-gates on `mainView === "werkstatt" && werkstattTab === "dashboard"`.
- * TODO(werkstatt): replace MOCK_* with API data once the BE endpoints land.
  */
 export function WerkstattDashboardPage() {
-  const { mainView, language, werkstattTab, setWerkstattTab } = useAppContext();
-
-  if (mainView !== "werkstatt" || werkstattTab !== "dashboard") return null;
+  const { mainView, language, werkstattTab, setWerkstattTab, token, now } = useAppContext();
 
   const de = language === "de";
+  const active = mainView === "werkstatt" && werkstattTab === "dashboard";
+
+  const overview = useWerkstattOverview(
+    active,
+    token,
+    fetchWerkstattDashboard,
+    de ? "Werkstatt-Übersicht nicht geladen." : "Workshop overview not loaded.",
+  );
+  const onSite = useWerkstattOverview(
+    active,
+    token,
+    listOnSiteGroups,
+    de ? "Ausgegebene Artikel nicht geladen." : "Checked-out items not loaded.",
+  );
+  const reorder = useWerkstattOverview(
+    active,
+    token,
+    listReorderSuggestions,
+    de ? "Bestellvorschläge nicht geladen." : "Reorder suggestions not loaded.",
+  );
+
+  const onSitePreview = useMemo(
+    () => (onSite.data ? onSitePreviewFrom(onSite.data) : null),
+    [onSite.data],
+  );
+  const reorderPreview = useMemo(
+    () => (reorder.data ? reorderPreviewFrom(reorder.data) : null),
+    [reorder.data],
+  );
+
+  if (!active) return null;
+
+  const kpis = overview.data?.kpis ?? null;
+
+  const failures = [overview.error, onSite.error, reorder.error].filter(
+    (message): message is string => Boolean(message),
+  );
+  const allFailed = failures.length === 3;
+  const retryFailed = () => {
+    if (overview.error) overview.reload();
+    if (onSite.error) onSite.reload();
+    if (reorder.error) reorder.reload();
+  };
 
   return (
     <section className="werkstatt-tab-page">
-      <div className="werkstatt-kpi-strip">
-        <WerkstattKpiChip
-          label={de ? "ARTIKEL IM BESTAND" : "ITEMS IN STOCK"}
-          value="412"
-          subtitle={de ? "über 38 Kategorien" : "across 38 categories"}
-          tone="neutral"
+      {failures.length > 0 && (
+        <WerkstattLoadError
+          headline={
+            allFailed
+              ? de
+                ? "Die Zahlen konnten nicht geladen werden — hier steht nichts Aktuelles."
+                : "These figures could not be loaded — nothing here is current."
+              : de
+                ? "Ein Teil der Zahlen konnte nicht geladen werden — die betroffenen Karten sagen es."
+                : "Some figures could not be loaded — the affected cards say so."
+          }
+          detail={failures.join(" · ")}
+          retryLabel={de ? "Erneut versuchen" : "Try again"}
+          onRetry={retryFailed}
         />
-        <WerkstattKpiChip
-          label={de ? "MINDESTBESTAND UNTERSCHRITTEN" : "BELOW MINIMUM STOCK"}
-          value="14"
-          subtitle={de ? "Artikel nachbestellen" : "items to reorder"}
-          tone="warning"
-        />
-        <WerkstattKpiChip
-          label={de ? "AUSGEGEBEN AUF BAUSTELLE" : "CHECKED OUT ON SITE"}
-          value="27"
-          subtitle={de ? "bei 9 Projekten" : "across 9 projects"}
-          tone="info"
-        />
-        <WerkstattKpiChip
-          label={de ? "NICHT VERFÜGBAR" : "UNAVAILABLE"}
-          value="3"
-          subtitle={de ? "Reparatur oder verloren" : "repair or lost"}
-          tone="danger"
-        />
-      </div>
+      )}
+
+      <DashboardKpiStrip kpis={kpis} language={de ? "de" : "en"} />
 
       <div className="werkstatt-content-grid">
         <div className="werkstatt-column werkstatt-column--left">
-          <section className="werkstatt-card">
-            <header className="werkstatt-card-head">
-              <div className="werkstatt-card-title-block">
-                <h3 className="werkstatt-card-title">
-                  {de ? "Nachbestellen" : "Reorder"}
-                </h3>
-                <span className="werkstatt-card-subtitle">
-                  {de
-                    ? "14 Artikel unter Mindestbestand"
-                    : "14 items below minimum stock"}
-                </span>
-              </div>
-              <button type="button" className="werkstatt-card-action">
-                {de ? "Bericht öffnen →" : "Open report →"}
-              </button>
-            </header>
-            <ul className="werkstatt-reorder-list">
-              {MOCK_REORDER.map((row) => (
-                <WerkstattReorderRow
-                  key={row.id}
-                  itemName={row.item_name}
-                  articleNo={row.article_no}
-                  category={row.category}
-                  location={row.location}
-                  stockLabel={row.stock_label}
-                  severity={row.severity}
-                  orderLabel={de ? "Bestellen" : "Order"}
-                />
-              ))}
-            </ul>
-          </section>
+          <DashboardReorderCard
+            lines={reorderPreview?.lines ?? null}
+            orderableCount={reorderPreview?.total ?? null}
+            belowMinCount={kpis?.below_min_count ?? null}
+            phase={blockPhaseFor(reorder, reorderPreview?.lines.length)}
+            language={de ? "de" : "en"}
+            onOpenReorder={() => setWerkstattTab("nachbestellen")}
+          />
 
-          <section className="werkstatt-card">
-            <header className="werkstatt-card-head">
-              <div className="werkstatt-card-title-block">
-                <h3 className="werkstatt-card-title">
-                  {de ? "Letzte Bewegungen" : "Recent movements"}
-                </h3>
-                <span className="werkstatt-card-subtitle">
-                  {de
-                    ? "Heute · 11 Ein- und Ausgänge"
-                    : "Today · 11 ins and outs"}
-                </span>
-              </div>
-              <div
-                className="werkstatt-segmented"
-                role="tablist"
-                aria-label={de ? "Bewegungstyp" : "Movement type"}
-              >
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected="true"
-                  className="werkstatt-segmented-btn werkstatt-segmented-btn--active"
-                >
-                  {de ? "Alle" : "All"}
-                </button>
-                <button type="button" role="tab" className="werkstatt-segmented-btn">
-                  {de ? "Entnahmen" : "Out"}
-                </button>
-                <button type="button" role="tab" className="werkstatt-segmented-btn">
-                  {de ? "Rückgaben" : "Returns"}
-                </button>
-                <button type="button" role="tab" className="werkstatt-segmented-btn">
-                  {de ? "Korrekturen" : "Adjustments"}
-                </button>
-              </div>
-            </header>
-            <ul className="werkstatt-movement-list">
-              {MOCK_MOVEMENTS.map((movement) => (
-                <WerkstattMovementRow
-                  key={movement.id}
-                  kind={movement.kind}
-                  title={de ? movement.title_de : movement.title_en}
-                  subtitle={movement.subtitle}
-                  timestamp={de ? movement.timestamp_de : movement.timestamp_en}
-                />
-              ))}
-            </ul>
-          </section>
+          <DashboardMovementsCard
+            movements={overview.data?.recent_movements ?? null}
+            phase={blockPhaseFor(overview, overview.data?.recent_movements?.length)}
+            language={de ? "de" : "en"}
+            now={now}
+          />
         </div>
 
         <div className="werkstatt-column werkstatt-column--right">
-          <section className="werkstatt-card">
-            <header className="werkstatt-card-head">
-              <div className="werkstatt-card-title-block">
-                <h3 className="werkstatt-card-title">
-                  {de ? "Auf Baustelle" : "On site"}
-                </h3>
-                <span className="werkstatt-card-subtitle">
-                  {de
-                    ? "27 Artikel bei 9 Projekten"
-                    : "27 items across 9 projects"}
-                </span>
-              </div>
-              <button
-                type="button"
-                className="werkstatt-card-action"
-                onClick={() => setWerkstattTab("on_site")}
-              >
-                {de ? "Alle →" : "All →"}
-              </button>
-            </header>
-            <div className="werkstatt-checkout-groups">
-              {MOCK_CHECKOUT_GROUPS.map((group) => (
-                <WerkstattProjectGroup
-                  key={group.id}
-                  projectNumber={group.project_number}
-                  projectTitle={group.project_title}
-                  itemsLabel={
-                    de
-                      ? `${group.item_count} Artikel`
-                      : `${group.item_count} items`
-                  }
-                  items={group.items}
-                />
-              ))}
-            </div>
-          </section>
+          <DashboardOnSiteCard
+            groups={onSitePreview?.groups ?? null}
+            hiddenGroups={onSitePreview?.hiddenGroups ?? 0}
+            hiddenItems={onSitePreview?.hiddenItems ?? 0}
+            onSiteCount={kpis?.on_site_count ?? null}
+            phase={blockPhaseFor(onSite, onSitePreview?.groups.length)}
+            language={de ? "de" : "en"}
+            now={now}
+            onOpenAll={() => setWerkstattTab("on_site")}
+          />
 
-          <section className="werkstatt-card">
-            <header className="werkstatt-card-head">
-              <div className="werkstatt-card-title-block">
-                <h3 className="werkstatt-card-title">
-                  {de ? "In Reparatur / Prüfung" : "Repair / Inspection"}
-                </h3>
-                <span className="werkstatt-card-subtitle">
-                  {de
-                    ? "3 Werkzeuge außer Betrieb"
-                    : "3 tools out of service"}
-                </span>
-              </div>
-            </header>
-            <ul className="werkstatt-maintenance-list">
-              {MOCK_MAINTENANCE.map((entry) => (
-                <WerkstattMaintenanceRow
-                  key={entry.id}
-                  toolName={entry.tool_name}
-                  context={de ? entry.context_de : entry.context_en}
-                  badge={entry.badge}
-                  badgeLabel={de ? entry.badge_label_de : entry.badge_label_en}
-                />
-              ))}
-            </ul>
-          </section>
+          <DashboardMaintenanceCard
+            entries={overview.data?.maintenance_entries ?? null}
+            inRepairCount={kpis?.in_repair_count ?? null}
+            phase={blockPhaseFor(overview, overview.data?.maintenance_entries?.length)}
+            language={de ? "de" : "en"}
+          />
         </div>
       </div>
     </section>

@@ -15,7 +15,7 @@ import {
   type StockFilterKey,
 } from "../../components/werkstatt/StockFilterBar";
 import { StockTableRow } from "../../components/werkstatt/StockTableRow";
-import { type MockInventoryRow, type MockStockTone } from "../../components/werkstatt/mockData";
+import { type StockRow, type StockTone } from "../../components/werkstatt/stockRowTypes";
 import {
   adjustArticleStock,
   checkoutArticle,
@@ -42,13 +42,14 @@ import {
 import { lookupArticleCode } from "../../utils/werkstattArticleLookupApi";
 import { expectedReturnIso } from "../../utils/werkstattReturnDates";
 import "../../styles/stock.css";
+import "../../styles/werkstatt-load-states.css";
 
 /**
  * WerkstattInventarPage — full inventory list. Ported from Paper 7RO-0
  * "Alle Artikel". Self-gates on mainView+werkstattTab.
  *
- * Reads /api/werkstatt/articles. It previously rendered MOCK_INVENTORY_ROWS —
- * an EMPTY array — beside hard-coded filter counts (412/368/14/3/27), so the
+ * Reads /api/werkstatt/articles. It previously rendered an EMPTY fixture
+ * array beside hard-coded filter counts (412/368/14/3/27), so the
  * page confidently reported four hundred articles over an empty table while
  * production held two hundred and forty-nine real ones. Counts are now derived
  * from the rows actually fetched, which is the only way the two can never
@@ -65,7 +66,7 @@ import "../../styles/stock.css";
  *
  * Narrower than a table row on purpose: the dialog is also opened for articles
  * that are NOT in the table — a machine type, or anything the current filter
- * excludes — and a row is the wrong thing to demand there. `MockInventoryRow`
+ * excludes — and a row is the wrong thing to demand there. `StockRow`
  * satisfies it structurally, so the table path is unchanged.
  */
 type StockDialogSubject = {
@@ -77,6 +78,19 @@ type StockDialogSubject = {
   stock_available: number;
   unit: string | null;
 };
+
+/**
+ * How many articles one list request asks for — and the server's own ceiling
+ * (`ARTICLE_LIST_MAX_LIMIT` in workflow_werkstatt_articles.py), so it cannot
+ * be raised here to fetch "everything".
+ *
+ * Production holds ~249 consumables today, so the cap is not reached. It will
+ * be, and a page that silently shows the first 500 of 600 would report "Alle ·
+ * 500" as the stock of the workshop. The endpoint refuses a higher limit, so
+ * the page cannot fetch one row beyond the cap to tell "cut off" from "exactly
+ * 500" — hence the note says "möglicherweise", which is all that is known.
+ */
+const ARTICLE_PAGE_LIMIT = 500;
 
 export function WerkstattInventarPage() {
   const {
@@ -200,7 +214,7 @@ export function WerkstattInventarPage() {
         // EAN-clash message telling somebody to go and reactivate SP-0042
         // named a row no screen could open.
         includeArchived: showArchived,
-        limit: 500,
+        limit: ARTICLE_PAGE_LIMIT,
       });
       setArticles(rows);
       setLoadError(null);
@@ -243,11 +257,11 @@ export function WerkstattInventarPage() {
 
   /** API row → the presentational shape this page already renders.
    *
-   * MockInventoryRow is label-shaped, not number-shaped: it wants the strings
+   * StockRow is label-shaped, not number-shaped: it wants the strings
    * the table prints. Formatting here keeps the table dumb and means German
    * wording lives in one place instead of being rebuilt per cell.
    */
-  const allRows = useMemo<MockInventoryRow[]>(
+  const allRows = useMemo<StockRow[]>(
     () =>
       articles.map((a) => {
         const out = Math.max(0, a.stock_total - a.stock_available);
@@ -255,8 +269,8 @@ export function WerkstattInventarPage() {
         // dialog the row opens. The row used to print a hard-coded "Stk" while
         // the dialog printed "St." — same article, two units, two numbers.
         const unit = unitLabel(a.unit, language === "de");
-        const tone: MockStockTone =
-          a.stock_status === "unavailable" ? "empty" : (a.stock_status as MockStockTone);
+        const tone: StockTone =
+          a.stock_status === "unavailable" ? "empty" : (a.stock_status as StockTone);
         return {
           id: String(a.id),
           article_no: a.article_number,
@@ -293,23 +307,27 @@ export function WerkstattInventarPage() {
   );
 
   const counts = useMemo(() => {
-    const by: Record<MockStockTone, number> = { available: 0, low: 0, empty: 0, out: 0 };
+    const by: Record<StockTone, number> = { available: 0, low: 0, empty: 0, out: 0 };
     for (const row of allRows) by[row.stock_tone] += 1;
     return by;
   }, [allRows]);
 
-  const filters: ReadonlyArray<StockFilterDef> = useMemo(
-    () => [
-      { key: "all", label_de: "Alle", label_en: "All", count: allRows.length },
-      { key: "available", label_de: "Verfügbar", label_en: "Available", count: counts.available },
-      { key: "low", label_de: "Niedrig", label_en: "Low", count: counts.low },
-      { key: "empty", label_de: "Leer", label_en: "Empty", count: counts.empty },
-      { key: "out", label_de: "Unterwegs", label_en: "Out", count: counts.out },
-    ],
-    [allRows.length, counts],
-  );
+  /* While the load failed there are no rows to count, and every chip would
+   * otherwise print "· 0" directly above a row saying the stock could not be
+   * read. The chips are the part a user takes in at a glance, so they say
+   * nothing rather than something false. */
+  const filters: ReadonlyArray<StockFilterDef> = useMemo(() => {
+    const at = (value: number): number | null => (loadError ? null : value);
+    return [
+      { key: "all", label_de: "Alle", label_en: "All", count: at(allRows.length) },
+      { key: "available", label_de: "Verfügbar", label_en: "Available", count: at(counts.available) },
+      { key: "low", label_de: "Niedrig", label_en: "Low", count: at(counts.low) },
+      { key: "empty", label_de: "Leer", label_en: "Empty", count: at(counts.empty) },
+      { key: "out", label_de: "Unterwegs", label_en: "Out", count: at(counts.out) },
+    ];
+  }, [allRows.length, counts, loadError]);
 
-  const rows = useMemo<ReadonlyArray<MockInventoryRow>>(() => {
+  const rows = useMemo<ReadonlyArray<StockRow>>(() => {
     const needle = search.trim().toLowerCase();
     return allRows.filter((row) => {
       if (activeFilter !== "all" && row.stock_tone !== activeFilter) return false;
@@ -397,7 +415,7 @@ export function WerkstattInventarPage() {
    * derived from that, so not reloading would leave it inviting a second print.
    */
   const handlePrintLabel = useCallback(
-    async (row: MockInventoryRow) => {
+    async (row: StockRow) => {
       if (!token || printingId !== null) return;
       setPrintingId(row.article_id);
       setLabelNotice("");
@@ -448,7 +466,7 @@ export function WerkstattInventarPage() {
   /** Check stock out of the workshop. Closes the dialog only on success. */
   const handleCheckout = useCallback(
     async (
-      row: MockInventoryRow,
+      row: StockRow,
       payload: {
         quantity: number;
         project_id: string | null;
@@ -707,6 +725,17 @@ export function WerkstattInventarPage() {
       />
 
       <div className="werkstatt-table-card">
+        {/* A full page is indistinguishable from a complete one here: the
+            endpoint refuses a limit above its own cap, so the page cannot
+            fetch a probe row the way the Katalog page does. It says what it
+            knows — and that the chip counts describe these rows only. */}
+        {!loading && !loadError && articles.length >= ARTICLE_PAGE_LIMIT && (
+          <p className="werkstatt-stock-note werkstatt-stock-note--cap" role="note">
+            {de
+              ? `Es werden ${ARTICLE_PAGE_LIMIT} Artikel angezeigt — möglicherweise gibt es weitere. Die Zahlen an den Filtern zählen nur diese ${ARTICLE_PAGE_LIMIT}. Suche oder Kategorie eingrenzen.`
+              : `${ARTICLE_PAGE_LIMIT} articles are shown — there may be more. The filter counts cover only these ${ARTICLE_PAGE_LIMIT}. Narrow the search or category.`}
+          </p>
+        )}
         <div className="werkstatt-table-head" role="row">
           <span className="werkstatt-col werkstatt-col-checkbox" />
           <span className="werkstatt-col werkstatt-col-item">

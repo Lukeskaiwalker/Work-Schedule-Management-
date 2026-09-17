@@ -215,6 +215,13 @@ def mobile_return(
       - ``ok``     → ``return``
       - ``repair`` → ``repair_out``
       - ``lost``   → ``correction`` (shrinks stock_total too)
+
+    ``payload.project_id`` is written onto the movement so the return lands in
+    the same ledger bucket as the checkout it closes. ``list_my_checkouts``
+    balances a borrower per ``(article, project)``; without the project a
+    return of a project-tagged loan leaves that loan open — the phone then
+    shows a row it can never clear — and subtracts from the borrower's
+    project-less loan of the same article instead. See ``ReturnPayload``.
     """
 
     article = _load_article_or_404(db, payload.article_id)
@@ -236,6 +243,7 @@ def mobile_return(
             movement_type=movement_type,
             quantity=payload.quantity,
             user_id=acting_user_id,
+            project_id=payload.project_id,
             notes=payload.notes,
         )
     except MovementError as exc:

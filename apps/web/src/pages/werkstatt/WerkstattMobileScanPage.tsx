@@ -76,11 +76,16 @@ export function WerkstattMobileScanPage() {
   const [createCode, setCreateCode] = useState<string | null>(null);
   /* The create dialog can discover that the code IS stocked — under another
    * spelling of the barcode — and hand off. The hand-off used to set
-   * `activeWerkstattArticleId` and switch to the "artikel" tab, which on a
-   * phone is still the mock fixture: it printed LAGER 0 / UNTERWEGS 0 /
-   * BESTAND 0 and an empty name for a real article with fourteen on the
-   * shelf, and offered no way to adjust anything. The article is already in
-   * hand here, so the dialog that books stock opens HERE. */
+   * `activeWerkstattArticleId` and switch to the "artikel" tab, which was then
+   * a fixture printing LAGER 0 / UNTERWEGS 0 / BESTAND 0 for a real article
+   * with fourteen on the shelf. That page is wired now and adjusts, checks out
+   * and returns for real — but the dialog still opens HERE, because the reason
+   * has outlived the fixture: the person is standing in front of the item with
+   * the barcode already read, and what they came to do is put it into stock.
+   * Sending them to another screen to find the same dialog in a menu is how a
+   * delivery stops being booked at all. The scan cascade's own
+   * `werkstatt_article` branch below still hands off, and now lands on real
+   * numbers. */
   const [stockArticle, setStockArticle] = useState<WerkstattArticle | null>(null);
   const [stockSaving, setStockSaving] = useState(false);
   const [stockError, setStockError] = useState<string | null>(null);
@@ -514,8 +519,8 @@ export function WerkstattMobileScanPage() {
         onAdjustStock={(articleId) => {
           // The article turned out to exist after all. Booked here, on the
           // screen the person is already looking at, from the row the server
-          // just returned — not on a page that would have to be fetched and
-          // that, on a phone, still renders a fixture.
+          // just returned — see the note on `stockArticle` for why this stays
+          // in place now that the article screen is no longer a fixture.
           setCreateCode(null);
           setStockError(null);
           void openStockDialog(articleId);

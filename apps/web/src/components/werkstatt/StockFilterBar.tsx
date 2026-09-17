@@ -12,7 +12,16 @@ export interface StockFilterDef {
   key: StockFilterKey;
   label_de: string;
   label_en: string;
-  count: number;
+  /**
+   * How many loaded rows fall into this bucket — or null when there is no
+   * answer to give.
+   *
+   * The chips are what a user reads at a glance, and "Leer · 0" is a positive
+   * claim about stock. When the list could not be loaded the page has no rows
+   * to count, and a zero derived from that emptiness contradicts the error row
+   * directly beneath the chips. Null prints the label alone.
+   */
+  count: number | null;
 }
 
 export interface StockFilterBarProps {
@@ -112,7 +121,8 @@ export function StockFilterBar({
             }`}
             onClick={() => onFilter(def.key)}
           >
-            {(de ? def.label_de : def.label_en)} · {def.count}
+            {(de ? def.label_de : def.label_en)}
+            {def.count === null ? "" : ` · ${def.count}`}
           </button>
         ))}
       </div>

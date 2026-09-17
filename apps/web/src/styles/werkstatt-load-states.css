@@ -1,0 +1,59 @@
+/* ── What a Werkstatt list says when it did NOT get its data ──────────────
+ *
+ * Shared by the Bestellungen and the Bestand page. Both render a KPI strip or
+ * a chip row derived from one fetch, and both used to keep printing those
+ * figures when the fetch failed — "ÜBERFÄLLIG 0" over a list nobody received,
+ * "Leer · 0" over stock nobody counted. The wording lives in the pages; this
+ * sheet is the two shapes that wording needs and the existing werkstatt-*
+ * rules do not have: a stale-data strip above a table, and a note admitting a
+ * list was cut off at the server's row cap.
+ *
+ * Page-local sheet rather than an addition to src/styles.css, which is shared
+ * by every area of the app and frozen for this work.
+ */
+
+.werkstatt-orders-stale,
+.werkstatt-stock-note {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 8px 16px;
+  border-bottom: 1px solid #e3ecf6;
+  background: #fff8e8;
+  color: #7a5a12;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+/* The row cap is not a failure, only a boundary — stated in the page's own
+   informational blue rather than the warning amber above. */
+.werkstatt-stock-note--cap {
+  background: #eef5ff;
+  color: #34506e;
+}
+
+/* Inside a sentence, so a link rather than a second button competing with the
+   page's real actions. */
+.werkstatt-orders-retry {
+  border: none;
+  background: none;
+  padding: 0;
+  color: inherit;
+  font: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+/* The server's own words, kept smaller than the sentence that explains them:
+   "502 Bad Gateway" is evidence, not the message. */
+.werkstatt-orders-empty-detail {
+  display: block;
+  margin-top: 6px;
+  color: #8a2222;
+  font-size: 12px;
+  word-break: break-word;
+}

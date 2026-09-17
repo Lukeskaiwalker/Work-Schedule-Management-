@@ -1,99 +1,109 @@
-import { useMemo, useState } from "react";
+import { useCallback, useState } from "react";
+
 import { useAppContext } from "../../context/AppContext";
-import {
-  MOCK_NACHBESTELL_GROUPS,
-  type NachbestellGroup,
-  type NachbestellSeverity,
-} from "../../components/werkstatt/mockData";
+import { useIsMobileViewport } from "../../hooks/useIsMobileViewport";
+import { NachbestellGruppe } from "../../components/werkstatt/NachbestellGruppe";
+import { useReorderBasket } from "../../hooks/useReorderBasket";
+import { commonCurrency, formatCents } from "../../utils/reorderBasket";
+import { orderCsvNotice } from "../../utils/reorderExportNotice";
+import { downloadOrderCsv } from "../../utils/reorderOrderCsv";
+import "../../styles/reorder.css";
 
 /**
  * WerkstattNachbestellenPage — Bestell-Bericht grouped by supplier.
- * Ported from Paper artboard 8SK-0. Self-gates on
- * `mainView === "werkstatt" && werkstattTab === "nachbestellen"`.
  *
- * Each supplier-group shows its lines with per-line stock pill, qty stepper
- * and computed line-total. Per-group subtotal + page-level total-ribbon at
- * the top. "Bestellen bei X →" CTA sits in every group header.
+ * Self-gates on `mainView === "werkstatt" && werkstattTab === "nachbestellen"`
+ * and on a non-phone viewport (`WerkstattMobileNachbestellenPage` owns the
+ * phone; both are mounted at once by `WerkstattPage`).
  *
- * Data currently from MOCK_NACHBESTELL_GROUPS. Swap to
- * GET /api/werkstatt/reorder/suggestions once wired.
+ * Wired to the real API:
+ *   GET  /werkstatt/reorder/suggestions  — the list, grouped by supplier
+ *   POST /werkstatt/reorder/submit       — one order per supplier, auto-sent
+ *   GET  /werkstatt/orders/{id}/export   — the CSV of an order that EXISTS
+ *
+ * Two things this page deliberately does not do. It does not add up a total
+ * across suppliers quoted in different currencies, and it does not carry a
+ * "PDF-Export" button any more: there is no export of a suggestion list in the
+ * API, only of an order, so the download is offered on the order once it has
+ * been created. A button that produces nothing is worse than no button.
  */
-
-function formatEuro(cents: number, language: "de" | "en"): string {
-  const euros = cents / 100;
-  return euros.toLocaleString(language === "de" ? "de-DE" : "en-US", {
-    style: "currency",
-    currency: "EUR",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-}
-
-function formatUnitPrice(cents: number, language: "de" | "en"): string {
-  const euros = cents / 100;
-  return euros.toLocaleString(language === "de" ? "de-DE" : "en-US", {
-    minimumFractionDigits: euros < 1 ? 3 : 2,
-    maximumFractionDigits: 3,
-  });
-}
-
-/** Severity class + accessibility label for the stock pill. */
-function severityMeta(severity: NachbestellSeverity, de: boolean): {
-  cls: string;
-  srLabel: string;
-} {
-  if (severity === "out") {
-    return { cls: "werkstatt-nachbestell-stock--out", srLabel: de ? "leer" : "out of stock" };
-  }
-  return { cls: "werkstatt-nachbestell-stock--low", srLabel: de ? "niedrig" : "low stock" };
-}
-
 export function WerkstattNachbestellenPage() {
-  const { mainView, language, werkstattTab, setNotice } = useAppContext();
+  const { mainView, language, werkstattTab, setWerkstattTab, token } = useAppContext();
+  const { isMobile } = useIsMobileViewport();
 
-  // Per-line quantity overrides — keyed by line.id. Undefined → use suggested.
-  const [quantityById, setQuantityById] = useState<Record<string, number>>({});
+  const active = mainView === "werkstatt" && werkstattTab === "nachbestellen" && !isMobile;
+  const basket = useReorderBasket(active);
+
+  // The CSV of a created order, per supplier: which one is downloading, what
+  // the last download did, and what went wrong. Keyed by supplier so two
+  // orders on screen cannot show each other's outcome.
+  const [exportingSupplierId, setExportingSupplierId] = useState<number | null>(null);
+  const [exportNotices, setExportNotices] = useState<ReadonlyMap<number, string>>(new Map());
+  const [exportErrors, setExportErrors] = useState<ReadonlyMap<number, string>>(new Map());
 
   const de = language === "de";
 
-  /* Aggregate totals across groups. useMemo so stepper edits don't recompute
-   * on every render of unrelated state changes. */
-  const pageTotals = useMemo(() => {
-    let totalCents = 0;
-    let totalLines = 0;
-    let criticalLines = 0;
-    for (const group of MOCK_NACHBESTELL_GROUPS) {
-      for (const line of group.lines) {
-        const qty = quantityById[line.id] ?? line.suggested_quantity;
-        totalCents += qty * line.unit_price_cents;
-        totalLines += 1;
-        if (line.severity === "out") criticalLines += 1;
+  const putExportResult = useCallback(
+    (supplierId: number, notice: string | null, error: string | null) => {
+      setExportNotices((current) => {
+        const next = new Map(current);
+        if (notice === null) next.delete(supplierId);
+        else next.set(supplierId, notice);
+        return next;
+      });
+      setExportErrors((current) => {
+        const next = new Map(current);
+        if (error === null) next.delete(supplierId);
+        else next.set(supplierId, error);
+        return next;
+      });
+    },
+    [],
+  );
+
+  const exportOrderCsv = useCallback(
+    async (supplierId: number, orderId: number, allowUnresolved: boolean) => {
+      setExportingSupplierId(supplierId);
+      putExportResult(supplierId, null, null);
+      try {
+        const result = await downloadOrderCsv(token, orderId, allowUnresolved);
+        // The file can be SHORTER than the order: the export drops every
+        // position the policy cannot number. Saying so is the whole point —
+        // see `orderCsvNotice`.
+        putExportResult(supplierId, orderCsvNotice(result, de), null);
+      } catch (err) {
+        putExportResult(
+          supplierId,
+          null,
+          de
+            ? `CSV nicht erstellt: ${err instanceof Error ? err.message : String(err)}`
+            : `CSV not created: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      } finally {
+        setExportingSupplierId(null);
       }
-    }
-    return { totalCents, totalLines, criticalLines };
-  }, [quantityById]);
+    },
+    [de, putExportResult, token],
+  );
 
-  const supplierCount = MOCK_NACHBESTELL_GROUPS.length;
+  /** Forget every download message — a new list, or a new order, is a new
+   *  story, and a leftover "heruntergeladen" would belong to neither. */
+  const clearExportResults = useCallback(() => {
+    setExportNotices(new Map());
+    setExportErrors(new Map());
+  }, []);
 
-  if (mainView !== "werkstatt" || werkstattTab !== "nachbestellen") return null;
+  // Parsing belongs to the field, which owns the half-typed states an input
+  // goes through (see ReorderQuantityField); what arrives here is a number.
+  const { setQuantity } = basket;
 
-  function adjustQuantity(lineId: string, suggested: number, delta: number): void {
-    setQuantityById((prev) => {
-      const current = prev[lineId] ?? suggested;
-      const next = Math.max(0, current + delta);
-      return { ...prev, [lineId]: next };
-    });
-  }
+  if (!active) return null;
 
-  function setExactQuantity(lineId: string, value: string): void {
-    const parsed = Number.parseInt(value, 10);
-    if (Number.isNaN(parsed)) return;
-    setQuantityById((prev) => ({ ...prev, [lineId]: Math.max(0, parsed) }));
-  }
+  const { totals } = basket;
+  const currency = commonCurrency(basket.groups);
 
   return (
     <section className="werkstatt-tab-page werkstatt-nachbestell-page">
-      {/* Header — reuses existing werkstatt-sub-* classes from other sub-pages */}
       <header className="werkstatt-sub-head">
         <div className="werkstatt-sub-head-text">
           <span className="werkstatt-sub-breadcrumb">
@@ -103,286 +113,184 @@ export function WerkstattNachbestellenPage() {
             {de ? "Nachbestell-Bericht" : "Reorder report"}
           </h1>
           <p className="werkstatt-sub-subtitle">
-            <span className="werkstatt-kpi-dot werkstatt-kpi-dot--warning" aria-hidden="true" />{" "}
-            {de
-              ? `${pageTotals.totalLines} Artikel unter Mindestbestand`
-              : `${pageTotals.totalLines} items below minimum stock`}
+            {basket.loadError ? (
+              de ? "Bestand konnte nicht gelesen werden." : "Stock could not be read."
+            ) : basket.loading ? (
+              de ? "Bestand wird gelesen…" : "Reading stock…"
+            ) : (
+              <>
+                <span className="werkstatt-kpi-dot werkstatt-kpi-dot--warning" aria-hidden="true" />{" "}
+                {de
+                  ? `${totals.lineCount} Artikel unter Mindestbestand`
+                  : `${totals.lineCount} ${totals.lineCount === 1 ? "item" : "items"} below minimum stock`}
+              </>
+            )}
           </p>
         </div>
         <div className="werkstatt-sub-head-actions">
           <button
             type="button"
             className="werkstatt-action-btn"
-            onClick={() =>
-              setNotice(
-                de
-                  ? "PDF-Export ist hier noch nicht angebunden — es wird nichts erzeugt."
-                  : "PDF export is not connected here yet — nothing is produced.",
-              )
-            }
+            disabled={basket.loading || basket.busy}
+            onClick={() => {
+              clearExportResults();
+              basket.reload();
+            }}
           >
-            {de ? "PDF exportieren" : "Export PDF"}
-          </button>
-          <button
-            type="button"
-            className="werkstatt-action-btn werkstatt-action-btn--primary"
-            onClick={() =>
-              // Says what actually happened — nothing. Claiming "versendet"
-              // for a page that still runs on MOCK_NACHBESTELL_GROUPS is the
-              // one failure mode that costs real money: somebody waits for
-              // material that was never ordered. Werkstatt › Bestellungen can
-              // place a real order today, so the notice points there.
-              setNotice(
-                de
-                  ? "Diese Seite ist noch nicht angebunden — es wurde nichts versendet. Bestellungen bitte unter Werkstatt › Bestellungen anlegen."
-                  : "This page is not connected yet — nothing was submitted. Create orders under Werkstatt › Bestellungen.",
-              )
-            }
-          >
-            {de ? "Bestellung versenden" : "Submit orders"}
+            {de ? "Aktualisieren" : "Refresh"}
           </button>
         </div>
       </header>
 
-      {/* KPI strip */}
-      <div className="werkstatt-kpi-strip werkstatt-nachbestell-kpi-strip">
-        <div className="werkstatt-kpi werkstatt-kpi--neutral">
-          <span className="werkstatt-kpi-label">
-            {de ? "VORGESCHLAGENER BESTELLWERT" : "SUGGESTED ORDER VALUE"}
-          </span>
-          <div className="werkstatt-kpi-value-row">
-            <span className="werkstatt-kpi-value">
-              {formatEuro(pageTotals.totalCents, language)}
-            </span>
-            <span className="werkstatt-kpi-subtitle">netto</span>
-          </div>
-        </div>
-        <div className="werkstatt-kpi werkstatt-kpi--info">
-          <span className="werkstatt-kpi-label">
-            {de ? `BEI ${supplierCount} LIEFERANTEN` : `AT ${supplierCount} SUPPLIERS`}
-          </span>
-          <div className="werkstatt-kpi-value-row">
-            <span className="werkstatt-kpi-value">{pageTotals.totalLines}</span>
-            <span className="werkstatt-kpi-subtitle">
-              {de ? "Artikel nachzubestellen" : "items to reorder"}
-            </span>
-          </div>
-        </div>
-        <div className="werkstatt-kpi werkstatt-kpi--info">
-          <span className="werkstatt-kpi-label">
-            {de ? "BEREITS BESTELLT" : "ALREADY ON ORDER"}
-          </span>
-          <div className="werkstatt-kpi-value-row">
-            <span className="werkstatt-kpi-value">3</span>
-            <span className="werkstatt-kpi-subtitle">
-              {de ? "Lieferung erwartet" : "deliveries pending"}
-            </span>
-          </div>
-        </div>
-        <div className="werkstatt-kpi werkstatt-kpi--danger">
-          <span className="werkstatt-kpi-label">{de ? "KRITISCH" : "CRITICAL"}</span>
-          <div className="werkstatt-kpi-value-row">
-            <span className="werkstatt-kpi-value">{pageTotals.criticalLines}</span>
-            <span className="werkstatt-kpi-subtitle">{de ? "völlig leer" : "completely out"}</span>
-          </div>
-        </div>
-      </div>
+      {!basket.canManage && !basket.loadError && (
+        <p className="reorder-permission-note">
+          {de
+            ? "Nur Ansicht: Bestellen erfordert die Berechtigung „werkstatt:manage“."
+            : "View only: ordering requires the “werkstatt:manage” permission."}
+        </p>
+      )}
 
-      {/* Supplier-grouped list */}
-      <div className="werkstatt-nachbestell-groups">
-        {MOCK_NACHBESTELL_GROUPS.map((group) => (
-          <SupplierGroup
-            key={group.id}
-            group={group}
-            de={de}
-            language={language}
-            quantityById={quantityById}
-            adjustQuantity={adjustQuantity}
-            setExactQuantity={setExactQuantity}
-            onSubmitGroup={(g, subtotal) => {
-              const amount = formatEuro(subtotal, language);
-              setNotice(
-                de
-                  ? `Nicht versendet — diese Seite ist noch nicht angebunden. Bestellung an ${g.supplier_name} (${amount}) bitte unter Werkstatt › Bestellungen anlegen.`
-                  : `Not submitted — this page is not connected yet. Create the order to ${g.supplier_name} (${amount}) under Werkstatt › Bestellungen.`,
+      {basket.loadError && (
+        <div className="reorder-banner reorder-banner--error" role="alert">
+          <b>
+            {de
+              ? "Die Nachbestell-Vorschläge konnten nicht geladen werden."
+              : "The reorder suggestions could not be loaded."}
+          </b>
+          <p>{basket.loadError}</p>
+          <p>
+            {de
+              ? "Es werden keine Zahlen angezeigt, solange die Liste nicht gelesen werden kann."
+              : "No figures are shown while the list cannot be read."}
+          </p>
+          <button type="button" className="werkstatt-action-btn" onClick={basket.reload}>
+            {de ? "Erneut laden" : "Try again"}
+          </button>
+        </div>
+      )}
+
+      {!basket.loadError && basket.loading && (
+        <div className="reorder-banner" role="status">
+          {de ? "Wird geladen…" : "Loading…"}
+        </div>
+      )}
+
+      {!basket.loadError && !basket.loading && basket.groups.length === 0 && (
+        <div className="reorder-banner" role="status">
+          <b>{de ? "Nichts nachzubestellen." : "Nothing to reorder."}</b>
+          <p>
+            {de
+              ? "Kein Artikel liegt unter seinem Mindestbestand. Artikel ohne hinterlegten Lieferanten erscheinen hier nicht — die stehen unter Werkstatt › Bestand."
+              : "No article is below its minimum stock. Articles without a supplier link do not appear here — they live under Werkstatt › Bestand."}
+          </p>
+        </div>
+      )}
+
+      {!basket.loadError && !basket.loading && basket.groups.length > 0 && (
+        <>
+          <div className="werkstatt-kpi-strip werkstatt-nachbestell-kpi-strip">
+            <div className="werkstatt-kpi werkstatt-kpi--neutral">
+              <span className="werkstatt-kpi-label">
+                {de ? "VORGESCHLAGENER BESTELLWERT" : "SUGGESTED ORDER VALUE"}
+              </span>
+              <div className="werkstatt-kpi-value-row">
+                <span className="werkstatt-kpi-value">
+                  {currency === null
+                    ? de ? "gemischte Währungen" : "mixed currencies"
+                    : formatCents(totals.cents, currency, language)}
+                </span>
+                <span className="werkstatt-kpi-subtitle">
+                  {currency === null
+                    ? de ? "Summe je Lieferant unten" : "per-supplier subtotals below"
+                    : totals.unpricedCount > 0
+                      ? de
+                        ? `netto, ohne ${totals.unpricedCount} Position(en) ohne Preis`
+                        : `net, excluding ${totals.unpricedCount} line(s) without a price`
+                      : "netto"}
+                </span>
+              </div>
+            </div>
+            <div className="werkstatt-kpi werkstatt-kpi--info">
+              <span className="werkstatt-kpi-label">
+                {de
+                  ? `BEI ${totals.supplierCount} ${totals.supplierCount === 1 ? "LIEFERANT" : "LIEFERANTEN"}`
+                  : `AT ${totals.supplierCount} ${totals.supplierCount === 1 ? "SUPPLIER" : "SUPPLIERS"}`}
+              </span>
+              <div className="werkstatt-kpi-value-row">
+                <span className="werkstatt-kpi-value">{totals.positionCount}</span>
+                <span className="werkstatt-kpi-subtitle">
+                  {de ? "Positionen im Warenkorb" : "lines in the basket"}
+                </span>
+              </div>
+            </div>
+            <div className="werkstatt-kpi werkstatt-kpi--info">
+              <span className="werkstatt-kpi-label">{de ? "OHNE PREIS" : "WITHOUT A PRICE"}</span>
+              <div className="werkstatt-kpi-value-row">
+                <span className="werkstatt-kpi-value">{totals.unpricedCount}</span>
+                <span className="werkstatt-kpi-subtitle">
+                  {totals.unpricedCount === 0
+                    ? de ? "alle Positionen bepreist" : "every line priced"
+                    : de ? "Summe unvollständig" : "total incomplete"}
+                </span>
+              </div>
+            </div>
+            <div className="werkstatt-kpi werkstatt-kpi--danger">
+              <span className="werkstatt-kpi-label">{de ? "KRITISCH" : "CRITICAL"}</span>
+              <div className="werkstatt-kpi-value-row">
+                <span className="werkstatt-kpi-value">{totals.criticalCount}</span>
+                <span className="werkstatt-kpi-subtitle">
+                  {de ? "völlig leer" : "completely out"}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="werkstatt-nachbestell-groups">
+            {basket.groups.map((group) => {
+              const sendState = basket.sendStateFor(group.supplier_id);
+              return (
+                <NachbestellGruppe
+                  key={group.supplier_id}
+                  group={group}
+                  de={de}
+                  language={language}
+                  canManage={basket.canManage}
+                  busy={basket.busy}
+                  totals={basket.totalsFor(group)}
+                  sendState={sendState}
+                  quantityFor={(line) => basket.quantityFor(group, line)}
+                  onStep={(line, delta) => basket.stepQuantity(group.supplier_id, line, delta)}
+                  onSetQuantity={(line, quantity) =>
+                    setQuantity(group.supplier_id, line.article_id, quantity)
+                  }
+                  onSubmit={(allowUnresolved) => {
+                    putExportResult(group.supplier_id, null, null);
+                    void basket.submitGroup(group, allowUnresolved);
+                  }}
+                  onDismiss={() => basket.dismissSendState(group.supplier_id)}
+                  onOpenOrders={() => setWerkstattTab("orders")}
+                  exportAction={
+                    sendState?.kind === "sent"
+                      ? {
+                          onExport: () => {
+                            void exportOrderCsv(
+                              group.supplier_id,
+                              sendState.order.id,
+                              sendState.allowUnresolved,
+                            );
+                          },
+                          busy: exportingSupplierId === group.supplier_id,
+                          notice: exportNotices.get(group.supplier_id) ?? null,
+                          error: exportErrors.get(group.supplier_id) ?? null,
+                        }
+                      : undefined
+                  }
+                />
               );
-              // TODO(werkstatt): POST /api/werkstatt/reorder/submit
-              //   { supplier_id: g.supplier_id, lines: [...], notes: null }
-            }}
-          />
-        ))}
-      </div>
+            })}
+          </div>
+        </>
+      )}
     </section>
   );
-}
-
-/* ──────────────────────────────────────────────────────────────────────── */
-
-interface SupplierGroupProps {
-  group: NachbestellGroup;
-  de: boolean;
-  language: "de" | "en";
-  quantityById: Record<string, number>;
-  adjustQuantity: (lineId: string, suggested: number, delta: number) => void;
-  setExactQuantity: (lineId: string, value: string) => void;
-  onSubmitGroup: (group: NachbestellGroup, subtotalCents: number) => void;
-}
-
-function SupplierGroup({
-  group,
-  de,
-  language,
-  quantityById,
-  adjustQuantity,
-  setExactQuantity,
-  onSubmitGroup,
-}: SupplierGroupProps) {
-  const subtotalCents = useMemo(() => {
-    let sum = 0;
-    for (const line of group.lines) {
-      const qty = quantityById[line.id] ?? line.suggested_quantity;
-      sum += qty * line.unit_price_cents;
-    }
-    return sum;
-  }, [group.lines, quantityById]);
-
-  return (
-    <article className="werkstatt-nachbestell-group">
-      <header className="werkstatt-nachbestell-group-head">
-        <div className="werkstatt-nachbestell-group-identity">
-          <div className="werkstatt-nachbestell-group-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8">
-              <rect x="3.5" y="5.5" width="17" height="13" rx="1.5" />
-              <path d="M3.5 9.5h17" />
-            </svg>
-          </div>
-          <div>
-            <h3 className="werkstatt-nachbestell-group-name">
-              {group.supplier_name}{" "}
-              <span className="werkstatt-nachbestell-group-cat">
-                {de ? group.supplier_category_de : group.supplier_category_en}
-              </span>
-            </h3>
-            <p className="werkstatt-nachbestell-group-meta">
-              {group.lines.length} {de ? "Artikel" : "items"} ·{" "}
-              {de ? "Lieferzeit typisch" : "typical lead time"} {group.lead_time_days_label} ·{" "}
-              {de ? "Kontakt" : "Contact"}: {group.contact_email}
-            </p>
-          </div>
-        </div>
-        <div className="werkstatt-nachbestell-group-totals">
-          <div>
-            <span className="werkstatt-nachbestell-group-subtotal-label">
-              {de ? "ZWISCHENSUMME" : "SUBTOTAL"}
-            </span>
-            <span className="werkstatt-nachbestell-group-subtotal">
-              {formatEuro(subtotalCents, language)}
-            </span>
-          </div>
-          <button
-            type="button"
-            className="werkstatt-action-btn werkstatt-action-btn--primary"
-            onClick={() => onSubmitGroup(group, subtotalCents)}
-          >
-            {de ? `Bestellen bei ${shortName(group.supplier_name)} →` : `Order from ${shortName(group.supplier_name)} →`}
-          </button>
-        </div>
-      </header>
-
-      {/* Lines */}
-      <ul className="werkstatt-nachbestell-lines">
-        {group.lines.map((line) => {
-          const qty = quantityById[line.id] ?? line.suggested_quantity;
-          const lineTotalCents = qty * line.unit_price_cents;
-          const sev = severityMeta(line.severity, de);
-          return (
-            <li key={line.id} className="werkstatt-nachbestell-line">
-              <div className="werkstatt-nachbestell-line-icon" aria-hidden="true">
-                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.6">
-                  <path d="M3 7.5 12 3l9 4.5v9L12 21l-9-4.5v-9Z" />
-                  <path d="M3 7.5 12 12m0 0 9-4.5M12 12v9" />
-                </svg>
-              </div>
-              <div className="werkstatt-nachbestell-line-main">
-                <div className="werkstatt-nachbestell-line-title">{line.item_name}</div>
-                <div className="werkstatt-nachbestell-line-meta">
-                  <span className="werkstatt-nachbestell-line-sp">{line.article_no}</span>
-                  <span aria-hidden="true">·</span>
-                  <span>
-                    {de ? "Art.-Nr. beim Lieferanten" : "supplier art.-no"}: {line.supplier_article_no}
-                  </span>
-                </div>
-              </div>
-              <div className="werkstatt-nachbestell-line-stock">
-                <span className="werkstatt-nachbestell-stock-label">{de ? "BESTAND" : "STOCK"}</span>
-                <span
-                  className={`werkstatt-pill ${sev.cls}`}
-                  aria-label={`${sev.srLabel}: ${line.stock_label}`}
-                >
-                  {line.stock_label}
-                </span>
-              </div>
-              <div className="werkstatt-nachbestell-line-qty">
-                <span className="werkstatt-nachbestell-stock-label">
-                  {de ? "BESTELLMENGE" : "ORDER QTY"}
-                </span>
-                <div className="werkstatt-stepper" role="group" aria-label={de ? "Bestellmenge" : "Order quantity"}>
-                  <button
-                    type="button"
-                    className="werkstatt-stepper-btn"
-                    aria-label={de ? "weniger" : "less"}
-                    onClick={() => adjustQuantity(line.id, line.suggested_quantity, -1)}
-                  >
-                    −
-                  </button>
-                  <input
-                    type="number"
-                    className="werkstatt-stepper-input"
-                    inputMode="numeric"
-                    min={0}
-                    value={qty}
-                    onChange={(e) => setExactQuantity(line.id, e.target.value)}
-                  />
-                  <button
-                    type="button"
-                    className="werkstatt-stepper-btn"
-                    aria-label={de ? "mehr" : "more"}
-                    onClick={() => adjustQuantity(line.id, line.suggested_quantity, 1)}
-                  >
-                    +
-                  </button>
-                </div>
-              </div>
-              <div className="werkstatt-nachbestell-line-total">
-                <span className="werkstatt-nachbestell-stock-label">{de ? "SUMME" : "LINE TOTAL"}</span>
-                <span className="werkstatt-nachbestell-line-total-value">
-                  {formatEuro(lineTotalCents, language)}
-                </span>
-                <span className="werkstatt-nachbestell-line-unit-price">
-                  {formatUnitPrice(line.unit_price_cents, language)} € / {line.unit_label}
-                </span>
-              </div>
-            </li>
-          );
-        })}
-      </ul>
-    </article>
-  );
-}
-
-/** Abbreviate the supplier's name for the per-group CTA
- * ("Contorion GmbH" → "Contorion", "voestalpine Böhler GmbH" → "voestalpine"). */
-function shortName(name: string): string {
-  const dropSuffixes = [" GmbH", " AG", " KG", " Group", " OHG", " SE"];
-  let result = name;
-  for (const suffix of dropSuffixes) {
-    if (result.endsWith(suffix)) {
-      result = result.slice(0, -suffix.length);
-      break;
-    }
-  }
-  // If still multi-word, use the first word.
-  const firstSpace = result.indexOf(" ");
-  if (firstSpace > 0) return result.slice(0, firstSpace);
-  return result;
 }

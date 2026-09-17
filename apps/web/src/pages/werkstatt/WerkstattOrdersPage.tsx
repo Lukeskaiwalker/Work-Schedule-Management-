@@ -19,7 +19,7 @@ import {
   orderStatusToTone,
   shortDate,
   type OrdersFilterKey,
-} from "../../components/werkstatt/mockData";
+} from "../../components/werkstatt/orderPresentation";
 import { useOrderHandover } from "../../hooks/useOrderHandover";
 import type { WerkstattOrder, WerkstattOrderSummary, WerkstattSupplier } from "../../types/werkstatt";
 import type { OrderResolution } from "../../types/werkstattProcurement";
@@ -46,6 +46,7 @@ import {
   updateOrderLine,
 } from "../../utils/werkstattOrdersApi";
 import "../../styles/orders.css";
+import "../../styles/werkstatt-load-states.css";
 
 /**
  * WerkstattOrdersPage — the buyer's order list. Self-gates on
@@ -57,8 +58,9 @@ import "../../styles/orders.css";
  * recurring job one click instead of forty.
  *
  * Presentation helpers (money, dates, status tones, filter chips) live in
- * `components/werkstatt/mockData.ts` — they were written for the fixtures but
- * are typed against the real API shapes, so they survived the de-mocking.
+ * `components/werkstatt/orderPresentation.ts`. They were first written beside
+ * the fixtures, but nothing about them was ever demo data — they are typed
+ * against the real API shapes, which is why they outlived the fixture module.
  */
 
 type ModalKind = "new" | "cart" | "merge" | "templates" | null;
@@ -94,6 +96,12 @@ export function WerkstattOrdersPage() {
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /* Set while the LIST could not be read, and not dismissible: the banner
+   * above can be closed with one click, and everything this page prints —
+   * four KPI figures, the subtitle, the empty state — is derived from a list
+   * that is then empty for the wrong reason. Zero open orders and zero
+   * overdue ones are findings; "we did not get the orders" is not one. */
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [modal, setModal] = useState<ModalKind>(null);
   const [notice, setNotice] = useState<string | null>(null);
   // Set only when the browser refused the popup, so the buyer still has a way
@@ -130,8 +138,10 @@ export function WerkstattOrdersPage() {
       setOrders(orderRows);
       setTemplates(templateRows);
       setSuppliers(supplierRows);
+      setLoadError(null);
     } catch (err) {
       reportError(err);
+      setLoadError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
@@ -329,29 +339,33 @@ export function WerkstattOrdersPage() {
     (order) => order.status === "sent" || order.status === "confirmed",
   ).length;
 
+  /* No figure survives a failed load. A buyer who glances at "ÜBERFÄLLIG 0"
+   * and closes the red banner otherwise walks away believing nothing is late,
+   * on a page that never received the orders. */
+  const unknown = de ? "nicht geladen" : "not loaded";
   const kpis: ReadonlyArray<KpiDef> = [
     {
       label: de ? "OFFEN" : "OPEN",
-      value: String(kpiNumbers.openCount),
-      subtitle: de ? "Bestellungen" : "orders",
+      value: loadError ? "—" : String(kpiNumbers.openCount),
+      subtitle: loadError ? unknown : de ? "Bestellungen" : "orders",
       tone: "neutral",
     },
     {
       label: de ? "ÜBERFÄLLIG" : "OVERDUE",
-      value: String(kpiNumbers.overdueCount),
-      subtitle: de ? "Termin verpasst" : "past ETA",
+      value: loadError ? "—" : String(kpiNumbers.overdueCount),
+      subtitle: loadError ? unknown : de ? "Termin verpasst" : "past ETA",
       tone: "danger",
     },
     {
       label: de ? "DIESE WOCHE GELIEFERT" : "DELIVERED THIS WEEK",
-      value: String(kpiNumbers.deliveredWeek),
-      subtitle: de ? "Bestellungen" : "orders",
+      value: loadError ? "—" : String(kpiNumbers.deliveredWeek),
+      subtitle: loadError ? unknown : de ? "Bestellungen" : "orders",
       tone: "info",
     },
     {
       label: de ? "OFFENER WARENWERT" : "OPEN VALUE",
-      value: formatMoney(kpiNumbers.openValueCents, "EUR"),
-      subtitle: de ? "netto, kumuliert" : "net, cumulative",
+      value: loadError ? "—" : formatMoney(kpiNumbers.openValueCents, "EUR"),
+      subtitle: loadError ? unknown : de ? "netto, kumuliert" : "net, cumulative",
       tone: "warning",
     },
   ];
@@ -365,9 +379,13 @@ export function WerkstattOrdersPage() {
           </span>
           <h1 className="werkstatt-sub-title">{de ? "Bestellungen" : "Orders"}</h1>
           <span className="werkstatt-sub-subtitle">
-            {de
-              ? `${kpiNumbers.openCount} offen · ${inTransitCount} unterwegs · ${kpiNumbers.deliveredWeek} geliefert diese Woche`
-              : `${kpiNumbers.openCount} open · ${inTransitCount} in transit · ${kpiNumbers.deliveredWeek} delivered this week`}
+            {loadError
+              ? de
+                ? "Keine Zahlen — Bestellungen wurden nicht geladen."
+                : "No figures — the orders did not load."
+              : de
+                ? `${kpiNumbers.openCount} offen · ${inTransitCount} unterwegs · ${kpiNumbers.deliveredWeek} geliefert diese Woche`
+                : `${kpiNumbers.openCount} open · ${inTransitCount} in transit · ${kpiNumbers.deliveredWeek} delivered this week`}
           </span>
         </div>
         <div className="werkstatt-sub-actions">
@@ -529,8 +547,33 @@ export function WerkstattOrdersPage() {
             </span>
           </div>
 
+          {/* The last list that did load, kept on screen rather than thrown
+              away — but labelled, so nobody reads it as today's. */}
+          {loadError && orders.length > 0 && (
+            <div className="werkstatt-orders-stale" role="status">
+              {de
+                ? "Letzter geladener Stand — die Aktualisierung ist fehlgeschlagen."
+                : "Last loaded state — the refresh failed."}{" "}
+              <button type="button" className="werkstatt-orders-retry" onClick={() => void refresh()}>
+                {de ? "Erneut versuchen" : "Try again"}
+              </button>
+            </div>
+          )}
+
           {loading ? (
             <div className="werkstatt-orders-empty">{de ? "Wird geladen…" : "Loading…"}</div>
+          ) : loadError && orders.length === 0 ? (
+            /* NOT "Noch keine Bestellungen": that invites a buyer with forty
+               open orders to create their first one. */
+            <div className="werkstatt-orders-empty" role="alert">
+              {de
+                ? "Bestellungen konnten nicht geladen werden — das heißt nicht, dass es keine gibt."
+                : "The orders could not be loaded — that does not mean there are none."}{" "}
+              <span className="werkstatt-orders-empty-detail">{loadError}</span>{" "}
+              <button type="button" className="werkstatt-orders-retry" onClick={() => void refresh()}>
+                {de ? "Erneut versuchen" : "Try again"}
+              </button>
+            </div>
           ) : filteredOrders.length === 0 ? (
             <div className="werkstatt-orders-empty">
               {orders.length === 0

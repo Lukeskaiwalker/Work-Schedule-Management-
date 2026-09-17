@@ -1,0 +1,399 @@
+/* Werkstatt — phone screens (Mobile group).
+ *
+ * Everything the Paper artboards already drew lives in styles.css. This file
+ * holds only what wiring the screens to the API made necessary: the loading /
+ * empty / error states that a fixture never needed, the search results, the
+ * supplier list, the return sheet's condition cards, and the disabled looks
+ * for actions the server would refuse.
+ *
+ * Colours are taken from the same literal palette as the artboards
+ * (#14293D ink, #5C7895 muted, #2F70B7 accent, #A4171C error) rather than
+ * introducing a second one halfway down a screen.
+ *
+ * Touch targets stay at 44px or more: these screens are used one-handed in a
+ * van, often with gloves on.
+ */
+
+/* ── Shared state blocks (loading / empty / error) ───────────────── */
+
+.werkstatt-mobile-state {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 18px;
+  color: #14293D;
+}
+
+.werkstatt-mobile-state b {
+  font-size: 14px;
+  line-height: 18px;
+  font-weight: 700;
+}
+
+.werkstatt-mobile-state small {
+  font-size: 12px;
+  line-height: 16px;
+  color: #5C7895;
+  /* Server messages can be long and are not wrapped by the server. */
+  overflow-wrap: anywhere;
+}
+
+.werkstatt-mobile-state--error b {
+  color: #A4171C;
+}
+
+/* The article screen has no card to sit in while it is loading or broken. */
+.werkstatt-mobile-state--page {
+  margin: 24px 16px;
+  background: #FFFFFF;
+  border-radius: 14px;
+  box-shadow: 0 1px 4px rgba(20, 41, 61, 0.06);
+}
+
+.werkstatt-mobile-state-retry,
+.werkstatt-mobile-state-back {
+  appearance: none;
+  border: 0;
+  margin-top: 6px;
+  min-height: 44px;
+  padding: 0 16px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.werkstatt-mobile-state-retry {
+  background: #2F70B7;
+  color: #FFFFFF;
+}
+
+.werkstatt-mobile-state-back {
+  background: #EAF4FF;
+  color: #2F70B7;
+}
+
+.werkstatt-mobile-state-retry:disabled {
+  background: #B9CDE4;
+  cursor: default;
+}
+
+/* A one-line remark under a control: "Suche läuft…", an archived warning. */
+.werkstatt-mobile-note {
+  margin: 0;
+  padding: 8px 4px;
+  font-size: 12px;
+  line-height: 16px;
+  color: #5C7895;
+  overflow-wrap: anywhere;
+}
+
+.werkstatt-mobile-note--error {
+  color: #A4171C;
+  font-weight: 600;
+}
+
+/* ── Start screen: refresh, thumbnails, reorder pill variants ────── */
+
+/* Sits in the slot that used to hold an inert "Alle →" caption, so it inherits
+ * that caption's type from .werkstatt-mobile-card-action and only adds what a
+ * button needs. */
+.werkstatt-mobile-refresh {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 8px 4px;
+  min-height: 44px;
+  cursor: pointer;
+}
+
+.werkstatt-mobile-refresh:disabled {
+  color: #8FA2BA;
+  cursor: default;
+}
+
+.werkstatt-mobile-thumb {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  object-fit: cover;
+}
+
+/* Good news must not wear the warning colour, and a failed load must not look
+ * like a count of zero. */
+.werkstatt-mobile-alert-pill--ok {
+  background: #EAF7EE;
+}
+
+.werkstatt-mobile-alert-pill--ok .werkstatt-mobile-alert-subtitle {
+  color: #0E6F45;
+}
+
+.werkstatt-mobile-alert-pill--error {
+  background: #FBEAEA;
+}
+
+.werkstatt-mobile-alert-pill--error .werkstatt-mobile-alert-title {
+  color: #A4171C;
+}
+
+.werkstatt-mobile-alert-pill--error .werkstatt-mobile-alert-subtitle {
+  color: #A4171C;
+  overflow-wrap: anywhere;
+}
+
+/* ── Start screen: search ────────────────────────────────────────── */
+
+.werkstatt-mobile-searchblock {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.werkstatt-mobile-search-clear {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: #5C7895;
+  font-size: 16px;
+  line-height: 1;
+  width: 44px;
+  height: 44px;
+  margin: -12px -12px -12px 0;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+.werkstatt-mobile-searchresults {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  background: #FFFFFF;
+  border-radius: 14px;
+  box-shadow: 0 1px 4px rgba(20, 41, 61, 0.06);
+  overflow: hidden;
+}
+
+.werkstatt-mobile-searchresults li + li .werkstatt-mobile-searchresult {
+  border-top: 1px solid #F1F5FA;
+}
+
+.werkstatt-mobile-searchresult {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  width: 100%;
+  min-height: 56px;
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.werkstatt-mobile-searchresult-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.werkstatt-mobile-searchresult-title {
+  font-size: 14px;
+  line-height: 18px;
+  font-weight: 600;
+  color: #14293D;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.werkstatt-mobile-searchresult-meta {
+  font-size: 11px;
+  line-height: 14px;
+  color: #5C7895;
+}
+
+.werkstatt-mobile-searchresult-chevron {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+/* ── Article screen ──────────────────────────────────────────────── */
+
+.werkstatt-mobile-artikel-photo {
+  width: 140px;
+  height: 140px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+/* The location row is no longer a button — it opens nothing on a phone. */
+.werkstatt-mobile-artikel-location {
+  cursor: default;
+}
+
+.werkstatt-mobile-artikel-primary:disabled {
+  background: #B9CDE4;
+  cursor: default;
+}
+
+.werkstatt-mobile-suppliers {
+  background: #FFFFFF;
+  border-radius: 14px;
+  box-shadow: 0 1px 4px rgba(20, 41, 61, 0.06);
+  padding: 14px 16px;
+}
+
+.werkstatt-mobile-suppliers-title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  line-height: 16px;
+  font-weight: 700;
+  color: #14293D;
+}
+
+.werkstatt-mobile-suppliers-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.werkstatt-mobile-supplier {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.werkstatt-mobile-supplier-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 17px;
+  font-weight: 600;
+  color: #14293D;
+}
+
+.werkstatt-mobile-supplier-tag {
+  font-size: 10px;
+  line-height: 14px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #0E6F45;
+  background: #EAF7EE;
+  border-radius: 6px;
+  padding: 0 6px;
+}
+
+.werkstatt-mobile-supplier-no {
+  font-size: 11px;
+  line-height: 14px;
+  color: #5C7895;
+}
+
+/* ── Return sheet ────────────────────────────────────────────────── */
+
+/* The shared modal is sized for a desk. On a phone it should fill the width
+ * and sit at the bottom, where a thumb is. */
+.werkstatt-mobile-sheet {
+  width: 100%;
+  max-width: 520px;
+}
+
+.werkstatt-mobile-condition-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.werkstatt-mobile-condition {
+  appearance: none;
+  background: #FFFFFF;
+  border: 1.5px solid #E3EDF7;
+  border-radius: 12px;
+  min-height: 56px;
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.werkstatt-mobile-condition b {
+  font-size: 14px;
+  line-height: 18px;
+  font-weight: 700;
+  color: #14293D;
+}
+
+.werkstatt-mobile-condition small {
+  font-size: 11px;
+  line-height: 15px;
+  color: #5C7895;
+}
+
+.werkstatt-mobile-condition--active {
+  border-color: #2F70B7;
+  background: #EAF4FF;
+}
+
+.werkstatt-mobile-condition:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+/* ── Ledger card: the window caption ─────────────────────────────────
+ *
+ * `GET /werkstatt/mobile/movements` answers the caller's newest N movements
+ * across every article, and the card filters them to one. The caption says so
+ * under the heading, so the count beside it is never read as this article's
+ * total. `.werkstatt-mobile-artikel-movements-head` (styles.css) is a
+ * space-between row; this wraps the two title lines into its first cell.
+ */
+.werkstatt-mobile-artikel-movements-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.werkstatt-mobile-artikel-movements-window {
+  font-size: 11px;
+  line-height: 14px;
+  color: #5C7895;
+}
+
+/* ── The "In Arbeit" card under a finished screen ────────────────────
+ *
+ * WerkstattPage renders `.werkstatt-desktop-only-placeholder` whenever the
+ * Werkstatt tab is "artikel", with no viewport condition, and the phone's
+ * article screen self-gates on the same tab — so both render, as siblings, and
+ * a Monteur scrolling past the real LAGER / UNTERWEGS / BESTAND figures read
+ * "Dieser Werkstatt-Bereich wird gerade gebaut" under the screen he was
+ * standing on. True while the page was a fixture; a contradiction now.
+ *
+ * The one-line gate belongs in WerkstattPage.tsx (`!isMobile && …`), which this
+ * group does not own — see the handoff note. This is the half that can be
+ * fixed from here, and it is not a workaround: the placeholder is by its own
+ * class name the DESKTOP-only stand-in, so the phone breakpoint is exactly
+ * where it has no business rendering.
+ */
+@media (max-width: 767px) {
+  /* Both selectors on purpose: the compound one outranks
+     `.werkstatt-tab-page { display: flex }` in styles.css whatever order the
+     bundler emits the two files in, and the bare one still covers the class
+     if it is ever rendered on different markup. */
+  .werkstatt-tab-page.werkstatt-desktop-only-placeholder,
+  .werkstatt-desktop-only-placeholder {
+    display: none;
+  }
+}

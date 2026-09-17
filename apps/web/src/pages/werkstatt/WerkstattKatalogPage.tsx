@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useAppContext } from "../../context/AppContext";
 import { NeuerArtikelModal } from "../../components/werkstatt/NeuerArtikelModal";
 import {
@@ -6,245 +6,341 @@ import {
   type NeuerBedarfSubmit,
 } from "../../components/werkstatt/bedarfe/NeuerBedarfModal";
 import { createNeed } from "../../utils/werkstattBedarfeApi";
+import { searchWerkstattCatalog } from "../../utils/werkstattCatalogApi";
+import { listSuppliers } from "../../utils/werkstattSuppliersApi";
+import { deleteCatalogImage, uploadCatalogImage } from "../../utils/werkstattKatalogApi";
 import {
-  MOCK_SUPPLIERS,
-  type MockCatalogEntry,
-} from "../../components/werkstatt/mockData";
-import type { MaterialCatalogItem } from "../../types";
+  KATALOG_FETCH_LIMIT,
+  KATALOG_SEARCH_LIMIT,
+  countCatalogRows,
+  describeImageDeletion,
+  groupImage,
+  imageRemovedMessage,
+  isTruncated,
+  rowLabel,
+  supplierLeadTimes,
+  supplierTagText,
+  toBedarfSeed,
+  trimToRowLimit,
+  withCatalogImage,
+} from "../../components/werkstatt/katalogEntries";
+import type {
+  MaterialCatalogItemLite,
+  WerkstattCatalogGroup,
+  WerkstattSupplier,
+} from "../../types/werkstatt";
+import "../../styles/katalog.css";
 
 /**
- * WerkstattKatalogPage — Datanorm catalog browse / search. Relocated from
- * MaterialsPage and extended with the multi-supplier grouping pattern from
- * Paper BIV-0.
+ * WerkstattKatalogPage — Datanorm catalog browse / search.
  *
- * Input-binding strategy: the live `materialCatalogQuery` from AppContext
- * drives the search — the same state the legacy MaterialsPage used — so
- * deep links and server-side search keep working. We then group results by
- * EAN to render hero cards when multiple suppliers share the same EAN.
+ * Reads `GET /werkstatt/catalog/search`, which is the endpoint that knows
+ * which SUPPLIER a catalogue row came from. The page previously read the
+ * legacy `/materials/catalog` instead, which does not carry a supplier at
+ * all — so it printed the MANUFACTURER under the heading "Lieferanten",
+ * filtered those names against a fixture list of suppliers that had been
+ * emptied (making the filter row permanently blank), and padded every offer
+ * with `lead_time_days: 0` and `is_preferred: false`, i.e. "0 Werktage" on
+ * every article in the workshop and a PREFERRED badge that could never light
+ * up. None of those three values existed in any API response.
  *
- * When no EAN is present the row renders as a compact card; an amber warning
- * explains that scan-match will fall back to the internal SP-number.
- *
- * Search is server-side and debounced against /api/materials/catalog. Results
- * are never filtered on the client: the Datanorm pool is far larger than any
- * page we fetch, so client-side filtering would only ever search the rows that
- * happened to be on screen.
+ * Both the search text and the supplier filter are applied by the SERVER.
+ * Filtering the supplier client-side would only ever filter the rows that
+ * happened to be in the current page of results, and the Datanorm pool is
+ * hundreds of thousands of rows deep.
  */
+
+const SEARCH_DEBOUNCE_MS = 220;
+
+function errorText(err: unknown, fallback: string): string {
+  return err instanceof Error && err.message ? err.message : fallback;
+}
+
 export function WerkstattKatalogPage() {
   const {
     mainView,
     language,
     werkstattTab,
-    materialCatalogRows,
-    materialCatalogQuery,
-    setMaterialCatalogQuery,
-    materialCatalogLoading,
-    loadMaterialCatalog,
-    uploadMaterialCatalogImage,
-    deleteMaterialCatalogImage,
     setNotice,
     token,
     user,
     activeProjects,
   } = useAppContext();
 
+  const de = language === "de";
+  const active = mainView === "werkstatt" && werkstattTab === "katalog";
+
   /* POST /werkstatt/articles (and /articles/from-catalog) need
    * `werkstatt:manage`. Offering the dialog without it costs a filled-in
    * dialog to learn that — the same rule the Bestand page's row menu keeps. */
   const canManageStock = (user?.effective_permissions ?? []).includes("werkstatt:manage");
 
-  const [activeSupplier, setActiveSupplier] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [supplierFilter, setSupplierFilter] = useState<number | null>(null);
+  const [groups, setGroups] = useState<ReadonlyArray<WerkstattCatalogGroup>>([]);
+  /* Decided on the RAW response (one row wider than the page shows) and kept,
+   * because the trimmed list on screen can no longer prove it. */
+  const [truncated, setTruncated] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [suppliers, setSuppliers] = useState<ReadonlyArray<WerkstattSupplier>>([]);
+  const [suppliersLoading, setSuppliersLoading] = useState(true);
+  const [supplierError, setSupplierError] = useState<string | null>(null);
+  const [imageError, setImageError] = useState<string | null>(null);
+  const [imageBusyKeys, setImageBusyKeys] = useState<ReadonlySet<string>>(new Set());
+  /* The catalogue row whose × is armed: a delete is two deliberate clicks. */
+  const [pendingImageDelete, setPendingImageDelete] = useState<string | null>(null);
+  /* Bumped by the retry buttons. A counter rather than a callback because both
+   * loads are effects, and re-running an effect is what "try again" means. */
+  const [retryCount, setRetryCount] = useState(0);
+
   const [neuerArtikelOpen, setNeuerArtikelOpen] = useState(false);
-  /* The seed is the catalogue ROW, not the folded display entry: creating an
-   * article needs a real `material_catalog_items.id`, which is what brings the
-   * wholesaler's article number and their supplier link with it. The folded
-   * entry is a display shape and has neither. */
-  const [neuerArtikelSeed, setNeuerArtikelSeed] = useState<MaterialCatalogItem | null>(null);
+  const [neuerArtikelSeed, setNeuerArtikelSeed] = useState<MaterialCatalogItemLite | null>(null);
   // "Zum Projekt-Bedarf": the catalogue is where somebody realises a site is
   // short of something, and until now the only way to record that was to wait
   // for a fitter to file a report.
-  const [bedarfSeed, setBedarfSeed] = useState<MaterialCatalogItem | null>(null);
+  const [bedarfSeed, setBedarfSeed] = useState<MaterialCatalogItemLite | null>(null);
   const [bedarfBusy, setBedarfBusy] = useState(false);
   const [bedarfError, setBedarfError] = useState<string | null>(null);
-  const [imageUploadingKeys, setImageUploadingKeys] = useState<Set<string>>(new Set());
-  const imageFileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
 
-  // Map each folded MockCatalogEntry back to its source MaterialCatalogItem so
-  // we can render thumbnails + per-row upload controls without extending the
-  // fake-first MockCatalogEntry shape.
-  const rowsByEntryId = useMemo(() => {
-    const map = new Map<string, MaterialCatalogItem>();
-    for (const row of materialCatalogRows) {
-      if (row.ean) {
-        const key = `ean-${row.ean}`;
-        // Prefer the row that already has an image — that's the one users
-        // care about when there are multiple supplier listings per EAN.
-        if (!map.has(key) || (!map.get(key)?.image_url && row.image_url)) {
-          map.set(key, row);
-        }
-      } else {
-        map.set(`row-entry-${row.id}`, row);
+  const imageFileInputRefs = useRef<Record<string, HTMLInputElement | null>>({});
+  /* Out-of-order guard: a fast typist has several searches in flight and the
+   * slowest one must not be the one that lands. */
+  const searchSeqRef = useRef(0);
+
+  // Debounced, server-side search. Re-runs on every input the server cares
+  // about: the text, the supplier filter, the session.
+  useEffect(() => {
+    if (!active) return;
+    const seq = searchSeqRef.current + 1;
+    searchSeqRef.current = seq;
+    setLoading(true);
+    const timeout = window.setTimeout(() => {
+      void searchWerkstattCatalog(token, {
+        q: query.trim(),
+        supplierId: supplierFilter,
+        // One row more than the page shows, purely to tell "cut off here"
+        // apart from "that is all there is".
+        limit: KATALOG_FETCH_LIMIT,
+      })
+        .then((found) => {
+          if (seq !== searchSeqRef.current) return;
+          // Judge before trimming; show only what the note talks about.
+          setTruncated(isTruncated(found));
+          setGroups(trimToRowLimit(found));
+          setLoadError(null);
+          // A new result is a new list: an armed × must not survive into it
+          // and turn the next single click on that row into a deletion.
+          setPendingImageDelete(null);
+        })
+        .catch((err: unknown) => {
+          if (seq !== searchSeqRef.current) return;
+          // Empty the list as well: leaving the previous hits on screen under
+          // a failed search is how a stale result gets read as a fresh one.
+          setGroups([]);
+          setTruncated(false);
+          setLoadError(
+            errorText(
+              err,
+              de ? "Katalog konnte nicht geladen werden." : "The catalog could not be loaded.",
+            ),
+          );
+        })
+        .finally(() => {
+          if (seq !== searchSeqRef.current) return;
+          setLoading(false);
+        });
+    }, SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(timeout);
+  }, [active, token, query, supplierFilter, retryCount, de]);
+
+  // The supplier filter's options. Independent of the search: a failure here
+  // costs the filter row, not the catalogue.
+  useEffect(() => {
+    if (!active) return;
+    let cancelled = false;
+    setSuppliersLoading(true);
+    void listSuppliers(token)
+      .then((rows) => {
+        if (cancelled) return;
+        setSuppliers(rows);
+        setSupplierError(null);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setSuppliers([]);
+        setSupplierError(
+          errorText(
+            err,
+            de ? "Lieferanten konnten nicht geladen werden." : "Suppliers could not be loaded.",
+          ),
+        );
+      })
+      .finally(() => {
+        if (!cancelled) setSuppliersLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [active, token, retryCount, de]);
+
+  /** Chips offer every live supplier, including ones with no Datanorm rows
+   *  yet — picking such a supplier answers "nothing imported for them",
+   *  which is the thing the buyer wanted to know. */
+  const supplierChips = useMemo(
+    () => suppliers.filter((supplier) => !supplier.is_archived),
+    [suppliers],
+  );
+
+  const leadTimes = useMemo(() => supplierLeadTimes(suppliers), [suppliers]);
+
+  const setImageBusy = useCallback((externalKey: string, busy: boolean) => {
+    setImageBusyKeys((current) => {
+      const next = new Set(current);
+      if (busy) next.add(externalKey);
+      else next.delete(externalKey);
+      return next;
+    });
+  }, []);
+
+  const handleImageUpload = useCallback(
+    async (externalKey: string, file: File) => {
+      setImageBusy(externalKey, true);
+      setImageError(null);
+      try {
+        const result = await uploadCatalogImage(token, externalKey, file);
+        setGroups((current) => withCatalogImage(current, externalKey, result.image_url));
+        setNotice(de ? "Bild hochgeladen." : "Image uploaded.");
+      } catch (err) {
+        setImageError(
+          errorText(
+            err,
+            de ? "Bild konnte nicht hochgeladen werden." : "The image could not be uploaded.",
+          ),
+        );
+      } finally {
+        setImageBusy(externalKey, false);
       }
-    }
-    return map;
-  }, [materialCatalogRows]);
+    },
+    [de, setImageBusy, setNotice, token],
+  );
+
+  const handleImageDelete = useCallback(
+    async (externalKey: string) => {
+      setImageBusy(externalKey, true);
+      setImageError(null);
+      try {
+        await deleteCatalogImage(token, externalKey);
+        /* Worded from the card the user clicked on — which row the picture
+         * came off, and whether another wholesaler's picture for the same EAN
+         * has just taken its place. The LIST is updated functionally, so a
+         * search that landed during the round trip is not overwritten by the
+         * rows this click started from. */
+        const deletion = describeImageDeletion(groups, externalKey);
+        setGroups((current) => withCatalogImage(current, externalKey, null));
+        setNotice(imageRemovedMessage(deletion, de));
+      } catch (err) {
+        setImageError(
+          errorText(
+            err,
+            de ? "Bild konnte nicht entfernt werden." : "The image could not be removed.",
+          ),
+        );
+      } finally {
+        setImageBusy(externalKey, false);
+      }
+    },
+    [de, groups, setImageBusy, setNotice, token],
+  );
+
+  /**
+   * First click arms, second click deletes.
+   *
+   * DELETE /materials/catalog/images/{key} removes the cached file and resets
+   * the row's image state for EVERY user in the company, with no undo — a
+   * hand-uploaded picture has no original to come back from. Both image
+   * endpoints are gated on an authenticated user only, so there is no
+   * permission to hang the control on and a deliberate second click is the
+   * only protection available. A mis-tap on a small × in a browsing list is
+   * otherwise a company-wide destructive write.
+   */
+  const armImageDelete = useCallback((externalKey: string) => {
+    setPendingImageDelete(externalKey);
+    setImageError(null);
+  }, []);
+
+  const confirmImageDelete = useCallback(
+    (externalKey: string) => {
+      setPendingImageDelete(null);
+      void handleImageDelete(externalKey);
+    },
+    [handleImageDelete],
+  );
+
+  /**
+   * Switch the supplier filter and drop the rows on screen with it.
+   *
+   * The chip is aria-selected on the same render, while the new result is a
+   * debounce plus a round trip away — on a workshop tablet easily a second or
+   * two. Leaving the previous supplier's cards under an already-active chip
+   * re-attributes every price on screen to a wholesaler that never quoted it.
+   * Emptying the list falls back to the page's own "no counts + Lädt…" state,
+   * which claims nothing. (Stale rows under a TYPED query are a different
+   * case: the text narrows a pool, it does not re-attribute it.)
+   */
+  const chooseSupplier = useCallback(
+    (supplierId: number | null) => {
+      if (supplierId === supplierFilter) return;
+      setSupplierFilter(supplierId);
+      setGroups([]);
+      setTruncated(false);
+    },
+    [supplierFilter],
+  );
+
+  const submitBedarf = useCallback(
+    async (input: NeuerBedarfSubmit) => {
+      setBedarfBusy(true);
+      setBedarfError(null);
+      try {
+        await createNeed(token, input);
+        setBedarfSeed(null);
+        setNotice(de ? "Zum Projekt-Bedarf hinzugefügt" : "Added to the project needs");
+      } catch (err) {
+        setBedarfError(
+          errorText(
+            err,
+            de ? "Bedarf konnte nicht angelegt werden." : "The need could not be created.",
+          ),
+        );
+      } finally {
+        setBedarfBusy(false);
+      }
+    },
+    [de, setNotice, token],
+  );
 
   /* One stable object per seed. Built with useMemo rather than inline in the
    * JSX because the dialog keys its "resolve what I was handed" effect on the
    * seed, and a new object on every render would re-run it. */
-  const catalogSeedLite = useMemo(
-    () =>
-      neuerArtikelSeed
-        ? {
-            id: neuerArtikelSeed.id,
-            external_key: neuerArtikelSeed.external_key ?? "",
-            supplier_id: null,
-            supplier_name: null,
-            article_no: neuerArtikelSeed.article_no ?? null,
-            item_name: neuerArtikelSeed.item_name,
-            ean: neuerArtikelSeed.ean ?? null,
-            manufacturer: neuerArtikelSeed.manufacturer ?? null,
-            unit: neuerArtikelSeed.unit ?? null,
-            price_text: neuerArtikelSeed.price_text ?? null,
-            image_url: neuerArtikelSeed.image_url ?? null,
-          }
-        : null,
-    [neuerArtikelSeed],
+  const bedarfSeedItem = useMemo(
+    () => (bedarfSeed ? toBedarfSeed(bedarfSeed) : null),
+    [bedarfSeed],
   );
 
-  async function submitBedarf(input: NeuerBedarfSubmit) {
-    setBedarfBusy(true);
-    setBedarfError(null);
-    try {
-      await createNeed(token, input);
-      setBedarfSeed(null);
-      setNotice(de ? "Zum Projekt-Bedarf hinzugefügt" : "Added to the project needs");
-    } catch (err) {
-      setBedarfError(
-        err instanceof Error && err.message
-          ? err.message
-          : de
-            ? "Bedarf konnte nicht angelegt werden."
-            : "The need could not be created.",
-      );
-    } finally {
-      setBedarfBusy(false);
-    }
-  }
+  if (!active) return null;
 
-  async function handleCatalogImageUpload(externalKey: string, file: File) {
-    setImageUploadingKeys((current) => {
-      const next = new Set(current);
-      next.add(externalKey);
-      return next;
-    });
-    try {
-      await uploadMaterialCatalogImage(externalKey, file);
-    } finally {
-      setImageUploadingKeys((current) => {
-        const next = new Set(current);
-        next.delete(externalKey);
-        return next;
-      });
-    }
-  }
-
-  // Debounced server-side search, re-run whenever the query changes.
-  //
-  // This previously fired only on mount, so typing in the search box updated
-  // `materialCatalogQuery` but never asked the server anything — the list was
-  // whatever single page had been fetched when the tab opened, and nothing
-  // filtered it by the typed text at all. On a Datanorm pool of hundreds of
-  // thousands of rows that made most articles unfindable, which is exactly the
-  // "search doesn't really work" report.
-  //
-  // `loadMaterialCatalog` already guards against out-of-order responses with a
-  // request-sequence ref, so a fast typist cannot get a stale result rendered.
-  // 220ms matches the debounce the materials page uses.
-  useEffect(() => {
-    if (mainView !== "werkstatt" || werkstattTab !== "katalog") return;
-    const timeout = window.setTimeout(() => {
-      void loadMaterialCatalog(materialCatalogQuery);
-    }, 220);
-    return () => window.clearTimeout(timeout);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mainView, werkstattTab, materialCatalogQuery]);
-
-  // Server rows only. The mock fallback that used to kick in on an empty
-  // result set had to go: now that the query actually reaches the server, "no
-  // rows" means the search genuinely found nothing, and rendering sample
-  // products there would show articles that do not exist in the catalog. The
-  // empty state below says so instead.
-  const sourceEntries = useMemo<ReadonlyArray<MockCatalogEntry>>(() => {
-    // Fold the flat MaterialCatalogItem rows into the MockCatalogEntry shape
-    // so the hero-card grouping works identically for both sources.
-    const byEan = new Map<string, MockCatalogEntry>();
-    const singles: MockCatalogEntry[] = [];
-    for (const row of materialCatalogRows) {
-      const offerId = `row-${row.id}`;
-      const offer = {
-        id: offerId,
-        supplier_name: row.manufacturer?.trim() || "—",
-        supplier_article_no: row.article_no?.trim() ?? "",
-        lead_time_days: 0,
-        price_text: row.price_text?.trim() ?? "",
-        is_preferred: false,
-      };
-      if (!row.ean) {
-        singles.push({
-          id: `row-entry-${row.id}`,
-          item_name: row.item_name,
-          manufacturer: row.manufacturer ?? null,
-          ean: null,
-          offers: [offer],
-        });
-        continue;
-      }
-      const existing = byEan.get(row.ean);
-      if (existing) {
-        byEan.set(row.ean, {
-          ...existing,
-          offers: [...existing.offers, offer],
-        });
-      } else {
-        byEan.set(row.ean, {
-          id: `ean-${row.ean}`,
-          item_name: row.item_name,
-          manufacturer: row.manufacturer ?? null,
-          ean: row.ean,
-          offers: [offer],
-        });
-      }
-    }
-    return [...byEan.values(), ...singles];
-  }, [materialCatalogRows]);
-
-  const supplierChips = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const entry of sourceEntries) {
-      for (const offer of entry.offers) {
-        counts.set(offer.supplier_name, (counts.get(offer.supplier_name) ?? 0) + 1);
-      }
-    }
-    return MOCK_SUPPLIERS.map((s) => ({
-      id: s.id,
-      name: s.name,
-      count: counts.get(s.name) ?? 0,
-    })).filter((c) => c.count > 0);
-  }, [sourceEntries]);
-
-  const visibleEntries = useMemo(() => {
-    if (!activeSupplier) return sourceEntries;
-    return sourceEntries.filter((entry) =>
-      entry.offers.some((offer) => offer.supplier_name === activeSupplier),
-    );
-  }, [sourceEntries, activeSupplier]);
-
-  if (mainView !== "werkstatt" || werkstattTab !== "katalog") return null;
-
-  const de = language === "de";
-  const hasNoEan = visibleEntries.some((entry) => !entry.ean);
-  const totalOffers = visibleEntries.reduce((sum, e) => sum + e.offers.length, 0);
+  const productCount = groups.length;
+  const rowCount = countCatalogRows(groups);
+  /* No counts before there is anything to count: "0 Produkte" next to a
+   * spinner is a figure, and a figure gets believed. A refresh over rows
+   * already on screen keeps showing those, which are the true ones. */
+  const firstLoad = loading && groups.length === 0;
+  const hasNoEan = groups.some((group) => !group.ean);
+  const activeSupplierName =
+    supplierFilter == null
+      ? null
+      : (supplierChips.find((s) => s.id === supplierFilter)?.name ?? null);
 
   return (
     <section className="werkstatt-tab-page">
@@ -272,297 +368,368 @@ export function WerkstattKatalogPage() {
           </svg>
           <input
             type="text"
-            value={materialCatalogQuery}
-            onChange={(event) => setMaterialCatalogQuery(event.target.value)}
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
             placeholder={
               de
                 ? "Name, EAN, Artikelnummer oder Hersteller suchen…"
                 : "Search name, EAN, article number or manufacturer…"
             }
+            aria-label={de ? "Katalog durchsuchen" : "Search the catalog"}
           />
         </div>
       </div>
 
       <div className="werkstatt-card werkstatt-katalog-wrap">
-        <div className="werkstatt-chips" role="tablist">
+        <div
+          className="werkstatt-chips"
+          role="tablist"
+          aria-label={de ? "Nach Lieferant filtern" : "Filter by supplier"}
+        >
           <button
             type="button"
             role="tab"
-            aria-selected={activeSupplier === null}
-            className={`werkstatt-chip${activeSupplier === null ? " werkstatt-chip--active" : ""}`}
-            onClick={() => setActiveSupplier(null)}
+            aria-selected={supplierFilter === null}
+            className={`werkstatt-chip${supplierFilter === null ? " werkstatt-chip--active" : ""}`}
+            onClick={() => chooseSupplier(null)}
           >
-            {de ? "Alle" : "All"}
-            <span className="werkstatt-chip-count">
-              {sourceEntries.reduce((sum, e) => sum + e.offers.length, 0)}
-            </span>
+            {de ? "Alle Lieferanten" : "All suppliers"}
           </button>
-          {supplierChips.map((chip) => (
+          {supplierChips.map((supplier) => (
             <button
-              key={chip.id}
+              key={supplier.id}
               type="button"
               role="tab"
-              aria-selected={activeSupplier === chip.name}
-              className={`werkstatt-chip${activeSupplier === chip.name ? " werkstatt-chip--active" : ""}`}
-              onClick={() => setActiveSupplier(chip.name)}
+              aria-selected={supplierFilter === supplier.id}
+              className={`werkstatt-chip${supplierFilter === supplier.id ? " werkstatt-chip--active" : ""}`}
+              onClick={() => chooseSupplier(supplier.id)}
             >
-              {chip.name}
-              <span className="werkstatt-chip-count">{chip.count}</span>
+              {supplier.short_name?.trim() || supplier.name}
             </button>
           ))}
+          {/* An empty filter row otherwise reads as "there are no suppliers",
+              which is a different answer from "not loaded yet". */}
+          {supplierChips.length === 0 && !supplierError && (
+            <span className="muted katalog-chip-note">
+              {suppliersLoading
+                ? de
+                  ? "Lieferanten werden geladen…"
+                  : "Loading suppliers…"
+                : de
+                  ? "Keine Lieferanten angelegt."
+                  : "No suppliers created yet."}
+            </span>
+          )}
         </div>
+
+        {supplierError && (
+          <p className="katalog-inline-error" role="alert">
+            {de
+              ? `Lieferanten konnten nicht geladen werden — es lässt sich gerade nicht nach Lieferant filtern. (${supplierError})`
+              : `Suppliers could not be loaded — filtering by supplier is unavailable. (${supplierError})`}{" "}
+            <button
+              type="button"
+              className="katalog-retry"
+              onClick={() => setRetryCount((count) => count + 1)}
+            >
+              {de ? "Erneut versuchen" : "Try again"}
+            </button>
+          </p>
+        )}
+
+        {imageError && (
+          <p className="katalog-inline-error" role="alert">
+            {imageError}{" "}
+            <button type="button" className="katalog-retry" onClick={() => setImageError(null)}>
+              {de ? "Ausblenden" : "Dismiss"}
+            </button>
+          </p>
+        )}
 
         <div className="werkstatt-katalog-head">
           <span>
-            {de
-              ? `${visibleEntries.length} Produkte · ${totalOffers} Angebote`
-              : `${visibleEntries.length} products · ${totalOffers} offers`}
+            {loadError
+              ? de
+                ? "Keine Zahlen — der Katalog wurde nicht geladen."
+                : "No figures — the catalog did not load."
+              : firstLoad
+                ? ""
+                : de
+                  ? `${productCount} Produkte · ${rowCount} Katalogeinträge`
+                  : `${productCount} products · ${rowCount} catalog rows`}
           </span>
-          {materialCatalogLoading && (
-            <span className="muted">{de ? "Lädt…" : "Loading…"}</span>
-          )}
+          {loading && <span className="muted">{de ? "Lädt…" : "Loading…"}</span>}
         </div>
 
-        <ul className="werkstatt-katalog-list">
-          {visibleEntries.map((entry) => {
-            const isMulti = entry.offers.length > 1;
-            const preferred = entry.offers.find((o) => o.is_preferred) ?? entry.offers[0];
-            const sourceRow = rowsByEntryId.get(entry.id) ?? null;
-            const externalKey = sourceRow?.external_key ?? "";
-            const imageUrl = sourceRow?.image_url ?? null;
-            const isManualImage = sourceRow?.image_source === "manual";
-            const isImageUploading = externalKey
-              ? imageUploadingKeys.has(externalKey)
-              : false;
-            return (
-              <li
-                key={entry.id}
-                className={`werkstatt-katalog-card${isMulti ? " werkstatt-katalog-card--hero" : ""}`}
-              >
-                <div className="werkstatt-katalog-card-head">
-                  <span
-                    className="werkstatt-katalog-thumb"
-                    style={{ position: "relative", overflow: "hidden" }}
-                    title={
-                      externalKey
-                        ? imageUrl
-                          ? isManualImage
-                            ? de
-                              ? "Manuell hochgeladen. Klicken zum Ersetzen."
-                              : "Manually uploaded. Click to replace."
-                            : de
-                              ? "Automatisch gefunden. Klicken zum Ersetzen."
-                              : "Auto-fetched. Click to replace."
-                          : de
-                            ? "Kein Bild — klicken zum Hochladen."
-                            : "No image — click to upload."
-                        : undefined
-                    }
-                  >
-                    {imageUrl ? (
-                      <img
-                        src={imageUrl}
-                        alt=""
-                        style={{ width: "100%", height: "100%", objectFit: "contain" }}
-                      />
-                    ) : (
-                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-                        <path
-                          d="M12 3 3 7.5v9L12 21l9-4.5v-9L12 3Z"
-                          stroke="#5C7895"
-                          strokeWidth="1.6"
-                          strokeLinejoin="round"
-                        />
-                      </svg>
-                    )}
-                    {externalKey && (
-                      <>
-                        <button
-                          type="button"
-                          onClick={() => imageFileInputRefs.current[externalKey]?.click()}
-                          disabled={isImageUploading}
-                          aria-label={
-                            imageUrl
-                              ? de ? "Bild ersetzen" : "Replace image"
-                              : de ? "Bild hochladen" : "Upload image"
-                          }
-                          style={{
-                            position: "absolute",
-                            inset: 0,
-                            background: "transparent",
-                            border: "none",
-                            cursor: "pointer",
-                            padding: 0,
-                          }}
-                        />
-                        {isManualImage && (
+        {!loadError && !loading && truncated && (
+          <p className="katalog-note" role="note">
+            {de
+              ? `Nur die ersten ${KATALOG_SEARCH_LIMIT} Katalogeinträge werden angezeigt — es gibt weitere Treffer. Suche eingrenzen. Die Lieferantenzahl je Produkt kann dadurch unvollständig sein.`
+              : `Only the first ${KATALOG_SEARCH_LIMIT} catalog rows are shown — there are more hits. Narrow the search. A product's supplier count can be incomplete because of the cut.`}
+          </p>
+        )}
+
+        {loadError ? (
+          <div className="katalog-error" role="alert">
+            <b>{de ? "Katalog konnte nicht geladen werden." : "The catalog could not be loaded."}</b>
+            <span className="katalog-error-detail">{loadError}</span>
+            <button
+              type="button"
+              className="werkstatt-action-btn"
+              onClick={() => setRetryCount((count) => count + 1)}
+            >
+              {de ? "Erneut versuchen" : "Try again"}
+            </button>
+          </div>
+        ) : (
+          <ul className="werkstatt-katalog-list">
+            {groups.map((group) => {
+              const hero = group.hero;
+              const isMulti = group.suppliers.length > 1;
+              const image = groupImage(group);
+              // Written to the row the card is about; removed from the row the
+              // picture actually hangs on, which after an EAN fold can be a
+              // different wholesaler's row.
+              const uploadKey = hero.external_key;
+              const imageKey = image?.external_key ?? uploadKey;
+              const imageBusy = imageBusyKeys.has(uploadKey) || imageBusyKeys.has(imageKey);
+              const deleteArmed = pendingImageDelete === imageKey;
+              return (
+                <li
+                  key={group.ean ? `ean-${group.ean}` : `row-${hero.id}`}
+                  className={`werkstatt-katalog-card${isMulti ? " werkstatt-katalog-card--hero" : ""}`}
+                >
+                  <div className="werkstatt-katalog-card-head">
+                    <span className="werkstatt-katalog-thumb katalog-thumb">
+                      {image?.image_url ? (
+                        <img src={image.image_url} alt="" className="katalog-thumb-img" />
+                      ) : (
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                          <path
+                            d="M12 3 3 7.5v9L12 21l9-4.5v-9L12 3Z"
+                            stroke="#5C7895"
+                            strokeWidth="1.6"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
+                      )}
+                      {uploadKey && (
+                        <>
                           <button
                             type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              void deleteMaterialCatalogImage(externalKey);
+                            className="katalog-thumb-hit"
+                            onClick={() => imageFileInputRefs.current[uploadKey]?.click()}
+                            disabled={imageBusy}
+                            title={
+                              image?.image_url
+                                ? de
+                                  ? "Bild ersetzen"
+                                  : "Replace image"
+                                : de
+                                  ? "Bild hochladen"
+                                  : "Upload image"
+                            }
+                            aria-label={
+                              image?.image_url
+                                ? de
+                                  ? `Bild von ${hero.item_name} ersetzen`
+                                  : `Replace image of ${hero.item_name}`
+                                : de
+                                  ? `Bild für ${hero.item_name} hochladen`
+                                  : `Upload an image for ${hero.item_name}`
+                            }
+                          />
+                          {image?.image_url && (
+                            <button
+                              type="button"
+                              className={`katalog-thumb-remove${deleteArmed ? " katalog-thumb-remove--armed" : ""}`}
+                              disabled={imageBusy}
+                              aria-expanded={deleteArmed}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                armImageDelete(imageKey);
+                              }}
+                              title={
+                                de
+                                  ? "Bild entfernen — gilt für alle und lässt sich nicht rückgängig machen."
+                                  : "Remove image — applies to everyone and cannot be undone."
+                              }
+                              aria-label={de ? "Bild entfernen" : "Remove image"}
+                            >
+                              ×
+                            </button>
+                          )}
+                          {imageBusy && (
+                            <span className="katalog-thumb-busy" aria-hidden="true">
+                              …
+                            </span>
+                          )}
+                          <input
+                            ref={(node) => {
+                              imageFileInputRefs.current[uploadKey] = node;
                             }}
-                            aria-label={de ? "Bild entfernen" : "Remove image"}
-                            title={de ? "Bild entfernen" : "Remove image"}
-                            style={{
-                              position: "absolute",
-                              top: 2,
-                              right: 2,
-                              width: 14,
-                              height: 14,
-                              padding: 0,
-                              borderRadius: 7,
-                              border: "none",
-                              background: "rgba(20, 41, 61, 0.72)",
-                              color: "#ffffff",
-                              fontSize: 9,
-                              lineHeight: "12px",
-                              cursor: "pointer",
+                            type="file"
+                            accept="image/jpeg,image/png,image/webp,image/gif"
+                            hidden
+                            onChange={(event) => {
+                              const picked = event.target.files?.[0];
+                              event.target.value = "";
+                              if (picked) void handleImageUpload(uploadKey, picked);
                             }}
-                          >
-                            ×
-                          </button>
-                        )}
-                        {isImageUploading && (
-                          <span
-                            style={{
-                              position: "absolute",
-                              inset: 0,
-                              background: "rgba(255,255,255,0.6)",
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "center",
-                              fontSize: 11,
-                              color: "#14293d",
-                            }}
-                          >
-                            …
-                          </span>
-                        )}
-                        <input
-                          ref={(node) => {
-                            imageFileInputRefs.current[externalKey] = node;
-                          }}
-                          type="file"
-                          accept="image/jpeg,image/png,image/webp,image/gif"
-                          hidden
-                          onChange={(event) => {
-                            const picked = event.target.files?.[0];
-                            event.target.value = "";
-                            if (picked) void handleCatalogImageUpload(externalKey, picked);
-                          }}
-                        />
-                      </>
-                    )}
-                  </span>
-                  <span className="werkstatt-katalog-title">
-                    <b>{entry.item_name}</b>
-                    <span
-                      className={`werkstatt-katalog-supplier-tag${isMulti ? "" : " werkstatt-katalog-supplier-tag--single"}`}
-                    >
-                      {entry.offers.length}{" "}
-                      {isMulti
-                        ? de
-                          ? "Lieferanten"
-                          : "suppliers"
-                        : de
-                          ? "Lieferant"
-                          : "supplier"}
+                          />
+                        </>
+                      )}
                     </span>
-                    <small className="werkstatt-katalog-meta">
-                      {entry.manufacturer ?? "—"} ·{" "}
-                      {entry.ean ? `EAN ${entry.ean}` : de ? "keine EAN" : "no EAN"}
-                    </small>
-                  </span>
-                  {!isMulti && (
-                    <span className="werkstatt-katalog-hero-price">
-                      <b>{preferred.price_text || "—"}</b>
-                      <small>
-                        {de
-                          ? `${preferred.lead_time_days} Werktage`
-                          : `${preferred.lead_time_days} days`}
+                    <span className="werkstatt-katalog-title">
+                      <b>{hero.item_name}</b>
+                      <span
+                        className={`werkstatt-katalog-supplier-tag${isMulti ? "" : " werkstatt-katalog-supplier-tag--single"}`}
+                      >
+                        {supplierTagText(group, {
+                          de,
+                          filtered: supplierFilter !== null,
+                          truncated,
+                        })}
+                      </span>
+                      <small className="werkstatt-katalog-meta">
+                        {/* Who sells it, on the cards that have no offer list.
+                            The field was in the response and thrown away, so
+                            the price on a single-offer card could only be
+                            attributed by re-running the search once per
+                            supplier chip. */}
+                        {!isMulti && (
+                          <>
+                            <b className="werkstatt-katalog-hero-supplier">
+                              {hero.supplier_name?.trim() ||
+                                (de ? "ohne Lieferant" : "no supplier")}
+                            </b>
+                            {" · "}
+                          </>
+                        )}
+                        {hero.manufacturer ?? "—"} ·{" "}
+                        {group.ean ? `EAN ${group.ean}` : de ? "keine EAN" : "no EAN"}
+                        {hero.article_no ? ` · Art.-Nr. ${hero.article_no}` : ""}
                       </small>
                     </span>
-                  )}
-                  <button
-                    type="button"
-                    className="werkstatt-action-btn"
-                    disabled={!sourceRow}
-                    title={
-                      sourceRow
-                        ? undefined
-                        : de
-                          ? "Für diese Zeile ist kein Katalog-Eintrag geladen."
-                          : "No catalogue row is loaded for this entry."
-                    }
-                    onClick={() => {
-                      if (!sourceRow) return;
-                      setBedarfError(null);
-                      setBedarfSeed(sourceRow);
-                    }}
-                  >
-                    {de ? "Zum Projekt-Bedarf" : "To project needs"}
-                  </button>
-                  {canManageStock && (
+                    {!isMulti && (
+                      <span className="werkstatt-katalog-hero-price">
+                        <b>{hero.price_text?.trim() || "—"}</b>
+                        <small>
+                          {hero.unit?.trim() ||
+                            (de ? "keine Einheit" : "no unit")}
+                        </small>
+                      </span>
+                    )}
                     <button
                       type="button"
-                      className="werkstatt-action-btn werkstatt-action-btn--primary"
-                      disabled={!sourceRow}
-                      title={
-                        sourceRow
-                          ? undefined
-                          : de
-                            ? "Für diese Zeile ist kein Katalog-Eintrag geladen."
-                            : "No catalogue row is loaded for this entry."
-                      }
+                      className="werkstatt-action-btn"
                       onClick={() => {
-                        if (!sourceRow) return;
-                        setNeuerArtikelSeed(sourceRow);
-                        setNeuerArtikelOpen(true);
+                        setBedarfError(null);
+                        setBedarfSeed(hero);
                       }}
                     >
-                      {de ? "In Werkstatt anlegen" : "Add to workshop"}
+                      {de ? "Zum Projekt-Bedarf" : "To project needs"}
                     </button>
+                    {canManageStock && (
+                      <button
+                        type="button"
+                        className="werkstatt-action-btn werkstatt-action-btn--primary"
+                        onClick={() => {
+                          setNeuerArtikelSeed(hero);
+                          setNeuerArtikelOpen(true);
+                        }}
+                      >
+                        {de ? "In Werkstatt anlegen" : "Add to workshop"}
+                      </button>
+                    )}
+                  </div>
+                  {deleteArmed && image && (
+                    <p className="katalog-confirm" role="alert">
+                      <span>
+                        {de
+                          ? `Bild von ${rowLabel(image, de)} entfernen? Das gilt für alle im Betrieb und lässt sich nicht rückgängig machen — ein selbst hochgeladenes Bild ist danach weg.`
+                          : `Remove ${rowLabel(image, de)}'s image? This applies to everyone in the company and cannot be undone — an uploaded picture is gone for good.`}
+                      </span>
+                      <button
+                        type="button"
+                        className="katalog-confirm-yes"
+                        disabled={imageBusy}
+                        onClick={() => confirmImageDelete(imageKey)}
+                      >
+                        {de ? "Entfernen" : "Remove"}
+                      </button>
+                      <button
+                        type="button"
+                        className="katalog-confirm-no"
+                        onClick={() => setPendingImageDelete(null)}
+                      >
+                        {de ? "Abbrechen" : "Cancel"}
+                      </button>
+                    </p>
                   )}
-                </div>
-                {isMulti && (
-                  <ul className="werkstatt-katalog-offers">
-                    {entry.offers.map((offer) => (
-                      <li key={offer.id} className="werkstatt-katalog-offer">
-                        <span className="werkstatt-katalog-offer-main">
-                          <b>
-                            {offer.supplier_name}
-                            {offer.is_preferred && (
-                              <span className="werkstatt-katalog-preferred">
-                                {de ? "PREFERRED" : "PREFERRED"}
-                              </span>
-                            )}
-                          </b>
-                          <small>Art.-Nr. {offer.supplier_article_no || "—"}</small>
-                        </span>
-                        <span className="werkstatt-katalog-offer-lead">
-                          {de
-                            ? `${offer.lead_time_days} Werktage`
-                            : `${offer.lead_time_days} days`}
-                        </span>
-                        <span className="werkstatt-katalog-offer-price">
-                          {offer.price_text || "—"}
-                        </span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </li>
-            );
-          })}
-          {visibleEntries.length === 0 && (
-            <li className="werkstatt-katalog-empty muted">
-              {de ? "Keine Katalogeinträge gefunden." : "No catalog entries found."}
-            </li>
-          )}
-        </ul>
+                  {isMulti && (
+                    <ul className="werkstatt-katalog-offers">
+                      {group.suppliers.map((offer) => {
+                        const lead =
+                          offer.supplier_id == null ? undefined : leadTimes.get(offer.supplier_id);
+                        return (
+                          <li key={offer.id} className="werkstatt-katalog-offer">
+                            <span className="werkstatt-katalog-offer-main">
+                              <b>
+                                {offer.supplier_name ??
+                                  (de ? "ohne Lieferant" : "no supplier")}
+                              </b>
+                              <small>Art.-Nr. {offer.article_no || "—"}</small>
+                            </span>
+                            <span
+                              className="werkstatt-katalog-offer-lead"
+                              title={
+                                lead == null
+                                  ? undefined
+                                  : de
+                                    ? "Standard-Lieferzeit des Lieferanten — nicht artikelbezogen."
+                                    : "The supplier's standard lead time — not per article."
+                              }
+                            >
+                              {lead == null
+                                ? de
+                                  ? "Lieferzeit unbekannt"
+                                  : "lead time unknown"
+                                : de
+                                  ? `i. d. R. ${lead} Werktage`
+                                  : `usually ${lead} days`}
+                            </span>
+                            <span className="werkstatt-katalog-offer-price">
+                              {offer.price_text?.trim() || "—"}
+                            </span>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  )}
+                </li>
+              );
+            })}
 
-        {hasNoEan && (
+            {firstLoad && (
+              <li className="werkstatt-katalog-empty muted">{de ? "Lädt…" : "Loading…"}</li>
+            )}
+
+            {groups.length === 0 && !loading && (
+              <li className="werkstatt-katalog-empty muted">
+                {query.trim() || supplierFilter !== null
+                  ? de
+                    ? `Keine Treffer${activeSupplierName ? ` bei ${activeSupplierName}` : ""}.`
+                    : `No hits${activeSupplierName ? ` at ${activeSupplierName}` : ""}.`
+                  : de
+                    ? "Noch keine Katalogdaten. Eine Datanorm-Datei wird unter Werkstatt › Datanorm-Import eingelesen (Administrator)."
+                    : "No catalog data yet. A Datanorm file is imported under Workshop › Datanorm import (administrator)."}
+              </li>
+            )}
+          </ul>
+        )}
+
+        {hasNoEan && !loadError && (
           <div className="werkstatt-no-ean-warn" role="note">
             <span className="werkstatt-no-ean-warn-icon" aria-hidden="true">⚠</span>
             <span>
@@ -582,7 +749,7 @@ export function WerkstattKatalogPage() {
         }}
         language={language}
         token={token}
-        seedCatalogItem={catalogSeedLite}
+        seedCatalogItem={neuerArtikelSeed}
         onCreated={(article) => {
           setNeuerArtikelSeed(null);
           setNotice(
@@ -598,7 +765,7 @@ export function WerkstattKatalogPage() {
         language={language}
         token={token}
         projects={activeProjects}
-        seedCatalogItem={bedarfSeed}
+        seedCatalogItem={bedarfSeedItem}
         busy={bedarfBusy}
         error={bedarfError}
         onSubmit={(input) => void submitBedarf(input)}

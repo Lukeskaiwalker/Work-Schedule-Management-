@@ -1,0 +1,130 @@
+/* Werkstatt overview screens — dashboard tab and "Auf Baustelle".
+ *
+ * Own file, imported by both pages, because styles.css is a 36k-line shared
+ * surface several people edit in the same week. Colours mirror the Werkstatt
+ * palette there (#14293d ink, #5c7895 muted, #d9e4f2 hairline) so nothing
+ * added here reads as a graft.
+ *
+ * Everything in this file exists for one of three jobs the screens had no
+ * vocabulary for while they rendered fixtures: saying a load FAILED, saying a
+ * block is genuinely EMPTY, and saying plainly that an action does not exist.
+ */
+
+/* ── Load failed ───────────────────────────────────────────────────────────
+ * Deliberately loud. The number these screens show is the number a workshop
+ * acts on, so "could not load" has to beat "looks like zero". */
+
+.wsov-error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+  border: 1px solid #f0c3c3;
+  border-left: 3px solid #c0392b;
+  border-radius: 10px;
+  background: #fdf3f2;
+  color: #8e2f22;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.wsov-error-text {
+  flex: 1 1 260px;
+  min-width: 0;
+}
+
+.wsov-error-detail {
+  display: block;
+  color: #a8574a;
+  font-size: 12px;
+  line-height: 16px;
+  word-break: break-word;
+}
+
+.wsov-retry {
+  appearance: none;
+  flex: 0 0 auto;
+  padding: 5px 12px;
+  border: 1px solid #c0392b;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #8e2f22;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.wsov-retry:hover {
+  background: #fbeceb;
+}
+
+/* ── Per-block loading / empty ─────────────────────────────────────────── */
+
+.wsov-state {
+  margin: 0;
+  padding: 22px 20px;
+  text-align: center;
+  color: #5c7895;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 18px;
+}
+
+.wsov-state--failed {
+  color: #8e2f22;
+}
+
+/* ── A note that is not a promise ──────────────────────────────────────────
+ * Used where a control used to sit that claimed to do something the API has
+ * no endpoint for. Quiet, because it is an explanation, not an alarm. */
+
+.wsov-note {
+  display: block;
+  margin: 0 0 12px;
+  padding: 8px 12px;
+  border: 1px dashed #d9e4f2;
+  border-radius: 10px;
+  background: #f7fafd;
+  color: #5c7895;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 12px;
+  line-height: 17px;
+}
+
+/* Same idea, inside a card head: says what the card is a preview OF. */
+.wsov-card-foot {
+  padding: 8px 20px 14px;
+  color: #7c93ad;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 11px;
+  line-height: 15px;
+}
+
+/* ── Row-level busy / failure on "Auf Baustelle" ───────────────────────── */
+
+.wsov-row-error {
+  grid-column: 1 / -1;
+  margin: 2px 0 0;
+  color: #8e2f22;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.wsov-kpi-unknown {
+  color: #7c93ad;
+}
+
+/* ── A segmented control that may run out of room ───────────────────────────
+ * `.werkstatt-segmented` in styles.css is a non-wrapping inline-flex, which is
+ * right for three or four chips in a card head. The movements filter now has
+ * five (goods-in had to leave the "Rückgaben" bucket — a delivery is not a
+ * return), so it is allowed to wrap rather than push the card wider. */
+
+.wsov-segmented-wrap {
+  flex-wrap: wrap;
+}

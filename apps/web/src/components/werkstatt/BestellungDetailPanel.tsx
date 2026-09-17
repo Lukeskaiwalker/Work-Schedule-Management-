@@ -41,7 +41,7 @@ import {
   type SendConflict,
   type SendRoute,
 } from "./BestellungVersandLeiste";
-import { formatMoney, orderStatusLabel, orderStatusToTone, shortDate } from "./mockData";
+import { formatMoney, orderStatusLabel, orderStatusToTone, shortDate } from "./orderPresentation";
 
 export interface BestellungDetailPanelProps {
   language: Language;

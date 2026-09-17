@@ -22,6 +22,7 @@ from app.routers import workflow_station_admin
 from app.routers import workflow_station_pairing
 from app.routers import workflow_station_werkstatt
 from app.routers import workflow_werkstatt_inventory
+from app.routers import workflow_werkstatt_on_site
 from app.routers import admin, api_tokens, auth, events, time_tracking, workflow, workflow_notifications, workflow_schaltplan, workflow_task_packing_list, workflow_training_reports
 from app.services.material_catalog import sync_pending_material_catalog_images
 from app.services.runtime_settings import (
@@ -390,6 +391,10 @@ app.include_router(workflow_notifications.router, prefix="/api")
 app.include_router(time_tracking.router, prefix="/api")
 app.include_router(workflow_training_reports.router, prefix="/api")
 app.include_router(workflow_werkstatt_inventory.router, prefix="/api")
+# `/werkstatt/on-site` is a literal path that collides with nothing in the
+# persona routers, so it mounts here beside inventory rather than inside the
+# desktop composite. See routers/workflow_werkstatt_on_site.py.
+app.include_router(workflow_werkstatt_on_site.router, prefix="/api")
 app.include_router(workflow_station.router, prefix="/api")
 app.include_router(workflow_station_pairing.router, prefix="/api")
 app.include_router(workflow_station_admin.router, prefix="/api")

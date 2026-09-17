@@ -1,158 +1,162 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAppContext } from "../../context/AppContext";
+import { OnSiteItemRow } from "../../components/werkstatt/onsite/OnSiteItemRow";
+import { OnSiteKpiStrip } from "../../components/werkstatt/onsite/OnSiteKpiStrip";
+import { WerkstattLoadError } from "../../components/werkstatt/dashboard/WerkstattLoadError";
+import { useWerkstattOverview } from "../../hooks/useWerkstattOverview";
 import {
-  MOCK_ON_SITE_PROJECTS,
-  type OnSiteItem,
-  type OnSiteItemStatus,
-  type OnSiteProject,
-} from "../../components/werkstatt/mockData";
+  listOnSiteGroups,
+  returnArticle,
+  type WerkstattOnSiteGroup,
+  type WerkstattOnSiteItem,
+} from "../../utils/werkstattDashboardApi";
+import {
+  articlesOnSeveralSites,
+  computeOnSiteTotals,
+  filterOnSiteGroups,
+  ON_SITE_FILTERS,
+  type OnSiteFilterKey,
+} from "../../utils/werkstattOnSiteTotals";
+import { formatQuantity, pluralize } from "../../utils/werkstattOverviewFormat";
+import "../../styles/werkstatt-overview.css";
 
 /**
- * WerkstattAufBaustellePage — "Auf Baustelle" full view. Drill-down target
- * of the Dashboard's "Auf Baustelle" card "Alle →" button.
+ * WerkstattAufBaustellePage — everything still checked out, grouped by site.
  *
- * Shows all currently checked-out Werkstatt articles, grouped by project.
- * Each project group can be collapsed; filter chips narrow by status
- * (alle / aktiv / überfällig / heute / diese Woche). Search matches
- * article name, SP-number, or assignee.
+ * Two things were wrong with the screen this replaces. It rendered fixtures,
+ * and both of its actions lied: "Zurückgeben" printed a notice and booked
+ * nothing, "Mahnen" claimed a reminder had been sent to a named colleague. The
+ * second one is the worse of the two, because the office had no way to tell it
+ * had not happened until somebody asked why nobody replied.
  *
- * Per-row actions: "Zurückgeben" returns the item (stub callback — real
- * call lands on POST /api/werkstatt/mobile/return once the FE is wired).
- * "Mahnen" (per overdue row) fires a notice today; when notifications land,
- * it will trigger a reminder to the assignee.
+ * So: the list comes from `GET /werkstatt/on-site`, which nets returns against
+ * checkouts and does not cap at three projects the way the dashboard preview
+ * does; "Zurückgeben" books through `POST /werkstatt/mobile/return` and shows
+ * the server's own words when that fails; and the reminder buttons are gone,
+ * replaced by a line that says reminders are not available. There is no
+ * notification endpoint to wire them to, and a disabled button that looks like
+ * it might work on a better day is its own kind of claim.
+ *
+ * Self-gates on `mainView === "werkstatt" && werkstattTab === "on_site"`.
  */
-type FilterKey = "all" | "active" | "overdue" | "due_today" | "this_week";
 
-interface FilterDef {
-  key: FilterKey;
-  label_de: string;
-  label_en: string;
-}
-
-const FILTERS: ReadonlyArray<FilterDef> = [
-  { key: "all", label_de: "Alle", label_en: "All" },
-  { key: "active", label_de: "Aktiv", label_en: "Active" },
-  { key: "overdue", label_de: "Überfällig", label_en: "Overdue" },
-  { key: "due_today", label_de: "Heute", label_en: "Today" },
-  { key: "this_week", label_de: "Diese Woche", label_en: "This week" },
-];
-
-function itemMatchesFilter(item: OnSiteItem, filter: FilterKey): boolean {
-  if (filter === "all") return true;
-  if (filter === "overdue") return item.status === "overdue";
-  if (filter === "due_today") return item.status === "due_today";
-  if (filter === "this_week") return item.status === "due_today" || item.status === "due_soon";
-  if (filter === "active") return item.status !== "overdue";
-  return true;
-}
-
-function statusClass(status: OnSiteItemStatus): string {
-  switch (status) {
-    case "overdue":
-      return "werkstatt-onsite-return werkstatt-onsite-return--overdue";
-    case "due_today":
-      return "werkstatt-onsite-return werkstatt-onsite-return--today";
-    case "due_soon":
-      return "werkstatt-onsite-return werkstatt-onsite-return--soon";
-    default:
-      return "werkstatt-onsite-return";
-  }
+/** Identity of one row across a reload — article, who holds it, and when it is
+ *  due back, which is exactly how the endpoint groups them. The deadline is
+ *  part of the key because two lots of one article can sit with one person on
+ *  one site under different return dates; without it the two rows would share
+ *  a busy flag and an error message. */
+function rowKey(group: WerkstattOnSiteGroup, item: WerkstattOnSiteItem): string {
+  return [
+    group.project_id ?? "none",
+    item.article_id,
+    item.assignee_user_id ?? "none",
+    item.expected_return_at ?? "none",
+  ].join(":");
 }
 
 export function WerkstattAufBaustellePage() {
-  const { mainView, language, werkstattTab, setNotice } = useAppContext();
-
-  const [search, setSearch] = useState("");
-  const [activeFilter, setActiveFilter] = useState<FilterKey>("all");
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
-
-  /* Filtered projects — drop groups that end up empty after filter+search. */
-  const filteredProjects = useMemo(() => {
-    const needle = search.trim().toLowerCase();
-    const filterMatch = (item: OnSiteItem) => {
-      if (!itemMatchesFilter(item, activeFilter)) return false;
-      if (!needle) return true;
-      return (
-        item.article_name.toLowerCase().includes(needle) ||
-        item.article_no.toLowerCase().includes(needle) ||
-        item.assignee_name.toLowerCase().includes(needle)
-      );
-    };
-    const projectMatch = (project: OnSiteProject) => {
-      if (needle && (
-        project.project_number.toLowerCase().includes(needle) ||
-        project.project_title.toLowerCase().includes(needle)
-      )) return project.items;  // whole group if project text matches
-      return project.items.filter(filterMatch);
-    };
-    return MOCK_ON_SITE_PROJECTS
-      .map((p) => ({ ...p, items: projectMatch(p) }))
-      .filter((p) => p.items.length > 0);
-  }, [search, activeFilter]);
-
-  /* Totals for KPI strip — computed from the full (unfiltered) dataset so
-   * the headline numbers don't change as you filter the view. */
-  const totals = useMemo(() => {
-    let totalItems = 0;
-    let totalQuantity = 0;
-    let overdue = 0;
-    let dueToday = 0;
-    const projectIds = new Set<string>();
-    for (const project of MOCK_ON_SITE_PROJECTS) {
-      projectIds.add(project.id);
-      for (const item of project.items) {
-        totalItems += 1;
-        totalQuantity += item.quantity;
-        if (item.status === "overdue") overdue += 1;
-        if (item.status === "due_today") dueToday += 1;
-      }
-    }
-    return {
-      totalItems,
-      totalQuantity,
-      projectCount: projectIds.size,
-      overdue,
-      dueToday,
-    };
-  }, []);
-
-  if (mainView !== "werkstatt" || werkstattTab !== "on_site") return null;
+  const { mainView, language, werkstattTab, token, user, now, setNotice, setWerkstattTab } =
+    useAppContext();
 
   const de = language === "de";
+  const active = mainView === "werkstatt" && werkstattTab === "on_site";
 
-  function toggleProject(id: string): void {
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+  const [search, setSearch] = useState("");
+  const [activeFilter, setActiveFilter] = useState<OnSiteFilterKey>("all");
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set<string>());
+  const [busyRows, setBusyRows] = useState<ReadonlySet<string>>(() => new Set<string>());
+  const [rowErrors, setRowErrors] = useState<Readonly<Record<string, string>>>({});
+
+  const { data, loading, error, reload } = useWerkstattOverview(
+    active,
+    token,
+    listOnSiteGroups,
+    de ? "Ausgegebene Artikel nicht geladen." : "Checked-out items not loaded.",
+  );
+
+  // A per-row refusal belongs to the numbers it was refused against. Once a
+  // new payload lands those numbers are gone — a colleague may have booked the
+  // item back from the mobile screen — so the message underneath the row would
+  // be contradicting the figures beside it and reading as a failed refresh.
+  useEffect(() => {
+    setRowErrors({});
+  }, [data]);
+
+  const groups = data ?? [];
+  const totals = useMemo(
+    () => (data ? computeOnSiteTotals(data, now) : null),
+    [data, now],
+  );
+  const visibleGroups = useMemo(
+    () => filterOnSiteGroups(groups, activeFilter, search, now),
+    [groups, activeFilter, search, now],
+  );
+  // Computed over the FULL response: an article is shared across sites whether
+  // or not the current filter happens to show both of them.
+  const sharedArticleIds = useMemo(() => articlesOnSeveralSites(groups), [groups]);
+
+  const canManage = (user?.effective_permissions ?? []).includes("werkstatt:manage");
+  const currentUserId = user?.id ?? null;
+
+  const handleReturn = useCallback(
+    async (group: WerkstattOnSiteGroup, item: WerkstattOnSiteItem) => {
+      const key = rowKey(group, item);
+      // Booking somebody else's checkout back in has to be written against
+      // THEIR balance — a return only settles checkouts of the same person, so
+      // an office user booking it as themselves would leave the technician's
+      // "Meine Entnahmen" showing the tool forever.
+      const onBehalfOf =
+        item.assignee_user_id != null && item.assignee_user_id !== currentUserId
+          ? item.assignee_user_id
+          : null;
+      setBusyRows((current) => new Set([...current, key]));
+      setRowErrors((current) => {
+        const { [key]: _dropped, ...rest } = current;
+        return rest;
+      });
+      try {
+        await returnArticle(token, {
+          articleId: item.article_id,
+          quantity: item.quantity_out,
+          onBehalfOf,
+        });
+        setNotice(
+          de
+            ? `${formatQuantity(item.quantity_out, item.unit)} ${item.article_name} zurückgebucht.`
+            : `${formatQuantity(item.quantity_out, item.unit)} ${item.article_name} booked back in.`,
+        );
+        reload();
+      } catch (cause: unknown) {
+        const message =
+          cause instanceof Error && cause.message
+            ? cause.message
+            : de
+              ? "Unbekannter Fehler."
+              : "Unknown error.";
+        setRowErrors((current) => ({ ...current, [key]: message }));
+      } finally {
+        setBusyRows((current) => {
+          const next = new Set(current);
+          next.delete(key);
+          return next;
+        });
+      }
+    },
+    [currentUserId, de, reload, setNotice, token],
+  );
+
+  const toggleGroup = useCallback((key: string) => {
+    setCollapsed((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
-  }
+  }, []);
 
-  function returnItem(project: OnSiteProject, item: OnSiteItem): void {
-    // Nothing is booked here yet. Saying "zurückgegeben" would put the item
-    // back on the shelf in the reader's head while the ledger still has it
-    // out on the job — the kind of drift that only shows up at stocktake.
-    // The rack station and the Werkstatt page both book a real return today.
-    setNotice(
-      de
-        ? `Nicht gebucht — diese Seite ist noch nicht angebunden. ${item.quantity}× ${item.article_name} bitte am Regal-Bildschirm oder unter Werkstatt zurückbuchen.`
-        : `Not booked — this page is not connected yet. Return ${item.quantity}× ${item.article_name} at the rack screen or under Werkstatt.`,
-    );
-    // TODO(werkstatt): POST /api/werkstatt/mobile/return
-    //   { article_id, quantity: item.quantity, condition: "ok", notes: null }
-  }
+  if (!active) return null;
 
-  function remindAssignee(project: OnSiteProject, item: OnSiteItem): void {
-    setNotice(
-      de
-        ? `Erinnerung an ${item.assignee_name} gesendet · ${item.article_name}`
-        : `Reminder sent to ${item.assignee_name} · ${item.article_name}`,
-    );
-    // TODO(werkstatt): POST /api/werkstatt/mobile/remind once endpoint lands.
-  }
-
-  const anyOverdue = totals.overdue > 0;
+  const anyOverdue = (totals?.overdue ?? 0) > 0;
 
   return (
     <section className="werkstatt-tab-page werkstatt-onsite-page">
@@ -165,10 +169,14 @@ export function WerkstattAufBaustellePage() {
             {de ? "Auf Baustelle — alle Projekte" : "On site — all projects"}
           </h1>
           <p className="werkstatt-sub-subtitle">
-            {de
-              ? `${totals.totalItems} Artikel bei ${totals.projectCount} Projekten`
-              : `${totals.totalItems} items at ${totals.projectCount} projects`}
-            {anyOverdue && (
+            {totals == null
+              ? de
+                ? "Bestand nicht geladen"
+                : "List not loaded"
+              : de
+                ? `${pluralize(totals.lineCount, "Position", "Positionen")} bei ${pluralize(totals.projectCount, "Projekt", "Projekten")}`
+                : `${pluralize(totals.lineCount, "line item", "line items")} at ${pluralize(totals.projectCount, "project", "projects")}`}
+            {anyOverdue && totals && (
               <>
                 {" · "}
                 <span className="werkstatt-onsite-subtitle-danger">
@@ -182,83 +190,67 @@ export function WerkstattAufBaustellePage() {
           <button
             type="button"
             className="werkstatt-action-btn"
-            disabled={!anyOverdue}
-            onClick={() =>
-              setNotice(
-                de
-                  ? "Erinnerungen sind hier noch nicht angebunden — es wurde nichts gesendet."
-                  : "Reminders are not connected here yet — nothing was sent.",
-              )
-            }
+            onClick={reload}
+            disabled={loading}
           >
-            {de ? "Alle überfälligen mahnen" : "Remind all overdue"}
+            {loading
+              ? de
+                ? "Lädt…"
+                : "Loading…"
+              : de
+                ? "Aktualisieren"
+                : "Refresh"}
           </button>
           <button
             type="button"
             className="werkstatt-action-btn werkstatt-action-btn--primary"
-            onClick={() =>
-              setNotice(
-                de
-                  ? "Neue Entnahme – Dialog folgt (API vorhanden: POST /api/werkstatt/mobile/checkout)"
-                  : "New checkout dialog coming soon (endpoint ready)",
-              )
+            onClick={() => setWerkstattTab("inventar")}
+            title={
+              de
+                ? "Öffnet Werkstatt › Bestand — dort wird entnommen."
+                : "Opens Workshop › Stock, where checkouts are booked."
             }
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-            </svg>
-            {de ? "Neue Entnahme" : "New checkout"}
+            {de ? "Entnahme im Bestand buchen" : "Book a checkout in Stock"}
           </button>
         </div>
       </header>
 
-      {/* KPI strip */}
-      <div className="werkstatt-kpi-strip werkstatt-onsite-kpi-strip">
-        <div className="werkstatt-kpi werkstatt-kpi--info">
-          <span className="werkstatt-kpi-label">
-            {de ? "AUSGEGEBEN" : "CHECKED OUT"}
-          </span>
-          <div className="werkstatt-kpi-value-row">
-            <span className="werkstatt-kpi-value">{totals.totalItems}</span>
-            <span className="werkstatt-kpi-subtitle">
-              {de ? "Positionen" : "line items"}
-            </span>
-          </div>
-        </div>
-        <div className="werkstatt-kpi werkstatt-kpi--neutral">
-          <span className="werkstatt-kpi-label">
-            {de ? "AUF PROJEKTEN" : "AT PROJECTS"}
-          </span>
-          <div className="werkstatt-kpi-value-row">
-            <span className="werkstatt-kpi-value">{totals.projectCount}</span>
-            <span className="werkstatt-kpi-subtitle">
-              {de ? "Baustellen aktiv" : "sites active"}
-            </span>
-          </div>
-        </div>
-        <div className="werkstatt-kpi werkstatt-kpi--warning">
-          <span className="werkstatt-kpi-label">
-            {de ? "HEUTE ZURÜCK" : "DUE TODAY"}
-          </span>
-          <div className="werkstatt-kpi-value-row">
-            <span className="werkstatt-kpi-value">{totals.dueToday}</span>
-            <span className="werkstatt-kpi-subtitle">
-              {de ? "Positionen" : "line items"}
-            </span>
-          </div>
-        </div>
-        <div className="werkstatt-kpi werkstatt-kpi--danger">
-          <span className="werkstatt-kpi-label">{de ? "ÜBERFÄLLIG" : "OVERDUE"}</span>
-          <div className="werkstatt-kpi-value-row">
-            <span className="werkstatt-kpi-value">{totals.overdue}</span>
-            <span className="werkstatt-kpi-subtitle">
-              {de ? "nachfragen" : "to chase"}
-            </span>
-          </div>
-        </div>
-      </div>
+      {error && (
+        <WerkstattLoadError
+          headline={
+            de
+              ? "Die Liste konnte nicht geladen werden — was hier steht, ist nicht der Bestand."
+              : "This list could not be loaded — what you see is not the current state."
+          }
+          detail={error}
+          retryLabel={de ? "Erneut versuchen" : "Try again"}
+          onRetry={reload}
+        />
+      )}
 
-      {/* Filter + search */}
+      <OnSiteKpiStrip totals={totals} language={de ? "de" : "en"} />
+
+      {/* Reminders have no endpoint. The buttons that claimed to send them are
+          gone; this says why, once, instead of three dead controls. */}
+      {anyOverdue && (
+        <p className="wsov-note">
+          {de
+            ? "Erinnerungen lassen sich von hier nicht verschicken — dafür gibt es keine Funktion. Überfällige Ausgaben bitte direkt beim Kollegen nachfragen."
+            : "Reminders cannot be sent from here — there is no such function. Please chase overdue items with the colleague directly."}
+        </p>
+      )}
+
+      {/* Said once, and only when it can actually happen: a return carries no
+          project, so the list has to guess which checkout it settled. */}
+      {sharedArticleIds.size > 0 && (
+        <p className="wsov-note">
+          {de
+            ? `${pluralize(sharedArticleIds.size, "Artikel ist", "Artikel sind")} gleichzeitig auf mehreren Baustellen ausgegeben. Eine Rückgabe wird im Bestand je Artikel gebucht, nicht je Baustelle — welcher Zeile sie hier abgezogen wird, ist danach eine Annahme (die älteste offene Entnahme zuerst).`
+            : `${pluralize(sharedArticleIds.size, "article is", "articles are")} out at several sites at once. A return is booked per article, not per site — which row it is deducted from here is an assumption afterwards (oldest open checkout first).`}
+        </p>
+      )}
+
       <div className="werkstatt-filter-bar werkstatt-filter-bar--slim">
         <div className="werkstatt-search">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -277,7 +269,7 @@ export function WerkstattAufBaustellePage() {
           />
         </div>
         <div className="werkstatt-segmented werkstatt-segmented--fill" role="tablist">
-          {FILTERS.map((def) => (
+          {ON_SITE_FILTERS.map((def) => (
             <button
               key={def.key}
               type="button"
@@ -292,21 +284,20 @@ export function WerkstattAufBaustellePage() {
         </div>
       </div>
 
-      {/* Project groups */}
       <div className="werkstatt-onsite-groups">
-        {filteredProjects.map((project) => {
-          const isCollapsed = collapsed.has(project.id);
-          const groupOverdue = project.items.filter((i) => i.status === "overdue").length;
+        {visibleGroups.map((group) => {
+          const key = String(group.project_id ?? "none");
+          const isCollapsed = collapsed.has(key);
           return (
             <article
-              key={project.id}
+              key={key}
               className={`werkstatt-onsite-group${isCollapsed ? " werkstatt-onsite-group--collapsed" : ""}`}
             >
               <header className="werkstatt-onsite-group-head">
                 <button
                   type="button"
                   className="werkstatt-onsite-group-toggle"
-                  onClick={() => toggleProject(project.id)}
+                  onClick={() => toggleGroup(key)}
                   aria-expanded={!isCollapsed}
                 >
                   <span className="werkstatt-onsite-caret" aria-hidden="true">
@@ -315,119 +306,79 @@ export function WerkstattAufBaustellePage() {
                   <div className="werkstatt-onsite-group-identity">
                     <div className="werkstatt-onsite-group-title-row">
                       <span className="werkstatt-onsite-project-number">
-                        {project.project_number}
+                        {group.project_number ?? (de ? "OHNE PROJEKT" : "NO PROJECT")}
                       </span>
                       <span className="werkstatt-onsite-project-title">
-                        {project.project_title}
+                        {group.project_title ??
+                          (de
+                            ? "Entnahmen ohne Baustelle"
+                            : "Checkouts without a site")}
                       </span>
                     </div>
+                    {/* Project number and title only. The endpoint sends no
+                        customer name and no site address: it is gated on
+                        authentication alone, and every other project read
+                        scopes on membership. */}
                     <p className="werkstatt-onsite-group-meta">
-                      {project.customer_short} · {project.site_city} · {project.items.length}{" "}
-                      {de ? "Artikel" : "items"}
-                      {groupOverdue > 0 && (
+                      {de
+                        ? pluralize(group.item_count, "Position", "Positionen")
+                        : pluralize(group.item_count, "line item", "line items")}
+                      {group.overdue_count > 0 && (
                         <>
                           {" · "}
                           <span className="werkstatt-onsite-group-overdue">
-                            {groupOverdue} {de ? "überfällig" : "overdue"}
+                            {group.overdue_count} {de ? "überfällig" : "overdue"}
                           </span>
                         </>
                       )}
                     </p>
                   </div>
                 </button>
-                {groupOverdue > 0 && (
-                  <button
-                    type="button"
-                    className="werkstatt-action-btn werkstatt-action-btn--warn"
-                    onClick={() =>
-                      setNotice(
-                        de
-                          ? `Erinnerung an ${groupOverdue} Mitarbeiter von ${project.project_number} gesendet`
-                          : `Reminder sent to ${groupOverdue} assignees on ${project.project_number}`,
-                      )
-                    }
-                  >
-                    {de ? "Team mahnen" : "Remind team"}
-                  </button>
-                )}
               </header>
 
               {!isCollapsed && (
                 <ul className="werkstatt-onsite-items">
-                  {project.items.map((item) => (
-                    <li key={item.id} className="werkstatt-onsite-item">
-                      <div className="werkstatt-onsite-item-icon" aria-hidden="true">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                          <path
-                            d="M12 3 3 7.5v9L12 21l9-4.5v-9L12 3Z"
-                            stroke="#5C7895"
-                            strokeWidth="1.6"
-                            strokeLinejoin="round"
-                          />
-                          <path d="M3 7.5 12 12l9-4.5M12 12v9" stroke="#5C7895" strokeWidth="1.6" />
-                        </svg>
-                      </div>
-                      <div className="werkstatt-onsite-item-main">
-                        <div className="werkstatt-onsite-item-title">
-                          {item.article_name}
-                        </div>
-                        <div className="werkstatt-onsite-item-meta">
-                          <span className="werkstatt-onsite-item-sp">{item.article_no}</span>
-                          <span aria-hidden="true">·</span>
-                          <span>
-                            {item.quantity}× {de ? item.checked_out_label_de : item.checked_out_label_en}
-                          </span>
-                        </div>
-                      </div>
-                      <div className="werkstatt-onsite-item-assignee">
-                        <span className="werkstatt-initials" aria-hidden="true">
-                          {item.assignee_initials}
-                        </span>
-                        <span className="werkstatt-onsite-assignee-name">
-                          {item.assignee_name}
-                        </span>
-                      </div>
-                      <div className={statusClass(item.status)}>
-                        {item.status === "overdue" && (
-                          <span className="werkstatt-onsite-return-dot" aria-hidden="true" />
-                        )}
-                        <span>
-                          {de ? item.expected_return_label_de : item.expected_return_label_en}
-                        </span>
-                      </div>
-                      <div className="werkstatt-onsite-item-actions">
-                        {item.status === "overdue" && (
-                          <button
-                            type="button"
-                            className="werkstatt-action-btn werkstatt-action-btn--warn werkstatt-action-btn--small"
-                            onClick={() => remindAssignee(project, item)}
-                            title={de ? "Mitarbeiter erinnern" : "Remind assignee"}
-                          >
-                            {de ? "Mahnen" : "Remind"}
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          className="werkstatt-action-btn werkstatt-action-btn--small"
-                          onClick={() => returnItem(project, item)}
-                          title={de ? "Als zurückgegeben markieren" : "Mark as returned"}
-                        >
-                          ↩ {de ? "Zurück" : "Return"}
-                        </button>
-                      </div>
-                    </li>
-                  ))}
+                  {group.items.map((item) => {
+                    const itemKey = rowKey(group, item);
+                    const needsOnBehalf =
+                      item.assignee_user_id != null && item.assignee_user_id !== currentUserId;
+                    return (
+                      <OnSiteItemRow
+                        key={itemKey}
+                        item={item}
+                        now={now}
+                        language={de ? "de" : "en"}
+                        canReturn={!needsOnBehalf || canManage}
+                        sharedAcrossSites={sharedArticleIds.has(item.article_id)}
+                        busy={busyRows.has(itemKey)}
+                        failure={rowErrors[itemKey] ?? null}
+                        onReturn={() => void handleReturn(group, item)}
+                      />
+                    );
+                  })}
                 </ul>
               )}
             </article>
           );
         })}
 
-        {filteredProjects.length === 0 && (
+        {visibleGroups.length === 0 && (
           <div className="werkstatt-card werkstatt-onsite-empty muted">
-            {de
-              ? "Keine Artikel für die aktuelle Auswahl."
-              : "No items match the current filter."}
+            {data == null && error == null
+              ? de
+                ? "Lädt…"
+                : "Loading…"
+              : error
+                ? de
+                  ? "Nicht geladen — die Liste oben zeigt nichts Aktuelles."
+                  : "Not loaded — nothing above is current."
+                : groups.length === 0
+                  ? de
+                    ? "Nichts ausgegeben — alles ist in der Werkstatt."
+                    : "Nothing checked out — everything is in the workshop."
+                  : de
+                    ? "Keine Artikel für die aktuelle Auswahl."
+                    : "No items match the current filter."}
           </div>
         )}
       </div>

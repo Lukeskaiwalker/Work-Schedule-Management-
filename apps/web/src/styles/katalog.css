@@ -1,0 +1,210 @@
+/* ── Datanorm-Katalog: failure states + the per-row product image ─────────
+ *
+ * Page-local sheet, imported from WerkstattKatalogPage.tsx rather than
+ * appended to src/styles.css — the same arrangement as styles/orders.css and
+ * styles/stock.css, and for the same reason: styles.css is shared by every
+ * area, and a separate file is the one shape of change that cannot conflict.
+ *
+ * Everything the existing werkstatt-katalog-* / werkstatt-chip rules already
+ * cover (cards, chips, offer rows, the no-EAN warning) is reused by class
+ * name and NOT redefined here. What lives here is what the page did not have
+ * before: the states it enters when a fetch fails, the note that admits the
+ * result list was cut off, and the image controls that used to be a pile of
+ * inline styles on the thumbnail.
+ */
+
+/* ── Failure + truncation notices ─────────────────────────────────────── */
+
+.katalog-error {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 12px 0 4px;
+  padding: 14px 16px;
+  border-radius: 10px;
+  background: #fdecec;
+  border: 1px solid #f3b7b7;
+  color: #8a2222;
+  font-size: 13px;
+}
+
+.katalog-error-detail {
+  color: #a04141;
+  font-size: 12px;
+  word-break: break-word;
+}
+
+.katalog-inline-error {
+  margin: 8px 0 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #fdecec;
+  border: 1px solid #f3b7b7;
+  color: #8a2222;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+/* A link, not a second call-to-action: the page already has its buttons and
+   this sits inside a sentence. */
+.katalog-retry {
+  border: none;
+  background: none;
+  padding: 0;
+  color: #8a2222;
+  font: inherit;
+  font-weight: 700;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.katalog-note {
+  margin: 8px 0 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #eef5ff;
+  border: 1px solid #c8ddf7;
+  color: #34506e;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+/* ── Thumbnail with upload / replace / remove ─────────────────────────── */
+
+.katalog-thumb {
+  position: relative;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.katalog-thumb-img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+/* Covers the whole thumbnail: the picture IS the button, which is how the
+   row stays one line high instead of growing a control per card. */
+.katalog-thumb-hit {
+  position: absolute;
+  inset: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+.katalog-thumb-hit:disabled {
+  cursor: default;
+}
+
+.katalog-thumb-hit:focus-visible {
+  outline: 2px solid #2f6fb2;
+  outline-offset: -2px;
+}
+
+.katalog-thumb-remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: none;
+  border-radius: 7px;
+  background: rgba(20, 41, 61, 0.72);
+  color: #ffffff;
+  font-size: 9px;
+  line-height: 12px;
+  cursor: pointer;
+}
+
+/* Armed: the × itself only changes colour — the sentence lives in the confirm
+   row below the card head, because the thumbnail clips anything wider than
+   itself and a 14 px glyph cannot carry "this cannot be undone". */
+.katalog-thumb-remove--armed {
+  background: #8a2222;
+}
+
+.katalog-thumb-busy {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(255, 255, 255, 0.6);
+  color: #14293d;
+  font-size: 11px;
+}
+
+/* Sits in the chip row where the supplier chips would be, so the row is never
+   silently empty while the list is still on its way. */
+.katalog-chip-note {
+  align-self: center;
+  font-size: 12px;
+}
+
+/* ── The supplier on a single-offer card ──────────────────────────────────
+ *
+ * Products carried by two or more wholesalers list their offers underneath,
+ * each naming its supplier. A product with exactly one row had no offer list
+ * and so named nobody — a price with no seller. This puts the name back in the
+ * meta line, where it reads as part of the same sentence as the EAN.
+ */
+.werkstatt-katalog-hero-supplier {
+  color: #34506e;
+  font-weight: 700;
+}
+
+/* ── Confirming an image deletion ─────────────────────────────────────────
+ *
+ * DELETE /materials/catalog/images/{key} is company-wide and has no undo, and
+ * both image endpoints are gated on a signed-in user only — there is no
+ * permission to hang the control on, so this row IS the protection. Styled as
+ * a warning rather than a neutral prompt for that reason.
+ */
+.katalog-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #fdecec;
+  border: 1px solid #f3b7b7;
+  color: #8a2222;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.katalog-confirm span {
+  flex: 1 1 260px;
+}
+
+.katalog-confirm-yes,
+.katalog-confirm-no {
+  padding: 4px 10px;
+  border-radius: 6px;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.katalog-confirm-yes {
+  border: 1px solid #8a2222;
+  background: #8a2222;
+  color: #ffffff;
+}
+
+.katalog-confirm-yes:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.katalog-confirm-no {
+  border: 1px solid #d8b4b4;
+  background: #ffffff;
+  color: #8a2222;
+}

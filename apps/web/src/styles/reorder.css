@@ -1,0 +1,199 @@
+/* ── Nachbestellen: load/empty/error banners and the hand-over panel ───────
+ *
+ * Page-local sheet, imported from the two reorder pages rather than appended
+ * to src/styles.css — same arrangement as styles/orders.css, and for the same
+ * reason: styles.css is shared by every area and a separate file is the one
+ * shape of change that cannot conflict.
+ *
+ * Everything the existing werkstatt-nachbestell-* / werkstatt-mobile-nach-* /
+ * werkstatt-kpi-* / werkstatt-action-btn rules already cover is reused by
+ * class name and NOT redefined here. Only the pieces that did not exist while
+ * the pages ran on fixtures live in this file: the states a real fetch can be
+ * in, and the four outcomes of a submission. Colours come from the tokens in
+ * styles.css; the literals that appear are tints for backgrounds, which have
+ * no token of their own.
+ */
+
+/* ── Page-level states ────────────────────────────────────────────────── */
+
+.reorder-banner {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 16px 18px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.reorder-banner p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.reorder-banner--error {
+  background: #fdecec;
+  border-color: #f2b8b8;
+}
+
+.reorder-banner--error b {
+  color: var(--danger);
+}
+
+.reorder-permission-note {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* ── Hand-over outcome, per supplier ──────────────────────────────────── */
+
+.reorder-send-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 4px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.reorder-send-panel-text {
+  margin: 0;
+  color: var(--muted);
+}
+
+.reorder-send-panel-text--warn {
+  color: #8a6110;
+}
+
+.reorder-send-panel-list {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.reorder-send-panel-list--muted {
+  color: var(--muted);
+}
+
+.reorder-send-panel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+/* The refusal is not a failure — it is a question with two answers — but it
+   has to stop the eye, because the buyer believes the order went out. */
+.reorder-send-panel--conflict {
+  background: #fdecec;
+  border-color: #f2b8b8;
+  color: var(--danger);
+}
+
+.reorder-send-panel--conflict .reorder-send-panel-text {
+  color: #7a2020;
+}
+
+.reorder-send-panel--error {
+  background: #fdecec;
+  border-color: #f2b8b8;
+  color: var(--danger);
+}
+
+.reorder-send-panel--sent {
+  background: var(--ok-bg);
+  border-color: var(--ok-line);
+  color: #256b45;
+}
+
+.reorder-send-panel--sent .reorder-send-panel-text {
+  color: #2f5c48;
+}
+
+/* ── Line details ─────────────────────────────────────────────────────── */
+
+.reorder-unpriced-note {
+  display: block;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* Quantity 0: still listed, deliberately, so the buyer sees what they took
+   out — but visibly not part of the order. */
+.reorder-line--skipped {
+  opacity: 0.55;
+}
+
+.reorder-qty-locked {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+/* ── Phone ────────────────────────────────────────────────────────────── */
+
+.reorder-mobile-group-submit {
+  display: block;
+  width: calc(100% - 24px);
+  margin: 8px 12px 12px;
+  padding: 12px 16px;
+  border: none;
+  border-radius: 10px;
+  background: var(--accent);
+  color: #ffffff;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.reorder-mobile-group-submit:disabled {
+  background: #a9c3de;
+  cursor: not-allowed;
+}
+
+.werkstatt-mobile--nachbestellen .reorder-banner,
+.werkstatt-mobile--nachbestellen .reorder-permission-note {
+  margin: 12px;
+}
+
+.werkstatt-mobile--nachbestellen .reorder-send-panel {
+  margin: 8px 12px;
+}
+
+/* Not a failure and not a success: the request produced no answer at all, so
+   the panel must not wear the red of "it did not happen" nor the green of
+   "it did". Amber, and the only way out is a deliberate click. */
+.reorder-send-panel--unknown {
+  background: #fdf3e2;
+  border-color: #e8c98a;
+  color: #7a5310;
+}
+
+.reorder-send-panel--unknown .reorder-send-panel-text {
+  color: #7a5310;
+}
+
+/* A line the created order does not contain. Deliberately not a number: there
+   is no quantity to show, and a 0 would read as one. */
+.reorder-qty-locked--none {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+}

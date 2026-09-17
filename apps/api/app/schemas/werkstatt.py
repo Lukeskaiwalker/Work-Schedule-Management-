@@ -487,11 +487,27 @@ class ReturnPayload(BaseModel):
       - ``ok``     → ``return``       (item goes back into ``stock_available``)
       - ``repair`` → ``repair_out``   (item leaves ``stock_out``, enters ``stock_repair``)
       - ``lost``   → ``correction``   (shrinks ``stock_total``, removes from ``stock_out``)
+
+    ``project_id`` names the loan being closed, and is not decoration.
+    ``services.werkstatt_movements.list_my_checkouts`` — the "Meine Entnahmen"
+    list on the phone — balances a borrower's open quantity per
+    ``(article, project)`` tuple. A return that carries no project therefore
+    lands in the borrower's *no-project* bucket: it cannot subtract from the
+    loan a project-tagged checkout opened, so that loan stays open forever
+    while the −qty silently eats an unrelated project-less loan of the same
+    article. The station router solves the same problem by reading the open
+    loan out of the ledger (``workflow_station_werkstatt._open_loan_for_article``)
+    because a wall screen has no session to ask; a phone does have one — the row
+    the user tapped already names the project — so it says which loan it means.
+
+    ``None`` keeps the historical behaviour (close a loan that was booked
+    against no project), which is what a bare return has always meant.
     """
 
     article_id: int = Field(..., gt=0)
     quantity: int = Field(..., gt=0)
     condition: Literal["ok", "repair", "lost"]
+    project_id: int | None = Field(default=None, gt=0)
     notes: str | None = None
 
 

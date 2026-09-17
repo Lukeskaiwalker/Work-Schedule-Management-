@@ -27,11 +27,13 @@ from app.schemas.werkstatt import (
     WerkstattMovementOut,
     ReorderSuggestionLineOut,
 )
+from app.services.werkstatt_on_site import list_on_site_groups
 
 
 DASHBOARD_RECENT_MOVEMENTS_LIMIT = 5
 DASHBOARD_REORDER_PREVIEW_LIMIT = 5
 DASHBOARD_ON_SITE_GROUPS_LIMIT = 3
+DASHBOARD_ON_SITE_ITEMS_LIMIT = 5
 DASHBOARD_MAINTENANCE_LIMIT = 5
 
 
@@ -64,14 +66,15 @@ def compute_dashboard_kpis(db: Session) -> WerkstattDashboardKpisOut:
         )
         or 0
     )
-    on_site_project_count = int(
-        db.scalar(
-            select(func.count(func.distinct(WerkstattMovement.project_id))).where(
-                WerkstattMovement.movement_type == "checkout",
-                WerkstattMovement.project_id.is_not(None),
-            )
-        )
-        or 0
+    # Projects that STILL have something out, not every project that has ever
+    # received a checkout. The plain distinct-count below never subtracted a
+    # return, so the tile only ever grew: after a year it read "projects we have
+    # lent anything to, ever", beside an on_site_count that does net returns.
+    # list_on_site_groups replays the ledger per article and is the one place
+    # that arithmetic lives; a group with a null project_id is stock out without
+    # a job attached and is not a project.
+    on_site_project_count = sum(
+        1 for group in list_on_site_groups(db) if group.project_id is not None
     )
     unavailable_count = int(
         db.scalar(
@@ -212,72 +215,52 @@ def recent_movements(db: Session, *, limit: int = DASHBOARD_RECENT_MOVEMENTS_LIM
 
 
 def on_site_groups(db: Session, *, limit: int = DASHBOARD_ON_SITE_GROUPS_LIMIT) -> list[WerkstattCheckoutGroupPreviewOut]:
-    # Projects with the most open checkout movements, newest first.
-    open_checkouts = (
-        select(WerkstattMovement.project_id, func.count(WerkstattMovement.id).label("open_count"))
-        .where(
-            WerkstattMovement.movement_type == "checkout",
-            WerkstattMovement.project_id.is_not(None),
-        )
-        .group_by(WerkstattMovement.project_id)
-        .order_by(func.count(WerkstattMovement.id).desc())
-        .limit(limit)
-        .subquery()
-    )
-    project_ids = [pid for pid, _ in db.execute(select(open_checkouts.c.project_id, open_checkouts.c.open_count)).all()]
-    if not project_ids:
-        return []
+    """The dashboard's preview of what is still out, biggest sites first.
 
-    projects_by_id = {
-        p.id: p
-        for p in db.scalars(select(Project).where(Project.id.in_(project_ids))).all()
-    }
-    now = utcnow()
+    Derived from ``list_on_site_groups`` rather than counted here. The version
+    this replaces selected projects by their number of ``checkout`` ledger rows
+    and listed the five newest of those rows — with nothing subtracting a
+    return, so a tool booked back days ago kept its place on the card, and a
+    site whose every item had come home could still head the list. The ledger
+    replay is the only arithmetic that answers "still out"; keeping a second,
+    looser one next to it is how the card and the page underneath it came to
+    disagree.
+
+    Only the shape is this function's own: the preview caps at ``limit``
+    projects and five items each, and drops the no-project group, which belongs
+    on the full page rather than in a card about sites.
+    """
     groups: list[WerkstattCheckoutGroupPreviewOut] = []
-    for project_id in project_ids:
-        project = projects_by_id.get(project_id)
-        if project is None:
+    for group in list_on_site_groups(db):
+        if group.project_id is None:
             continue
-        items_rows = db.execute(
-            select(WerkstattMovement, WerkstattArticle, User)
-            .join(WerkstattArticle, WerkstattArticle.id == WerkstattMovement.article_id)
-            .outerjoin(User, User.id == WerkstattMovement.assignee_user_id)
-            .where(
-                WerkstattMovement.movement_type == "checkout",
-                WerkstattMovement.project_id == project_id,
+        items = [
+            WerkstattCheckoutGroupItemOut(
+                article_id=item.article_id,
+                article_number=item.article_number,
+                article_name=item.article_name,
+                quantity=item.quantity_out,
+                assignee_display_name=item.assignee_display_name,
+                expected_return_at=item.expected_return_at,
+                is_overdue=item.is_overdue,
             )
-            .order_by(WerkstattMovement.created_at.desc())
-            .limit(5)
-        ).all()
-        items: list[WerkstattCheckoutGroupItemOut] = []
-        for movement, article, assignee in items_rows:
-            is_overdue = bool(
-                movement.expected_return_at is not None and movement.expected_return_at < now
-            )
-            items.append(
-                WerkstattCheckoutGroupItemOut(
-                    article_id=article.id,
-                    article_number=article.article_number,
-                    article_name=article.item_name,
-                    quantity=movement.quantity,
-                    assignee_display_name=(
-                        (assignee.full_name or assignee.email) if assignee else None
-                    ),
-                    expected_return_at=movement.expected_return_at,
-                    is_overdue=is_overdue,
-                )
-            )
+            for item in group.items[:DASHBOARD_ON_SITE_ITEMS_LIMIT]
+        ]
         groups.append(
             WerkstattCheckoutGroupPreviewOut(
-                project_id=project_id,
-                project_number=project.project_number,
-                project_title=project.name,
-                item_count=len(items),
+                project_id=group.project_id,
+                project_number=group.project_number or "",
+                project_title=group.project_title or "",
+                # What the site actually has out, not how many of them fit on
+                # the card — the number under the title must not shrink when
+                # the preview truncates.
+                item_count=group.item_count,
                 items=items,
             )
         )
+        if len(groups) >= limit:
+            break
     return groups
-
 
 def maintenance_entries(
     db: Session, *, limit: int = DASHBOARD_MAINTENANCE_LIMIT

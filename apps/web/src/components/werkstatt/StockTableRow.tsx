@@ -11,11 +11,11 @@
  * so the same article cannot be quoted here in one unit and in the dialog it
  * opens in another.
  */
-import type { MockInventoryRow } from "./mockData";
+import type { StockRow } from "./stockRowTypes";
 import { KebabMenu } from "./KebabMenu";
 
 export interface StockTableRowProps {
-  row: MockInventoryRow;
+  row: StockRow;
   de: boolean;
   /** The article whose label is being printed right now, if any. */
   printingId: number | null;
@@ -25,7 +25,7 @@ export interface StockTableRowProps {
   onAdjustStock: (articleId: number) => void;
   onEdit: (articleId: number) => void;
   onArchive: (articleId: number) => void;
-  onPrintLabel: (row: MockInventoryRow) => void;
+  onPrintLabel: (row: StockRow) => void;
 }
 
 export function StockTableRow({

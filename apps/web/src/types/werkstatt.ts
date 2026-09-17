@@ -179,6 +179,10 @@ export interface WerkstattArticle {
   id: number;
   article_number: string;              // "SP-0201"
   ean: string | null;
+  // The barcode we print ourselves for stock that carries no manufacturer one,
+  // i.e. what is actually stuck on the shelf label. `WerkstattArticleOut` has
+  // always sent it; the phone's article screen reads it to show the shelf code.
+  internal_code: string | null;
   item_name: string;
   manufacturer: string | null;
   category_id: number | null;

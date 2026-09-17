@@ -21,7 +21,7 @@ import type {
   OrderLineResolution,
   OrderResolutionAlternative,
 } from "../../types/werkstattProcurement";
-import { formatMoney } from "./mockData";
+import { formatMoney } from "./orderPresentation";
 
 export type ResolutionTone = "ok" | "warn" | "missing";
 
