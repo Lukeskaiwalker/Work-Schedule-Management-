@@ -19,7 +19,9 @@ import type { WerkstattSupplier, WerkstattSupplierCreate } from "../types/werkst
 
 
 /** Partial-update payload. Every field is optional; pass only what changes.
- *  `is_archived` is included so the same endpoint covers unarchive flows. */
+ *  `is_archived` is included so the same endpoint covers unarchive flows.
+ *  `order_identifier` / `order_channel` ride along from the create shape —
+ *  the Lieferanten form saves them, the admin IDS card only displays them. */
 export type WerkstattSupplierUpdate = Partial<WerkstattSupplierCreate> & {
   is_archived?: boolean;
 };

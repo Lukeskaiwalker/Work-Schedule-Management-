@@ -47,6 +47,7 @@ from app.services.werkstatt_order_composition import (
     recompute_total,
     save_as_template,
 )
+from app.services.werkstatt_order_lines import build_order_line
 from app.services.werkstatt_orders import generate_order_number
 
 router = APIRouter(prefix="/werkstatt", tags=["werkstatt-procurement"])
@@ -80,68 +81,20 @@ def add_order_line(
     _: User = Depends(require_permission("werkstatt:manage")),
     db: Session = Depends(get_db),
 ) -> WerkstattOrderOut:
-    """Add one position — a stocked article, or free text.
+    """Add one position — a stocked article, a catalogue row, or free text.
 
-    When an article is given, its name, EAN and unit are snapshotted onto the
-    line and the supplier link supplies a price if the caller did not. That
-    keeps a hand-added line indistinguishable from an imported one downstream,
-    which is what lets merge and delivery treat them identically.
+    The snapshotting lives in `services/werkstatt_order_lines.build_order_line`,
+    shared with draft creation and the reorder path, so a hand-added line is
+    indistinguishable from an imported one downstream — which is what lets
+    merge, resolution and delivery treat them identically.
     """
 
     order = _load_editable(db, order_id)
-    now = utcnow()
-
-    article: WerkstattArticle | None = None
-    link: WerkstattArticleSupplier | None = None
-    if payload.article_id is not None:
-        article = db.get(WerkstattArticle, payload.article_id)
-        if article is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND, detail="Artikel nicht gefunden"
-            )
-        link = db.scalar(
-            select(WerkstattArticleSupplier).where(
-                WerkstattArticleSupplier.article_id == article.id,
-                WerkstattArticleSupplier.supplier_id == order.supplier_id,
-            )
-        )
-    elif not (payload.description or "").strip() and not (
-        payload.supplier_article_no or ""
-    ).strip():
-        # Without an article, a line needs at least something to identify it,
-        # or the order grows a row nobody can act on.
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Bitte einen Artikel wählen oder Bezeichnung/Artikelnummer angeben",
-        )
-
-    unit_price = payload.unit_price_cents
-    if unit_price is None and link is not None:
-        unit_price = link.typical_price_cents
-
-    line = WerkstattOrderLine(
-        order_id=order.id,
-        article_id=article.id if article else None,
-        article_supplier_id=link.id if link else None,
-        supplier_article_no=(
-            payload.supplier_article_no
-            or (link.supplier_article_no if link else None)
-        ),
-        description=payload.description or (article.item_name if article else None),
-        manufacturer=payload.manufacturer or (article.manufacturer if article else None),
-        ean=payload.ean or (article.ean if article else None),
-        unit=payload.unit or (article.unit if article else None),
-        quantity_ordered=payload.quantity_ordered,
-        quantity_received=0,
-        unit_price_cents=unit_price,
-        currency=payload.currency or (link.currency if link else order.currency) or "EUR",
-        line_status="pending",
-        notes=payload.notes,
-        created_at=now,
-        updated_at=now,
-    )
-    db.add(line)
-    db.flush()
+    try:
+        build_order_line(db, order, payload)
+    except HTTPException:
+        db.rollback()
+        raise
     recompute_total(db, order)
     db.commit()
     db.refresh(order)

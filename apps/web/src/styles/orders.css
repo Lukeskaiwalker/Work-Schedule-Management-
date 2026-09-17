@@ -1,0 +1,434 @@
+/* ── Bestellungen: order builder, article picker, send controls ────────────
+ *
+ * Page-local sheet, imported from WerkstattOrdersPage.tsx rather than
+ * appended to src/styles.css — the same arrangement as styles/pi-station.css,
+ * and for the same reason: styles.css is shared by every area and a separate
+ * file is the one shape of change that cannot conflict.
+ *
+ * Everything the existing werkstatt-orders-* / werkstatt-modal rules already
+ * cover (drawer, chips, inputs, buttons, status pills) is reused by class
+ * name and NOT redefined here. Only the new pieces live in this file: the
+ * per-line resolution badges, the dual-source article picker, the cart list
+ * in the "Neue Bestellung" modal and the export menu. Colours come from the
+ * tokens in styles.css; the literals that appear are tints for backgrounds,
+ * which have no token of their own.
+ */
+
+/* ── Resolution badges (drawer lines) ─────────────────────────────────── */
+
+.werkstatt-orders-resolution {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+  max-width: 100%;
+}
+
+.werkstatt-orders-resolution--ok {
+  color: #256b45;
+  background: var(--ok-bg);
+  border-color: var(--ok-line);
+}
+
+.werkstatt-orders-resolution--warn {
+  color: #8a6110;
+  background: #fff8ea;
+  border-color: #e8cf9a;
+}
+
+.werkstatt-orders-resolution--missing {
+  color: var(--danger);
+  background: #fdecec;
+  border-color: #f2b8b8;
+}
+
+/* The red badge is a button: it opens the inline number field. */
+button.werkstatt-orders-resolution--missing {
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+button.werkstatt-orders-resolution--missing:hover,
+button.werkstatt-orders-resolution--missing:focus-visible {
+  background: #f9d6d6;
+  outline: none;
+}
+
+.werkstatt-orders-resolution-alternatives {
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.werkstatt-orders-resolution-alternatives button {
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.werkstatt-orders-resolution-alternatives button:hover {
+  border-color: var(--accent);
+}
+
+/* Inline "Lieferanten-Artikelnummer eintragen" row under a red line. */
+.werkstatt-orders-number-entry {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+.werkstatt-orders-number-entry input {
+  flex: 1 1 160px;
+  min-width: 0;
+}
+
+/* Summary line in the drawer header: "3 von 4 Positionen übergabefähig". */
+.werkstatt-orders-readiness {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.werkstatt-orders-readiness--short {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+/* ── Article picker (modal + drawer) ──────────────────────────────────── */
+
+.werkstatt-artikelsuche {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.werkstatt-artikelsuche-results {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 8px;
+  background: var(--surface);
+}
+
+.werkstatt-artikelsuche-section-title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.werkstatt-artikelsuche-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.werkstatt-artikelsuche-hit {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 8px;
+  border-radius: 8px;
+}
+
+.werkstatt-artikelsuche-hit:hover {
+  background: #eef3fa;
+}
+
+.werkstatt-artikelsuche-hit-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.werkstatt-artikelsuche-hit-main b {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.werkstatt-artikelsuche-hit-main small {
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.werkstatt-artikelsuche-add {
+  width: 30px;
+  height: 30px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--accent);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.werkstatt-artikelsuche-add:hover,
+.werkstatt-artikelsuche-add:focus-visible {
+  border-color: var(--accent);
+  background: #eef3fa;
+  outline: none;
+}
+
+.werkstatt-artikelsuche-add:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* The "Freie Position" row at the bottom of the results. */
+.werkstatt-artikelsuche-free {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px 96px auto;
+  gap: 6px;
+  align-items: center;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line);
+}
+
+.werkstatt-artikelsuche-free > input {
+  min-width: 0;
+}
+
+.werkstatt-artikelsuche-empty {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ── "Neue Bestellung" modal ──────────────────────────────────────────── */
+
+.werkstatt-neue-bestellung-body {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(220px, 2fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.werkstatt-neue-bestellung-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.werkstatt-neue-bestellung-form-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+}
+
+.werkstatt-neue-bestellung-cart {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.werkstatt-neue-bestellung-cart h3 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.werkstatt-neue-bestellung-cart ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.werkstatt-neue-bestellung-cart li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 64px auto;
+  gap: 6px;
+  align-items: center;
+}
+
+.werkstatt-neue-bestellung-cart li > div {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.werkstatt-neue-bestellung-cart li b {
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.werkstatt-neue-bestellung-cart li small {
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.werkstatt-neue-bestellung-warning {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fff8ea;
+  border: 1px solid #e8cf9a;
+  color: #8a6110;
+  font-size: 12px;
+}
+
+/* ── Send controls in the drawer footer ───────────────────────────────── */
+
+.werkstatt-orders-send-conflict {
+  flex-basis: 100%;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #fdecec;
+  border: 1px solid #f2b8b8;
+  color: var(--danger);
+  font-size: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.werkstatt-orders-send-conflict ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.werkstatt-orders-send-conflict-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.werkstatt-orders-export {
+  position: relative;
+  display: inline-flex;
+}
+
+.werkstatt-orders-export-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  min-width: 220px;
+  padding: 4px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  box-shadow: 0 8px 24px rgba(20, 41, 61, 0.18);
+  z-index: var(--z-dropdown);
+  display: flex;
+  flex-direction: column;
+}
+
+.werkstatt-orders-export-menu button {
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.werkstatt-orders-export-menu button:hover,
+.werkstatt-orders-export-menu button:focus-visible {
+  background: #eef3fa;
+  outline: none;
+}
+
+/* The article numbers, when the clipboard refused them (WebKit outside a
+   user gesture, a locked-down browser): a read-only box the buyer can select
+   and copy by hand, so a hand-over the server already stamped is never lost
+   between the response and the paste. */
+.werkstatt-orders-notice-copy {
+  flex: 1 1 100%;
+  order: 1;
+  min-height: 72px;
+  max-height: 160px;
+  margin: 0;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid #d3e0ee;
+  background: var(--surface);
+  color: var(--ink);
+  font: 12px/16px ui-monospace, "SF Mono", Menlo, monospace;
+  resize: vertical;
+  white-space: pre;
+}
+
+.werkstatt-orders-notice--stacked {
+  flex-wrap: wrap;
+}
+
+/* ── Supplier settings help text ──────────────────────────────────────── */
+
+.werkstatt-supplier-setting-help {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* ── Narrow screens ───────────────────────────────────────────────────── */
+
+@media (max-width: 720px) {
+  .werkstatt-neue-bestellung-body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .werkstatt-artikelsuche-free {
+    grid-template-columns: minmax(0, 1fr) 64px;
+  }
+
+  .werkstatt-artikelsuche-free > input:nth-child(3),
+  .werkstatt-artikelsuche-free > button {
+    grid-column: 1 / -1;
+  }
+}

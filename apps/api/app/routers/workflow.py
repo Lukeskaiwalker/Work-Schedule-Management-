@@ -32,8 +32,14 @@ from app.routers.workflow_werkstatt_boxes import (
 )
 from app.routers.workflow_werkstatt_machines import router as werkstatt_machines_router
 from app.routers.workflow_werkstatt_ids import router as werkstatt_ids_router
+from app.routers.workflow_werkstatt_ids_handoff import (
+    router as werkstatt_ids_handoff_router,
+)
 from app.routers.workflow_werkstatt_order_composition import (
     router as werkstatt_order_composition_router,
+)
+from app.routers.workflow_werkstatt_order_send import (
+    router as werkstatt_order_send_router,
 )
 from app.routers.workflow_helpers import (
     _fetch_openweather_forecast,
@@ -73,7 +79,14 @@ router.include_router(system_router)
 # ``POST /werkstatt/orders/from-template`` must reach its own literal route
 # before anything tries to read "from-template" as an order id.
 router.include_router(werkstatt_order_composition_router)
+# Pre-send resolution and the manual-channel export sit on
+# ``/werkstatt/orders/{id}/resolution|export`` — literal suffixes, mounted
+# here for the same reason as the composition router above.
+router.include_router(werkstatt_order_send_router)
 router.include_router(werkstatt_ids_router)
+# The two unauthenticated hand-over pages (/handoff, /hook) — same prefix,
+# own file, no route overlap with the connection/submit router above.
+router.include_router(werkstatt_ids_handoff_router)
 # Werkstatt — three persona-scoped routers under /api/werkstatt. All three
 # share the prefix; route paths within each do not collide. See
 # WERKSTATT_CONTRACT.md §5 for file ownership.

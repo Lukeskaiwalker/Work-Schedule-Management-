@@ -6,12 +6,19 @@
  * another order, attach it to the job it is for, hand it back to the
  * wholesaler.
  *
- * Two ideas drive the layout:
+ * Three ideas drive the layout:
  *
  *   A line is either *stocked* or *free*. A free line — job material we buy but
  *   do not keep — is marked, because on delivery it records the receipt but
  *   moves no stock. That distinction is invisible in the numbers and matters
  *   when the stock figures are questioned, so it is visible in the list.
+ *
+ *   Every line shows whether the supplier will receive it. The resolution
+ *   (`GET /orders/{id}/resolution`) runs on open and after every change, and
+ *   each line carries a badge: green, amber or red — see
+ *   `BestellungPositionZeile`. The header sums it up as "3 von 4 Positionen
+ *   übergabefähig", so a short basket is a thing the buyer sees, not
+ *   discovers.
  *
  *   Editing stops when the order is sent. A sent order is a statement about
  *   what the wholesaler was asked for; the editing controls disappear rather
@@ -21,24 +28,41 @@ import { useState } from "react";
 
 import type { Language, Task } from "../../types";
 import type { WerkstattOrder, WerkstattOrderLine } from "../../types/werkstatt";
+import type {
+  OrderLineCreate,
+  OrderLineUpdate,
+  OrderResolution,
+  OrderResolutionAlternative,
+} from "../../types/werkstattProcurement";
+import { ArtikelSuchfeld, hitToOrderLine } from "./ArtikelSuchfeld";
+import { BestellungPositionZeile } from "./BestellungPositionZeile";
 import {
-  formatMoney,
-  orderStatusLabel,
-  orderStatusToTone,
-  shortDate,
-} from "./mockData";
+  BestellungVersandLeiste,
+  type SendConflict,
+  type SendRoute,
+} from "./BestellungVersandLeiste";
+import { formatMoney, orderStatusLabel, orderStatusToTone, shortDate } from "./mockData";
 
 export interface BestellungDetailPanelProps {
   language: Language;
+  token: string | null;
   order: WerkstattOrder;
   tasks: ReadonlyArray<Task>;
   canManage: boolean;
   busy?: boolean;
   error?: string | null;
+  /** Per-line send status; null while loading. */
+  resolution: OrderResolution | null;
+  /** The last refused hand-over, until dismissed or overridden. */
+  conflict: SendConflict | null;
   onClose: () => void;
-  onAddLine: (description: string, quantity: number, priceCents: number | null) => void;
-  onUpdateLine: (lineId: number, patch: { quantity_ordered?: number }) => void;
+  onAddLine: (payload: OrderLineCreate) => void;
+  onUpdateLine: (lineId: number, patch: OrderLineUpdate) => void;
   onDeleteLine: (lineId: number) => void;
+  onSetSupplierNo: (line: WerkstattOrderLine, supplierArticleNo: string) => void;
+  onPickAlternative: (line: WerkstattOrderLine, alternative: OrderResolutionAlternative) => void;
+  onSend: (route: SendRoute, allowUnresolved: boolean) => void;
+  onDismissConflict: () => void;
   onMarkSent: () => void;
   onMarkDelivered: () => void;
   onCancel: () => void;
@@ -46,17 +70,7 @@ export interface BestellungDetailPanelProps {
   onSaveAsTemplate: (name: string) => void;
   onApplyTemplate: () => void;
   onAttachTask: (taskId: number | null) => void;
-  onSubmitToShop: () => void;
   onShopAgain: () => void;
-}
-
-/** German comma or English dot, both to cents. Empty means "no price". */
-function parsePriceCents(raw: string): number | null {
-  const text = raw.trim().replace(",", ".");
-  if (!text) return null;
-  const value = Number(text);
-  if (!Number.isFinite(value) || value < 0) return null;
-  return Math.round(value * 100);
 }
 
 function sourceLabel(source: string, de: boolean): string {
@@ -67,6 +81,8 @@ function sourceLabel(source: string, de: boolean): string {
       return de ? "Aus Vorlage" : "From template";
     case "reorder":
       return de ? "Aus Nachbestellung" : "From reorder";
+    case "needs":
+      return de ? "Aus Bedarfen" : "From material needs";
     default:
       return de ? "Manuell angelegt" : "Created manually";
   }
@@ -74,15 +90,22 @@ function sourceLabel(source: string, de: boolean): string {
 
 export function BestellungDetailPanel({
   language,
+  token,
   order,
   tasks,
   canManage,
   busy = false,
   error = null,
+  resolution,
+  conflict,
   onClose,
   onAddLine,
   onUpdateLine,
   onDeleteLine,
+  onSetSupplierNo,
+  onPickAlternative,
+  onSend,
+  onDismissConflict,
   onMarkSent,
   onMarkDelivered,
   onCancel,
@@ -90,103 +113,46 @@ export function BestellungDetailPanel({
   onSaveAsTemplate,
   onApplyTemplate,
   onAttachTask,
-  onSubmitToShop,
   onShopAgain,
 }: BestellungDetailPanelProps) {
   const de = language === "de";
-  const [newDescription, setNewDescription] = useState("");
-  const [newQuantity, setNewQuantity] = useState("1");
-  const [newPrice, setNewPrice] = useState("");
   const [templateName, setTemplateName] = useState("");
   const [namingTemplate, setNamingTemplate] = useState(false);
 
   const editable = order.status === "draft" && canManage;
   const freeLineCount = order.lines.filter((line) => !line.is_stocked).length;
-
-  function submitLine() {
-    const quantity = Number(newQuantity);
-    if (!newDescription.trim() || !Number.isFinite(quantity) || quantity < 1) return;
-    onAddLine(newDescription.trim(), Math.floor(quantity), parsePriceCents(newPrice));
-    setNewDescription("");
-    setNewQuantity("1");
-    setNewPrice("");
-  }
-
-  function renderLine(line: WerkstattOrderLine) {
-    return (
-      <li key={line.id} className="werkstatt-orders-drawer-line">
-        <div className="werkstatt-orders-drawer-line-main">
-          <b>{line.article_name}</b>
-          <small>
-            {[
-              line.article_number,
-              line.supplier_article_no,
-              line.manufacturer,
-              // The badge answers "will this move stock?" — see the file header.
-              line.is_stocked ? null : de ? "Freiposition" : "Free item",
-            ]
-              .filter(Boolean)
-              .join(" · ")}
-          </small>
-          {line.notes && (
-            <small className="werkstatt-orders-drawer-line-note">{line.notes}</small>
-          )}
-        </div>
-        <div className="werkstatt-orders-drawer-line-qty">
-          {editable ? (
-            <input
-              type="number"
-              min={1}
-              className="werkstatt-field-input werkstatt-orders-qty-input"
-              value={line.quantity_ordered}
-              aria-label={de ? "Menge" : "Quantity"}
-              onChange={(event) => {
-                const next = Number(event.target.value);
-                if (Number.isFinite(next) && next >= 1) {
-                  onUpdateLine(line.id, { quantity_ordered: Math.floor(next) });
-                }
-              }}
-            />
-          ) : (
-            <span>
-              {line.quantity_received} / {line.quantity_ordered}
-            </span>
-          )}
-          <small>
-            {formatMoney(line.unit_price_cents, line.currency)}
-            {line.unit ? ` / ${line.unit}` : ""}
-          </small>
-        </div>
-        {editable && (
-          <button
-            type="button"
-            className="werkstatt-orders-line-remove"
-            onClick={() => onDeleteLine(line.id)}
-            aria-label={de ? `${line.article_name} entfernen` : `Remove ${line.article_name}`}
-          >
-            ✕
-          </button>
-        )}
-      </li>
-    );
-  }
+  const resolutionByLine = new Map(
+    (resolution?.lines ?? []).map((line) => [line.line_id, line] as const),
+  );
+  const readiness =
+    resolution && resolution.line_count > 0
+      ? {
+          short: resolution.ready_count < resolution.line_count,
+          text: de
+            ? `${resolution.ready_count} von ${resolution.line_count} Positionen übergabefähig`
+            : `${resolution.ready_count} of ${resolution.line_count} lines ready to send`,
+        }
+      : null;
 
   return (
-    <aside
-      className="werkstatt-orders-drawer"
-      aria-label={de ? "Bestelldetails" : "Order details"}
-    >
+    <aside className="werkstatt-orders-drawer" aria-label={de ? "Bestelldetails" : "Order details"}>
       <header className="werkstatt-orders-drawer-head">
         <div className="werkstatt-orders-drawer-title-block">
           <span className="werkstatt-orders-drawer-number">{order.order_number}</span>
-          <h2 className="werkstatt-orders-drawer-title">
-            {order.title || order.supplier_name}
-          </h2>
+          <h2 className="werkstatt-orders-drawer-title">{order.title || order.supplier_name}</h2>
           <span
             className={`werkstatt-orders-status werkstatt-orders-status--${orderStatusToTone(order.status)}`}
           >
             {orderStatusLabel(order.status, de)}
           </span>
+          {readiness && (
+            <span
+              className={`werkstatt-orders-readiness${readiness.short ? " werkstatt-orders-readiness--short" : ""}`}
+              role="status"
+            >
+              {readiness.text}
+            </span>
+          )}
         </div>
         <button
           type="button"
@@ -195,12 +161,7 @@ export function BestellungDetailPanel({
           aria-label={de ? "Schließen" : "Close"}
         >
           <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
-            <path
-              d="M6 6l12 12M18 6L6 18"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              strokeLinecap="round"
-            />
+            <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
           </svg>
         </button>
       </header>
@@ -226,6 +187,12 @@ export function BestellungDetailPanel({
           <dt>{de ? "Summe" : "Total"}</dt>
           <dd>{formatMoney(order.total_amount_cents, order.currency)}</dd>
         </div>
+        {order.submitted_at && (
+          <div>
+            <dt>{de ? "Übergeben am" : "Handed over"}</dt>
+            <dd>{shortDate(order.submitted_at, de)}</dd>
+          </div>
+        )}
         {order.external_reference && (
           <div>
             <dt>{de ? "Shop-Referenz" : "Shop ref"}</dt>
@@ -235,17 +202,13 @@ export function BestellungDetailPanel({
       </dl>
 
       <section className="werkstatt-orders-drawer-section">
-        <h3 className="werkstatt-orders-drawer-section-title">
-          {de ? "Auftrag" : "Job"}
-        </h3>
+        <h3 className="werkstatt-orders-drawer-section-title">{de ? "Auftrag" : "Job"}</h3>
         <select
           className="werkstatt-field-select"
           value={order.task_id ?? ""}
           disabled={!canManage}
           aria-label={de ? "Bestellung einem Auftrag zuordnen" : "Attach order to a job"}
-          onChange={(event) =>
-            onAttachTask(event.target.value ? Number(event.target.value) : null)
-          }
+          onChange={(event) => onAttachTask(event.target.value ? Number(event.target.value) : null)}
         >
           <option value="">{de ? "— keinem Auftrag —" : "— no job —"}</option>
           {tasks.map((task) => (
@@ -268,56 +231,43 @@ export function BestellungDetailPanel({
           {freeLineCount > 0 && (
             <span className="werkstatt-orders-drawer-section-hint">
               {de
-                ? ` · ${freeLineCount} Freiposition${freeLineCount === 1 ? "" : "en"} (kein Lagerbestand)`
-                : ` · ${freeLineCount} free item${freeLineCount === 1 ? "" : "s"} (no stock)`}
+                ? ` · ${freeLineCount} Freiposition${freeLineCount === 1 ? "" : "en"} (kein Lagerartikel — kein Bestand gebucht)`
+                : ` · ${freeLineCount} free item${freeLineCount === 1 ? "" : "s"} (not stocked — no stock booked)`}
             </span>
           )}
         </h3>
         {order.lines.length === 0 ? (
-          <p className="werkstatt-modal-hint">
-            {de ? "Noch keine Positionen." : "No lines yet."}
-          </p>
+          <p className="werkstatt-modal-hint">{de ? "Noch keine Positionen." : "No lines yet."}</p>
         ) : (
-          <ul className="werkstatt-orders-drawer-lines-list">{order.lines.map(renderLine)}</ul>
+          <ul className="werkstatt-orders-drawer-lines-list">
+            {order.lines.map((line) => (
+              <BestellungPositionZeile
+                key={line.id}
+                line={line}
+                resolution={resolutionByLine.get(line.id) ?? null}
+                de={de}
+                editable={editable}
+                busy={busy}
+                onUpdateQuantity={(lineId, quantity) =>
+                  onUpdateLine(lineId, { quantity_ordered: quantity })
+                }
+                onDelete={onDeleteLine}
+                onSetSupplierNo={onSetSupplierNo}
+                onPickAlternative={onPickAlternative}
+              />
+            ))}
+          </ul>
         )}
 
         {editable && (
-          <div className="werkstatt-orders-add-line">
-            <input
-              className="werkstatt-field-input"
-              placeholder={de ? "Position hinzufügen…" : "Add a position…"}
-              value={newDescription}
-              onChange={(event) => setNewDescription(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") submitLine();
-              }}
-              aria-label={de ? "Bezeichnung" : "Description"}
-            />
-            <input
-              className="werkstatt-field-input werkstatt-orders-qty-input"
-              type="number"
-              min={1}
-              value={newQuantity}
-              onChange={(event) => setNewQuantity(event.target.value)}
-              aria-label={de ? "Menge" : "Quantity"}
-            />
-            <input
-              className="werkstatt-field-input werkstatt-orders-price-input"
-              inputMode="decimal"
-              placeholder={de ? "€ netto" : "€ net"}
-              value={newPrice}
-              onChange={(event) => setNewPrice(event.target.value)}
-              aria-label={de ? "Einzelpreis" : "Unit price"}
-            />
-            <button
-              type="button"
-              className="werkstatt-action-btn"
-              disabled={busy || !newDescription.trim()}
-              onClick={submitLine}
-            >
-              {de ? "Hinzufügen" : "Add"}
-            </button>
-          </div>
+          <ArtikelSuchfeld
+            token={token}
+            language={language}
+            supplierId={order.supplier_id}
+            supplierName={order.supplier_name}
+            disabled={busy}
+            onPick={(hit, quantity) => onAddLine(hitToOrderLine(hit, quantity))}
+          />
         )}
       </section>
 
@@ -326,9 +276,11 @@ export function BestellungDetailPanel({
       <footer className="werkstatt-orders-drawer-actions">
         {editable && (
           <>
-            <button type="button" className="werkstatt-action-btn" onClick={onShopAgain}>
-              {de ? "Nachkaufen" : "Shop again"}
-            </button>
+            {order.supplier_has_shop && (
+              <button type="button" className="werkstatt-action-btn" onClick={onShopAgain}>
+                {de ? "Nachkaufen" : "Shop again"}
+              </button>
+            )}
             <button type="button" className="werkstatt-action-btn" onClick={onApplyTemplate}>
               {de ? "Vorlage einfügen" : "Insert template"}
             </button>
@@ -338,8 +290,9 @@ export function BestellungDetailPanel({
           </>
         )}
 
-        {canManage && !order.is_template && (
-          namingTemplate ? (
+        {canManage &&
+          !order.is_template &&
+          (namingTemplate ? (
             <div className="werkstatt-orders-add-line">
               <input
                 className="werkstatt-field-input"
@@ -370,60 +323,24 @@ export function BestellungDetailPanel({
               </button>
             </div>
           ) : (
-            <button
-              type="button"
-              className="werkstatt-action-btn"
-              onClick={() => setNamingTemplate(true)}
-            >
+            <button type="button" className="werkstatt-action-btn" onClick={() => setNamingTemplate(true)}>
               {de ? "Als Vorlage speichern" : "Save as template"}
             </button>
-          )
-        )}
+          ))}
 
-        {order.supplier_has_shop && order.status === "draft" && canManage && (
-          <button
-            type="button"
-            className="werkstatt-action-btn"
-            disabled={busy || order.lines.length === 0}
-            onClick={onSubmitToShop}
-            title={
-              de
-                ? "Öffnet den Warenkorb im Shop. Bestellt wird dort — mit den Preisen und Beständen des Lieferanten."
-                : "Fills the basket in the shop. You order there, under the supplier's prices and stock."
-            }
-          >
-            {de ? "Im Shop bestellen" : "Order in shop"}
-          </button>
-        )}
-
-        {canManage && order.status === "draft" && (
-          <button type="button" className="werkstatt-action-btn" onClick={onCancel}>
-            {de ? "Stornieren" : "Cancel order"}
-          </button>
-        )}
-        {canManage && (
-          <button
-            type="button"
-            className="werkstatt-action-btn"
-            disabled={order.status !== "draft" || busy}
-            onClick={onMarkSent}
-          >
-            {de ? "Als versendet markieren" : "Mark as sent"}
-          </button>
-        )}
-        {canManage && (
-          <button
-            type="button"
-            className="werkstatt-action-btn werkstatt-action-btn--primary"
-            disabled={
-              busy ||
-              !["sent", "confirmed", "partially_delivered"].includes(order.status)
-            }
-            onClick={onMarkDelivered}
-          >
-            {de ? "Als geliefert markieren" : "Mark as delivered"}
-          </button>
-        )}
+        <BestellungVersandLeiste
+          order={order}
+          de={de}
+          canManage={canManage}
+          busy={busy}
+          resolution={resolution}
+          conflict={conflict}
+          onSend={onSend}
+          onDismissConflict={onDismissConflict}
+          onMarkSent={onMarkSent}
+          onMarkDelivered={onMarkDelivered}
+          onCancel={onCancel}
+        />
       </footer>
     </aside>
   );

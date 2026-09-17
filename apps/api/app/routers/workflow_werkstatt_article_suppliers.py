@@ -1,9 +1,17 @@
 """Werkstatt article-supplier link CRUD.
 
 Endpoints:
-- POST   /werkstatt/articles/{article_id}/suppliers
+- POST   /werkstatt/articles/{article_id}/suppliers      (upsert on the pair)
 - PATCH  /werkstatt/articles/{article_id}/suppliers/{link_id}
 - DELETE /werkstatt/articles/{article_id}/suppliers/{link_id}
+
+POST is an upsert on ``(article, supplier)``: when the pair already exists the
+fields the caller actually sent are written onto that link and it is returned
+with 200. The order drawer relies on this — a line drafted before the link
+existed carries no link id, so "record what the supplier calls this article"
+must be expressible without knowing whether a link is already there. A
+duplicate used to be a 400 that left the number on the line only, so the next
+order for the same article asked again.
 
 Enforces at most one `is_preferred=True` link per article — setting a second
 atomically clears the previous one.
@@ -45,12 +53,13 @@ def add_supplier_link(
 ) -> WerkstattArticleSupplier:
     """Shared helper reused by the article-creation endpoints.
 
-    Validates the supplier exists, enforces uniqueness of (article, supplier),
-    and clears any previous preferred link when the new link is preferred.
+    Validates the supplier exists, upserts on (article, supplier) — see the
+    module header — and clears any previous preferred link when the link is
+    (or becomes) preferred.
     """
     supplier = db.get(WerkstattSupplier, payload.supplier_id)
     if supplier is None:
-        raise HTTPException(status_code=400, detail=f"Supplier {payload.supplier_id} not found")
+        raise HTTPException(status_code=400, detail="Lieferant nicht gefunden")
     existing = db.scalar(
         select(WerkstattArticleSupplier).where(
             WerkstattArticleSupplier.article_id == article_id,
@@ -58,9 +67,7 @@ def add_supplier_link(
         )
     )
     if existing is not None:
-        raise HTTPException(
-            status_code=400, detail="Supplier link already exists for this article"
-        )
+        return _update_existing_link(db, existing, payload)
     link = WerkstattArticleSupplier(
         article_id=article_id,
         supplier_id=payload.supplier_id,
@@ -80,6 +87,38 @@ def add_supplier_link(
     return link
 
 
+def _update_existing_link(
+    db: Session,
+    link: WerkstattArticleSupplier,
+    payload: WerkstattArticleSupplierCreate,
+) -> WerkstattArticleSupplier:
+    """The upsert half of `add_supplier_link`: only what was sent changes.
+
+    `model_fields_set` separates "the caller said is_preferred=False" from
+    "the caller said nothing", so a POST that only carries the supplier's
+    number cannot silently un-prefer the link or reset its price. A number
+    sent as empty is ignored rather than written: the point of the call is to
+    record a number, never to erase one the article already has.
+    """
+
+    sent = payload.model_fields_set - {"supplier_id"}
+    for field in sent:
+        value = getattr(payload, field)
+        if field == "supplier_article_no":
+            value = (value or "").strip() or None
+            if value is None:
+                continue
+        elif field == "notes":
+            value = value or None
+        setattr(link, field, value)
+    link.updated_at = utcnow()
+    db.add(link)
+    db.flush()
+    if link.is_preferred:
+        clear_preferred_link(db, article_id=link.article_id, keep_link_id=link.id)
+    return link
+
+
 @router.post(
     "/articles/{article_id}/suppliers",
     response_model=WerkstattArticleSupplierOut,
@@ -92,7 +131,7 @@ def add_article_supplier_link_endpoint(
 ) -> WerkstattArticleSupplierOut:
     article = db.get(WerkstattArticle, article_id)
     if article is None:
-        raise HTTPException(status_code=404, detail="Article not found")
+        raise HTTPException(status_code=404, detail="Artikel nicht gefunden")
     link = add_supplier_link(db, article_id=article_id, payload=payload)
     db.commit()
     db.refresh(link)
@@ -113,7 +152,7 @@ def update_article_supplier_link_endpoint(
 ) -> WerkstattArticleSupplierOut:
     link = db.get(WerkstattArticleSupplier, link_id)
     if link is None or link.article_id != article_id:
-        raise HTTPException(status_code=404, detail="Supplier link not found")
+        raise HTTPException(status_code=404, detail="Lieferanten-Verknüpfung nicht gefunden")
     data = payload.model_dump(exclude_unset=True)
     for field, value in data.items():
         setattr(link, field, value)
@@ -136,7 +175,7 @@ def delete_article_supplier_link_endpoint(
 ) -> dict[str, bool]:
     link = db.get(WerkstattArticleSupplier, link_id)
     if link is None or link.article_id != article_id:
-        raise HTTPException(status_code=404, detail="Supplier link not found")
+        raise HTTPException(status_code=404, detail="Lieferanten-Verknüpfung nicht gefunden")
     db.delete(link)
     db.commit()
     return {"ok": True}

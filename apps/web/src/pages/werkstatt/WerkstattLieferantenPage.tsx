@@ -7,7 +7,17 @@ import {
   listSuppliers,
   updateSupplier,
 } from "../../utils/werkstattSuppliersApi";
-import type { WerkstattSupplier, WerkstattSupplierCreate } from "../../types/werkstatt";
+import type { WerkstattSupplier } from "../../types/werkstatt";
+import {
+  EMPTY_SUPPLIER_FORM,
+  LieferantFormModal,
+  formStateFromSupplier,
+  payloadFromForm,
+  type SupplierFormState,
+} from "../../components/werkstatt/LieferantFormModal";
+// The ordering-settings help text shares the orders sheet; Vite loads a
+// stylesheet once however many modules import it.
+import "../../styles/orders.css";
 
 
 /**
@@ -17,90 +27,11 @@ import type { WerkstattSupplier, WerkstattSupplierCreate } from "../../types/wer
  * client check is purely UX (hide buttons that would 403).
  *
  * Columns: Name · Kontakt · Std. Lieferzeit · # Artikel · Letzte Bestellung.
+ *
+ * The form itself, its state helpers and the two ordering settings
+ * (`order_channel`, `order_identifier`) live in
+ * `components/werkstatt/LieferantFormModal.tsx`.
  */
-
-
-type SupplierFormState = {
-  name: string;
-  short_name: string;
-  email: string;
-  order_email: string;
-  phone: string;
-  contact_person: string;
-  address_street: string;
-  address_zip: string;
-  address_city: string;
-  address_country: string;
-  default_lead_time_days: string;  // free-text in the form, parsed on submit
-  notes: string;
-};
-
-
-const EMPTY_FORM: SupplierFormState = {
-  name: "",
-  short_name: "",
-  email: "",
-  order_email: "",
-  phone: "",
-  contact_person: "",
-  address_street: "",
-  address_zip: "",
-  address_city: "",
-  address_country: "",
-  default_lead_time_days: "",
-  notes: "",
-};
-
-
-function formStateFromSupplier(supplier: WerkstattSupplier): SupplierFormState {
-  return {
-    name: supplier.name,
-    short_name: supplier.short_name ?? "",
-    email: supplier.email ?? "",
-    order_email: supplier.order_email ?? "",
-    phone: supplier.phone ?? "",
-    contact_person: supplier.contact_person ?? "",
-    address_street: supplier.address_street ?? "",
-    address_zip: supplier.address_zip ?? "",
-    address_city: supplier.address_city ?? "",
-    address_country: supplier.address_country ?? "",
-    default_lead_time_days:
-      supplier.default_lead_time_days != null
-        ? String(supplier.default_lead_time_days)
-        : "",
-    notes: supplier.notes ?? "",
-  };
-}
-
-
-/** Convert form state to the API's create/update payload. Empty strings turn
- *  into `null` so the backend records "field cleared" rather than "field is
- *  the empty string" — Pydantic distinguishes the two. */
-function payloadFromForm(form: SupplierFormState): WerkstattSupplierCreate {
-  const trimToNull = (value: string): string | null => {
-    const trimmed = value.trim();
-    return trimmed === "" ? null : trimmed;
-  };
-  const leadTime = form.default_lead_time_days.trim();
-  const leadTimeParsed = leadTime === "" ? null : Number.parseInt(leadTime, 10);
-  return {
-    name: form.name.trim(),
-    short_name: trimToNull(form.short_name),
-    email: trimToNull(form.email),
-    order_email: trimToNull(form.order_email),
-    phone: trimToNull(form.phone),
-    contact_person: trimToNull(form.contact_person),
-    address_street: trimToNull(form.address_street),
-    address_zip: trimToNull(form.address_zip),
-    address_city: trimToNull(form.address_city),
-    address_country: trimToNull(form.address_country),
-    default_lead_time_days:
-      leadTimeParsed != null && Number.isFinite(leadTimeParsed) && leadTimeParsed >= 0
-        ? leadTimeParsed
-        : null,
-    notes: trimToNull(form.notes),
-  };
-}
 
 
 function formatLastOrderAt(iso: string | null, de: boolean): string {
@@ -132,7 +63,7 @@ export function WerkstattLieferantenPage() {
   // `form` always holds the in-flight values; submit reads from here.
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<WerkstattSupplier | null>(null);
-  const [form, setForm] = useState<SupplierFormState>(EMPTY_FORM);
+  const [form, setForm] = useState<SupplierFormState>(EMPTY_SUPPLIER_FORM);
   const [submitting, setSubmitting] = useState(false);
 
   // ── Per-row action menu (the … overflow button) ────────────────────────
@@ -188,7 +119,7 @@ export function WerkstattLieferantenPage() {
 
   const openCreateModal = () => {
     setEditing(null);
-    setForm(EMPTY_FORM);
+    setForm(EMPTY_SUPPLIER_FORM);
     setModalOpen(true);
   };
 
@@ -203,11 +134,11 @@ export function WerkstattLieferantenPage() {
     if (submitting) return;
     setModalOpen(false);
     setEditing(null);
-    setForm(EMPTY_FORM);
+    setForm(EMPTY_SUPPLIER_FORM);
   };
 
   const onFieldChange = (field: keyof SupplierFormState) =>
-    (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+    (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
       setForm((prev) => ({ ...prev, [field]: event.target.value }));
     };
 
@@ -238,7 +169,7 @@ export function WerkstattLieferantenPage() {
       }
       setModalOpen(false);
       setEditing(null);
-      setForm(EMPTY_FORM);
+      setForm(EMPTY_SUPPLIER_FORM);
     } catch (err: any) {
       setError(err?.message ?? (de ? "Speichern fehlgeschlagen" : "Save failed"));
     } finally {
@@ -511,7 +442,7 @@ export function WerkstattLieferantenPage() {
       </div>
 
       {modalOpen && (
-        <SupplierFormModal
+        <LieferantFormModal
           de={de}
           editing={editing}
           form={form}
@@ -522,212 +453,5 @@ export function WerkstattLieferantenPage() {
         />
       )}
     </section>
-  );
-}
-
-
-// ── Modal ──────────────────────────────────────────────────────────────────
-
-
-function SupplierFormModal({
-  de,
-  editing,
-  form,
-  onFieldChange,
-  onCancel,
-  onSubmit,
-  submitting,
-}: {
-  de: boolean;
-  editing: WerkstattSupplier | null;
-  form: SupplierFormState;
-  onFieldChange: (field: keyof SupplierFormState) =>
-    (event: ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => void;
-  onCancel: () => void;
-  onSubmit: (event: FormEvent<HTMLFormElement>) => void;
-  submitting: boolean;
-}) {
-  const title = editing
-    ? de ? "Lieferant bearbeiten" : "Edit supplier"
-    : de ? "Neuer Lieferant" : "New supplier";
-
-  return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label={title}
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,0.5)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        zIndex: 1000,
-        padding: 16,
-      }}
-      onClick={(event) => {
-        if (event.target === event.currentTarget && !submitting) onCancel();
-      }}
-    >
-      <form
-        onSubmit={onSubmit}
-        style={{
-          background: "var(--surface, #fff)",
-          color: "var(--text, #111)",
-          borderRadius: 10,
-          padding: 24,
-          maxWidth: 640,
-          width: "100%",
-          maxHeight: "90vh",
-          overflowY: "auto",
-          boxShadow: "0 24px 60px rgba(0,0,0,0.4)",
-        }}
-      >
-        <h2 style={{ marginTop: 0 }}>{title}</h2>
-
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-          <label style={{ gridColumn: "1 / -1" }}>
-            <span>{de ? "Name *" : "Name *"}</span>
-            <input
-              type="text"
-              required
-              maxLength={200}
-              value={form.name}
-              onChange={onFieldChange("name")}
-              style={{ width: "100%", padding: 8 }}
-              autoFocus
-            />
-          </label>
-
-          <label>
-            <span>{de ? "Kürzel" : "Short name"}</span>
-            <input
-              type="text"
-              maxLength={50}
-              value={form.short_name}
-              onChange={onFieldChange("short_name")}
-              style={{ width: "100%", padding: 8 }}
-            />
-          </label>
-
-          <label>
-            <span>{de ? "Std. Lieferzeit (Werktage)" : "Default lead time (days)"}</span>
-            <input
-              type="number"
-              min={0}
-              step={1}
-              value={form.default_lead_time_days}
-              onChange={onFieldChange("default_lead_time_days")}
-              style={{ width: "100%", padding: 8 }}
-            />
-          </label>
-
-          <label>
-            <span>{de ? "Kontaktperson" : "Contact person"}</span>
-            <input
-              type="text"
-              value={form.contact_person}
-              onChange={onFieldChange("contact_person")}
-              style={{ width: "100%", padding: 8 }}
-            />
-          </label>
-
-          <label>
-            <span>{de ? "Telefon" : "Phone"}</span>
-            <input
-              type="tel"
-              value={form.phone}
-              onChange={onFieldChange("phone")}
-              style={{ width: "100%", padding: 8 }}
-            />
-          </label>
-
-          <label>
-            <span>{de ? "E-Mail (allgemein)" : "Email (general)"}</span>
-            <input
-              type="email"
-              value={form.email}
-              onChange={onFieldChange("email")}
-              style={{ width: "100%", padding: 8 }}
-            />
-          </label>
-
-          <label>
-            <span>{de ? "E-Mail (Bestellungen)" : "Email (orders)"}</span>
-            <input
-              type="email"
-              value={form.order_email}
-              onChange={onFieldChange("order_email")}
-              style={{ width: "100%", padding: 8 }}
-            />
-          </label>
-
-          <label style={{ gridColumn: "1 / -1" }}>
-            <span>{de ? "Straße" : "Street"}</span>
-            <input
-              type="text"
-              value={form.address_street}
-              onChange={onFieldChange("address_street")}
-              style={{ width: "100%", padding: 8 }}
-            />
-          </label>
-
-          <label>
-            <span>{de ? "PLZ" : "ZIP"}</span>
-            <input
-              type="text"
-              maxLength={20}
-              value={form.address_zip}
-              onChange={onFieldChange("address_zip")}
-              style={{ width: "100%", padding: 8 }}
-            />
-          </label>
-
-          <label>
-            <span>{de ? "Stadt" : "City"}</span>
-            <input
-              type="text"
-              value={form.address_city}
-              onChange={onFieldChange("address_city")}
-              style={{ width: "100%", padding: 8 }}
-            />
-          </label>
-
-          <label style={{ gridColumn: "1 / -1" }}>
-            <span>{de ? "Land" : "Country"}</span>
-            <input
-              type="text"
-              value={form.address_country}
-              onChange={onFieldChange("address_country")}
-              style={{ width: "100%", padding: 8 }}
-            />
-          </label>
-
-          <label style={{ gridColumn: "1 / -1" }}>
-            <span>{de ? "Notizen" : "Notes"}</span>
-            <textarea
-              value={form.notes}
-              onChange={onFieldChange("notes")}
-              rows={3}
-              style={{ width: "100%", padding: 8, resize: "vertical" }}
-            />
-          </label>
-        </div>
-
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
-          <button type="button" className="ghost" onClick={onCancel} disabled={submitting}>
-            {de ? "Abbrechen" : "Cancel"}
-          </button>
-          <button type="submit" disabled={submitting || form.name.trim() === ""}>
-            {submitting
-              ? de ? "Speichere…" : "Saving…"
-              : editing
-                ? de ? "Speichern" : "Save"
-                : de ? "Anlegen" : "Create"}
-          </button>
-        </div>
-      </form>
-    </div>
   );
 }

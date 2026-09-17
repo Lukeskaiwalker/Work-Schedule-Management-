@@ -103,6 +103,21 @@ export interface WerkstattLocation {
 // Suppliers
 // ──────────────────────────────────────────────────────────────────────────
 
+/**
+ * What an outbound cart / export carries per position. Mirrors
+ * `WerkstattOrderIdentifier` in apps/api/app/schemas/werkstatt.py.
+ *
+ *   supplier_no         the supplier's own number only (default — most shops
+ *                       import nothing else)
+ *   supplier_no_or_ean  the number when known, otherwise the EAN in its place
+ *   ean                 the EAN only, for a shop keyed on GTIN
+ *   both                number and EAN, the pre-v2.15 behaviour
+ */
+export type WerkstattOrderIdentifier = "supplier_no" | "supplier_no_or_ean" | "ean" | "both";
+
+/** How orders reach the supplier: through the IDS shop, or by CSV/clipboard. */
+export type WerkstattOrderChannel = "ids" | "manual";
+
 export interface WerkstattSupplier {
   id: number;
   name: string;
@@ -117,6 +132,8 @@ export interface WerkstattSupplier {
   address_country: string | null;
   default_lead_time_days: number | null;
   notes: string | null;
+  order_identifier: WerkstattOrderIdentifier;
+  order_channel: WerkstattOrderChannel;
   is_archived: boolean;
   article_count: number;
   last_order_at: string | null;
@@ -128,7 +145,7 @@ export type WerkstattSupplierCreate = Pick<
   WerkstattSupplier,
   "name" | "short_name" | "email" | "order_email" | "phone" | "contact_person"
   | "address_street" | "address_zip" | "address_city" | "address_country"
-  | "default_lead_time_days" | "notes"
+  | "default_lead_time_days" | "notes" | "order_identifier" | "order_channel"
 >;
 
 export interface WerkstattArticleSupplier {
@@ -211,6 +228,9 @@ export interface WerkstattArticleLite {
   stock_status: WerkstattStockStatus;
   image_url: string | null;
   next_expected_delivery_at: string | null;
+  /** What the supplier of a `supplier_id`-filtered list calls this article.
+   *  Absent or null otherwise — the question has no answer without one. */
+  supplier_article_no?: string | null;
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -408,6 +428,17 @@ export interface MaterialCatalogItemLite {
   unit: string | null;
   price_text: string | null;
   image_url: string | null;
+}
+
+/**
+ * One product in `GET /werkstatt/catalog/search`: rows sharing a non-empty
+ * EAN are folded into a hero plus the per-supplier rows. Mirrors
+ * `WerkstattCatalogGroupOut`.
+ */
+export interface WerkstattCatalogGroup {
+  ean: string | null;
+  hero: MaterialCatalogItemLite;
+  suppliers: MaterialCatalogItemLite[];
 }
 
 export type ScanResolveResult =

@@ -25,6 +25,10 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# The order-line contract lives with procurement; the draft-order payload
+# below subclasses it so both entry points build lines the same way.
+from app.schemas.werkstatt_procurement import OrderLineCreatePayload
+
 # Machines live in their own schema module (this file is already the shared
 # article/stock contract). The scan cascade can return one, so the union below
 # needs the type — the dependency only goes this way, never back.
@@ -163,6 +167,15 @@ class WerkstattLocationUpdate(BaseModel):
 # ──────────────────────────────────────────────────────────────────────────
 
 
+# What an outbound cart / export carries per position. See the column comment
+# on WerkstattSupplier.order_identifier for what each value means on the wire.
+WerkstattOrderIdentifier = Literal["supplier_no", "supplier_no_or_ean", "ean", "both"]
+# How orders reach the supplier: through the IDS punchout, or by hand (CSV /
+# clipboard export). Informational for the UI; the shop button stays gated on
+# an enabled connection.
+WerkstattOrderChannel = Literal["ids", "manual"]
+
+
 class WerkstattSupplierOut(_OrmBase):
     id: int
     name: str
@@ -177,6 +190,8 @@ class WerkstattSupplierOut(_OrmBase):
     address_country: str | None
     default_lead_time_days: int | None
     notes: str | None
+    order_identifier: WerkstattOrderIdentifier = "supplier_no"
+    order_channel: WerkstattOrderChannel = "manual"
     is_archived: bool
     article_count: int = 0
     last_order_at: datetime | None = None
@@ -200,6 +215,8 @@ class WerkstattSupplierCreate(BaseModel):
     address_country: str | None = Field(default=None, max_length=64)
     default_lead_time_days: int | None = Field(default=None, ge=0, le=365)
     notes: str | None = None
+    order_identifier: WerkstattOrderIdentifier = "supplier_no"
+    order_channel: WerkstattOrderChannel = "manual"
 
 
 class WerkstattSupplierUpdate(BaseModel):
@@ -215,6 +232,8 @@ class WerkstattSupplierUpdate(BaseModel):
     address_country: str | None = Field(default=None, max_length=64)
     default_lead_time_days: int | None = Field(default=None, ge=0, le=365)
     notes: str | None = None
+    order_identifier: WerkstattOrderIdentifier | None = None
+    order_channel: WerkstattOrderChannel | None = None
     is_archived: bool | None = None
 
 
@@ -310,6 +329,11 @@ class WerkstattArticleLiteOut(_OrmBase):
     stock_status: WerkstattStockStatus
     image_url: str | None
     next_expected_delivery_at: datetime | None = None
+    # What the supplier named in the request calls this article, when the
+    # list is filtered by `supplier_id`. The order picker shows it so the buyer
+    # sees before adding a line whether it will resolve. Null without a
+    # supplier filter — the question has no answer then.
+    supplier_article_no: str | None = None
 
 
 # Desktop BE: append WerkstattArticleCreate / Update / ArticleSupplierCreate here.
@@ -572,23 +596,26 @@ class WerkstattOrderSummaryOut(_OrmBase):
 # Tablet BE: append SubmitOrderPayload / UpdateOrderStatusPayload here.
 
 
-class WerkstattOrderLineCreatePayload(BaseModel):
-    """One line of a draft-order creation payload."""
+class WerkstattOrderLineCreatePayload(OrderLineCreatePayload):
+    """One line of a draft-order creation payload.
 
-    article_id: int
-    quantity_ordered: int = Field(ge=1)
+    The same shape as a line added later (`OrderLineCreatePayload`: a stocked
+    article, a catalogue row, or free text), so the order builder and the
+    drawer send identical lines and the server builds them through one
+    function. `article_supplier_id` is the one addition, kept for the tablet
+    persona that pins a specific supplier link.
+    """
+
     article_supplier_id: int | None = None
-    unit_price_cents: int | None = Field(default=None, ge=0)
-    currency: str | None = Field(default=None, min_length=1, max_length=8)
-    notes: str | None = None
 
 
 class WerkstattOrderCreatePayload(BaseModel):
     """Direct draft-order creation (not via the reorder-suggestion flow).
 
-    `lines` here only covers stocked articles. Free (catalog-less) positions
-    go through ``POST /werkstatt/orders/{id}/lines`` — see
-    `routers/workflow_werkstatt_order_composition.py`.
+    A line is a stocked article (`article_id`), a Datanorm row of this
+    supplier (`catalog_item_id`, which snapshots the supplier's own number
+    onto the line) or free text. Backward compatible: an `article_id`-only
+    line still works exactly as before.
     """
 
     supplier_id: int
@@ -660,6 +687,11 @@ class ReorderSubmitPayload(BaseModel):
     supplier_id: int
     lines: list[ReorderSubmitLinePayload] = Field(min_length=1)
     notes: str | None = None
+    # The auto-send runs the same pre-send resolution as the shop hand-over.
+    # A line the supplier could not identify is a 409 unless the buyer says
+    # "Trotzdem übergeben" — the short basket is the bug the resolver exists
+    # to prevent, and a reorder is the path most likely to carry stale links.
+    allow_unresolved: bool = False
 
 
 # ──────────────────────────────────────────────────────────────────────────

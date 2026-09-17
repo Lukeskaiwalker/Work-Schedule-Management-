@@ -13,17 +13,14 @@ Three groups, with deliberately different gating:
 
   ``/werkstatt/ids/handoff/{token}`` and ``/werkstatt/ids/hook/{token}``
         **No permission dependency at all.** These are reached by a browser
-        mid-hand-over: the hook is a cross-origin form POST that the
-        wholesaler's page composes, so it arrives with none of our headers and
-        cannot carry an Authorization token. The single-use token in the path
-        IS the credential — see `services/ids_connect.py` for why that is
-        sound and what exactly it authorises.
+        mid-hand-over and live in `workflow_werkstatt_ids_handoff.py`; the
+        single-use token in the path IS the credential — see
+        `services/ids_connect.py` for why that is sound.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -35,10 +32,8 @@ from app.models.entities import (
     Task,
     User,
     WerkstattIdsConnection,
-    WerkstattIdsSession,
     WerkstattOrder,
     WerkstattOrderImport,
-    WerkstattOrderLine,
     WerkstattSupplier,
 )
 from app.routers._werkstatt_tablet_shared import load_order_full
@@ -56,32 +51,20 @@ from app.schemas.werkstatt_procurement import (
     OrderImportOut,
 )
 from app.services.audit import log_admin_action
-from app.services.ids_cart_builder import build_cart_xml, cart_items_for_order_lines
-from app.services.ids_cart_parser import (
-    CartParseError,
-    ParsedCart,
-    decode_payload,
-    parse_cart,
-)
+from app.services.ids_cart_builder import build_cart_xml
+from app.services.ids_cart_parser import CartParseError, parse_cart
 from app.services.ids_connect import (
     assert_directions_not_swapped,
-    consume_session,
     describe_field_map_problems,
     create_session,
     default_connection_values,
-    extract_cart_payload,
     hook_url_for,
     placeholder_values,
     render_field_map,
 )
-from app.services.ids_handoff_page import (
-    handoff_headers,
-    render_handoff_page,
-    render_result_page,
-    result_headers,
-)
 from app.services.secret_box import encrypt_secret
 from app.services.werkstatt_order_composition import append_cart_lines, resolve_article
+from app.services.werkstatt_order_send import prepare_order_for_send, require_resolved
 from app.services.werkstatt_orders import generate_order_number
 
 router = APIRouter(prefix="/werkstatt/ids", tags=["werkstatt-procurement"])
@@ -187,6 +170,18 @@ def upsert_ids_connection(
 
     connection.updated_at = now
     db.add(connection)
+
+    # A supplier with a live shop connection IS a shop supplier: the order
+    # dialog preselects on `order_channel`, and before this line nothing ever
+    # set it — Unielektro stayed "manual" until somebody edited the supplier
+    # by hand. Disabling does NOT flip it back: a connection switched off for
+    # a credential rotation does not turn the wholesaler into a CSV shop, and
+    # the supplier form still lets an admin change the channel explicitly.
+    if payload.is_enabled and supplier.order_channel != "ids":
+        supplier.order_channel = "ids"
+        supplier.updated_at = now
+        db.add(supplier)
+
     db.commit()
     db.refresh(connection)
 
@@ -422,6 +417,7 @@ def start_punchout(
 @router.post("/submit", response_model=IdsSubmitOut)
 def submit_order_to_shop(
     order_id: int = Query(...),
+    allow_unresolved: bool = Query(default=False),
     current_user: User = Depends(require_permission("werkstatt:manage")),
     db: Session = Depends(get_db),
 ) -> IdsSubmitOut:
@@ -431,11 +427,11 @@ def submit_order_to_shop(
     browser over so the human confirms there, under the wholesaler's own
     prices and stock. See `services/ids_cart_builder.py`.
 
-    The returned `warnings` are the only channel the buyer has for a line the
-    shop will not receive. `ids_ean_resolver` translates each line into this
-    supplier's own article number and names — with SP-number, description and
-    EAN — every line it could not, so a short basket is visible here rather
-    than discovered when the van is loaded.
+    A line the supplier cannot identify is a 409 (`unresolved_lines`, with the
+    positions and the resolver's warnings in the detail) rather than a quietly
+    short basket. ``allow_unresolved`` is the buyer's "Trotzdem übergeben":
+    the cart goes out without those lines and `warnings` says which — the
+    pre-v2.15 behaviour, now opt-in. Nothing is stamped on a 409.
     """
 
     order = db.get(WerkstattOrder, order_id)
@@ -448,16 +444,34 @@ def submit_order_to_shop(
         )
 
     connection = _enabled_connection(db, order.supplier_id)
-    supplier = db.get(WerkstattSupplier, order.supplier_id)
-    full = load_order_full(db, order)
-    items, resolution = cart_items_for_order_lines(
-        db,
-        supplier_id=order.supplier_id,
-        lines=full.lines,
-        supplier_name=supplier.name if supplier else None,
+    # The same at-the-moment-of-use check /start runs on the fetch map. A WKS
+    # map without {cart_xml} hands the shop an empty basket and errors
+    # nowhere; this is the last point where that is still legible.
+    field_errors, _ = describe_field_map_problems(
+        connection.submit_field_map or {},
+        direction="submit",
+        has_username=bool((connection.username or "").strip()),
     )
+    if field_errors:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Die Shop-Anbindung ist nicht korrekt konfiguriert: "
+                + " ".join(field_errors)
+                + " (Admin → Einstellungen → IDS-Anbindung, dort 'Prüfen')"
+            ),
+        )
+
+    preparation = prepare_order_for_send(db, order, backfill=True)
+    try:
+        require_resolved(preparation, allow_unresolved=allow_unresolved)
+    except HTTPException:
+        # A refused hand-over writes nothing, not even the resolver's
+        # backfill: the buyer only looked, and will be back after fixing.
+        db.rollback()
+        raise
     built = build_cart_xml(
-        items,
+        preparation.items,
         reference=order.order_number,
         customer_number=connection.customer_number,
         ids_version=connection.ids_version,
@@ -466,6 +480,7 @@ def submit_order_to_shop(
         # detail needed to fix it. The builder's generic notice would only
         # repeat it, less usefully.
         warn_on_missing_article_no=False,
+        identifier=preparation.identifier,
     )
 
     session = create_session(
@@ -490,308 +505,18 @@ def submit_order_to_shop(
     # HOOK_URL is the one URL here that must stay absolute (see
     # ids_connect.hook_url_for): it is embedded in a form submitted to the
     # wholesaler, so a relative path would have no origin to resolve against.
+    # The preparation already reconciled every line's sentence (dropped lines
+    # first, then the policy's own notes about lines that travel). The
+    # builder repeats the policy's notes for the positions it rendered — the
+    # same text, from the same `wire_identity` — so only what it adds on top
+    # (an empty cart) goes through; a sentence must not appear twice.
+    builder_only = [text for text in built.warnings if text not in preparation.warnings]
     return IdsSubmitOut(
         token=session.token,
         handoff_url=f"/api/werkstatt/ids/handoff/{session.token}",
         expires_at=session.expires_at,
-        # Resolution warnings first: an unresolved line is the one that will be
-        # missing from the basket, and the buyer skims this list.
-        warnings=[*resolution.warnings(), *built.warnings],
+        warnings=[*preparation.warnings, *builder_only],
     )
-
-
-@router.get("/handoff/{token}", response_class=HTMLResponse, include_in_schema=False)
-def render_handoff(token: str, db: Session = Depends(get_db)) -> HTMLResponse:
-    """Serve the self-submitting form. Unauthenticated by necessity.
-
-    Fetchable exactly once: the page carries the wholesaler password in a
-    hidden field, so a URL that could be replayed out of browser history would
-    be a credential-disclosure route. The token stays otherwise valid because
-    the *hook* still has to use it when the cart comes back.
-    """
-
-    session = db.scalar(select(WerkstattIdsSession).where(WerkstattIdsSession.token == token))
-    now = utcnow()
-    if session is None or session.status not in {"pending"} or session.expires_at <= now:
-        return HTMLResponse(
-            render_result_page(
-                heading="Sitzung nicht mehr gültig",
-                message=(
-                    "Diese Weiterleitung wurde bereits verwendet oder ist abgelaufen. "
-                    "Bitte den Vorgang in SMPL erneut starten."
-                ),
-                return_url="/",
-                is_error=True,
-            ),
-            status_code=status.HTTP_410_GONE,
-            headers=result_headers(),
-        )
-    if session.opened_at is not None:
-        return HTMLResponse(
-            render_result_page(
-                heading="Weiterleitung bereits geöffnet",
-                message=(
-                    "Diese Weiterleitung wurde schon einmal aufgerufen. Aus "
-                    "Sicherheitsgründen wird sie kein zweites Mal ausgeliefert."
-                ),
-                return_url="/",
-                is_error=True,
-            ),
-            status_code=status.HTTP_410_GONE,
-            headers=result_headers(),
-        )
-
-    connection = db.get(WerkstattIdsConnection, session.connection_id)
-    if connection is None or not connection.is_enabled:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail="Shop-Anbindung nicht verfügbar"
-        )
-
-    cart_xml = ""
-    order_number = ""
-    if session.direction == "submit" and session.order_id is not None:
-        order = db.get(WerkstattOrder, session.order_id)
-        if order is not None:
-            order_number = order.order_number
-            full = load_order_full(db, order)
-            # The same resolver as /submit, so the XML the shop receives cannot
-            # disagree with the warnings the buyer was shown a moment ago. It
-            # is idempotent: everything /submit backfilled resolves at step 1
-            # here, and this pass writes nothing new.
-            items, _ = cart_items_for_order_lines(
-                db, supplier_id=order.supplier_id, lines=full.lines
-            )
-            cart_xml = build_cart_xml(
-                items,
-                reference=order.order_number,
-                customer_number=connection.customer_number,
-                ids_version=connection.ids_version,
-                charset=connection.charset,
-                warn_on_missing_article_no=False,
-            ).xml
-
-    field_map = (
-        connection.submit_field_map if session.direction == "submit" else connection.fetch_field_map
-    )
-    fields = render_field_map(
-        field_map or {},
-        placeholder_values(
-            connection, token=token, cart_xml=cart_xml, order_number=order_number
-        ),
-    )
-
-    session.opened_at = now
-    db.add(session)
-    supplier = db.get(WerkstattSupplier, connection.supplier_id)
-    db.commit()
-
-    return HTMLResponse(
-        render_handoff_page(
-            action_url=connection.entry_url,
-            method=connection.http_method,
-            fields=fields,
-            supplier_name=supplier.name if supplier else "Lieferant",
-        ),
-        headers=handoff_headers(connection.entry_url),
-    )
-
-
-def _result(
-    heading: str,
-    message: str,
-    *,
-    error: bool = False,
-    code: int = 200,
-    return_url: str = "/",
-) -> HTMLResponse:
-    return HTMLResponse(
-        render_result_page(
-            heading=heading, message=message, return_url=return_url, is_error=error
-        ),
-        status_code=code,
-        headers=result_headers(),
-    )
-
-
-@router.post("/hook/{token}", response_class=HTMLResponse, include_in_schema=False)
-async def receive_cart(token: str, request: Request, db: Session = Depends(get_db)) -> HTMLResponse:
-    """Receive the cart the wholesaler's page POSTs back. Unauthenticated by design.
-
-    Every exit from this function writes an audit row first. A cart that
-    arrives and is then dropped because the XML was in a dialect we did not
-    expect is the single most expensive failure in this feature — the user has
-    already done the work — so the payload is persisted before it is
-    interpreted, and stays persisted when interpretation fails.
-    """
-
-    session, error = consume_session(db, token)
-    if session is None:
-        db.commit()  # persist the expiry flip, if that is what happened
-        return _result("Warenkorb nicht übernommen", error or "Ungültige Sitzung", error=True, code=410)
-
-    connection = db.get(WerkstattIdsConnection, session.connection_id)
-    if connection is None:
-        db.commit()
-        return _result(
-            "Warenkorb nicht übernommen",
-            "Die Shop-Anbindung existiert nicht mehr.",
-            error=True,
-            code=410,
-        )
-
-    # Read the payload however it arrived: a form POST is the norm, but some
-    # shops POST the XML as the raw request body with an XML content type.
-    content_type = request.headers.get("content-type", "")
-    raw_body = await request.body()
-    payload_text: str | None = None
-    if "xml" in content_type.lower():
-        payload_text = decode_payload(raw_body, declared_charset=connection.charset)
-    else:
-        try:
-            form = await request.form()
-            fields = {str(k): str(v) for k, v in form.multi_items() if isinstance(v, str)}
-        except Exception:
-            fields = {}
-        payload_text, _field = extract_cart_payload(
-            fields, configured_names=list(connection.cart_field_names or [])
-        )
-        if payload_text is None and raw_body:
-            payload_text = decode_payload(raw_body, declared_charset=connection.charset)
-
-    import_row = WerkstattOrderImport(
-        supplier_id=connection.supplier_id,
-        connection_id=connection.id,
-        session_id=session.id,
-        source="ids_cart",
-        status="received",
-        content_type=content_type[:255] or None,
-        raw_payload=payload_text,
-        created_by=session.user_id,
-        created_at=utcnow(),
-    )
-    db.add(import_row)
-    db.flush()
-
-    if not payload_text:
-        import_row.status = "failed"
-        import_row.error_message = "Der Shop hat keinen Warenkorb mitgeschickt."
-        db.add(import_row)
-        db.commit()
-        return _result(
-            "Kein Warenkorb empfangen",
-            "Der Shop hat keine Warenkorbdaten übermittelt. Bitte im Shop erneut "
-            "auf „Warenkorb übergeben“ klicken.",
-            error=True,
-        )
-
-    try:
-        cart = parse_cart(payload_text)
-    except CartParseError as exc:
-        import_row.status = "failed"
-        import_row.error_message = str(exc)
-        db.add(import_row)
-        db.commit()
-        return _result(
-            "Warenkorb konnte nicht gelesen werden",
-            f"{exc} Die Rohdaten wurden gespeichert und können im Import-Protokoll "
-            "eingesehen werden.",
-            error=True,
-        )
-
-    order = _order_for_session(db, session, connection, cart)
-    import_row.order_id = order.id
-    import_row.external_reference = cart.external_reference
-    import_row.parsed_line_count = len(cart.lines)
-    import_row.status = "committed"
-    db.add(import_row)
-    db.flush()
-
-    # Which way the cart is travelling decides whether it extends the order or
-    # supersedes it.
-    #
-    #   fetch (WKE)   a shopping trip. Appending is the point: a second trip
-    #                 extends the first rather than discarding it, which is what
-    #                 `append_cart_lines` documents and is correct here.
-    #   submit (WKS)  the cart we just handed over, coming back. Appending it
-    #                 would file every position twice — a purchase order that
-    #                 says 20 m of cable where the buyer asked for 10.
-    #
-    # On the way back the shop's version is the authoritative one: it has
-    # applied the customer's own conditions and may carry edits made in the
-    # basket. So it replaces rather than merges.
-    #
-    # Only when it actually contains something. An empty or unreadable return
-    # must not wipe an order the buyer spent time assembling, and the raw
-    # payload is stored either way, so nothing is lost by declining to act.
-    if session.direction == "submit" and cart.lines:
-        db.query(WerkstattOrderLine).filter(
-            WerkstattOrderLine.order_id == order.id
-        ).delete(synchronize_session=False)
-        db.flush()
-
-    if cart.lines or session.direction != "submit":
-        append_cart_lines(db, order, cart, import_id=import_row.id)
-    session.order_id = order.id
-    db.add(session)
-    db.commit()
-
-    count = len(cart.lines)
-    # WarenkorbInfo/RueckgabeKZ is the wholesaler saying whether the buyer
-    # actually committed. It is the only field that separates "looked at the
-    # basket" from "placed the order", so it is worth telling them which one the
-    # shop reported rather than leaving them to guess from the order list.
-    placed = " Der Shop meldet: Bestellung wurde ausgelöst." if cart.order_placed else ""
-    # The shop returns the cart as a browser form POST with target=_top, so this
-    # page replaces the tab the user started in — it is not a popup. Telling
-    # them to close it is telling them to close the app, and it contradicts the
-    # "Zurück zu SMPL" button directly underneath.
-    #
-    # The button carries the order in a query parameter. The SPA has no router —
-    # navigation is a `mainView` state string — so a path like
-    # /werkstatt/orders/12 would simply load the app at its default view, which
-    # is what left the buyer on the dashboard hunting for the order they had
-    # just created. `?werkstatt_order=` is read once at boot, opens the order,
-    # and is then stripped from the URL, matching how the app already handles
-    # its invite and password-reset links.
-    return _result(
-        "Warenkorb übernommen",
-        f"{count} Position{'en' if count != 1 else ''} wurden als Bestellung "
-        f"{order.order_number} gespeichert.{placed}",
-        return_url=f"/?werkstatt_order={order.id}",
-    )
-
-
-def _order_for_session(
-    db: Session,
-    session: WerkstattIdsSession,
-    connection: WerkstattIdsConnection,
-    cart: ParsedCart,
-) -> WerkstattOrder:
-    """The order a returned cart lands in — the one asked for, or a new draft."""
-
-    if session.order_id is not None:
-        existing = db.get(WerkstattOrder, session.order_id)
-        if existing is not None and existing.status == "draft":
-            return existing
-
-    now = utcnow()
-    supplier = db.get(WerkstattSupplier, connection.supplier_id)
-    order = WerkstattOrder(
-        order_number=generate_order_number(db, now=now),
-        supplier_id=connection.supplier_id,
-        status="draft",
-        currency=cart.currency or "EUR",
-        title=f"{supplier.name if supplier else 'Shop'}-Warenkorb "
-        f"{now.strftime('%d.%m.%Y')}",
-        source="ids",
-        external_reference=cart.external_reference,
-        created_by=session.user_id,
-        created_at=now,
-        updated_at=now,
-    )
-    db.add(order)
-    db.flush()
-    return order
 
 
 # ──────────────────────────────────────────────────────────────────────────

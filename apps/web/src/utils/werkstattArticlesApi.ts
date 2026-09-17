@@ -11,6 +11,7 @@
 // them all" stops working quietly rather than loudly.
 
 import { apiFetch } from "../api/client";
+import type { WerkstattArticleSupplier } from "../types/werkstatt";
 
 /** Mirrors WerkstattStockStatus in apps/api/app/schemas/werkstatt.py. */
 export type WerkstattStockStatus = "available" | "low" | "empty" | "out" | "unavailable";
@@ -36,13 +37,22 @@ export interface WerkstattArticleLite {
    *  is not silently quoted in pieces. Null for articles that carry no unit;
    *  see `unitLabel` for the per-language fallback. */
   unit: string | null;
+  /** What the supplier named by `supplierId` or `annotateSupplierId` calls
+   *  this article. Null (or absent) otherwise — the question has no answer
+   *  without a supplier, and null under one means "no link yet". */
+  supplier_article_no?: string | null;
 }
 
 export interface ArticleListOptions {
   q?: string;
   categoryId?: number | null;
   locationId?: number | null;
+  /** Only articles linked to this supplier, each with its number. */
   supplierId?: number | null;
+  /** Every matching article, each with THIS supplier's number where a link
+   *  exists — the order picker's question, which must still surface the
+   *  stocked article that has no link yet. */
+  annotateSupplierId?: number | null;
   status?: WerkstattStockStatus | null;
   includeArchived?: boolean;
   limit?: number;
@@ -57,6 +67,9 @@ export async function listArticles(
   if (options.categoryId != null) params.set("category_id", String(options.categoryId));
   if (options.locationId != null) params.set("location_id", String(options.locationId));
   if (options.supplierId != null) params.set("supplier_id", String(options.supplierId));
+  if (options.annotateSupplierId != null) {
+    params.set("annotate_supplier_id", String(options.annotateSupplierId));
+  }
   if (options.status) params.set("status", options.status);
   if (options.includeArchived) params.set("include_archived", "true");
   if (options.limit != null) params.set("limit", String(options.limit));
@@ -219,5 +232,56 @@ export async function printArticleLabel(
     `/werkstatt/articles/${articleId}/print-label`,
     token,
     { method: "POST" },
+  );
+}
+
+
+/* ─────────────────────────────────────────────────────────────────────
+   Article ↔ supplier links
+   ──────────────────────────────────────────────────────────────────── */
+
+/** Mirrors `WerkstattArticleSupplierCreate`; only what the order drawer sends. */
+export interface ArticleSupplierLinkCreate {
+  supplier_id: number;
+  supplier_article_no?: string | null;
+  typical_price_cents?: number | null;
+  is_preferred?: boolean;
+  source_catalog_item_id?: number | null;
+  notes?: string | null;
+}
+
+export type ArticleSupplierLinkUpdate = Partial<Omit<ArticleSupplierLinkCreate, "supplier_id">>;
+
+/**
+ * Record what a supplier calls an article.
+ *
+ * Backend: `POST /werkstatt/articles/{id}/suppliers` in
+ * workflow_werkstatt_article_suppliers.py. The link is what the resolver
+ * consults first on every later order, so typing the number once from the
+ * order drawer means the next order for the same article resolves without
+ * asking — that is why the drawer writes here and not only onto its line.
+ */
+export async function addArticleSupplierLink(
+  token: string | null,
+  articleId: number,
+  payload: ArticleSupplierLinkCreate,
+): Promise<WerkstattArticleSupplier> {
+  return apiFetch<WerkstattArticleSupplier>(`/werkstatt/articles/${articleId}/suppliers`, token, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+/** `PATCH /werkstatt/articles/{id}/suppliers/{link_id}` — only the sent fields change. */
+export async function updateArticleSupplierLink(
+  token: string | null,
+  articleId: number,
+  linkId: number,
+  patch: ArticleSupplierLinkUpdate,
+): Promise<WerkstattArticleSupplier> {
+  return apiFetch<WerkstattArticleSupplier>(
+    `/werkstatt/articles/${articleId}/suppliers/${linkId}`,
+    token,
+    { method: "PATCH", body: JSON.stringify(patch) },
   );
 }

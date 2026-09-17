@@ -48,7 +48,11 @@ interface FormState {
   customerNumber: string;
   charset: string;
   hookBaseUrl: string;
+  /** The WWWSHOP call — fetching a cart out of the shop. */
   fieldMapJson: string;
+  /** The WKS call — handing our cart back to the shop. Differs per wholesaler
+   *  just like the fetch map, so it is editable here for the same reason. */
+  submitFieldMapJson: string;
 }
 
 const EMPTY_FORM: FormState = {
@@ -61,7 +65,25 @@ const EMPTY_FORM: FormState = {
   charset: "ISO-8859-1",
   hookBaseUrl: "",
   fieldMapJson: "",
+  submitFieldMapJson: "",
 };
+
+const IDENTIFIER_LABELS: Record<string, { de: string; en: string }> = {
+  supplier_no: { de: "Nur Lieferanten-Artikelnummer", en: "Supplier article number only" },
+  supplier_no_or_ean: { de: "Lieferanten-Nr., sonst EAN", en: "Supplier no., otherwise EAN" },
+  ean: { de: "Nur EAN", en: "EAN only" },
+  both: { de: "Lieferanten-Nr. und EAN", en: "Supplier no. and EAN" },
+};
+
+/** A JSON object from a textarea, `undefined` when left empty, or an error. */
+function parseFieldMap(raw: string): Record<string, string> | undefined {
+  if (!raw.trim()) return undefined;
+  const parsed = JSON.parse(raw) as unknown;
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("not an object");
+  }
+  return parsed as Record<string, string>;
+}
 
 export function AdminIdsConnectCard() {
   const { token, language } = useAppContext();
@@ -112,6 +134,7 @@ export function AdminIdsConnectCard() {
       charset: existing?.charset ?? "ISO-8859-1",
       hookBaseUrl: existing?.hook_base_url ?? "",
       fieldMapJson: existing ? JSON.stringify(existing.fetch_field_map, null, 2) : "",
+      submitFieldMapJson: existing ? JSON.stringify(existing.submit_field_map, null, 2) : "",
     });
   }
 
@@ -122,23 +145,30 @@ export function AdminIdsConnectCard() {
     setFeedback(null);
 
     let fetchFieldMap: Record<string, string> | undefined;
-    if (form.fieldMapJson.trim()) {
-      try {
-        const parsed = JSON.parse(form.fieldMapJson) as unknown;
-        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-          throw new Error("not an object");
-        }
-        fetchFieldMap = parsed as Record<string, string>;
-      } catch {
-        setSaving(false);
-        setFeedback({
-          ok: false,
-          text: de
-            ? "Das Feld-Mapping ist kein gültiges JSON-Objekt."
-            : "The field map is not a valid JSON object.",
-        });
-        return;
-      }
+    let submitFieldMap: Record<string, string> | undefined;
+    try {
+      fetchFieldMap = parseFieldMap(form.fieldMapJson);
+    } catch {
+      setSaving(false);
+      setFeedback({
+        ok: false,
+        text: de
+          ? "Das Feld-Mapping (Warenkorb holen) ist kein gültiges JSON-Objekt."
+          : "The field map (fetch cart) is not a valid JSON object.",
+      });
+      return;
+    }
+    try {
+      submitFieldMap = parseFieldMap(form.submitFieldMapJson);
+    } catch {
+      setSaving(false);
+      setFeedback({
+        ok: false,
+        text: de
+          ? "Das Feld-Mapping (Warenkorb-Übergabe) ist kein gültiges JSON-Objekt."
+          : "The field map (cart hand-over) is not a valid JSON object.",
+      });
+      return;
     }
 
     try {
@@ -156,6 +186,7 @@ export function AdminIdsConnectCard() {
         ...(form.password === PASSWORD_MASK ? {} : { password: form.password }),
         customer_number: form.customerNumber.trim() || null,
         ...(fetchFieldMap ? { fetch_field_map: fetchFieldMap } : {}),
+        ...(submitFieldMap ? { submit_field_map: submitFieldMap } : {}),
         hook_base_url: form.hookBaseUrl.trim() || null,
         notes: null,
       });
@@ -342,10 +373,52 @@ export function AdminIdsConnectCard() {
               />
               <small className="admin-tools-desc">
                 {de
-                  ? "Die Formularfelder, die der Shop erwartet. Platzhalter: {username}, {password}, {customer_number}, {hook_url}, {ids_version}."
-                  : "The form fields the shop expects. Placeholders: {username}, {password}, {customer_number}, {hook_url}, {ids_version}."}
+                  ? "Die Formularfelder für „Warenkorb holen“ (WWWSHOP). Platzhalter: {username}, {password}, {customer_number}, {hook_url}, {ids_version}."
+                  : "The form fields for fetching a cart (WWWSHOP). Placeholders: {username}, {password}, {customer_number}, {hook_url}, {ids_version}."}
               </small>
             </label>
+
+            <label className="admin-invite-field">
+              <span className="admin-invite-field-label">
+                {de ? "Feld-Mapping Warenkorb-Übergabe (JSON)" : "Field map for cart hand-over (JSON)"}
+              </span>
+              <textarea
+                className="admin-invite-input"
+                rows={7}
+                spellCheck={false}
+                value={form.submitFieldMapJson}
+                onChange={(e) => setForm((p) => ({ ...p, submitFieldMapJson: e.target.value }))}
+                placeholder={'{\n  "action": "WKS",\n  "name_kunde": "{username}",\n  "warenkorb": "{cart_xml}"\n}'}
+              />
+              <small className="admin-tools-desc">
+                {de
+                  ? "Die Formularfelder für „Im Shop bestellen“ (WKS). Muss {cart_xml} enthalten. Weitere Platzhalter: {order_number}, {username}, {password}, {customer_number}, {hook_url}, {ids_version}."
+                  : "The form fields for handing our cart to the shop (WKS). Must contain {cart_xml}. Other placeholders: {order_number}, {username}, {password}, {customer_number}, {hook_url}, {ids_version}."}
+              </small>
+            </label>
+
+            {(() => {
+              // Read-only on purpose: the setting lives on the supplier, where
+              // it also governs the CSV export of suppliers with no shop at
+              // all. Showing it here avoids a second source of truth while
+              // still answering the admin's question in the place they look.
+              const supplier = suppliers.find((row) => row.id === form.supplierId);
+              const identifier = supplier?.order_identifier ?? "supplier_no";
+              const label = IDENTIFIER_LABELS[identifier] ?? IDENTIFIER_LABELS.supplier_no;
+              return (
+                <div className="admin-invite-field">
+                  <span className="admin-invite-field-label">
+                    {de ? "Übertragene Artikelnummer" : "Identifier sent"}
+                  </span>
+                  <span>{de ? label.de : label.en}</span>
+                  <small className="admin-tools-desc">
+                    {de
+                      ? "Wird beim Lieferanten eingestellt: Werkstatt → Lieferanten → Bearbeiten → „Übertragene Artikelnummer“."
+                      : "Set on the supplier: Workshop → Suppliers → Edit → “Identifier sent”."}
+                  </small>
+                </div>
+              );
+            })()}
 
             {/* No `admin-invite-field` here: it stacks its children in a
                 column, which would put the tick above its own label. */}

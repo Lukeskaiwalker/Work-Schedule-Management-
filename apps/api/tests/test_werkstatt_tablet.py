@@ -107,10 +107,12 @@ def _seed_link(
     moq: int = 1,
     preferred: bool = False,
     lead_override: int | None = None,
+    supplier_article_no: str | None = None,
 ) -> WerkstattArticleSupplier:
     link = WerkstattArticleSupplier(
         article_id=article.id,
         supplier_id=supplier.id,
+        supplier_article_no=supplier_article_no,
         typical_price_cents=price,
         minimum_order_quantity=moq,
         is_preferred=preferred,
@@ -310,7 +312,11 @@ def test_reorder_submit_creates_sent_order_with_expected_delivery(client: TestCl
         article1 = _seed_article(
             db, article_number="SP-0100", stock_total=0, stock_min=4
         )
-        _seed_link(db, article=article1, supplier=supplier, price=250)
+        # The auto-send runs the pre-send resolution; a link without the
+        # supplier's number is a 409 (test_werkstatt_order_send.py).
+        _seed_link(
+            db, article=article1, supplier=supplier, price=250, supplier_article_no="AC-100"
+        )
         db.commit()
         article1_id = article1.id
         supplier_id = supplier.id

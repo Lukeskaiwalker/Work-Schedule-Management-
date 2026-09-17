@@ -10,7 +10,7 @@
 //   order + line mutations     → `werkstatt:manage`
 //   shop connection settings   → `settings:manage` (it holds a credential)
 
-import { apiFetch } from "../api/client";
+import { ApiError, apiFetch } from "../api/client";
 import type { WerkstattOrder, WerkstattOrderSummary } from "../types/werkstatt";
 import type {
   CartImportResult,
@@ -19,9 +19,12 @@ import type {
   IdsConnectionUpsert,
   IdsHandoff,
   OrderAttach,
+  OrderExportResult,
   OrderImportRow,
   OrderLineCreate,
   OrderLineUpdate,
+  OrderResolution,
+  UnresolvedLinesConflict,
 } from "../types/werkstattProcurement";
 
 export interface OrderListFilters {
@@ -62,6 +65,14 @@ export async function getOrder(token: string | null, id: number): Promise<Werkst
   return apiFetch<WerkstattOrder>(`/werkstatt/orders/${id}`, token);
 }
 
+/**
+ * Create a draft, optionally with its lines in one go.
+ *
+ * Each line is a stocked article, a catalogue row of this supplier, or free
+ * text — the same `OrderLineCreate` the drawer sends later, built server-side
+ * by one function, so a line added at creation resolves exactly like one
+ * added afterwards.
+ */
 export async function createOrder(
   token: string | null,
   payload: {
@@ -70,6 +81,7 @@ export async function createOrder(
     task_id?: number | null;
     project_id?: number | null;
     notes?: string | null;
+    lines?: OrderLineCreate[];
   },
 ): Promise<WerkstattOrder> {
   return apiFetch<WerkstattOrder>(`/werkstatt/orders`, token, {
@@ -254,14 +266,65 @@ export async function startPunchout(
 /**
  * Hand an assembled order to the shop's basket. Does NOT place the order —
  * the user confirms in the wholesaler's own checkout, under their prices.
+ *
+ * Answers 409 (`unresolved_lines`, see `unresolvedLinesConflict`) while a line
+ * has no supplier number; `allowUnresolved` is the buyer's "Trotzdem
+ * übergeben" — the cart goes out without those lines, which `warnings` lists.
  */
 export async function submitOrderToShop(
   token: string | null,
   orderId: number,
+  options: { allowUnresolved?: boolean } = {},
 ): Promise<IdsHandoff> {
-  return apiFetch<IdsHandoff>(`/werkstatt/ids/submit?order_id=${orderId}`, token, {
-    method: "POST",
-  });
+  const qs = buildQuery({ order_id: orderId, allow_unresolved: options.allowUnresolved });
+  return apiFetch<IdsHandoff>(`/werkstatt/ids/submit${qs}`, token, { method: "POST" });
+}
+
+// ── Pre-send resolution and export ────────────────────────────────────────
+
+/**
+ * What each line resolves to under the supplier's identifier policy — the
+ * drawer's per-line badges. Read-only on the server: opening an order never
+ * writes a link.
+ */
+export async function getOrderResolution(
+  token: string | null,
+  orderId: number,
+): Promise<OrderResolution> {
+  return apiFetch<OrderResolution>(`/werkstatt/orders/${orderId}/resolution`, token);
+}
+
+/**
+ * The hand-over for a supplier without a shop connection: both the CSV and
+ * the quick-order text, from one call, so the SPA can download one and copy
+ * the other. Stamps `submitted_at` on a draft; 409s like the shop path.
+ */
+export async function exportOrder(
+  token: string | null,
+  orderId: number,
+  options: { allowUnresolved?: boolean } = {},
+): Promise<OrderExportResult> {
+  const qs = buildQuery({ format: "json", allow_unresolved: options.allowUnresolved });
+  return apiFetch<OrderExportResult>(`/werkstatt/orders/${orderId}/export${qs}`, token);
+}
+
+/**
+ * The structured 409 a send path answers while a line is unresolved, or null
+ * for any other failure. The caller offers "Trotzdem übergeben" on it and
+ * shows the message for everything else.
+ */
+export function unresolvedLinesConflict(err: unknown): UnresolvedLinesConflict | null {
+  if (!(err instanceof ApiError) || err.status !== 409) return null;
+  const detail = err.detail as Partial<UnresolvedLinesConflict> | null;
+  if (!detail || typeof detail !== "object" || detail.code !== "unresolved_lines") return null;
+  return {
+    code: "unresolved_lines",
+    message: typeof detail.message === "string" ? detail.message : err.message,
+    warnings: Array.isArray(detail.warnings) ? detail.warnings.map(String) : [],
+    unresolved_positions: Array.isArray(detail.unresolved_positions)
+      ? detail.unresolved_positions.map(Number)
+      : [],
+  };
 }
 
 /** Import a cart XML by hand — works without a configured punchout. */

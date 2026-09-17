@@ -187,6 +187,11 @@ class OrderLineCreatePayload(BaseModel):
     """
 
     article_id: int | None = None
+    # A Datanorm row of the order's supplier. Its article number, name, EAN,
+    # unit and manufacturer are snapshotted onto the line, so the supplier's
+    # own number is on the order from the start rather than rediscovered at
+    # submit time. Any explicit field in this payload still wins over the row.
+    catalog_item_id: int | None = None
     supplier_article_no: str | None = Field(default=None, max_length=160)
     description: str | None = Field(default=None, max_length=500)
     manufacturer: str | None = Field(default=None, max_length=255)
@@ -247,3 +252,67 @@ class OrderAttachPayload(BaseModel):
     task_id: int | None = None
     project_id: int | None = None
     title: str | None = Field(default=None, max_length=255)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Pre-send resolution and export
+# ──────────────────────────────────────────────────────────────────────────
+
+
+class OrderResolutionAlternativeOut(BaseModel):
+    """Another Datanorm row that matched a line equally well — pack size and
+    variant hide here, so the buyer gets to see them, not just a count."""
+
+    catalog_item_id: int
+    article_no: str | None
+    item_name: str
+
+
+class OrderLineResolutionOut(BaseModel):
+    """What the supplier will receive for one line, before anything is sent."""
+
+    line_id: int
+    position: int
+    supplier_article_no: str | None
+    # line_snapshot | supplier_link | catalog_ean | catalog_article_no |
+    # supplier_lookup | unresolved — see services/ids_ean_resolver.py.
+    matched_by: str
+    # Whether the position will be on the wire at all under the supplier's
+    # identifier policy. Differs from "has a supplier number" in `ean` mode,
+    # where a line without a GTIN cannot be expressed.
+    is_resolved: bool
+    ean: str | None
+    catalog_item_id: int | None
+    ambiguous_alternatives: int = 0
+    alternatives: list[OrderResolutionAlternativeOut] = Field(default_factory=list)
+    # The exact ArtNo the cart / export carries — after the identifier policy
+    # and the schema's 15-character cap. Null when the position is dropped.
+    will_send: str | None
+    warning: str | None = None
+
+
+class OrderResolutionOut(BaseModel):
+    order_id: int
+    supplier_id: int
+    identifier: str
+    channel: str
+    line_count: int
+    ready_count: int
+    lines: list[OrderLineResolutionOut] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class OrderExportOut(BaseModel):
+    """The manual-channel hand-over as JSON, so the SPA can both download the
+    CSV and copy the quick-order text from one call."""
+
+    order_id: int
+    order_number: str
+    filename: str
+    identifier: str
+    csv: str
+    text: str
+    warnings: list[str] = Field(default_factory=list)
+    sent_positions: int
+    dropped_positions: int
+    submitted_at: datetime | None

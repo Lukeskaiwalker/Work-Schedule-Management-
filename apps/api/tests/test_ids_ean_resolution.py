@@ -759,6 +759,10 @@ def test_submit_reports_the_line_the_shop_will_not_receive(
     shape: a cart that goes through looking fine while one position is quietly
     absent from it. An order where *nothing* resolves at least announces itself
     by being empty.
+
+    Since the pre-send gate, a short basket is a 409 unless the buyer says
+    "Trotzdem übergeben" (``allow_unresolved``); this pins the override's
+    warning, the gate itself is covered in test_werkstatt_order_send.py.
     """
 
     supplier = _supplier(client, admin_token)
@@ -770,7 +774,8 @@ def test_submit_reports_the_line_the_shop_will_not_receive(
     _add_line(client, admin_token, order["id"], article_id=article["id"])
 
     resp = client.post(
-        f"/api/werkstatt/ids/submit?order_id={order['id']}", headers=auth_headers(admin_token)
+        f"/api/werkstatt/ids/submit?order_id={order['id']}&allow_unresolved=true",
+        headers=auth_headers(admin_token),
     )
     assert resp.status_code == 200, resp.text
     warnings = resp.json()["warnings"]

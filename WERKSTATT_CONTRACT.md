@@ -236,7 +236,9 @@ GET  /api/werkstatt/mobile/my-checkouts
 ### 3.3 Core CRUD (owned by Desktop BE)
 
 ```
-GET    /api/werkstatt/articles                 (search + filter)
+GET    /api/werkstatt/articles                 (search + filter; ?supplier_id= filters to linked articles
+                                                AND fills supplier_article_no; ?annotate_supplier_id= fills
+                                                supplier_article_no WITHOUT filtering — the order picker)
 POST   /api/werkstatt/articles
 GET    /api/werkstatt/articles/{id}
 PATCH  /api/werkstatt/articles/{id}
@@ -250,6 +252,8 @@ GET/POST/PATCH/DELETE  /api/werkstatt/categories
 GET/POST/PATCH/DELETE  /api/werkstatt/locations
 
 POST /api/werkstatt/articles/{id}/suppliers          { supplier_id, supplier_article_no?, ... }
+                                                    upsert on (article, supplier): an existing pair gets
+                                                    the sent fields written and comes back with 200
 PATCH /api/werkstatt/articles/{id}/suppliers/{link_id}
 DELETE /api/werkstatt/articles/{id}/suppliers/{link_id}
 
@@ -265,18 +269,52 @@ GET  /api/werkstatt/catalog/search                  (search material_catalog_ite
 
 ```
 GET  /api/werkstatt/reorder/suggestions             (articles below stock_min, grouped by preferred supplier)
-POST /api/werkstatt/reorder/submit                  { supplier_id, lines[] } → creates werkstatt_orders row
+POST /api/werkstatt/reorder/submit                  { supplier_id, lines[], allow_unresolved? } → creates + sends
+                                                    409 unresolved_lines unless allow_unresolved (no row left behind)
 
 GET  /api/werkstatt/orders                          ?status=&supplier_id=
-POST /api/werkstatt/orders                          (draft)
-PATCH /api/werkstatt/orders/{id}                    (status transitions)
+POST /api/werkstatt/orders                          (draft; lines[] = article_id | catalog_item_id | free text)
+PATCH /api/werkstatt/orders/{id}                    (notes, delivery_reference)
 GET  /api/werkstatt/orders/{id}
 POST /api/werkstatt/orders/{id}/mark-sent           → sets ordered_at + expected_delivery_at
 POST /api/werkstatt/orders/{id}/mark-delivered      → sets delivered_at, creates intake movements
 
+GET  /api/werkstatt/orders/{id}/resolution          (any user; read-only, no backfill) per line:
+                                                    { line_id, position, supplier_article_no, matched_by,
+                                                      is_resolved, ean, catalog_item_id, ambiguous_alternatives,
+                                                      alternatives[≤5], will_send, warning }
+                                                    + identifier, channel, line_count, ready_count, warnings[]
+GET  /api/werkstatt/orders/{id}/export              ?format=csv|text|json&allow_unresolved=  (werkstatt:manage)
+                                                    csv → text/csv download "BST-2026-0042.csv"; text → ArtNo<TAB>Qty;
+                                                    json → { csv, text, filename, warnings, sent_positions,
+                                                      dropped_positions, submitted_at }
+                                                    409 unresolved_lines unless allow_unresolved; stamps
+                                                    submitted_at on a draft only
+POST /api/werkstatt/ids/submit                      ?order_id=&allow_unresolved=  → 409 unresolved_lines
+                                                    (structured detail: code, message, warnings[],
+                                                    unresolved_positions[]) unless allow_unresolved;
+                                                    validates submit_field_map at the moment of use
+
 GET  /api/werkstatt/inspections/due                 (BG-Prüfungen coming up)
 POST /api/werkstatt/inspections/{article_id}        (record BG-Prüfung)
 ```
+
+Order-line contract (`OrderLineCreatePayload`, shared by `POST /orders`, `POST /orders/{id}/lines`
+and the reorder path via `services/werkstatt_order_lines.build_order_line`):
+`article_id` (stocked), `catalog_item_id` (a Datanorm row of the ORDER's supplier — 409 otherwise;
+snapshots supplier_article_no/description/manufacturer/ean/unit and links a stocked article by EAN),
+or free text (`description` / `supplier_article_no` required). Explicit fields win over snapshots.
+`WerkstattOrder.source` accepts `needs` for drafts assembled from material needs.
+
+Supplier columns (migration 20260918_0084, `werkstatt_suppliers`):
+- `order_identifier` `supplier_no` (default) | `supplier_no_or_ean` | `ean` | `both` — what every
+  outbound cart / export carries per line; decided once in `ids_cart_builder.wire_identity`.
+- `order_channel` `ids` | `manual` — informational; the shop button stays gated on an enabled connection.
+  Set to `ids` by the 0084 data step for every supplier with an enabled `werkstatt_ids_connections`
+  row, and by `PUT /werkstatt/ids/connections` whenever an enabled connection is saved (disabling
+  leaves it alone). The hand-over pages `/werkstatt/ids/handoff|hook/{token}` live in
+  `workflow_werkstatt_ids_handoff.py`; connection CRUD, `/start`, `/submit` and the manual import
+  stay in `workflow_werkstatt_ids.py`.
 
 ## 4. Scan input contract (FE, shared across agents)
 

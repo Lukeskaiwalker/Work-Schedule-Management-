@@ -3,6 +3,10 @@ import { useAppContext } from "../../context/AppContext";
 import { BestellVorlagenModal } from "../../components/werkstatt/BestellVorlagenModal";
 import { BestellungDetailPanel } from "../../components/werkstatt/BestellungDetailPanel";
 import { BestellungZusammenfuehrenModal } from "../../components/werkstatt/BestellungZusammenfuehrenModal";
+import {
+  NeueBestellungModal,
+  type NeueBestellungPayload,
+} from "../../components/werkstatt/NeueBestellungModal";
 import { WarenkorbHolenModal } from "../../components/werkstatt/WarenkorbHolenModal";
 import {
   ORDERS_FILTER_CHIPS,
@@ -16,16 +20,20 @@ import {
   shortDate,
   type OrdersFilterKey,
 } from "../../components/werkstatt/mockData";
+import { useOrderHandover } from "../../hooks/useOrderHandover";
 import type { WerkstattOrder, WerkstattOrderSummary, WerkstattSupplier } from "../../types/werkstatt";
+import type { OrderResolution } from "../../types/werkstattProcurement";
 import { listSuppliers } from "../../utils/werkstattSuppliersApi";
 import {
   addOrderLine,
   applyTemplateToOrder,
   attachOrder,
   cancelOrder,
+  createOrder,
   createOrderFromTemplate,
   deleteOrderLine,
   getOrder,
+  getOrderResolution,
   importCartXml,
   listIdsConnections,
   listOrderTemplates,
@@ -35,9 +43,9 @@ import {
   mergeOrders,
   saveOrderAsTemplate,
   startPunchout,
-  submitOrderToShop,
   updateOrderLine,
 } from "../../utils/werkstattOrdersApi";
+import "../../styles/orders.css";
 
 /**
  * WerkstattOrdersPage — the buyer's order list. Self-gates on
@@ -53,7 +61,7 @@ import {
  * are typed against the real API shapes, so they survived the de-mocking.
  */
 
-type ModalKind = "cart" | "merge" | "templates" | null;
+type ModalKind = "new" | "cart" | "merge" | "templates" | null;
 
 type KpiTone = "neutral" | "warning" | "info" | "danger";
 
@@ -91,6 +99,13 @@ export function WerkstattOrdersPage() {
   // Set only when the browser refused the popup, so the buyer still has a way
   // through. Cleared on the next hand-over attempt.
   const [blockedShopUrl, setBlockedShopUrl] = useState<string | null>(null);
+  // The exported article numbers when the clipboard refused them (WebKit
+  // outside a gesture, a locked-down browser): shown in a selectable box so
+  // the hand-over the server already stamped is not lost. Cleared with the
+  // notice and at the next export.
+  const [clipboardFallback, setClipboardFallback] = useState<string | null>(null);
+  // Per-line send status of the open order; re-read after every change to it.
+  const [resolution, setResolution] = useState<OrderResolution | null>(null);
 
   const de = language === "de";
   const active = mainView === "werkstatt" && werkstattTab === "orders";
@@ -177,17 +192,69 @@ export function WerkstattOrdersPage() {
     [refresh, reportError],
   );
 
+  // Everything that sends: the punchout tab, the CSV / clipboard export, the
+  // 409 on a short basket and its override, and the supplier-number writes.
+  const {
+    conflict,
+    clearConflict,
+    openHandoff,
+    sendActiveOrder,
+    setSupplierNo,
+    pickAlternative,
+  } = useOrderHandover({
+    token,
+    de,
+    activeOrder,
+    setActiveOrder,
+    refresh,
+    runMutation,
+    reportError,
+    setBusy,
+    setError,
+    setNotice,
+    setBlockedShopUrl,
+    setClipboardFallback,
+  });
+
   const openOrder = useCallback(
     async (id: number) => {
       setError(null);
+      clearConflict();
       try {
         setActiveOrder(await getOrder(token, id));
       } catch (err) {
         reportError(err);
       }
     },
-    [token, reportError],
+    [token, reportError, clearConflict],
   );
+
+  /**
+   * Re-read the send status whenever the open order changes.
+   *
+   * Every mutation adopts a fresh order object, so depending on the object
+   * rather than its id refetches after each line change — which is when the
+   * badges can move. The read is server-side read-only (no backfill), so
+   * opening an order a dozen times writes nothing. A failure here clears the
+   * badges rather than raising the page banner: nothing the buyer did failed.
+   */
+  useEffect(() => {
+    if (!activeOrder) {
+      setResolution(null);
+      return;
+    }
+    let cancelled = false;
+    getOrderResolution(token, activeOrder.id)
+      .then((result) => {
+        if (!cancelled) setResolution(result);
+      })
+      .catch(() => {
+        if (!cancelled) setResolution(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeOrder, token]);
 
   /**
    * Open the order the wholesaler just sent back.
@@ -205,83 +272,20 @@ export function WerkstattOrdersPage() {
     void openOrder(id);
   }, [active, pendingWerkstattOrderId, consumePendingWerkstattOrderId, openOrder]);
 
-  /**
-   * Open a punchout hand-over.
-   *
-   * A NEW TAB, never this one: the URL serves a form that posts itself to the
-   * wholesaler, so navigating in place would replace the app. The tab is
-   * opened synchronously from the click and its location set once the token
-   * arrives — opening it after the await would be swallowed by the popup
-   * blocker, which only trusts a window opened during a user gesture.
-   *
-   * `noopener` must NOT go in the feature string, however much it looks like it
-   * belongs there. The HTML spec says window.open returns null when noopener is
-   * set — deliberately, since noopener exists to sever the very handle it would
-   * return. This previously read `window.open("", "_blank", "noopener,...")`,
-   * so `tab` was null on every call, control fell through to
-   * `window.location.assign`, and the buyer's own tab was navigated to the shop
-   * while the blank tab just opened was orphaned. Exporting a cart therefore
-   * meant leaving SMPL, and a buyer who then decided not to order had no way
-   * back. The opener link is cut on the handle instead, which achieves the same
-   * protection and keeps the reference.
-   *
-   * When the popup is blocked outright we now say so rather than navigating in
-   * place. Hijacking the tab is worse than not opening the shop: the buyer
-   * loses their order view either way, but silently.
-   */
-  const openHandoff = useCallback(
-    async (request: () => Promise<{ handoff_url: string; warnings?: string[] }>) => {
-      const tab = window.open("", "_blank");
-      if (tab) {
-        try {
-          // Reverse-tabnabbing guard, applied while the tab is still
-          // about:blank and reachable. Survives the navigation to the shop.
-          tab.opener = null;
-        } catch {
-          /* Some embedded webviews refuse the assignment; not worth failing the
-             hand-over over, and the shop is a known origin. */
-        }
-      }
-      setBusy(true);
-      setError(null);
-      setBlockedShopUrl(null);
-      try {
-        const handoff = await request();
-        // Resolve against our own origin explicitly. The server returns a
-        // relative path — the handoff page is ours, and hard-coding an
-        // absolute base is what previously sent everyone to https://localhost.
-        // The target tab is still `about:blank` at this point, and relying on
-        // it to inherit the opener's base URL for a relative href is subtle
-        // enough to be worth not relying on.
-        const target = new URL(handoff.handoff_url, window.location.origin).toString();
-        const warned = handoff.warnings?.length ? `${handoff.warnings.join(" · ")} — ` : "";
-
-        if (tab && !tab.closed) {
-          tab.location.href = target;
-          const opened = de
-            ? "Shop im neuen Tab geöffnet. Dieses Fenster bleibt offen."
-            : "Shop opened in a new tab. This window stays open.";
-          setNotice(`${warned}${opened}`);
-        } else {
-          // Blocked, or closed again before the token arrived. Hand the buyer a
-          // link instead of moving them: a real anchor clicked by them is a
-          // fresh user gesture that no blocker refuses.
-          setBlockedShopUrl(target);
-          setNotice(
-            warned +
-              (de
-                ? "Der Browser hat das Shop-Fenster blockiert — bitte über den Link unten öffnen."
-                : "The browser blocked the shop window — please use the link below."),
-          );
-        }
-      } catch (err) {
-        tab?.close();
-        reportError(err);
-      } finally {
-        setBusy(false);
-      }
+  const createDraft = useCallback(
+    (payload: NeueBestellungPayload) => {
+      setModal(null);
+      void runMutation(async () => {
+        const created = await createOrder(token, payload);
+        setNotice(
+          de
+            ? `Entwurf ${created.order_number} mit ${created.line_count} Position(en) angelegt.`
+            : `Draft ${created.order_number} created with ${created.line_count} line(s).`,
+        );
+        return created;
+      });
     },
-    [de, reportError],
+    [de, runMutation, token],
   );
 
   const kpiNumbers = useMemo(() => {
@@ -377,21 +381,42 @@ export function WerkstattOrdersPage() {
           {canManage && (
             <button
               type="button"
-              className="werkstatt-action-btn werkstatt-action-btn--primary"
+              className="werkstatt-action-btn"
               onClick={() => setModal("cart")}
+            >
+              {de ? "Warenkorb holen" : "Fetch cart"}
+            </button>
+          )}
+          {canManage && (
+            <button
+              type="button"
+              className="werkstatt-action-btn werkstatt-action-btn--primary"
+              onClick={() => setModal("new")}
             >
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                 <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
               </svg>
-              {de ? "Warenkorb holen" : "Fetch cart"}
+              {de ? "Neue Bestellung" : "New order"}
             </button>
           )}
         </div>
       </header>
 
       {notice && (
-        <div className="werkstatt-orders-notice" role="status">
+        <div
+          className={`werkstatt-orders-notice${clipboardFallback ? " werkstatt-orders-notice--stacked" : ""}`}
+          role="status"
+        >
           {notice}
+          {clipboardFallback && (
+            <textarea
+              className="werkstatt-orders-notice-copy"
+              readOnly
+              value={clipboardFallback}
+              aria-label={de ? "Artikelnummern zum Kopieren" : "Article numbers to copy"}
+              onFocus={(event) => event.currentTarget.select()}
+            />
+          )}
           {blockedShopUrl && (
             /* A real anchor, not another window.open: the buyer's click on it is
                a fresh user gesture, which is the one thing no popup blocker
@@ -414,6 +439,7 @@ export function WerkstattOrdersPage() {
             onClick={() => {
               setNotice(null);
               setBlockedShopUrl(null);
+              setClipboardFallback(null);
             }}
             aria-label={de ? "Schließen" : "Dismiss"}
           >
@@ -509,8 +535,8 @@ export function WerkstattOrdersPage() {
             <div className="werkstatt-orders-empty">
               {orders.length === 0
                 ? de
-                  ? "Noch keine Bestellungen. Über „Warenkorb holen“ lässt sich ein Warenkorb aus dem Shop des Lieferanten übernehmen."
-                  : "No orders yet. Use “Fetch cart” to pull one from a supplier's shop."
+                  ? "Noch keine Bestellungen. Über „Neue Bestellung“ Artikel aus Lager und Lieferantenkatalog zusammenstellen, oder über „Warenkorb holen“ einen Warenkorb aus dem Shop übernehmen."
+                  : "No orders yet. Use “New order” to pick articles from stock and the supplier's catalogue, or “Fetch cart” to pull one from the shop."
                 : de
                   ? "Keine Bestellungen für diesen Filter."
                   : "No orders match this filter."}
@@ -579,19 +605,16 @@ export function WerkstattOrdersPage() {
         {activeOrder && (
           <BestellungDetailPanel
             language={language}
+            token={token}
             order={activeOrder}
             tasks={tasks}
             canManage={canManage}
             busy={busy}
+            resolution={resolution}
+            conflict={conflict}
             onClose={() => setActiveOrder(null)}
-            onAddLine={(description, quantity, priceCents) =>
-              void runMutation(() =>
-                addOrderLine(token, activeOrder.id, {
-                  description,
-                  quantity_ordered: quantity,
-                  unit_price_cents: priceCents,
-                }),
-              )
+            onAddLine={(payload) =>
+              void runMutation(() => addOrderLine(token, activeOrder.id, payload))
             }
             onUpdateLine={(lineId, patch) =>
               void runMutation(() => updateOrderLine(token, activeOrder.id, lineId, patch))
@@ -599,6 +622,10 @@ export function WerkstattOrdersPage() {
             onDeleteLine={(lineId) =>
               void runMutation(() => deleteOrderLine(token, activeOrder.id, lineId))
             }
+            onSetSupplierNo={setSupplierNo}
+            onPickAlternative={pickAlternative}
+            onSend={sendActiveOrder}
+            onDismissConflict={clearConflict}
             onMarkSent={() => void runMutation(() => markOrderSent(token, activeOrder.id))}
             onMarkDelivered={() =>
               void runMutation(() => markOrderDelivered(token, activeOrder.id))
@@ -618,9 +645,6 @@ export function WerkstattOrdersPage() {
             onAttachTask={(taskId) =>
               void runMutation(() => attachOrder(token, activeOrder.id, { task_id: taskId }))
             }
-            onSubmitToShop={() =>
-              void openHandoff(() => submitOrderToShop(token, activeOrder.id))
-            }
             onShopAgain={() =>
               void openHandoff(() =>
                 startPunchout(token, {
@@ -632,6 +656,23 @@ export function WerkstattOrdersPage() {
           />
         )}
       </div>
+
+      <NeueBestellungModal
+        open={modal === "new"}
+        language={language}
+        token={token}
+        suppliers={suppliers}
+        shopSupplierIds={shopSupplierIds}
+        tasks={tasks}
+        templates={templates}
+        busy={busy}
+        onClose={() => setModal(null)}
+        onCreate={createDraft}
+        onStartFromTemplate={(templateId, title) => {
+          setModal(null);
+          void runMutation(() => createOrderFromTemplate(token, { template_id: templateId, title }));
+        }}
+      />
 
       <WarenkorbHolenModal
         open={modal === "cart"}

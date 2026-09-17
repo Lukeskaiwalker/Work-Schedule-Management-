@@ -1574,7 +1574,10 @@ def test_the_outbound_cart_carries_the_three_mandatory_item_elements() -> None:
     xs:sequence fixes their order — a reordered document is invalid even with
     every element present."""
 
-    root = ET.fromstring(_built_cart().xml)
+    # `both` is the one identifier mode that emits every element, which is
+    # what a sequence check needs; the default (`supplier_no`) omits EAN on
+    # purpose and is covered in test_werkstatt_order_send.py.
+    root = ET.fromstring(_built_cart(identifier="both").xml)
     items = root.findall(f"{{{IDS_NS}}}Order/{{{IDS_NS}}}OrderItem")
     assert len(items) == 2
 

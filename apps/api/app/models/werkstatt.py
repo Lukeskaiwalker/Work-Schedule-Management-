@@ -93,6 +93,30 @@ class WerkstattSupplier(Base):
     address_country: Mapped[str | None] = mapped_column(String(64))
     default_lead_time_days: Mapped[int | None] = mapped_column(Integer)
     notes: Mapped[str | None] = mapped_column(Text)
+    # Which identifier an outbound cart or export carries per position —
+    # enforced in the app layer (schemas/werkstatt.py::WerkstattOrderIdentifier):
+    #
+    #   supplier_no         ArtNo only, the EAN element omitted. The default,
+    #                       because most webshops import only their own number
+    #                       and treat the rest as noise at best.
+    #   supplier_no_or_ean  ArtNo when we know it, otherwise the GTIN in ArtNo
+    #                       with a warning — only for a shop that accepts both
+    #                       in one field.
+    #   ean                 GTIN only (ArtNo is mandatory in the ITEK schema, so
+    #                       the GTIN goes there too). For a shop keyed on GTIN.
+    #   both                ArtNo and EAN, the pre-v2.15 behaviour.
+    #
+    # On the supplier rather than the IDS connection because it also governs
+    # the CSV/clipboard export of a supplier who has no connection at all.
+    order_identifier: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="supplier_no", server_default="supplier_no"
+    )
+    # ids | manual — how orders reach this supplier. Informational for the UI
+    # ("Im Shop bestellen" stays gated on an enabled connection); `manual`
+    # suppliers get the export button instead.
+    order_channel: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="manual", server_default="manual"
+    )
     is_archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
@@ -347,7 +371,10 @@ class WerkstattOrder(Base):
         ForeignKey("projects.id", ondelete="SET NULL"), index=True
     )
 
-    # manual | ids | template | merge | reorder
+    # manual | ids | template | merge | reorder | needs
+    # `needs` marks a draft the Bedarfe view assembled from open material
+    # needs; the reverse hooks that move those needs live in
+    # services/material_needs.py.
     source: Mapped[str] = mapped_column(
         String(32), nullable=False, default="manual", index=True
     )

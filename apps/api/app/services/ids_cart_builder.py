@@ -63,13 +63,19 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
-from typing import TYPE_CHECKING, Sequence
+from typing import TYPE_CHECKING, Literal, Sequence
 from xml.sax.saxutils import escape
 
 from app.services.ids_ean_resolver import ResolutionReport, resolve_order_lines
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from sqlalchemy.orm import Session
+
+# Which identifier(s) a position carries. Mirrors
+# schemas/werkstatt.py::WerkstattOrderIdentifier; the column comment on
+# WerkstattSupplier.order_identifier explains each value.
+OrderIdentifier = Literal["supplier_no", "supplier_no_or_ean", "ean", "both"]
+DEFAULT_ORDER_IDENTIFIER: OrderIdentifier = "supplier_no"
 
 
 @dataclass(frozen=True)
@@ -160,6 +166,103 @@ def _ean(value: str | None) -> str | None:
     return text.lstrip("0") or None
 
 
+@dataclass(frozen=True)
+class WireIdentity:
+    """What one position carries on the wire under a supplier's policy.
+
+    ``artno`` is None when the position cannot be expressed at all and is
+    dropped; ``ean`` is the EAN element's value or None when it is omitted.
+    ``warning`` says why something is missing or changed, in the buyer's
+    words, or is None when nothing needs saying.
+    """
+
+    artno: str | None
+    ean: str | None
+    warning: str | None = None
+
+    @property
+    def is_sendable(self) -> bool:
+        return self.artno is not None
+
+
+def _ean_digits(value: str | None) -> str | None:
+    """The GTIN as the shop would key on it — digits only, leading zeros kept.
+
+    Unlike `_ean` (the numeric XML element) this is for ArtNo, a string field
+    where a leading zero is part of the identifier and must survive.
+    """
+
+    text = (value or "").strip()
+    return text if text.isdigit() and len(text) <= _ARTNO_MAX else None
+
+
+def wire_identity(
+    item: CartItem,
+    identifier: OrderIdentifier,
+    position: int,
+    *,
+    channel: str = "ids",
+) -> WireIdentity:
+    """Apply the supplier's identifier policy to one position.
+
+    The single place the policy is decided, shared by the IDS cart, the CSV
+    and clipboard exports and the pre-send preview, so what the drawer shows
+    as "wird übergeben" is exactly what leaves — they cannot drift apart.
+
+    ``channel`` only changes the wording: a supplier reached by CSV has no
+    shop, so a dropped line is "nicht an den Lieferanten übergeben", not "an
+    den Shop". The cart builder never passes it — a cart IS the shop route.
+    """
+
+    artno = (item.supplier_article_no or "").strip() or None
+    gtin = _ean_digits(item.ean)
+    name = item.description or "ohne Bezeichnung"
+    recipient = "den Lieferanten" if channel == "manual" else "den Shop"
+    warning: str | None = None
+
+    if identifier == "ean":
+        # ArtNo is mandatory in the schema, so a GTIN-keyed shop gets the GTIN
+        # there too. The supplier's number is deliberately NOT sent as a
+        # fallback: to a shop keyed on GTIN it is just an unknown string.
+        if gtin is None:
+            return WireIdentity(
+                artno=None,
+                ean=None,
+                warning=(
+                    f"Position {position} ({name}) hat keine EAN und kann bei diesem "
+                    "Lieferanten nicht übergeben werden"
+                ),
+            )
+        return WireIdentity(artno=gtin, ean=_ean(item.ean))
+
+    if artno is None and identifier == "supplier_no_or_ean" and gtin is not None:
+        artno = gtin
+        warning = f"Position {position} ({name}) wird mit EAN statt Artikelnummer übergeben"
+
+    if artno is None:
+        return WireIdentity(
+            artno=None,
+            ean=None,
+            warning=(
+                f"Position {position} ({name}) hat keine Lieferanten-Artikelnummer und "
+                f"kann nicht an {recipient} übergeben werden"
+            ),
+        )
+
+    if len(artno) > _ARTNO_MAX:
+        warning = (
+            f"Position {position}: Artikelnummer '{artno}' ist länger als "
+            f"{_ARTNO_MAX} Zeichen und wurde gekürzt"
+        )
+        artno = artno[:_ARTNO_MAX]
+
+    return WireIdentity(
+        artno=artno,
+        ean=_ean(item.ean) if identifier == "both" else None,
+        warning=warning,
+    )
+
+
 def build_cart_xml(
     items: list[CartItem],
     *,
@@ -169,6 +272,7 @@ def build_cart_xml(
     charset: str = "UTF-8",
     now: datetime | None = None,
     warn_on_missing_article_no: bool = True,
+    identifier: OrderIdentifier = DEFAULT_ORDER_IDENTIFIER,
 ) -> BuiltCart:
     """Render the cart as an ITEK Warenkorb document.
 
@@ -180,6 +284,9 @@ def build_cart_xml(
     ``cart_items_for_order_lines``, which has already reported those lines with
     the article number, name and EAN a buyer needs. The position is still
     dropped either way; only the duplicate, less informative warning goes.
+
+    ``identifier`` is the supplier's policy — see `wire_identity`. The default
+    carries the supplier's number only; the EAN element is omitted.
     """
 
     warnings: list[str] = []
@@ -187,23 +294,16 @@ def build_cart_xml(
     stamp = now or datetime.now()
 
     for index, item in enumerate(items, start=1):
-        artno = (item.supplier_article_no or "").strip()
-        if not artno:
+        identity = wire_identity(item, identifier, index)
+        if identity.artno is None:
             # ArtNo is mandatory. A position without one cannot be expressed at
             # all, and emitting it anyway would produce a document the shop
             # rejects wholesale — losing the entire cart rather than one line.
-            if warn_on_missing_article_no:
-                warnings.append(
-                    f"Position {index} ({item.description or 'ohne Bezeichnung'}) hat keine "
-                    "Lieferanten-Artikelnummer und kann nicht an den Shop übergeben werden"
-                )
+            if warn_on_missing_article_no and identity.warning:
+                warnings.append(identity.warning)
             continue
-        if len(artno) > _ARTNO_MAX:
-            warnings.append(
-                f"Position {index}: Artikelnummer '{artno}' ist länger als "
-                f"{_ARTNO_MAX} Zeichen und wurde gekürzt"
-            )
-            artno = artno[:_ARTNO_MAX]
+        if identity.warning:
+            warnings.append(identity.warning)
 
         # Element order is the schema's xs:sequence and is not negotiable:
         # RefItems, EAN, ArtNo, Qty, QU, Kurztext.
@@ -211,8 +311,8 @@ def build_cart_xml(
             # "Positionsnummer des Handwerkers" — ours, so the shop can keep
             # line identity, which section 5.2 requires of it.
             f"      <RefItems><Customer>{escape(str(index)[:_REFITEM_MAX])}</Customer></RefItems>",
-            f"      {_tag('EAN', _ean(item.ean))}",
-            f"      {_tag('ArtNo', artno)}",
+            f"      {_tag('EAN', identity.ean)}",
+            f"      {_tag('ArtNo', identity.artno)}",
             f"      {_tag('Qty', _qty(item.quantity))}",
             f"      {_tag('QU', (item.unit or '').strip() or _DEFAULT_QU)}",
             f"      {_tag('Kurztext', (item.description or '')[:_KURZTEXT_MAX])}",

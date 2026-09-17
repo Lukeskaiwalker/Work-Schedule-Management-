@@ -107,6 +107,8 @@ def list_articles(
     category_id: int | None = Query(default=None),
     location_id: int | None = Query(default=None),
     supplier_id: int | None = Query(default=None),
+    # Numbers the rows for a supplier WITHOUT filtering to its linked articles.
+    annotate_supplier_id: int | None = Query(default=None),
     status: str | None = Query(default=None, description="stock_status filter"),
     include_archived: bool = Query(default=False),
     limit: int = Query(default=ARTICLE_LIST_DEFAULT_LIMIT, ge=1, le=ARTICLE_LIST_MAX_LIMIT),
@@ -166,12 +168,31 @@ def list_articles(
             ).all()
         }
 
+    # What THIS supplier calls each article. The order picker asks with
+    # `annotate_supplier_id`, not the filter: a stocked article with no link
+    # yet is exactly the one it must still pick (and number). One extra query.
+    numbers_for = annotate_supplier_id if annotate_supplier_id is not None else supplier_id
+    supplier_numbers: dict[int, str | None] = {}
+    if numbers_for is not None and rows:
+        supplier_numbers = {
+            article_id: number
+            for article_id, number in db.execute(
+                select(
+                    WerkstattArticleSupplier.article_id,
+                    WerkstattArticleSupplier.supplier_article_no,
+                ).where(
+                    WerkstattArticleSupplier.supplier_id == numbers_for,
+                    WerkstattArticleSupplier.article_id.in_([r.id for r in rows]),
+                )
+            ).all()
+        }
+
     result = [
         article_lite_out(
             r,
             category_name=categories_by_id.get(r.category_id) if r.category_id else None,
             location_name=locations_by_id.get(r.location_id) if r.location_id else None,
-        )
+        ).model_copy(update={"supplier_article_no": supplier_numbers.get(r.id)})
         for r in rows
     ]
     if status:

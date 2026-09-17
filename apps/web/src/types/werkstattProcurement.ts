@@ -113,6 +113,12 @@ export interface OrderImportRow {
 
 export interface OrderLineCreate {
   article_id?: number | null;
+  /**
+   * A Datanorm row of the order's supplier. The server snapshots its article
+   * number, name, EAN and unit onto the line — the supplier's own number is on
+   * the order from the start. Explicit fields here still win over the row.
+   */
+  catalog_item_id?: number | null;
   supplier_article_no?: string | null;
   description?: string | null;
   manufacturer?: string | null;
@@ -130,4 +136,74 @@ export interface OrderAttach {
   task_id?: number | null;
   project_id?: number | null;
   title?: string | null;
+}
+
+// ── Pre-send resolution and export ────────────────────────────────────────
+// Mirrors OrderResolutionOut / OrderExportOut in
+// apps/api/app/schemas/werkstatt_procurement.py.
+
+/** How a line's supplier number was found — see services/ids_ean_resolver.py. */
+export type OrderLineMatchedBy =
+  | "line_snapshot"
+  | "supplier_link"
+  | "catalog_ean"
+  | "catalog_article_no"
+  | "supplier_lookup"
+  | "unresolved";
+
+export interface OrderResolutionAlternative {
+  catalog_item_id: number;
+  article_no: string | null;
+  item_name: string;
+}
+
+export interface OrderLineResolution {
+  line_id: number;
+  position: number;
+  supplier_article_no: string | null;
+  matched_by: OrderLineMatchedBy;
+  /** Whether the position will be on the wire under the supplier's policy. */
+  is_resolved: boolean;
+  ean: string | null;
+  catalog_item_id: number | null;
+  ambiguous_alternatives: number;
+  alternatives: OrderResolutionAlternative[];
+  /** The exact ArtNo the cart / export carries; null when the line is dropped. */
+  will_send: string | null;
+  warning: string | null;
+}
+
+export interface OrderResolution {
+  order_id: number;
+  supplier_id: number;
+  identifier: string;
+  channel: string;
+  line_count: number;
+  ready_count: number;
+  lines: OrderLineResolution[];
+  warnings: string[];
+}
+
+export interface OrderExportResult {
+  order_id: number;
+  order_number: string;
+  filename: string;
+  identifier: string;
+  csv: string;
+  text: string;
+  warnings: string[];
+  sent_positions: number;
+  dropped_positions: number;
+  submitted_at: string | null;
+}
+
+/**
+ * The structured 409 a send path answers while a line has no supplier number.
+ * The buyer's way through is `allow_unresolved` — "Trotzdem übergeben".
+ */
+export interface UnresolvedLinesConflict {
+  code: "unresolved_lines";
+  message: string;
+  warnings: string[];
+  unresolved_positions: number[];
 }

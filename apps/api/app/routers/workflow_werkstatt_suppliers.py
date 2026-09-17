@@ -72,6 +72,8 @@ def _supplier_out(
         address_country=row.address_country,
         default_lead_time_days=row.default_lead_time_days,
         notes=row.notes,
+        order_identifier=row.order_identifier,  # type: ignore[arg-type]
+        order_channel=row.order_channel,  # type: ignore[arg-type]
         is_archived=row.is_archived,
         article_count=article_count,
         last_order_at=last_order_at,
@@ -128,6 +130,8 @@ def create_supplier(
         address_country=(payload.address_country or None),
         default_lead_time_days=payload.default_lead_time_days,
         notes=(payload.notes or None),
+        order_identifier=payload.order_identifier,
+        order_channel=payload.order_channel,
         created_by=current_user.id,
     )
     db.add(row)

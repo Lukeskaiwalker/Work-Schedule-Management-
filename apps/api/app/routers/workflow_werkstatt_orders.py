@@ -22,7 +22,6 @@ from app.models.entities import (
     Task,
     User,
     WerkstattArticle,
-    WerkstattArticleSupplier,
     WerkstattOrder,
     WerkstattOrderLine,
     WerkstattSupplier,
@@ -34,8 +33,8 @@ from app.schemas.werkstatt import (
     WerkstattOrderSummaryOut,
     WerkstattOrderUpdatePayload,
 )
+from app.services.werkstatt_order_lines import build_order_line, create_draft_order
 from app.services.werkstatt_orders import (
-    generate_order_number,
     recompute_expected_delivery,
     transition_order,
 )
@@ -134,14 +133,18 @@ def create_order(
             status_code=status.HTTP_404_NOT_FOUND, detail="Supplier not found"
         )
 
-    if payload.lines:
-        article_ids = [line.article_id for line in payload.lines]
-        articles = list(
-            db.scalars(
+    # Prefetch the stocked articles in one query; the line builder accepts
+    # them pre-loaded. Checking them all up front keeps a bad id from leaving
+    # a half-built draft behind — nothing is flushed before this passes.
+    article_ids = [line.article_id for line in payload.lines if line.article_id is not None]
+    articles_by_id: dict[int, WerkstattArticle] = {}
+    if article_ids:
+        articles_by_id = {
+            article.id: article
+            for article in db.scalars(
                 select(WerkstattArticle).where(WerkstattArticle.id.in_(article_ids))
             ).all()
-        )
-        articles_by_id = {article.id: article for article in articles}
+        }
         missing = [aid for aid in article_ids if aid not in articles_by_id]
         if missing:
             raise HTTPException(
@@ -155,60 +158,37 @@ def create_order(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Projekt nicht gefunden")
 
     now = utcnow()
-    order = WerkstattOrder(
-        order_number=generate_order_number(db, now=now),
-        supplier_id=supplier.id,
-        status="draft",
-        currency="EUR",
-        notes=payload.notes,
-        delivery_reference=payload.delivery_reference,
-        title=payload.title,
-        task_id=payload.task_id,
-        project_id=payload.project_id,
-        source="manual",
-        created_by=current_user.id,
-        created_at=now,
-        updated_at=now,
-    )
-    db.add(order)
-    db.flush()
-
-    for line_payload in payload.lines:
-        link: WerkstattArticleSupplier | None = None
-        if line_payload.article_supplier_id is not None:
-            link = db.get(WerkstattArticleSupplier, line_payload.article_supplier_id)
-            if link is None or link.article_id != line_payload.article_id:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="article_supplier_id does not match article_id",
-                )
-        if link is None:
-            link = db.scalar(
-                select(WerkstattArticleSupplier).where(
-                    WerkstattArticleSupplier.article_id == line_payload.article_id,
-                    WerkstattArticleSupplier.supplier_id == supplier.id,
-                )
-            )
-        unit_price = line_payload.unit_price_cents
-        if unit_price is None and link is not None:
-            unit_price = link.typical_price_cents
-        currency = line_payload.currency or (link.currency if link else "EUR")
-        line = WerkstattOrderLine(
-            order_id=order.id,
-            article_id=line_payload.article_id,
-            article_supplier_id=link.id if link else None,
-            quantity_ordered=line_payload.quantity_ordered,
-            quantity_received=0,
-            unit_price_cents=unit_price,
-            currency=currency,
-            line_status="pending",
-            notes=line_payload.notes,
-            created_at=now,
-            updated_at=now,
+    try:
+        order = create_draft_order(
+            db,
+            supplier=supplier,
+            project_id=payload.project_id,
+            title=payload.title,
+            source="manual",
+            created_by=current_user.id,
+            now=now,
+            task_id=payload.task_id,
+            notes=payload.notes,
+            delivery_reference=payload.delivery_reference,
         )
-        db.add(line)
+        for line_payload in payload.lines:
+            build_order_line(
+                db,
+                order,
+                line_payload,
+                article=(
+                    articles_by_id.get(line_payload.article_id)
+                    if line_payload.article_id is not None
+                    else None
+                ),
+                now=now,
+            )
+    except HTTPException:
+        # A catalogue row of another supplier, or a free line with nothing on
+        # it, is refused per line; the draft created above must not survive it.
+        db.rollback()
+        raise
 
-    db.flush()
     order.total_amount_cents = compute_total_cents(
         list(
             db.scalars(
