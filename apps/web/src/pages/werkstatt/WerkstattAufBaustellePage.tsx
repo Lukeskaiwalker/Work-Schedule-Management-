@@ -130,10 +130,14 @@ export function WerkstattAufBaustellePage() {
   }
 
   function returnItem(project: OnSiteProject, item: OnSiteItem): void {
+    // Nothing is booked here yet. Saying "zurückgegeben" would put the item
+    // back on the shelf in the reader's head while the ledger still has it
+    // out on the job — the kind of drift that only shows up at stocktake.
+    // The rack station and the Werkstatt page both book a real return today.
     setNotice(
       de
-        ? `${item.quantity}× ${item.article_name} zurückgegeben von ${project.project_number} (API folgt)`
-        : `Returned ${item.quantity}× ${item.article_name} from ${project.project_number} (API pending)`,
+        ? `Nicht gebucht — diese Seite ist noch nicht angebunden. ${item.quantity}× ${item.article_name} bitte am Regal-Bildschirm oder unter Werkstatt zurückbuchen.`
+        : `Not booked — this page is not connected yet. Return ${item.quantity}× ${item.article_name} at the rack screen or under Werkstatt.`,
     );
     // TODO(werkstatt): POST /api/werkstatt/mobile/return
     //   { article_id, quantity: item.quantity, condition: "ok", notes: null }
@@ -182,8 +186,8 @@ export function WerkstattAufBaustellePage() {
             onClick={() =>
               setNotice(
                 de
-                  ? `${totals.overdue} Erinnerung(en) an überfällige Mitarbeiter gesendet (API folgt)`
-                  : `${totals.overdue} reminder(s) sent to overdue assignees (API pending)`,
+                  ? "Erinnerungen sind hier noch nicht angebunden — es wurde nichts gesendet."
+                  : "Reminders are not connected here yet — nothing was sent.",
               )
             }
           >

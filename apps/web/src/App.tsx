@@ -287,7 +287,6 @@ const PublicCustomerConfirmationPage = lazy(() =>
     default: m.PublicCustomerConfirmationPage,
   })),
 );
-const MaterialsPage = lazy(() => import("./pages/MaterialsPage").then((m) => ({ default: m.MaterialsPage })));
 const MessagesPage = lazy(() => import("./pages/MessagesPage").then((m) => ({ default: m.MessagesPage })));
 const MyTasksPage = lazy(() => import("./pages/MyTasksPage").then((m) => ({ default: m.MyTasksPage })));
 const OfficeTasksPage = lazy(() => import("./pages/OfficeTasksPage").then((m) => ({ default: m.OfficeTasksPage })));
@@ -3043,11 +3042,6 @@ export function App() {
         return;
       }
 
-      if (mainView === "materials") {
-        await Promise.all([loadMaterialNeeds(), loadMaterialCatalog(materialCatalogQuery)]);
-        return;
-      }
-
       if (mainView === "messages") {
         await loadThreads();
         if (activeThreadId) {
@@ -3332,10 +3326,6 @@ export function App() {
         if (projectTab === "tasks" || projectTab === "gantt") await loadTasks(activeProjectTaskView, activeProjectId);
         if (projectTab === "finances" || projectTab === "hours") await loadProjectFinance(activeProjectId);
         if (projectTab === "materials") await loadProjectTrackedMaterials(activeProjectId);
-      }
-      if (mainView === "materials") {
-        await loadMaterialNeeds();
-        await loadMaterialCatalog(materialCatalogQuery);
       }
     } catch (err: any) {
       setError(err.message ?? "Failed to load data");
@@ -10667,7 +10657,6 @@ export function App() {
 
         <Suspense fallback={<div className="page-loading-spinner" aria-hidden="true" />}>
           {mainView === "overview" && <OverviewPage />}
-          {mainView === "materials" && <MaterialsPage />}
           {(mainView === "werkstatt" || mainView === "werkstatt_scan") && <WerkstattPage />}
           {mainView === "projects_all" && <ProjectsAllPage />}
           {mainView === "projects_archive" && <ProjectsArchivePage />}

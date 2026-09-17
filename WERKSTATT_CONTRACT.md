@@ -555,3 +555,113 @@ Queued for a follow-up round — do NOT implement:
 If an agent discovers it needs functionality outside its fence, **stop and flag
 it** in the agent's final summary — do not extend shared files or reach into
 another agent's fence.
+
+---
+
+## 8. Current state after the 2026-09 program
+
+§§1–7 describe the build round that created this area and its agent fences.
+Those fences are history; this section is what the code does **now**
+(migration `0088`). Where the two disagree, this section wins.
+
+### 8.1 Articles: consumables vs machines
+
+`is_serialized` is the single marker — a machine is a serialized article with
+units. `GET /werkstatt/articles` takes `?kind=consumable|machine` and the lite
+row carries `is_serialized`, so the Bestand page can show consumables only
+while the Maschinen tab keeps its own list. The create dialog on Bestand never
+sends `is_serialized`; new machine types are created from the Maschinen side.
+
+### 8.2 Article lookup cascade
+
+`GET /werkstatt/articles/lookup?code=` and its station twin
+`GET /station/werkstatt/lookup` answer `existing | catalog | external | none`:
+
+1. own articles and machine units, through the GTIN variants (UPC-A ↔ EAN-13,
+   EAN-8) — stored EANs are never rewritten, only the search fans out;
+2. the wholesaler Datanorm catalogue, grouped by EAN;
+3. the public Unielektro webshop, but only for a checksum-valid GTIN, and only
+   when the scraped product's own GTIN equals the query **and** its name comes
+   from the same record as that GTIN. Hits and misses are cached
+   (`werkstatt_ean_lookups`), so a scanner cannot hammer the shop.
+
+`none` carries `external_skipped` (`not_a_gtin` | `disabled` | null) because
+"that is not a barcode" and "the web search is switched off" are different
+instructions to the person standing there.
+
+### 8.3 Duplicates and merge
+
+`GET /werkstatt/articles/duplicates` returns pairs with both sides' facts and a
+German reason; `POST …/duplicates/dismiss` (and its `DELETE`) persists and
+undoes a "Kein Duplikat". `POST /werkstatt/articles/merge` repoints movements,
+order lines, crate items, machine units, inventory counts and task materials,
+carries `internal_code` over, sets `merged_into_id` on the duplicate and
+archives it. `resolve_scan` follows `merged_into_id`, so **the duplicate's
+printed shelf label keeps working** and leads to the survivor. A second merge
+forwards the first one's pointer, so the chain never grows past one hop.
+Merging is irreversible; the confirm dialog says so.
+
+### 8.4 Orders: which identifier the shop receives
+
+`werkstatt_suppliers.order_identifier` (`supplier_no` default, plus
+`supplier_no_or_ean`, `ean`, `both`) decides what a cart or an export carries
+per line, and `order_channel` (`ids` | `manual`) decides which hand-over the UI
+offers. The policy is resolved once and shared by the IDS cart, the CSV/text
+export and the read-only preview, so those three can never disagree.
+
+`GET /werkstatt/orders/{id}/resolution` is that preview and writes nothing.
+Every hand-over path — IDS submit, export, and the reorder auto-send — passes
+the same gate: a line with no usable identifier answers **409** and does not
+stamp `submitted_at`, unless the caller opts in with `allow_unresolved`.
+
+### 8.5 Material needs → order
+
+Needs gained the status `ordered` between `order` and `on_the_way`, plus
+`werkstatt_order_id` / `werkstatt_order_line_id` / `ordered_at`.
+`POST /werkstatt/bedarfe/create-order` groups the selection by the catalogue
+row's supplier, creates **one draft per supplier** through
+`services/werkstatt_order_lines.py`, and skips anything without a catalogue
+match with a reason the UI shows. A needs-created order is a draft and is never
+auto-sent. `services/material_needs.sync_needs_for_order` is the single place
+that maps an order event back onto its needs (delivered → `available`,
+cancelled or line deleted → `order`), including when a draft is merged into
+another.
+
+### 8.6 Construction boxes
+
+`offen → gepackt → zugewiesen → zurueck`, where **`gepackt` is a resting
+state**: packed, assigned to a customer, standing in the workshop, contents
+still editable, and **no stock moved**. `POST /werkstatt/boxes/{id}/pack`
+seals it; the handover (`gepackt → zugewiesen`) is what books the checkout, and
+`POST /station/werkstatt/boxes/{id}/handover` lets the wall screen do it.
+`gepackt → offen` is "Zuweisung aufheben" and clears the customer.
+
+At task completion `GET /tasks/{id}/material-settlement` previews what is left
+and `TaskUpdate.material_remainder` decides where it goes: `shelf`, `same_box`
+or `new_box`. The ledger is identical in all three (`correction` for what was
+fitted, `return` for the rest) — only the crate differs. A crate that never had
+its handover booked gets it retro-booked, and every line is capped at what the
+crate actually holds, so two tasks sharing one crate cannot settle it twice.
+
+### 8.7 Station surface
+
+The Pi reports its own LAN address on each heartbeat (the pairing IP is the
+router's, because the office hairpins NAT), and the api reaches it only through
+`services/station_agent_client.py`: private addresses only, a fixed path
+allowlist, short timeouts, capped bodies, and a proof header derived from the
+station token for `/restart`. An unknown code at Wareneingang is read first
+(`lookup`), then written with a `request_id` so a retry replays instead of
+booking twice; when nothing is found the rack asks for a name and unit.
+
+**After a release the Pi must be re-run through `install-pi.sh`** — the service
+runs a copy under `/opt/smpl-station`, so pulling the repo changes nothing.
+Until then every Scan-Station action answers „Adresse unbekannt".
+
+### 8.8 What §7 said not to build, and what is built now
+
+Built since: order creation from the Orders tab, CSV/clipboard export, the
+camera scanner (real `BarcodeDetector` with the documented insecure-context
+fallback), and `MaterialsPage.tsx` is now **deleted** — `mainView="materials"`
+redirects to Werkstatt › Bedarfe for old deep links. Still not built: e-mail
+dispatch on submit, order import from a supplier mailbox, partial-delivery UX,
+and an order audit page.

@@ -115,7 +115,9 @@ export function WerkstattNachbestellenPage() {
             className="werkstatt-action-btn"
             onClick={() =>
               setNotice(
-                de ? "PDF-Export wird vorbereitet (API folgt)" : "PDF export starting (API pending)",
+                de
+                  ? "PDF-Export ist hier noch nicht angebunden — es wird nichts erzeugt."
+                  : "PDF export is not connected here yet — nothing is produced.",
               )
             }
           >
@@ -125,10 +127,15 @@ export function WerkstattNachbestellenPage() {
             type="button"
             className="werkstatt-action-btn werkstatt-action-btn--primary"
             onClick={() =>
+              // Says what actually happened — nothing. Claiming "versendet"
+              // for a page that still runs on MOCK_NACHBESTELL_GROUPS is the
+              // one failure mode that costs real money: somebody waits for
+              // material that was never ordered. Werkstatt › Bestellungen can
+              // place a real order today, so the notice points there.
               setNotice(
                 de
-                  ? `${MOCK_NACHBESTELL_GROUPS.length} Bestellungen an Lieferanten versendet (API folgt)`
-                  : `${MOCK_NACHBESTELL_GROUPS.length} orders submitted to suppliers (API pending)`,
+                  ? "Diese Seite ist noch nicht angebunden — es wurde nichts versendet. Bestellungen bitte unter Werkstatt › Bestellungen anlegen."
+                  : "This page is not connected yet — nothing was submitted. Create orders under Werkstatt › Bestellungen.",
               )
             }
           >
@@ -196,8 +203,8 @@ export function WerkstattNachbestellenPage() {
               const amount = formatEuro(subtotal, language);
               setNotice(
                 de
-                  ? `Bestellung an ${g.supplier_name} (${amount}) versendet (API folgt)`
-                  : `Order to ${g.supplier_name} (${amount}) submitted (API pending)`,
+                  ? `Nicht versendet — diese Seite ist noch nicht angebunden. Bestellung an ${g.supplier_name} (${amount}) bitte unter Werkstatt › Bestellungen anlegen.`
+                  : `Not submitted — this page is not connected yet. Create the order to ${g.supplier_name} (${amount}) under Werkstatt › Bestellungen.`,
               );
               // TODO(werkstatt): POST /api/werkstatt/reorder/submit
               //   { supplier_id: g.supplier_id, lines: [...], notes: null }

@@ -129,6 +129,16 @@ Three design choices carry that budget:
 | `POST` | `/imports/rescan` | look at every mounted card again |
 | `POST` | `/imports/retry` | re-queue everything SMPL has not taken yet |
 
+The wall screens have their own routes — `/regal`, `/kisten`, `/screen/state`,
+`/screen/action`, `/scan/route`, `/box/session`, `/box/item`,
+`/box/item/remove`, `/rack/movement`, `/boxes/state`, `/barcode.svg`,
+`/now-playing` — and all of them are **local-only**: the agent answers `403` to
+any caller that is not this machine, on `GET` and `HEAD` exactly as on `POST`.
+They drive two screens that book stock and list every customer's crate, so
+"it only reads" was never the right test. The table above is the half that is
+meant to be reachable from a laptop. See `docs/PI_STATION.md` for the
+reasoning and the full matrix.
+
 ### Wall screens: the scanned commands
 
 The two kiosk screens (`/regal`, `/kisten`) have a scanner and no keyboard, so

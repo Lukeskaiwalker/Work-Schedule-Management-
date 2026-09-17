@@ -402,6 +402,7 @@ Ausgabe goes to, and the Wareneingang direction. Both are below.
 | `SMPL-CMD-AUS` | Regal: book **Ausgabe** — stock leaves with the person tapped on the screen |
 | `SMPL-CMD-EIN` | Regal: book **Rückgabe** — a borrowed item comes back |
 | `SMPL-CMD-ENTNAHME` | Kiste: switch between packing in and taking back out. Stock is never touched. |
+| `SMPL-CMD-MITNEHMEN` | Kiste: the open crate is taken to the customer — SMPL books the checkout for every line. Refuses with *Erst die Kiste scannen* when no crate is open, and SMPL refuses unless the crate is **gepackt**. The crate screen carries this one on the glass too, next to the *Mitnehmen* button, which posts exactly the same thing. |
 
 **Wareneingang is not on the card.** A delivery is booked by tapping
 *Wareneingang* on the rack screen — see [The rack screen books three
@@ -677,6 +678,29 @@ than the stock it believes is on the shelf, so booking a pallet of something
 rare as an Ausgabe fails with an error somebody reads. A delivery of something
 already well stocked passes straight through and is wrong in silence. The
 guard is a backstop, not the rule.
+
+#### A Wareneingang for something SMPL has never stocked
+
+This used to be a dead end: the screen said *„SMPL kennt diesen Code nicht"*
+and the delivery had to wait for somebody at a PC. Now the rack finishes the
+job, and the order of operations is the point.
+
+1. The agent **asks before it writes** — `GET /station/werkstatt/lookup`, a
+   read. SMPL tries its own articles, then the wholesaler catalogue, then the
+   public Unielektro webshop. The screen shows *„Suche im Webshop…"*, the one
+   flash level that does not clear itself.
+2. Found: the article is created from that data and the intake is booked in
+   one transaction. The flash names where the identity came from —
+   *„Artikel angelegt (Unielektro), Wareneingang 3"*.
+3. Nobody knows the code: the screen asks for **Bezeichnung** and **Einheit**
+   and creates the consumable from that. This is why the rack has a keyboard
+   and the crate screen does not — the crate screen keeps its old message.
+
+The write carries a `request_id` the Pi mints once per prompt. A web search
+can take longer than the screen is willing to wait, and the obvious retry
+would otherwise book the same pallet twice; with the token SMPL replays its
+first answer instead. That is also why step 1 is a read: a lookup that times
+out has changed nothing.
 
 #### Tap your name first
 
@@ -1091,6 +1115,7 @@ is; the guard used to live in `do_POST` alone, which left every read open.
 | `POST /rack/movement` | **no — 403** | it writes the ledger |
 | `GET /regal`, `/kisten`, `/screen/state`, `/boxes/state` | **no — 403** | not "they only read": the crate list is the customer, the project and every packed item of every open job, and `/screen/state` is a 25-second long poll on a threaded server — one held thread per caller, which is a lever against the two screens as much as it is a leak |
 | `GET /now-playing`, `/now-playing/cover.jpg` | **no — 403** | the same kiosk furniture, and it says what is playing in the workshop |
+| `GET /barcode.svg` | **no — 403** | it draws the command codes onto the crate screen. Reachable, it is a barcode generator anyone on the LAN can point at a printer — and the codes it draws move stock |
 | `POST /pair/start`, `/pair/cancel`, `/pair/forget` | **no — 403** | `/pair/forget` deletes the station credential from disk. A route that unpairs a Pi from the far side of the workshop LAN is not a route, it is a prank |
 | `GET /pair/status` | yes | the readable half of pairing: paired or not, and whether a code is outstanding. It writes nothing and holds no thread |
 | `GET /health`, `/sessions`, `/session/…`, `/export/…` | yes | monitoring, and copying counts off the box — and what SMPL's Scan-Station page reads for *Hardware prüfen* and the session list |

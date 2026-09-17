@@ -263,4 +263,59 @@ Files in `apps/api/alembic/versions/`. Naming: `YYYYMMDD_NNNN_description.py`.
 Run migrations: `docker compose exec api alembic upgrade head`
 Create new migration: `docker compose exec api alembic revision --autogenerate -m "description"`
 
-Latest migration: `20260320_0044_user_vacation_balance_year.py`
+Latest migration: `20260920_0088_werkstatt_article_lookup_and_merge.py`
+
+---
+
+## Werkstatt, Scan-Station, Schaltplan and task scheduling (2026-09 program)
+
+> This section is current as of migration `0088`. The tables above it predate
+> it and undercount the codebase — trust a `grep` over this file where the two
+> disagree.
+
+### Backend
+
+| File | Handles |
+|------|---------|
+| `routers/workflow_station.py` | Station auth (`get_current_station`), `POST /station/heartbeat`, `/station/me`, the admin station list and revoke |
+| `routers/workflow_station_pairing.py` | RFC 8628 device grant: `/station/pair/{start,pending,approve,deny,poll}`, code minting, flood control, one-time token issue |
+| `routers/workflow_station_admin.py` | The Scan-Station page's actions: `/station/setup`, `PATCH /station/stations/{id}`, `…/refresh`, `…/test-print`, `…/restart`, `…/sessions`, `…/sessions/{name}/import` — all `system:manage` |
+| `routers/workflow_station_werkstatt.py` | What a paired Pi may do: crates, resolve, crew, movements, box handover, article lookup and creation from catalogue or webshop |
+| `routers/workflow_werkstatt_article_lookup.py` | `GET /werkstatt/articles/lookup` — own rows → wholesaler catalogue → public webshop |
+| `routers/workflow_werkstatt_article_dedup.py` | `GET /werkstatt/articles/duplicates`, `…/duplicates/dismiss`, `POST /werkstatt/articles/merge` |
+| `routers/workflow_werkstatt_order_send.py` | `GET /werkstatt/orders/{id}/resolution` and `…/export` — the pre-send gate and CSV/clipboard hand-over |
+| `routers/workflow_werkstatt_ids_handoff.py` | The IDS hand-off and hook-result HTML pages (split out of `workflow_werkstatt_ids.py`) |
+| `services/station_agent_client.py` | The ONLY api→Pi path: private-IP allowlist, fixed path allowlist, short timeouts, capped bodies, restart proof header |
+| `services/station_heartbeat.py` | Folds a heartbeat (or a `/health` reply) onto the station row, including the self-reported LAN address |
+| `services/station_sessions.py` | Lists a Pi's counting sessions and imports one into a Werkstatt inventory (SET semantics, so a re-import is idempotent) |
+| `services/station_view.py` | Builds `StationOut`: online/stale/offline thresholds, hardware normalisation, batched lookups |
+| `services/werkstatt_article_lookup.py` | The lookup cascade and its hit/miss cache |
+| `services/ean_lookup/` | `base` (provider protocol), `http` (SSRF-guarded transport + budget), `cascade`, `unielektro_shop` (scraper), `open_ean_db` (configurable, empty by default) |
+| `services/gtin.py` | GTIN checksum and UPC-A/EAN-13/EAN-8 variants — every DB lookup tries the variants, stored EANs are never rewritten |
+| `services/werkstatt_order_lines.py` | `create_draft_order` + `build_order_line` — the ONE order-line builder (orders, needs and reorder all use it) |
+| `services/werkstatt_order_export.py` | CSV and clipboard text for suppliers without a shop connection |
+| `services/werkstatt_order_send.py` | Identifier policy (`supplier_no` / `ean` / …) decided once, shared by cart, export and preview |
+| `services/material_needs.py` | `sync_needs_for_order` — the one place that maps an order event onto its linked needs |
+| `services/task_material_settlement.py` | Settling a task's crate: correction + return, capped at what the crate holds, with the leftover disposition |
+| `services/werkstatt_item_search.py` | The crate item search (pure move out of the boxes router) |
+| `services/schaltplan_terminal_rules.py` / `schaltplan_terminals.py` | WAGO Reihenklemmen: part table with widths + sources, eligibility, derivation per FI group, BOM, strips — Python twin of the TS pair |
+| `services/schaltplan_pdf_style.py` / `schaltplan_pdf_terminals.py` | Shared PDF primitives and the Reihenklemmen A4 sheet |
+
+### Frontend
+
+| File | Handles |
+|------|---------|
+| `utils/schaltplanTerminalRules.ts` / `schaltplanTerminals.ts` | TS twin of the Reihenklemmen derivation — pinned on the same fixtures as the Python side |
+| `utils/werkstattArticleLookupApi.ts` / `werkstattDuplicatesApi.ts` | Article lookup, duplicates and merge clients |
+| `utils/werkstattBedarfeApi.ts` | Bedarfe list, inline edit, bulk actions, order creation |
+| `utils/taskCopy.ts` | Builds a create-modal state from a task or the live edit form |
+| `utils/latestRequest.ts` | Request-sequence guard so a stale list response cannot overwrite a newer one |
+| `utils/idempotentRetry.ts` | Report upload retry under one idempotency key |
+| `components/tasks/MyTasksOverviewCard.tsx`, `TaskRowSummary.tsx` | The overview's task box and the shared row header |
+| `components/tasks/MaterialRemainderDialog.tsx` | „Was ist mit dem Rest passiert?" at task completion |
+| `components/werkstatt/NeueBestellungModal.tsx`, `ArtikelSuchfeld.tsx`, `BestellungPositionZeile.tsx`, `BestellungVersandLeiste.tsx` | Order creation, dual article/catalogue search, per-line readiness, send/export controls |
+| `components/werkstatt/ArtikelFormFields.tsx`, `ArtikelCodeStep.tsx`, `ArtikelLookupResult.tsx`, `ArtikelBearbeitenModal.tsx` | The consumable create/edit dialogs and their code-first step |
+| `components/werkstatt/DuplikateModal.tsx`, `ArtikelZusammenfuehrenModal.tsx` | Duplicate review and the irreversible-merge confirmation |
+| `components/schaltplan/TerminalList.tsx`, `TerminalGroupCard.tsx`, `LabelPrintTerminals.tsx`, `StripSvg.tsx`, `useLabelPrinting.ts` | The „Klemmen" tab, its BOM, and label printing in terminal mode |
+| `components/station/StationEditForm.tsx` | Name / location / manual agent address |
+| `styles/*.css` | Page-local stylesheets (`tasks`, `orders`, `boxes`, `bedarfe`, `stock`, `schaltplan-terminals`, `pi-station`) — `styles.css` is no longer the only sheet |
