@@ -1,7 +1,7 @@
 """The Werkstatt API a paired scan station may reach.
 
 Two screens are going on the workshop wall, both driven by the Raspberry Pi
-that is already paired with SMPL (see ``workflow_station.py`` for the RFC 8628
+that is already paired with SMPL (see ``workflow_station_pairing.py`` for the RFC 8628
 device grant that put a token on it):
 
   * the **box screen** lists the Baustellenkisten with their contents and who

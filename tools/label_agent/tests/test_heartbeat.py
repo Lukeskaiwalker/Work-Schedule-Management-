@@ -137,6 +137,57 @@ class TestReporting(HeartbeatCase):
         self.assertEqual(len(self.server.received), 2)
         self.assertEqual(beat.status()["endpoint"], "/api/station/heartbeat")
 
+    def test_the_address_uptime_sessions_and_hardware_reach_smpl(self):
+        """What the Scan-Station page needs to call back: the Pi's own LAN
+        address and port, and enough about the box to render its rows."""
+        hardware = {"printer_model": "Brother PT-P710BT", "scanner_present": True,
+                    "scanner_name": "/dev/input/event3", "simulated": False}
+        beat = self.build(
+            {"/api/station/heartbeat": lambda _p: OK_RESPONSE},
+            status={"printer_connected": True, "host": " 192.168.2.235 ", "port": 8765,
+                    "uptime_seconds": 4242.7, "session_count": 3, "hardware": hardware},
+        )
+        beat.beat()
+        _path, payload, _auth = self.server.received[-1]
+        self.assertEqual(payload["host"], "192.168.2.235")
+        self.assertEqual(payload["port"], 8765)
+        self.assertEqual(payload["uptime_seconds"], 4242)
+        self.assertEqual(payload["session_count"], 3)
+        self.assertEqual(payload["hardware"], hardware)
+
+    def test_unsound_reachability_values_are_left_out_not_sent(self):
+        """A key SMPL does not receive keeps the address it has; a wrong one
+        would replace it. So anything mistyped is dropped, not coerced."""
+        beat = self.build(
+            {"/api/station/heartbeat": lambda _p: OK_RESPONSE},
+            status={"host": "", "port": "8765", "uptime_seconds": -1,
+                    "session_count": True, "hardware": ["not", "a", "dict"]},
+        )
+        beat.beat()
+        _path, payload, _auth = self.server.received[-1]
+        for key in ("host", "port", "uptime_seconds", "session_count", "hardware"):
+            self.assertNotIn(key, payload)
+
+
+class TestLanAddress(unittest.TestCase):
+    def test_detection_yields_an_address_or_nothing_and_never_raises(self):
+        for url in ("http://192.168.2.50", "https://smpl.example.invalid", "", "not a url",
+                    "http://[::1]:99999"):
+            with self.subTest(url=url):
+                found = station_heartbeat.detect_lan_ip(url)
+                self.assertTrue(found is None or isinstance(found, str))
+                if found is not None:
+                    self.assertFalse(found.startswith("127."), found)
+                    self.assertEqual(found.count("."), 3, found)
+
+    def test_a_routable_target_names_this_machines_own_interface(self):
+        """Toward a LAN-shaped address the kernel picks a real interface, so
+        the answer is one of this machine's addresses — never the target's."""
+        found = station_heartbeat.detect_lan_ip("http://192.168.2.50")
+        if found is None:
+            self.skipTest("no route to a private network on this machine")
+        self.assertNotEqual(found, "192.168.2.50")
+
 
 class TestDegradation(HeartbeatCase):
     def test_an_unpaired_station_sends_nothing(self):

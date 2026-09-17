@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
+import hmac
 import importlib
 import io
 import json
@@ -70,6 +72,15 @@ HEALTH_PATH = "/api/healthz"
 CACHE_REVALIDATE_S = 3600.0
 MAX_BODY_BYTES = 64 * 1024
 PRINT_BUDGET_MS = 5000
+
+# What the Pi's own printer is, for SMPL's hardware row. One model, one
+# constant: the raster protocol has no "what are you" command to ask.
+PRINTER_MODEL = "Brother PT-P710BT"
+# SMPL's proof on POST /restart: the sha256 of the station token, which SMPL
+# stores as the token's hash and only this Pi can compute from the token it
+# holds. See Handler._post_restart.
+RESTART_PROOF_HEADER = "X-SMPL-Station-Proof"
+RESTART_DELAY_S = 0.5
 
 SCREEN_RACK = "regal"
 SCREEN_BOXES = "kisten"
@@ -254,6 +265,12 @@ def ms_since(start: float) -> float:
     return round((time.perf_counter() - start) * 1000.0, 1)
 
 
+def _exit_for_restart() -> None:
+    """``os._exit``, not ``sys.exit``: nothing on a request thread may catch
+    it, and systemd — not this process — is what brings the agent back."""
+    os._exit(0)
+
+
 class ApiError(Exception):
     """A request the client got wrong; carries the status code to answer with."""
 
@@ -390,10 +407,28 @@ class Store:
         return dict(row) if row else None
 
     def sessions(self) -> list[dict]:
+        """Every session with its totals, in one query.
+
+        SMPL's Scan-Station page lists these to decide what to import, and a
+        row that is only a name cannot say whether a session is worth
+        importing. LEFT JOIN so a session that was opened and never counted
+        into still appears — with zeros, which is the truthful figure.
+        """
         rows = self.conn.execute(
-            "SELECT name, started_at, status FROM sessions ORDER BY started_at DESC"
+            "SELECT s.name, s.started_at, s.status, "
+            "COUNT(c.id) AS articles, "
+            "COALESCE(SUM(c.counted_qty), 0) AS total_qty, "
+            "COALESCE(SUM(c.scan_count), 0) AS total_scans, "
+            "MAX(c.last_counted_at) AS last_counted_at "
+            "FROM sessions s LEFT JOIN counts c ON c.session = s.name "
+            "GROUP BY s.name, s.started_at, s.status "
+            "ORDER BY s.started_at DESC"
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def session_count(self) -> int:
+        row = self.conn.execute("SELECT COUNT(*) FROM sessions").fetchone()
+        return int(row[0]) if row else 0
 
     # -- counts -----------------------------------------------------------
 
@@ -660,6 +695,12 @@ def parse_resolution(payload: dict) -> tuple[str, str, str]:
 # --------------------------------------------------------------------------
 
 
+# The sentence a real printer reports while the Brother is unplugged or off.
+# SMPL's Scan-Station page shows it verbatim under "Testetikett drucken", so
+# it is one constant rather than a string in two places.
+PRINTER_NOT_FOUND_ERROR = "printer not found on USB (PT-P710BT unplugged or powered off?)"
+
+
 class Printer:
     """Owns the one USB handle and the one lock that serialises printing.
 
@@ -697,7 +738,7 @@ class Printer:
             return False
         try:
             if hasattr(mod, "find_printer") and not mod.find_printer():
-                self._error = "printer not found on USB (PT-P710BT unplugged or powered off?)"
+                self._error = PRINTER_NOT_FOUND_ERROR
                 return False
             device = mod.BrotherPTouch()
             device.__enter__()
@@ -712,6 +753,12 @@ class Printer:
     def _drop_locked(self, error: str) -> None:
         device, self._device = self._device, None
         self._error = error
+        # Invalidate the cached status too: the bus just told us the handle is
+        # gone, and a cache that survives that reports a printer which is no
+        # longer there for up to STATUS_TTL_S. That window is exactly when the
+        # station's refusal() check runs after a cable is pulled mid-feed, so a
+        # test print would be accepted and then silently dropped.
+        self._status_at = 0.0
         if device is not None:
             try:
                 device.__exit__(None, None, None)
@@ -785,6 +832,28 @@ class Printer:
     def tape_mm(self) -> int:
         width = self.status().get("media_width_mm")
         return int(width) if isinstance(width, int) and width > 0 else self.default_tape_mm
+
+    def refusal(self) -> str | None:
+        """Why a label must not be queued right now — or None when it may.
+
+        ``submit_lines`` answers in milliseconds by design and a failure in
+        the worker lands only in ``_last_print_error``, where nobody at the
+        bench (or at SMPL's "Testetikett drucken") is listening. So the one
+        thing that can be said up front is said up front: a real printer
+        that is not connected refuses the label with its reason instead of
+        queueing it into a worker that loses the reason.
+
+        A simulated printer is always ready. A status read that could not get
+        the lock (``busy``) means a label is feeding right now, and a feeding
+        printer is a connected one — refusing there would turn every second
+        label of a burst into a false "unplugged".
+        """
+        status = self.status()
+        if status.get("simulated") or status.get("busy"):
+            return None
+        if status.get("printer_connected"):
+            return None
+        return str(status.get("error") or "printer unavailable")
 
     # -- printing ---------------------------------------------------------
 
@@ -886,6 +955,9 @@ class Agent:
             self.upstream.station = station
         self._stop = threading.Event()
         self._probe_thread: threading.Thread | None = None
+        # Monotonic, not the injectable kiosk clock: uptime is a fact about
+        # this process, and SMPL shows it to answer "did the restart happen?".
+        self.started_monotonic = time.monotonic()
 
         # The kiosk is the same kind of optional as the station: four sibling
         # modules, all stdlib, none of which may stop the agent booting.
@@ -1043,6 +1115,24 @@ class Agent:
 
     # -- endpoints --------------------------------------------------------
 
+    def uptime_seconds(self) -> int:
+        return int(time.monotonic() - self.started_monotonic)
+
+    def hardware_summary(self, printer_status: dict | None = None) -> dict:
+        """The fixed keys SMPL's Scan-Station page renders — the same four
+        whether they travel by heartbeat or by a synchronous ``/health``.
+        Kept in step with ``StationHardwareOut`` (apps/api/app/schemas/station.py).
+        """
+        status = printer_status if printer_status is not None else self.printer.status()
+        scanner = self.scanner.status() if self.scanner is not None else {}
+        device = scanner.get("device")
+        return {
+            "printer_model": PRINTER_MODEL,
+            "scanner_present": bool(device),
+            "scanner_name": device if isinstance(device, str) else None,
+            "simulated": bool(status.get("simulated")),
+        }
+
     def health(self) -> dict:
         status = self.printer.status()
         payload = {
@@ -1055,6 +1145,9 @@ class Agent:
             "upstream_configured": self.upstream.configured,
             "upstream_error": self.upstream.last_error or None,
             "simulated": bool(status.get("simulated")),
+            "uptime_seconds": self.uptime_seconds(),
+            "session_count": self.store.session_count(),
+            "hardware": self.hardware_summary(status),
             "db": str(self.store.path),
             "modules": {
                 "brother_raster": module("brother_raster") is not None,
@@ -1155,6 +1248,12 @@ class Agent:
         render = module("label_render")
         if render is None:
             raise ApiError(503, module_error("label_render"))
+        # Before rendering, not after queueing: a 200 here means "the label
+        # will feed", and that is only true of a printer that is there. The
+        # 503 carries the printer's own sentence, which SMPL shows verbatim.
+        refusal = self.printer.refusal()
+        if refusal is not None:
+            raise ApiError(503, refusal)
         spec = render.LabelSpec(
             code=code, title=title or code, subtitle=subtitle or None,
             tape_mm=self.printer.tape_mm(),
@@ -2200,6 +2299,7 @@ class Handler(BaseHTTPRequestHandler):
             "/resolve": lambda q: self._post_resolve(),
             "/count": lambda q: self._post_count(),
             "/print": lambda q: self._post_print(),
+            "/restart": lambda q: self._post_restart(),
             "/pair/start": lambda q: self._post_pair_start(),
             "/pair/cancel": lambda q: self._json(200, self._station().pair_cancel()),
             "/pair/forget": lambda q: self._json(200, self._station().unpair()),
@@ -2595,6 +2695,31 @@ class Handler(BaseHTTPRequestHandler):
         subtitle = require_str(payload, "subtitle", max_len=256, required=False)
         self._json(200, self.agent.print_label(code, title, subtitle))
 
+    def _post_restart(self) -> None:
+        """Exit, and let systemd's ``Restart=always`` bring the agent back.
+
+        LAN-reachable on purpose — SMPL's api calls it from the Scan-Station
+        page, and SMPL is not this machine — which is exactly why it needs
+        proof that the caller is SMPL and not a stray curl on the workshop
+        LAN: the sha256 of the station token, which SMPL stores as the
+        token's hash and only this Pi can compute from the token it holds.
+        Constant-time compare, no oracle. Unpaired there is nothing to prove
+        against, and a restart nobody can authorise is a restart nobody gets.
+        Run by hand instead of under systemd the agent simply exits — the
+        README says so.
+        """
+        self._read_json()  # consume the body; nothing in it is consulted
+        token = self._station().token()
+        if not token:
+            raise ApiError(503, "not paired: there is no station token to prove a restart against")
+        expected = hashlib.sha256(token.encode("utf-8")).hexdigest()
+        offered = (self.headers.get(RESTART_PROOF_HEADER) or "").strip().lower()
+        if not offered or not hmac.compare_digest(offered, expected):
+            raise ApiError(403, "restart proof missing or wrong")
+        self._json(200, {"ok": True, "detail": "restarting"})
+        # The response is on the wire; a timer thread does the exiting.
+        threading.Timer(RESTART_DELAY_S, _exit_for_restart).start()
+
 
 class Server(ThreadingHTTPServer):
     """Threaded so a feeding label never blocks the next scan lookup."""
@@ -2690,30 +2815,43 @@ def main(argv: list[str] | None = None) -> int:
     # all). A late-bound holder keeps the construction order simple and means
     # a heartbeat that fires before the printer is warm reports "unknown"
     # rather than crashing.
-    printer_holder: dict = {}
+    holder: dict = {}
 
-    def printer_status() -> dict:
-        current = printer_holder.get("printer")
-        if current is None:
+    def station_status() -> dict:
+        printer = holder.get("printer")
+        if printer is None:
             return {}
-        status = current.status()
-        return {
+        status = printer.status()
+        body = {
             "printer_connected": bool(status.get("printer_connected")),
             "media_width_mm": status.get("media_width_mm"),
             "error": status.get("error"),
             "status": {
                 "simulated": bool(status.get("simulated")),
-                "queue_depth": current.queue_depth(),
+                "queue_depth": printer.queue_depth(),
                 "db": str(db_path),
             },
+            # Where SMPL can call back. The port is ours to know; the host is
+            # the address of the NIC that reaches SMPL — the request IP SMPL
+            # sees is the office router, hairpinned, and useless for this.
+            "port": args.port,
         }
+        heartbeat_mod = module("station_heartbeat")
+        if heartbeat_mod is not None:
+            body["host"] = heartbeat_mod.detect_lan_ip(base_url)
+        agent = holder.get("agent")
+        if agent is not None:
+            body["uptime_seconds"] = agent.uptime_seconds()
+            body["session_count"] = agent.store.session_count()
+            body["hardware"] = agent.hardware_summary(status)
+        return body
 
     station = None
     if helpers is None:
         print(f"  station : unavailable ({module_error('station_cli')})")
     else:
         station = helpers.build_station(args, db_path, base_url, env_token, VERSION,
-                                        status_provider=printer_status)
+                                        status_provider=station_status)
     if args.pair:
         if helpers is None:
             print("station services are unavailable, so there is nothing to pair.")
@@ -2722,7 +2860,7 @@ def main(argv: list[str] | None = None) -> int:
 
     store = Store(db_path)
     printer = Printer(enabled=not args.no_printer, default_tape_mm=args.tape)
-    printer_holder["printer"] = printer
+    holder["printer"] = printer
     upstream = Upstream(
         base_url, env_token,
         token_provider=station.token if station is not None else None,
@@ -2734,6 +2872,7 @@ def main(argv: list[str] | None = None) -> int:
         scanner_layout=args.scanner_layout,
         session_idle_s=args.session_idle,
     )
+    holder["agent"] = agent
     if agent.scanner is not None and args.scanner_device:
         agent.scanner.set_device(args.scanner_device)
     agent.start_background()

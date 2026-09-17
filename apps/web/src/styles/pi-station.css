@@ -346,6 +346,51 @@
   color: var(--danger);
 }
 
+/* A quiet one-liner under a control: what the control does that the label
+   cannot say ("the heartbeat is two minutes apart"). */
+.pi-station-hint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+/* ── Inline edit (name, location, override) ────────────────────────────── */
+
+.pi-station-edit {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px 18px;
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  background-color: var(--surface);
+}
+
+.pi-station-edit .admin-invite-field {
+  margin: 0;
+}
+
+.pi-station-edit-wide {
+  grid-column: 1 / -1;
+}
+
+/* ── Import target ─────────────────────────────────────────────────────── */
+
+.pi-station-target {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 0 0 12px;
+}
+
+.pi-station-select {
+  min-width: 260px;
+  max-width: 100%;
+}
+
 /* ── Actions ───────────────────────────────────────────────────────────── */
 
 .pi-station-actions {
@@ -496,4 +541,76 @@
   overflow: auto;
   white-space: pre;
   tab-size: 2;
+}
+
+/* ── Card head with the audit toggle ───────────────────────────────────── */
+
+.pi-station-card-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.pi-station-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.pi-station-toggle input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+/* ── Retired stations (revoked / expired), the audit list ──────────────── */
+
+.pi-station-retired {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pi-station-retired-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* Greyed on purpose: the row is history, not a Pi that can be talked to. */
+.pi-station-retired-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  padding: 8px 12px;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  color: var(--muted);
+  background-color: var(--surface);
+}
+
+.pi-station-retired-name {
+  font-weight: 600;
+}
+
+.pi-station-retired-meta {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Target select hint ────────────────────────────────────────────────── */
+
+.pi-station-target-hint {
+  margin-top: 6px;
+  max-width: 72ch;
 }

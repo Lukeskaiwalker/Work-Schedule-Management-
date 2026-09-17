@@ -109,15 +109,16 @@ Three design choices carry that budget:
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/` | the station page (`static/station.html`) |
-| `GET` | `/health` | `printer_connected`, `media_width_mm`, `error`, `upstream_ok` |
+| `GET` | `/health` | `printer_connected`, `media_width_mm`, `error`, `upstream_ok`, `uptime_seconds`, `session_count`, `hardware` (`printer_model`, `scanner_present`, `scanner_name`, `simulated`) |
 | `POST` | `/resolve` | `{code}` → article name, from SMPL or the local cache |
 | `POST` | `/count` | `{session, code, article_name, qty}` → running total for that code |
-| `POST` | `/print` | `{code, title, subtitle?}` → renders and prints, returns timing |
+| `POST` | `/print` | `{code, title, subtitle?}` → renders and queues the label (`queued: true`; `simulated: true` under `--no-printer`), returns timing. While the Brother is unplugged it answers `503` with the printer's own reason *before* queueing anything — SMPL's *Testetikett drucken* shows that sentence |
 | `GET` | `/preview.png?code=..&title=..` | PNG preview of the label (`&subtitle=`, `&tape=`) |
 | `GET` | `/session/{name}` | every count in the session, plus totals |
 | `GET` | `/export/{name}.json` | the session as JSON, ready for SMPL |
 | `GET` | `/export/{name}.csv` | the same as CSV (UTF-8 with BOM, so Excel behaves) |
-| `GET` | `/sessions` | every session the database knows about |
+| `GET` | `/sessions` | every session the database knows about, each with `articles`, `total_qty`, `total_scans` and `last_counted_at` (one query; a never-counted session lists with zeros) |
+| `POST` | `/restart` | exits so systemd's `Restart=always` brings the agent back in ~3 s. Needs `X-SMPL-Station-Proof: sha256(<station token>)` — what SMPL stores as the token's hash — else `403`; `503` while unpaired. Run by hand (`run.sh`) the agent simply exits |
 | `GET` | `/setup` | the one-time setup page: SMPL login, imports, diagnostics |
 | `POST` | `/pair/start` | ask SMPL for a pairing code and start waiting |
 | `GET` | `/pair/status` | the code, the countdown, or the resulting token's details |
@@ -200,8 +201,9 @@ while feeding. Concurrent `/print` calls queue on a lock; scanning and counting
 run past them unaffected.
 
 **Unplugging mid-session is survivable.** A USB failure drops the handle,
-`/health` reports `printer_connected: false` with the reason, and the next
-print reconnects automatically. Counting is untouched throughout — this is the
+`/health` reports `printer_connected: false` with the reason, `/print` refuses
+with `503` and that same reason instead of queueing a label nobody will get,
+and the next print after re-plugging reconnects automatically. Counting is untouched throughout — this is the
 case the design is built around, because the operator cannot stop counting to
 go find a cable.
 
@@ -211,7 +213,11 @@ SMPL*; it does not put a lock on port 8765. `--host 0.0.0.0` is therefore a
 decision about the network the station sits on, and the agent says so at
 startup when you make it. Staged import files are deliberately not served over
 HTTP for the same reason — `/imports` returns metadata, and the files stay on
-disk.
+disk. The one exception is `POST /restart`: it is meant to be called by SMPL's
+api across the LAN (the Scan-Station page's *Agent neu starten*), so instead
+of a network lock it demands `X-SMPL-Station-Proof` — the sha256 of the
+station token, which SMPL stores and only this Pi can compute — and answers
+`403` to everything else.
 
 **`--no-printer`** simulates the print step (real render, real timing, no
 tape) so the station page and the counting flow can be exercised without

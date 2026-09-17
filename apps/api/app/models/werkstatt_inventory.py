@@ -54,6 +54,19 @@ class WerkstattInventorySession(Base):
 
     notes: Mapped[str | None] = mapped_column(Text)
 
+    # Provenance when the counts came off the office scan station rather than
+    # from a live scan. The Pi keeps its own sessions by name; importing one
+    # here records which station and which of its sessions fed this row, and
+    # when. That is what lets the Scan-Station page say "Übernommen · <stamp>"
+    # next to a Pi session and route a re-import into the same open inventory
+    # instead of a second one. One link per inventory session: importing a
+    # second Pi session into the same target repoints it to the latest.
+    source_station_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stations.id", ondelete="SET NULL"), index=True
+    )
+    source_session_name: Mapped[str | None] = mapped_column(String(64))
+    source_imported_at: Mapped[datetime | None] = mapped_column(DateTime)
+
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow, onupdate=utcnow, nullable=False

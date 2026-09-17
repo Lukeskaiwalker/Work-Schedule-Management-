@@ -73,6 +73,14 @@ class Settings(BaseSettings):
     # out against nothing.
     werkstatt_label_printer_host: str = ""
     werkstatt_label_printer_port: int = 9100
+    # Outbound calls from the api to the office scan station (the Pi running
+    # tools/label_agent). Connect stays tight: the most likely failure is a Pi
+    # that is off, and an admin clicking "Hardware prüfen" should hear that in
+    # seconds. Read is longer because a test label physically feeds ~2 s of
+    # tape and the agent answers only afterwards. Both are per-call; the
+    # client opens no pool (memory note: the api container is capped).
+    station_agent_connect_timeout_seconds: float = 3.0
+    station_agent_read_timeout_seconds: float = 15.0
     app_release_version: str = ""
     app_release_commit: str = ""
     update_repo_owner: str = "Lukeskaiwalker"

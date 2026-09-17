@@ -981,7 +981,7 @@ Four separate paths, deliberately independent:
 | Article lookups | `GET /api/station/werkstatt/resolve?code=…` on each new code — both the wall screens and the older scan-and-print page | the two differ. The scan-and-print page falls back to the local SQLite cache and then to "unknown code", so counting never waits. The wall screens have **no** cache: an unresolved code is flashed as *„Code nicht zugeordnet"* and nothing is booked, because a rack booking needs an article id and guessing one would move the wrong stock. |
 | Counted stock | manual export: `GET /export/<session>.csv` or `.json` | the SQLite file is the product; copy it off with `scp` |
 | Test protocols | `POST /api/station/imports` (multipart) | stays staged locally and is retried |
-| Liveness | `POST /api/station/heartbeat` every 2 min | the admin page shows the station as stale; nothing else changes |
+| Liveness | `POST /api/station/heartbeat` every 2 min — printer state plus the agent's own LAN `host`/`port`, `uptime_seconds`, `session_count` and a `hardware` summary | the admin page shows the station as stale; nothing else changes |
 
 The station authenticates with the paired token, sent as
 `Authorization: Bearer …`. It is stored at
@@ -1008,6 +1008,22 @@ is `0700` and owned by the service user. If SMPL answers `401` or `403`,
 The heartbeat is what fills in `last_seen_at` and the printer status on SMPL's
 **Scan-Station** admin page. Without it every station on that page reads
 "never seen", including the ones working perfectly.
+
+It is also how that page learns **where to call back**. Every button on it
+that touches the Pi — *Testetikett drucken*, *Hardware prüfen*, *Agent neu
+starten*, the session list and *Übernehmen* — is SMPL's api calling the
+agent's port 8765 across the office LAN, and SMPL cannot read the address off
+the request: the office router hairpins NAT, so every station arrives from
+the router's address. The agent therefore reports the address of its own
+NIC (the interface that routes to SMPL, found with a UDP connect that sends
+nothing), and SMPL stores it only if it is a private address. Until an agent
+that reports one has beaten at least once, the page says *„Adresse unbekannt
+— Agent auf dem Pi aktualisieren"* and every action answers with that same
+sentence: **after updating SMPL, re-run `install-pi.sh` on the Pi** (it is
+idempotent) so the agent is new enough to report its address. If the Pi
+guesses the wrong interface (a VPN, docker0) or sits on another subnet, the
+page's *Bearbeiten* form takes a manual `http://<ip>:8765` that wins over the
+reported one — private addresses and `*.local` names only.
 
 **The SMPL side was built in parallel with this station**, so every endpoint is
 treated as possibly absent: the agent tries several plausible paths, and when
@@ -1077,7 +1093,8 @@ is; the guard used to live in `do_POST` alone, which left every read open.
 | `GET /now-playing`, `/now-playing/cover.jpg` | **no — 403** | the same kiosk furniture, and it says what is playing in the workshop |
 | `POST /pair/start`, `/pair/cancel`, `/pair/forget` | **no — 403** | `/pair/forget` deletes the station credential from disk. A route that unpairs a Pi from the far side of the workshop LAN is not a route, it is a prank |
 | `GET /pair/status` | yes | the readable half of pairing: paired or not, and whether a code is outstanding. It writes nothing and holds no thread |
-| `GET /health`, `/sessions`, `/session/…`, `/export/…` | yes | monitoring, and copying counts off the box |
+| `GET /health`, `/sessions`, `/session/…`, `/export/…` | yes | monitoring, and copying counts off the box — and what SMPL's Scan-Station page reads for *Hardware prüfen* and the session list |
+| `POST /restart` | yes, **with proof** | SMPL's *Agent neu starten* button. SMPL is not this machine, so the route cannot be loopback-only; instead it demands `X-SMPL-Station-Proof: sha256(<station token>)` — the hash SMPL stores, which only this Pi can compute from the token it holds — and answers `403` to anything else, `503` while unpaired. The agent exits half a second after answering and systemd's `Restart=always` brings it back; the kiosk launcher waits on `/health`, so the screens survive. A restart mid-SD-import aborts that upload, which the agent's own queue retries |
 | `GET /`, `/setup`, `/preview.png`, `/static/…`, `/imports`, `/imports/<id>` | yes | the two pages somebody opens from a laptop or a phone, and the label preview |
 | `POST /resolve`, `/count`, `/print`, `/imports/rescan`, `/imports/retry` | yes | the older scan-and-print path the README documents `--host 0.0.0.0` for |
 

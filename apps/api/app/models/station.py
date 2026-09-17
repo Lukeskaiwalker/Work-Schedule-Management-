@@ -87,8 +87,32 @@ class Station(Base):
     # agent's hardware surface will change faster than this schema should.
     hardware_status: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
 
+    # Admin-typed "where is it" — "Werkstatt, Regalwand" — for the station
+    # list. Optional; the name is what identifies the row.
+    location: Mapped[str | None] = mapped_column(String(128))
+
+    # Where the api can reach the agent. The Pi reports its own LAN address on
+    # every heartbeat (``StationHeartbeatRequest.host``/``port``): the request
+    # IP is useless for this because the office router hairpins NAT and every
+    # station arrives from the router's address. The value is validated to a
+    # PRIVATE address before it is stored — a station token must never be able
+    # to point the api at a public host or the cloud metadata address — and
+    # the api calls the Pi only through ``services/station_agent_client.py``,
+    # which reads these and nothing else.
+    agent_host: Mapped[str | None] = mapped_column(String(64))
+    agent_port: Mapped[int | None] = mapped_column(Integer)
+    # Admin-set base URL that wins over the reported pair: for a Pi on another
+    # subnet, or one whose detected interface is the wrong one (docker0, VPN).
+    agent_url_override: Mapped[str | None] = mapped_column(String(200))
+
+    # Agent process uptime and how many count sessions its SQLite holds, both
+    # from the heartbeat. Informational — the admin page shows them next to
+    # the version so "did the restart happen?" is answerable from a distance.
+    uptime_seconds: Mapped[int | None] = mapped_column(Integer)
+    session_count: Mapped[int | None] = mapped_column(Integer)
+
     # NULL means "never expires". The approve endpoint sets a bounded default
-    # instead; see routers/workflow_station.py for the reasoning.
+    # instead; see routers/workflow_station_pairing.py for the reasoning.
     expires_at: Mapped[datetime | None] = mapped_column(DateTime)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime)
     revoked_by: Mapped[int | None] = mapped_column(

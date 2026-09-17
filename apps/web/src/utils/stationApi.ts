@@ -1,17 +1,18 @@
 // API client for the Raspberry Pi scan station ("Pi-Station").
 //
 // The station is a Pi in the office running `tools/label_agent/server.py`: a
-// barcode scanner (HID keyboard), a Brother PT-P710BT over USB, and — later —
+// barcode scanner (HID keyboard), a Brother PT-P710BT over USB, and
 // Benning/Metrel device imports off an SD card. SMPL never talks to the Pi
 // directly from the browser: the Pi is on the LAN, the browser may not be, and
 // the agent has no authentication of its own (see the agent README, "No
-// authentication"). Everything here goes through the SMPL API, which holds the
-// pairing secret and proxies to the agent.
+// authentication"). Everything here goes through the SMPL API, which knows the
+// Pi's LAN address (the agent reports it on every heartbeat) and proxies to it
+// through a fixed, address-checked client.
 //
 // ── Endpoint contract ────────────────────────────────────────────────────
 // All paths are relative to `/api` (apiFetch prefixes it).
 //
-//   GET    /station/stations                              → StationListResponse
+//   GET    /station/stations[?include_inactive=1]        → Station[] (bare list)
 //   PATCH  /station/stations/{id}                         → Station
 //   DELETE /station/stations/{id}                         → 204 (unpair)
 //   POST   /station/stations/{id}/refresh                 → Station
@@ -22,8 +23,9 @@
 //   POST   /station/pair/start                            → device grant (Pi)
 //   GET    /station/pair/pending                          → StationPairingRequest[]
 //   POST   /station/pair/approve                          → { station: Station }
-//   POST   /station/pair/deny                             → 204
+//   POST   /station/pair/deny                             → { user_code }
 //   GET    /station/setup                                 → StationSetup
+//   GET    /werkstatt/inventory/sessions                  → InventorySessionSummary[]
 //
 // The collection is `/station/stations` and not `/station/{id}` on purpose:
 // `/station/pair/...` and `/station/setup` would otherwise collide with an int
@@ -56,8 +58,8 @@ export const STATION_NETWORK_STATUS = 0;
  * How fresh the agent's last check-in is, as judged by the server.
  *
  * `stale` exists because "offline" is too strong for a Pi that missed one
- * heartbeat: the agent's own `/health` answers from a 2-second cache and the
- * box may simply be busy feeding tape.
+ * heartbeat: the agent beats every two minutes, and the box may simply be busy
+ * feeding tape.
  */
 export type StationStatus = "online" | "stale" | "offline" | "unknown";
 
@@ -83,9 +85,11 @@ export interface Station {
   agent_version: string | null;
   /** Agent process uptime in seconds, not host uptime. */
   uptime_seconds: number | null;
-  /** LAN address the agent reported at check-in, for the admin's own SSH. */
+  /** LAN address the agent reported at check-in, validated private server-side. */
   host: string | null;
   port: number | null;
+  /** Admin-typed `http://<ip>:<port>` that wins over the reported pair. */
+  agent_url_override: string | null;
   last_seen_at: string | null;
   paired_at: string | null;
   paired_by_name: string | null;
@@ -93,8 +97,14 @@ export interface Station {
   session_count: number;
   /** Sessions recorded on the Pi that have not been imported into SMPL yet. */
   pending_count: number;
-  /** Last error the agent reported, or the proxy's own reason for failing. */
+  /** The API's own reason its last call to the agent failed, if any. */
   agent_error: string | null;
+  /** True when the token still authenticates (not revoked, not expired). */
+  active?: boolean;
+  /** Set once an admin unpaired the station; the row stays as the audit trail. */
+  revoked_at?: string | null;
+  /** When the token stops authenticating; null means never. */
+  expires_at?: string | null;
 }
 
 export interface StationListResponse {
@@ -106,8 +116,8 @@ export interface StationListResponse {
 /**
  * One inventory session as the Pi recorded it.
  *
- * Mirrors the agent's `/session/{name}` view (`articles`, `total_qty`,
- * `total_scans`) plus the two fields only SMPL can know: whether it has
+ * Mirrors the agent's `/sessions` row (`articles`, `total_qty`, `total_scans`,
+ * `last_counted_at`) plus the two fields only SMPL can know: whether it has
  * already been pulled in, and into which Werkstatt inventory session.
  */
 export interface StationSession {
@@ -124,15 +134,15 @@ export interface StationSession {
 
 export interface StationSessionListResponse {
   sessions: StationSession[];
-  /** False when the station answered but the agent could not list sessions. */
+  /** False when the Pi could not be asked; `error` then says why. */
   ok: boolean;
   error: string | null;
 }
 
 export interface StationImportPayload {
-  /** Append into an existing Werkstatt inventory session, or omit to create one. */
+  /** Append into an existing open Werkstatt inventory, or omit to reuse/create one. */
   target_session_id?: number | null;
-  /** Name for the session the import creates. Defaults to the Pi's own name. */
+  /** Name for the session the import creates. Defaults to the station's name. */
   create_session_name?: string;
 }
 
@@ -161,6 +171,8 @@ export interface StationActionResult {
 export interface StationPatchPayload {
   name?: string;
   location?: string | null;
+  /** `http://<private ip or *.local>:<port>`; null clears the override. */
+  agent_url?: string | null;
 }
 
 export interface StationTestPrintPayload {
@@ -173,6 +185,14 @@ export interface StationSetup {
   script: string;
   /** The SMPL base URL the script bakes in. */
   base_url: string;
+}
+
+/** A Werkstatt inventory session, as far as the import target select needs. */
+export interface InventorySessionSummary {
+  id: number;
+  name: string;
+  status: string;
+  counted_articles: number;
 }
 
 // ── Transport ────────────────────────────────────────────────────────────
@@ -195,7 +215,7 @@ function asApiError(error: unknown): ApiError {
   return new ApiError(String(error), STATION_NETWORK_STATUS);
 }
 
-async function stationFetch<T>(
+async function timedFetch<T>(
   path: string,
   token: string | null,
   options: RequestInit = {},
@@ -204,7 +224,7 @@ async function stationFetch<T>(
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await apiFetch<T>(`${BASE}${path}`, token, {
+    return await apiFetch<T>(path, token, {
       ...options,
       signal: controller.signal,
     });
@@ -215,12 +235,21 @@ async function stationFetch<T>(
   }
 }
 
+function stationFetch<T>(
+  path: string,
+  token: string | null,
+  options: RequestInit = {},
+  timeoutMs: number = READ_TIMEOUT_MS,
+): Promise<T> {
+  return timedFetch<T>(`${BASE}${path}`, token, options, timeoutMs);
+}
+
 /**
  * Pull a list out of a response that may or may not be enveloped.
  *
- * The backend for these endpoints is being written in parallel with this
- * client. A bare array where an envelope was expected is the single most
- * likely mismatch, and it is not worth a blank screen.
+ * `GET /station/stations` answers a bare list by contract; the envelope form is
+ * accepted too because a wrapped list is the single most likely shape a later
+ * server might grow, and it is not worth a blank screen.
  */
 function unwrapList<T>(payload: unknown, key: string): T[] {
   if (Array.isArray(payload)) return payload as T[];
@@ -245,17 +274,32 @@ function readBool(payload: unknown, key: string, fallback: boolean): boolean {
 
 // ── Error classification ─────────────────────────────────────────────────
 
+/** What FastAPI answers for a path no route matches — and nothing else. */
+const FASTAPI_DEFAULT_404 = "Not Found";
+
+/** The API's own sentence on an error, or null when it sent none. */
+function apiDetail(error: ApiError): string | null {
+  return typeof error.detail === "string" && error.detail.trim() ? error.detail.trim() : null;
+}
+
 /**
  * True when the failure means "this server has no station API", rather than
  * "the request failed".
  *
- * 404 and 405 are what a router that was never mounted answers; 501 is what a
- * deliberately stubbed one answers. The page shows a calm "not available yet"
- * card for these instead of a red error.
+ * A 404 counts only when it carries no sentence of its own: FastAPI answers
+ * an unrouted path with exactly "Not Found", while a route that exists and
+ * says 404 does so in German ("Sitzung „regal“ wurde auf der Station nicht
+ * gefunden.") — that is an answer to show, not a missing API.
+ *
+ * Kept as a defence for a web build that is newer than the API it talks to;
+ * no page path reaches it against a current server.
  */
 export function isStationApiMissing(error: unknown): boolean {
   if (!(error instanceof ApiError)) return false;
-  return error.status === 404 || error.status === 405 || error.status === 501;
+  if (error.status === 405 || error.status === 501) return true;
+  if (error.status !== 404) return false;
+  const detail = apiDetail(error);
+  return detail === null || detail === FASTAPI_DEFAULT_404;
 }
 
 /** True when the request never reached the server (timeout, offline). */
@@ -279,6 +323,11 @@ export function describeStationError(error: unknown, de: boolean): string {
     if (error.status === 403) {
       return de ? "Keine Berechtigung für die Pi-Station." : "Not permitted to manage the Pi station.";
     }
+    // 404 (unknown Pi session, missing inventory), 409 (no address yet,
+    // station unpaired, inventory closed) and 502 (the agent's own words)
+    // carry a German sentence from the API — show it.
+    const detail = apiDetail(error);
+    if (detail !== null) return detail;
     if (error.status === 502 || error.status === 504) {
       return de
         ? "Die Station antwortet nicht. Läuft der Agent auf dem Pi?"
@@ -292,16 +341,18 @@ export function describeStationError(error: unknown, de: boolean): string {
 
 // ── Status helpers ───────────────────────────────────────────────────────
 
-/** Freshness thresholds, matching what the backend is expected to apply. */
-const ONLINE_WITHIN_MS = 90_000;
-const STALE_WITHIN_MS = 10 * 60_000;
+/**
+ * Freshness thresholds, identical to the API's (`services/station_view.py`).
+ * The agent beats every 120 s: one missed beat is not an outage.
+ */
+export const ONLINE_WITHIN_MS = 3 * 60_000;
+export const STALE_WITHIN_MS = 15 * 60_000;
 
 /**
  * The station's status, preferring the server's own verdict.
  *
- * Falls back to deriving it from `last_seen_at` so a backend that has not
- * implemented `status` yet still renders something truthful rather than
- * "unknown" on every row.
+ * Falls back to deriving it from `last_seen_at` so a row that carries no
+ * `status` still renders something truthful rather than "unknown".
  */
 export function stationStatus(station: Station, now: number = Date.now()): StationStatus {
   if (
@@ -311,23 +362,61 @@ export function stationStatus(station: Station, now: number = Date.now()): Stati
   ) {
     return station.status;
   }
-  if (!station.last_seen_at) return "unknown";
-  const seen = Date.parse(
-    /(?:[zZ]|[+\-]\d{2}:\d{2})$/.test(station.last_seen_at)
-      ? station.last_seen_at
-      : `${station.last_seen_at}Z`,
-  );
-  if (Number.isNaN(seen)) return "unknown";
+  const seen = parseServerStamp(station.last_seen_at);
+  if (seen === null) return "unknown";
   const age = now - seen;
   if (age <= ONLINE_WITHIN_MS) return "online";
   if (age <= STALE_WITHIN_MS) return "stale";
   return "offline";
 }
 
+/** `host:port`, the admin override, or null when the API has no address. */
+export function stationAddress(station: Station): string | null {
+  if (station.agent_url_override) return station.agent_url_override;
+  if (!station.host) return null;
+  return station.port ? `${station.host}:${station.port}` : station.host;
+}
+
+function parseServerStamp(iso: string | null | undefined): number | null {
+  if (!iso) return null;
+  const stamp = Date.parse(/(?:[zZ]|[+\-]\d{2}:\d{2})$/.test(iso) ? iso : `${iso}Z`);
+  return Number.isNaN(stamp) ? null : stamp;
+}
+
+/**
+ * Revoked or expired — the rows the default list hides and the audit toggle
+ * brings back. The same rule as the API's `is_station_retired`: an approved
+ * station whose Pi has not collected its token yet is *not* retired, and the
+ * admin who just approved it must still see it.
+ */
+export function isStationRetired(station: Station, now: number = Date.now()): boolean {
+  if (station.revoked_at) return true;
+  const expires = parseServerStamp(station.expires_at);
+  return expires !== null && expires <= now;
+}
+
+/**
+ * The station the page selects on its own: the first one that still works.
+ * A retired row is never auto-selected — every action on it would answer 409,
+ * and the page would open on a Pi that is not there.
+ */
+export function firstSelectableStation(stations: Station[], now: number = Date.now()): Station | null {
+  return stations.find((station) => !isStationRetired(station, now)) ?? null;
+}
+
 // ── Stations ─────────────────────────────────────────────────────────────
 
-export async function listStations(token: string | null): Promise<StationListResponse> {
-  const payload = await stationFetch<unknown>("/stations", token);
+export interface ListStationsOptions {
+  /** Also return revoked/expired rows — the audit list, greyed on the page. */
+  includeInactive?: boolean;
+}
+
+export async function listStations(
+  token: string | null,
+  options: ListStationsOptions = {},
+): Promise<StationListResponse> {
+  const path = options.includeInactive ? "/stations?include_inactive=1" : "/stations";
+  const payload = await stationFetch<unknown>(path, token);
   return {
     stations: unwrapList<Station>(payload, "stations"),
     server_time: readString(payload, "server_time"),
@@ -408,6 +497,21 @@ export async function importStationSession(
   );
 }
 
+/**
+ * Open Werkstatt inventories, for the "Ziel-Inventur" select.
+ *
+ * Only open ones: a finalized inventory is never written, and offering it
+ * would turn the select into a way to earn a 409.
+ */
+export async function listOpenInventorySessions(
+  token: string | null,
+): Promise<InventorySessionSummary[]> {
+  const rows = await timedFetch<unknown>("/werkstatt/inventory/sessions", token);
+  return unwrapList<InventorySessionSummary>(rows, "sessions").filter(
+    (row) => row && row.status === "open" && typeof row.id === "number",
+  );
+}
+
 // ── Pairing ──────────────────────────────────────────────────────────────
 //
 // The backend implements the OAuth 2.0 **device authorization grant**
@@ -483,37 +587,27 @@ export async function getSetupScript(token: string | null): Promise<StationSetup
 }
 
 /**
- * The fallback setup block, used when `/station/setup` is not implemented.
- *
- * Deliberately a literal here rather than a spinner over a missing endpoint:
- * an admin standing at a fresh Pi needs commands on screen, and these do not
- * depend on anything the server has to compute except its own URL.
+ * The setup block shown until `/station/setup` has answered (or when it
+ * cannot). The same documented path the server renders — install-pi.sh, then
+ * `--pair` — so the two can never contradict each other. The server's copy
+ * additionally pins the release tag on the clone.
  */
 export function fallbackSetupScript(baseUrl: string): string {
+  const base = baseUrl.replace(/\/+$/, "");
   return [
-    "# 1) Abhängigkeiten (Raspberry Pi OS)",
-    "sudo apt update && sudo apt install -y git python3-venv libusb-1.0-0",
+    "# 1) Code holen — einmalig. Später zum Aktualisieren: cd ~/smpl && git pull",
+    "git clone --depth 1 <SMPL-Repository-URL> ~/smpl",
     "",
-    "# 2) SMPL Label-Agent holen",
-    "git clone <SMPL-Repository-URL> ~/smpl && cd ~/smpl/tools/label_agent",
+    "# 2) Installer — Dienst, udev-Regeln und venv; idempotent, nach jedem Update erneut ausführen",
+    "#    (mit --with-kiosk zusätzlich die beiden Werkstatt-Bildschirme)",
+    `sudo ~/smpl/tools/label_agent/packaging/install-pi.sh --smpl-url ${base}`,
     "",
-    "# 3) USB-Regel für den Brother PT-P710BT (sonst braucht der Agent root)",
-    "sudo tee /etc/udev/rules.d/99-brother-ptouch.rules >/dev/null <<'EOF'",
-    'SUBSYSTEM=="usb", ATTR{idVendor}=="04f9", ATTR{idProduct}=="20af", MODE="0660", GROUP="lp"',
-    "EOF",
-    "sudo udevadm control --reload-rules && sudo udevadm trigger",
+    "# 3) Koppeln — zeigt einen Code; hier unter „Neue Station koppeln“ freigeben",
+    "sudo -u smpl-station AGENT_STATE_DIR=/var/lib/smpl-station \\",
+    "  /opt/smpl-station/tools/label_agent/.venv/bin/python \\",
+    "  /opt/smpl-station/tools/label_agent/server.py --pair",
     "",
-    "# 4) Mit dieser SMPL-Installation koppeln",
-    // No pairing code to enter here: the agent starts the pairing itself and
-    // prints a code to approve in SMPL. The script used to export
-    // SMPL_PAIRING_CODE with a <Kopplungscode> placeholder — a variable the
-    // agent has never read, standing in for a code the operator cannot obtain
-    // before the agent runs, which left them looking for one that will not
-    // exist until it does.
-    `export SMPL_API_URL=${baseUrl}`,
-    "./run.sh --host 0.0.0.0",
-    "",
-    "# 5) Der Agent zeigt jetzt einen Kopplungscode.",
-    "#    In SMPL unter Scan-Station freigeben — Code muss übereinstimmen.",
+    "# Danach meldet der Agent alle 2 Minuten Adresse und Hardware an SMPL;",
+    "# erst dann funktionieren Testetikett, Hardware prüfen und Neustart.",
   ].join("\n");
 }

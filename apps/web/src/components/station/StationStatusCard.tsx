@@ -1,16 +1,16 @@
 /**
  * StationStatusCard — "is the box up, and what is plugged into it".
  *
- * The card resolves into a *statement* in every branch: the API is not there
- * yet, the request failed, nothing is paired, or here is the station. It never
- * spins forever, because the thing it describes is a Pi on a shelf that can be
- * unplugged.
+ * The card resolves into a *statement* in every branch: the request failed,
+ * nothing is paired, or here is the station. It never spins forever, because
+ * the thing it describes is a Pi on a shelf that can be unplugged.
  *
  * It owns no data. `PiStationPage` polls; this renders what it is handed and
- * calls back for the four actions.
+ * calls back for the actions and the inline edit.
  */
 import type { Station, StationStatus } from "../../utils/stationApi";
-import { stationStatus } from "../../utils/stationApi";
+import { stationAddress, stationStatus } from "../../utils/stationApi";
+import { StationEditForm, type StationEditDraft, type StationEditField } from "./StationEditForm";
 import { FeedbackLine, MetaItem, StatusPill, type Feedback } from "./StationPrimitives";
 import {
   formatAge,
@@ -25,12 +25,28 @@ export type StationActionKind = "print" | "recheck" | "restart" | "unpair";
 
 export type StationListState = "loading" | "ready" | "error" | "missing";
 
+export interface StationEditState {
+  editing: boolean;
+  draft: StationEditDraft;
+  busy: boolean;
+  error: string | null;
+}
+
 export interface StationStatusCardProps {
   t: StationT;
   de: boolean;
   /** Ticking clock from the page, so relative ages stay honest. */
   now: number;
+  /** Stations that can still be talked to — the switcher and the detail. */
   stations: Station[];
+  /**
+   * Revoked or expired rows, rendered greyed as the audit list when
+   * `showInactive` is on. Never selectable: every action on one answers 409,
+   * and the page must not open on a Pi that is not there.
+   */
+  retired: Station[];
+  showInactive: boolean;
+  onShowInactiveChange: (show: boolean) => void;
   listState: StationListState;
   listError: string | null;
   selected: Station | null;
@@ -44,6 +60,11 @@ export interface StationStatusCardProps {
   onRecheck: () => void;
   onRestart: () => void;
   onUnpair: () => void;
+  edit: StationEditState;
+  onEditStart: () => void;
+  onEditChange: (field: StationEditField, value: string) => void;
+  onEditCancel: () => void;
+  onEditSave: () => void;
 }
 
 // ── Pieces ───────────────────────────────────────────────────────────────
@@ -85,9 +106,12 @@ function StationSwitcher({
 }
 
 function StationMetaGrid({ station, t, de, now }: { station: Station; t: StationT; de: boolean; now: number }) {
-  const address = station.host
-    ? `${station.host}${station.port ? `:${station.port}` : ""}`
-    : "—";
+  const address = stationAddress(station);
+  const addressValue = address
+    ? station.agent_url_override
+      ? `${address} (${t("addressManual")})`
+      : address
+    : t("addressUnknown");
   const paired = station.paired_at
     ? `${formatStamp(station.paired_at, de)}${
         station.paired_by_name ? ` · ${station.paired_by_name}` : ""
@@ -99,7 +123,7 @@ function StationMetaGrid({ station, t, de, now }: { station: Station; t: Station
       <MetaItem label={t("version")} value={station.agent_version ?? "—"} mono />
       <MetaItem label={t("uptime")} value={formatUptime(station.uptime_seconds, de)} />
       <MetaItem label={t("lastSeen")} value={formatAge(station.last_seen_at, de, now)} />
-      <MetaItem label={t("address")} value={address} mono />
+      <MetaItem label={t("address")} value={addressValue} mono={Boolean(address)} />
       <MetaItem label={t("pairedAt")} value={paired} />
     </dl>
   );
@@ -120,7 +144,7 @@ function StationHardware({ station, t }: { station: Station; t: StationT }) {
 
   const printerValue = hw?.printer_connected
     ? [
-        hw.printer_model ?? "Brother PT-P710BT",
+        hw.printer_model ?? t("printerModel"),
         t("printerOk"),
         hw.media_width_mm ? `${t("tape")} ${hw.media_width_mm} mm` : null,
       ]
@@ -150,6 +174,7 @@ function StationActionBar({
   onRecheck,
   onRestart,
   onUnpair,
+  onEditStart,
 }: {
   t: StationT;
   busy: boolean;
@@ -160,6 +185,7 @@ function StationActionBar({
   onRecheck: () => void;
   onRestart: () => void;
   onUnpair: () => void;
+  onEditStart: () => void;
 }) {
   return (
     <div className="pi-station-actions">
@@ -198,6 +224,9 @@ function StationActionBar({
           {t("restart")}
         </button>
       )}
+      <button type="button" className="werkstatt-card-action" onClick={onEditStart} disabled={busy}>
+        {t("edit")}
+      </button>
       <button
         type="button"
         className="werkstatt-card-action pi-station-unpair"
@@ -223,19 +252,24 @@ function StationDetail({
   onRecheck,
   onRestart,
   onUnpair,
-}: {
+  edit,
+  onEditStart,
+  onEditChange,
+  onEditCancel,
+  onEditSave,
+}: Omit<
+  StationStatusCardProps,
+  | "stations"
+  | "retired"
+  | "showInactive"
+  | "onShowInactiveChange"
+  | "listState"
+  | "listError"
+  | "selected"
+  | "selectedId"
+  | "onSelect"
+> & {
   station: Station;
-  t: StationT;
-  de: boolean;
-  now: number;
-  actionBusy: StationActionKind | null;
-  actionFeedback: Feedback | null;
-  restartArmed: boolean;
-  onArmRestart: (armed: boolean) => void;
-  onTestPrint: () => void;
-  onRecheck: () => void;
-  onRestart: () => void;
-  onUnpair: () => void;
 }) {
   const status = stationStatus(station, now);
 
@@ -249,7 +283,19 @@ function StationDetail({
         <StatusPill status={status} label={t(statusKey(status))} />
       </div>
 
-      <StationMetaGrid station={station} t={t} de={de} now={now} />
+      {edit.editing ? (
+        <StationEditForm
+          t={t}
+          draft={edit.draft}
+          busy={edit.busy}
+          error={edit.error}
+          onChange={onEditChange}
+          onCancel={onEditCancel}
+          onSave={onEditSave}
+        />
+      ) : (
+        <StationMetaGrid station={station} t={t} de={de} now={now} />
+      )}
 
       <h4 className="pi-station-subhead">{t("hardware")}</h4>
       <StationHardware station={station} t={t} />
@@ -259,48 +305,94 @@ function StationDetail({
         <p className="pi-station-warn pi-station-warn--bad">{station.agent_error}</p>
       )}
 
-      <StationActionBar
-        t={t}
-        busy={actionBusy !== null}
-        actionBusy={actionBusy}
-        restartArmed={restartArmed}
-        onArmRestart={onArmRestart}
-        onTestPrint={onTestPrint}
-        onRecheck={onRecheck}
-        onRestart={onRestart}
-        onUnpair={onUnpair}
-      />
+      {!edit.editing && (
+        <StationActionBar
+          t={t}
+          busy={actionBusy !== null}
+          actionBusy={actionBusy}
+          restartArmed={restartArmed}
+          onArmRestart={onArmRestart}
+          onTestPrint={onTestPrint}
+          onRecheck={onRecheck}
+          onRestart={onRestart}
+          onUnpair={onUnpair}
+          onEditStart={onEditStart}
+        />
+      )}
 
+      <p className="pi-station-hint">{t("recheckHint")}</p>
       {restartArmed && <p className="pi-station-warn">{t("restartConfirm")}</p>}
       <FeedbackLine feedback={actionFeedback} />
     </div>
   );
 }
 
+/** "Entkoppelt · 10.09.26, 10:00 · Gekoppelt 08.09.26, 10:00" — why the row is
+ *  history, and since when. */
+function retiredReason(station: Station, t: StationT, de: boolean): string {
+  const parts: string[] = [];
+  if (station.revoked_at) {
+    parts.push(`${t("revokedAt")} · ${formatStamp(station.revoked_at, de)}`);
+  } else if (station.expires_at) {
+    parts.push(`${t("expiredAt")} · ${formatStamp(station.expires_at, de)}`);
+  }
+  if (station.paired_at) {
+    parts.push(`${t("pairedAt")} ${formatStamp(station.paired_at, de)}`);
+  }
+  return parts.join(" · ");
+}
+
+function RetiredStations({ retired, t, de }: { retired: Station[]; t: StationT; de: boolean }) {
+  return (
+    <div className="pi-station-retired">
+      <h4 className="pi-station-subhead">{t("retiredTitle")}</h4>
+      {retired.length === 0 ? (
+        <p className="admin-page-muted">{t("retiredNone")}</p>
+      ) : (
+        <ul className="pi-station-retired-list">
+          {retired.map((station) => (
+            <li key={station.id} className="pi-station-retired-row">
+              <span className="pi-station-retired-name">{station.name}</span>
+              <span className="pi-station-retired-meta">{retiredReason(station, t, de)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="pi-station-hint">{t("retiredHint")}</p>
+    </div>
+  );
+}
+
 // ── Card ─────────────────────────────────────────────────────────────────
 
-export function StationStatusCard({
-  t,
-  de,
-  now,
-  stations,
-  listState,
-  listError,
-  selected,
-  selectedId,
-  onSelect,
-  actionBusy,
-  actionFeedback,
-  restartArmed,
-  onArmRestart,
-  onTestPrint,
-  onRecheck,
-  onRestart,
-  onUnpair,
-}: StationStatusCardProps) {
+export function StationStatusCard(props: StationStatusCardProps) {
+  const {
+    t,
+    de,
+    stations,
+    retired,
+    showInactive,
+    onShowInactiveChange,
+    listState,
+    listError,
+    selected,
+    selectedId,
+    onSelect,
+    now,
+  } = props;
   return (
     <div className="admin-page-card">
-      <h2 className="admin-page-card-title">{t("stationsTitle")}</h2>
+      <div className="pi-station-card-head">
+        <h2 className="admin-page-card-title">{t("stationsTitle")}</h2>
+        <label className="pi-station-toggle">
+          <input
+            type="checkbox"
+            checked={showInactive}
+            onChange={(event) => onShowInactiveChange(event.target.checked)}
+          />
+          {t("showInactive")}
+        </label>
+      </div>
 
       {listState === "loading" && <p className="admin-page-muted">{t("loading")}</p>}
 
@@ -332,22 +424,9 @@ export function StationStatusCard({
         />
       )}
 
-      {selected && (
-        <StationDetail
-          station={selected}
-          t={t}
-          de={de}
-          now={now}
-          actionBusy={actionBusy}
-          actionFeedback={actionFeedback}
-          restartArmed={restartArmed}
-          onArmRestart={onArmRestart}
-          onTestPrint={onTestPrint}
-          onRecheck={onRecheck}
-          onRestart={onRestart}
-          onUnpair={onUnpair}
-        />
-      )}
+      {selected && <StationDetail {...props} station={selected} />}
+
+      {showInactive && <RetiredStations retired={retired} t={t} de={de} />}
     </div>
   );
 }

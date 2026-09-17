@@ -319,7 +319,12 @@ def test_an_approval_never_collected_leaves_nothing_usable(client: TestClient, a
     assert body["status"] == "expired"
     assert body["token"] is None
 
-    stations = client.get("/api/station/stations", headers=auth_headers(admin_token)).json()
+    # The default list hides a revoked row (it must not be auto-selected on
+    # the admin page); the audit view asks for it explicitly.
+    assert client.get("/api/station/stations", headers=auth_headers(admin_token)).json() == []
+    stations = client.get(
+        "/api/station/stations?include_inactive=1", headers=auth_headers(admin_token)
+    ).json()
     assert [s["id"] for s in stations] == [approved["station"]["id"]]
     assert stations[0]["active"] is False
     assert stations[0]["revoked_at"] is not None
@@ -406,7 +411,11 @@ def test_a_revoked_station_stops_working_on_its_very_next_call(
         f"/api/station/stations/{station['id']}", headers=auth_headers(admin_token)
     )
     assert again.status_code == 204
-    still_listed = client.get("/api/station/stations", headers=auth_headers(admin_token)).json()
+    # Gone from the working list, kept in the audit list.
+    assert client.get("/api/station/stations", headers=auth_headers(admin_token)).json() == []
+    still_listed = client.get(
+        "/api/station/stations?include_inactive=1", headers=auth_headers(admin_token)
+    ).json()
     assert [s["id"] for s in still_listed] == [station["id"]]
     assert still_listed[0]["revoked_at"] == revoked.json()["revoked_at"]
 

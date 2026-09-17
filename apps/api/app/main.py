@@ -18,6 +18,8 @@ from app.core.security import get_password_hash, verify_password
 from app.core.time import utcnow
 from app.models.entities import User
 from app.routers import workflow_station
+from app.routers import workflow_station_admin
+from app.routers import workflow_station_pairing
 from app.routers import workflow_station_werkstatt
 from app.routers import workflow_werkstatt_inventory
 from app.routers import admin, api_tokens, auth, events, time_tracking, workflow, workflow_notifications, workflow_schaltplan, workflow_task_packing_list, workflow_training_reports
@@ -389,6 +391,8 @@ app.include_router(time_tracking.router, prefix="/api")
 app.include_router(workflow_training_reports.router, prefix="/api")
 app.include_router(workflow_werkstatt_inventory.router, prefix="/api")
 app.include_router(workflow_station.router, prefix="/api")
+app.include_router(workflow_station_pairing.router, prefix="/api")
+app.include_router(workflow_station_admin.router, prefix="/api")
 app.include_router(workflow_station_werkstatt.router, prefix="/api")
 app.include_router(workflow_schaltplan.router, prefix="/api")
 app.include_router(workflow_task_packing_list.router, prefix="/api")

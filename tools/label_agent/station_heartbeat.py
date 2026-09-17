@@ -18,17 +18,26 @@ permission to keep working, and every failure mode here is silent by design:
 Deliberately slow. A Pi on a small office line has better things to do with
 its uplink, and "seen within the last two minutes" answers the only question
 the admin page is really asking.
+
+Since the Scan-Station page grew buttons that call *back* to the Pi, the beat
+also carries where the agent listens (``host``/``port``), its uptime, how
+many count sessions it holds and a small ``hardware`` summary. The address
+has to come from the Pi's own NIC — SMPL sees the office router on every
+request (hairpin NAT) — which is what ``detect_lan_ip`` is for.
 """
 
 from __future__ import annotations
 
 import json
+import socket
+import subprocess
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Callable, Dict, Optional
 
-__all__ = ["Heartbeat", "HEARTBEAT_PATHS"]
+__all__ = ["Heartbeat", "HEARTBEAT_PATHS", "detect_lan_ip"]
 
 HEARTBEAT_PATHS = (
     "/api/station/heartbeat",
@@ -39,6 +48,62 @@ INTERVAL_S = 120.0
 REJECTED_INTERVAL_S = 600.0
 REQUEST_TIMEOUT_S = 10.0
 MAX_RESPONSE_BYTES = 64 * 1024
+# `hostname -I` is the fallback address source; it must never hang a beat.
+HOSTNAME_TIMEOUT_S = 2.0
+
+
+def _target(base_url: str) -> Optional[tuple]:
+    """(host, port) of the SMPL server, or None when the URL has none."""
+    parsed = urllib.parse.urlsplit((base_url or "").strip())
+    host = parsed.hostname
+    if not host:
+        return None
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    return host, port or (443 if parsed.scheme == "https" else 80)
+
+
+def _hostname_i() -> Optional[str]:
+    """First non-loopback IPv4 from `hostname -I` (Linux only; elsewhere None)."""
+    try:
+        completed = subprocess.run(
+            ["hostname", "-I"], capture_output=True, text=True,
+            timeout=HOSTNAME_TIMEOUT_S, check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    for token in (completed.stdout or "").split():
+        if token.count(".") == 3 and not token.startswith("127."):
+            return token
+    return None
+
+
+def detect_lan_ip(base_url: str) -> Optional[str]:
+    """This machine's address on the interface that reaches SMPL.
+
+    A UDP "connect" makes the kernel pick the route to the SMPL host and
+    ``getsockname`` reads the address of the interface it chose. No packet is
+    sent, so it works while SMPL is down, and it names the Pi's own NIC —
+    not the router SMPL sees on the request, and not a docker0 or VPN
+    interface the Pi happens to have. Falls back to ``hostname -I`` when
+    the URL has no host or nothing routes there. Never raises: an address
+    the beat cannot find is a key it does not send, and SMPL keeps the last
+    one it had.
+    """
+    target = _target(base_url)
+    if target is not None:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.settimeout(1.0)
+                sock.connect(target)
+                address = sock.getsockname()[0]
+            if address and not address.startswith("127.") and address != "0.0.0.0":
+                return address
+        except (OSError, ValueError):
+            pass
+    return _hostname_i()
 
 
 class Heartbeat:
@@ -155,6 +220,30 @@ class Heartbeat:
         extra = status.get("status")
         if isinstance(extra, dict):
             body["status"] = extra
+        body.update(self._reachability(status))
+        return body
+
+    @staticmethod
+    def _reachability(status: Dict[str, Any]) -> Dict[str, Any]:
+        """The keys SMPL needs to call back: typed strictly, absent when the
+        provider has nothing sound to say. A missing ``host`` makes SMPL keep
+        the address it already stored; a wrong one would replace it."""
+        body: Dict[str, Any] = {}
+        host = status.get("host")
+        if isinstance(host, str) and host.strip():
+            body["host"] = host.strip()[:64]
+        port = status.get("port")
+        if isinstance(port, int) and not isinstance(port, bool) and 1 <= port <= 65535:
+            body["port"] = port
+        uptime = status.get("uptime_seconds")
+        if isinstance(uptime, (int, float)) and not isinstance(uptime, bool) and uptime >= 0:
+            body["uptime_seconds"] = int(uptime)
+        sessions = status.get("session_count")
+        if isinstance(sessions, int) and not isinstance(sessions, bool) and sessions >= 0:
+            body["session_count"] = sessions
+        hardware = status.get("hardware")
+        if isinstance(hardware, dict):
+            body["hardware"] = hardware
         return body
 
     def _post(self, path: str, payload: Dict[str, Any], token: str):

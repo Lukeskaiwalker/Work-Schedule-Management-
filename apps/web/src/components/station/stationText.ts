@@ -125,6 +125,67 @@ export const TEXT = {
     de: "Die Sitzungen konnten nicht geladen werden.",
     en: "Sessions could not be loaded.",
   },
+  // -- editing a station ---------------------------------------------------
+  edit: { de: "Bearbeiten", en: "Edit" },
+  save: { de: "Speichern", en: "Save" },
+  saving: { de: "Speichert…", en: "Saving…" },
+  saved: { de: "Gespeichert.", en: "Saved." },
+  nameLabel: { de: "Name", en: "Name" },
+  location: { de: "Standort", en: "Location" },
+  locationPlaceholder: { de: "z. B. Werkstatt, Regalwand", en: "e.g. workshop, rack wall" },
+  agentUrl: { de: "Agent-Adresse (optional)", en: "Agent address (optional)" },
+  agentUrlHint: {
+    de: "http://<IP>:8765 — nur nötig, wenn der Pi in einem anderen Netz steht oder die gemeldete Adresse falsch ist. Leer lassen, um die gemeldete Adresse zu verwenden.",
+    en: "http://<ip>:8765 — only needed when the Pi sits on another subnet or the reported address is wrong. Leave empty to use the reported address.",
+  },
+  addressUnknown: {
+    de: "Adresse unbekannt — Agent auf dem Pi aktualisieren",
+    en: "Address unknown — update the agent on the Pi",
+  },
+  addressManual: { de: "manuell", en: "manual" },
+  printerModel: { de: "Brother PT-P710BT", en: "Brother PT-P710BT" },
+  recheckHint: {
+    de: "Der Heartbeat kommt alle 2 Minuten — „Hardware prüfen“ fragt den Pi sofort.",
+    en: "The heartbeat arrives every 2 minutes — “Re-check hardware” asks the Pi right now.",
+  },
+  restartTriggered: {
+    de: "Neustart ausgelöst — der Agent meldet sich in wenigen Sekunden zurück.",
+    en: "Restart triggered — the agent will report back in a few seconds.",
+  },
+  stationInactive: { de: "Station ist entkoppelt.", en: "The station is unpaired." },
+  sessionsOffline: {
+    de: "Die Station antwortet nicht. Läuft der Agent auf dem Pi?",
+    en: "The station is not answering. Is the agent running on the Pi?",
+  },
+  // -- importing ---------------------------------------------------------------
+  importTarget: { de: "Ziel-Inventur", en: "Target inventory" },
+  // Honest about what the server does with the default: a Pi session that
+  // was imported before lands in the open inventory it fed, not in a new one.
+  importTargetNew: {
+    de: "Neue Inventur anlegen — bzw. die offene Inventur dieser Sitzung fortführen",
+    en: "Create a new inventory — or continue this session's open one",
+  },
+  importTargetDefault: { de: "Standard", en: "default" },
+  // `{names}` is replaced by the card with the sessions this applies to.
+  importTargetHint: {
+    de: "Schon übernommene Sitzungen ({names}) führen mit dieser Auswahl ihre bisherige Inventur fort, solange sie offen ist — eine neue entsteht erst, wenn jene abgeschlossen wurde. Für eine getrennte Nachzählung oben eine andere offene Inventur wählen.",
+    en: "Sessions imported before ({names}) continue their previous inventory with this choice as long as it is open — a new one is only created once that one was finalized. For a separate recount pick another open inventory above.",
+  },
+  // -- retired stations ---------------------------------------------------------
+  showInactive: { de: "Entkoppelte anzeigen", en: "Show unpaired" },
+  retiredTitle: { de: "Entkoppelte Stationen", en: "Unpaired stations" },
+  retiredNone: { de: "Keine entkoppelten Stationen.", en: "No unpaired stations." },
+  revokedAt: { de: "Entkoppelt", en: "Unpaired" },
+  expiredAt: { de: "Abgelaufen", en: "Expired" },
+  retiredHint: {
+    de: "Eine abgelaufene oder entkoppelte Station kann nur durch erneutes Koppeln zurückkommen.",
+    en: "An expired or unpaired station only comes back by pairing it again.",
+  },
+  sessionsDefaultNote: {
+    de: "„default“ sammelt alles, was ohne Sitzung gezählt wurde; sein Übernommen-Stempel wandert bei jeder Übernahme mit.",
+    en: "“default” collects everything counted without a session; its imported stamp moves with every import.",
+  },
+  importedInto: { de: "Inventur", en: "inventory" },
 } as const;
 
 export type StationTextKey = keyof typeof TEXT;

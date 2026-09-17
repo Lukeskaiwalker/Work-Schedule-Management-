@@ -2,19 +2,18 @@
  * PiStationPage — admin surface for the Raspberry Pi scan station.
  *
  * The station is a Pi in the office with a barcode scanner, a Brother
- * PT-P710BT and (later) an SD card reader for Benning/Metrel device exports.
- * It runs `tools/label_agent/server.py`. This page is the only place inside
- * SMPL where that box is visible: is it up, what is plugged into it, what has
- * it counted, and how do I get a new one on the network.
+ * PT-P710BT and an SD card reader for Benning/Metrel device exports. It runs
+ * `tools/label_agent/server.py`. This page is the only place inside SMPL where
+ * that box is visible: is it up, what is plugged into it, what has it counted,
+ * and how do I get a new one on the network.
  *
  * Two things shape the surface:
  *
- *  1. **Everything here can be absent.** The station API is being written in
- *     parallel with this page, and the Pi itself is a box on a shelf that can
- *     be unplugged. Each panel therefore resolves into a *statement* — "not
- *     available yet", "not reachable", "nothing recorded" — never an endless
- *     spinner. `stationApi` time-boxes every request so a silent Pi cannot
- *     hang one.
+ *  1. **The Pi can be absent.** It is a box on a shelf that can be unplugged,
+ *     and one that has not been updated yet has no address the API can call.
+ *     Each panel therefore resolves into a *statement* — "not reachable",
+ *     "address unknown", "nothing recorded" — never an endless spinner.
+ *     `stationApi` time-boxes every request so a silent Pi cannot hang one.
  *
  *  2. **It is a monitoring surface, not a marketing page.** Dense rows, real
  *     numbers, and the failure reason spelled out where the failure is.
@@ -33,14 +32,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { useAppContext } from "../context/AppContext";
 import { StationPairingCard } from "../components/station/StationPairingCard";
+import type { StationEditDraft, StationEditField } from "../components/station/StationEditForm";
 import {
+  IMPORT_TARGET_NEW,
   StationSessionsCard,
+  type ImportTarget,
   type StationSessionState,
 } from "../components/station/StationSessionsCard";
 import { StationSetupCard } from "../components/station/StationSetupCard";
 import {
   StationStatusCard,
   type StationActionKind,
+  type StationEditState,
   type StationListState,
 } from "../components/station/StationStatusCard";
 import type { Feedback } from "../components/station/StationPrimitives";
@@ -50,16 +53,21 @@ import {
   describeStationError,
   fallbackSetupScript,
   denyPairing,
+  firstSelectableStation,
   getSetupScript,
   importStationSession,
   isStationApiMissing,
+  isStationRetired,
+  listOpenInventorySessions,
   listStationSessions,
   listStations,
+  patchStation,
   printTestLabel,
   refreshStation,
   restartStationAgent,
   listPendingPairings,
   unpairStation,
+  type InventorySessionSummary,
   type Station,
   type StationPairingRequest,
   type StationSession,
@@ -73,6 +81,8 @@ const POLL_MS_SLOW = 90_000;
 const POLL_FAILURES_BEFORE_BACKOFF = 3;
 /** How often to ask whether an outstanding pairing code has been claimed. */
 const PAIRING_POLL_MS = 4_000;
+
+const EMPTY_DRAFT: StationEditDraft = { name: "", location: "", agentUrl: "" };
 
 /**
  * A ticking clock, so relative timestamps stay honest without a manual reload.
@@ -90,6 +100,14 @@ function useNow(intervalMs: number): number {
   return now;
 }
 
+function draftFor(station: Station): StationEditDraft {
+  return {
+    name: station.name,
+    location: station.location ?? "",
+    agentUrl: station.agent_url_override ?? "",
+  };
+}
+
 export function PiStationPage() {
   const { token, language } = useAppContext();
   const de = language === "de";
@@ -102,6 +120,9 @@ export function PiStationPage() {
   const [lastUpdated, setLastUpdated] = useState<number | null>(null);
   const [manualReloading, setManualReloading] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  // The audit toggle: also fetch revoked/expired rows. Off by default, so an
+  // unpaired Pi vanishes from the switcher instead of being auto-selected.
+  const [showInactive, setShowInactive] = useState(false);
 
   const mountedRef = useRef(true);
   const failuresRef = useRef(0);
@@ -114,7 +135,7 @@ export function PiStationPage() {
 
   const loadStations = useCallback(async () => {
     try {
-      const result = await listStations(token);
+      const result = await listStations(token, { includeInactive: showInactive });
       if (!mountedRef.current) return;
       failuresRef.current = 0;
       setStations(result.stations);
@@ -134,7 +155,7 @@ export function PiStationPage() {
       }
       setLastUpdated(Date.now());
     }
-  }, [token, de]);
+  }, [token, de, showInactive]);
 
   useEffect(() => {
     let cancelled = false;
@@ -166,22 +187,6 @@ export function PiStationPage() {
     if (mountedRef.current) setManualReloading(false);
   }, [loadStations]);
 
-  // Keep the selection pointing at something that still exists.
-  useEffect(() => {
-    if (stations.length === 0) {
-      if (selectedId !== null) setSelectedId(null);
-      return;
-    }
-    if (selectedId === null || !stations.some((s) => s.id === selectedId)) {
-      setSelectedId(stations[0].id);
-    }
-  }, [stations, selectedId]);
-
-  const selected = useMemo(
-    () => stations.find((s) => s.id === selectedId) ?? null,
-    [stations, selectedId],
-  );
-
   // -- pairing -------------------------------------------------------------
   const [pending, setPending] = useState<StationPairingRequest[]>([]);
   const [pairingNames, setPairingNames] = useState<Record<string, string>>({});
@@ -191,6 +196,34 @@ export function PiStationPage() {
   // A second while any code is counting down, 30 s otherwise — see useNow.
   const pairingActive = pending.length > 0;
   const now = useNow(pairingActive ? 1_000 : 30_000);
+
+  // Live rows drive the switcher and the detail; retired ones are the audit
+  // list. Split here, on the clock, so a token that expires while the page
+  // is open moves its row across on the next tick rather than on a reload.
+  const activeStations = useMemo(
+    () => stations.filter((station) => !isStationRetired(station, now)),
+    [stations, now],
+  );
+  const retiredStations = useMemo(
+    () => stations.filter((station) => isStationRetired(station, now)),
+    [stations, now],
+  );
+
+  // Keep the selection pointing at something that still works: never a
+  // retired row (every action on it would answer 409), and nothing at all
+  // when only retired rows are left.
+  useEffect(() => {
+    const stillLive = activeStations.some((s) => s.id === selectedId);
+    if (stillLive) return;
+    const next = firstSelectableStation(stations, now);
+    const nextId = next?.id ?? null;
+    if (nextId !== selectedId) setSelectedId(nextId);
+  }, [stations, activeStations, selectedId, now]);
+
+  const selected = useMemo(
+    () => activeStations.find((s) => s.id === selectedId) ?? null,
+    [activeStations, selectedId],
+  );
 
   /**
    * Poll for codes the Pi has requested.
@@ -320,10 +353,10 @@ export function PiStationPage() {
       const result = await restartStationAgent(token, selected.id);
       return {
         ok: result.ok !== false,
-        text: result.detail || (de ? "Neustart ausgelöst." : "Restart triggered."),
+        text: result.detail || t("restartTriggered"),
       };
     });
-  }, [selected, token, de, runAction]);
+  }, [selected, token, runAction, t]);
 
   const doUnpair = useCallback(() => {
     if (!selected) return;
@@ -334,12 +367,69 @@ export function PiStationPage() {
     });
   }, [selected, token, de, runAction, t]);
 
+  // -- inline edit ---------------------------------------------------------
+  const [editing, setEditing] = useState(false);
+  const [editDraft, setEditDraft] = useState<StationEditDraft>(EMPTY_DRAFT);
+  const [editBusy, setEditBusy] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
+
+  // A different station means a different form; never carry a draft across.
+  useEffect(() => {
+    setEditing(false);
+    setEditError(null);
+  }, [selectedId]);
+
+  const startEdit = useCallback(() => {
+    if (!selected) return;
+    setEditDraft(draftFor(selected));
+    setEditError(null);
+    setEditing(true);
+  }, [selected]);
+
+  const changeEdit = useCallback((field: StationEditField, value: string) => {
+    setEditDraft((prev) => ({ ...prev, [field]: value }));
+  }, []);
+
+  const cancelEdit = useCallback(() => {
+    setEditing(false);
+    setEditError(null);
+  }, []);
+
+  const saveEdit = useCallback(() => {
+    if (!selected) return;
+    const stationId = selected.id;
+    const draft = editDraft;
+    setEditBusy(true);
+    setEditError(null);
+    void (async () => {
+      try {
+        await patchStation(token, stationId, {
+          name: draft.name.trim(),
+          location: draft.location.trim() || null,
+          agent_url: draft.agentUrl.trim() || null,
+        });
+        if (!mountedRef.current) return;
+        setEditing(false);
+        setActionFeedback({ ok: true, text: t("saved") });
+        await loadStations();
+      } catch (error: unknown) {
+        if (mountedRef.current) setEditError(describeStationError(error, de));
+      } finally {
+        if (mountedRef.current) setEditBusy(false);
+      }
+    })();
+  }, [selected, editDraft, token, de, t, loadStations]);
+
+  const edit: StationEditState = { editing, draft: editDraft, busy: editBusy, error: editError };
+
   // -- sessions ------------------------------------------------------------
   const [sessions, setSessions] = useState<StationSession[]>([]);
   const [sessionState, setSessionState] = useState<StationSessionState>("idle");
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [importingName, setImportingName] = useState<string | null>(null);
   const [importFeedback, setImportFeedback] = useState<Feedback | null>(null);
+  const [openInventories, setOpenInventories] = useState<InventorySessionSummary[]>([]);
+  const [importTarget, setImportTarget] = useState<ImportTarget>(IMPORT_TARGET_NEW);
 
   const loadSessions = useCallback(
     async (stationId: number) => {
@@ -361,32 +451,62 @@ export function PiStationPage() {
     [token, de],
   );
 
+  /**
+   * The open Werkstatt inventories for the target select. A failure here
+   * costs nothing but the select's extra options: "Neue Inventur anlegen"
+   * needs no list, so the import stays usable.
+   */
+  const loadOpenInventories = useCallback(async () => {
+    try {
+      const rows = await listOpenInventorySessions(token);
+      if (mountedRef.current) setOpenInventories(rows);
+    } catch {
+      if (mountedRef.current) setOpenInventories([]);
+    }
+  }, [token]);
+
   useEffect(() => {
     setImportFeedback(null);
+    setImportTarget(IMPORT_TARGET_NEW);
     if (selectedId == null) {
       setSessions([]);
       setSessionState("idle");
       return;
     }
     void loadSessions(selectedId);
-  }, [selectedId, loadSessions]);
+    void loadOpenInventories();
+  }, [selectedId, loadSessions, loadOpenInventories]);
+
+  // A target that vanished (finalized meanwhile) falls back to "new" rather
+  // than earning a 409 on the next click.
+  useEffect(() => {
+    if (importTarget !== IMPORT_TARGET_NEW && !openInventories.some((row) => row.id === importTarget)) {
+      setImportTarget(IMPORT_TARGET_NEW);
+    }
+  }, [openInventories, importTarget]);
 
   const doImport = useCallback(
     (session: StationSession) => {
       if (selectedId == null) return;
       const stationId = selectedId;
+      const target = importTarget;
       setImportingName(session.name);
       setImportFeedback(null);
       void (async () => {
         try {
-          const result = await importStationSession(token, stationId, session.name);
+          const result = await importStationSession(
+            token,
+            stationId,
+            session.name,
+            typeof target === "number" ? { target_session_id: target } : {},
+          );
           if (!mountedRef.current) return;
           const unmatched = result.unmatched?.length ?? 0;
           const summary =
             result.detail ||
             (de
-              ? `${result.imported} übernommen, ${result.updated} aktualisiert`
-              : `${result.imported} imported, ${result.updated} updated`);
+              ? `${result.imported} übernommen, ${result.updated} aktualisiert → Inventur „${result.session_name}“`
+              : `${result.imported} imported, ${result.updated} updated → inventory “${result.session_name}”`);
           setImportFeedback({
             ok: result.ok !== false,
             text: unmatched
@@ -396,6 +516,8 @@ export function PiStationPage() {
               : summary,
           });
           void loadSessions(stationId);
+          void loadOpenInventories();
+          void loadStations();
         } catch (error: unknown) {
           if (mountedRef.current) {
             setImportFeedback({ ok: false, text: describeStationError(error, de) });
@@ -405,13 +527,14 @@ export function PiStationPage() {
         }
       })();
     },
-    [selectedId, token, de, loadSessions],
+    [selectedId, importTarget, token, de, loadSessions, loadOpenInventories, loadStations],
   );
 
   const reloadSessions = useCallback(() => {
     if (selectedId == null) return;
     void loadSessions(selectedId);
-  }, [selectedId, loadSessions]);
+    void loadOpenInventories();
+  }, [selectedId, loadSessions, loadOpenInventories]);
 
   // -- setup script --------------------------------------------------------
   const baseUrl = typeof window !== "undefined" ? window.location.origin : "";
@@ -424,7 +547,7 @@ export function PiStationPage() {
         const result = await getSetupScript(token);
         if (!cancelled && result?.script) setSetupScript(result.script);
       } catch {
-        // Expected until the endpoint exists — the fallback below is complete.
+        // The fallback below is the same documented path, minus the pinned tag.
       }
     })();
     return () => {
@@ -466,7 +589,10 @@ export function PiStationPage() {
             t={t}
             de={de}
             now={now}
-            stations={stations}
+            stations={activeStations}
+            retired={retiredStations}
+            showInactive={showInactive}
+            onShowInactiveChange={setShowInactive}
             listState={listState}
             listError={listError}
             selected={selected}
@@ -480,6 +606,11 @@ export function PiStationPage() {
             onRecheck={doRecheck}
             onRestart={doRestart}
             onUnpair={doUnpair}
+            edit={edit}
+            onEditStart={startEdit}
+            onEditChange={changeEdit}
+            onEditCancel={cancelEdit}
+            onEditSave={saveEdit}
           />
 
           {selected && (
@@ -492,6 +623,9 @@ export function PiStationPage() {
               sessionError={sessionError}
               importingName={importingName}
               importFeedback={importFeedback}
+              openInventories={openInventories}
+              importTarget={importTarget}
+              onImportTargetChange={setImportTarget}
               onReload={reloadSessions}
               onImport={doImport}
             />

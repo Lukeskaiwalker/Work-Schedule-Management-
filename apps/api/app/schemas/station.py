@@ -118,6 +118,33 @@ class StationPairDenyRequest(BaseModel):
     pairing_id: int | None = None
 
 
+# Freshness of the last heartbeat, judged server-side so the page and the api
+# can never disagree about what "online" means. ``stale`` exists because
+# "offline" is too strong for a Pi that missed one beat — the agent may simply
+# be feeding tape. The thresholds live in ``services/station_view.py``.
+StationStatus = Literal["online", "stale", "offline", "unknown"]
+
+
+class StationHardwareOut(BaseModel):
+    """The station's hardware, normalised from the agent's free-form blob.
+
+    The agent describes itself in whatever keys its version knows; this is the
+    fixed shape the admin page renders, so a printer row can never read "nicht
+    verbunden" while the heartbeat underneath says the printer is fine.
+    """
+
+    printer_connected: bool = False
+    printer_model: str | None = None
+    media_width_mm: float | None = None
+    # Why the printer is unusable, in the agent's words ("printer not found on
+    # USB …"). Truthful, not an outage: the rest of the station keeps working.
+    printer_error: str | None = None
+    scanner_present: bool = False
+    scanner_name: str | None = None
+    # True when the agent runs with --no-printer: labels render, nothing feeds.
+    simulated: bool = False
+
+
 class StationOut(BaseModel):
     """Public view of a paired station. Never carries the token — only its
     ``prefix`` stub, which is not usable as a credential."""
@@ -137,6 +164,26 @@ class StationOut(BaseModel):
     # Convenience for the UI: true when the token would authenticate right
     # now (not revoked, not expired).
     active: bool
+
+    # -- what the Scan-Station page renders (computed, never stored as-is) --
+    status: StationStatus = "unknown"
+    location: str | None = None
+    # The agent's LAN address as the Pi reported it, validated private. The
+    # admin override (``agent_url_override``) wins over the pair when set.
+    host: str | None = None
+    port: int | None = None
+    agent_url_override: str | None = None
+    uptime_seconds: int | None = None
+    paired_at: datetime | None = None
+    paired_by_name: str | None = None
+    # Sessions the Pi holds, and how many of them SMPL has never imported.
+    session_count: int = 0
+    pending_count: int = 0
+    # The api's own reason the last call to the agent failed, cleared by the
+    # next heartbeat or successful refresh. Distinct from the printer's error,
+    # which lives in ``hardware.printer_error``.
+    agent_error: str | None = None
+    hardware: StationHardwareOut = Field(default_factory=StationHardwareOut)
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -199,11 +246,130 @@ class StationHeartbeatRequest(BaseModel):
     error: str | None = Field(default=None, max_length=500)
     status: dict[str, Any] | None = None
 
+    # Where the agent listens, as seen from the Pi's own NIC. The router is
+    # what the request IP shows (hairpin NAT), so the device has to say. The
+    # router validates ``host`` to a private address before storing it; an
+    # agent that reports something else keeps its heartbeat but loses its
+    # address. Older agents send none of these and are unaffected.
+    host: str | None = Field(default=None, max_length=64)
+    port: int | None = Field(default=None, ge=1, le=65535)
+    uptime_seconds: int | None = Field(default=None, ge=0)
+    session_count: int | None = Field(default=None, ge=0, le=100_000)
+    # {printer_model, scanner_present, scanner_name, simulated} — the keys
+    # ``StationHardwareOut`` normalises. Kept as a dict so a newer agent can
+    # add a field without a schema change on this side.
+    hardware: dict[str, Any] | None = None
+
 
 class StationHeartbeatOut(BaseModel):
     ok: bool = True
     station: StationOut
     server_time: datetime
+
+
+# ---------------------------------------------------------------------------
+# Admin operations on a paired station (routers/workflow_station_admin.py)
+# ---------------------------------------------------------------------------
+
+
+class StationPatchRequest(BaseModel):
+    """Body for PATCH /api/station/stations/{id}. Every field optional; a
+    field that is absent is left alone, ``null`` clears the optional ones.
+
+    ``agent_url`` is the admin override for where the api reaches the agent:
+    ``http://<private ip or *.local>:<port>``. Anything public is refused —
+    see ``services/station_agent_client.validate_agent_url``.
+    """
+
+    # No ``min_length`` here on purpose: an empty name is answered by the
+    # router as a 400 with a German sentence, not as a 422 listing constraints.
+    name: str | None = Field(default=None, max_length=128)
+    location: str | None = Field(default=None, max_length=128)
+    agent_url: str | None = Field(default=None, max_length=200)
+
+
+class StationTestPrintRequest(BaseModel):
+    """Body for POST …/test-print. ``text`` is the label's title line."""
+
+    text: str | None = Field(default=None, max_length=120)
+
+
+class StationRestartRequest(BaseModel):
+    """Body for POST …/restart. The api refuses without ``confirm: true`` so
+    a stray POST can never bounce the agent mid-inventory."""
+
+    confirm: bool = False
+
+
+class StationActionOut(BaseModel):
+    """Outcome of a one-shot action. ``ok=False`` with a ``detail`` is the
+    agent saying "I could not" (printer unplugged); a transport failure is a
+    502 instead, because those are different things to a person at the page."""
+
+    ok: bool
+    detail: str
+    # Round trip in milliseconds — the agent's own figure when it measured one.
+    ms: int | None = None
+
+
+class StationSessionOut(BaseModel):
+    """One count session as the Pi holds it, plus what only SMPL knows: when it
+    was last imported and into which Werkstatt inventory."""
+
+    name: str
+    # The agent's own ISO stamps, passed through untouched.
+    started_at: str | None = None
+    status: str = "open"
+    articles: int = 0
+    total_qty: int = 0
+    total_scans: int = 0
+    last_counted_at: str | None = None
+    imported_at: datetime | None = None
+    imported_session_id: int | None = None
+
+
+class StationSessionListOut(BaseModel):
+    """``ok=False`` + ``error`` is a statement ("the Pi is off"), not a 5xx:
+    the card renders it with a reload button."""
+
+    sessions: list[StationSessionOut] = Field(default_factory=list)
+    ok: bool = True
+    error: str | None = None
+
+
+class StationImportRequest(BaseModel):
+    """Body for POST …/sessions/{name}/import.
+
+    ``target_session_id`` appends into an existing OPEN inventory; without it
+    the newest open inventory this same Pi session was imported into before
+    is reused (a re-import is SET-idempotent), else one is created and named
+    ``create_session_name`` or after the station.
+    """
+
+    target_session_id: int | None = None
+    create_session_name: str | None = Field(default=None, max_length=200)
+
+
+class StationImportOut(BaseModel):
+    ok: bool = True
+    session_id: int
+    session_name: str
+    # Count rows written for the first time / already present and updated.
+    imported: int
+    updated: int
+    # Zero-quantity rows the agent sent ("scanned, then undone").
+    skipped: int
+    # Codes that matched nothing and had no barcode — a person has to look.
+    unmatched: list[str] = Field(default_factory=list)
+    detail: str
+
+
+class StationSetupOut(BaseModel):
+    """The copy-pasteable install block for a fresh Pi, with the SMPL URL it
+    bakes in. The documented path — install-pi.sh, then --pair."""
+
+    script: str
+    base_url: str
 
 
 # ---------------------------------------------------------------------------

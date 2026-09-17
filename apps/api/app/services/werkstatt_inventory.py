@@ -194,6 +194,11 @@ def import_counts(
     """
 
     matched = from_catalog = created = 0
+    # Count rows written for the first time vs. rewritten. Distinct from the
+    # article tallies above: a re-import of the same export matches every
+    # article and updates every row, and the Scan-Station page reports that
+    # as "0 übernommen, 12 aktualisiert" rather than as a second import.
+    rows_created = rows_updated = 0
     unresolved: list[str] = []
     skipped: list[str] = []
 
@@ -269,11 +274,13 @@ def import_counts(
                     last_counted_at=now,
                 )
             )
+            rows_created += 1
         else:
             existing.counted_qty = int(row.counted_qty)
             existing.scan_count = int(row.scan_count or 0)
             existing.last_counted_at = now
             db.add(existing)
+            rows_updated += 1
 
     db.commit()
     return {
@@ -281,6 +288,8 @@ def import_counts(
         "matched_existing": matched,
         "created_from_catalog": from_catalog,
         "created_new": created,
+        "count_rows_created": rows_created,
+        "count_rows_updated": rows_updated,
         "codes_without_barcode": unresolved[:50],
         "skipped_zero_qty": skipped[:50],
     }

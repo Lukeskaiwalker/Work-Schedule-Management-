@@ -39,20 +39,58 @@ class QuietHandler(server.Handler):
         pass
 
 
+class ScriptedPrinter(server.Printer):
+    """A *real* printer (not ``--no-printer``) whose USB status is scripted,
+    so the ``/print`` contract can be pinned without a Brother on the bench.
+
+    Nothing is ever fed: ``submit_lines`` records the job instead of starting
+    the worker, and ``status`` answers what the test says the USB bus looks
+    like. ``busy`` is the shape ``Printer.status`` returns while a label is
+    feeding (the lock could not be taken, the cached status is handed back).
+    """
+
+    def __init__(self, *, connected: bool, busy: bool = False) -> None:
+        super().__init__(enabled=True)
+        self.connected = connected
+        self.busy = busy
+        self.jobs: list = []
+
+    def status(self, *, force: bool = False) -> dict:
+        status = {
+            "printer_connected": self.connected,
+            "media_width_mm": 12 if self.connected else None,
+            "media_type": None,
+            "error": "" if self.connected else server.PRINTER_NOT_FOUND_ERROR,
+            "simulated": False,
+        }
+        if self.busy:
+            status["busy"] = True
+        return status
+
+    def submit_lines(self, lines: list) -> dict:
+        self.jobs.append(lines)
+        return {
+            "ok": True, "simulated": False, "queued": True,
+            "raster_lines": len(lines), "queue_depth": len(self.jobs),
+        }
+
+
 class RunningAgent:
     """The real agent on an ephemeral port, torn down cleanly."""
 
-    def __init__(self, root: Path, *, sd_simulate=None, base_url=""):
+    def __init__(self, root: Path, *, sd_simulate=None, base_url="", env_token="",
+                 printer=None):
         self.root = root
         os.environ["AGENT_STATE_DIR"] = str(root / "state")
         self.db = root / "state" / "inventory.db"
         self.station = station_module.Station(
-            self.db, base_url=base_url, device_name="Test-Station",
+            self.db, base_url=base_url, env_token=env_token, device_name="Test-Station",
             agent_version="test", sd_simulate=sd_simulate, sd_poll_s=0.2,
         )
+        self.printer = printer if printer is not None else server.Printer(enabled=False)
         self.agent = server.Agent(
             server.Store(self.db),
-            server.Printer(enabled=False),
+            self.printer,
             server.Upstream(base_url, "", token_provider=self.station.token),
             station=self.station,
         )
@@ -79,6 +117,19 @@ class RunningAgent:
         with urllib.request.urlopen(request, timeout=5) as handle:
             return handle.status, json.loads(handle.read().decode("utf-8"))
 
+    def post_raw(self, path: str, payload=None, headers=None):
+        """Like ``post`` but hands back a 4xx/5xx as (status, body) instead of raising."""
+        body = json.dumps(payload or {}).encode("utf-8")
+        request = urllib.request.Request(self.base + path, data=body, method="POST")
+        request.add_header("Content-Type", "application/json")
+        for key, value in (headers or {}).items():
+            request.add_header(key, value)
+        try:
+            with urllib.request.urlopen(request, timeout=5) as handle:
+                return handle.status, json.loads(handle.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            return exc.code, json.loads(exc.read().decode("utf-8"))
+
     def close(self):
         self.server.shutdown()
         self.server.server_close()
@@ -87,6 +138,11 @@ class RunningAgent:
 
 class StationHttpCase(unittest.TestCase):
     sd_simulate = None
+
+    def make_printer(self):
+        """The simulated printer by default; a case that needs a scripted real
+        one overrides this rather than building its own agent."""
+        return server.Printer(enabled=False)
 
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -97,6 +153,7 @@ class StationHttpCase(unittest.TestCase):
         self.running = RunningAgent(
             self.root,
             sd_simulate=str(self.cards) if self.sd_simulate else None,
+            printer=self.make_printer(),
         )
 
     def tearDown(self) -> None:
@@ -148,7 +205,73 @@ class TestHealthAndCoreUnaffected(StationHttpCase):
         _s, body = self.running.post("/print", {"code": "SP-1042", "title": "Kabelbinder"})
         self.assertTrue(body["ok"])
         self.assertTrue(body["simulated"], "no tape may be consumed by a test")
+        self.assertTrue(body["queued"], "the simulated printer queues too — SMPL reads both flags")
         self.assertTrue(body["within_budget"])
+
+
+class TestPrintIsTruthfulAboutThePrinter(unittest.TestCase):
+    """``POST /print`` against a *real* printer — what SMPL's "Testetikett
+    drucken" relies on.
+
+    The queue answers in milliseconds and a worker failure is silent, so the
+    only honest moment is before queueing: an unplugged Brother is a 503 with
+    the printer's own sentence, a connected one queues, and one that is busy
+    feeding is a connected one, not an unplugged one.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self._saved_state_dir = os.environ.get("AGENT_STATE_DIR")
+        self.running = None
+
+    def tearDown(self) -> None:
+        if self.running is not None:
+            self.running.close()
+        if self._saved_state_dir is None:
+            os.environ.pop("AGENT_STATE_DIR", None)
+        else:
+            os.environ["AGENT_STATE_DIR"] = self._saved_state_dir
+        self.tmp.cleanup()
+
+    def start(self, printer: ScriptedPrinter) -> ScriptedPrinter:
+        self.running = RunningAgent(self.root, printer=printer)
+        return printer
+
+    LABEL = {"code": "SMPL-TEST", "title": "SMPL Testetikett", "subtitle": "Werkstatt Pi · 17.09. 14:05"}
+
+    def test_an_unplugged_printer_refuses_the_label_with_its_reason(self):
+        printer = self.start(ScriptedPrinter(connected=False))
+        status, body = self.running.post_raw("/print", self.LABEL)
+        self.assertEqual(status, 503)
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["error"], server.PRINTER_NOT_FOUND_ERROR)
+        self.assertEqual(printer.jobs, [], "nothing may be queued for a printer that is not there")
+
+    def test_a_connected_printer_queues_the_label_and_says_so(self):
+        printer = self.start(ScriptedPrinter(connected=True))
+        status, body = self.running.post_raw("/print", self.LABEL)
+        self.assertEqual(status, 200)
+        self.assertTrue(body["ok"])
+        self.assertTrue(body["queued"])
+        self.assertFalse(body["simulated"])
+        self.assertEqual(body["tape_mm"], 12, "the tape width comes from the printer's status")
+        self.assertEqual(len(printer.jobs), 1)
+
+    def test_a_printer_busy_feeding_is_not_mistaken_for_an_unplugged_one(self):
+        # The cached status still says "not connected" (never read since the
+        # agent started) but the lock is held by a label in flight.
+        printer = self.start(ScriptedPrinter(connected=False, busy=True))
+        status, body = self.running.post_raw("/print", self.LABEL)
+        self.assertEqual(status, 200)
+        self.assertTrue(body["queued"])
+        self.assertEqual(len(printer.jobs), 1)
+
+    def test_the_refusal_is_the_printer_status_error_when_there_is_one(self):
+        printer = ScriptedPrinter(connected=False)
+        self.assertEqual(printer.refusal(), server.PRINTER_NOT_FOUND_ERROR)
+        self.assertIsNone(ScriptedPrinter(connected=True).refusal())
+        self.assertIsNone(server.Printer(enabled=False).refusal(), "simulated is always ready")
 
 
 class TestPairingEndpoints(StationHttpCase):
@@ -260,6 +383,123 @@ class TestImportEndpoints(StationHttpCase):
         _s, body = self.running.post("/imports/retry", {})
         self.assertFalse(body["ok"])
         self.assertIn("no SMPL server", body["error"])
+
+
+class TestWhatSmplReads(StationHttpCase):
+    """The two reads SMPL's Scan-Station page makes across the LAN."""
+
+    def test_sessions_carry_their_totals_in_one_row(self):
+        self.running.post("/count", {"session": "regal", "code": "A1",
+                                     "article_name": "Ding", "qty": 2})
+        self.running.post("/count", {"session": "regal", "code": "B2",
+                                     "article_name": "Dong", "qty": 3})
+        self.running.post("/count", {"session": "regal", "code": "A1", "qty": 1})
+        _s, body = self.running.get("/sessions")
+        (regal,) = [row for row in body["sessions"] if row["name"] == "regal"]
+        self.assertEqual(regal["status"], "open")
+        self.assertTrue(regal["started_at"])
+        self.assertEqual(regal["articles"], 2)
+        self.assertEqual(regal["total_qty"], 6)
+        self.assertEqual(regal["total_scans"], 3)
+        self.assertTrue(regal["last_counted_at"])
+
+    def test_a_session_opened_but_never_counted_into_lists_with_zeros(self):
+        self.running.agent.store.ensure_session("leer")
+        _s, body = self.running.get("/sessions")
+        (leer,) = [row for row in body["sessions"] if row["name"] == "leer"]
+        self.assertEqual((leer["articles"], leer["total_qty"], leer["total_scans"]), (0, 0, 0))
+        self.assertIsNone(leer["last_counted_at"])
+
+    def test_health_reports_uptime_sessions_and_the_hardware_summary(self):
+        self.running.agent.store.ensure_session("regal")
+        _s, body = self.running.get("/health")
+        self.assertGreaterEqual(body["uptime_seconds"], 0)
+        self.assertEqual(body["session_count"], 1)
+        hardware = body["hardware"]
+        self.assertEqual(hardware["printer_model"], "Brother PT-P710BT")
+        self.assertTrue(hardware["simulated"], "Printer(enabled=False) is the simulated printer")
+        self.assertFalse(hardware["scanner_present"])
+        self.assertIsNone(hardware["scanner_name"])
+
+
+class TestRestart(unittest.TestCase):
+    """POST /restart: LAN-reachable, so it needs proof — and the proof is the
+    one thing only SMPL and this Pi share."""
+
+    TOKEN = "smpl_station_test-token-value"
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self._saved_state_dir = os.environ.get("AGENT_STATE_DIR")
+        self.running = RunningAgent(self.root, env_token=self.TOKEN)
+        # The real exit is os._exit; the test records the call instead.
+        self.exits = []
+        self._real_exit = server._exit_for_restart
+        server._exit_for_restart = lambda: self.exits.append(time.time())
+
+    def tearDown(self) -> None:
+        server._exit_for_restart = self._real_exit
+        self.running.close()
+        if self._saved_state_dir is None:
+            os.environ.pop("AGENT_STATE_DIR", None)
+        else:
+            os.environ["AGENT_STATE_DIR"] = self._saved_state_dir
+        self.tmp.cleanup()
+
+    def proof(self) -> str:
+        import hashlib
+        return hashlib.sha256(self.TOKEN.encode("utf-8")).hexdigest()
+
+    def wait_for_exit(self, timeout: float = 3.0) -> bool:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self.exits:
+                return True
+            time.sleep(0.05)
+        return False
+
+    def test_without_proof_nothing_happens(self):
+        status, body = self.running.post_raw("/restart", {"confirm": True})
+        self.assertEqual(status, 403)
+        self.assertIn("proof", body["error"])
+        time.sleep(server.RESTART_DELAY_S * 2)
+        self.assertEqual(self.exits, [])
+
+    def test_with_a_wrong_proof_nothing_happens(self):
+        wrong = "0" * 64
+        status, _body = self.running.post_raw(
+            "/restart", {"confirm": True}, headers={server.RESTART_PROOF_HEADER: wrong})
+        self.assertEqual(status, 403)
+        time.sleep(server.RESTART_DELAY_S * 2)
+        self.assertEqual(self.exits, [])
+
+    def test_the_right_proof_answers_first_and_exits_after(self):
+        status, body = self.running.post_raw(
+            "/restart", {"confirm": True}, headers={server.RESTART_PROOF_HEADER: self.proof()})
+        self.assertEqual(status, 200)
+        self.assertEqual(body, {"ok": True, "detail": "restarting"})
+        self.assertTrue(self.wait_for_exit(), "the exit must follow the answer")
+
+    def test_the_proof_header_is_case_insensitive_in_value(self):
+        status, _body = self.running.post_raw(
+            "/restart", {}, headers={server.RESTART_PROOF_HEADER: self.proof().upper()})
+        self.assertEqual(status, 200)
+        self.assertTrue(self.wait_for_exit())
+
+    def test_it_is_reachable_from_the_lan_by_design(self):
+        """SMPL is not this machine. Locking the route to loopback would lock
+        out the only caller it exists for."""
+        self.assertNotIn("/restart", server.LOOPBACK_ONLY)
+
+
+class TestRestartUnpaired(StationHttpCase):
+    def test_an_unpaired_station_cannot_be_restarted_from_the_lan(self):
+        proof_shaped = "0" * 64
+        status, body = self.running.post_raw(
+            "/restart", {}, headers={server.RESTART_PROOF_HEADER: proof_shaped})
+        self.assertEqual(status, 503)
+        self.assertIn("not paired", body["error"])
 
 
 class TestStationDisabled(unittest.TestCase):
