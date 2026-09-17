@@ -1543,3 +1543,104 @@ def test_a_delivery_onto_an_archived_article_is_refused_with_a_reason(
     assert "Altbestand Klemme" in refused.json()["detail"]
     # And nothing was written: the ledger still holds only the first delivery.
     assert len(_movements(article_id)) == 1
+
+
+# --------------------------------------------------------------------------
+# Mitnehmen — the handover a person books at the wall
+# --------------------------------------------------------------------------
+#
+# A crate standing "gepackt" in the workshop is taken by whoever walks past it,
+# and that person is at the wall screen, not at a desk. The station may book it
+# for the same reason it may already book a checkout: the movement it writes is
+# a checkout, under the station owner's name, marked as a station row.
+
+
+def _packed_box(client: TestClient, admin_token: str, label: str, article: dict, qty: int) -> dict:
+    customer = client.post(
+        "/api/customers", headers=auth_headers(admin_token), json={"name": f"Kunde {label}"}
+    )
+    assert customer.status_code == 200, customer.text
+    box = _box(client, admin_token, label)
+    added = client.post(
+        f"/api/werkstatt/boxes/{box['id']}/items",
+        headers=auth_headers(admin_token),
+        json={"article_id": article["id"], "quantity": qty},
+    )
+    assert added.status_code == 200, added.text
+    packed = client.post(
+        f"/api/werkstatt/boxes/{box['id']}/pack",
+        headers=auth_headers(admin_token),
+        json={"customer_id": customer.json()["id"]},
+    )
+    assert packed.status_code == 200, packed.text
+    return packed.json()
+
+
+def test_the_wall_can_book_a_packed_crate_out(
+    client: TestClient, admin_token: str, station_token: str
+) -> None:
+    article = _article(client, admin_token, "Gira 0212 00", stock=9)
+    box = _packed_box(client, admin_token, "Kiste Mitnehmen", article, 4)
+
+    taken = client.post(
+        f"{BASE}/boxes/{box['id']}/handover",
+        headers=auth_headers(station_token),
+        json={},
+    )
+    assert taken.status_code == 200, taken.text
+    body = taken.json()
+    assert body["status"] == "zugewiesen"
+    assert body["assigned_at"] is not None
+
+    row = _movements(article["id"])[-1]
+    assert (row.movement_type, row.quantity) == ("checkout", 4)
+    assert row.construction_box_id == box["id"]
+    assert row.station_id is not None
+    assert row.notes.startswith("Regal-Station Werkstatt Pi")
+    assert row.user_id == _user_id("admin@example.com")
+
+
+def test_only_a_packed_crate_can_be_taken_at_the_wall(
+    client: TestClient, admin_token: str, station_token: str
+) -> None:
+    article = _article(client, admin_token, "Busch-Jaeger 2000/6", stock=6)
+    box = _box(client, admin_token, "Kiste Offen")
+    client.post(
+        f"/api/werkstatt/boxes/{box['id']}/items",
+        headers=auth_headers(admin_token),
+        json={"article_id": article["id"], "quantity": 2},
+    )
+
+    open_crate = client.post(
+        f"{BASE}/boxes/{box['id']}/handover", headers=auth_headers(station_token), json={}
+    )
+    assert open_crate.status_code == 400
+    assert "gepackt" in open_crate.json()["detail"]
+
+    packed = _packed_box(client, admin_token, "Kiste Doppelt", article, 2)
+    assert (
+        client.post(
+            f"{BASE}/boxes/{packed['id']}/handover",
+            headers=auth_headers(station_token),
+            json={},
+        ).status_code
+        == 200
+    )
+    again = client.post(
+        f"{BASE}/boxes/{packed['id']}/handover", headers=auth_headers(station_token), json={}
+    )
+    assert again.status_code == 400
+    # Booked exactly once.
+    assert [row.movement_type for row in _movements(article["id"])] == ["intake", "checkout"]
+
+
+def test_the_handover_endpoint_is_station_only(
+    client: TestClient, admin_token: str, station_token: str
+) -> None:
+    article = _article(client, admin_token, "Hensel Mi", stock=3)
+    box = _packed_box(client, admin_token, "Kiste Grenze", article, 1)
+    _ = station_token
+    refused = client.post(
+        f"{BASE}/boxes/{box['id']}/handover", headers=auth_headers(admin_token), json={}
+    )
+    assert refused.status_code in (401, 403)

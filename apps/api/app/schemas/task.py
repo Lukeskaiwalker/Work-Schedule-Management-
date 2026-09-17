@@ -28,6 +28,89 @@ def validate_task_date_range(*, due_date: date | None, end_date: date | None) ->
         raise ValueError(TASK_DATE_RANGE_DETAIL)
 
 
+# The German a completion answers with when a new crate was asked for without
+# a name. Router-level (400) rather than pydantic (422) because it is a rule
+# about the choice, not about the shape of the request, and the dialog shows
+# the sentence verbatim.
+NEW_BOX_LABEL_REQUIRED_DETAIL = "Die neue Kiste braucht eine Bezeichnung"
+
+
+class MaterialRemainderChoice(BaseModel):
+    """What should happen to the material a finished job did not use up.
+
+    Sent with the completing PATCH rather than as its own request so that
+    "settle the crate" and "the task is done" cannot come apart: one
+    transaction, or neither.
+
+    ``shelf`` is the default for every client that does not ask — the task edit
+    modal, the mobile status dropdown, anything external — because it is what
+    completing a task has always done.
+    """
+
+    disposition: Literal["shelf", "same_box", "new_box"] = "shelf"
+    # Required for ``new_box`` (checked in the router, which answers 400 with
+    # NEW_BOX_LABEL_REQUIRED_DETAIL). A crate nobody named is a crate nobody
+    # finds again on the rack.
+    new_box_label: str | None = Field(default=None, max_length=160)
+
+
+class TaskMaterialSettlementBoxOut(BaseModel):
+    """The crate a completion is about to settle."""
+
+    id: int
+    box_number: str
+    label: str
+    status: str
+    customer_name: str | None = None
+
+
+class TaskMaterialSettlementLineOut(BaseModel):
+    """One position: what went out, what was fitted, what is left."""
+
+    id: int
+    item_name: str
+    unit: str | None = None
+    quantity: int
+    # None means nobody has reported on this line — then the whole line counts
+    # as fitted, which is why ``remainder`` can be 0 while this is null.
+    quantity_used: int | None = None
+    remainder: int
+    article_id: int | None = None
+
+
+class TaskMaterialSettlementOut(BaseModel):
+    """Preview of what completing this task would do to its crate.
+
+    Read before the task is completed. ``needs_decision`` is false for the
+    overwhelming majority of tasks (no crate, or nothing left over) — the
+    client only asks the question when it is true, so completing stays one
+    click everywhere else.
+    """
+
+    box: TaskMaterialSettlementBoxOut | None = None
+    lines: list[TaskMaterialSettlementLineOut] = Field(default_factory=list)
+    remainder_total: int = 0
+    # The crate never had its handover booked — completing it books that too.
+    handover_pending: bool = False
+    needs_decision: bool = False
+
+
+class TaskMaterialSettlementResultOut(BaseModel):
+    """What the completion actually did with the rest.
+
+    The outcome, not the choice: a ``same_box`` asked for on a crate whose last
+    line disappeared between the preview and the PATCH empties the crate
+    instead, and the client has to be able to say so. Only present on the
+    response to the PATCH that settled a crate.
+    """
+
+    disposition: Literal["shelf", "same_box", "new_box"]
+    remainder_box_id: int | None = None
+    remainder_box_number: str | None = None
+    # The crate had never been booked out — completing it booked the handover.
+    handover_booked: bool = False
+
+
 class TaskCreate(BaseModel):
     # v2.4.5: a task is anchored to a project, a customer, or both.
     # The model_validator below enforces "at least one is set" so the
@@ -136,6 +219,12 @@ class TaskUpdate(BaseModel):
     # status to "pending" + auto-sends email (if customer email
     # available); False clears status to null (no indicator shown).
     request_customer_confirmation: bool | None = None
+    # Where the crate's leftovers go when this PATCH completes the task.
+    # Absent means "shelf" — the behaviour every client had before the
+    # question existed. Read only on the transition into "done"; sending it
+    # with any other change is ignored rather than refused, because the task
+    # modal ships the whole form on every save.
+    material_remainder: MaterialRemainderChoice | None = None
 
     @field_validator("estimated_hours")
     @classmethod
@@ -206,6 +295,10 @@ class TaskOut(BaseModel):
     # The crate's contents, copied onto the task when a box is selected.
     # Empty for a task with no box, which is most of them.
     materials: list["TaskMaterialOut"] = []
+    # Set only on the PATCH that completed a task and settled its crate, so
+    # the client can phrase its notice from what happened rather than from
+    # what was asked for. Absent everywhere else, including the SSE payload.
+    material_settlement: TaskMaterialSettlementResultOut | None = None
 
     model_config = ConfigDict(from_attributes=True)
 

@@ -5,13 +5,14 @@ that is already paired with SMPL (see ``workflow_station_pairing.py`` for the RF
 device grant that put a token on it):
 
   * the **box screen** lists the Baustellenkisten with their contents and who
-    they belong to, and lets somebody scan a crate and then scan articles into
-    it;
+    they belong to, lets somebody scan a crate and then scan articles into it,
+    and books the handover of a crate that is packed and waiting — the person
+    carrying it out is standing at this screen, not at a desk;
   * the **rack screen** books stock in three directions — Ausgabe (checkout),
     Rückgabe (return) and Wareneingang (intake) — and hands a tool to the
     person whose name the worker tapped, from the crew list this router also
     serves. A Wareneingang may also meet a product the workshop has never
-    stocked, which is the seventh endpoint: the wholesaler's catalogue already
+    stocked, which is the eighth endpoint: the wholesaler's catalogue already
     describes it, so the article is built from that row rather than left as a
     dead end in front of somebody holding the delivery.
 
@@ -21,7 +22,7 @@ a credential that opens the whole API — projects, customers, files, everything
 that user can see — and revoking it means editing a file on the Pi. The
 station token it already has is the opposite of that: minted by an
 administrator, revocable centrally with one click, and — because of this
-router — able to do exactly seven things.
+router — able to do exactly eight things.
 
 So this router is deliberately thin. It owns no rules of its own; every
 endpoint delegates to the same function the user-facing endpoint calls, so
@@ -59,18 +60,21 @@ from app.routers.workflow_helpers import _list_active_assignable_users
 from app.routers.workflow_station import get_current_station
 from app.routers.workflow_werkstatt_articles import build_article_from_catalog_item
 from app.routers.workflow_werkstatt_boxes import (
-    add_item_to_box,
     box_code,
     box_out,
-    ensure_box_unlocked,
     get_box_or_404,
     item_out,
+)
+from app.services.werkstatt_box_items import (
+    add_item_to_box,
+    ensure_box_unlocked,
     remove_item_from_box,
 )
 from app.schemas.station import (
     STATION_MOVEMENT_TYPES,
     StationArticleFromCatalogOut,
     StationArticleFromCatalogRequest,
+    StationBoxHandoverRequest,
     StationCrewMemberOut,
     StationMovementOut,
     StationMovementRequest,
@@ -84,7 +88,11 @@ from app.schemas.werkstatt_boxes import (
     WerkstattStationBoxItemRemoveOut,
     WerkstattStationBoxOut,
 )
-from app.services.werkstatt_boxes import ensure_standard_boxes
+from app.services.werkstatt_boxes import (
+    NOT_PACKED_DETAIL,
+    ensure_standard_boxes,
+    transition_box,
+)
 from app.services.werkstatt_movements import (
     MovementError,
     apply_movement,
@@ -131,6 +139,11 @@ def _station_actor(db: Session, station: Station) -> User | None:
     ).first()
 
 
+def _station_marker(station: Station) -> str:
+    """The one string that says "a machine wrote this row", in one place."""
+    return f"Regal-Station {station.name}"
+
+
 def _station_notes(station: Station, caller_note: str | None) -> str:
     """The ledger note for a station booking: marker first, caller's text after.
 
@@ -141,7 +154,7 @@ def _station_notes(station: Station, caller_note: str | None) -> str:
     marker is always the first thing in the field and the caller's own text, if
     any, follows it.
     """
-    marker = f"Regal-Station {station.name}"
+    marker = _station_marker(station)
     note = (caller_note or "").strip()
     return f"{marker} — {note}" if note else marker
 
@@ -304,6 +317,49 @@ def station_remove_box_item(
     box = get_box_or_404(db, box_id)
     removed = remove_item_from_box(db, box, payload.item_id, quantity=payload.quantity)
     return WerkstattStationBoxItemRemoveOut(removed=removed)
+
+
+@router.post("/boxes/{box_id}/handover", response_model=WerkstattStationBoxOut)
+def station_handover_box(
+    box_id: int,
+    payload: StationBoxHandoverRequest,
+    station: Station = Depends(get_current_station),
+    db: Session = Depends(get_db),
+) -> WerkstattStationBoxOut:
+    """"Mitnehmen": the crate leaves the workshop, its contents leave the shelf.
+
+    A packed crate standing on the rack is taken by whoever is walking past it,
+    and that person is standing in front of this screen — not at a desk. So the
+    wall may book the handover, for the same reason it may already book a
+    checkout: it writes the same ``checkout`` movements the web path writes,
+    under the same borrowed name, and marks them as a station's rows so the two
+    stay tellable apart.
+
+    Nothing else about the crate is decided here. The customer and the project
+    were chosen when it was packed; this only says that it has gone.
+    """
+    box = get_box_or_404(db, box_id)
+    if (box.status or "offen") != "gepackt":
+        raise HTTPException(status_code=400, detail=NOT_PACKED_DETAIL)
+
+    user_id = resolve_station_user_id(db, station)
+    transition_box(
+        db,
+        box,
+        target_status="zugewiesen",
+        user_id=user_id,
+        station_id=station.id,
+        note_prefix=_station_notes(station, payload.notes),
+    )
+    db.commit()
+    db.refresh(box)
+    base = box_out(db, box, with_items=True)
+    return WerkstattStationBoxOut(
+        **base.model_dump(),
+        code=box_code(box),
+        customer=base.customer_name,
+        project=base.project_name,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -538,9 +594,9 @@ def station_article_from_catalog(
     zugeordnet. SMPL ist nicht erreichbar", which was true in its first half
     and false in its second, and sent people to check the network.
 
-    So this is the seventh thing a station may do, and it is a wider power than
-    the other six: those move quantities between columns, this one adds a row
-    to the stock list. Four things keep it narrow.
+    So this is the widest power a station has: the others move quantities
+    between columns, this one adds a row to the stock list. Four things keep it
+    narrow.
 
     **The device cannot describe the product.** It sends a catalogue id, not a
     name — every field on the new article is copied from the Datanorm row by

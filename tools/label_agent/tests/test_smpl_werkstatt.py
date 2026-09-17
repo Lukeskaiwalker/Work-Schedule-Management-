@@ -538,6 +538,10 @@ class TestMutations(ClientCase):
         ("POST", P["movements"]):
             lambda p, q, h: (200, {"article": {"id": 5, "stock_qty": 17},
                                    "movement_id": 4242}),
+        ("POST", "/api/station/werkstatt/boxes/3/handover"):
+            lambda p, q, h: (200, {"id": 3, "status": "zugewiesen"}),
+        ("POST", "/api/station/werkstatt/boxes/4/handover"):
+            lambda p, q, h: (400, {"detail": "Nur eine gepackte Kiste kann mitgenommen werden."}),
     }
 
     def test_add_item_posts_the_box_id_in_the_path(self):
@@ -594,6 +598,34 @@ class TestMutations(ClientCase):
         result = self.client.add_item("3/../../admin", code="x")
         self.assertFalse(result.ok)
         self.assertNotIn(("POST", "/api/station/werkstatt/boxes/3/items"), self.stub.hits)
+
+    def test_a_handover_names_the_crate_in_the_path_and_nothing_else(self):
+        """The customer and the project were decided when the crate was packed;
+        a wall screen must not be able to send either."""
+        result = self.client.handover(3)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.data["status"], "zugewiesen")
+        method, path, _headers, payload = self.stub.requests[-1]
+        self.assertEqual((method, path), ("POST", "/api/station/werkstatt/boxes/3/handover"))
+        self.assertEqual(payload, {})
+
+    def test_a_handover_of_a_crate_that_is_not_packed_is_the_servers_sentence(self):
+        result = self.client.handover(4)
+        self.assertFalse(result.ok)
+        self.assertIn("gepackt", result.error)
+
+    def test_a_handover_of_a_nonsense_crate_never_reaches_the_url(self):
+        result = self.client.handover("3/../../admin")
+        self.assertFalse(result.ok)
+        self.assertNotIn(("POST", "/api/station/werkstatt/boxes/3/handover"), self.stub.hits)
+
+    def test_a_handover_invalidates_the_box_cache(self):
+        """The crate's status just changed; the wall must not keep showing the
+        old one until the TTL runs out."""
+        self.client.boxes()
+        self.client.handover(3)
+        self.client.boxes()
+        self.assertEqual(self.stub.hits[("GET", P["boxes"])], 2)
 
     def test_a_successful_mutation_invalidates_the_box_cache(self):
         self.client.boxes()
@@ -769,6 +801,8 @@ class TestNothingEscapes(unittest.TestCase):
         self.assertEqual(smpl_werkstatt.items_path(3), "/api/station/werkstatt/boxes/3/items")
         self.assertEqual(smpl_werkstatt.remove_path(3),
                          "/api/station/werkstatt/boxes/3/items/remove")
+        self.assertEqual(smpl_werkstatt.handover_path(3),
+                         "/api/station/werkstatt/boxes/3/handover")
 
 
 if __name__ == "__main__":

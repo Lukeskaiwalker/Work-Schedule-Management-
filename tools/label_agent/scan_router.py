@@ -27,6 +27,9 @@ The rules, in the order they are applied:
 5. **A machine is not stock.** Scanning a tool during a crate session is
    almost always a wrong-screen mistake, so it is refused in German and
    mirrored to the rack, where it would have been meaningful.
+6. **"Mitnehmen" needs an open crate.** It is the one box-screen command that
+   books stock, and the codes hang on a wall where anybody can scan one in
+   passing, so it names the crate that is open and refuses when none is.
 
 The de-duplication window exists because two readers deliver the same scan:
 the evdev reader owns the device, but a browser wedge can still be focused
@@ -57,6 +60,7 @@ __all__ = [
     "SessionState",
     "RouterState",
     "COMMAND_CODES",
+    "CMD_MITNEHMEN",
     "CODE_ALPHABET",
     "CODE_PREFIX",
     "CODE_LENGTH",
@@ -93,6 +97,10 @@ CMD_MENGE_50 = "SMPL-CMD-MENGE-50"
 CMD_EIN = "SMPL-CMD-EIN"
 CMD_AUS = "SMPL-CMD-AUS"
 CMD_ENTNAHME = "SMPL-CMD-ENTNAHME"
+# "Mitnehmen": the packed crate on the screen is being carried out now. The one
+# command that books stock from the box screen, which is why it needs an open
+# session and is refused without one rather than guessing which crate is meant.
+CMD_MITNEHMEN = "SMPL-CMD-MITNEHMEN"
 
 COMMAND_CODES: Tuple[str, ...] = (
     CMD_FERTIG,
@@ -103,6 +111,7 @@ COMMAND_CODES: Tuple[str, ...] = (
     CMD_EIN,
     CMD_AUS,
     CMD_ENTNAHME,
+    CMD_MITNEHMEN,
 )
 
 _MENGE = {CMD_MENGE_5: 5, CMD_MENGE_10: 10, CMD_MENGE_50: 50}
@@ -642,6 +651,20 @@ class ScanRouter:
             qty = _MENGE[command]
             self._state = replace(state, pending_qty=qty)
             return Decision(screen=self.active_screen, action="qty", qty=qty, **base)
+
+        if command == CMD_MITNEHMEN:
+            session = state.session
+            if session is None:
+                # Nothing is open, so there is no crate this could mean. Said
+                # plainly rather than picking one: the codes hang on the wall
+                # where anybody can scan them by accident.
+                return Decision(screen=BOXES, action="nothing_to_handover", ok=False,
+                                error="Erst die Kiste scannen, dann »Mitnehmen«.", **base)
+            # Whether the crate is actually packed is the server's rule (and
+            # the agent checks the cached list before it calls); the router's
+            # job is only to say which crate is meant.
+            return Decision(screen=BOXES, action="handover",
+                            box_code=session.code, box_number=session.box_number, **base)
 
         if command in (CMD_EIN, CMD_AUS):
             direction = "ein" if command == CMD_EIN else "aus"

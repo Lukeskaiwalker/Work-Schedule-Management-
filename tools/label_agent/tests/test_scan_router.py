@@ -168,6 +168,33 @@ class TestBoxSessions(unittest.TestCase):
         router.route("SMPL-CMD-ENTNAHME")
         self.assertEqual(router.mode, "add")
 
+    def test_mitnehmen_names_the_open_crate(self):
+        router, clock = build()
+        router.route("KISTE-K3")
+        clock.advance(1)
+        decision = router.route("SMPL-CMD-MITNEHMEN")
+        self.assertEqual(decision.screen, "kisten")
+        self.assertEqual(decision.action, "handover")
+        self.assertTrue(decision.ok)
+        self.assertEqual(decision.box_code, "KISTE-K3")
+        # It says what to book; it does not close the crate behind itself.
+        self.assertIsNotNone(router.session)
+
+    def test_mitnehmen_with_no_crate_open_refuses_instead_of_guessing(self):
+        router, _ = build()
+        decision = router.route("SMPL-CMD-MITNEHMEN")
+        self.assertEqual(decision.screen, "kisten")
+        self.assertEqual(decision.action, "nothing_to_handover")
+        self.assertFalse(decision.ok)
+        self.assertIn("Kiste", decision.error)
+
+    def test_mitnehmen_never_lands_on_the_rack(self):
+        """The rack screen books articles; a crate is not an article."""
+        router, clock = build()
+        router.set_direction("ein")
+        clock.advance(1)
+        self.assertEqual(router.route("SMPL-CMD-MITNEHMEN").screen, "kisten")
+
     def test_remove_mode_routes_an_article_to_remove_item(self):
         router, clock = build()
         router.route("KISTE-K3")

@@ -282,7 +282,10 @@ def test_illegal_status_transition_is_rejected(client: TestClient, admin_token: 
         json={"status": "zurueck"},
     )
     assert resp.status_code == 400
-    assert "Cannot change box status" in resp.json()["detail"]
+    # German, and it names both ends of the edge it refused — the workshop
+    # reads these verbatim.
+    detail = resp.json()["detail"]
+    assert "Offen" in detail and "Zurück" in detail
 
 
 def test_customer_boxes_endpoint(client: TestClient, admin_token: str):
@@ -366,7 +369,7 @@ def test_standard_box_cannot_be_deleted(client: TestClient, admin_token: str):
         f"/api/werkstatt/boxes/{standard['id']}", headers=auth_headers(admin_token)
     )
     assert blocked.status_code == 400
-    assert "permanent" in blocked.json()["detail"]
+    assert "Standard-Kisten" in blocked.json()["detail"]
 
     # An ad-hoc box is still deletable.
     ad_hoc = _box(client, admin_token, "Wegwerfkiste")
@@ -761,3 +764,455 @@ def test_item_search_finds_an_article_by_our_own_printed_barcode(
     # The scanner reads position 0 and refuses anything that is not exact, so
     # a "partial" here would have the same effect as finding nothing.
     assert hits[0]["match"] != "partial"
+
+
+# ── Packen, Mitnehmen, Zuweisung aufheben ────────────────────────────────────
+#
+# ``gepackt`` means "packed AND assigned to a customer, standing in the
+# workshop, ready to be taken". These pin the two halves of that sentence: no
+# stock moves while the crate is still in the workshop, and the handover is a
+# separate act.
+
+
+def _pack(client: TestClient, admin_token: str, box_id: int, customer_id: int, **extra):
+    return client.post(
+        f"/api/werkstatt/boxes/{box_id}/pack",
+        headers=auth_headers(admin_token),
+        json={"customer_id": customer_id, **extra},
+    )
+
+
+def test_pack_assigns_the_customer_without_moving_stock(client: TestClient, admin_token: str):
+    article = _article(client, admin_token, "Wago 2273-203", 40)
+    customer_id = _customer(client, admin_token, "Kunde Gepackt")
+    box = _box(client, admin_token, "Kiste Bereit")
+    client.post(
+        f"/api/werkstatt/boxes/{box['id']}/items",
+        headers=auth_headers(admin_token),
+        json={"article_id": article["id"], "quantity": 6},
+    )
+
+    packed = _pack(client, admin_token, box["id"], customer_id)
+    assert packed.status_code == 200, packed.text
+    body = packed.json()
+    assert body["status"] == "gepackt"
+    assert body["customer_id"] == customer_id
+    assert body["packed_at"] is not None
+    assert body["assigned_at"] is None
+
+    got = client.get(
+        f"/api/werkstatt/articles/{article['id']}", headers=auth_headers(admin_token)
+    ).json()
+    assert got["stock_available"] == 40
+
+
+def test_pack_refuses_an_empty_crate_and_a_crate_without_a_customer(
+    client: TestClient, admin_token: str
+):
+    customer_id = _customer(client, admin_token, "Kunde Leer")
+    box = _box(client, admin_token, "Kiste Leer")
+
+    empty = _pack(client, admin_token, box["id"], customer_id)
+    assert empty.status_code == 400
+    assert "Position" in empty.json()["detail"]
+
+    client.post(
+        f"/api/werkstatt/boxes/{box['id']}/items",
+        headers=auth_headers(admin_token),
+        json={"item_name": "Klemmen", "quantity": 2},
+    )
+    # The FSM guards the same rule for anybody who drives /status directly.
+    bare = client.post(
+        f"/api/werkstatt/boxes/{box['id']}/status",
+        headers=auth_headers(admin_token),
+        json={"status": "gepackt"},
+    )
+    assert bare.status_code == 400
+    assert "Kunde" in bare.json()["detail"]
+
+
+def test_a_packed_crate_can_still_be_topped_up(client: TestClient, admin_token: str):
+    """Only ``zugewiesen`` freezes the contents — a top-up before it leaves is real life."""
+    customer_id = _customer(client, admin_token, "Kunde Nachpacken")
+    box = _box(client, admin_token, "Kiste Nachpacken")
+    client.post(
+        f"/api/werkstatt/boxes/{box['id']}/items",
+        headers=auth_headers(admin_token),
+        json={"item_name": "Dosen", "quantity": 4},
+    )
+    assert _pack(client, admin_token, box["id"], customer_id).status_code == 200
+
+    added = client.post(
+        f"/api/werkstatt/boxes/{box['id']}/items",
+        headers=auth_headers(admin_token),
+        json={"item_name": "Nachtrag", "quantity": 1},
+    )
+    assert added.status_code == 200, added.text
+
+
+def test_handover_from_packed_checks_the_contents_out(client: TestClient, admin_token: str):
+    article = _article(client, admin_token, "Hager MBN116", 12)
+    customer_id = _customer(client, admin_token, "Kunde Übergabe")
+    box = _box(client, admin_token, "Kiste Übergabe")
+    client.post(
+        f"/api/werkstatt/boxes/{box['id']}/items",
+        headers=auth_headers(admin_token),
+        json={"article_id": article["id"], "quantity": 5},
+    )
+    assert _pack(client, admin_token, box["id"], customer_id).status_code == 200
+
+    handed = client.post(
+        f"/api/werkstatt/boxes/{box['id']}/status",
+        headers=auth_headers(admin_token),
+        json={"status": "zugewiesen"},
+    )
+    assert handed.status_code == 200, handed.text
+    assert handed.json()["assigned_at"] is not None
+    got = client.get(
+        f"/api/werkstatt/articles/{article['id']}", headers=auth_headers(admin_token)
+    ).json()
+    assert got["stock_available"] == 7
+
+
+def test_unassigning_a_packed_crate_clears_the_customer(client: TestClient, admin_token: str):
+    customer_id = _customer(client, admin_token, "Kunde Aufheben")
+    project = client.post(
+        "/api/projects",
+        headers=auth_headers(admin_token),
+        json={
+            "project_number": "2026-4711",
+            "name": "Projekt Aufheben",
+            "status": "active",
+            "customer_id": customer_id,
+        },
+    )
+    assert project.status_code == 200, project.text
+    box = _box(client, admin_token, "Kiste Aufheben")
+    client.post(
+        f"/api/werkstatt/boxes/{box['id']}/items",
+        headers=auth_headers(admin_token),
+        json={"item_name": "Leitung", "quantity": 1},
+    )
+    assert (
+        _pack(
+            client, admin_token, box["id"], customer_id, project_id=project.json()["id"]
+        ).status_code
+        == 200
+    )
+
+    reopened = client.post(
+        f"/api/werkstatt/boxes/{box['id']}/status",
+        headers=auth_headers(admin_token),
+        json={"status": "offen"},
+    )
+    assert reopened.status_code == 200, reopened.text
+    body = reopened.json()
+    assert body["status"] == "offen"
+    assert body["customer_id"] is None and body["project_id"] is None
+    assert body["packed_at"] is None
+    # The contents survive — this undoes the assignment, not the packing.
+    assert body["item_count"] == 1
+
+
+def test_assign_still_packs_and_hands_over_in_one_step(client: TestClient, admin_token: str):
+    """The one-step route stays as a published shape; this test is what keeps it.
+
+    No client in the repository calls it any more — the Kisten page posts
+    ``/pack`` and then ``/status``. It is still a legal act ("it is going out
+    right now"), so it is pinned rather than deleted.
+    """
+    article = _article(client, admin_token, "Kabelbinder", 10)
+    customer_id = _customer(client, admin_token, "Kunde Einschritt")
+    box = _box(client, admin_token, "Kiste Einschritt")
+    client.post(
+        f"/api/werkstatt/boxes/{box['id']}/items",
+        headers=auth_headers(admin_token),
+        json={"article_id": article["id"], "quantity": 3},
+    )
+
+    assigned = client.post(
+        f"/api/werkstatt/boxes/{box['id']}/assign",
+        headers=auth_headers(admin_token),
+        json={"customer_id": customer_id},
+    )
+    assert assigned.status_code == 200, assigned.text
+    body = assigned.json()
+    assert body["status"] == "zugewiesen"
+    assert body["packed_at"] is not None and body["assigned_at"] is not None
+
+
+# ── A sealed crate keeps its promise ─────────────────────────────────────────
+#
+# "Gepackt" is read off a rack, off the wall screen, and by the station's
+# handover endpoint. Everything below pins the same sentence from a different
+# side: while a crate says that, it has a customer and something in it.
+
+
+def _box_updated_at(box_id: int):
+    """``updated_at`` is not serialised, and it is exactly what is under test."""
+    from app.core.db import SessionLocal
+    from app.models.entities import WerkstattConstructionBox
+
+    with SessionLocal() as db:
+        return db.get(WerkstattConstructionBox, box_id).updated_at
+
+
+def test_a_sealed_crate_cannot_be_emptied(client: TestClient, admin_token: str):
+    """The rule that seals a crate has to hold for as long as it is sealed.
+
+    Emptying checked only at sealing time left the claim standing over a crate
+    whose last line had since been taken back out — and the wall screen, the
+    assign card and ``POST /station/.../handover`` all believe that claim.
+    """
+    customer_id = _customer(client, admin_token, "Kunde Versiegelt")
+    box = _box(client, admin_token, "Kiste Versiegelt")
+    for name in ("Klemmen", "Dosen"):
+        client.post(
+            f"/api/werkstatt/boxes/{box['id']}/items",
+            headers=auth_headers(admin_token),
+            json={"item_name": name, "quantity": 2},
+        )
+    assert _pack(client, admin_token, box["id"], customer_id).status_code == 200
+
+    blocked = client.delete(
+        f"/api/werkstatt/boxes/{box['id']}/items", headers=auth_headers(admin_token)
+    )
+    assert blocked.status_code == 400
+    assert "Zuweisung aufheben" in blocked.json()["detail"]
+
+    items = client.get(
+        f"/api/werkstatt/boxes/{box['id']}/items", headers=auth_headers(admin_token)
+    ).json()
+    assert len(items) == 2
+
+    # Taking one of two lines out is fine — the crate still holds something.
+    first = client.delete(
+        f"/api/werkstatt/boxes/{box['id']}/items/{items[0]['id']}",
+        headers=auth_headers(admin_token),
+    )
+    assert first.status_code == 204, first.text
+
+    # The last one is not: that is the same emptying, one request at a time.
+    last = client.delete(
+        f"/api/werkstatt/boxes/{box['id']}/items/{items[1]['id']}",
+        headers=auth_headers(admin_token),
+    )
+    assert last.status_code == 400
+    assert "Zuweisung aufheben" in last.json()["detail"]
+
+    state = client.get(
+        f"/api/werkstatt/boxes/{box['id']}", headers=auth_headers(admin_token)
+    ).json()
+    assert state["status"] == "gepackt" and state["item_count"] == 1
+
+    # And the way out is the assignment, not the contents.
+    assert (
+        client.post(
+            f"/api/werkstatt/boxes/{box['id']}/status",
+            headers=auth_headers(admin_token),
+            json={"status": "offen"},
+        ).status_code
+        == 200
+    )
+    assert (
+        client.delete(
+            f"/api/werkstatt/boxes/{box['id']}/items", headers=auth_headers(admin_token)
+        ).status_code
+        == 200
+    )
+
+
+def test_an_empty_crate_cannot_be_sealed_through_the_status_endpoint(
+    client: TestClient, admin_token: str
+):
+    """The reachable hole: a returned crate keeps its customer, so ``/status``
+    could seal it with nothing in it — and the wall screen would advertise it."""
+    customer_id = _customer(client, admin_token, "Kunde Rückläufer")
+    box = _box(client, admin_token, "Kiste Rückläufer")
+    client.post(
+        f"/api/werkstatt/boxes/{box['id']}/items",
+        headers=auth_headers(admin_token),
+        json={"item_name": "Leitung", "quantity": 1},
+    )
+    for status in ("zugewiesen", "zurueck", "offen"):
+        if status == "zugewiesen":
+            assert (
+                client.post(
+                    f"/api/werkstatt/boxes/{box['id']}/assign",
+                    headers=auth_headers(admin_token),
+                    json={"customer_id": customer_id},
+                ).status_code
+                == 200
+            )
+            continue
+        assert (
+            client.post(
+                f"/api/werkstatt/boxes/{box['id']}/status",
+                headers=auth_headers(admin_token),
+                json={"status": status},
+            ).status_code
+            == 200
+        )
+    # Coming back from ``zurueck`` keeps the customer — only the gepackt → offen
+    # edge is "Zuweisung aufheben".
+    assert (
+        client.delete(
+            f"/api/werkstatt/boxes/{box['id']}/items", headers=auth_headers(admin_token)
+        ).status_code
+        == 200
+    )
+
+    sealed = client.post(
+        f"/api/werkstatt/boxes/{box['id']}/status",
+        headers=auth_headers(admin_token),
+        json={"status": "gepackt"},
+    )
+    assert sealed.status_code == 400
+    assert "leer" in sealed.json()["detail"]
+    state = client.get(
+        f"/api/werkstatt/boxes/{box['id']}", headers=auth_headers(admin_token)
+    ).json()
+    assert state["status"] == "offen"
+
+
+def test_handing_an_empty_crate_over_is_still_allowed(client: TestClient, admin_token: str):
+    """``/assign`` is the one caller that passes THROUGH gepackt on purpose.
+
+    It makes no claim about a crate standing ready on a rack — it books
+    whatever is inside out of the warehouse, and booking nothing out is
+    harmless. The exemption is explicit so the rule above cannot break it.
+    """
+    customer_id = _customer(client, admin_token, "Kunde Leerübergabe")
+    box = _box(client, admin_token, "Kiste Leerübergabe")
+
+    assigned = client.post(
+        f"/api/werkstatt/boxes/{box['id']}/assign",
+        headers=auth_headers(admin_token),
+        json={"customer_id": customer_id},
+    )
+    assert assigned.status_code == 200, assigned.text
+    assert assigned.json()["status"] == "zugewiesen"
+
+
+def test_a_sealed_crate_is_not_repacked_for_another_customer(
+    client: TestClient, admin_token: str
+):
+    """It already holds one customer's material; re-labelling it would leave the
+    rack, the wall screen and the station naming the wrong person."""
+    first_id = _customer(client, admin_token, "Kunde Erst")
+    second_id = _customer(client, admin_token, "Kunde Zweit")
+    box = _box(client, admin_token, "Kiste Umwidmung")
+    client.post(
+        f"/api/werkstatt/boxes/{box['id']}/items",
+        headers=auth_headers(admin_token),
+        json={"item_name": "Schienen", "quantity": 3},
+    )
+    assert _pack(client, admin_token, box["id"], first_id).status_code == 200
+
+    refused = _pack(client, admin_token, box["id"], second_id)
+    assert refused.status_code == 400
+    assert "anderen Kunden" in refused.json()["detail"]
+    state = client.get(
+        f"/api/werkstatt/boxes/{box['id']}", headers=auth_headers(admin_token)
+    ).json()
+    assert state["customer_id"] == first_id and state["status"] == "gepackt"
+
+    # Handing it over to somebody else is the same mistake with the checkout
+    # attached, so the one-step route refuses it too.
+    assert (
+        client.post(
+            f"/api/werkstatt/boxes/{box['id']}/assign",
+            headers=auth_headers(admin_token),
+            json={"customer_id": second_id},
+        ).status_code
+        == 400
+    )
+
+
+def test_repacking_the_same_crate_for_the_same_customer_records_the_change(
+    client: TestClient, admin_token: str
+):
+    """``gepackt → gepackt`` is a no-op edge, so the timestamp is stamped by the
+    call that changed the owner — otherwise a moved project is invisible."""
+    customer_id = _customer(client, admin_token, "Kunde Nachtrag")
+    project = client.post(
+        "/api/projects",
+        headers=auth_headers(admin_token),
+        json={
+            "project_number": "2026-4712",
+            "name": "Projekt Nachtrag",
+            "status": "active",
+            "customer_id": customer_id,
+        },
+    )
+    assert project.status_code == 200, project.text
+    box = _box(client, admin_token, "Kiste Nachtrag")
+    client.post(
+        f"/api/werkstatt/boxes/{box['id']}/items",
+        headers=auth_headers(admin_token),
+        json={"item_name": "Rohr", "quantity": 1},
+    )
+    first = _pack(client, admin_token, box["id"], customer_id)
+    assert first.status_code == 200, first.text
+    before = _box_updated_at(box["id"])
+
+    again = _pack(client, admin_token, box["id"], customer_id, project_id=project.json()["id"])
+    assert again.status_code == 200, again.text
+    assert again.json()["project_id"] == project.json()["id"]
+    assert _box_updated_at(box["id"]) != before
+
+
+def test_a_crate_packed_for_a_customer_cannot_be_deleted(
+    client: TestClient, admin_token: str
+):
+    """``gepackt`` became a resting state, so "handed over" no longer covers
+    every crate that is spoken for — the settlement's leftover crates least of
+    all, and deleting one loses the record of where the rest went."""
+    customer_id = _customer(client, admin_token, "Kunde Löschen")
+    box = _box(client, admin_token, "Kiste Löschen")
+    client.post(
+        f"/api/werkstatt/boxes/{box['id']}/items",
+        headers=auth_headers(admin_token),
+        json={"item_name": "Rest", "quantity": 2},
+    )
+    assert _pack(client, admin_token, box["id"], customer_id).status_code == 200
+
+    blocked = client.delete(
+        f"/api/werkstatt/boxes/{box['id']}", headers=auth_headers(admin_token)
+    )
+    assert blocked.status_code == 400
+    assert "Zuweisung" in blocked.json()["detail"]
+
+    # Freed from the customer it is deletable again.
+    assert (
+        client.post(
+            f"/api/werkstatt/boxes/{box['id']}/status",
+            headers=auth_headers(admin_token),
+            json={"status": "offen"},
+        ).status_code
+        == 200
+    )
+    assert (
+        client.delete(
+            f"/api/werkstatt/boxes/{box['id']}", headers=auth_headers(admin_token)
+        ).status_code
+        == 204
+    )
+
+
+def test_the_item_search_rationale_is_written_down_exactly_once():
+    """The ranking rules were explained twice in one 25-line window.
+
+    ``search_box_items`` carried its real one-line docstring followed by a
+    second bare string literal — a no-op expression — repeating the module
+    docstring above it verbatim. Two copies of the same reasoning in a file
+    created to give that reasoning one home, in the place a reader expects the
+    function body, with only one of them reachable from ``help()``.
+    """
+    import inspect
+
+    from app.services import werkstatt_item_search
+
+    source = inspect.getsource(werkstatt_item_search)
+    assert source.count("Results are ranked EXACT-IDENTIFIER FIRST") == 1
+    assert "\n" not in (werkstatt_item_search.search_box_items.__doc__ or "").strip()

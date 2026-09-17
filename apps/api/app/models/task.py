@@ -202,6 +202,20 @@ class TaskMaterial(Base):
     # plan: it is never moved again and never deleted by unlinking the crate.
     settled_at: Mapped[datetime | None] = mapped_column(DateTime)
 
+    # What happened to the part of this line that was not fitted:
+    # "shelf" | "same_box" | "new_box" (services/task_materials.py). NULL on an
+    # unsettled line, and on lines settled before the question was ever asked —
+    # those all went back to the rack, which is what "shelf" means.
+    remainder_disposition: Mapped[str | None] = mapped_column(String(16))
+    # The crate the rest is sitting in afterwards — the same one for
+    # "same_box", a freshly created one for "new_box", NULL for "shelf". Stored
+    # rather than derived because the answer has to survive that crate being
+    # repacked for the next job. SET NULL: deleting an ad-hoc crate must not
+    # destroy the record of what the job consumed.
+    remainder_box_id: Mapped[int | None] = mapped_column(
+        ForeignKey("werkstatt_construction_boxes.id", ondelete="SET NULL"), index=True
+    )
+
     notes: Mapped[str | None] = mapped_column(Text)
     added_by: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL")

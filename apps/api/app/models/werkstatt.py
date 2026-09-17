@@ -514,14 +514,24 @@ class WerkstattDatanormImport(Base):
 # A construction box is a physical crate packed in the workshop and handed to
 # a customer / taken to a site. Lifecycle:
 #
-#   offen  →  gepackt  →  zugewiesen  →  zurueck
-#   (packing)  (sealed)   (with customer)  (back in the workshop)
+#   offen      →  gepackt              →  zugewiesen      →  zurueck
+#   (packing)     (packed for a         (with the           (back in the
+#                  customer, standing    customer)            workshop)
+#                  in the workshop,
+#                  ready to be taken)
 #
-# STOCK SEMANTICS (deliberate): packing does NOT move stock — a half-packed box
-# is a picking list, and per-item ledger writes during packing would be pure
-# churn. Stock moves once, at ASSIGNMENT (`checkout` movements for the contents)
-# and unwinds on RETURN (`return` movements). That keeps stock_available and the
-# "auf Baustelle" KPIs honest without a noisy ledger.
+# `gepackt` is a RESTING state, not a moment: a crate can stand packed and
+# assigned for days before somebody carries it out, and the office has to be
+# able to see whose it is while it does. Its contents stay editable (a top-up
+# before it leaves is real life); only `zugewiesen` freezes them. Going back to
+# `offen` from here is "Zuweisung aufheben" and clears the customer with it.
+#
+# STOCK SEMANTICS (deliberate): packing does NOT move stock — a packed box is
+# still standing in the workshop, so its contents are still stock on hand, and
+# per-item ledger writes during packing would be pure churn. Stock moves once,
+# at HANDOVER (`checkout` movements for the contents, `gepackt → zugewiesen`)
+# and unwinds on RETURN (`return` movements). That keeps stock_available and
+# the "auf Baustelle" KPIs honest without a noisy ledger.
 
 
 class WerkstattConstructionBox(Base):

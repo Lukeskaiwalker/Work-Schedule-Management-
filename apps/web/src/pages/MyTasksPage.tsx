@@ -6,7 +6,7 @@ import { estimateTravelMinutesFromAddresses, projectLocationAddress } from "../u
 import { BackIcon, PenIcon } from "../components/icons";
 import { TaskRowSummary } from "../components/tasks/TaskRowSummary";
 import { TaskMaterialList } from "../components/tasks/TaskMaterialList";
-import { taskBoxDisplay } from "../utils/boxes";
+import { taskBoxSummary } from "../utils/boxes";
 
 export function MyTasksPage() {
   const {
@@ -237,7 +237,7 @@ export function MyTasksPage() {
                       </span>
                       <span>
                         {de ? "Baustellenkiste" : "Construction box"}:{" "}
-                        {taskBoxDisplay(task) ?? "-"}
+                        {taskBoxSummary(task, de) ?? "-"}
                       </span>
                       <span>
                         {de ? "Unteraufgaben" : "Sub-tasks"}:{" "}

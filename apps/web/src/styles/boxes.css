@@ -1,0 +1,207 @@
+/* ── Baustellenkisten: packed-and-waiting crates, and the leftover dialog ──
+ *
+ * Page-local sheet, imported from MaterialRemainderDialog.tsx and
+ * WerkstattKistenPage.tsx rather than appended to src/styles.css — the same
+ * arrangement as styles/pi-station.css and styles/orders.css, and for the same
+ * reason: styles.css is shared by every area and a separate file is the one
+ * shape of change that cannot conflict.
+ *
+ * Everything the existing werkstatt-card / kisten-* / modal-card rules already
+ * cover is reused by class name and NOT redefined here. Colours come from the
+ * tokens in styles.css.
+ */
+
+/* ── Packed and waiting (Kisten page) ─────────────────────────────────── */
+
+.kisten-ready-banner {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--ok-line);
+  border-radius: 10px;
+  background: var(--ok-bg);
+}
+
+.kisten-ready-banner strong {
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+.kisten-ready-banner small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/* The two crate actions are a pair: one sends the crate out, one takes the
+   assignment back. Stacking them keeps the destructive one from sitting
+   under the thumb on a phone. */
+.kisten-ready-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.kisten-action-hint {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* ── "Was ist mit dem Rest passiert?" ─────────────────────────────────── */
+
+.boxes-remainder-dialog {
+  width: min(560px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.boxes-remainder-sub {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.boxes-remainder-note {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  /* Literal tints: styles.css has tokens for ok/line/muted but none for an
+     informational or a warning ground, and this sheet may not add to it. */
+  background: #eef4fd;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.boxes-remainder-note--warn {
+  background: #fff7e6;
+  color: #8a6110;
+}
+
+/* A packing list can be long; the table scrolls inside the dialog so the
+   decision cards and the buttons never leave the screen. */
+.boxes-remainder-table-wrap {
+  max-height: 34vh;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.boxes-remainder-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.boxes-remainder-table th,
+.boxes-remainder-table td {
+  padding: 7px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--line);
+}
+
+.boxes-remainder-table th {
+  position: sticky;
+  top: 0;
+  background: var(--surface);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.boxes-remainder-table th:not(:first-child),
+.boxes-remainder-table td:not(:first-child) {
+  width: 78px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.boxes-remainder-table tr:last-child td {
+  border-bottom: none;
+}
+
+.boxes-remainder-left {
+  font-weight: 700;
+}
+
+.boxes-remainder-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.boxes-remainder-option {
+  display: flex;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.boxes-remainder-option.is-selected {
+  border-color: var(--accent);
+  background: #eef4fd;
+}
+
+.boxes-remainder-option input[type="radio"] {
+  margin-top: 3px;
+}
+
+.boxes-remainder-option-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.boxes-remainder-option-title {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.boxes-remainder-option-hint {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.boxes-remainder-label-input {
+  margin-top: 6px;
+  width: 100%;
+  max-width: 100%;
+}
+
+.boxes-remainder-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* The confirming action carries the app's accent the way a submit button
+   does; this dialog's buttons are type="button" because the crate choice is
+   not a form. */
+.boxes-remainder-primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.boxes-remainder-primary:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+@media (max-width: 560px) {
+  .boxes-remainder-table-wrap {
+    max-height: 28vh;
+  }
+
+  .boxes-remainder-actions button {
+    flex: 1 1 100%;
+  }
+}

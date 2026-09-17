@@ -34,7 +34,9 @@ import {
   CameraScannerSheet,
   type ScanOutcome,
 } from "../../components/werkstatt/CameraScannerSheet";
+import { boxStatusLabel } from "../../utils/boxes";
 import { formatServerDateTime } from "../../utils/dates";
+import "../../styles/boxes.css";
 
 type BoxItem = {
   id: number;
@@ -99,13 +101,6 @@ type SearchHit = {
     | "partial";
   supplier_name: string | null;
   supplier_article_no: string | null;
-};
-
-const STATUS_LABELS: Record<string, { de: string; en: string }> = {
-  offen: { de: "Offen", en: "Open" },
-  gepackt: { de: "Gepackt", en: "Packed" },
-  zugewiesen: { de: "Beim Kunden", en: "With customer" },
-  zurueck: { de: "Zurück", en: "Returned" },
 };
 
 /**
@@ -188,6 +183,14 @@ export function WerkstattKistenPage() {
   // A handed-over box has its contents frozen server-side; every write control
   // is hidden. Computed up here because the scanner hooks below need it too.
   const locked = activeBox?.status === "zugewiesen";
+  // Packed and waiting: assigned to a customer, still in the workshop, and
+  // still editable — a top-up before the crate leaves is real life.
+  const packed = activeBox?.status === "gepackt";
+  // Came back unopened. Its contents are still in it and it has to be
+  // re-opened before it can be packed again (there is no zurueck → gepackt
+  // edge), so the assign card offers exactly one button.
+  const returned = activeBox?.status === "zurueck";
+  const isOpen = activeBox?.status === "offen";
 
   const loadBoxes = useCallback(async () => {
     setLoading(true);
@@ -357,9 +360,11 @@ export function WerkstattKistenPage() {
     onScan: (code) => void runScan(code),
   });
 
+  // One label map for the whole app (utils/boxes.ts) — this page used to keep
+  // its own copy, and "Gepackt" meant something different here than on the
+  // customer page the moment the state's meaning changed.
   const statusLabel = useCallback(
-    (status: string) =>
-      de ? STATUS_LABELS[status]?.de ?? status : STATUS_LABELS[status]?.en ?? status,
+    (status: string) => boxStatusLabel(status, de) || status,
     [de],
   );
 
@@ -471,30 +476,59 @@ export function WerkstattKistenPage() {
     }
   }
 
-  async function setStatus(status: string) {
-    if (!activeBox) return;
+  /** Drive the crate's status. Returns whether it actually moved, so the
+   *  callers below only claim success when there was some. */
+  async function setStatus(status: string): Promise<boolean> {
+    if (!activeBox) return false;
     try {
       await apiFetch(`/werkstatt/boxes/${activeBox.id}/status`, token, {
         method: "POST",
         body: JSON.stringify({ status }),
       });
       await Promise.all([openBox(activeBox.id), loadBoxes()]);
+      return true;
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : String(err));
+      return false;
+    }
+  }
+
+  /**
+   * "Packen & zuweisen" — the crate is spoken for and ready, and stays here.
+   *
+   * Deliberately NOT the old one-step ``/assign``: nothing physically leaves
+   * the building at this moment, so nothing leaves the shelf either. The
+   * checkout happens when somebody actually carries the crate out.
+   */
+  async function pack() {
+    if (!activeBox || assignCustomerId == null) return;
+    try {
+      await apiFetch(`/werkstatt/boxes/${activeBox.id}/pack`, token, {
+        method: "POST",
+        body: JSON.stringify({ customer_id: assignCustomerId }),
+      });
+      setNotice(de ? "Kiste gepackt und zugewiesen" : "Box packed and assigned");
+      await Promise.all([openBox(activeBox.id), loadBoxes()]);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
     }
   }
 
-  async function assign() {
-    if (!activeBox || assignCustomerId == null) return;
-    try {
-      await apiFetch(`/werkstatt/boxes/${activeBox.id}/assign`, token, {
-        method: "POST",
-        body: JSON.stringify({ customer_id: assignCustomerId }),
-      });
-      setNotice(de ? "Kiste zugewiesen" : "Box assigned");
-      await Promise.all([openBox(activeBox.id), loadBoxes()]);
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : String(err));
+  /** "Übergabe buchen" — the crate leaves, its contents leave the shelf. */
+  async function handOver() {
+    if (!activeBox) return;
+    if (await setStatus("zugewiesen")) {
+      setNotice(
+        de ? "Übergabe gebucht – Bestand ausgebucht" : "Handover booked — stock checked out",
+      );
+    }
+  }
+
+  /** "Zuweisung aufheben" — back to the packing bench, customer cleared. */
+  async function unassign() {
+    if (!activeBox) return;
+    if (await setStatus("offen")) {
+      setNotice(de ? "Zuweisung aufgehoben" : "Assignment cleared");
     }
   }
 
@@ -618,7 +652,7 @@ export function WerkstattKistenPage() {
             <div className="werkstatt-kpi-value-row">
               <span className="werkstatt-kpi-value">{totals.packed}</span>
               <span className="werkstatt-kpi-subtitle">
-                {de ? "bereit zur Übergabe" : "ready to hand over"}
+                {de ? "bereit zur Mitnahme" : "ready to take"}
               </span>
             </div>
           </div>
@@ -935,7 +969,12 @@ export function WerkstattKistenPage() {
                   </span>
                 )}
               </div>
-              {!locked && activeBox.items.length > 0 && (
+              {/* Hidden for a sealed crate as well as a handed-over one: a
+                  crate that says "gepackt" is advertised as ready to take on
+                  this card, on the wall screen and to the station's handover,
+                  so emptying it is refused server-side. The way out is
+                  "Zuweisung aufheben". */}
+              {!locked && !packed && activeBox.items.length > 0 && (
                 <button
                   type="button"
                   className="werkstatt-card-action"
@@ -1002,16 +1041,30 @@ export function WerkstattKistenPage() {
             <header className="werkstatt-card-head">
               <div className="werkstatt-card-title-block">
                 <h3 className="werkstatt-card-title">
-                  {locked ? (de ? "Übergabe" : "Handover") : de ? "Kiste zuweisen" : "Assign box"}
+                  {locked
+                    ? de
+                      ? "Übergabe"
+                      : "Handover"
+                    : packed
+                      ? de
+                        ? "Bereit zur Mitnahme"
+                        : "Ready to take"
+                      : de
+                        ? "Kiste zuweisen"
+                        : "Assign box"}
                 </h3>
                 <span className="werkstatt-card-subtitle">
                   {locked
                     ? de
                       ? "Der Bestand ist ausgebucht"
                       : "Stock is checked out"
-                    : de
-                      ? "Beim Zuweisen wird der Bestand ausgebucht"
-                      : "Assigning checks the contents out of stock"}
+                    : packed
+                      ? de
+                        ? "Erst bei der Übergabe wird der Bestand ausgebucht"
+                        : "Stock is checked out at handover, not before"
+                      : de
+                        ? "Beim Zuweisen wird noch kein Bestand gebucht"
+                        : "Assigning does not book any stock yet"}
                 </span>
               </div>
             </header>
@@ -1030,6 +1083,43 @@ export function WerkstattKistenPage() {
                     {de ? "Kiste zurückbuchen" : "Return box"}
                   </button>
                 </>
+              ) : packed ? (
+                <>
+                  <div className="kisten-ready-banner">
+                    <strong>
+                      {de
+                        ? `Gepackt für ${activeBox.customer_name ?? "–"} – bereit zur Mitnahme`
+                        : `Packed for ${activeBox.customer_name ?? "–"} – ready to take`}
+                    </strong>
+                    {activeBox.packed_at && (
+                      <small>
+                        {de ? "Gepackt" : "Packed"}:{" "}
+                        {formatServerDateTime(activeBox.packed_at, language)}
+                      </small>
+                    )}
+                  </div>
+                  <div className="kisten-ready-actions">
+                    <button
+                      type="button"
+                      className="werkstatt-action-btn werkstatt-action-btn--primary"
+                      onClick={() => void handOver()}
+                    >
+                      {de ? "Übergabe buchen" : "Book handover"}
+                    </button>
+                    <button
+                      type="button"
+                      className="werkstatt-action-btn"
+                      onClick={() => void unassign()}
+                    >
+                      {de ? "Zuweisung aufheben" : "Clear assignment"}
+                    </button>
+                  </div>
+                  <p className="kisten-action-hint">
+                    {de
+                      ? "Übergabe buchen bucht den Inhalt aus dem Lager aus. „Zuweisung aufheben“ gibt die Kiste frei – der Inhalt bleibt drin."
+                      : "Booking the handover checks the contents out of stock. Clearing the assignment frees the box and keeps its contents."}
+                  </p>
+                </>
               ) : (
                 <>
                   <CustomerCombobox
@@ -1047,12 +1137,14 @@ export function WerkstattKistenPage() {
                     <button
                       type="button"
                       className="werkstatt-action-btn werkstatt-action-btn--primary"
-                      onClick={() => void assign()}
-                      disabled={assignCustomerId == null || activeBox.items.length === 0}
+                      onClick={() => void pack()}
+                      disabled={
+                        !isOpen || assignCustomerId == null || activeBox.items.length === 0
+                      }
                     >
                       {de ? "Packen & zuweisen" : "Pack & assign"}
                     </button>
-                    {activeBox.status === "zurueck" && (
+                    {returned && (
                       <button
                         type="button"
                         className="werkstatt-action-btn"
@@ -1062,7 +1154,23 @@ export function WerkstattKistenPage() {
                       </button>
                     )}
                   </div>
-                  {activeBox.items.length === 0 && (
+                  {returned ? (
+                    /* A returned crate cannot be packed — the FSM has no
+                       zurueck → gepackt edge, so the only honest button here
+                       is the one that re-opens it. */
+                    <p className="kisten-action-hint">
+                      {de
+                        ? "Die Kiste ist zurück – erst „Erneut öffnen“, dann packen."
+                        : "The box is back — re-open it before packing it again."}
+                    </p>
+                  ) : (
+                    <p className="kisten-action-hint">
+                      {de
+                        ? "Beim Zuweisen wird noch kein Bestand gebucht – erst bei der Übergabe."
+                        : "Assigning books no stock — the handover does."}
+                    </p>
+                  )}
+                  {isOpen && activeBox.items.length === 0 && (
                     <p className="kisten-note kisten-note--muted">
                       {de
                         ? "Erst packen, dann zuweisen."

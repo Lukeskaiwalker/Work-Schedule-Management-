@@ -12,6 +12,7 @@ import { useEffect, useState } from "react";
 
 import { apiFetch, ApiError } from "../../api/client";
 import { useAppContext } from "../../context/AppContext";
+import { boxStatusLabel } from "../../utils/boxes";
 import { formatServerDateTime } from "../../utils/dates";
 
 type CustomerBox = {
@@ -20,16 +21,13 @@ type CustomerBox = {
   label: string;
   status: string;
   item_count: number;
+  /** Set once the crate is packed for this customer — it may sit like that for
+   *  days before anybody carries it out, which is exactly what this card has
+   *  to be able to show. */
+  packed_at: string | null;
   assigned_at: string | null;
   returned_at: string | null;
   project_name: string | null;
-};
-
-const STATUS_LABELS: Record<string, { de: string; en: string }> = {
-  offen: { de: "Offen", en: "Open" },
-  gepackt: { de: "Gepackt", en: "Packed" },
-  zugewiesen: { de: "Beim Kunden", en: "With customer" },
-  zurueck: { de: "Zurück", en: "Returned" },
 };
 
 type Props = {
@@ -98,10 +96,7 @@ export function CustomerBoxesCard({ customerId }: Props) {
                 {box.label} <span className="muted">{box.box_number}</span>
               </div>
               <div className="overview-report-meta">
-                {de ? "Status" : "Status"}:{" "}
-                {de
-                  ? STATUS_LABELS[box.status]?.de ?? box.status
-                  : STATUS_LABELS[box.status]?.en ?? box.status}
+                {de ? "Status" : "Status"}: {boxStatusLabel(box.status, de) || box.status}
                 {" · "}
                 {box.item_count}{" "}
                 {de
@@ -117,7 +112,14 @@ export function CustomerBoxesCard({ customerId }: Props) {
                   {de ? "Projekt" : "Project"}: {box.project_name}
                 </div>
               )}
-              {box.assigned_at && (
+              {/* A packed crate has not been handed over yet, so its date is
+                  the one that matters; once it goes out, the handover wins. */}
+              {box.status === "gepackt" && box.packed_at && (
+                <div className="overview-report-meta">
+                  {de ? "Gepackt" : "Packed"}: {formatServerDateTime(box.packed_at, language)}
+                </div>
+              )}
+              {box.assigned_at && box.status !== "gepackt" && (
                 <div className="overview-report-meta">
                   {de ? "Übergeben" : "Handed over"}:{" "}
                   {formatServerDateTime(box.assigned_at, language)}

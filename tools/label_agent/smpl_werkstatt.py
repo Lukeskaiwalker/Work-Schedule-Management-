@@ -40,6 +40,7 @@ __all__ = [
     "PATHS",
     "items_path",
     "remove_path",
+    "handover_path",
     "article_id_of",
     "machine_of",
     "kind_of",
@@ -89,6 +90,10 @@ def items_path(box_id: int) -> str:
 
 def remove_path(box_id: int) -> str:
     return "%s/boxes/%d/items/remove" % (BASE, int(box_id))
+
+
+def handover_path(box_id: int) -> str:
+    return "%s/boxes/%d/handover" % (BASE, int(box_id))
 
 
 @dataclass(frozen=True)
@@ -450,6 +455,19 @@ class WerkstattClient:
         if qty is None:
             return Result(False, error="Ungültige Menge.")
         return self._write(remove_path(box), {"item_id": item, "quantity": qty})
+
+    def handover(self, box_id: Any) -> Result:
+        """Book "Mitnehmen": the packed crate leaves, its contents leave stock.
+
+        No body beyond the crate: the customer and the project were decided
+        when it was packed, and a wall screen must not be able to change
+        either. SMPL refuses anything that is not ``gepackt`` with a German
+        sentence the screen shows verbatim.
+        """
+        box = _as_id(box_id)
+        if box is None:
+            return Result(False, error="Ungültige Kisten-Nummer.")
+        return self._write(handover_path(box), {})
 
     def movement(self, article_id: Any, movement_type: str, quantity: int = 1, *,
                  assignee_user_id: Optional[int] = None, notes: str = "") -> Result:

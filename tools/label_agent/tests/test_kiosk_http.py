@@ -723,6 +723,76 @@ class TestTheSecondDoorOntoTheLedger(KioskCase):
         self.assertEqual(scan_router.MOVEMENT_REQUIRING_ASSIGNEE, "checkout")
 
 
+class TestMitnehmen(KioskCase):
+    """Booking a packed crate out at the wall.
+
+    Two doors, one body: the button on the box screen and the printed
+    ``SMPL-CMD-MITNEHMEN`` code both end in ``handover_box``. What these pin is
+    that the crate it means is the one on the screen, that a crate which is not
+    packed is refused with a sentence instead of a booking, and that nothing at
+    all happens when no crate is open — the codes hang on a wall where anybody
+    can scan one in passing.
+    """
+
+    def _crate(self, status="gepackt"):
+        self.agent.kiosk.set_boxes({
+            "boxes": [{"id": 3, "box_number": "K3", "label": "Kiste 3", "code": "KISTE-K3",
+                       "status": status, "customer": "Musterbau GmbH", "items": []}],
+            "fetched_at": 1.7e9, "stale": False, "error": None,
+        })
+        calls = []
+        self.agent.werkstatt.handover = lambda box_id: (
+            calls.append(box_id) or smpl_werkstatt.Result(True, data={"id": box_id})
+        )
+        # The crate list is re-read after every booking; keep it answering.
+        self.agent.werkstatt.boxes = lambda force=False: self.agent.kiosk.boxes()
+        return calls
+
+    def test_the_button_books_the_crate_that_is_on_the_screen(self):
+        calls = self._crate()
+        post(self.base() + "/scan/route", {"code": "KISTE-K3"})
+        status, body = post(self.base() + "/screen/action",
+                            {"screen": "kisten", "action": "handover"})
+        self.assertEqual(status, 200, body)
+        self.assertEqual(calls, [3])
+        _s, state = self.state("kisten")
+        self.assertEqual(state["flash"]["level"], "ok")
+        self.assertIn("K3", state["flash"]["title"])
+
+    def test_the_printed_code_books_the_same_crate(self):
+        calls = self._crate()
+        post(self.base() + "/scan/route", {"code": "KISTE-K3"})
+        status, body = post(self.base() + "/scan/route", {"code": "SMPL-CMD-MITNEHMEN"})
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body["routed_to"], "kisten")
+        self.assertEqual(calls, [3])
+
+    def test_a_crate_that_is_not_packed_is_refused_without_a_booking(self):
+        calls = self._crate(status="offen")
+        post(self.base() + "/scan/route", {"code": "KISTE-K3"})
+        post(self.base() + "/screen/action", {"screen": "kisten", "action": "handover"})
+        self.assertEqual(calls, [])
+        _s, state = self.state("kisten")
+        self.assertEqual(state["flash"]["level"], "warn")
+        self.assertIn("gepackt", state["flash"]["detail"])
+
+    def test_scanning_the_code_with_no_crate_open_says_so(self):
+        calls = self._crate()
+        status, body = post(self.base() + "/scan/route", {"code": "SMPL-CMD-MITNEHMEN"})
+        self.assertEqual(status, 200, body)
+        self.assertEqual(calls, [])
+        _s, state = self.state("kisten")
+        self.assertIn("Kiste", state["flash"]["title"])
+
+    def test_the_rack_screen_cannot_book_a_handover(self):
+        calls = self._crate()
+        post(self.base() + "/scan/route", {"code": "KISTE-K3"})
+        status, _body = post(self.base() + "/screen/action",
+                             {"screen": "regal", "action": "handover"})
+        self.assertEqual(status, 400)
+        self.assertEqual(calls, [])
+
+
 class TestAnActionBelongsToItsScreen(KioskCase):
     """``screen`` used to be validated and then ignored."""
 
@@ -1683,18 +1753,31 @@ class TestTheCommandCodesFitTheWall(unittest.TestCase):
     own max-height: the mode toggle and both quantity codes never reached
     the glass. This pins the arithmetic that stopped it happening again -
     what the page asks for, and whether it fits the panel it is shown on.
+
+    The property is per ROW, not per page. MITNEHMEN pushed the set past what
+    one row of the panel holds, so the page lays the codes out in rows it
+    declares itself; a row that has to wrap is the failure this pins, and the
+    strip is free to grow downward (it has no max-height and the crate panel
+    gives way - see the comment on .cmds in the page).
     """
 
     PANEL_CSS_WIDTH = 1920  # 3840 device px at --force-device-scale-factor=2
     PAGE = pathlib.Path(__file__).resolve().parents[1] / "static" / "kiosk_boxes.html"
 
-    def _requested(self):
+    def _rows(self):
+        """The requested barcodes, grouped by the row they are declared in."""
         html = self.PAGE.read_text(encoding="utf-8")
-        out = []
-        for src in re.findall(r'src="(/barcode\.svg\?[^"]+)"', html):
-            query = urllib.parse.parse_qs(src.split("?", 1)[1].replace("&amp;", "&"))
-            out.append((query["text"][0], int(query["m"][0]), int(query["h"][0])))
-        return out
+        rows = []
+        for chunk in html.split('class="cmd-row"')[1:]:
+            row = []
+            for src in re.findall(r'src="(/barcode\.svg\?[^"]+)"', chunk.split("</section>")[0]):
+                query = urllib.parse.parse_qs(src.split("?", 1)[1].replace("&amp;", "&"))
+                row.append((query["text"][0], int(query["m"][0]), int(query["h"][0])))
+            rows.append(row)
+        return rows
+
+    def _requested(self):
+        return [code for row in self._rows() for code in row]
 
     def test_every_command_image_asks_for_an_explicit_module_width(self):
         asked = self._requested()
@@ -1702,17 +1785,19 @@ class TestTheCommandCodesFitTheWall(unittest.TestCase):
         for text, module, _height in asked:
             self.assertGreaterEqual(module, 2, "%s would be too fine to scan" % text)
 
-    def test_they_fit_across_the_panel_in_one_row(self):
+    def test_every_row_fits_across_the_panel_without_wrapping(self):
         import barcode128
 
-        asked = self._requested()
-        total = sum(barcode128.module_width(t) * m for t, m, _ in asked)
-        # Leave room for the gaps and padding around each card.
-        self.assertLess(
-            total, self.PANEL_CSS_WIDTH * 0.8,
-            "the command codes need %d px of a %d px panel; they will wrap and be clipped"
-            % (total, self.PANEL_CSS_WIDTH),
-        )
+        rows = [row for row in self._rows() if row]
+        self.assertTrue(rows, "the box page declares no command rows")
+        for row in rows:
+            total = sum(barcode128.module_width(t) * m for t, m, _ in row)
+            # Leave room for the gaps and padding around each card.
+            self.assertLess(
+                total, self.PANEL_CSS_WIDTH * 0.8,
+                "the row %s needs %d px of a %d px panel; it will wrap and be clipped"
+                % ([t for t, _m, _h in row], total, self.PANEL_CSS_WIDTH),
+            )
 
     def test_each_one_is_a_command_the_router_actually_implements(self):
         source = (pathlib.Path(__file__).resolve().parents[1] / "scan_router.py").read_text(
@@ -1723,6 +1808,14 @@ class TestTheCommandCodesFitTheWall(unittest.TestCase):
                 text, source,
                 "the box screen offers %s but scan_router never mentions it" % text,
             )
+
+    def test_the_crate_handover_is_offered_at_the_wall(self):
+        """A packed crate is carried out by whoever walks past it, and that
+        person has a scanner and no keyboard."""
+        self.assertIn(
+            "SMPL-CMD-MITNEHMEN", [text for text, _m, _h in self._requested()],
+            "the box screen has no way to book a handover",
+        )
 
 
 if __name__ == "__main__":

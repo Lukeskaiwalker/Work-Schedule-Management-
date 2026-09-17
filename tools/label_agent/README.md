@@ -129,6 +129,27 @@ Three design choices carry that budget:
 | `POST` | `/imports/rescan` | look at every mounted card again |
 | `POST` | `/imports/retry` | re-queue everything SMPL has not taken yet |
 
+### Wall screens: the scanned commands
+
+The two kiosk screens (`/regal`, `/kisten`) have a scanner and no keyboard, so
+every command is a barcode. `scan_router.py` owns the vocabulary; the box
+screen prints these four on the glass, and `POST /scan/route` routes them
+before any code is looked up.
+
+| Code | What it does |
+|---|---|
+| `SMPL-CMD-FERTIG` | close the crate session, back to the overview |
+| `SMPL-CMD-ABBRUCH` | take back the last position (or the last booking at the rack) |
+| `SMPL-CMD-ENTNAHME` | toggle between packing into the crate and taking out of it |
+| `SMPL-CMD-MITNEHMEN` | book the handover of the **packed** crate on screen: SMPL checks its contents out of stock under the station's name. Refused when no crate is open, and when the crate is not `gepackt` |
+
+`SMPL-CMD-MENGE-5` / `-10` / `-50` set the quantity for the next scan and live
+on the printed card beside the rack — a sixth card on the glass would push the
+crate panel off the screen. The rack's direction codes (`SMPL-CMD-EIN`,
+`SMPL-CMD-AUS`) work the same way. The **Mitnehmen** button on the box screen
+posts `{"screen":"kisten","action":"handover"}` to `/screen/action` and ends in
+exactly the same place as the scanned code.
+
 ```sh
 curl -s localhost:8765/health
 curl -s -X POST localhost:8765/resolve -d '{"code":"4011923456789"}'

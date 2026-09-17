@@ -5,7 +5,7 @@ import { taskMaterialsDisplay } from "../../utils/reports";
 import { PenIcon } from "../../components/icons";
 import { PartnerTaskChip } from "../../components/partners/PartnerTaskChip";
 import { TerminBadge } from "../../components/tasks/TerminBadge";
-import { taskBoxDisplay } from "../../utils/boxes";
+import { taskBoxDisplay, taskBoxSummary } from "../../utils/boxes";
 
 export function ProjectTasksTab() {
   const {
@@ -202,8 +202,8 @@ export function ProjectTasksTab() {
                       {taskMaterials
                         ? `${language === "de" ? "Material" : "Materials"}: ${taskMaterials}`
                         : ""}
-                      {taskBoxDisplay(task)
-                        ? ` | ${language === "de" ? "Baustellenkiste" : "Construction box"}: ${taskBoxDisplay(task)}`
+                      {taskBoxSummary(task, language === "de")
+                        ? ` | ${language === "de" ? "Baustellenkiste" : "Construction box"}: ${taskBoxSummary(task, language === "de")}`
                         : ""}
                     </small>
                   )}

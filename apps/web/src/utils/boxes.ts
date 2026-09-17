@@ -7,9 +7,16 @@
  */
 import type { SelectableConstructionBox, Task } from "../types";
 
+/**
+ * ``gepackt`` reads "Gepackt – bereit" and not just "Gepackt" because the
+ * state now means something a person can act on: the crate is packed, it
+ * belongs to a customer, and it is standing in the workshop waiting to be
+ * carried out. "Packed" alone said nothing about whether anybody still had to
+ * do something with it.
+ */
 const STATUS_LABELS: Record<string, { de: string; en: string }> = {
   offen: { de: "Offen", en: "Open" },
-  gepackt: { de: "Gepackt", en: "Packed" },
+  gepackt: { de: "Gepackt – bereit", en: "Packed – ready" },
   zugewiesen: { de: "Beim Kunden", en: "With customer" },
   zurueck: { de: "Zurück", en: "Returned" },
 };
@@ -59,4 +66,19 @@ export function taskBoxDisplay(task: Task): string | null {
   }
   if (task.storage_box_number != null) return String(task.storage_box_number);
   return null;
+}
+
+/**
+ * The crate on a task row: which one, and what is going on with it.
+ *
+ * "K3 — Kiste 3" alone left the office unable to tell a crate that is still
+ * being packed from one that is already on the customer's site — the two ask
+ * for completely different phone calls. One helper rather than the same
+ * concatenation in three list pages.
+ */
+export function taskBoxSummary(task: Task, de: boolean): string | null {
+  const display = taskBoxDisplay(task);
+  if (!display) return null;
+  const status = boxStatusLabel(task.construction_box_status, de);
+  return status ? `${display} · ${status}` : display;
 }

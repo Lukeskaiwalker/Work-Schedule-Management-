@@ -5,6 +5,18 @@ import type { AppContextValue } from "./context/AppContext";
 import { ApiError, apiFetch, apiUploadWithProgress, setUnauthorizedHandler } from "./api/client";
 import { apiUrl } from "./native/shell";
 import { taskBoxDisplay } from "./utils/boxes";
+import { MaterialRemainderDialog } from "./components/tasks/MaterialRemainderDialog";
+import type {
+  MaterialRemainderChoice,
+  MaterialSettlementPreview,
+  TaskCompletionResponse,
+} from "./types/taskSettlement";
+import { remainderOutcomeText } from "./utils/taskSettlementNotice";
+import {
+  REMAINDER_CANCELLED,
+  completeQuietly,
+  isRemainderCancelled,
+} from "./utils/taskCompletion";
 import { compressReportImages } from "./utils/imageCompression";
 import { formDataFingerprint, sendUnderSubmissionKey, uploadWithIdempotentRetry } from "./utils/idempotentRetry";
 import type { SubmissionKey } from "./utils/idempotentRetry";
@@ -340,6 +352,12 @@ export function App() {
   const [error, setError] = useState<string>("");
   const [notice, setNotice] = useState<string>("");
   const [actionLinkDialog, setActionLinkDialog] = useState<ActionLinkDialogState>(null);
+  // The crate settlement question: the preview being asked about, and the
+  // promise the completion flow is parked on while it is on screen.
+  const [remainderPreview, setRemainderPreview] = useState<MaterialSettlementPreview | null>(null);
+  const remainderResolverRef = useRef<((choice: MaterialRemainderChoice | null) => void) | null>(
+    null,
+  );
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -6500,16 +6518,96 @@ export function App() {
   }
 
   /**
-   * The one request that completes a task. Both completion paths — the
-   * "Als erledigt markieren" button and the post-report completion — go
-   * through here, so a later step (a material-settlement dialog) can wrap
-   * this single call instead of two code paths.
+   * Ask where the crate's leftovers should go, and resolve with the answer.
+   *
+   * A promise around a modal: the completion flow is one linear function and
+   * reads like one, instead of being cut in half by a callback that then has
+   * to remember which task it was completing.
+   */
+  function askForMaterialRemainder(
+    preview: MaterialSettlementPreview,
+  ): Promise<MaterialRemainderChoice | null> {
+    return new Promise((resolve) => {
+      // A dialog that is somehow still open loses its question rather than
+      // its answer: leaving the old resolver behind would park that flow's
+      // promise forever, and a task stuck mid-completion is invisible.
+      remainderResolverRef.current?.(null);
+      remainderResolverRef.current = resolve;
+      setRemainderPreview(preview);
+    });
+  }
+
+  function answerMaterialRemainder(choice: MaterialRemainderChoice | null) {
+    const resolve = remainderResolverRef.current;
+    remainderResolverRef.current = null;
+    setRemainderPreview(null);
+    resolve?.(choice);
+  }
+
+  /**
+   * The one request that completes a task, plus the question that has to be
+   * answered first when its crate does not come back empty.
+   *
+   * Both completion paths — the "Als erledigt markieren" button and the
+   * post-report completion — go through here, so the dialog exists once. The
+   * preview is a cheap read that answers "no question needed" for almost every
+   * task; a preview that cannot be read at all does NOT block the completion,
+   * it just falls back to what completing a task always did.
+   *
+   * Returns the line to append to the success notice, or null. Throws
+   * REMAINDER_CANCELLED when the person closed the dialog — the task then
+   * stays open on purpose, and both callers say so in their own words.
+   */
+  async function completeTaskSettled(
+    taskId: number,
+    extraPatch: Record<string, unknown> = {},
+  ): Promise<string | null> {
+    let preview: MaterialSettlementPreview | null = null;
+    try {
+      preview = await apiFetch<MaterialSettlementPreview>(
+        `/tasks/${taskId}/material-settlement`,
+        token,
+      );
+    } catch {
+      preview = null;
+    }
+
+    let choice: MaterialRemainderChoice | null = null;
+    if (preview?.needs_decision) {
+      choice = await askForMaterialRemainder(preview);
+      if (!choice) {
+        throw new Error(REMAINDER_CANCELLED);
+      }
+    }
+
+    const completed = await apiFetch<TaskCompletionResponse>(`/tasks/${taskId}`, token, {
+      method: "PATCH",
+      body: JSON.stringify({
+        status: "done",
+        ...(choice ? { material_remainder: choice } : {}),
+        ...extraPatch,
+      }),
+    });
+    // Phrased from the answer, not from the choice — see the helper.
+    return remainderOutcomeText(completed?.material_settlement, {
+      hadRemainder: (preview?.remainder_total ?? 0) > 0,
+      de: language === "de",
+    });
+  }
+
+  /**
+   * The context-facing completion. Same seam as before — one named function
+   * both paths call — now with the settlement question inside it.
+   *
+   * Closing the settlement dialog resolves rather than rejects: it is a
+   * decision ("not yet"), not a failure, and the internal sentinel that
+   * carries it is not something a caller outside this file should ever see —
+   * a page rendering `err.message` would put "material-remainder-cancelled" in
+   * front of the workshop. The two callers in this file want to say their own
+   * sentence about it and use `completeTaskSettled` directly.
    */
   async function completeTask(taskId: number, extraPatch: Record<string, unknown> = {}) {
-    await apiFetch(`/tasks/${taskId}`, token, {
-      method: "PATCH",
-      body: JSON.stringify({ status: "done", ...extraPatch }),
-    });
+    await completeQuietly(() => completeTaskSettled(taskId, extraPatch));
   }
 
   async function markTaskDone(
@@ -6528,7 +6626,7 @@ export function App() {
     }
 
     try {
-      await completeTask(
+      const outcome = await completeTaskSettled(
         task.id,
         task.updated_at !== null && task.updated_at !== undefined ? { expected_updated_at: task.updated_at } : {},
       );
@@ -6542,8 +6640,20 @@ export function App() {
       if (mainView === "planning") {
         await loadPlanningWeek(null, planningWeekStart, planningTaskTypeView === "all" ? null : planningTaskTypeView);
       }
-      setNotice(language === "de" ? "Aufgabe abgeschlossen" : "Task marked complete");
+      const done = language === "de" ? "Aufgabe abgeschlossen" : "Task marked complete";
+      setNotice(outcome ? `${done} · ${outcome}` : done);
     } catch (err: any) {
+      if (isRemainderCancelled(err)) {
+        // Closing the dialog is a decision: nothing was settled, so nothing
+        // was completed either. Said plainly, because the row will still be
+        // there afterwards.
+        setNotice(
+          language === "de"
+            ? "Abgebrochen – Aufgabe bleibt offen, Material noch nicht abgerechnet."
+            : "Cancelled — the task stays open and the material is not settled.",
+        );
+        return;
+      }
       if (err?.status === 409) {
         setError(
           language === "de"
@@ -7845,13 +7955,11 @@ export function App() {
         const task = planningWeek?.days.flatMap((d) => d.tasks).find((t) => t.id === taskToMarkDone)
           ?? null;
         try {
-          await completeTask(taskToMarkDone);
+          const outcome = await completeTaskSettled(taskToMarkDone);
           await loadMyTasks();
-          setNotice(
-            language === "de"
-              ? "Aufgabe als erledigt markiert"
-              : "Task marked as complete",
-          );
+          const done =
+            language === "de" ? "Aufgabe als erledigt markiert" : "Task marked as complete";
+          setNotice(outcome ? `${done} · ${outcome}` : done);
         } catch (err: any) {
           // v2.5.21: previously this catch silently swallowed every error
           // — including the 403 that bit employees pre-fix. Now we surface
@@ -7861,13 +7969,22 @@ export function App() {
           // we don't want to raise an outright error and confuse the user
           // about whether their submission was accepted.
           void task;
-          const message = err?.message
+          // A cancelled settlement dialog is not a failure: the report is
+          // saved — the expensive half — and the person chose not to finish
+          // the task yet. Nothing here may return early, because the upload's
+          // own processing still has to be followed below.
+          const cancelled = isRemainderCancelled(err);
+          const message = cancelled
             ? (language === "de"
-                ? `Bericht gespeichert, aber Aufgabe konnte nicht als erledigt markiert werden: ${err.message}`
-                : `Report saved, but task could not be marked complete: ${err.message}`)
-            : (language === "de"
-                ? "Bericht gespeichert, aber Aufgabe konnte nicht automatisch als erledigt markiert werden."
-                : "Report saved, but task could not be marked complete automatically.");
+                ? "Bericht gespeichert – Aufgabe bleibt offen, Material noch nicht abgerechnet."
+                : "Report saved — the task stays open and the material is not settled.")
+            : err?.message
+              ? (language === "de"
+                  ? `Bericht gespeichert, aber Aufgabe konnte nicht als erledigt markiert werden: ${err.message}`
+                  : `Report saved, but task could not be marked complete: ${err.message}`)
+              : (language === "de"
+                  ? "Bericht gespeichert, aber Aufgabe konnte nicht automatisch als erledigt markiert werden."
+                  : "Report saved, but task could not be marked complete automatically.");
           setNotice(message);
         }
       }
@@ -10518,6 +10635,17 @@ export function App() {
             <option key={`material-unit-${unit}`} value={unit} />
           ))}
         </datalist>
+
+        {remainderPreview && (
+          <MaterialRemainderDialog
+            preview={remainderPreview}
+            language={language}
+            onCancel={() => answerMaterialRemainder(null)}
+            // The PATCH runs in the flow that is awaiting this answer; the
+            // dialog closes here, so a second click has nothing to hit.
+            onConfirm={(choice) => answerMaterialRemainder(choice)}
+          />
+        )}
 
         <ProjectModal />
 

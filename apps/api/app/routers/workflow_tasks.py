@@ -6,7 +6,21 @@ from sqlalchemy import and_, func, or_
 from app.core.events import notify
 from app.models.notification import Notification
 from app.routers.workflow_helpers import *  # noqa: F401,F403
-from app.services.task_materials import settle_task_materials
+# Imported from their own modules rather than through the ``*`` above: these
+# names are new with the settlement dialog, and ``schemas/api.py`` — which is
+# what the star import re-exports from — is a shared hub no single area owns.
+from app.schemas.task import (
+    NEW_BOX_LABEL_REQUIRED_DETAIL,
+    TaskMaterialSettlementBoxOut,
+    TaskMaterialSettlementLineOut,
+    TaskMaterialSettlementOut,
+    TaskMaterialSettlementResultOut,
+)
+from app.services.task_material_settlement import (
+    Settlement,
+    material_settlement_preview,
+    settle_task_materials,
+)
 
 router = APIRouter(prefix="", tags=["tasks"])
 
@@ -310,6 +324,16 @@ def update_task(
             current=task.updated_at,
             conflict_detail="Task was updated by another user. Please reload and retry.",
         )
+    # Checked before anything is written: a completion that would settle the
+    # crate into a nameless new box must fail with the task still open and the
+    # crate still out, not half-way through.
+    remainder = payload.material_remainder
+    if (
+        remainder is not None
+        and remainder.disposition == "new_box"
+        and not (remainder.new_box_label or "").strip()
+    ):
+        raise HTTPException(status_code=400, detail=NEW_BOX_LABEL_REQUIRED_DETAIL)
 
     if not can_manage:
         # v2.5.21: allow harmless meta-fields through the employee path.
@@ -326,7 +350,15 @@ def update_task(
         # is consumed downstream by the overlap-detection logic, so both
         # are safe to include without granting any new data-mutation power
         # to non-managers.
-        ALLOWED_EMPLOYEE_FIELDS = {"status", "expected_updated_at", "confirm_overlap"}
+        # ``material_remainder`` rides along with the completing PATCH, and an
+        # employee is precisely the person who completes a task — refusing it
+        # here would mean the field staff got the dialog and then a 403.
+        ALLOWED_EMPLOYEE_FIELDS = {
+            "status",
+            "expected_updated_at",
+            "confirm_overlap",
+            "material_remainder",
+        }
         illegal_fields = payload.model_fields_set.difference(ALLOWED_EMPLOYEE_FIELDS)
         if illegal_fields:
             raise HTTPException(status_code=403, detail="Assigned employees can only mark tasks complete")
@@ -552,19 +584,30 @@ def update_task(
     )
 
     resolved_notification_user_ids: list[int] = []
+    # None unless this PATCH is the one that completed the task and its crate
+    # had something to settle — see the response at the end of the function.
+    settlement: Settlement | None = None
     if task.status != previous_status and task.status == "done":
         resolved_notification_user_ids = _resolve_task_notifications(db, task.id)
         # The crate's contents are booked now, not at handover: the report has
         # said what was fitted, the rest goes back on the shelf, and the crate
         # is freed for the next job. Same transaction as the status change.
-        settlement = settle_task_materials(db, task=task, user_id=current_user.id)
+        settlement = settle_task_materials(
+            db,
+            task=task,
+            user_id=current_user.id,
+            disposition=remainder.disposition if remainder is not None else "shelf",
+            new_box_label=remainder.new_box_label if remainder is not None else None,
+        )
         if settlement is not None and task.project_id is not None:
             _record_project_activity(
                 db,
                 project_id=task.project_id,
                 actor_user_id=current_user.id,
                 event_type="task.materials_settled",
-                message=f"Material abgerechnet: {task.title}",
+                # The outcome belongs in the sentence: "abgerechnet" alone
+                # left the office guessing which crate the leftovers are in.
+                message=f"Material abgerechnet: {task.title} ({settlement.remainder_text})",
                 details={"task_id": task.id, **settlement.as_details()},
             )
     if (
@@ -606,7 +649,58 @@ def update_task(
             notify(db, "notification.created", {"user_id": uid})
     for uid in resolved_notification_user_ids:
         notify(db, "notification.resolved", {"user_id": uid})
-    return updated
+    if settlement is None:
+        return updated
+    # Only the caller who just completed the task is told what became of the
+    # rest — the broadcast above is the ordinary task shape every listener
+    # already parses, and "where did the leftovers go" is an answer to this
+    # request, not news about the task. A copy rather than a mutation so the
+    # payload that was broadcast stays exactly what was broadcast.
+    return updated.model_copy(
+        update={
+            "material_settlement": TaskMaterialSettlementResultOut(
+                disposition=settlement.disposition,
+                remainder_box_id=settlement.remainder_box_id,
+                remainder_box_number=settlement.remainder_box_number,
+                handover_booked=settlement.handover_booked,
+            )
+        }
+    )
+
+@router.get("/tasks/{task_id}/material-settlement", response_model=TaskMaterialSettlementOut)
+def task_material_settlement(
+    task_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """What completing this task would do to its crate. Writes nothing.
+
+    Read by the client immediately before it completes a task, so it can ask
+    "was ist mit dem Rest passiert?" — and, far more often, so it can skip the
+    question: a task with no crate, or with nothing left over, answers
+    ``needs_decision: false`` and completion stays one click.
+
+    Same access rule as the PATCH it precedes (manager, or somebody the task is
+    assigned to): a preview that were readable more widely than the write it
+    describes would leak a customer's name and a crate's contents.
+    """
+    task = db.get(Task, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    assignee_ids = _task_assignee_map(db, [task]).get(task.id, [])
+    can_manage = has_permission_for_user(current_user.id, current_user.role, "tasks:manage")
+    if not can_manage and current_user.id not in assignee_ids:
+        raise HTTPException(status_code=403, detail="Task access denied")
+
+    preview = material_settlement_preview(db, task=task)
+    return TaskMaterialSettlementOut(
+        box=TaskMaterialSettlementBoxOut(**preview.box) if preview.box is not None else None,
+        lines=[TaskMaterialSettlementLineOut(**line.as_dict()) for line in preview.lines],
+        remainder_total=preview.remainder_total,
+        handover_pending=preview.handover_pending,
+        needs_decision=preview.needs_decision,
+    )
+
 
 @router.delete("/tasks/{task_id}")
 def delete_task(

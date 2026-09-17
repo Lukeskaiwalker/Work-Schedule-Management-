@@ -95,6 +95,7 @@ ACTION_SCREEN = {
     "assignee": SCREEN_RACK,
     "mode": SCREEN_BOXES,
     "close_session": SCREEN_BOXES,
+    "handover": SCREEN_BOXES,
 }
 
 # The screens render state; they never accumulate events. So every poll
@@ -1508,7 +1509,8 @@ class Agent:
     def _applied_note(self, decision, _resolved) -> None:
         titles = {"clear_pending": "Verworfen",
                   "nothing_to_undo": "Nichts zum Rückgängigmachen",
-                  "cannot_undo": "Abbruch nicht möglich"}
+                  "cannot_undo": "Abbruch nicht möglich",
+                  "nothing_to_handover": "Keine Kiste offen"}
         level = "ok" if decision.ok else "warn"
         self.kiosk.flash(decision.screen or SCREEN_RACK, level,
                          titles.get(decision.action, decision.action),
@@ -1739,6 +1741,15 @@ class Agent:
                                     decision.qty),
                          code=decision.code)
 
+    def _applied_handover(self, decision, _resolved) -> None:
+        box_id = self._session_box_id()
+        if box_id is None:
+            self.kiosk.flash(SCREEN_BOXES, "error", "Kiste unbekannt",
+                             "SMPL kennt die Kiste %s nicht." % (decision.box_number or "?"),
+                             code=decision.code)
+            return
+        self.handover_box(box_id)
+
     # -- undo -------------------------------------------------------------
 
     def _applied_undo_item(self, decision, _resolved) -> None:
@@ -1815,6 +1826,41 @@ class Agent:
         self.router.close_session()
         self.kiosk.flash(SCREEN_BOXES, "ok", "Kiste geschlossen", "")
         return {"ok": True}
+
+    def handover_box(self, box_id) -> dict:
+        """"Mitnehmen": book the packed crate out, under the station's name.
+
+        One body for the button and for the scanned ``SMPL-CMD-MITNEHMEN``,
+        because a crate that leaves the workshop must be booked the same way
+        whichever of the two a person reaches for.
+
+        The cached status is checked first only to give the better sentence —
+        SMPL refuses anything that is not ``gepackt`` anyway, and its refusal
+        is the one that counts. The crate list is refreshed afterwards either
+        way: a wrong-looking status on the wall is usually a stale one.
+        """
+        self.require_kiosk()
+        box = self.kiosk.find_box(box_id=box_id) if box_id is not None else None
+        if box is None:
+            self.kiosk.flash(SCREEN_BOXES, "error", "Kiste unbekannt",
+                             "SMPL kennt diese Kiste nicht.")
+            return {"ok": False, "error": "unknown box"}
+        number = str(box.get("box_number") or box_id)
+        if str(box.get("status") or "") != "gepackt":
+            self.kiosk.flash(SCREEN_BOXES, "warn", "Nicht gepackt",
+                             "Nur eine gepackte Kiste kann mitgenommen werden.")
+            self._refresh_boxes(force=True)
+            return {"ok": False, "error": "not packed"}
+
+        result = self.werkstatt.handover(box.get("id"))
+        if result.ok:
+            self.kiosk.flash(SCREEN_BOXES, "ok", "Kiste %s mitgenommen" % number,
+                             "Bestand ausgebucht für %s" % (box.get("customer") or "den Kunden"))
+        else:
+            self.kiosk.flash(SCREEN_BOXES, "error", "Nicht gebucht", result.error or "")
+        self._refresh_boxes(force=True)
+        return {"ok": result.ok, "box": result.data if result.ok else None,
+                "error": result.error}
 
     def add_box_item(self, box_id: int, code: str, article_id, qty: int) -> dict:
         self.require_kiosk()
@@ -1910,6 +1956,11 @@ class Agent:
         elif action == "close_session":
             self.router.close_session()
             self.kiosk.bump(SCREEN_BOXES)
+        elif action == "handover":
+            # The crate is the one whose screen the button sits on, never one
+            # named by the caller: the box screen has no keyboard and no way
+            # to mean a different crate.
+            self.handover_box(self._session_box_id())
         elif action == "qty":
             self.router.set_qty(require_int({"qty": value}, "qty", 1, 1, 9999))
             self.kiosk.bump(*SCREENS)
@@ -1961,6 +2012,8 @@ _APPLY = {
     "add_item": Agent._applied_add,
     "remove_item": Agent._applied_remove,
     "movement": Agent._applied_movement,
+    "handover": Agent._applied_handover,
+    "nothing_to_handover": Agent._applied_note,
     "undo_item": Agent._applied_undo_item,
     "undo_remove": Agent._applied_undo_remove,
     "undo_movement": Agent._applied_undo_movement,

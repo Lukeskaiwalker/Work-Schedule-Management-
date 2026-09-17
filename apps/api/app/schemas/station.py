@@ -497,3 +497,12 @@ class StationArticleFromCatalogOut(StationMovementOut):
     """
 
     created: bool
+
+
+class StationBoxHandoverRequest(BaseModel):
+    """"Mitnehmen" at the wall. The crate is named by the URL, so the body is
+    empty — a station may not choose a customer, a project or a quantity here;
+    all three are already on the packed crate and the screen only confirms that
+    somebody is carrying it out."""
+
+    notes: str | None = Field(default=None, max_length=500)

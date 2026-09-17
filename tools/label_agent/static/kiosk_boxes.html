@@ -45,6 +45,32 @@ main{flex:1 1 auto; min-height:0; display:grid; grid-template-rows:minmax(0,1fr)
   padding:14px 16px; gap:8px;
 }
 .box.locked-box{border-color:var(--warn-line)}
+
+/* Eine gepackte Kiste wartet darauf, mitgenommen zu werden - das ist der
+   einzige Zustand auf dieser Wand, der jemanden zum Handeln auffordert. Der
+   Rand pulst deshalb, aus drei Metern erkennbar, ohne Farbe dazuzunehmen:
+   --ok ist der Akzent, den diese Wand ohnehin fuer "gut" benutzt.
+   Die Regel steht hier und nicht in kiosk.css, weil .box nur auf diesem
+   Bildschirm existiert (siehe Kopf von kiosk.css). */
+.box.ready-box{border-color:var(--ok-line); animation:kready 2.4s ease-out infinite}
+@keyframes kready{
+  0%{box-shadow:0 0 0 0 rgba(47,224,131,.38)}
+  70%{box-shadow:0 0 0 12px rgba(47,224,131,0)}
+  100%{box-shadow:0 0 0 0 rgba(47,224,131,0)}
+}
+/* Wer nicht laufen kann, soll trotzdem sehen, welche Kiste bereit steht. */
+@media (prefers-reduced-motion: reduce){
+  .box.ready-box{animation:none; box-shadow:0 0 0 3px var(--ok-line)}
+}
+.box-take{
+  font-size:var(--t-md); font-weight:800; color:var(--ok);
+  min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+/* Der MITNEHMEN-Code wirkt nur auf eine gepackte Kiste; die Karte sagt das
+   mit derselben Farbe, die die Kistenkarte oben benutzt. */
+.cmd.is-ready{border-color:var(--ok-line); background:var(--ok-bg)}
+.cmd.is-ready .cmd-cap{color:var(--ok)}
+.cmd.is-ready .cmd-now{color:var(--ok)}
 .box-top{display:flex; align-items:center; justify-content:space-between; gap:10px}
 .box-no{
   font-size:var(--t-2xl); font-weight:850; line-height:1;
@@ -280,7 +306,7 @@ main{flex:1 1 auto; min-height:0; display:grid; grid-template-rows:minmax(0,1fr)
         <div class="f-ready">
           <div class="locked" id="fLocked" hidden>
             Inhalt gesperrt
-            <span>Kiste ist beim Kunden &ndash; erst in SMPL auf &raquo;zur&uuml;ck&laquo; buchen, dann wieder scannen.</span>
+            <span>Kiste ist beim Kunden &ndash; erst in SMPL auf &raquo;zur&uuml;ck&laquo; buchen oder die Aufgabe abschlie&szlig;en.</span>
           </div>
 
           <div class="ready-line">
@@ -293,6 +319,7 @@ main{flex:1 1 auto; min-height:0; display:grid; grid-template-rows:minmax(0,1fr)
           </div>
 
           <div class="f-actions">
+            <button class="btn on" id="btnTake" type="button" hidden>Mitnehmen</button>
             <button class="btn" id="btnMode" type="button">Modus</button>
             <button class="btn ghost" id="btnClose" type="button">Sitzung beenden</button>
           </div>
@@ -346,8 +373,24 @@ main{flex:1 1 auto; min-height:0; display:grid; grid-template-rows:minmax(0,1fr)
           <span class="cmd-code mono">SMPL-CMD-ENTNAHME</span>
         </div>
 
-        
-        
+      </div>
+
+      <!-- Zweite Reihe, nicht vierte Karte in der ersten: vier Codes sind
+           zusammen breiter als das Panel, und eine Reihe, die selbst umbricht,
+           schneidet Karten unten ab. Der Streifen waechst stattdessen nach
+           oben - das Kistenfeld gibt nach. MITNEHMEN steht bewusst unten und
+           nicht neben FERTIG: es ist der einzige Code hier, der Bestand
+           bucht. -->
+      <div class="cmd-row">
+
+        <div class="cmd" id="cmdTake">
+          <span class="cmd-cap">Kiste mitnehmen &ndash; Bestand ausbuchen</span>
+          <span class="cmd-now" id="cmdTakeNow"></span>
+          <img class="cmd-img" alt="" src="/barcode.svg?text=SMPL-CMD-MITNEHMEN&amp;h=140&amp;m=2">
+          <span class="cmd-fail" hidden>Barcode nicht verf&uuml;gbar</span>
+          <span class="cmd-code mono">SMPL-CMD-MITNEHMEN</span>
+        </div>
+
       </div>
     </section>
   </section>
@@ -510,10 +553,13 @@ function beep(kind){
 /* ================================================================== *
  * Zustand
  * ================================================================== */
+/* 'gepackt' heisst jetzt: gepackt, einem Kunden zugewiesen, steht hier und
+   wartet darauf, mitgenommen zu werden. Das ist ein Zustand, aus dem jemand
+   etwas tun soll - deshalb steht das Wort 'bereit' im Etikett. */
 var STATUS = {
-  offen:      {label:'Offen',       cls:''},
-  gepackt:    {label:'Gepackt',     cls:'is-ok'},
-  zugewiesen: {label:'Beim Kunden', cls:'is-warn'},
+  offen:      {label:'Offen',            cls:''},
+  gepackt:    {label:'Gepackt – bereit', cls:'is-ok'},
+  zugewiesen: {label:'Beim Kunden',      cls:'is-warn'},
   zurueck:    {label:'Zurück', cls:''}
 };
 function statusOf(raw){
@@ -521,6 +567,7 @@ function statusOf(raw){
   return s ? s : {label: str(raw) || '–', cls:''};
 }
 function isLocked(raw){ return str(raw) === 'zugewiesen'; }
+function isReady(raw){ return str(raw) === 'gepackt'; }
 
 var snap = null;          /* letzter vollstaendiger Schnappschuss */
 var seq = -1;
@@ -665,7 +712,10 @@ function restoreScroll(){
 
 function boxCard(box){
   var st = statusOf(box && box.status);
-  var card = el('article', 'box card' + (isLocked(box && box.status) ? ' locked-box' : ''));
+  var ready = isReady(box && box.status);
+  var card = el('article', 'box card'
+    + (isLocked(box && box.status) ? ' locked-box' : '')
+    + (ready ? ' ready-box' : ''));
 
   var top = el('div', 'box-top');
   var no = str(box && box.box_number) || '–';
@@ -687,6 +737,13 @@ function boxCard(box){
   cline.appendChild(el('b', null, cnt));
   cline.appendChild(document.createTextNode(' ' + (cnt === 1 ? 'Position' : 'Positionen')));
   card.appendChild(cline);
+
+  /* Wer im Vorbeigehen auf die Wand schaut, soll ohne Nachfragen sehen,
+     welche Kiste mitgenommen werden kann und zu wem sie gehoert. */
+  if(ready){
+    card.appendChild(el('div', 'box-take ell',
+      'Mitnehmen zu: ' + (str(box && box.customer) || 'Kunde offen')));
+  }
 
   var ul = el('ul', 'items scroll');
   ul.setAttribute('data-boxscroll', str(box && box.id));
@@ -754,6 +811,10 @@ function renderSession(){
     : (str(s.mode) === 'remove' ? 'Bereit – Artikel zum Entfernen scannen'
                                 : 'Bereit – Artikel scannen'));
 
+  var take = $('btnTake');
+  show(take, isReady(status));
+  take.disabled = false;
+
   var mode = str(s.mode) === 'remove' ? 'remove' : 'add';
   var bm = $('btnMode');
   bm.className = 'btn ' + (mode === 'remove' ? 'on-warn' : 'on');
@@ -770,7 +831,7 @@ function renderSession(){
   setText($('fCount'), cnt + (cnt === 1 ? ' Position' : ' Positionen'));
   fillItems($('fItems'), items);
 
-  renderCommands(mode);
+  renderCommands(mode, isReady(status));
   renderStrip(s.box_id);
   renderCountdown();
 }
@@ -804,10 +865,14 @@ function renderStrip(activeId){
  * der eine Code angefasst, dessen Wirkung vom Zustand abhaengt: ENTNAHME
  * ist ein Umschalter, und wer nicht weiss, in welche Richtung er gerade
  * schaltet, raeumt die Kiste versehentlich leer. */
-function renderCommands(mode){
+function renderCommands(mode, ready){
   var remove = mode === 'remove';
   $('cmdToggle').className = 'cmd' + (remove ? ' is-toggle-on' : '');
   setText($('cmdToggleNow'), remove ? 'Jetzt: Entnehmen' : 'Jetzt: Einlagern');
+  /* Der Code liegt immer auf dem Glas, wirkt aber nur auf eine gepackte
+     Kiste. Was er gerade tun wuerde, steht deshalb in der Karte. */
+  $('cmdTake').className = 'cmd' + (ready ? ' is-ready' : '');
+  setText($('cmdTakeNow'), ready ? 'Jetzt: mitnehmen' : 'Nur wenn gepackt');
 }
 
 /* Die Blitzmeldung klebt unten am Bildschirm und wuerde die Befehle
@@ -930,6 +995,16 @@ $('btnMode').addEventListener('click', function(){
   var self = this;
   beep('tick');
   act('mode', next).then(function(){ self.disabled = false; });
+});
+$('btnTake').addEventListener('click', function(){
+  var s = snap && snap.session;
+  if(!s) return;
+  this.disabled = true;
+  var self = this;
+  beep('tick');
+  /* Der Agent prueft den Zustand noch einmal und SMPL danach ein drittes
+     Mal - ein Knopf an der Wand darf nicht die einzige Sicherung sein. */
+  act('handover').then(function(){ self.disabled = false; });
 });
 $('btnClose').addEventListener('click', function(){
   this.disabled = true;

@@ -14,7 +14,7 @@ import { taskMaterialsDisplay } from "../utils/reports";
 import { PenIcon } from "../components/icons";
 import { PartnerTaskChip } from "../components/partners/PartnerTaskChip";
 import { TerminBadge } from "../components/tasks/TerminBadge";
-import { taskBoxDisplay } from "../utils/boxes";
+import { taskBoxDisplay, taskBoxSummary } from "../utils/boxes";
 
 export function OfficeTasksPage() {
   const {
@@ -319,8 +319,8 @@ export function OfficeTasksPage() {
                   <span className="tasks-page-row-meta">
                     {de ? "Typ" : "Type"}:{" "}
                     {taskTypeLabel(normalizeTaskTypeValue(task.task_type), language)}
-                    {taskBoxDisplay(task)
-                      ? `  ·  ${de ? "Baustellenkiste" : "Construction box"}: ${taskBoxDisplay(task)}`
+                    {taskBoxSummary(task, de)
+                      ? `  ·  ${de ? "Baustellenkiste" : "Construction box"}: ${taskBoxSummary(task, de)}`
                       : ""}
                     {task.description ? `  ·  ${de ? "Info" : "Info"}: ${task.description}` : ""}
                     {taskMaterials ? `  ·  ${de ? "Material" : "Materials"}: ${taskMaterials}` : ""}
