@@ -133,6 +133,9 @@ export function makeDevice(kind: DeviceKind, overrides: Partial<PanelDevice> = {
     phase: "-",
     parent_id: null,
     feeds_following: false,
+    // Off by default and opt-in per device ("select per MCB"); the Klemmen
+    // tab's bulk switch makes a 40-breaker board a two-tap job.
+    terminal_block: false,
     note: "",
     ...overrides,
   };

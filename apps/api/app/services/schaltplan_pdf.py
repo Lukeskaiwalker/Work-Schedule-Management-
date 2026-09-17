@@ -51,19 +51,26 @@ from app.services.schaltplan_layout import (
     build_topology,
 )
 
-# Brand palette — kept identical to the Baustellenbericht so a customer
-# receiving both documents sees one company, not two.
-_BLUE = colors.HexColor("#2f70b7")
-_BLUE_DEEP = colors.HexColor("#225a96")
-_BLUE_TINT = colors.HexColor("#eef3fa")
-_INK = colors.HexColor("#14293d")
-_MUTED = colors.HexColor("#6b7280")
-_LINE = colors.HexColor("#c9d9ea")
-_GRID = colors.HexColor("#d8dce0")
-_WARN = colors.HexColor("#b45309")
-
-_FONT = "Helvetica"
-_FONT_BOLD = "Helvetica-Bold"
+# Palette, fonts and the text primitives are shared with the Reihenklemmen
+# sheet through schaltplan_pdf_style.py; the house names below keep the
+# drawing code reading as it always has.
+from app.services.schaltplan_pdf_style import (
+    BLUE as _BLUE,
+    BLUE_DEEP as _BLUE_DEEP,
+    BLUE_TINT as _BLUE_TINT,
+    FONT as _FONT,
+    FONT_BOLD as _FONT_BOLD,
+    GRID as _GRID,
+    INK as _INK,
+    LINE as _LINE,
+    MUTED as _MUTED,
+    WARN as _WARN,
+    header_bar as _header_bar,
+    text_of as _text,
+    wrap as _wrap,
+)
+from app.services.schaltplan_pdf_terminals import draw_terminal_sheets
+from app.services.schaltplan_terminals import derive_terminals
 
 # ── Diagram geometry (points) ───────────────────────────────────────────────
 _COL_W = 78.0          # one circuit column
@@ -94,48 +101,6 @@ _BAND0_X1 = _FRAME_R
 _BAND1_X0 = _FRAME_L + 20
 # Band 1 stops short of the Schriftfeld, which owns the bottom-right corner.
 _BAND1_X1 = 496.0
-
-
-def _wrap(text: str, font: str, size: float, max_width: float, max_lines: int) -> list[str]:
-    """Greedy word wrap. Overlong single words are hard-cut, never dropped.
-
-    An un-wrappable token (a cable spec like ``NYM-J5x2,5mm²``) would
-    otherwise silently vanish from the drawing — worse than a mid-word break
-    on a document someone wires a building from.
-    """
-
-    if not text:
-        return []
-    words = text.split()
-    lines: list[str] = []
-    current = ""
-    for word in words:
-        candidate = f"{current} {word}".strip()
-        if stringWidth(candidate, font, size) <= max_width or not current:
-            if stringWidth(candidate, font, size) > max_width and not current:
-                # single word too long — hard cut
-                cut = word
-                while cut and stringWidth(cut + "…", font, size) > max_width:
-                    cut = cut[:-1]
-                lines.append(cut + "…" if cut != word else word)
-                current = ""
-                continue
-            current = candidate
-        else:
-            lines.append(current)
-            current = word
-        if len(lines) == max_lines:
-            break
-    if current and len(lines) < max_lines:
-        lines.append(current)
-    if len(lines) == max_lines and current and lines[-1] != current:
-        # Signal the truncation rather than pretending the text ended.
-        lines[-1] = lines[-1][: max(0, len(lines[-1]) - 1)] + "…"
-    return lines[:max_lines]
-
-
-def _text(value: Any) -> str:
-    return str(value).strip() if value is not None else ""
 
 
 def _short(kind: str) -> str:
@@ -232,16 +197,6 @@ def _draw_symbol(c: pdfcanvas.Canvas, kind: str, cx: float, cy: float) -> None:
 
 
 # ── Sheet furniture ─────────────────────────────────────────────────────────
-
-
-def _header_bar(c: pdfcanvas.Canvas, width: float, height: float, title: str, company: str) -> None:
-    c.setFillColor(_BLUE)
-    c.rect(0, height - 34, width, 34, stroke=0, fill=1)
-    c.setFillColor(colors.white)
-    c.setFont(_FONT_BOLD, 13)
-    c.drawString(34, height - 23, title)
-    c.setFont(_FONT, 9)
-    c.drawRightString(width - 34, height - 22, company)
 
 
 def _title_block(
@@ -749,16 +704,41 @@ def build_panel_plan_pdf(
     author: str | None = None,
     company_name: str | None = None,
     legend_only: bool = False,
+    terminals_only: bool = False,
 ) -> bytes:
-    """Render the plan. Returns PDF bytes; never writes to disk."""
+    """Render the plan. Returns PDF bytes; never writes to disk.
+
+    The full document is diagram sheets, the legend, and — only when the
+    board has at least one Reihenklemme — the terminal sheet. ``legend_only``
+    and ``terminals_only`` each print just their sheet; ``terminals_only``
+    wins when both are set, because the Klemmen tab is the only caller that
+    sets it and it wants exactly that page.
+    """
 
     document = plan.document or {}
     company = (company_name or "SMPL").strip() or "SMPL"
+    terminal_groups = derive_terminals(document)
 
     buffer = BytesIO()
     c = pdfcanvas.Canvas(buffer, pagesize=landscape(A4))
     c.setTitle(f"Schaltplan {plan.designation} — {plan.name}")
     c.setAuthor(company)
+
+    def terminal_sheet() -> None:
+        draw_terminal_sheets(
+            c,
+            plan=plan,
+            document=document,
+            groups=terminal_groups,
+            customer_name=customer_name,
+            project_label=project_label,
+            company=company,
+        )
+
+    if terminals_only:
+        terminal_sheet()
+        c.save()
+        return buffer.getvalue()
 
     if not legend_only:
         pages = _paginate_groups(build_topology(document)["groups"])
@@ -784,6 +764,12 @@ def build_panel_plan_pdf(
         project_label=project_label,
         company=company,
     )
+
+    # Never behind the door sheet: legend_only is the one-sided Stromkreisliste
+    # glued inside the panel door, and a terminal list behind it would be
+    # printed and thrown away.
+    if terminal_groups and not legend_only:
+        terminal_sheet()
 
     c.save()
     return buffer.getvalue()

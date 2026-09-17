@@ -11,6 +11,9 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { LabelPrintDialog } from "../components/schaltplan/LabelPrintDialog";
 import { emptyDocument, makeDevice } from "../utils/schaltplanDevices";
 
+/** The options every print reports alongside ids and material. */
+const BMK_OPTIONS = { target: "bmk", terminalText: "circuit" };
+
 function twoRailBoard() {
   return {
     ...emptyDocument(),
@@ -153,7 +156,7 @@ describe("LabelPrintDialog", () => {
     const print = screen.getByRole("button", { name: "Drucken" });
     expect(print).toBeEnabled();
     fireEvent.click(print);
-    expect(onPrint).toHaveBeenCalledWith(["r1"], "wago-2009-110");
+    expect(onPrint).toHaveBeenCalledWith(["r1"], "wago-2009-110", BMK_OPTIONS);
   });
 
   it("drops an unnamed device that sits BEFORE a labelled one, so the label moves left", () => {
@@ -221,13 +224,13 @@ describe("LabelPrintDialog", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: "Reihe 1 drucken" }));
     fireEvent.click(screen.getByRole("radio", { name: "WAGO 210-805" }));
     fireEvent.click(screen.getByRole("button", { name: "Drucken" }));
-    expect(onPrint).toHaveBeenCalledWith(["r2"], "wago-210-805");
+    expect(onPrint).toHaveBeenCalledWith(["r2"], "wago-210-805", BMK_OPTIONS);
   });
 
   it("defaults to the 2009-110 strip", () => {
     const { onPrint } = renderDialog({ initialRowIds: ["r1"] });
     fireEvent.click(screen.getByRole("button", { name: "Drucken" }));
-    expect(onPrint).toHaveBeenCalledWith(["r1"], "wago-2009-110");
+    expect(onPrint).toHaveBeenCalledWith(["r1"], "wago-2009-110", BMK_OPTIONS);
   });
 
   it("disables Drucken with nothing selected, and re-enables via Alle", () => {
@@ -279,5 +282,173 @@ describe("LabelPrintDialog", () => {
     renderDialog({ document, initialRowIds: ["r1"] });
     const row = screen.getByRole("checkbox", { name: "Reihe 1 drucken" }).closest("li");
     expect(within(row as HTMLElement).queryByText(/ mm/)).toBeNull();
+  });
+});
+
+/** Two FIs on one rail, one terminal each — the twin fixture of the derivation tests. */
+function terminalBoard() {
+  return {
+    ...emptyDocument(),
+    rows: [
+      {
+        id: "r1",
+        label: "Reihe 1",
+        slots: 12,
+        devices: [
+          makeDevice("rcd", { id: "f1", designation: "F1" }),
+          makeDevice("mcb", { id: "a", designation: "F1.1", circuit: "1", terminal_block: true }),
+          makeDevice("rcd", { id: "f2", designation: "F2" }),
+          makeDevice("mcb", { id: "b", designation: "F2.1", circuit: "2", terminal_block: true }),
+        ],
+      },
+    ],
+  };
+}
+
+function renderTerminalDialog(overrides: Partial<Parameters<typeof LabelPrintDialog>[0]> = {}) {
+  return renderDialog({
+    mode: "reihenklemmen",
+    document: terminalBoard(),
+    initialRowIds: ["f1", "f2"],
+    ...overrides,
+  });
+}
+
+describe("LabelPrintDialog — Reihenklemmen", () => {
+  it("lists FI groups instead of rails, and only the continuous strip", () => {
+    renderTerminalDialog();
+    expect(screen.getByRole("dialog", { name: "Klemmen-Etiketten drucken" })).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: "FI F1 · Reihe 1 drucken" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "FI F2 · Reihe 1 drucken" })).toBeChecked();
+    expect(screen.queryByRole("checkbox", { name: "Reihe 1 drucken" })).toBeNull();
+    expect(screen.getByRole("radio", { name: "WAGO 2009-110" })).toBeInTheDocument();
+    expect(screen.queryByRole("radio", { name: "WAGO 210-805" })).toBeNull();
+    expect(screen.getByText(/ein Streifen je FI-Gruppe/)).toBeInTheDocument();
+  });
+
+  it("previews one strip per group with the Stromkreis-Nr. by default, at the terminal pitch", () => {
+    const { container } = renderTerminalDialog();
+    expect(screen.getByRole("img", { name: /Streifen FI F1 · Reihe 1/ })).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: /Streifen FI F2 · Reihe 1/ })).toBeInTheDocument();
+    const texts = Array.from(container.querySelectorAll("text.sp-strip-text")).map((node) => node.textContent);
+    expect(texts).toEqual(["F1", "1", "F2", "2"]);
+    // 12 mm feed + 5.2 mm Etagenklemme = 17.2 mm between the end lines, 3 mm lead each side.
+    expect(screen.getAllByText(/3 \+ 17,2 \+ 3/)).toHaveLength(2);
+    // "1" on 5.2 mm with the 0.5 mm pad fits at 90 dots → 7.5 mm.
+    expect(screen.getByText(/2 Streifen · 4 Klemmen · 46,4 mm Material · Schriftgröße: 7,5 mm/)).toBeInTheDocument();
+    expect(new Set(previewTextSizes(container))).toEqual(new Set(["18"]));
+  });
+
+  it("switches the outgoings to their BMK from the text chips", () => {
+    const { container } = renderTerminalDialog();
+    fireEvent.click(screen.getByRole("radio", { name: "BMK" }));
+    const texts = Array.from(container.querySelectorAll("text.sp-strip-text")).map((node) => node.textContent);
+    expect(texts).toEqual(["F1", "F1.1", "F2", "F2.1"]);
+    expect(screen.getByText(/Schriftgröße: 2,1 mm/)).toBeInTheDocument();
+  });
+
+  it("prints the selected groups with the terminal target and text mode", () => {
+    const { onPrint } = renderTerminalDialog();
+    fireEvent.click(screen.getByRole("checkbox", { name: "FI F1 · Reihe 1 drucken" }));
+    fireEvent.click(screen.getByRole("radio", { name: "BMK" }));
+    fireEvent.click(screen.getByRole("button", { name: "Drucken" }));
+    expect(onPrint).toHaveBeenCalledWith(["f2"], "wago-2009-110", { target: "reihenklemmen", terminalText: "bmk" });
+  });
+
+  it("shows group metadata: terminals, unlabelled ones and the strip length", () => {
+    const document = terminalBoard();
+    document.rows[0].devices[1] = { ...document.rows[0].devices[1], circuit: "" };
+    renderTerminalDialog({ document });
+    const row = screen.getByRole("checkbox", { name: "FI F1 · Reihe 1 drucken" }).closest("li");
+    expect(within(row as HTMLElement).getByText(/3 Klemmen/)).toBeInTheDocument();
+    expect(within(row as HTMLElement).getByText(/1 ohne Beschriftung/)).toBeInTheDocument();
+    expect(within(row as HTMLElement).getByText(/12 mm/)).toBeInTheDocument();
+  });
+
+  it("warns once about a part whose width is not confirmed", () => {
+    const document = {
+      ...emptyDocument(),
+      rows: [
+        {
+          id: "r1",
+          label: "Reihe 1",
+          slots: 12,
+          devices: [
+            makeDevice("rcd", { id: "f1", designation: "F1" }),
+            makeDevice("wallbox", { id: "w", designation: "F1.1", circuit: "1", terminal_block: true }),
+          ],
+        },
+      ],
+    };
+    renderTerminalDialog({ document, initialRowIds: ["f1"] });
+    expect(screen.getByText(/Breite nicht bestätigt: WAGO 2016-7606/)).toBeInTheDocument();
+  });
+
+  it("disables Drucken when no group has a text in the chosen mode", () => {
+    const document = terminalBoard();
+    document.rows[0].devices = document.rows[0].devices.map((device) => ({ ...device, designation: "", circuit: "" }));
+    renderTerminalDialog({ document });
+    expect(screen.getByRole("button", { name: "Drucken" })).toBeDisabled();
+  });
+
+  it("shows the empty state on a board without terminals", () => {
+    renderTerminalDialog({ document: twoRailBoard(), initialRowIds: [] });
+    expect(screen.getByText(/Noch keine Reihenklemmen/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Drucken" })).toBeDisabled();
+  });
+
+  // The Reihenklemmen twin of "disables Drucken with nothing selected": an
+  // empty selection used to preview and print EVERY group.
+  it("disables Drucken with no group ticked — nothing is nothing, not every group", () => {
+    const { onPrint } = renderTerminalDialog({ initialRowIds: [] });
+    const print = screen.getByRole("button", { name: "Drucken" });
+    expect(print).toBeDisabled();
+    expect(screen.queryByRole("img", { name: /Streifen/ })).toBeNull();
+    expect(screen.getByText("Keine FI-Gruppe ausgewählt.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Alle" }));
+    expect(print).toBeEnabled();
+    expect(screen.getAllByRole("img", { name: /Streifen/ })).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "Keine" }));
+    expect(print).toBeDisabled();
+    expect(screen.queryByRole("img", { name: /Streifen/ })).toBeNull();
+    fireEvent.click(print);
+    expect(onPrint).not.toHaveBeenCalled();
+  });
+
+  it("counts the terminals of a ticked group that has nothing to print in the chosen mode", () => {
+    const document = {
+      ...emptyDocument(),
+      rows: [
+        {
+          id: "r1",
+          label: "Reihe 1",
+          slots: 12,
+          devices: [
+            makeDevice("rcd", { id: "f1", designation: "F1" }),
+            makeDevice("mcb", { id: "a", designation: "F1.1", circuit: "1", terminal_block: true }),
+            makeDevice("mcb", { id: "b", designation: "F1.2", circuit: "2", terminal_block: true }),
+          ],
+        },
+        {
+          id: "r2",
+          label: "Reihe 2",
+          slots: 12,
+          devices: [
+            makeDevice("hauptschalter", { id: "q1", designation: "Q1" }),
+            makeDevice("mcb", { id: "c", designation: "F0.1", circuit: "", terminal_block: true }),
+            makeDevice("mcb", { id: "d", designation: "F0.2", circuit: "", terminal_block: true }),
+          ],
+        },
+      ],
+    };
+    renderTerminalDialog({ document, initialRowIds: ["f1", "q1"] });
+    // Q1's group has no strip in circuit mode, but its two terminals are still unmarked.
+    expect(screen.getByText(/^1 Streifen · 3 Klemmen · .* · 2 ohne Beschriftung$/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("checkbox", { name: "FI F1 · Reihe 1 drucken" }));
+    expect(screen.getByText("Nichts zu drucken · 2 ohne Beschriftung")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Drucken" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("radio", { name: "BMK" }));
+    expect(screen.getByText(/^1 Streifen · 2 Klemmen · .* mm$/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Drucken" })).toBeEnabled();
   });
 });

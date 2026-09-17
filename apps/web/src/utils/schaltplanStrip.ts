@@ -142,9 +142,14 @@ export function deviceWidthMm(device: Pick<PanelDevice, "te" | "width_mm">): num
  */
 const BMK_EDGE_JUNK = /^[\s\ufeff\u0000-\u001f\u007f]+|[\s\ufeff\u0000-\u001f\u007f]+$/g;
 
+/** Trim a marker text the way the printer path does — shared with the Reihenklemmen strip. */
+export function trimMarkerText(text: string): string {
+  return (text ?? "").replace(BMK_EDGE_JUNK, "");
+}
+
 export function segmentText(device: Pick<PanelDevice, "kind" | "designation">): string {
   if (device.kind === "blank") return "";
-  return (device.designation ?? "").replace(BMK_EDGE_JUNK, "");
+  return trimMarkerText(device.designation);
 }
 
 /** Does this device get a segment on the strip? Blanks and unnamed devices do not. */
@@ -229,38 +234,63 @@ export interface BoardFontSize {
   overflowing: string[];
 }
 
+/** A text and the segment it has to fit into — a labelled device, or a terminal marker. */
+export interface FitSegment {
+  text: string;
+  widthMm: number;
+}
+
 interface SegmentFit {
   text: string;
   /** The font size (dots) at which this text exactly fills its segment minus the padding. */
   fit: number;
 }
 
-function segmentFits(document: DocumentLike): SegmentFit[] {
-  return document.rows.flatMap((row) =>
-    row.devices.filter(isLabelled).map((device) => {
-      const text = segmentText(device);
-      const available = deviceWidthMm(device) * DOTS_PER_MM - 2 * SEG_PAD_DOTS;
-      return { text, fit: available / textWidthEm(text) };
-    }),
-  );
-}
-
 /**
- * The board font size: the largest size at which every labelled device of
- * every row still holds its BMK, floored to whole dots and clamped to
- * [MIN_FONT_DOTS, maxFontDots]. Computed over the whole document, not just
- * the rails being printed, so a rail reprinted later matches the others.
- * A board with nothing labelled gets the maximum.
+ * ONE font size for a list of segments: the largest size at which the
+ * tightest segment still holds its text, floored to whole dots and clamped
+ * to [MIN_FONT_DOTS, maxFontDots]. `padDots` is what stays free between a
+ * cut mark and the text on either side — 1 mm on the BMK strip, 0.5 mm on
+ * a Reihenklemme (`schaltplanTerminals.TERMINAL_SEG_PAD_DOTS`). An empty
+ * list gets the maximum. Twin of `font_size_for_fits` on the backend.
  */
-export function boardFontSize(document: DocumentLike, stripWidthMm: number): BoardFontSize {
+export function fontSizeForSegments(
+  segments: readonly FitSegment[],
+  stripWidthMm: number,
+  padDots: number = SEG_PAD_DOTS,
+): BoardFontSize {
   const max = maxFontDots(stripWidthMm);
-  const fits = segmentFits(document);
+  const fits: SegmentFit[] = segments
+    .filter((segment) => segment.text !== "")
+    .map((segment) => ({
+      text: segment.text,
+      fit: (segment.widthMm * DOTS_PER_MM - 2 * padDots) / textWidthEm(segment.text),
+    }));
   if (fits.length === 0) return { sizeDots: max, overflowing: [] };
   const tightest = fits.reduce((smallest, entry) => Math.min(smallest, entry.fit), Number.POSITIVE_INFINITY);
   return {
     sizeDots: Math.min(max, Math.max(MIN_FONT_DOTS, Math.floor(tightest))),
     overflowing: fits.filter((entry) => entry.fit < MIN_FONT_DOTS).map((entry) => entry.text),
   };
+}
+
+function labelledSegments(document: DocumentLike): FitSegment[] {
+  return document.rows.flatMap((row) =>
+    row.devices.filter(isLabelled).map((device) => ({
+      text: segmentText(device),
+      widthMm: deviceWidthMm(device),
+    })),
+  );
+}
+
+/**
+ * The board font size: every labelled device of every row, fitted with the
+ * BMK pad. Computed over the whole document, not just the rails being
+ * printed, so a rail reprinted later matches the others. A board with
+ * nothing labelled gets the maximum.
+ */
+export function boardFontSize(document: DocumentLike, stripWidthMm: number): BoardFontSize {
+  return fontSizeForSegments(labelledSegments(document), stripWidthMm, SEG_PAD_DOTS);
 }
 
 /**

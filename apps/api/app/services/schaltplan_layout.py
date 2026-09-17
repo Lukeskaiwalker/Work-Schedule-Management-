@@ -41,6 +41,8 @@ The document shape
       "phase": "L1",
       "parent_id": null,            # explicit feed override; see below
       "feeds_following": false,     # fuse only: opens a group like an FI
+      "terminal_block": false,      # outgoing ends on a WAGO Reihenklemme;
+                                    # see schaltplan_terminal_rules.py
       "note": ""
     }
 
@@ -415,30 +417,33 @@ def strip_max_font_size(strip_width_mm: float) -> int:
     )
 
 
-def board_font_size(document: dict[str, Any], strip_width_mm: float) -> tuple[int, list[str]]:
-    """ONE font size for every BMK on the board, and the texts that still overflow.
+def font_size_for_fits(
+    segments: list[tuple[str, float]],
+    strip_width_mm: float,
+    *,
+    pad_dots: int = STRIP_SEG_PAD_DOTS,
+) -> tuple[int, list[str]]:
+    """ONE font size for a list of ``(text, width_mm)`` segments, and the texts that overflow.
 
-    For each labelled device of each row, the size at which its BMK exactly
-    fills its segment minus the pads is ``(width_mm × 12 − 2 × pad) / em``.
-    The board prints at the floor of the smallest such fit, clamped to
-    [STRIP_MIN_SIZE_DOTS, strip_max_font_size]. A board without a labelled
-    device gets the maximum.
+    For each segment the size at which its text exactly fills the width
+    minus the pads is ``(width_mm × 12 − 2 × pad) / em``. The result is the
+    floor of the smallest such fit, clamped to [STRIP_MIN_SIZE_DOTS,
+    strip_max_font_size]. ``pad_dots`` is what stays free between a cut mark
+    and the text on either side — 1 mm on the BMK strip, 0.5 mm on a
+    Reihenklemme (``schaltplan_terminals.TERMINAL_SEG_PAD_DOTS``). An empty
+    list (or one of empty texts) gets the maximum.
 
-    Fitted over the whole document, not over the rails being printed: a rail
-    printed next week has to match the ones printed today, and a board with
-    two text sizes on it looks like two boards.
-
-    ``overflowing`` lists the BMK whose own fit is below the minimum: at the
-    clamped size they run past their cut marks. That is for the caller to say
-    out loud — shrinking them further would just make them unreadable.
+    ``overflowing`` lists the texts whose own fit is below the minimum: at
+    the clamped size they run past their cut marks. That is for the caller
+    to say out loud — shrinking them further would just make them unreadable.
+    Twin of ``fontSizeForSegments`` in the editor.
     """
     max_size = strip_max_font_size(strip_width_mm)
     fits: list[tuple[str, float]] = []
-    for _row, device in iter_devices(document):
-        text = segment_text(device)
+    for text, width_mm in segments:
         if not text:
             continue
-        budget = device_width_mm(device) * STRIP_DOTS_PER_MM - 2 * STRIP_SEG_PAD_DOTS
+        budget = width_mm * STRIP_DOTS_PER_MM - 2 * pad_dots
         fits.append((text, budget / text_width_em(text)))
     if not fits:
         return max_size, []
@@ -448,6 +453,22 @@ def board_font_size(document: dict[str, Any], strip_width_mm: float) -> tuple[in
     size = min(max_size, max(STRIP_MIN_SIZE_DOTS, tightest))
     overflowing = [text for text, fit in fits if fit < STRIP_MIN_SIZE_DOTS]
     return size, overflowing
+
+
+def board_font_size(document: dict[str, Any], strip_width_mm: float) -> tuple[int, list[str]]:
+    """ONE font size for every BMK on the board, and the texts that still overflow.
+
+    Every labelled device of every row, fitted with the BMK pad by
+    ``font_size_for_fits``. Over the whole document, not over the rails being
+    printed: a rail printed next week has to match the ones printed today,
+    and a board with two text sizes on it looks like two boards.
+    """
+    segments = [
+        (segment_text(device), device_width_mm(device))
+        for _row, device in iter_devices(document)
+        if segment_text(device)
+    ]
+    return font_size_for_fits(segments, strip_width_mm, pad_dots=STRIP_SEG_PAD_DOTS)
 
 
 def iter_devices(document: dict[str, Any]) -> Iterator[tuple[dict[str, Any], dict[str, Any]]]:
@@ -927,5 +948,12 @@ def validate_document(document: dict[str, Any]) -> list[dict[str, str]]:
                     ),
                 }
             )
+
+    # Reihenklemmen: a group without an FI that still wants terminals, and
+    # pole counts the Etagenklemmen round. Imported here, not at the top:
+    # the rules module reads DEVICE_CATALOG from this one.
+    from app.services.schaltplan_terminal_rules import terminal_findings
+
+    findings.extend(terminal_findings(topology["groups"]))
 
     return findings

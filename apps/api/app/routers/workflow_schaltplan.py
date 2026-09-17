@@ -25,7 +25,9 @@ any passing colleague.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import select
@@ -43,6 +45,7 @@ from app.schemas.schaltplan import (
     PanelLabelsPrintOut,
     PanelStripOut,
     PanelLabelsPrintRequest,
+    PanelTerminalBomRow,
     DeviceCatalogEntry,
     PanelDocument,
     PanelPlanCreate,
@@ -58,13 +61,18 @@ from app.services.schaltplan_layout import (
     build_legend,
     document_stats,
     empty_document,
-    iter_devices,
     strip_segments,
     unlabelled_device_count,
     validate_document,
 )
+from app.services.schaltplan_terminals import (
+    derive_terminals,
+    terminal_bom,
+    terminal_font_size,
+    terminal_strips,
+)
 from app.services import werkstatt_labels
-from app.services.werkstatt_label_materials import MaterialValidationError
+from app.services.werkstatt_label_materials import MaterialProfile, MaterialValidationError
 from app.services.schaltplan_pdf import build_panel_plan_pdf
 
 router = APIRouter(prefix="/schaltplan", tags=["schaltplan"])
@@ -154,6 +162,7 @@ def _detail(db: Session, plan: PanelPlan) -> PanelPlanOut:
         notes=plan.notes,
         legend=build_legend(document),  # type: ignore[arg-type]
         findings=validate_document(document),  # type: ignore[arg-type]
+        terminal_bom=[PanelTerminalBomRow(**row) for row in terminal_bom(derive_terminals(document))],
         created_at=plan.created_at,
         created_by_name=names["users"].get(plan.created_by),
     )
@@ -373,6 +382,105 @@ def get_panel(
     return _detail(db, plan)
 
 
+@dataclass
+class _PrintPlan:
+    """What one label request sends to the printer, before it is shipped.
+
+    ``strips`` is the ``(text, width_mm)`` form ``print_marking_strips``
+    takes; ``meta`` is what the response reports per strip. Built by one of
+    the two ``_..._print_plan`` functions so the endpoint itself only picks a
+    target, ships and answers.
+    """
+
+    strips: list[list[tuple[str, float]]] = field(default_factory=list)
+    meta: list[PanelStripOut] = field(default_factory=list)
+    skipped: int = 0
+    font_size: int | None = None
+    overflowing: list[str] = field(default_factory=list)
+    empty_detail: str = ""
+
+
+def _bmk_print_plan(document: dict[str, Any], payload: PanelLabelsPrintRequest, profile: MaterialProfile) -> _PrintPlan:
+    """The BMK strips of the selected rails (see ``print_panel_labels``)."""
+    plan = _PrintPlan(empty_detail="Keine BMK vergeben — erst Betriebsmittelkennzeichen eintragen.")
+    # The board size is a strip concept: die-cut labels (210-805) are fitted
+    # one by one on their own 15 mm, so there is nothing board-wide to report.
+    if profile.continuous:
+        plan.font_size, plan.overflowing = board_font_size(document, profile.width_mm)
+
+    wanted = set(payload.row_ids or [])
+    if payload.row_id:
+        wanted.add(payload.row_id)
+
+    for row in document.get("rows") or []:
+        if not isinstance(row, dict):
+            continue
+        row_id = str(row.get("id") or "")
+        if wanted and row_id not in wanted:
+            continue
+        plan.skipped += unlabelled_device_count(row)
+        segments = strip_segments(row)
+        if not segments:
+            continue
+        plan.strips.append([(seg.text, seg.width_mm) for seg in segments])
+        plan.meta.append(
+            PanelStripOut(
+                row_id=row_id,
+                row_label=str(row.get("label") or ""),
+                length_mm=round(sum(seg.width_mm for seg in segments), 2),
+            )
+        )
+    return plan
+
+
+def _terminal_print_plan(
+    document: dict[str, Any], payload: PanelLabelsPrintRequest, profile: MaterialProfile
+) -> _PrintPlan:
+    """The Reihenklemmen markers of the selected FI groups, one strip per group.
+
+    Continuous stock only: the markers are 5.2 mm and 12 mm wide and slide
+    into the WAGO marker slot as one strip per group, so a die-cut label
+    cannot carry them. The font size is fitted over every group of the board
+    in the chosen text mode, exactly like the BMK size is fitted over every
+    rail — a group reprinted next week must match the ones printed today.
+    """
+    if not profile.continuous:
+        raise HTTPException(status_code=400, detail="Reihenklemmen werden nur auf Endlosstreifen gedruckt.")
+    # An explicit empty selection is "nothing", never "everything": the sheet
+    # sends exactly the ticked groups, and unticking them all must not print
+    # the whole board.
+    if payload.group_ids is not None and not payload.group_ids:
+        raise HTTPException(status_code=400, detail="Keine FI-Gruppe ausgewählt — mindestens eine Gruppe wählen.")
+    groups = derive_terminals(document)
+    if not groups:
+        raise HTTPException(
+            status_code=400,
+            detail="Keine Reihenklemmen abgeleitet — erst Abgänge mit „Reihenklemme am Abgang“ markieren.",
+        )
+    plan = _PrintPlan(
+        empty_detail=(
+            "Keine Beschriftung für die gewählten Klemmen — Stromkreis-Nummern eintragen "
+            "oder BMK als Text wählen."
+        ),
+    )
+    plan.font_size, plan.overflowing = terminal_font_size(groups, payload.terminal_text, profile.width_mm)
+    selection = terminal_strips(groups, payload.terminal_text, payload.group_ids)
+    # Over the whole selection, not the strips: a group with no text at all
+    # produces no strip, but its terminals are still the ones left unmarked.
+    plan.skipped = int(selection["skipped"])
+    for strip in selection["strips"]:
+        plan.strips.append(list(strip["segments"]))
+        plan.meta.append(
+            PanelStripOut(
+                row_id=str(strip["group_id"]),
+                row_label=str(strip["label"]),
+                length_mm=round(float(strip["length_mm"]), 2),
+                part_count=int(strip["part_count"]),
+            )
+        )
+    return plan
+
+
 @router.post("/panels/{plan_id}/labels", response_model=PanelLabelsPrintOut)
 def print_panel_labels(
     plan_id: int,
@@ -380,7 +488,7 @@ def print_panel_labels(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> PanelLabelsPrintOut:
-    """Print the Betriebsmittelkennzeichen of selected rails.
+    """Print the Betriebsmittelkennzeichen of selected rails — or the Reihenklemmen markers.
 
     Anyone who may read the plan may print its labels: the person at the
     printer is the one building the board, not the one who drew it. On the
@@ -398,6 +506,14 @@ def print_panel_labels(
     selection: it is fitted over every labelled device of every row, so a rail
     printed next week matches the ones printed today. BMK that cannot fit
     their segment even at the minimum size are listed in ``overflowing``.
+
+    With ``target="reihenklemmen"`` the same path prints the WAGO terminal
+    markers: one strip per FI group at the terminals' real pitch (see
+    ``services/schaltplan_terminals.py``), ``strips[].row_id`` then being the
+    group id and ``skipped_without_bmk`` the terminals of the selected groups
+    that have no text in the chosen mode — a group with no text at all gets
+    no strip, but its terminals are counted. ``group_ids`` null = every
+    group; an explicit empty list is refused, not read as "all".
     """
     plan = _get_plan_or_404(db, plan_id)
     _assert_readable(db, current_user, plan)
@@ -407,48 +523,17 @@ def print_panel_labels(
         profile = werkstatt_labels.material_by_id(db, material_id)
     except MaterialValidationError as exc:
         raise HTTPException(status_code=400, detail=f"Unbekanntes Etikettenmaterial: {exc}")
-    # The board size is a strip concept: die-cut labels (210-805) are fitted
-    # one by one on their own 15 mm, so there is nothing board-wide to report.
-    font_size: int | None
-    if profile.continuous:
-        font_size, overflowing = board_font_size(document, profile.width_mm)
+
+    if payload.target == "reihenklemmen":
+        print_plan = _terminal_print_plan(document, payload, profile)
     else:
-        font_size, overflowing = None, []
+        print_plan = _bmk_print_plan(document, payload, profile)
 
-    wanted = set(payload.row_ids or [])
-    if payload.row_id:
-        wanted.add(payload.row_id)
-
-    strips: list[list[tuple[str, float]]] = []
-    strip_meta: list[PanelStripOut] = []
-    skipped = 0
-    for row in document.get("rows") or []:
-        if not isinstance(row, dict):
-            continue
-        row_id = str(row.get("id") or "")
-        if wanted and row_id not in wanted:
-            continue
-        skipped += unlabelled_device_count(row)
-        segments = strip_segments(row)
-        if not segments:
-            continue
-        strips.append([(seg.text, seg.width_mm) for seg in segments])
-        strip_meta.append(
-            PanelStripOut(
-                row_id=row_id,
-                row_label=str(row.get("label") or ""),
-                length_mm=round(sum(seg.width_mm for seg in segments), 2),
-            )
-        )
-
-    if not strips:
-        raise HTTPException(
-            status_code=400,
-            detail="Keine BMK vergeben — erst Betriebsmittelkennzeichen eintragen.",
-        )
+    if not print_plan.strips:
+        raise HTTPException(status_code=400, detail=print_plan.empty_detail)
     try:
         printed, printer = werkstatt_labels.print_marking_strips(
-            db, strips=strips, material_id=material_id, size=font_size
+            db, strips=print_plan.strips, material_id=material_id, size=print_plan.font_size
         )
     except werkstatt_labels.LabelPrinterNotConfigured:
         raise HTTPException(status_code=503, detail="Kein Etikettendrucker konfiguriert")
@@ -457,12 +542,12 @@ def print_panel_labels(
 
     return PanelLabelsPrintOut(
         printed=printed,
-        skipped_without_bmk=skipped,
+        skipped_without_bmk=print_plan.skipped,
         printer=printer,
         material=material_id,
-        strips=strip_meta if profile.continuous else [],
-        font_size_dots=font_size,
-        overflowing=overflowing,
+        strips=print_plan.meta if profile.continuous else [],
+        font_size_dots=print_plan.font_size,
+        overflowing=print_plan.overflowing,
     )
 
 
@@ -602,14 +687,18 @@ def duplicate_panel(
 def panel_pdf(
     plan_id: int,
     legend_only: bool = Query(default=False),
+    terminals_only: bool = Query(default=False),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> Response:
-    """Übersichtsschaltplan + Legende as one PDF in the company drawing style.
+    """Übersichtsschaltplan + Legende (+ Reihenklemmen) as one PDF in the company drawing style.
 
     ``legend_only`` prints just the Stromkreisliste — that is the sheet that
     gets glued inside the panel door, and workers asked for it without the
-    drawing page so it fits on one side.
+    drawing page so it fits on one side. ``terminals_only`` prints just the
+    Reihenklemmen sheet (terminal list per FI group plus the Stückliste),
+    which the Klemmen tab offers; the full document carries that sheet after
+    the legend whenever the board has at least one terminal.
     """
 
     plan = _get_plan_or_404(db, plan_id)
@@ -630,8 +719,9 @@ def panel_pdf(
         author=_display_name(current_user),
         company_name=settings.get("company_name"),
         legend_only=legend_only,
+        terminals_only=terminals_only,
     )
-    suffix = "Legende" if legend_only else "Schaltplan"
+    suffix = "Reihenklemmen" if terminals_only else ("Legende" if legend_only else "Schaltplan")
     file_name = f"{suffix}_{plan.designation}_{datetime.now():%Y-%m-%d}.pdf".replace(" ", "_")
     return Response(
         content=pdf,

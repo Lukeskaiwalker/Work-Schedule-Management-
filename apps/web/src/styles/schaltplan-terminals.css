@@ -1,0 +1,301 @@
+/* ── Reihenklemmen (Schaltplan) ─────────────────────────────────────────────
+ *
+ * Page-local sheet, imported from SchaltplanPage.tsx rather than appended to
+ * src/styles.css — the same precedent as styles/pi-station.css: several areas
+ * held styles.css at once while this was written, and a separate file is the
+ * one shape of the change that cannot conflict.
+ *
+ * Everything is scoped under .sp-terminal-* (plus the one tile marker) and
+ * uses the --sp-* tokens the Schaltplan block in styles.css defines. The
+ * table/card switch at 768 px mirrors the legend's (LegendTable.tsx): a
+ * four-column table on a phone is a 6 px font nobody reads.
+ */
+
+/* ── Rail tile marker ────────────────────────────────────────────────────── */
+
+/* A dot under the tile text: the device ends on a Reihenklemme. No text —
+   the tile is already three lines on 1 TE. */
+.sp-tile-terminal {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-top: 2px;
+  border-radius: 50%;
+  background: var(--sp-accent-deep);
+  box-shadow: 0 0 0 2px #fff;
+  flex-shrink: 0;
+}
+
+/* ── Tab body ────────────────────────────────────────────────────────────── */
+
+.sp-terminal-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.sp-terminal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.sp-terminal-head h4 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.sp-terminal-summary {
+  margin: 2px 0 0;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.sp-terminal-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.sp-terminal-empty {
+  margin: 0;
+  padding: 14px;
+  border: 1px dashed var(--sp-line);
+  border-radius: 10px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+/* One line, same tint as the editor's Prüfen block: a part whose width is
+   not confirmed shifts every following marker if the constant is wrong. */
+.sp-terminal-warn {
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--sp-warn-line);
+  background: var(--sp-warn-bg);
+  border-radius: 8px;
+  font-size: 12.5px;
+  color: #7c3d0a;
+}
+
+/* What the derivation assumed (no FI in a group, a 2-pole read as 1-pole):
+   info, not a warning — the tint of the editor's hint text, not its Prüfen
+   block. */
+.sp-terminal-hints {
+  margin: 0;
+  padding: 8px 12px 8px 28px;
+  border: 1px solid var(--sp-line);
+  border-radius: 8px;
+  background: var(--sp-tint);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--sp-accent-deep);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* ── Group card ──────────────────────────────────────────────────────────── */
+
+.sp-terminal-group {
+  border: 1px solid var(--sp-line);
+  border-radius: 12px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.sp-terminal-group-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  background: var(--sp-tint);
+  border-bottom: 1px solid var(--sp-line);
+}
+
+.sp-terminal-group-head b {
+  font-size: 14px;
+}
+
+.sp-terminal-group-head small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.sp-terminal-variant {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid var(--sp-line);
+  background: #fff;
+  color: var(--sp-accent-deep);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+/* No FI in the group: the derivation had nothing to open the N bus with. */
+.sp-terminal-variant--no_rcd {
+  color: var(--sp-warn);
+  border-color: var(--sp-warn-line);
+  background: var(--sp-warn-bg);
+}
+
+.sp-terminal-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.sp-terminal-table th {
+  text-align: left;
+  padding: 7px 10px;
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--sp-accent-deep);
+  border-bottom: 1px solid var(--sp-line);
+  white-space: nowrap;
+}
+
+.sp-terminal-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--sp-line);
+  color: var(--muted);
+  vertical-align: top;
+}
+
+.sp-terminal-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.sp-terminal-table tbody tr:nth-child(even) {
+  background: #f6f9fd;
+}
+
+.sp-terminal-pos {
+  width: 1%;
+  white-space: nowrap;
+  font-weight: 800;
+  color: var(--sp-ink);
+}
+
+.sp-terminal-part {
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--sp-ink);
+}
+
+/* The marker text, set like the printer sets it: plain, heavy, unambiguous. */
+.sp-terminal-text {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 700;
+  color: var(--sp-ink);
+}
+
+.sp-terminal-count {
+  text-align: right;
+  font-weight: 800;
+  color: var(--sp-ink);
+}
+
+.sp-terminal-unverified {
+  color: var(--sp-warn);
+  font-weight: 700;
+}
+
+/* Phone rendering of the same rows — hidden until the breakpoint below. */
+.sp-terminal-rows {
+  display: none;
+  list-style: none;
+  margin: 0;
+  padding: 8px;
+  gap: 6px;
+  flex-direction: column;
+}
+
+.sp-terminal-row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 2px 10px;
+  align-items: start;
+  padding: 8px 10px;
+  border: 1px solid var(--sp-line);
+  border-radius: 9px;
+}
+
+.sp-terminal-row-pos {
+  grid-row: 1 / span 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  background: var(--sp-accent);
+  color: #fff;
+  font-weight: 800;
+}
+
+.sp-terminal-row b {
+  font-size: 13.5px;
+  color: var(--sp-ink);
+}
+
+.sp-terminal-row small {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ── Stückliste ──────────────────────────────────────────────────────────── */
+
+.sp-terminal-bom {
+  border: 1px solid var(--sp-line);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.sp-terminal-bom-head {
+  padding: 10px 12px;
+  background: var(--sp-tint);
+  border-bottom: 1px solid var(--sp-line);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.sp-terminal-bom-foot {
+  padding: 8px 12px;
+  border-top: 1px solid var(--sp-line);
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+@media (max-width: 768px) {
+  .sp-terminal-table {
+    display: none;
+  }
+
+  .sp-terminal-rows {
+    display: flex;
+  }
+
+  /* The Stückliste stays a table: four short columns fit a phone. */
+  .sp-terminal-bom .sp-terminal-table {
+    display: table;
+  }
+
+  .sp-terminal-actions {
+    width: 100%;
+  }
+
+  .sp-terminal-actions .sp-btn {
+    flex: 1 1 46%;
+  }
+}

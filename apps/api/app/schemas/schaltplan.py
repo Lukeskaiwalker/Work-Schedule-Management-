@@ -62,6 +62,11 @@ class PanelDevice(BaseModel):
     # the way an FI does. Off, a fuse is a plain circuit unless a circuit
     # names it via ``parent_id`` (see ``schaltplan_layout.opens_group``).
     feeds_following: bool = False
+    # The outgoing ends on a WAGO Reihenklemme. Opt-in per device; only
+    # MCB-protected outgoing kinds (LS, Wallbox, UV-Abgang, PV) read it and
+    # an RCBO never does — see services/schaltplan_terminal_rules.py. Old
+    # documents load with False, the same way feeds_following does.
+    terminal_block: bool = False
     note: str = Field(default="", max_length=500)
     # Real mounted width in mm, when it is not `te` × the module pitch. The
     # BMK strip is cut to this, so a 70 mm Hager FI must not be labelled 72.
@@ -195,11 +200,27 @@ class PanelPlanSummary(BaseModel):
     updated_by_name: str | None = None
 
 
+class PanelTerminalBomRow(BaseModel):
+    """One line of the Reihenklemmen Stückliste: a WAGO part and how many the board needs."""
+
+    part_id: str
+    part_no: str
+    name: str
+    count: int
+    # Rail footprint per the datasheet; ``verified`` is False for a part whose
+    # width nobody could confirm (see services/schaltplan_terminal_rules.py).
+    width_mm: float
+    verified: bool
+
+
 class PanelPlanOut(PanelPlanSummary):
     document: PanelDocument
     notes: str | None = None
     legend: list[PanelLegendRow] = Field(default_factory=list)
     findings: list[PanelFinding] = Field(default_factory=list)
+    # The server-side Reihenklemmen derivation. The editor renders its own
+    # twin; this is the truth a purchasing hook or a test compares against.
+    terminal_bom: list[PanelTerminalBomRow] = Field(default_factory=list)
     created_at: datetime
     created_by_name: str | None = None
 
@@ -218,6 +239,10 @@ class DeviceCatalogEntry(BaseModel):
     rating_hint: str
 
 
+PrintTarget = Literal["bmk", "reihenklemmen"]
+TerminalTextMode = Literal["bmk", "circuit"]
+
+
 class PanelLabelsPrintRequest(BaseModel):
     """Print BMK labels for selected rails, on a chosen marking material.
 
@@ -225,18 +250,32 @@ class PanelLabelsPrintRequest(BaseModel):
     the 2009-110 strip (one continuous strip per rail, cut marks between the
     devices); ``wago-210-805`` prints one 6 × 15 mm label per BMK instead.
     ``row_id`` is the pre-v2.15 single-rail form, still honoured.
+
+    ``target="reihenklemmen"`` prints the WAGO terminal markers instead: one
+    strip per FI group (``group_ids`` absent or null = every group; an
+    explicit empty list = no group, refused with a 400, because the sheet
+    sends exactly the ticked groups), each marker saying the Stromkreis-Nr.
+    by default or the BMK on request (``terminal_text``). Continuous stock
+    only — a 5.2 mm terminal has no room for a 6 × 15 mm label.
     """
 
     row_ids: list[str] | None = Field(default=None, max_length=64)
     row_id: str | None = None
     material_id: str | None = Field(default=None, max_length=64)
+    target: PrintTarget = "bmk"
+    group_ids: list[str] | None = Field(default=None, max_length=256)
+    terminal_text: TerminalTextMode = "circuit"
 
 
 class PanelStripOut(BaseModel):
+    # A rail id for BMK strips, a terminal group id (the FI's device id or
+    # "supply") for Reihenklemmen strips.
     row_id: str
     row_label: str
-    # Length of the rail's strip between its start and end cut lines, in mm.
+    # Length of the strip between its start and end cut lines, in mm.
     length_mm: float
+    # Reihenklemmen only: every part of the group, end element included.
+    part_count: int | None = None
 
 
 class PanelLabelsPrintOut(BaseModel):

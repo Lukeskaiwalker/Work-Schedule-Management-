@@ -1,5 +1,6 @@
 /**
- * "BMK-Etiketten drucken" — choose rails and material, see the strip first.
+ * "BMK-Etiketten drucken" / "Klemmen-Etiketten drucken" — choose what to
+ * print and material, see the strip first.
  *
  * Printing used to fire straight from the toolbar. That was fine while the
  * strip was a list of names; now that every segment is cut to the width of
@@ -15,14 +16,25 @@
  * board. A BMK too long for its segment at that size is flagged, not
  * blocked: the electrician decides whether to shorten it or live with it.
  *
+ * In `mode="reihenklemmen"` the same sheet prints the WAGO terminal markers:
+ * the list is the FI groups instead of the rails, the material is the strip
+ * only, a chip row picks what each marker says, and the preview comes from
+ * `utils/schaltplanTerminals.ts` at the terminals' own pitch and pad.
+ *
  * Same bottom sheet as the palette and the inspector: it is the reachable
  * third of a phone held in front of an open board.
  */
 import { useEffect, useMemo, useState } from "react";
 
+import { StripSvg, layoutSegments, previewFontPx } from "./StripSvg";
+import {
+  TERMINAL_MATERIAL,
+  TERMINAL_TEXT_OPTIONS,
+  TerminalGroupList,
+  TerminalPreview,
+} from "./LabelPrintTerminals";
 import {
   DEFAULT_LABEL_MATERIAL,
-  DOTS_PER_MM,
   LABEL_MATERIALS,
   STRIP_HEIGHT_MM,
   STRIP_LEAD_MM,
@@ -38,81 +50,39 @@ import {
   type LabelMaterialId,
   type RowLabelCounts,
 } from "../../utils/schaltplanStrip";
+import {
+  deriveTerminals,
+  terminalFontSize,
+  terminalStrips,
+  unverifiedTerminalParts,
+  type TerminalTextMode,
+} from "../../utils/schaltplanTerminals";
+import type { PrintTarget } from "../../utils/schaltplanApi";
 import type { PanelDocument, PanelRow } from "../../types/schaltplan";
+
+export type LabelPrintMode = "bmk" | "reihenklemmen";
+
+export interface LabelPrintOptions {
+  target: PrintTarget;
+  terminalText: TerminalTextMode;
+}
 
 type Props = {
   open: boolean;
   document: PanelDocument;
-  /** Rails ticked when the sheet opens — every rail from the toolbar, one from a rail. */
+  /** Ticked when the sheet opens: rail ids in BMK mode, FI-group ids in Reihenklemmen mode. */
   initialRowIds: string[];
   busy: boolean;
-  onPrint: (rowIds: string[], materialId: string) => void;
+  mode?: LabelPrintMode;
+  onPrint: (ids: string[], materialId: string, options: LabelPrintOptions) => void;
   onClose: () => void;
 };
 
-/** Preview scale. 2.4 px/mm puts a 12-module rail at ~520 px — scrollable on a phone, whole on a tablet. */
-const PX_PER_MM = 2.4;
-/** The same scale in printer dots, so the board font size lands on screen at its true proportion. */
-const PX_PER_DOT = PX_PER_MM / DOTS_PER_MM;
-/** Room above and below the band so the thick end lines are not clipped. */
-const BAND_PAD_PX = 6;
-
-/** Font size for the preview, in px, rounded so SVG attributes do not carry float noise. */
-function previewFontPx(sizeDots: number): number {
-  return Math.round(sizeDots * PX_PER_DOT * 100) / 100;
-}
-
-function StripSvg({ row, fontPx }: { row: PanelRow; fontPx: number }) {
-  const segments = stripSegments(row);
-  const length = stripLengthMm(row);
-  const total = stripTotalMm(row);
-  const width = total * PX_PER_MM;
-  const band = STRIP_HEIGHT_MM * PX_PER_MM;
-  const height = band + BAND_PAD_PX * 2;
-  const top = BAND_PAD_PX;
-  const bottom = top + band;
-  const leadPx = STRIP_LEAD_MM * PX_PER_MM;
-  const x = (mm: number) => leadPx + mm * PX_PER_MM;
-
-  return (
-    <svg
-      className="sp-strip-svg"
-      width={width}
-      height={height}
-      viewBox={`0 0 ${width} ${height}`}
-      role="img"
-      aria-label={`Streifen ${row.label}, ${formatMm(total)} mm`}
-    >
-      <rect className="sp-strip-band" x={0} y={top} width={width} height={band} />
-      <rect className="sp-strip-lead" x={0} y={top} width={leadPx} height={band} />
-      <rect className="sp-strip-lead" x={x(length)} y={top} width={leadPx} height={band} />
-      {segments.map((segment, index) => (
-        <g key={segment.deviceId}>
-          {index > 0 && (
-            <line
-              className="sp-strip-cut"
-              x1={x(segment.start)}
-              x2={x(segment.start)}
-              y1={top}
-              y2={bottom}
-            />
-          )}
-          <text
-            className="sp-strip-text"
-            x={x(segment.start + segment.widthMm / 2)}
-            y={top + band / 2}
-            textAnchor="middle"
-            dominantBaseline="central"
-            fontSize={fontPx}
-          >
-            {segment.text}
-          </text>
-        </g>
-      ))}
-      <line className="sp-strip-end" x1={x(0)} x2={x(0)} y1={top - 3} y2={bottom + 3} />
-      <line className="sp-strip-end" x1={x(length)} x2={x(length)} y1={top - 3} y2={bottom + 3} />
-    </svg>
+function BmkStrip({ row, fontPx }: { row: PanelRow; fontPx: number }) {
+  const segments = layoutSegments(
+    stripSegments(row).map((segment) => ({ key: segment.deviceId, text: segment.text, widthMm: segment.widthMm })),
   );
+  return <StripSvg label={row.label} segments={segments} lengthMm={stripLengthMm(row)} fontPx={fontPx} />;
 }
 
 function SingleLabels({ row }: { row: PanelRow }) {
@@ -168,54 +138,103 @@ function summaryLine(rows: PanelRow[], counts: RowLabelCounts, strip: boolean, b
   return `${counts.labelled} Etiketten${skipped ? `${skipped} werden übersprungen` : ""}`;
 }
 
-export function LabelPrintDialog({ open, document, initialRowIds, busy, onPrint, onClose }: Props) {
+function Chips<T extends string>({
+  name,
+  options,
+  active,
+  onPick,
+}: {
+  name: string;
+  options: readonly { id: T; label: string }[];
+  active: T;
+  onPick: (id: T) => void;
+}) {
+  return (
+    <div className="sp-chips" role="radiogroup" aria-label={name}>
+      {options.map((option) => (
+        <button
+          key={option.id}
+          type="button"
+          role="radio"
+          aria-checked={active === option.id}
+          className={active === option.id ? "sp-chip-btn sp-chip-btn--active" : "sp-chip-btn"}
+          onClick={() => onPick(option.id)}
+        >
+          {option.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+export function LabelPrintDialog({ open, document, initialRowIds, busy, mode = "bmk", onPrint, onClose }: Props) {
+  const terminalMode = mode === "reihenklemmen";
   const [materialId, setMaterialId] = useState<LabelMaterialId>(DEFAULT_LABEL_MATERIAL);
+  const [terminalText, setTerminalText] = useState<TerminalTextMode>("circuit");
   const [selectedIds, setSelectedIds] = useState<string[]>(initialRowIds);
 
-  // Re-seed on every open: the toolbar preselects every rail, the per-rail
-  // button just its own, and a selection left over from the last print
-  // would quietly print the wrong rails. Keyed on the ids, not the array,
-  // so a parent re-render with a fresh array does not undo a tick.
+  // Re-seed on every open: the toolbar preselects every rail (or group),
+  // the per-rail button just its own, and a selection left over from the
+  // last print would quietly print the wrong rails. Keyed on the ids, not
+  // the array, so a parent re-render with a fresh array does not undo a tick.
   const seedKey = initialRowIds.join(" ");
   useEffect(() => {
     if (open) setSelectedIds(seedKey === "" ? [] : seedKey.split(" "));
   }, [open, seedKey]);
 
   const rows = document.rows;
-  const selectedRows = useMemo(
-    () => rows.filter((row) => selectedIds.includes(row.id)),
-    [rows, selectedIds],
-  );
+  const selectedRows = useMemo(() => rows.filter((row) => selectedIds.includes(row.id)), [rows, selectedIds]);
   const counts = useMemo(() => sumCounts(selectedRows), [selectedRows]);
   // Over the whole document on purpose — see the header comment.
   const board = useMemo(() => boardFontSize(document, STRIP_HEIGHT_MM), [document]);
 
+  const groups = useMemo(() => (terminalMode ? deriveTerminals(document) : []), [document, terminalMode]);
+  // Exactly the ticked groups: an empty selection is an empty preview and a
+  // disabled Drucken, never "every group" — the server reads [] the same way.
+  const selection = useMemo(
+    () => terminalStrips(groups, terminalText, selectedIds),
+    [groups, terminalText, selectedIds],
+  );
+  const selectedStrips = selection.strips;
+  // Fitted over every group of the board in this text mode, not the ticked ones.
+  const terminalBoard = useMemo(() => terminalFontSize(groups, terminalText, STRIP_HEIGHT_MM), [groups, terminalText]);
+  const unverified = useMemo(() => unverifiedTerminalParts(groups), [groups]);
+
   if (!open) return null;
 
-  const strip = materialId === "wago-2009-110";
-  const material = LABEL_MATERIALS.find((entry) => entry.id === materialId) ?? LABEL_MATERIALS[0];
+  const strip = terminalMode || materialId === "wago-2009-110";
+  const material = terminalMode
+    ? TERMINAL_MATERIAL
+    : (LABEL_MATERIALS.find((entry) => entry.id === materialId) ?? LABEL_MATERIALS[0]);
   const allSelected = rows.length > 0 && rows.every((row) => selectedIds.includes(row.id));
-  const canPrint = !busy && selectedRows.length > 0 && counts.labelled > 0;
-  const fontPx = previewFontPx(board.sizeDots);
+  const canPrint = terminalMode
+    ? !busy && selectedStrips.length > 0
+    : !busy && selectedRows.length > 0 && counts.labelled > 0;
+  const fontPx = previewFontPx(terminalMode ? terminalBoard.sizeDots : board.sizeDots);
 
-  const toggleRow = (rowId: string) =>
-    setSelectedIds((current) =>
-      current.includes(rowId) ? current.filter((id) => id !== rowId) : [...current, rowId],
-    );
-  const toggleAll = () => setSelectedIds(allSelected ? [] : rows.map((row) => row.id));
+  const toggle = (id: string) =>
+    setSelectedIds((current) => (current.includes(id) ? current.filter((entry) => entry !== id) : [...current, id]));
+  const toggleAllRows = () => setSelectedIds(allSelected ? [] : rows.map((row) => row.id));
+  const toggleAllGroups = () => {
+    const every = groups.every((group) => selectedIds.includes(group.groupId));
+    setSelectedIds(every ? [] : groups.map((group) => group.groupId));
+  };
+
+  const print = () =>
+    onPrint(selectedIds, material.id, {
+      target: terminalMode ? "reihenklemmen" : "bmk",
+      terminalText,
+    });
+
+  const title = terminalMode ? "Klemmen-Etiketten drucken" : "BMK-Etiketten drucken";
 
   return (
     <>
       <div className="sp-sheet-backdrop" onClick={onClose} aria-hidden="true" />
-      <div
-        className="sp-sheet sp-sheet--labels"
-        role="dialog"
-        aria-modal="true"
-        aria-label="BMK-Etiketten drucken"
-      >
+      <div className="sp-sheet sp-sheet--labels" role="dialog" aria-modal="true" aria-label={title}>
         <div className="sp-sheet-head">
           <div>
-            <h3>BMK-Etiketten drucken</h3>
+            <h3>{title}</h3>
             <small>{material.hint}</small>
           </div>
           <button type="button" className="sp-sheet-close" onClick={onClose} aria-label="Schließen">
@@ -226,104 +245,112 @@ export function LabelPrintDialog({ open, document, initialRowIds, busy, onPrint,
         <div className="sp-sheet-body">
           <div className="sp-field">
             <span className="sp-field-label">Material</span>
-            <div className="sp-chips" role="radiogroup" aria-label="Material">
-              {LABEL_MATERIALS.map((entry) => (
-                <button
-                  key={entry.id}
-                  type="button"
-                  role="radio"
-                  aria-checked={materialId === entry.id}
-                  className={materialId === entry.id ? "sp-chip-btn sp-chip-btn--active" : "sp-chip-btn"}
-                  onClick={() => setMaterialId(entry.id)}
-                >
-                  {entry.label}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="sp-field">
-            <div className="sp-label-rows-head">
-              <span className="sp-field-label">Reihen</span>
-              <button
-                type="button"
-                className="sp-label-toggle"
-                onClick={toggleAll}
-                disabled={rows.length === 0}
-              >
-                {allSelected ? "Keine" : "Alle"}
-              </button>
-            </div>
-            <ul className="sp-label-rows" aria-label="Reihen">
-              {rows.map((row) => {
-                const checked = selectedIds.includes(row.id);
-                return (
-                  <li key={row.id} className={checked ? "sp-label-row sp-label-row--on" : "sp-label-row"}>
-                    <label className="sp-label-row-main">
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => toggleRow(row.id)}
-                        aria-label={`${row.label} drucken`}
-                      />
-                      <span className="sp-label-row-text">
-                        <b>{row.label}</b>
-                        <small>{rowMeta(row, rowLabelCounts(row), strip)}</small>
-                      </span>
-                    </label>
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-
-          <section className="sp-label-preview" aria-label="Vorschau">
-            <div className="sp-label-rows-head">
-              <span className="sp-field-label">Vorschau</span>
-              <small className="sp-label-summary">{summaryLine(selectedRows, counts, strip, board)}</small>
-            </div>
-            {strip && board.overflowing.length > 0 && (
-              <p className="sp-label-warn" role="status">
-                {`Zu lang für die Box bei einheitlicher Größe: ${board.overflowing.join(", ")}`}
-              </p>
+            {terminalMode ? (
+              <Chips name="Material" options={[TERMINAL_MATERIAL]} active={TERMINAL_MATERIAL.id} onPick={() => undefined} />
+            ) : (
+              <Chips name="Material" options={LABEL_MATERIALS} active={materialId} onPick={setMaterialId} />
             )}
-            {selectedRows.map((row) => {
-              const rowCounts = rowLabelCounts(row);
-              return (
-                <div key={row.id} className="sp-strip-preview">
-                  <div className="sp-strip-head">
-                    <b>{row.label}</b>
-                    {strip && rowCounts.labelled > 0 && (
-                      <small>
-                        {`${formatMm(stripTotalMm(row))} mm (${STRIP_LEAD_MM} + ${formatMm(stripLengthMm(row))} + ${STRIP_LEAD_MM})`}
-                      </small>
+          </div>
+
+          {terminalMode && (
+            <div className="sp-field">
+              <span className="sp-field-label">Text</span>
+              <Chips name="Text" options={TERMINAL_TEXT_OPTIONS} active={terminalText} onPick={setTerminalText} />
+            </div>
+          )}
+
+          {terminalMode ? (
+            <TerminalGroupList
+              groups={groups}
+              mode={terminalText}
+              selectedIds={selectedIds}
+              onToggle={toggle}
+              onToggleAll={toggleAllGroups}
+            />
+          ) : (
+            <div className="sp-field">
+              <div className="sp-label-rows-head">
+                <span className="sp-field-label">Reihen</span>
+                <button type="button" className="sp-label-toggle" onClick={toggleAllRows} disabled={rows.length === 0}>
+                  {allSelected ? "Keine" : "Alle"}
+                </button>
+              </div>
+              <ul className="sp-label-rows" aria-label="Reihen">
+                {rows.map((row) => {
+                  const checked = selectedIds.includes(row.id);
+                  return (
+                    <li key={row.id} className={checked ? "sp-label-row sp-label-row--on" : "sp-label-row"}>
+                      <label className="sp-label-row-main">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggle(row.id)}
+                          aria-label={`${row.label} drucken`}
+                        />
+                        <span className="sp-label-row-text">
+                          <b>{row.label}</b>
+                          <small>{rowMeta(row, rowLabelCounts(row), strip)}</small>
+                        </span>
+                      </label>
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          )}
+
+          {terminalMode ? (
+            <TerminalPreview
+              strips={selectedStrips}
+              skipped={selection.skipped}
+              board={terminalBoard}
+              fontPx={fontPx}
+              unverified={unverified}
+            />
+          ) : (
+            <section className="sp-label-preview" aria-label="Vorschau">
+              <div className="sp-label-rows-head">
+                <span className="sp-field-label">Vorschau</span>
+                <small className="sp-label-summary">{summaryLine(selectedRows, counts, strip, board)}</small>
+              </div>
+              {strip && board.overflowing.length > 0 && (
+                <p className="sp-label-warn" role="status">
+                  {`Zu lang für die Box bei einheitlicher Größe: ${board.overflowing.join(", ")}`}
+                </p>
+              )}
+              {selectedRows.map((row) => {
+                const rowCounts = rowLabelCounts(row);
+                return (
+                  <div key={row.id} className="sp-strip-preview">
+                    <div className="sp-strip-head">
+                      <b>{row.label}</b>
+                      {strip && rowCounts.labelled > 0 && (
+                        <small>
+                          {`${formatMm(stripTotalMm(row))} mm (${STRIP_LEAD_MM} + ${formatMm(stripLengthMm(row))} + ${STRIP_LEAD_MM})`}
+                        </small>
+                      )}
+                    </div>
+                    {rowCounts.labelled === 0 ? (
+                      <p className="sp-label-empty">{emptyRowMessage(row)}</p>
+                    ) : strip ? (
+                      <div className="sp-strip-scroll">
+                        <BmkStrip row={row} fontPx={fontPx} />
+                      </div>
+                    ) : (
+                      <SingleLabels row={row} />
                     )}
                   </div>
-                  {rowCounts.labelled === 0 ? (
-                    <p className="sp-label-empty">{emptyRowMessage(row)}</p>
-                  ) : strip ? (
-                    <div className="sp-strip-scroll">
-                      <StripSvg row={row} fontPx={fontPx} />
-                    </div>
-                  ) : (
-                    <SingleLabels row={row} />
-                  )}
-                </div>
-              );
-            })}
-          </section>
+                );
+              })}
+            </section>
+          )}
         </div>
 
         <div className="sp-sheet-actions">
           <button type="button" className="sp-btn sp-btn--ghost" onClick={onClose}>
             Abbrechen
           </button>
-          <button
-            type="button"
-            className="sp-btn sp-btn--primary"
-            disabled={!canPrint}
-            onClick={() => onPrint(selectedIds, materialId)}
-          >
+          <button type="button" className="sp-btn sp-btn--primary" disabled={!canPrint} onClick={print}>
             {busy ? "Drucke…" : "Drucken"}
           </button>
         </div>

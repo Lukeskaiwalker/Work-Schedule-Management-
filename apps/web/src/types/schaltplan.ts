@@ -84,6 +84,12 @@ export interface PanelDevice {
    * FI would. See `opensGroup` in `utils/schaltplanTopology.ts`.
    */
   feeds_following: boolean;
+  /**
+   * The outgoing ends on a WAGO Reihenklemme. Opt-in per device; only
+   * MCB-protected outgoing kinds (LS, Wallbox, UV-Abgang, PV) read it —
+   * see `utils/schaltplanTerminalRules.ts`. Off on every old document.
+   */
+  terminal_block: boolean;
   note: string;
 }
 
@@ -156,11 +162,23 @@ export interface PanelPlanSummary {
   updated_by_name: string | null;
 }
 
+/** One line of the server-side Reihenklemmen Stückliste (mirrors `PanelTerminalBomRow`). */
+export interface PanelTerminalBomRow {
+  part_id: string;
+  part_no: string;
+  name: string;
+  count: number;
+  width_mm: number;
+  verified: boolean;
+}
+
 export interface PanelPlan extends PanelPlanSummary {
   document: PanelDocument;
   notes: string | null;
   legend: PanelLegendRow[];
   findings: PanelFinding[];
+  /** The server's derivation; the editor renders its own twin and uses this only as the truth to compare against. */
+  terminal_bom: PanelTerminalBomRow[];
   created_at: string;
   created_by_name: string | null;
 }

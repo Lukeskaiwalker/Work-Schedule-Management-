@@ -25,27 +25,23 @@ import { DevicePalette } from "../components/schaltplan/DevicePalette";
 import { LabelPrintDialog } from "../components/schaltplan/LabelPrintDialog";
 import { LegendTable } from "../components/schaltplan/LegendTable";
 import { NewPanelDialog } from "../components/schaltplan/NewPanelDialog";
+import { PanelDataTab } from "../components/schaltplan/PanelDataTab";
 import { PanelDiagram } from "../components/schaltplan/PanelDiagram";
 import { PanelScopePicker } from "../components/schaltplan/PanelScopePicker";
 import { RailEditor } from "../components/schaltplan/RailEditor";
 import { RowTemplateSheet } from "../components/schaltplan/RowTemplateSheet";
-import {
-  PANEL_TYPE_LABELS,
-  SUPPLY_SYSTEMS,
-  emptyDocument,
-  makeDevice,
-  newId,
-  nextCircuitNumber,
-} from "../utils/schaltplanDevices";
+import { TerminalList } from "../components/schaltplan/TerminalList";
+import { useLabelPrinting } from "../components/schaltplan/useLabelPrinting";
+import { PANEL_TYPE_LABELS, emptyDocument, makeDevice, newId, nextCircuitNumber } from "../utils/schaltplanDevices";
 import {
   duplicateDevice as duplicateDeviceInDocument,
   rowFromTemplate,
   type RowTemplateId,
 } from "../utils/schaltplanDocumentOps";
-import { formatFontMm } from "../utils/schaltplanStrip";
+import { isTerminalEligible } from "../utils/schaltplanTerminalRules";
+import { deriveTerminals, terminalCounts } from "../utils/schaltplanTerminals";
 import { buildLegend, findDevice, neighbourDeviceId, validateDocument } from "../utils/schaltplanTopology";
 import {
-  printPanelLabels,
   createPanel,
   deletePanel as deletePanelRequest,
   duplicatePanel,
@@ -63,8 +59,10 @@ import type {
   PanelSupply,
   PanelType,
 } from "../types/schaltplan";
+// Own sheet, not styles.css — see the header of that file.
+import "../styles/schaltplan-terminals.css";
 
-type EditorTab = "plan" | "aufbau" | "legende" | "daten";
+type EditorTab = "plan" | "aufbau" | "klemmen" | "legende" | "daten";
 type SaveState = "clean" | "pending" | "saving" | "error";
 
 const AUTOSAVE_DELAY_MS = 900;
@@ -72,6 +70,7 @@ const AUTOSAVE_DELAY_MS = 900;
 const TAB_LABELS: Record<EditorTab, string> = {
   plan: "Plan",
   aufbau: "Aufbau",
+  klemmen: "Klemmen",
   legende: "Legende",
   daten: "Daten",
 };
@@ -99,57 +98,7 @@ export function SchaltplanPage() {
   const [document, setDocument] = useState<PanelDocument | null>(null);
   const [tab, setTab] = useState<EditorTab>("plan");
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
-  // BMK label printing goes through a preview sheet: `rowIds` is what the
-  // sheet opens with — every rail from the toolbar, one from a rail's own
-  // button. Printing keeps its own busy flag: it must not be mistaken for a
-  // save in progress, and a second tap while the strip is feeding would
-  // print the board twice.
-  const [labelDialog, setLabelDialog] = useState<{ open: boolean; rowIds: string[] }>({
-    open: false,
-    rowIds: [],
-  });
-  const [labelsPrinting, setLabelsPrinting] = useState(false);
-
-  const openLabelDialog = useCallback((rowIds: string[]) => {
-    setLabelDialog({ open: true, rowIds });
-  }, []);
-
-  const closeLabelDialog = useCallback(() => {
-    setLabelDialog((current) => ({ ...current, open: false }));
-  }, []);
-
-  const printLabels = useCallback(
-    async (rowIds: string[], materialId: string) => {
-      if (!panel || labelsPrinting) return;
-      setLabelsPrinting(true);
-      try {
-        const result = await printPanelLabels(token, panel.id, { rowIds, materialId });
-        const skipped =
-          result.skipped_without_bmk > 0
-            ? ` — ${result.skipped_without_bmk} Gerät(e) ohne BMK übersprungen`
-            : "";
-        const single = materialId === "wago-210-805";
-        const summary = single
-          ? `${result.printed} Etiketten (210-805) gedruckt`
-          : `${(result.strips ?? []).length} Streifen gedruckt (${result.printed} BMK)`;
-        // The strip's board size is worth a glance: it tells the electrician
-        // whether a long BMK dragged the whole board down. Guarded, because
-        // an older server does not send it.
-        const sizeDots = result.font_size_dots;
-        const font =
-          !single && typeof sizeDots === "number" && Number.isFinite(sizeDots) && sizeDots > 0
-            ? ` — Schrift ${formatFontMm(sizeDots)} mm`
-            : "";
-        setNotice(`${summary}${font}${skipped}`);
-        closeLabelDialog();
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "BMK-Etiketten konnten nicht gedruckt werden");
-      } finally {
-        setLabelsPrinting(false);
-      }
-    },
-    [panel, labelsPrinting, token, setNotice, setError, closeLabelDialog],
-  );
+  const labels = useLabelPrinting({ panel, token, setNotice, setError });
   const [paletteRowId, setPaletteRowId] = useState<string | null>(null);
   const [templateSheetOpen, setTemplateSheetOpen] = useState(false);
   const [newPanelOpen, setNewPanelOpen] = useState(false);
@@ -196,6 +145,10 @@ export function SchaltplanPage() {
     };
   }, [reloadPanels]);
 
+  // The hook hands back a fresh object every render; only its callbacks are
+  // stable. Depending on `labels` itself would recreate openPanel on every
+  // render and defeat the memo for any effect that lists it.
+  const { reset: resetLabels } = labels;
   const openPanel = useCallback(
     async (panelId: number) => {
       try {
@@ -203,16 +156,14 @@ export function SchaltplanPage() {
         setPanel(loaded);
         setDocument(loaded.document);
         setSelectedDeviceId(null);
-        // A print sheet left open would now list the new board's rails with
-        // the old board's selection — nothing ticked, or the wrong rails.
-        setLabelDialog({ open: false, rowIds: [] });
+        resetLabels();
         setSaveState("clean");
         setTab("plan");
       } catch {
         setError("Der Verteilerplan konnte nicht geöffnet werden.");
       }
     },
-    [token, setError],
+    [token, setError, resetLabels],
   );
 
   // ── Autosave ─────────────────────────────────────────────────────────────
@@ -448,6 +399,26 @@ export function SchaltplanPage() {
     [mutate],
   );
 
+  /**
+   * Flag or clear "Reihenklemme am Abgang" on every eligible outgoing at
+   * once. Only devices whose flag actually changes get a new object, so an
+   * untouched breaker keeps its identity for React.
+   */
+  const setAllTerminals = useCallback(
+    (flag: boolean) => {
+      mutate((current) => ({
+        ...current,
+        rows: current.rows.map((row) => ({
+          ...row,
+          devices: row.devices.map((device) =>
+            isTerminalEligible(device) && device.terminal_block !== flag ? { ...device, terminal_block: flag } : device,
+          ),
+        })),
+      }));
+    },
+    [mutate],
+  );
+
   // ── Panel-level operations ───────────────────────────────────────────────
 
   const savePanelMeta = useCallback(
@@ -508,10 +479,25 @@ export function SchaltplanPage() {
     [customerId, projectId, token, reloadPanels, setError],
   );
 
+  const deleteCurrentPanel = useCallback(async () => {
+    if (!panel) return;
+    try {
+      await deletePanelRequest(token, panel.id);
+      setPanel(null);
+      setDocument(null);
+      setNotice("Verteilerplan gelöscht.");
+      void reloadPanels();
+    } catch {
+      setError("Der Verteilerplan konnte nicht gelöscht werden.");
+    }
+  }, [panel, token, reloadPanels, setNotice, setError]);
+
   // ── Derived ──────────────────────────────────────────────────────────────
 
   const legend = useMemo(() => (document ? buildLegend(document) : []), [document]);
   const findings = useMemo(() => (document ? validateDocument(document) : []), [document]);
+  const terminalGroups = useMemo(() => (document ? deriveTerminals(document) : []), [document]);
+  const terminalCount = terminalCounts(terminalGroups).terminals;
   const warnings = findings.filter((finding) => finding.level === "warn");
   const selectedDevice = document ? findDevice(document, selectedDeviceId) : null;
   // Previous/next inside the sheet walks the board in physical order — row
@@ -624,11 +610,11 @@ export function SchaltplanPage() {
               <button
                 type="button"
                 className="sp-btn"
-                disabled={labelsPrinting}
-                onClick={() => openLabelDialog(document.rows.map((row) => row.id))}
+                disabled={labels.printing}
+                onClick={() => labels.open(document.rows.map((row) => row.id))}
                 title="Ein Etikett je Betriebsmittelkennzeichen — Reihen und Material in der Vorschau wählen"
               >
-                {labelsPrinting ? "Drucke…" : "BMK-Etiketten"}
+                {labels.printing ? "Drucke…" : "BMK-Etiketten"}
               </button>
               {canEdit && (
                 <button
@@ -688,6 +674,7 @@ export function SchaltplanPage() {
                 {key === "legende" && legend.length > 0 && (
                   <span className="sp-count">{legend.length}</span>
                 )}
+                {key === "klemmen" && terminalCount > 0 && <span className="sp-count">{terminalCount}</span>}
               </button>
             ))}
           </nav>
@@ -704,7 +691,7 @@ export function SchaltplanPage() {
 
           {tab === "aufbau" && (
             <RailEditor
-              onPrintRowLabels={(rowId) => openLabelDialog([rowId])}
+              onPrintRowLabels={(rowId) => labels.open([rowId])}
               document={document}
               selectedDeviceId={selectedDeviceId}
               readOnly={readOnly}
@@ -748,6 +735,22 @@ export function SchaltplanPage() {
             />
           )}
 
+          {tab === "klemmen" && (
+            <TerminalList
+              document={document}
+              readOnly={readOnly}
+              onSetAllTerminals={setAllTerminals}
+              onPrint={() =>
+                labels.open(
+                  terminalGroups.map((group) => group.groupId),
+                  "reihenklemmen",
+                )
+              }
+              pdfHref={panelPdfUrl(panel.id, { terminalsOnly: true })}
+              printing={labels.printing}
+            />
+          )}
+
           {tab === "legende" && (
             <div className="sp-legend">
               <LegendTable rows={legend} />
@@ -755,182 +758,16 @@ export function SchaltplanPage() {
           )}
 
           {tab === "daten" && (
-            <div className="sp-data">
-              <section className="sp-data-block">
-                <h4>Einspeisung</h4>
-                <div className="sp-field-grid">
-                  <label className="sp-field">
-                    <span className="sp-field-label">Netzform</span>
-                    <select
-                      value={document.supply.system}
-                      disabled={readOnly}
-                      onChange={(event) =>
-                        patchSupply({ system: event.target.value as PanelSupply["system"] })
-                      }
-                    >
-                      {SUPPLY_SYSTEMS.map((system) => (
-                        <option key={system} value={system}>
-                          {system}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="sp-field">
-                    <span className="sp-field-label">Spannung</span>
-                    <input
-                      type="text"
-                      value={document.supply.voltage}
-                      disabled={readOnly}
-                      onChange={(event) => patchSupply({ voltage: event.target.value })}
-                    />
-                  </label>
-                  <label className="sp-field">
-                    <span className="sp-field-label">Zuleitung</span>
-                    <input
-                      type="text"
-                      value={document.supply.incoming}
-                      disabled={readOnly}
-                      placeholder="NYY-J 5x16 mm²"
-                      onChange={(event) => patchSupply({ incoming: event.target.value })}
-                    />
-                  </label>
-                  <label className="sp-field">
-                    <span className="sp-field-label">Vorsicherung</span>
-                    <input
-                      type="text"
-                      value={document.supply.fuse}
-                      disabled={readOnly}
-                      placeholder="NH 63 A"
-                      onChange={(event) => patchSupply({ fuse: event.target.value })}
-                    />
-                  </label>
-                  <label className="sp-field">
-                    <span className="sp-field-label">Zählernummer</span>
-                    <input
-                      type="text"
-                      value={document.supply.meter_number}
-                      disabled={readOnly}
-                      onChange={(event) => patchSupply({ meter_number: event.target.value })}
-                    />
-                  </label>
-                </div>
-              </section>
-
-              <section className="sp-data-block">
-                <h4>Verteiler</h4>
-                <div className="sp-field-grid">
-                  <label className="sp-field">
-                    <span className="sp-field-label">Bezeichnung</span>
-                    <input
-                      type="text"
-                      defaultValue={panel.designation}
-                      disabled={readOnly}
-                      onBlur={(event) => {
-                        const value = event.target.value.trim();
-                        if (value && value !== panel.designation) {
-                          void savePanelMeta({ designation: value });
-                        }
-                      }}
-                    />
-                  </label>
-                  <label className="sp-field">
-                    <span className="sp-field-label">Name</span>
-                    <input
-                      type="text"
-                      defaultValue={panel.name}
-                      disabled={readOnly}
-                      onBlur={(event) => {
-                        const value = event.target.value.trim();
-                        if (value && value !== panel.name) void savePanelMeta({ name: value });
-                      }}
-                    />
-                  </label>
-                  <label className="sp-field">
-                    <span className="sp-field-label">Ort</span>
-                    <input
-                      type="text"
-                      defaultValue={panel.location ?? ""}
-                      disabled={readOnly}
-                      onBlur={(event) => void savePanelMeta({ location: event.target.value.trim() })}
-                    />
-                  </label>
-                  <label className="sp-field">
-                    <span className="sp-field-label">Art</span>
-                    <select
-                      value={panel.panel_type}
-                      disabled={readOnly}
-                      onChange={(event) =>
-                        void savePanelMeta({ panel_type: event.target.value as PanelType })
-                      }
-                    >
-                      {(["main", "sub", "meter"] as PanelType[]).map((type) => (
-                        <option key={type} value={type}>
-                          {PANEL_TYPE_LABELS[type]}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="sp-field">
-                    <span className="sp-field-label">Eingespeist von</span>
-                    <select
-                      value={panel.fed_from_panel_id ?? ""}
-                      disabled={readOnly}
-                      onChange={(event) =>
-                        void savePanelMeta({
-                          fed_from_panel_id: event.target.value ? Number(event.target.value) : null,
-                        })
-                      }
-                    >
-                      <option value="">Netz / Hausanschluss</option>
-                      {panels
-                        .filter((row) => row.id !== panel.id)
-                        .map((row) => (
-                          <option key={row.id} value={row.id}>
-                            {row.designation} — {row.name}
-                          </option>
-                        ))}
-                    </select>
-                  </label>
-                </div>
-                <label className="sp-field">
-                  <span className="sp-field-label">Notizen</span>
-                  <textarea
-                    rows={3}
-                    defaultValue={panel.notes ?? ""}
-                    disabled={readOnly}
-                    onBlur={(event) => void savePanelMeta({ notes: event.target.value })}
-                  />
-                </label>
-              </section>
-
-              {canEdit && (
-                <section className="sp-data-block sp-data-block--danger">
-                  <h4>Verteiler löschen</h4>
-                  <p>
-                    Entfernt den Plan mit allen Stromkreisen. Nur der Ersteller oder die
-                    Projektleitung kann das.
-                  </p>
-                  <button
-                    type="button"
-                    className="sp-btn sp-btn--danger"
-                    onClick={async () => {
-                      if (!window.confirm(`Verteiler „${panel.designation}“ wirklich löschen?`)) return;
-                      try {
-                        await deletePanelRequest(token, panel.id);
-                        setPanel(null);
-                        setDocument(null);
-                        setNotice("Verteilerplan gelöscht.");
-                        void reloadPanels();
-                      } catch {
-                        setError("Der Verteilerplan konnte nicht gelöscht werden.");
-                      }
-                    }}
-                  >
-                    Löschen
-                  </button>
-                </section>
-              )}
-            </div>
+            <PanelDataTab
+              panel={panel}
+              document={document}
+              panels={panels}
+              readOnly={readOnly}
+              canEdit={canEdit}
+              onPatchSupply={patchSupply}
+              onSaveMeta={savePanelMeta}
+              onDelete={deleteCurrentPanel}
+            />
           )}
         </section>
       )}
@@ -966,12 +803,13 @@ export function SchaltplanPage() {
 
       {document && (
         <LabelPrintDialog
-          open={labelDialog.open}
+          open={labels.dialog.open}
+          mode={labels.dialog.mode}
           document={document}
-          initialRowIds={labelDialog.rowIds}
-          busy={labelsPrinting}
-          onPrint={(rowIds, materialId) => void printLabels(rowIds, materialId)}
-          onClose={closeLabelDialog}
+          initialRowIds={labels.dialog.ids}
+          busy={labels.printing}
+          onPrint={(ids, materialId, options) => void labels.print(ids, materialId, options)}
+          onClose={labels.close}
         />
       )}
 

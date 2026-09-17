@@ -217,6 +217,46 @@ describe("DeviceInspector — Aktionen", () => {
   });
 });
 
+describe("DeviceInspector — Reihenklemme am Abgang", () => {
+  it("offers the checkbox on an LS and writes terminal_block", () => {
+    const { document, mcb } = board();
+    const { onChange } = renderInspector(mcb, document);
+    const checkbox = screen.getByRole("checkbox", { name: /reihenklemme am abgang/i });
+    expect(checkbox).not.toBeChecked();
+    fireEvent.click(checkbox);
+    expect(onChange).toHaveBeenCalledWith({ terminal_block: true });
+  });
+
+  it("names the Etagenklemme the current poles resolve to", () => {
+    const { document, mcb } = board();
+    const { unmount } = renderInspector(mcb, document);
+    expect(screen.getByText(/WAGO 2003-7641/)).toBeInTheDocument();
+    unmount();
+    const wallbox = makeDevice("wallbox", { id: "w1", designation: "F1.2" });
+    renderInspector(wallbox, document);
+    expect(screen.getByText(/Bei 3 Polen: WAGO 2003-7642/)).toBeInTheDocument();
+  });
+
+  it("is hidden on an RCBO — with a note — and on a fuse, without one", () => {
+    const { document, rcbo, fuse } = board();
+    const { unmount } = renderInspector(rcbo, document);
+    expect(screen.queryByRole("checkbox", { name: /reihenklemme am abgang/i })).toBeNull();
+    expect(screen.getByText(/FI\/LS-Kombis erhalten keine Reihenklemme/)).toBeInTheDocument();
+    unmount();
+    renderInspector(fuse, document);
+    expect(screen.queryByRole("checkbox", { name: /reihenklemme am abgang/i })).toBeNull();
+    expect(screen.queryByText(/FI\/LS-Kombis erhalten keine Reihenklemme/)).toBeNull();
+  });
+
+  it("is checked and disabled read-only", () => {
+    const { document, mcb } = board();
+    renderInspector({ ...mcb, terminal_block: true }, document, { readOnly: true });
+    const checkbox = screen.getByRole("checkbox", { name: /reihenklemme am abgang/i });
+    expect(checkbox).toBeChecked();
+    expect(checkbox).toBeDisabled();
+  });
+});
+
 describe("DeviceInspector — Sicherung als Gruppenkopf", () => {
   it("hides the feed select for a fuse that already heads a group", () => {
     const { document, fuse } = board();

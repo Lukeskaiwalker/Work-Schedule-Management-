@@ -19,6 +19,7 @@
  */
 
 import { catalogEntry } from "./schaltplanDevices";
+import { terminalFindings } from "./schaltplanTerminalRules";
 import type {
   PanelDevice,
   PanelDocument,
@@ -306,7 +307,8 @@ export function validateDocument(document: PanelDocument): PanelFinding[] {
     }
   }
 
-  for (const group of buildTopology(document)) {
+  const groups = buildTopology(document);
+  for (const group of groups) {
     // Only a catalogue group reads its parent_id as a Vorsicherung; a
     // fuse-headed group's parent_id is not a reference at all.
     if (group.device && isGroupDevice(group.device) && group.device.parent_id && group.preFuse === null) {
@@ -337,6 +339,10 @@ export function validateDocument(document: PanelDocument): PanelFinding[] {
       });
     }
   }
+
+  // Reihenklemmen: a group without an FI that still wants terminals, and
+  // pole counts the Etagenklemmen round. Info, not warn — see the rules.
+  findings.push(...terminalFindings(groups));
 
   return findings;
 }

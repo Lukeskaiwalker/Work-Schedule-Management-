@@ -15,6 +15,7 @@
  */
 import { DeviceSymbol } from "./DeviceSymbol";
 import { catalogEntry, rowUsedSlots } from "../../utils/schaltplanDevices";
+import { hasTerminal } from "../../utils/schaltplanTerminalRules";
 import { isCircuitDevice, isGroupDevice } from "../../utils/schaltplanTopology";
 import type { PanelDocument, PanelRow } from "../../types/schaltplan";
 
@@ -138,6 +139,15 @@ function RailRow({
               </span>
               {isCircuitDevice(device) && device.label ? (
                 <span className="sp-tile-label">{device.label}</span>
+              ) : null}
+              {hasTerminal(device) ? (
+                // A dot, no text: the tile is already three lines on 1 TE.
+                <span
+                  className="sp-tile-terminal"
+                  role="img"
+                  aria-label="mit Reihenklemme"
+                  title="Reihenklemme am Abgang"
+                />
               ) : null}
             </button>
           );

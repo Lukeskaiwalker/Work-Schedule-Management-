@@ -28,8 +28,26 @@ import {
   catalogEntry,
 } from "../../utils/schaltplanDevices";
 import { deviceWidthMm, formatMm, widthSuggestionsMm } from "../../utils/schaltplanStrip";
+import {
+  TERMINAL_PARTS,
+  devicePoles,
+  isTerminalEligible,
+  outgoingPartForPoles,
+} from "../../utils/schaltplanTerminalRules";
 import { allDevices, buildTopology, isGroupDevice, opensGroup } from "../../utils/schaltplanTopology";
 import type { PanelDevice, PanelDocument, PhaseLabel } from "../../types/schaltplan";
+
+/**
+ * The live hint under "Reihenklemme am Abgang": which Etagenklemme the
+ * current pole count resolves to, then the rule in one line — the electrician
+ * changes Pole and sees the part change without opening the Klemmen tab.
+ */
+function terminalHint(device: PanelDevice): string {
+  const poles = devicePoles(device);
+  const part = TERMINAL_PARTS[outgoingPartForPoles(poles)];
+  const current = `Bei ${poles} Pol${poles === 1 ? "" : "en"}: ${part.partNo} (${part.name}).`;
+  return `${current} 1-polig → WAGO 2003-7641 · 3-polig → WAGO 2003-7642. Einspeise- und Endklemme der FI-Gruppe werden automatisch ergänzt.`;
+}
 
 /** "17.5" / "17,5" / "" → 17.5 / 17.5 / null. Anything that is not a positive number clears the override. */
 function parseWidthMm(raw: string): number | null {
@@ -304,6 +322,31 @@ export function DeviceInspector({
                 {fuseFeedsCircuits && !device.feeds_following
                   ? "Mindestens ein Abgang ist bereits auf diese Sicherung eingestellt — sie bildet deshalb schon eine eigene Gruppe."
                   : "Für FI/LS-Kombis oder eine LS-Reihe ohne FI: die Sicherung steht dann in der Legende als Vorsicherung dieser Stromkreise."}
+              </small>
+            </div>
+          )}
+
+          {isTerminalEligible(device) && (
+            <div className="sp-field">
+              <label className="sp-check">
+                <input
+                  type="checkbox"
+                  checked={device.terminal_block === true}
+                  disabled={readOnly}
+                  onChange={(event) => onChange({ terminal_block: event.target.checked })}
+                />
+                <span className="sp-check-text">Reihenklemme am Abgang (WAGO)</span>
+              </label>
+              <small className="sp-field-hint">{terminalHint(device)}</small>
+            </div>
+          )}
+
+          {device.kind === "rcbo" && (
+            // Owner decision: an RCBO's N is its own and must not sit on the
+            // FI group's N bus, so there is no toggle — only the reason.
+            <div className="sp-field">
+              <small className="sp-field-hint">
+                FI/LS-Kombis erhalten keine Reihenklemme der FI-Gruppe (eigener N).
               </small>
             </div>
           )}
