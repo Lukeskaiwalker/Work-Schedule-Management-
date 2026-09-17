@@ -38,6 +38,7 @@ import sys
 import queue
 import threading
 import time
+import uuid
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -96,7 +97,49 @@ ACTION_SCREEN = {
     "mode": SCREEN_BOXES,
     "close_session": SCREEN_BOXES,
     "handover": SCREEN_BOXES,
+    # Typing a name for an unknown delivery. Rack only, and not because of a
+    # permission: the crate screen has no keyboard bolted to it.
+    "name_article": SCREEN_RACK,
+    "cancel_name": SCREEN_RACK,
 }
+
+#: Where a freshly created article's identity came from, in the one word the
+#: wall shows. Keyed on what the API reports, with the provider names it can
+#: return — an operator who reads "Webshop" and an operator who reads
+#: "Unielektro" should both be right.
+def _request_token() -> str:
+    """One booking attempt's idempotency token.
+
+    Minted here rather than server-side because its whole job is to survive a
+    timeout: the server cannot hand back a token on a request whose answer
+    never arrived, and the retry has to carry the SAME one.
+    """
+    return uuid.uuid4().hex
+
+
+SOURCE_LABELS = {
+    "unielektro_shop": "Unielektro",
+    "catalog": "Katalog",
+    "external": "Webshop",
+    "manual": "Station",
+    "existing": "Bestand",
+}
+
+class _NamedIntake:
+    """What ``_stocked_or_flash`` needs from a decision, for a typed name.
+
+    The keyboard path has no routing decision behind it — nobody scanned
+    anything this time round — but the booking it produces has to be recorded
+    and flashed exactly like a scanned one, or the log on the wall would be
+    missing the deliveries that needed a person most.
+    """
+
+    __slots__ = ("code", "qty")
+
+    def __init__(self, code: str, qty: int) -> None:
+        self.code = code
+        self.qty = qty
+
 
 # The screens render state; they never accumulate events. So every poll
 # answers with a whole snapshot and a sequence number, and a screen that was
@@ -1612,6 +1655,9 @@ class Agent:
         self._refresh_boxes(force=True)
 
     def _applied_movement(self, decision, resolved) -> None:
+        # A new scan is a new subject. Leaving the old prompt up would let a
+        # name typed now land on the code from two deliveries ago.
+        self.kiosk.clear_name_prompt()
         article_id = self._sw.article_id_of(resolved)
         if article_id is None:
             self._unstocked(decision, resolved)
@@ -1634,7 +1680,7 @@ class Agent:
         match comes back in under 200 ms. So the screen reported an outage
         while the server was healthy, and people went to check the network.
 
-        Three genuinely different situations, told apart and said plainly:
+        Four genuinely different situations, told apart and said plainly:
 
         **No upstream.** This station has never been paired, or the token is
         gone. The only case where "not connected" is the truth.
@@ -1645,11 +1691,17 @@ class Agent:
         moment where that is fixable on the spot, by somebody holding the
         item. Create it and book the delivery in one call.
 
-        **A catalogue hit in any other direction.** Ausgabe and Rückgabe move
-        stock that must already exist; conjuring an article to hand out is a
-        different and much less defensible act than recording an arrival. Name
-        the product so the operator can see SMPL recognised it, and say what
-        is missing.
+        **Nothing at all, at Wareneingang.** The barcode is in no Datanorm we
+        imported. Ask the server to look further — it may recognise the code
+        on the wholesaler's public shop — and if even that comes back empty,
+        offer the keyboard. This panel has one; the crate screen does not,
+        which is why this path exists only here.
+
+        **A hit in any other direction.** Ausgabe and Rückgabe move stock that
+        must already exist; conjuring an article to hand out is a different
+        and much less defensible act than recording an arrival. Name the
+        product so the operator can see SMPL recognised it, and say what is
+        missing.
         """
         self.router.note_pending(self._article_from(resolved, decision.code), decision.qty)
 
@@ -1660,25 +1712,136 @@ class Agent:
             return
 
         catalog_id = self._catalog_item_id(resolved)
-        if catalog_id is None:
-            self.kiosk.flash(SCREEN_RACK, "error", "Code nicht zugeordnet",
-                             "SMPL kennt diesen Code nicht.", code=decision.code)
-            return
-
         name, hint, _kind = parse_resolution(resolved)
         label = name or decision.code
+
         if self.router.direction != "wareneingang":
+            if catalog_id is None:
+                self.kiosk.flash(SCREEN_RACK, "error", "Code nicht zugeordnet",
+                                 "SMPL kennt diesen Code nicht. Im Wareneingang scannen, "
+                                 "dann wird er angelegt.", code=decision.code)
+                return
             detail = "%s — noch kein Artikel im Bestand. Bitte im Wareneingang einbuchen." % (
                 hint or "Im Lieferantenkatalog gefunden")
             self.kiosk.flash(SCREEN_RACK, "error", label, detail, code=decision.code)
             return
 
-        result = self.werkstatt.stock_from_catalog(catalog_id, decision.qty)
+        if catalog_id is not None:
+            result = self.werkstatt.stock_from_catalog(catalog_id, decision.qty)
+            self._stocked_or_flash(decision, resolved, result, label, fallback="Katalog")
+            return
+
+        # Nothing here knows the code. The server may still — that call can
+        # reach a public shop, so it is made once, here, and never on the scan
+        # path. "busy" does not auto-clear: it is replaced by the outcome.
+        self.kiosk.flash(SCREEN_RACK, "busy", "Suche im Webshop…",
+                         "Einen Moment — SMPL fragt den Lieferanten-Shop.",
+                         code=decision.code)
+
+        # ASK before booking. The slow half of this — the scrape — is a read,
+        # and a read that times out has changed nothing, so a retry is free.
+        # Going straight to the write meant a slow answer left this end saying
+        # "Nicht angelegt" while the server had created the article and
+        # committed the intake, and it also made the keyboard path depend on
+        # seeing a 404: a timeout has no status, so the prompt never opened and
+        # the one screen with a keyboard offered nothing.
+        found = self.werkstatt.lookup(decision.code)
+        if found is None:
+            self.kiosk.flash(SCREEN_RACK, "error", "Nicht angelegt",
+                             "SMPL hat nicht geantwortet — bitte noch einmal scannen.",
+                             code=decision.code)
+            return
+        if self._lookup_found_nothing(found):
+            # Not an error the operator can do anything about by re-scanning —
+            # so ask for the one thing only a person standing here can supply.
+            self.kiosk.set_name_prompt({
+                "code": decision.code,
+                "qty": decision.qty,
+                "detail": "",
+                # Minted with the prompt so the typed name keeps ONE token
+                # across a resubmit.
+                "request_id": _request_token(),
+            })
+            self.kiosk.flash(SCREEN_RACK, "warn", "Artikel unbekannt",
+                             "Bitte Bezeichnung eintippen — dann wird er angelegt.",
+                             code=decision.code)
+            return
+
+        # The lookup cached what it found, so this write is a local read plus
+        # an INSERT — fast. It still carries a token, because "fast" is not
+        # "cannot time out" and booking a delivery twice cannot be undone.
+        result = self._book_from_lookup(decision.code, decision.qty)
+        if result.ok:
+            self._stocked_or_flash(decision, resolved, result, label, fallback="Webshop")
+            return
+        if result.status == 404:
+            self.kiosk.set_name_prompt({
+                "code": decision.code,
+                "qty": decision.qty,
+                "detail": result.error or "",
+                "request_id": _request_token(),
+            })
+            self.kiosk.flash(SCREEN_RACK, "warn", "Artikel unbekannt",
+                             "Bitte Bezeichnung eintippen — dann wird er angelegt.",
+                             code=decision.code)
+            return
+        if result.status == 0:
+            # Both attempts died in transport. Whether the booking landed is
+            # genuinely unknown from here, and the honest instruction is to
+            # look rather than to scan again — a fresh scan would carry a new
+            # token and could book the pallet a second time.
+            self.kiosk.flash(SCREEN_RACK, "error", "Nicht bestätigt",
+                             "SMPL hat nicht geantwortet. Bitte im SMPL prüfen, ob die "
+                             "Lieferung gebucht wurde, bevor erneut gescannt wird.",
+                             code=decision.code)
+            return
+        self.kiosk.flash(SCREEN_RACK, "error", "Nicht angelegt", result.error or "",
+                         code=decision.code)
+
+    def _book_from_lookup(self, code: str, qty: int, *, item_name: str = "",
+                          unit: str = "", request_id: str = ""):
+        """POST the intake, retrying a transport failure under the SAME token.
+
+        One retry, because the failure worth retrying is a connection that died
+        with the answer already written — and repeating the token is what makes
+        that safe: the server replays its first answer rather than booking a
+        second delivery.
+        """
+        token = request_id or _request_token()
+        result = self.werkstatt.stock_from_lookup(
+            code, qty, item_name=item_name, unit=unit, request_id=token)
+        if result.status == 0 and not result.ok:
+            result = self.werkstatt.stock_from_lookup(
+                code, qty, item_name=item_name, unit=unit, request_id=token)
+        return result
+
+    @staticmethod
+    def _lookup_found_nothing(found) -> bool:
+        """Did the wider cascade come back empty?
+
+        ``kind`` is read defensively: an answer this process cannot read is an
+        answer it must not book on, and the keyboard is the safe branch — the
+        operator sees what they are creating before it exists.
+        """
+        if not isinstance(found, dict):
+            return True
+        kind = found.get("kind")
+        return not isinstance(kind, str) or kind in ("none", "not_found", "")
+
+    def _stocked_or_flash(self, decision, resolved, result, label: str,
+                          fallback: str) -> None:
+        """Record a successful intake, or say why there was not one.
+
+        One body for the catalogue path and the lookup path because the two
+        differ in exactly one word — where the article's identity came from —
+        and everything after that (the ledger note, the "last booking" card,
+        the log line) has to be identical or the wall tells two stories about
+        one shelf.
+        """
         if not result.ok:
             self.kiosk.flash(SCREEN_RACK, "error", "Nicht angelegt", result.error or "",
                              code=decision.code)
             return
-
         data = result.data if isinstance(result.data, dict) else {}
         article = data.get("article") if isinstance(data.get("article"), dict) else None
         article_id = self._sw.article_id_of(data) or (article or {}).get("id")
@@ -1691,12 +1854,44 @@ class Agent:
             "movement": {"movement_type": "intake", "qty": decision.qty,
                          "movement_id": data.get("movement_id"), "at": self._clock()},
         })
+        self.kiosk.clear_name_prompt()
         created = bool(data.get("created"))
-        self.kiosk.flash(
-            SCREEN_RACK, "ok", (article or {}).get("item_name") or label,
-            ("Artikel angelegt, Wareneingang %d" if created else "Wareneingang %d")
-            % decision.qty,
-            code=decision.code)
+        source = str(data.get("source") or "").strip()
+        origin = SOURCE_LABELS.get(source) or SOURCE_LABELS.get(str(data.get("origin") or "")) \
+            or fallback
+        detail = ("Artikel angelegt (%s), Wareneingang %d" % (origin, decision.qty)) if created \
+            else ("Wareneingang %d" % decision.qty)
+        self.kiosk.flash(SCREEN_RACK, "ok",
+                         (article or {}).get("item_name") or label, detail,
+                         code=decision.code)
+
+    def name_unknown_article(self, item_name: str, unit: str = "") -> dict:
+        """Create the article the operator just typed, and book the delivery.
+
+        Only reachable while a prompt is open, and the code and quantity come
+        from that prompt rather than from the caller: the panel may name a
+        product it is holding, it may not choose which code the name lands on.
+        """
+        prompt = self.kiosk.name_prompt()
+        if not prompt:
+            raise ApiError(409, "no article is waiting for a name")
+        typed = (item_name or "").strip()
+        if len(typed) < 2:
+            raise ApiError(400, "'item_name' must be at least 2 characters")
+        result = self._book_from_lookup(
+            prompt.get("code") or "", int(prompt.get("qty") or 1),
+            item_name=typed, unit=unit or "",
+            request_id=str(prompt.get("request_id") or ""),
+        )
+        if not result.ok:
+            self.kiosk.flash(SCREEN_RACK, "error", "Nicht angelegt", result.error or "",
+                             code=prompt.get("code") or "")
+            return {"ok": False, "error": result.error or ""}
+        self._stocked_or_flash(
+            _NamedIntake(prompt.get("code") or "", int(prompt.get("qty") or 1)),
+            None, result, typed, fallback="Station",
+        )
+        return {"ok": True}
 
     @staticmethod
     def _catalog_item_id(resolved) -> "int | None":
@@ -1964,6 +2159,15 @@ class Agent:
         elif action == "qty":
             self.router.set_qty(require_int({"qty": value}, "qty", 1, 1, 9999))
             self.kiosk.bump(*SCREENS)
+        elif action == "name_article":
+            if not isinstance(value, dict):
+                raise ApiError(400, "'value' must be {item_name, unit}")
+            return self.name_unknown_article(
+                require_str(value, "item_name", max_len=200),
+                str(value.get("unit") or "")[:32],
+            )
+        elif action == "cancel_name":
+            self.kiosk.clear_name_prompt()
         else:
             raise ApiError(400, "unknown screen action '%s'" % action)
         return {"ok": True, "action": action}
@@ -2071,6 +2275,11 @@ class Kiosk:
         self._last = None
         self._boxes = {"boxes": [], "fetched_at": None, "stale": True, "error": None}
         self._crew: list = []
+        # An unknown delivery waiting for somebody to type its name. State
+        # rather than a flash: a flash is shown and forgotten, and this has to
+        # survive until it is answered or cancelled — the operator is walking
+        # to the panel with a box in their hands.
+        self._name_prompt = None
         self._closed = False
 
     # -- writes -----------------------------------------------------------
@@ -2098,6 +2307,25 @@ class Kiosk:
             self._flash[screen] = None
             self._seq[screen] += 1
             self._cond.notify_all()
+
+    def set_name_prompt(self, payload) -> None:
+        """Ask the rack for a name. Replaces any prompt already waiting."""
+        with self._cond:
+            self._name_prompt = dict(payload) if payload else None
+            self._seq[SCREEN_RACK] += 1
+            self._cond.notify_all()
+
+    def clear_name_prompt(self) -> None:
+        with self._cond:
+            if self._name_prompt is None:
+                return
+            self._name_prompt = None
+            self._seq[SCREEN_RACK] += 1
+            self._cond.notify_all()
+
+    def name_prompt(self):
+        with self._cond:
+            return dict(self._name_prompt) if self._name_prompt else None
 
     def set_last(self, payload) -> None:
         """The last thing that happened, which both screens now render.
@@ -2192,6 +2420,9 @@ class Kiosk:
             payload["direction"] = self._router.direction if self._router else "aus"
             payload["crew"] = [dict(person) for person in self._crew]
             payload["assignee"] = self._router.assignee if self._router else None
+            payload["name_prompt"] = (
+                dict(self._name_prompt) if self._name_prompt else None
+            )
         return payload
 
     def _session_payload(self):

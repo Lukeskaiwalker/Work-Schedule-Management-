@@ -21,6 +21,7 @@ Mapping helpers (row → Out) live in `workflow_werkstatt_article_mappers.py`.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, or_, select
@@ -52,22 +53,17 @@ from app.schemas.werkstatt import (
     WerkstattArticleLabelPrintOut,
     WerkstattArticleLinkCatalog,
     WerkstattArticleLiteOut,
-    WerkstattArticleMergeOut,
-    WerkstattArticleMergePayload,
     WerkstattArticleOut,
     WerkstattArticleSupplierCreate,
     WerkstattArticleUpdate,
     WerkstattCatalogFoldOut,
-    WerkstattDuplicateCandidateOut,
     WerkstattSimilarArticleOut,
     WerkstattSupplierLinkAddedOut,
 )
+from app.services import gtin
 from app.services.material_catalog import ensure_material_catalog_item_image
-from app.services.werkstatt_article_dedup import (
-    find_duplicate_candidates,
-    link_catalog_duplicates,
-    merge_articles,
-)
+from app.services.werkstatt_article_lookup import external_hit_note
+from app.services.werkstatt_article_dedup import link_catalog_duplicates
 from app.services.werkstatt_movements import book_opening_stock
 from app.services.werkstatt_article_numbers import next_article_number
 from app.services.search_matching import (
@@ -110,6 +106,12 @@ def list_articles(
     # Numbers the rows for a supplier WITHOUT filtering to its linked articles.
     annotate_supplier_id: int | None = Query(default=None),
     status: str | None = Query(default=None, description="stock_status filter"),
+    # "consumable" = counted stock, "machine" = a type whose units carry their
+    # own labels. One marker, `is_serialized`, because a machine already IS a
+    # serialized article — a second column would be two answers to one
+    # question. Default None keeps every existing caller (the order picker,
+    # the machine-type search) seeing everything.
+    kind: Literal["consumable", "machine"] | None = Query(default=None),
     include_archived: bool = Query(default=False),
     limit: int = Query(default=ARTICLE_LIST_DEFAULT_LIMIT, ge=1, le=ARTICLE_LIST_MAX_LIMIT),
     _: User = Depends(get_current_user),
@@ -118,6 +120,10 @@ def list_articles(
     stmt = select(WerkstattArticle)
     if not include_archived:
         stmt = stmt.where(WerkstattArticle.is_archived.is_(False))
+    if kind == "consumable":
+        stmt = stmt.where(WerkstattArticle.is_serialized.is_(False))
+    elif kind == "machine":
+        stmt = stmt.where(WerkstattArticle.is_serialized.is_(True))
     if category_id is not None:
         stmt = stmt.where(WerkstattArticle.category_id == category_id)
     if location_id is not None:
@@ -205,6 +211,40 @@ def list_articles(
 # ──────────────────────────────────────────────────────────────────────────
 
 
+def _ean_clash_detail(clash: WerkstattArticle) -> str:
+    """Why this EAN cannot be used, and what to do instead — in German.
+
+    "EAN already in use by another article" is true and useless: the person is
+    holding the product and has no way to find the row that already has it.
+    Naming it turns a dead end into two clicks, and an ARCHIVED clash gets a
+    different sentence because the fix is different — the row is there, it just
+    has to be brought back rather than found.
+    """
+    if bool(clash.is_archived):
+        return (
+            f"Diese EAN gehört zum archivierten Artikel {clash.article_number} "
+            f"„{clash.item_name}“ — bitte dort „Reaktivieren“ statt neu anlegen."
+        )
+    return (
+        f"Diese EAN gehört bereits zu {clash.article_number} „{clash.item_name}“ — "
+        "dort den Bestand anpassen."
+    )
+
+
+def _notes_with_provenance(notes: str | None, lookup_source: str | None) -> str | None:
+    """Record on the row that a human accepted a scraped suggestion.
+
+    Not a log line: the question "who decided this thing is called that?" is
+    asked months later by somebody looking at the article. ``lookup_source`` is
+    audit-only — nothing branches on it — so a client sending nonsense can at
+    worst write nonsense into its own article's notes.
+    """
+    source = (lookup_source or "").strip()
+    if not source:
+        return (notes or None)
+    return "\n".join(part for part in ((notes or "").strip(), external_hit_note(source)) if part)
+
+
 @router.post("/articles", response_model=WerkstattArticleOut)
 def create_article(
     payload: WerkstattArticleCreate,
@@ -220,9 +260,15 @@ def create_article(
         raise HTTPException(status_code=400, detail="Location not found")
     ean = (payload.ean or "").strip() or None
     if ean:
-        clash = db.scalar(select(WerkstattArticle).where(WerkstattArticle.ean == ean))
+        # Every spelling, not just the one typed. The unique index guards the
+        # exact string, so without this a UPC-A scan creates a second row for
+        # a product already stocked under its zero-padded EAN-13 — which is
+        # the duplicate the merge screen then has to clean up.
+        clash = db.scalar(
+            select(WerkstattArticle).where(WerkstattArticle.ean.in_(gtin.variants(ean)))
+        )
         if clash is not None:
-            raise HTTPException(status_code=400, detail="EAN already in use by another article")
+            raise HTTPException(status_code=400, detail=_ean_clash_detail(clash))
 
     article = WerkstattArticle(
         article_number=next_article_number(db),
@@ -248,7 +294,7 @@ def create_article(
         bg_inspection_interval_days=payload.bg_inspection_interval_days,
         purchase_price_cents=payload.purchase_price_cents,
         currency=payload.currency,
-        notes=(payload.notes or None),
+        notes=_notes_with_provenance(payload.notes, payload.lookup_source),
         created_by=current_user.id,
     )
     db.add(article)
@@ -263,55 +309,14 @@ def create_article(
     return article_full_out(db, article)
 
 
-# NOTE: must stay ABOVE `GET /articles/{article_id}`. FastAPI matches routes in
-# registration order, so a literal path declared after a parameterised one that
-# shares its shape is unreachable — "/articles/duplicates" would be parsed as
-# article_id="duplicates" and 422 before this handler ever ran.
-@router.get("/articles/duplicates", response_model=list[WerkstattDuplicateCandidateOut])
-def list_duplicate_candidates(
-    limit: int = Query(default=50, ge=1, le=200),
-    _: User = Depends(require_permission("werkstatt:manage")),
-    db: Session = Depends(get_db),
-) -> list[WerkstattDuplicateCandidateOut]:
-    """Review queue: article pairs that look like the same product.
-
-    Only pairs where at least one side has no EAN appear here — the database
-    already guarantees two articles cannot share a non-null EAN, so anything
-    with two EANs is genuinely two products however alike the names look.
-    Nothing is merged automatically; this is the list a human confirms.
-    """
-    candidates = find_duplicate_candidates(db, limit=limit)
-    if not candidates:
-        return []
-
-    ids = {candidate.article_id for candidate in candidates} | {
-        candidate.duplicate_id for candidate in candidates
-    }
-    by_id = {
-        article.id: article
-        for article in db.scalars(
-            select(WerkstattArticle).where(WerkstattArticle.id.in_(ids))
-        ).all()
-    }
-    out: list[WerkstattDuplicateCandidateOut] = []
-    for candidate in candidates:
-        left = by_id.get(candidate.article_id)
-        right = by_id.get(candidate.duplicate_id)
-        if left is None or right is None:
-            continue
-        out.append(
-            WerkstattDuplicateCandidateOut(
-                article_id=left.id,
-                article_name=left.item_name,
-                article_number=left.article_number,
-                duplicate_id=right.id,
-                duplicate_name=right.item_name,
-                duplicate_number=right.article_number,
-                score=candidate.score,
-                reason=candidate.reason,
-            )
-        )
-    return out
+# NOTE: `/articles/duplicates`, `/articles/duplicates/dismiss`,
+# `/articles/merge` and `/articles/lookup` are LITERAL paths that would be
+# parsed as `article_id` by the parameterised routes below — FastAPI matches in
+# registration order, so a literal declared after a parameterised route of the
+# same shape is unreachable and 422s on the int coercion. They live in
+# `workflow_werkstatt_article_dedup.py` / `workflow_werkstatt_article_lookup.py`
+# and are mounted BEFORE this router in `workflow_werkstatt_desktop.py`, which
+# turns "remember the ordering" into one include_router line.
 
 
 @router.get("/articles/{article_id}", response_model=WerkstattArticleOut)
@@ -343,12 +348,12 @@ def update_article(
         if new_ean and new_ean != article.ean:
             clash = db.scalar(
                 select(WerkstattArticle).where(
-                    WerkstattArticle.ean == new_ean,
+                    WerkstattArticle.ean.in_(gtin.variants(new_ean)),
                     WerkstattArticle.id != article_id,
                 )
             )
             if clash is not None:
-                raise HTTPException(status_code=400, detail="EAN already in use by another article")
+                raise HTTPException(status_code=400, detail=_ean_clash_detail(clash))
         data["ean"] = new_ean
     if "category_id" in data and data["category_id"] is not None:
         if db.get(WerkstattCategory, data["category_id"]) is None:
@@ -548,12 +553,11 @@ def create_article_from_catalog(
 
     ean = (catalog_item.ean or "").strip() or None
     if ean:
-        existing = db.scalar(select(WerkstattArticle).where(WerkstattArticle.ean == ean))
+        existing = db.scalar(
+            select(WerkstattArticle).where(WerkstattArticle.ean.in_(gtin.variants(ean)))
+        )
         if existing is not None:
-            raise HTTPException(
-                status_code=400,
-                detail="An article with this EAN already exists",
-            )
+            raise HTTPException(status_code=400, detail=_ean_clash_detail(existing))
 
     article, _ = build_article_from_catalog_item(
         db,
@@ -626,44 +630,6 @@ def fold_catalog_duplicates(
             for link in created
         ],
         already_linked=int(before or 0),
-    )
-
-
-@router.post("/articles/merge", response_model=WerkstattArticleMergeOut)
-def merge_duplicate_articles(
-    payload: WerkstattArticleMergePayload,
-    _: User = Depends(require_permission("werkstatt:manage")),
-    db: Session = Depends(get_db),
-) -> WerkstattArticleMergeOut:
-    """Fold one article into another, moving every referencing row with it.
-
-    The duplicate is archived rather than deleted: movements and order lines
-    reference articles with ``ondelete=RESTRICT`` because they are an audit
-    ledger, and its article number may already be on a printed label.
-    """
-    if payload.survivor_id == payload.duplicate_id:
-        raise HTTPException(status_code=400, detail="Cannot merge an article into itself")
-
-    survivor = db.get(WerkstattArticle, payload.survivor_id)
-    if survivor is None:
-        raise HTTPException(status_code=404, detail="Survivor article not found")
-    duplicate = db.get(WerkstattArticle, payload.duplicate_id)
-    if duplicate is None:
-        raise HTTPException(status_code=404, detail="Duplicate article not found")
-    if duplicate.is_archived:
-        raise HTTPException(status_code=400, detail="Duplicate article is already archived")
-
-    result = merge_articles(db, survivor=survivor, duplicate=duplicate)
-    db.commit()
-    return WerkstattArticleMergeOut(
-        survivor_id=result.survivor_id,
-        merged_id=result.merged_id,
-        supplier_links_moved=result.supplier_links_moved,
-        supplier_links_skipped=result.supplier_links_skipped,
-        movements_moved=result.movements_moved,
-        order_lines_moved=result.order_lines_moved,
-        box_items_moved=result.box_items_moved,
-        fields_filled=list(result.fields_filled),
     )
 
 

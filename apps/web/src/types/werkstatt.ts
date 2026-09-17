@@ -53,7 +53,10 @@ export type WerkstattOrderLineStatus =
   | "complete"
   | "cancelled";
 
-export type WerkstattImageSource = "unielektro" | "manual" | "catalog";
+/** "external" is a picture taken from a public webshop during an EAN lookup.
+ *  Kept apart from "unielektro" (the catalogue image pipeline) because only
+ *  one of the two may be re-fetched when the scraper is switched off. */
+export type WerkstattImageSource = "unielektro" | "manual" | "catalog" | "external";
 
 export type WerkstattLocationType =
   | "hall"
@@ -231,6 +234,13 @@ export interface WerkstattArticleLite {
   /** What the supplier of a `supplier_id`-filtered list calls this article.
    *  Absent or null otherwise — the question has no answer without one. */
   supplier_article_no?: string | null;
+  /** Machine TYPE (its units carry their own labels) rather than a consumable.
+   *  The Bestand page lists consumables; the row keeps the marker so a
+   *  server-filtered list can still explain itself per row. */
+  is_serialized?: boolean;
+  /** Only ever true in a list fetched with `includeArchived` — the row has to
+   *  be able to say so, or an out-of-service article sits among live ones. */
+  is_archived?: boolean;
 }
 
 // ──────────────────────────────────────────────────────────────────────────
@@ -633,4 +643,121 @@ export interface SubmitOrderLinePayload {
   article_id: number;
   quantity: number;
   unit_price_cents: number | null;
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Article lookup — "what is this code?", including sources outside SMPL
+// ──────────────────────────────────────────────────────────────────────────
+
+/**
+ * A product suggestion from outside SMPL — the public Unielektro shop, or a
+ * configured GTIN database. Always a PROPOSAL: the dialog shows it behind a
+ * banner and the person saving it can change every field first.
+ *
+ * `source` and `source_url` travel with it because a scrape is a guess with a
+ * provenance, and hiding the provenance makes it look like a fact.
+ */
+export interface WerkstattExternalHit {
+  item_name: string;
+  ean: string;
+  manufacturer: string | null;
+  unit: string | null;
+  image_url: string | null;
+  source: string;
+  source_url: string | null;
+  /** When it was fetched. A cached hit can be a month old and says so. */
+  fetched_at: string | null;
+}
+
+/** Mirrors `WerkstattArticleLookupOut` in apps/api/app/schemas/werkstatt.py. */
+export type WerkstattArticleLookup =
+  | {
+      /** Already stocked. The one answer that must stop a create flow. */
+      kind: "existing";
+      code: string;
+      article: WerkstattArticle;
+      matched_by:
+        | "sp"
+        | "internal_code"
+        | "ean"
+        | "supplier_no"
+        | "machine_number"
+        | "serial_number";
+      /** Set when the code was a machine label or nameplate serial. */
+      machine_number: string | null;
+      /** The article number printed on the label, when it belongs to a row
+       *  that has since been merged into the one returned. */
+      via_merged_article_number: string | null;
+    }
+  | {
+      kind: "catalog";
+      code: string;
+      groups: WerkstattCatalogGroup[];
+      matched_by: "catalog_ean" | "catalog_article_no";
+    }
+  | { kind: "external"; code: string; hit: WerkstattExternalHit }
+  | {
+      kind: "none";
+      code: string;
+      /** Why nothing external was tried: the code is not a barcode
+       *  ("not_a_gtin"), no source is configured ("disabled"), or the caller
+       *  asked for a cheap internal answer ("not_requested"). The last two are
+       *  emphatically not the same fact — one is a setting somebody has to go
+       *  and change. Null when providers ran and did not know it. */
+      external_skipped: "not_a_gtin" | "disabled" | "not_requested" | null;
+    };
+
+// ──────────────────────────────────────────────────────────────────────────
+// Duplicates — the review queue and what a merge moved
+// ──────────────────────────────────────────────────────────────────────────
+
+export interface WerkstattDuplicateSide {
+  id: number;
+  article_number: string;
+  item_name: string;
+  ean: string | null;
+  internal_code: string | null;
+  unit: string | null;
+  stock_total: number;
+  stock_available: number;
+  category_name: string | null;
+  location_name: string | null;
+  supplier_numbers: string[];
+  is_serialized: boolean;
+}
+
+export interface WerkstattDuplicateCandidate {
+  article_id: number;
+  article_name: string;
+  article_number: string;
+  duplicate_id: number;
+  duplicate_name: string;
+  duplicate_number: string;
+  score: number;
+  /** English, for logs. `reason_de` is what the screen shows. */
+  reason: string;
+  reason_de: string;
+  /** Stable identity of the pair, low id first — the key a dismissal uses. */
+  pair_key: string;
+  left: WerkstattDuplicateSide | null;
+  right: WerkstattDuplicateSide | null;
+}
+
+export interface WerkstattArticleMergeResult {
+  survivor_id: number;
+  merged_id: number;
+  supplier_links_moved: number;
+  supplier_links_skipped: number;
+  movements_moved: number;
+  order_lines_moved: number;
+  box_items_moved: number;
+  units_moved: number;
+  inventory_counts_moved: number;
+  task_materials_moved: number;
+  internal_code_moved: boolean;
+  /** Numbers the survivor's existing link had to absorb, because a link row is
+   *  unique per (article, supplier). Reported so the toast can name them —
+   *  the confirmation promises supplier numbers survive a merge. */
+  supplier_numbers_kept: string[];
+  fields_filled: string[];
 }

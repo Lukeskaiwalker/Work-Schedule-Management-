@@ -1,75 +1,59 @@
-import { useMemo, useState } from "react";
-import type { MockCatalogEntry } from "./mockData";
+import type { WerkstattCatalogGroup } from "../../types/werkstatt";
 
 /**
- * KatalogPicker — the multi-supplier catalog picker component reused by
- *   - the Katalog page (Paper BIV-0)
- *   - the Neuer-Artikel "Aus Katalog" tab (Paper 9ZD-0)
+ * KatalogPicker — pick one product out of the wholesalers' Datanorm.
  *
  * Rendering rules (per WERKSTATT_CONTRACT and Paper BIV-0):
- *   - hero card when an entry has >1 supplier offer (shows the group)
- *   - compact card when an entry has exactly 1 supplier offer
- *   - amber footer callout when the picker contains any no-EAN entry
- *     (since those can't be resolved by scan later)
+ *   - hero card when several suppliers list the same EAN (shows the group)
+ *   - compact card when only one supplier has it
+ *   - amber footer callout when any row has no EAN (those cannot be scanned
+ *     later and fall back to the internal SP-number)
  *
- * This is purely a presenter — no fetching. Caller supplies entries and a
- * selection callback so both contexts can decide what "select" means.
+ * Two things changed when this stopped being a mock. It is typed against
+ * `WerkstattCatalogGroup` — the shape `GET /werkstatt/catalog/search` and the
+ * article lookup both return — instead of the empty `MockCatalogEntry`, so
+ * what it renders is what the server said. And it does NOT filter: the
+ * catalogue is millions of Datanorm rows deep, so client-side filtering would
+ * only ever search the page that happened to be fetched. The host owns the
+ * query and the request; this is a presenter.
+ *
+ * Selection is two-level on purpose. The GROUP decides what the article is
+ * (name, EAN, manufacturer come from its hero row); the ticked supplier rows
+ * decide which article numbers the new article carries, which is what every
+ * later order resolves against.
  */
 export interface KatalogPickerProps {
-  entries: ReadonlyArray<MockCatalogEntry>;
-  selectedEntryId: string | null;
-  selectedOfferIds: ReadonlySet<string>;
-  onToggleOffer: (entryId: string, offerId: string) => void;
-  onSelectEntry: (entryId: string) => void;
+  groups: ReadonlyArray<WerkstattCatalogGroup>;
+  /** The catalogue row id of the chosen group's hero, or null. */
+  selectedCatalogItemId: number | null;
+  /** Catalogue row ids whose suppliers will be linked to the new article. */
+  selectedSupplierIds: ReadonlySet<number>;
+  onToggleSupplier: (catalogItemId: number) => void;
+  onSelectGroup: (group: WerkstattCatalogGroup) => void;
   language: "de" | "en";
-  /** When true, the picker renders without the top search field (used inside modals). */
+  /** Inside a dialog the host already has a search field; skip ours. */
   embedded?: boolean;
-  /** Optional list of supplier names to drive the filter chips. */
-  supplierChips?: ReadonlyArray<{ id: string; name: string; count: number }>;
+  search?: { value: string; onChange: (value: string) => void };
+  loading?: boolean;
 }
 
 export function KatalogPicker({
-  entries,
-  selectedEntryId,
-  selectedOfferIds,
-  onToggleOffer,
-  onSelectEntry,
+  groups,
+  selectedCatalogItemId,
+  selectedSupplierIds,
+  onToggleSupplier,
+  onSelectGroup,
   language,
   embedded = false,
-  supplierChips,
+  search,
+  loading = false,
 }: KatalogPickerProps) {
-  const [query, setQuery] = useState("");
-  const [activeChip, setActiveChip] = useState<string | null>(null);
   const de = language === "de";
-
-  const visibleEntries = useMemo(() => {
-    const needle = query.trim().toLowerCase();
-    return entries.filter((entry) => {
-      if (
-        activeChip &&
-        !entry.offers.some((offer) => offer.supplier_name === activeChip)
-      ) {
-        return false;
-      }
-      if (!needle) return true;
-      return (
-        entry.item_name.toLowerCase().includes(needle) ||
-        (entry.manufacturer?.toLowerCase().includes(needle) ?? false) ||
-        (entry.ean?.includes(needle) ?? false) ||
-        entry.offers.some(
-          (offer) =>
-            offer.supplier_article_no.toLowerCase().includes(needle) ||
-            offer.supplier_name.toLowerCase().includes(needle),
-        )
-      );
-    });
-  }, [entries, query, activeChip]);
-
-  const hasNoEan = visibleEntries.some((entry) => !entry.ean);
+  const hasNoEan = groups.some((group) => !group.ean);
 
   return (
     <div className="werkstatt-katalog-picker">
-      {!embedded && (
+      {!embedded && search && (
         <div className="werkstatt-search werkstatt-search--katalog">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
             <circle cx="11" cy="11" r="6.3" stroke="#5C7895" strokeWidth="1.8" />
@@ -77,8 +61,8 @@ export function KatalogPicker({
           </svg>
           <input
             type="text"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
+            value={search.value}
+            onChange={(event) => search.onChange(event.target.value)}
             placeholder={
               de
                 ? "Name, EAN, Artikelnummer oder Hersteller suchen…"
@@ -88,139 +72,101 @@ export function KatalogPicker({
         </div>
       )}
 
-      {supplierChips && supplierChips.length > 0 && (
-        <div className="werkstatt-chips" role="tablist">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={activeChip === null}
-            className={`werkstatt-chip${activeChip === null ? " werkstatt-chip--active" : ""}`}
-            onClick={() => setActiveChip(null)}
-          >
-            {de ? "Alle" : "All"}
-            <span className="werkstatt-chip-count">
-              {entries.reduce((sum, entry) => sum + entry.offers.length, 0)}
-            </span>
-          </button>
-          {supplierChips.map((chip) => (
-            <button
-              key={chip.id}
-              type="button"
-              role="tab"
-              aria-selected={activeChip === chip.name}
-              className={`werkstatt-chip${activeChip === chip.name ? " werkstatt-chip--active" : ""}`}
-              onClick={() => setActiveChip(chip.name)}
-            >
-              {chip.name}
-              <span className="werkstatt-chip-count">{chip.count}</span>
-            </button>
-          ))}
-        </div>
-      )}
-
       <div className="werkstatt-katalog-head">
         <span>
-          {de
-            ? `${visibleEntries.length} Treffer · sortiert nach Relevanz`
-            : `${visibleEntries.length} hits · sorted by relevance`}
+          {loading
+            ? de
+              ? "Katalog wird durchsucht…"
+              : "Searching the catalogue…"
+            : de
+              ? `${groups.length} Treffer`
+              : `${groups.length} hits`}
         </span>
-        <button type="button" className="werkstatt-katalog-sort">
-          {de ? "Sortieren ▾" : "Sort ▾"}
-        </button>
       </div>
 
       <ul className="werkstatt-katalog-list">
-        {visibleEntries.map((entry) => {
-          const isMulti = entry.offers.length > 1;
-          const isSelected = selectedEntryId === entry.id;
-          const preferred = entry.offers.find((o) => o.is_preferred) ?? entry.offers[0];
+        {groups.map((group) => {
+          const isMulti = group.suppliers.length > 1;
+          const isSelected = selectedCatalogItemId === group.hero.id;
           return (
             <li
-              key={entry.id}
+              key={group.ean ?? `row-${group.hero.id}`}
               className={`werkstatt-katalog-card${isMulti ? " werkstatt-katalog-card--hero" : ""}${isSelected ? " werkstatt-katalog-card--selected" : ""}`}
             >
               <button
                 type="button"
                 className="werkstatt-katalog-card-head"
-                onClick={() => onSelectEntry(entry.id)}
+                onClick={() => onSelectGroup(group)}
               >
                 <span className="werkstatt-katalog-thumb" aria-hidden="true">
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                    <path
-                      d="M12 3 3 7.5v9L12 21l9-4.5v-9L12 3Z"
-                      stroke="#5C7895"
-                      strokeWidth="1.6"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
+                  {group.hero.image_url ? (
+                    <img src={group.hero.image_url} alt="" />
+                  ) : (
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+                      <path
+                        d="M12 3 3 7.5v9L12 21l9-4.5v-9L12 3Z"
+                        stroke="#5C7895"
+                        strokeWidth="1.6"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  )}
                 </span>
                 <span className="werkstatt-katalog-title">
-                  <b>{entry.item_name}</b>
-                  {isMulti && (
-                    <span className="werkstatt-katalog-supplier-tag">
-                      {entry.offers.length} {de ? "Lieferanten" : "suppliers"}
-                    </span>
-                  )}
-                  {!isMulti && (
-                    <span className="werkstatt-katalog-supplier-tag werkstatt-katalog-supplier-tag--single">
-                      1 {de ? "Lieferant" : "supplier"}
-                    </span>
-                  )}
-                  <small className="werkstatt-katalog-meta">
-                    {entry.manufacturer ?? "—"} ·{" "}
-                    {entry.ean
-                      ? `EAN ${entry.ean}`
+                  <b>{group.hero.item_name}</b>
+                  <span
+                    className={`werkstatt-katalog-supplier-tag${isMulti ? "" : " werkstatt-katalog-supplier-tag--single"}`}
+                  >
+                    {group.suppliers.length}{" "}
+                    {isMulti
+                      ? de
+                        ? "Lieferanten"
+                        : "suppliers"
                       : de
-                        ? "keine EAN"
-                        : "no EAN"}
+                        ? "Lieferant"
+                        : "supplier"}
+                  </span>
+                  <small className="werkstatt-katalog-meta">
+                    {group.hero.manufacturer ?? "—"} ·{" "}
+                    {group.ean ? `EAN ${group.ean}` : de ? "keine EAN" : "no EAN"}
                   </small>
                 </span>
                 {!isMulti && (
                   <span className="werkstatt-katalog-hero-price">
-                    <b>{preferred.price_text}</b>
-                    <small>
-                      {de
-                        ? `${preferred.lead_time_days} Werktage`
-                        : `${preferred.lead_time_days} days`}
-                    </small>
+                    <b>{group.hero.price_text || "—"}</b>
+                    <small>{group.hero.article_no || "—"}</small>
                   </span>
                 )}
-                <span className={`werkstatt-katalog-check${isSelected ? " werkstatt-katalog-check--on" : ""}`} aria-hidden="true">
+                <span
+                  className={`werkstatt-katalog-check${isSelected ? " werkstatt-katalog-check--on" : ""}`}
+                  aria-hidden="true"
+                >
                   {isSelected ? "✓" : ""}
                 </span>
               </button>
 
               {isMulti && (
                 <ul className="werkstatt-katalog-offers">
-                  {entry.offers.map((offer) => {
-                    const offerSelected = selectedOfferIds.has(offer.id);
+                  {group.suppliers.map((row) => {
+                    const ticked = selectedSupplierIds.has(row.id);
                     return (
-                      <li key={offer.id} className="werkstatt-katalog-offer">
+                      <li key={row.id} className="werkstatt-katalog-offer">
                         <button
                           type="button"
-                          className={`werkstatt-katalog-offer-check${offerSelected ? " werkstatt-katalog-offer-check--on" : ""}`}
-                          aria-pressed={offerSelected}
-                          onClick={() => onToggleOffer(entry.id, offer.id)}
+                          className={`werkstatt-katalog-offer-check${ticked ? " werkstatt-katalog-offer-check--on" : ""}`}
+                          aria-pressed={ticked}
+                          aria-label={row.supplier_name ?? (de ? "Lieferant" : "Supplier")}
+                          onClick={() => onToggleSupplier(row.id)}
                         >
-                          {offerSelected ? "✓" : ""}
+                          {ticked ? "✓" : ""}
                         </button>
                         <span className="werkstatt-katalog-offer-main">
-                          <b>
-                            {offer.supplier_name}
-                            {offer.is_preferred && (
-                              <span className="werkstatt-katalog-preferred">
-                                {de ? "PREFERRED" : "PREFERRED"}
-                              </span>
-                            )}
-                          </b>
-                          <small>Art.-Nr. {offer.supplier_article_no}</small>
+                          <b>{row.supplier_name ?? (de ? "ohne Lieferant" : "no supplier")}</b>
+                          <small>Art.-Nr. {row.article_no || "—"}</small>
                         </span>
-                        <span className="werkstatt-katalog-offer-lead">
-                          {de
-                            ? `${offer.lead_time_days} Werktage`
-                            : `${offer.lead_time_days} days`}
+                        <span className="werkstatt-katalog-offer-price">
+                          {row.price_text || "—"}
                         </span>
-                        <span className="werkstatt-katalog-offer-price">{offer.price_text}</span>
                       </li>
                     );
                   })}
@@ -229,7 +175,7 @@ export function KatalogPicker({
             </li>
           );
         })}
-        {visibleEntries.length === 0 && (
+        {groups.length === 0 && !loading && (
           <li className="werkstatt-katalog-empty muted">
             {de ? "Keine Katalogeinträge gefunden." : "No catalog entries found."}
           </li>

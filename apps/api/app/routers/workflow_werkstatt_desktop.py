@@ -18,6 +18,9 @@ single file grows past ~400 lines:
 
   workflow_werkstatt_taxonomy.py  — categories + locations
   workflow_werkstatt_suppliers.py — suppliers CRUD
+  workflow_werkstatt_article_lookup.py — "what is this code?" (own rows →
+                                    wholesaler catalogue → external webshop)
+  workflow_werkstatt_article_dedup.py  — duplicate review, dismissal, merge
   workflow_werkstatt_articles.py  — articles + article-supplier links
   workflow_werkstatt_article_stock.py — manual stock adjustment (ledger write)
   workflow_werkstatt_datanorm.py  — Datanorm upload + commit + history
@@ -38,6 +41,8 @@ from fastapi import APIRouter, Depends
 from app.core.db import get_db
 from app.core.deps import get_current_user
 from app.models.entities import User
+from app.routers.workflow_werkstatt_article_dedup import router as article_dedup_router
+from app.routers.workflow_werkstatt_article_lookup import router as article_lookup_router
 from app.routers.workflow_werkstatt_article_stock import router as article_stock_router
 from app.routers.workflow_werkstatt_article_suppliers import router as article_suppliers_router
 from app.routers.workflow_werkstatt_articles import router as articles_router
@@ -60,6 +65,13 @@ router = APIRouter(prefix="/werkstatt", tags=["werkstatt-desktop"])
 
 router.include_router(taxonomy_router)
 router.include_router(suppliers_router)
+# BEFORE the article CRUD router: `/articles/lookup`, `/articles/duplicates`,
+# `/articles/duplicates/dismiss` and `/articles/merge` are literal paths that
+# `/articles/{article_id}` would swallow — FastAPI matches in registration
+# order, so a literal declared afterwards is unreachable and 422s on the int
+# coercion. Mounting order is the whole reason these two files exist.
+router.include_router(article_lookup_router)
+router.include_router(article_dedup_router)
 router.include_router(articles_router)
 router.include_router(article_stock_router)
 router.include_router(article_suppliers_router)

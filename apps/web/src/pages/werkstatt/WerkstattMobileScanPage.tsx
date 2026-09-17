@@ -30,11 +30,19 @@ import {
   cameraErrorIsRetryable,
   cameraErrorText,
 } from "../../components/werkstatt/cameraErrors";
+import { BestandAnpassenModal } from "../../components/werkstatt/BestandAnpassenModal";
 import { MaschineBuchenModal } from "../../components/werkstatt/MaschineBuchenModal";
 import { MaschineScanSheet } from "../../components/werkstatt/MaschineScanSheet";
-import type { ScanResolveResult, WerkstattLocation } from "../../types/werkstatt";
+import { NeuerArtikelModal } from "../../components/werkstatt/NeuerArtikelModal";
+import { stockAdjustmentNotice } from "../../components/werkstatt/stockNotices";
+import type {
+  ScanResolveResult,
+  WerkstattArticle,
+  WerkstattLocation,
+} from "../../types/werkstatt";
 import type { Machine, MachineBookPayload } from "../../types/werkstattMachines";
 import { bookMachine, returnMachine } from "../../utils/werkstattMachinesApi";
+import { adjustArticleStock, getArticle } from "../../utils/werkstattArticlesApi";
 
 export function WerkstattMobileScanPage() {
   const {
@@ -60,6 +68,28 @@ export function WerkstattMobileScanPage() {
   const [manualValue, setManualValue] = useState("");
   const [optionsOpen, setOptionsOpen] = useState(false);
   const [locations, setLocations] = useState<WerkstattLocation[]>([]);
+  /* A scanned code that resolved to nothing stockable. Held so the "anlegen"
+   * button can hand it straight to the create dialog: the person is standing
+   * in front of the item with the barcode already read, and making them type
+   * it again on a phone is how stock stops being entered at all. */
+  const [offerCreate, setOfferCreate] = useState<string | null>(null);
+  const [createCode, setCreateCode] = useState<string | null>(null);
+  /* The create dialog can discover that the code IS stocked — under another
+   * spelling of the barcode — and hand off. The hand-off used to set
+   * `activeWerkstattArticleId` and switch to the "artikel" tab, which on a
+   * phone is still the mock fixture: it printed LAGER 0 / UNTERWEGS 0 /
+   * BESTAND 0 and an empty name for a real article with fourteen on the
+   * shelf, and offered no way to adjust anything. The article is already in
+   * hand here, so the dialog that books stock opens HERE. */
+  const [stockArticle, setStockArticle] = useState<WerkstattArticle | null>(null);
+  const [stockSaving, setStockSaving] = useState(false);
+  const [stockError, setStockError] = useState<string | null>(null);
+
+  /* POST /werkstatt/articles needs `werkstatt:manage`; the lookup behind the
+   * dialog's first step deliberately does not. Offering "anlegen" without the
+   * permission costs a filled-in dialog to find out — the same rule the
+   * Bestand page's row menu follows. */
+  const canManageStock = (user?.effective_permissions ?? []).includes("werkstatt:manage");
 
   /**
    * One resolve at a time.
@@ -74,6 +104,7 @@ export function WerkstattMobileScanPage() {
   const resolveNow = useCallback(
     async (code: string) => {
       setMessage(null);
+      setOfferCreate(null);
       try {
         const result = await apiFetch<ScanResolveResult>(
           `/werkstatt/scan/resolve?code=${encodeURIComponent(code)}`,
@@ -98,18 +129,89 @@ export function WerkstattMobileScanPage() {
                 ? `Nur im Katalog gefunden (${result.catalog_items.length}) — noch kein Lagerartikel.`
                 : `Only found in the catalogue (${result.catalog_items.length}) — not stocked yet.`,
             );
+            setOfferCreate(code);
             return;
 
           default:
             setMessage(
               de ? `Nichts gefunden zu „${result.code}“` : `Nothing found for "${result.code}"`,
             );
+            setOfferCreate(code);
         }
       } catch (err: unknown) {
         setMessage(err instanceof Error ? err.message : String(err));
       }
     },
     [token, de, setActiveWerkstattArticleId, setWerkstattTab, setMainView],
+  );
+
+  /** Load the article the create dialog handed back, then open the dialog. */
+  const openStockDialog = useCallback(
+    async (articleId: number) => {
+      try {
+        setStockArticle(await getArticle(token, articleId));
+      } catch (err: unknown) {
+        // No silent dead end: the button said a dialog would open.
+        setMessage(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [token],
+  );
+
+  /**
+   * Book the adjustment. Closes the dialog only on success.
+   *
+   * A stock-take sends the TARGET total with the figure it was shown as an
+   * optimistic lock — a count is a statement about one observed total and has
+   * to be refused if the shelf moved underneath it. A delivery is not: three
+   * boxes arrived whatever else happened.
+   */
+  const confirmStock = useCallback(
+    async (payload: {
+      kind: "intake" | "defect" | "inventory";
+      amount: number;
+      new_total: number;
+      reason: string;
+    }) => {
+      if (!stockArticle || stockSaving) return;
+      setStockSaving(true);
+      setStockError(null);
+      try {
+        const snapshot = await adjustArticleStock(
+          token,
+          stockArticle.id,
+          payload.kind === "inventory"
+            ? {
+                kind: "inventory",
+                targetTotal: payload.new_total,
+                reason: payload.reason,
+                expectedTotal: stockArticle.stock_total,
+              }
+            : { kind: payload.kind, quantity: payload.amount, reason: payload.reason },
+        );
+        setStockArticle(null);
+        setOfferCreate(null);
+        setNotice(
+          stockAdjustmentNotice(
+            {
+              kind: payload.kind,
+              itemName: stockArticle.item_name,
+              amount: payload.amount,
+              confirmedTotalBefore:
+                payload.kind === "inventory" ? stockArticle.stock_total : null,
+              totalAfter: snapshot.stock_total,
+              availableAfter: snapshot.stock_available,
+            },
+            de,
+          ),
+        );
+      } catch (err: unknown) {
+        setStockError(err instanceof Error ? err.message : String(err));
+      } finally {
+        setStockSaving(false);
+      }
+    },
+    [stockArticle, stockSaving, token, de, setNotice],
   );
 
   const resolveScan = useCallback(
@@ -125,7 +227,8 @@ export function WerkstattMobileScanPage() {
   );
 
   const scannerActive = mainView === "werkstatt_scan" && isMobile;
-  const cameraActive = scannerActive && !manualOpen && !machine && !optionsOpen;
+  const cameraActive =
+    scannerActive && !manualOpen && !machine && !optionsOpen && createCode === null;
 
   const { status, error, sighted, videoRef, retry } = useCameraScanner({
     active: cameraActive,
@@ -135,7 +238,7 @@ export function WerkstattMobileScanPage() {
   // The HID wedge suppresses itself while an input is focused, so manual entry
   // still works; disabled while a sheet is up for the same reason as above.
   useBarcodeScanner({
-    enabled: scannerActive && !manualOpen && !machine && !optionsOpen,
+    enabled: scannerActive && !manualOpen && !machine && !optionsOpen && createCode === null,
     onScan: resolveScan,
   });
 
@@ -293,6 +396,24 @@ export function WerkstattMobileScanPage() {
         )}
 
         {message ? <p className="werkstatt-mobile-scan-error">{message}</p> : null}
+        {offerCreate &&
+          (canManageStock ? (
+            /* The dead end this removes: the phone recognised a code, said so,
+               and left the person with nothing to press. */
+            <button
+              type="button"
+              className="werkstatt-mobile-scan-create"
+              onClick={() => setCreateCode(offerCreate)}
+            >
+              {de ? "Als Lagerartikel anlegen" : "Add as a stock item"}
+            </button>
+          ) : (
+            <p className="werkstatt-mobile-scan-helper">
+              {de
+                ? "Anlegen darf nur das Büro (Berechtigung „Werkstatt verwalten“) — Code durchgeben genügt."
+                : "Only the office can add items (permission “manage workshop”) — passing on the code is enough."}
+            </p>
+          ))}
       </div>
 
       <div className="werkstatt-mobile-scan-manual">
@@ -371,6 +492,55 @@ export function WerkstattMobileScanPage() {
             setMainView("werkstatt");
           }}
           onDismiss={() => setMachine(null)}
+        />
+      )}
+
+      <NeuerArtikelModal
+        open={createCode !== null}
+        onClose={() => setCreateCode(null)}
+        language={language}
+        token={token}
+        seedCode={createCode}
+        onCreated={(article) => {
+          setCreateCode(null);
+          setOfferCreate(null);
+          setMessage(null);
+          setNotice(
+            de
+              ? `${article.article_number} „${article.item_name}“ angelegt`
+              : `${article.article_number} “${article.item_name}” created`,
+          );
+        }}
+        onAdjustStock={(articleId) => {
+          // The article turned out to exist after all. Booked here, on the
+          // screen the person is already looking at, from the row the server
+          // just returned — not on a page that would have to be fetched and
+          // that, on a phone, still renders a fixture.
+          setCreateCode(null);
+          setStockError(null);
+          void openStockDialog(articleId);
+        }}
+      />
+
+      {stockArticle && (
+        <BestandAnpassenModal
+          open
+          language={language}
+          article={{
+            item_name: stockArticle.item_name,
+            article_number: stockArticle.article_number,
+            category_name: stockArticle.category_name,
+            stock_total: stockArticle.stock_total,
+            stock_available: stockArticle.stock_available,
+            unit: stockArticle.unit,
+          }}
+          submitting={stockSaving}
+          error={stockError}
+          onClose={() => {
+            setStockArticle(null);
+            setStockError(null);
+          }}
+          onConfirm={(payload) => void confirmStock(payload)}
         />
       )}
 

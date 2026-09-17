@@ -1644,3 +1644,369 @@ def test_the_handover_endpoint_is_station_only(
         f"{BASE}/boxes/{box['id']}/handover", headers=auth_headers(admin_token), json={}
     )
     assert refused.status_code in (401, 403)
+
+
+# --------------------------------------------------------------------------
+# Wareneingang for a code no Datanorm describes — the rest of the dead end
+# --------------------------------------------------------------------------
+#
+# `/articles/from-catalog` fixed the half of this that a wholesaler's file
+# already describes. The other half is the box whose barcode is in nobody's
+# import: the operator is holding it, the rack has a keyboard, and the old
+# answer was "SMPL kennt diesen Code nicht" and a walk to the office.
+
+
+def _fake_shop(monkeypatch, body: str | None, status: int = 200) -> list[str]:
+    """Point the EAN cascade at a fake webshop and record what it fetched."""
+    import httpx
+
+    from app.core.config import get_settings
+    from app.services.ean_lookup import http as ean_http
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "ean_lookup_unielektro_enabled", True, raising=False)
+    monkeypatch.setattr(settings, "ean_lookup_provider", "", raising=False)
+    monkeypatch.setattr(settings, "ean_lookup_timeout_seconds", 3.0, raising=False)
+
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        seen.append(url)
+        if "bing.com" in url:
+            return httpx.Response(200, text="<rss></rss>")
+        if body is None or status != 200:
+            return httpx.Response(status or 404, text="nope")
+        if "/search" in url or "/navigator" in url:
+            # What the shop actually does with a barcode that matches one
+            # product — and what the provider now requires, because a result
+            # LISTING may no longer name an article.
+            return httpx.Response(302, headers={"location": _SHOP_PRODUCT_URL})
+        return httpx.Response(200, text=body, headers={"content-type": "text/html"})
+
+    def build_client(budget):
+        return httpx.Client(
+            transport=httpx.MockTransport(handler),
+            timeout=httpx.Timeout(2.0),
+            follow_redirects=False,
+        )
+
+    monkeypatch.setattr(ean_http, "build_client", build_client)
+    # The cascade imported the factory by value, so both names need replacing.
+    monkeypatch.setattr("app.services.ean_lookup.cascade.build_client", build_client)
+    allow = lambda url: url.startswith("https://")  # noqa: E731
+    monkeypatch.setattr(ean_http, "is_public_http_url", allow)
+    # The same guard runs on the URLs a hit KEEPS; it resolves hostnames for
+    # real, which a test host may not be able to do.
+    monkeypatch.setattr(
+        "app.services.ean_lookup.unielektro_shop.is_public_http_url", allow, raising=False
+    )
+    monkeypatch.setattr("app.services.ean_lookup.base.is_public_http_url", allow, raising=False)
+    return seen
+
+
+_SHOP_PRODUCT_URL = "https://www.unielektro.de/artikel/wago-221-413"
+
+_SHOP_PAGE = """
+<html><head>
+<script type="application/ld+json">
+{"@type": "Product", "name": "WAGO 221-413 Verbindungsklemme", "gtin13": "4045454121006",
+ "brand": {"name": "WAGO"}, "offers": {"@type": "Offer", "unitText": "Pak"}}
+</script>
+</head><body>ok</body></html>
+"""
+
+
+def test_station_stocks_a_webshop_hit_and_books_the_delivery(
+    client: TestClient, admin_token: str, station_token: str, monkeypatch
+) -> None:
+    """The dead end closes: an unknown barcode becomes a real article.
+
+    Not a placeholder called "Unbekannt (4045…)" — a row with the product's
+    actual name, its manufacturer and its packing unit, plus a note saying
+    where those words came from, because nobody ever goes back to fix a
+    placeholder.
+    """
+    _fake_shop(monkeypatch, _SHOP_PAGE)
+
+    created = client.post(
+        f"{BASE}/articles/from-lookup",
+        headers=auth_headers(station_token),
+        json={"code": "4045454121006", "quantity": 6, "notes": "Palette 7"},
+    )
+    assert created.status_code == 200, created.text
+    body = created.json()
+
+    assert body["created"] is True
+    assert body["origin"] == "external"
+    assert body["source"] == "unielektro_shop"
+    article = body["article"]
+    assert article["item_name"] == "WAGO 221-413 Verbindungsklemme"
+    assert article["manufacturer"] == "WAGO"
+    assert article["unit"] == "Pak"
+    assert article["ean"] == "4045454121006"
+    assert article["image_source"] in (None, "external")
+    # A wall screen may not create a machine type: units carry their own
+    # labels and inspection dates, and nothing a webshop says justifies one.
+    assert article["is_serialized"] is False
+    # Stock is the ledger's answer, not the payload's.
+    assert article["stock_total"] == 6
+
+    movement = _movements(article["id"])[0]
+    assert movement.movement_type == "intake"
+    assert movement.station_id is not None
+    assert movement.notes.startswith("Regal-Station ")
+    assert "Palette 7" in movement.notes
+    assert movement.user_id is not None
+
+
+def test_a_second_delivery_of_a_looked_up_article_tops_up(
+    client: TestClient, admin_token: str, station_token: str, monkeypatch
+) -> None:
+    """Same rule as from-catalog: the second box is a delivery, not a mistake."""
+    _fake_shop(monkeypatch, _SHOP_PAGE)
+    head = auth_headers(station_token)
+    payload = {"code": "4045454121006", "quantity": 3}
+
+    first = client.post(f"{BASE}/articles/from-lookup", headers=head, json=payload)
+    assert first.status_code == 200, first.text
+    second = client.post(f"{BASE}/articles/from-lookup", headers=head, json=payload)
+    assert second.status_code == 200, second.text
+
+    assert second.json()["created"] is False
+    assert second.json()["origin"] == "existing"
+    assert second.json()["article"]["id"] == first.json()["article"]["id"]
+    assert second.json()["article"]["stock_total"] == 6
+
+
+def test_the_catalogue_still_wins_over_the_webshop(
+    client: TestClient, admin_token: str, station_token: str, monkeypatch
+) -> None:
+    """A supplier's own row carries their article number; a scrape does not."""
+    seen = _fake_shop(monkeypatch, _SHOP_PAGE)
+    _catalog_item(ean="4045454121006", name="WAGO 221-413 (Datanorm)", article_no="55512345")
+
+    created = client.post(
+        f"{BASE}/articles/from-lookup",
+        headers=auth_headers(station_token),
+        json={"code": "4045454121006", "quantity": 1},
+    )
+    assert created.status_code == 200, created.text
+    assert created.json()["origin"] == "catalog"
+    assert created.json()["article"]["item_name"] == "WAGO 221-413 (Datanorm)"
+    assert seen == []
+
+
+def test_an_unknown_code_asks_for_a_name_rather_than_inventing_one(
+    client: TestClient, admin_token: str, station_token: str, monkeypatch
+) -> None:
+    """Nothing anywhere: refuse, in German, naming what to do instead."""
+    _fake_shop(monkeypatch, None, status=404)
+
+    refused = client.post(
+        f"{BASE}/articles/from-lookup",
+        headers=auth_headers(station_token),
+        json={"code": "4045454121013", "quantity": 2},
+    )
+    assert refused.status_code == 404, refused.text
+    detail = refused.json()["detail"]
+    assert "Kein Artikel" in detail and "Bezeichnung" in detail
+
+
+def test_a_typed_name_creates_a_proper_consumable(
+    client: TestClient, admin_token: str, station_token: str, monkeypatch
+) -> None:
+    """The rack panel HAS a keyboard, so the last resort is a real article.
+
+    A placeholder row called "Unbekannt (4045…)" would sit in the stock list
+    forever; a name somebody typed while holding the box is a record.
+    """
+    _fake_shop(monkeypatch, None, status=404)
+
+    created = client.post(
+        f"{BASE}/articles/from-lookup",
+        headers=auth_headers(station_token),
+        json={
+            "code": "4045454121013",
+            "quantity": 5,
+            "item_name": "Sonderklemme grau",
+            "unit": "Stk",
+        },
+    )
+    assert created.status_code == 200, created.text
+    body = created.json()
+    assert body["origin"] == "manual"
+    assert body["created"] is True
+    article = body["article"]
+    assert article["item_name"] == "Sonderklemme grau"
+    assert article["unit"] == "Stk"
+    assert article["ean"] == "4045454121013"
+    assert article["is_serialized"] is False
+    assert article["stock_total"] == 5
+
+    movement = _movements(article["id"])[0]
+    assert movement.station_id is not None
+
+
+def test_a_typed_name_never_overrides_what_smpl_already_knows(
+    client: TestClient, admin_token: str, station_token: str, monkeypatch
+) -> None:
+    """An unattended screen must not be able to rename the shelf.
+
+    The typed name is a last resort, not an override: if the cascade resolves,
+    the resolved identity wins and the delivery is booked onto it.
+    """
+    _fake_shop(monkeypatch, _SHOP_PAGE)
+    existing = _article(client, admin_token, "Verbindungsklemme (Bestand)")
+    with SessionLocal() as db:
+        row = db.get(WerkstattArticle, existing["id"])
+        row.ean = "4045454121006"
+        db.add(row)
+        db.commit()
+
+    created = client.post(
+        f"{BASE}/articles/from-lookup",
+        headers=auth_headers(station_token),
+        json={"code": "4045454121006", "quantity": 1, "item_name": "Etwas ganz anderes"},
+    )
+    assert created.status_code == 200, created.text
+    assert created.json()["article"]["item_name"] == "Verbindungsklemme (Bestand)"
+    assert created.json()["origin"] == "existing"
+
+
+def test_station_lookup_needs_a_station_token(
+    client: TestClient, admin_token: str, station_token: str, monkeypatch
+) -> None:
+    """A station is not a user, and the reverse stays true."""
+    _fake_shop(monkeypatch, None, status=404)
+    as_user = client.get(
+        f"{BASE}/lookup", params={"code": "4045454121006"}, headers=auth_headers(admin_token)
+    )
+    assert as_user.status_code in (401, 403), as_user.text
+
+    as_station = client.get(
+        f"{BASE}/lookup", params={"code": "SP-0001"}, headers=auth_headers(station_token)
+    )
+    assert as_station.status_code == 200, as_station.text
+    assert as_station.json()["kind"] in {"existing", "catalog", "external", "none"}
+
+
+def test_a_catalogue_row_whose_ean_is_already_stocked_tops_up_instead_of_500(
+    client: TestClient, admin_token: str, station_token: str, monkeypatch
+) -> None:
+    """The rack scanned the wholesaler's own article number on the box.
+
+    Nothing holds that number as an EAN or an internal code, so the cascade
+    falls through to the catalogue — whose row carries an EAN another article
+    already has. ``build_article_from_catalog_item`` leaves the uniqueness
+    question to its caller by design, and this caller was not asking it: the
+    partial-unique index rejected the INSERT, the IntegrityError escaped, and
+    the wall answered "Nicht angelegt — SMPL antwortete mit HTTP 500" for a
+    delivery standing in front of somebody. A repeat is a top-up.
+    """
+    _fake_shop(monkeypatch, None, status=404)
+    existing = client.post(
+        "/api/werkstatt/articles",
+        headers=auth_headers(admin_token),
+        json={"item_name": "Hager Einbausatz", "ean": "4045454121006", "unit": "Stk"},
+    )
+    assert existing.status_code == 200, existing.text
+    _catalog_item(ean="4045454121006", name="HAGER ZU37KS", article_no="01408573")
+
+    booked = client.post(
+        f"{BASE}/articles/from-lookup",
+        headers=auth_headers(station_token),
+        json={"code": "01408573", "quantity": 4},
+    )
+    assert booked.status_code == 200, booked.text
+    assert booked.json()["created"] is False
+    assert booked.json()["origin"] == "existing"
+    assert booked.json()["article"]["id"] == existing.json()["id"]
+    assert booked.json()["article"]["stock_total"] == 4
+
+
+def test_an_archived_article_blocks_the_catalogue_branch_in_german(
+    client: TestClient, admin_token: str, station_token: str, monkeypatch
+) -> None:
+    """Booking onto an archived row would hide the delivery from the list."""
+    _fake_shop(monkeypatch, None, status=404)
+    existing = client.post(
+        "/api/werkstatt/articles",
+        headers=auth_headers(admin_token),
+        json={"item_name": "Alter Einbausatz", "ean": "4045454121006"},
+    ).json()
+    client.delete(
+        f"/api/werkstatt/articles/{existing['id']}", headers=auth_headers(admin_token)
+    )
+    _catalog_item(ean="4045454121006", name="HAGER ZU37KS", article_no="01408573")
+
+    refused = client.post(
+        f"{BASE}/articles/from-lookup",
+        headers=auth_headers(station_token),
+        json={"code": "01408573", "quantity": 4},
+    )
+    assert refused.status_code == 400
+    assert "archiviert" in refused.json()["detail"]
+
+
+def test_a_retry_carrying_the_same_token_replays_instead_of_booking_twice(
+    client: TestClient, admin_token: str, station_token: str, monkeypatch
+) -> None:
+    """The failure this closes is a shelf holding 3 while SMPL says 6.
+
+    This endpoint may spend several seconds asking the outside world, which is
+    long enough for the Pi's own HTTP timeout to fire while the server goes on
+    to create the article and commit the intake. The wall then says "nicht
+    angelegt" for a delivery that WAS booked, and the operator — holding the
+    box in front of a screen that says it failed — scans again.
+    """
+    _fake_shop(monkeypatch, _SHOP_PAGE)
+    head = auth_headers(station_token)
+    payload = {"code": "4045454121006", "quantity": 3, "request_id": "scan-0f1e2d3c4b5a"}
+
+    first = client.post(f"{BASE}/articles/from-lookup", headers=head, json=payload)
+    assert first.status_code == 200, first.text
+    assert first.json()["created"] is True
+
+    second = client.post(f"{BASE}/articles/from-lookup", headers=head, json=payload)
+    assert second.status_code == 200, second.text
+    assert second.json()["article"]["id"] == first.json()["article"]["id"]
+    assert second.json()["movement_id"] == first.json()["movement_id"]
+    # Nothing was created and nothing was booked: this attempt already ran.
+    assert second.json()["created"] is False
+    assert second.json()["article"]["stock_total"] == 3
+    assert len(_movements(first.json()["article"]["id"])) == 1
+
+
+def test_a_deliberate_second_delivery_still_books_with_a_new_token(
+    client: TestClient, admin_token: str, station_token: str, monkeypatch
+) -> None:
+    """The guard is per ATTEMPT, not per code — two pallets are two intakes."""
+    _fake_shop(monkeypatch, _SHOP_PAGE)
+    head = auth_headers(station_token)
+
+    first = client.post(
+        f"{BASE}/articles/from-lookup",
+        headers=head,
+        json={"code": "4045454121006", "quantity": 3, "request_id": "scan-aaaaaaaaaaaa"},
+    )
+    assert first.status_code == 200, first.text
+    second = client.post(
+        f"{BASE}/articles/from-lookup",
+        headers=head,
+        json={"code": "4045454121006", "quantity": 3, "request_id": "scan-bbbbbbbbbbbb"},
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["article"]["stock_total"] == 6
+    assert len(_movements(first.json()["article"]["id"])) == 2
+
+
+def test_from_lookup_is_closed_to_users(
+    client: TestClient, admin_token: str, station_token: str
+) -> None:
+    refused = client.post(
+        f"{BASE}/articles/from-lookup",
+        headers=auth_headers(admin_token),
+        json={"code": "4045454121006", "quantity": 1},
+    )
+    assert refused.status_code in (401, 403), refused.text

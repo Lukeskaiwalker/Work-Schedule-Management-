@@ -220,6 +220,71 @@ type ScanResolveResult =
 `machine` carries the full `Machine` including its `components`, so the phone
 can warn "the battery and charger go with it" before the user confirms.
 
+**A merged duplicate forwards to its survivor** (2026-09). Every article hit
+(steps 2–4) follows `werkstatt_articles.merged_into_id` one hop, so a shelf
+label printed for an article that has since been merged keeps resolving — to
+the row that now holds the stock. `matched_by` is NOT changed by the hop: it
+describes how the *code* matched, and it matched by SP-number whether or not
+the row it named has since been folded into another. The chain is one hop from
+BOTH ends: `merge_articles` refuses a survivor that is itself merged, and it
+re-points every row already pointing at the duplicate onto the new survivor —
+so A→B followed by B→C leaves A→C, and A's printed label still reaches the row
+that holds the stock rather than an archived, zero-stock one.
+
+#### 3.1a Article lookup — the same question, one step further
+
+```
+GET  /api/werkstatt/articles/lookup?code=<raw>&allow_external=true|false
+GET  /api/station/werkstatt/lookup?code=<raw>            (station token)
+```
+
+`scan/resolve` answers "which of OUR rows is this" and never leaves the
+building. `articles/lookup` runs the same cascade and then, only for a code
+with a valid GTIN check digit and only when nothing here matched, asks the
+public Unielektro webshop (and a configured GTIN database, if one is set up —
+`EAN_LOOKUP_PROVIDER`, empty by default). It exists for the create dialog and
+for the rack station's Wareneingang, both of which are otherwise dead ends in
+front of somebody holding a product nobody has stocked.
+
+```ts
+type WerkstattArticleLookup =
+  | { kind: "existing"; code: string; article: WerkstattArticle;
+      matched_by: "sp"|"internal_code"|"ean"|"supplier_no"|"machine_number"|"serial_number";
+      machine_number: string | null; via_merged_article_number: string | null }
+  | { kind: "catalog"; code: string; groups: WerkstattCatalogGroup[];
+      matched_by: "catalog_ean" | "catalog_article_no" }
+  | { kind: "external"; code: string; hit: WerkstattExternalHit }
+  | { kind: "none"; code: string;
+      external_skipped: "not_a_gtin" | "disabled" | "not_requested" | null };
+```
+
+Rules the external step keeps, because a wrong suggestion is worse than none:
+a product page is accepted **only** when it states a GTIN of its own and that
+GTIN equals the query; every spelling of a barcode (UPC-A ↔ EAN-13) is one
+product; hits are cached 30 days and **misses 24 hours** in
+`werkstatt_ean_lookups`, so the rack re-scanning an unknown code costs nothing;
+and a provider that is slow, down or disabled yields `none` rather than
+blocking a save. `external_skipped` separates the two reasons nothing external
+ran: `"disabled"` is a setting somebody has to change, `"not_requested"` is the
+caller's own `allow_external=false`.
+
+A page is accepted only when the NAME comes from the same evidence as the
+GTIN — the JSON-LD `Product` whose gtin matched, or the microdata `Product`
+scope the matching `itemprop` sits inside. A search or category listing states
+many GTINs and its `og:title` is the query, so a listing is followed for its
+links and may never name an article.
+
+```
+POST /api/station/werkstatt/articles/from-lookup     (station token)
+  body: { code, quantity, item_name?, unit?, notes?, request_id? }
+```
+
+`request_id` identifies one booking ATTEMPT and is reused verbatim on its
+retries. The station's HTTP timeout and the server's webshop budget are two
+different clocks, and booking a delivery is not idempotent: a repeat carrying
+the same token replays the first answer (`created:false`, `origin:"existing"`)
+instead of booking the pallet twice. Omitted, the endpoint behaves as before.
+
 ### 3.2 Quick checkout / return (owned by Mobile BE)
 
 ```

@@ -104,11 +104,18 @@ function renderPage(setNotice: () => void, extra: Record<string, unknown> = {}) 
   );
 }
 
-/** Open "Bestand anpassen" on the one row, once the list has loaded. */
+/** Open "Bestand anpassen" on the one row, once the list has loaded.
+ *
+ * The row's actions moved into a kebab when the row grew a fifth of them
+ * (check out, adjust, edit, print, archive) — five icons in a table row is a
+ * guessing game. So opening the dialog is two clicks now, and this helper is
+ * where that fact lives rather than in nine tests.
+ */
 async function openAdjustDialog(setNotice: () => void, extra: Record<string, unknown> = {}) {
   renderPage(setNotice, extra);
   await screen.findByText("Bohrer SDS-Plus 8mm");
-  fireEvent.click(screen.getByRole("button", { name: "Adjust stock" }));
+  fireEvent.click(screen.getByRole("button", { name: "Item actions" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: "Adjust stock" }));
   return screen.getByRole("dialog", { name: "Adjust stock" });
 }
 
@@ -369,33 +376,250 @@ describe("Bestand anpassen — who is offered it", () => {
   beforeEach(() => vi.unstubAllGlobals());
 
   it("is not offered without werkstatt:manage", async () => {
-    // The endpoint requires the permission. Letting an apprentice fill in the
-    // whole dialog only to collect a 403 is a worse answer than no button.
+    // Every entry behind the menu requires the permission. Letting an
+    // apprentice fill in the whole dialog only to collect a 403 is a worse
+    // answer than no menu.
     stubApi({ status: 200, payload: {} });
     renderPage(() => undefined, { user: { id: 2, effective_permissions: ["werkstatt:view"] } });
     await screen.findByText("Bohrer SDS-Plus 8mm");
-    expect(screen.queryByRole("button", { name: "Adjust stock" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Item actions" })).toBeNull();
+  });
+  it("does not offer 'Neuer Artikel' either, for the same reason", async () => {
+    /* POST /werkstatt/articles needs `werkstatt:manage` too. The button used
+     * to be outside the gate, so an apprentice scanned a code, checked a
+     * webshop suggestion, picked a Lagerort, typed a Startbestand, pressed
+     * "Artikel speichern" — and got the server's English "Permission denied"
+     * as an inline message under a German dialog. */
+    stubApi({ status: 200, payload: {} });
+    renderPage(() => undefined, { user: { id: 2, effective_permissions: ["werkstatt:view"] } });
+    await screen.findByText("Bohrer SDS-Plus 8mm");
+    expect(screen.queryByRole("button", { name: /New item/ })).toBeNull();
+    await screen.findByText(/New items are created by the office/);
   });
 });
 
-describe("Neuer Artikel — no green tick for a save that did not happen", () => {
+describe("Bestand — the page around the dialogs", () => {
   beforeEach(() => vi.unstubAllGlobals());
 
-  it("reports that nothing was stored, because nothing was", async () => {
-    // POST /werkstatt/articles does not exist yet. Next to two dialogs that
-    // now genuinely book stock, "gespeichert (API folgt)" in the success toast
-    // is a claim the user has no way to check.
-    stubApi({ status: 200, payload: {} });
-    const setNotice = vi.fn();
-    const setError = vi.fn();
-    renderPage(setNotice, { setError });
+  it("disarms the wedge scanner while a dialog is open", async () => {
+    /* `useBarcodeScanner` only suppresses itself while focus is in a text
+     * field. Once the create dialog reaches a step made of buttons, a scan
+     * from the bench fired the PAGE handler: it re-seeded the dialog, and the
+     * seed effect replaced every field the person had typed. */
+    const calls = stubApi({ status: 200, payload: {} });
+    renderPage(() => undefined);
+    await screen.findByText("Bohrer SDS-Plus 8mm");
+    fireEvent.click(screen.getByRole("button", { name: /New item/ }));
+    await screen.findByRole("dialog", { name: "New stock item" });
+
+    const search = screen.getByPlaceholderText(/Search by name/) as HTMLInputElement;
+    for (const key of "4012345678901") {
+      fireEvent.keyDown(document.body, { key });
+    }
+    fireEvent.keyDown(document.body, { key: "Enter" });
+
+    /* The dialog's OWN code step is allowed to take the scan — that is what
+     * it is for, and it proves the scan was delivered. What must not happen is
+     * the page handler running underneath it: it drops the code into the
+     * search box (refetching the list under the dialog) and re-seeds the
+     * dialog, whose seed effect then replaces every field already typed. */
+    await waitFor(() =>
+      expect(calls.some((call) => call.url.includes("/articles/lookup"))).toBe(true),
+    );
+    expect(search.value).toBe("");
+    expect(
+      calls.some((call) => call.url.includes("/werkstatt/articles?") && call.url.includes("q=")),
+    ).toBe(false);
+    expect(screen.getByRole("dialog", { name: "New stock item" })).toBeInTheDocument();
+  });
+
+  it("puts the ARTICLE's number in the search box, not the scanned spelling", async () => {
+    /* A 13-digit scan against a row stored under its 12-digit UPC-A twin used
+     * to leave an empty list with the code in the search box and nothing
+     * saying why — the lookup had found the article, and the page threw that
+     * answer away. The header comment promised the list would scroll to it;
+     * narrowing to the number it actually matched is the version that works
+     * with a server-side search. */
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        const json = (payload: unknown) =>
+          new Response(JSON.stringify(payload), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        if (url.includes("/articles/lookup")) {
+          return json({
+            kind: "existing",
+            code: "4001234567890",
+            article: { ...ARTICLE, article_number: "SP-0042" },
+            matched_by: "ean",
+            machine_number: null,
+            via_merged_article_number: null,
+          });
+        }
+        if (url.includes("/duplicates")) return json([]);
+        return json([ARTICLE]);
+      }),
+    );
+    renderPage(() => undefined);
+    await screen.findByText("Bohrer SDS-Plus 8mm");
+    const search = screen.getByPlaceholderText(/Search by name/) as HTMLInputElement;
+
+    for (const key of "4001234567890") fireEvent.keyDown(document.body, { key });
+    fireEvent.keyDown(document.body, { key: "Enter" });
+
+    await waitFor(() => expect(search.value).toBe("SP-0042"));
+    // A hit must not open the create dialog — that is the duplicate path.
+    expect(screen.queryByRole("dialog", { name: "New stock item" })).toBeNull();
+  });
+
+  it("can show archived rows, and says which ones they are", async () => {
+    /* "Archivieren" promises the article can be brought back later, and the
+     * EAN-clash refusal tells people to go to it and press "Reaktivieren".
+     * Without this toggle there was no list it could be reached from. */
+    const calls = stubApi({ status: 200, payload: {} }, [
+      ARTICLE,
+      { ...ARTICLE, id: 8, article_number: "SP-0103", item_name: "Sonderklemme grau", is_archived: true },
+    ]);
+    renderPage(() => undefined);
+    await screen.findByText("Bohrer SDS-Plus 8mm");
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /Show archived/ }));
+
+    await waitFor(() =>
+      expect(
+        calls.some((call) => call.method === "GET" && call.url.includes("include_archived=true")),
+      ).toBe(true),
+    );
+  });
+
+  it("opens the stock dialog for an article the list does not contain", async () => {
+    /* The create dialog's "Bereits im Bestand" card can name an article this
+     * list has no row for — a filtered list, or a machine type (the list is
+     * fetched with kind=consumable). Deriving the dialog's subject from the
+     * list alone meant the create dialog closed, nothing opened and nothing
+     * was said: the person pressed the one button the card told them they
+     * wanted and the screen went back to the list. */
+    const stocked = {
+      ...ARTICLE,
+      id: 99,
+      article_number: "SP-0099",
+      item_name: "Schuko-Steckdose",
+      stock_total: 14,
+      stock_available: 12,
+      category_name: "Installation",
+      unit: "Stk",
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        const json = (payload: unknown) =>
+          new Response(JSON.stringify(payload), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        if (url.includes("/articles/lookup")) {
+          return json({
+            kind: "existing",
+            code: "4012345678901",
+            article: stocked,
+            matched_by: "ean",
+            machine_number: null,
+            via_merged_article_number: null,
+          });
+        }
+        if (url.includes("/werkstatt/articles/99")) return json(stocked);
+        if (url.includes("/duplicates")) return json([]);
+        // The list itself never contains SP-0099.
+        return json([ARTICLE]);
+      }),
+    );
+    renderPage(() => undefined);
     await screen.findByText("Bohrer SDS-Plus 8mm");
 
     fireEvent.click(screen.getByRole("button", { name: /New item/ }));
-    fireEvent.click(await screen.findByRole("button", { name: "Save article" }));
+    const codeInput = await screen.findByPlaceholderText(/EAN/i);
+    fireEvent.change(codeInput, { target: { value: "4012345678901" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Find|Suchen|Look up/ }));
 
-    expect(setNotice).not.toHaveBeenCalled();
-    expect(setError).toHaveBeenCalledWith(expect.stringContaining("NOT saved"));
+    fireEvent.click(await screen.findByRole("button", { name: "Adjust stock" }));
+    const dialog = await screen.findByRole("dialog", { name: "Adjust stock" });
+    expect(dialog).toHaveTextContent("SP-0099");
+    expect(dialog).toHaveTextContent("14");
+  });
+
+  it("counts the badge over the same queue the dialog shows", async () => {
+    /* A badge counted to 200 over a list capped at 50 promised work the screen
+     * could not show: the reviewer worked through 50 pairs and was left with a
+     * badge reading 13 and nothing to act on. */
+    const calls = stubApi({ status: 200, payload: {} });
+    renderPage(() => undefined);
+    await screen.findByText("Bohrer SDS-Plus 8mm");
+    fireEvent.click(screen.getByRole("button", { name: /Review duplicates/ }));
+    await screen.findByRole("dialog", { name: "Review duplicates" });
+
+    const limits = calls
+      .filter((call) => call.url.includes("/duplicates?"))
+      .map((call) => new URL(call.url, "http://x").searchParams.get("limit"));
+    expect(limits.length).toBeGreaterThan(1);
+    expect(new Set(limits).size).toBe(1);
+  });
+
+  it("keeps the blob alive long enough for Safari to fetch it", async () => {
+    /* Revoking in the same tick as the click meant the iPad saved nothing
+     * while the notice still said "38 Artikel exportiert". */
+    stubApi({ status: 200, payload: {} });
+    const revoke = vi.fn();
+    vi.stubGlobal("URL", {
+      ...URL,
+      createObjectURL: () => "blob:test",
+      revokeObjectURL: revoke,
+    } as unknown as typeof URL);
+    renderPage(() => undefined);
+    await screen.findByText("Bohrer SDS-Plus 8mm");
+
+    fireEvent.click(screen.getByRole("button", { name: "Export" }));
+    expect(revoke).not.toHaveBeenCalled();
+    await waitFor(() => expect(revoke).toHaveBeenCalledWith("blob:test"));
+  });
+});
+
+describe("Neuer Artikel — the dialog asks for consumables only", () => {
+  beforeEach(() => vi.unstubAllGlobals());
+
+  it("lists consumables, so machine types never reach this page", async () => {
+    // A machine TYPE in the consumables list is editable as a consumable and
+    // invisible in the Maschinen tab. The filter is server-side so the counts
+    // under the filter chips describe the list being looked at.
+    const calls = stubApi({ status: 200, payload: {} });
+    renderPage(() => undefined);
+    await screen.findByText("Bohrer SDS-Plus 8mm");
+
+    const list = calls.find(
+      (call) => call.method === "GET" && !call.url.includes("/duplicates"),
+    );
+    expect(list?.url).toContain("kind=consumable");
+  });
+
+  it("opens on the code step rather than on an empty form", async () => {
+    // The first question a new article has is "what is this?", and a barcode
+    // answers it better than nine fields. Everything else — the catalogue
+    // branch, the webshop suggestion, the plain form — is reached from here.
+    stubApi({ status: 200, payload: {} });
+    renderPage(() => undefined);
+    await screen.findByText("Bohrer SDS-Plus 8mm");
+
+    fireEvent.click(screen.getByRole("button", { name: /New item/ }));
+    const dialog = await screen.findByRole("dialog", { name: "New stock item" });
+    expect(dialog).toHaveTextContent("Scan or enter a code");
+    expect(dialog).toHaveTextContent("Continue without a code");
+    // The fields that belong to a machine are gone: no Seriennummer, no
+    // BG-Prüfpflicht toggle, no hand-typed article number.
+    expect(screen.queryByText("Serial number")).toBeNull();
+    expect(screen.queryByText("Safety check required")).toBeNull();
   });
 });
 

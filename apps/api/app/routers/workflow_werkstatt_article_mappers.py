@@ -158,6 +158,11 @@ def article_lite_out(
         stock_status=stock_status(article),  # type: ignore[arg-type]
         image_url=article.image_url,
         next_expected_delivery_at=None,
+        # The Bestand page lists consumables only and the Maschinen tab lists
+        # types; the row carries the marker so a list that was filtered
+        # server-side can still explain, per row, which world it belongs to.
+        is_serialized=bool(article.is_serialized),
+        is_archived=bool(article.is_archived),
     )
 
 

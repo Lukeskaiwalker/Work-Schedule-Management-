@@ -117,6 +117,10 @@ export type MockInventoryRow = {
   /** Whether anything on this article can be scanned. Drives the label button:
    *  a false here is stock you cannot find with a scanner. */
   scannable: boolean;
+  /** Out of service. Only ever true while "Archivierte anzeigen" is on, and
+   *  the row says so — an archived article sitting unmarked among live ones is
+   *  how somebody books a delivery onto a row nobody looks at again. */
+  is_archived: boolean;
 };
 
 export const MOCK_INVENTORY_ROWS: ReadonlyArray<MockInventoryRow> = [];

@@ -58,7 +58,11 @@ WerkstattOrderStatus = Literal[
 
 WerkstattOrderLineStatus = Literal["pending", "partial", "complete", "cancelled"]
 
-WerkstattImageSource = Literal["unielektro", "manual", "catalog"]
+# "external" is a picture taken from a public webshop page during an EAN
+# lookup. Kept apart from "unielektro" (which means the catalogue image
+# pipeline found it) because the two are refreshed by different code and
+# only one of them may be re-fetched when the scraper is switched off.
+WerkstattImageSource = Literal["unielektro", "manual", "catalog", "external"]
 
 WerkstattLocationType = Literal["hall", "shelf", "vehicle", "external"]
 WerkstattLocationStatus = Literal["open", "closed", "on_route", "in_workshop"]
@@ -334,6 +338,16 @@ class WerkstattArticleLiteOut(_OrmBase):
     # sees before adding a line whether it will resolve. Null without a
     # supplier filter — the question has no answer then.
     supplier_article_no: str | None = None
+    # Whether this row is a machine TYPE (individual units with their own
+    # labels) rather than a consumable. The stock list filters on it — the
+    # Bestand page is consumables, machines have their own tab — and the row
+    # needs it to explain why an article it is showing cannot be edited there.
+    is_serialized: bool = False
+    # Archived rows are hidden by default and only fetched when somebody asks
+    # for them. The marker travels so the list can say WHICH rows those are —
+    # a greyed-out article beside live ones with nothing distinguishing them is
+    # how somebody books a delivery onto a row that is out of service.
+    is_archived: bool = False
 
 
 # Desktop BE: append WerkstattArticleCreate / Update / ArticleSupplierCreate here.
@@ -380,6 +394,11 @@ class WerkstattArticleCreate(BaseModel):
     purchase_price_cents: int | None = Field(default=None, ge=0)
     currency: str = Field(default="EUR", min_length=1, max_length=8)
     notes: str | None = None
+    # Which external source suggested these fields ("unielektro_shop", …).
+    # Audit only: the server appends a German sentence to `notes` so the row
+    # itself records that a human accepted a scraped suggestion rather than
+    # typing the name. Never trusted for anything else.
+    lookup_source: str | None = Field(default=None, max_length=64)
     supplier_links: list[WerkstattArticleSupplierCreate] = Field(default_factory=list)
 
 
@@ -907,6 +926,30 @@ class WerkstattCatalogFoldOut(BaseModel):
     already_linked: int
 
 
+class WerkstattDuplicateSideOut(BaseModel):
+    """One half of a candidate pair, with everything the decision needs.
+
+    A merge is irreversible, so the screen may not make somebody guess which
+    row to keep. Stock, EAN, unit and the supplier numbers each side carries
+    are exactly the facts people said they were looking up by hand before
+    deciding — so they belong in the payload rather than behind two more
+    clicks.
+    """
+
+    id: int
+    article_number: str
+    item_name: str
+    ean: str | None
+    internal_code: str | None
+    unit: str | None
+    stock_total: int
+    stock_available: int
+    category_name: str | None
+    location_name: str | None
+    supplier_numbers: list[str] = Field(default_factory=list)
+    is_serialized: bool
+
+
 class WerkstattDuplicateCandidateOut(BaseModel):
     """A pair a human should confirm before merging."""
 
@@ -918,6 +961,22 @@ class WerkstattDuplicateCandidateOut(BaseModel):
     duplicate_number: str
     score: float
     reason: str
+    # German wording of `reason`, rendered server-side so the two sides of the
+    # app cannot disagree about why a pair was offered.
+    reason_de: str = ""
+    # Stable identity of the pair regardless of which way round it is offered
+    # ("12:47", low id first). The dismissal writes the same ordering, so a
+    # "Kein Duplikat" holds even after the finder swaps the sides.
+    pair_key: str = ""
+    left: WerkstattDuplicateSideOut | None = None
+    right: WerkstattDuplicateSideOut | None = None
+
+
+class WerkstattDuplicateDismissPayload(BaseModel):
+    """"These two are not the same product." Order-independent."""
+
+    article_id: int
+    duplicate_id: int
 
 
 class WerkstattArticleMergePayload(BaseModel):
@@ -933,7 +992,101 @@ class WerkstattArticleMergeOut(BaseModel):
     movements_moved: int
     order_lines_moved: int
     box_items_moved: int
+    # The rest of what references an article. Reported rather than silently
+    # done because "was my stock-take counted?" is the first question after a
+    # merge, and the toast is where it gets answered.
+    units_moved: int = 0
+    inventory_counts_moved: int = 0
+    task_materials_moved: int = 0
+    internal_code_moved: bool = False
+    # Numbers that belonged to a supplier the survivor was ALREADY linked to.
+    # The link row is unique per (article, supplier), so the duplicate's row
+    # cannot simply move — it is adopted onto the survivor's link when that
+    # link had no number, and otherwise recorded in its notes. Reported
+    # because the confirmation promises supplier numbers survive a merge, and
+    # a promise nobody can check is how 26191 disappeared unnoticed.
+    supplier_numbers_kept: list[str] = []
     fields_filled: list[str]
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Article lookup — "what is this code?", including sources outside SMPL
+# ──────────────────────────────────────────────────────────────────────────
+
+
+class WerkstattExternalHitOut(BaseModel):
+    """A product suggestion from outside SMPL. Always shown as a proposal.
+
+    ``source`` and ``source_url`` are part of the payload because the person
+    approving it is entitled to see where the words came from — a scrape is a
+    guess with a provenance, and hiding the provenance makes it look like a
+    fact.
+    """
+
+    item_name: str
+    ean: str
+    manufacturer: str | None = None
+    unit: str | None = None
+    image_url: str | None = None
+    source: str
+    source_url: str | None = None
+    # When this suggestion was fetched. A month-old cached hit is still fine;
+    # surfacing the age keeps that honest rather than implying a live query.
+    fetched_at: datetime | None = None
+
+
+class WerkstattArticleLookupExisting(BaseModel):
+    """Already on the shelf. The one answer that must stop a create flow."""
+
+    kind: Literal["existing"] = "existing"
+    code: str
+    article: WerkstattArticleOut
+    matched_by: Literal[
+        "sp", "internal_code", "ean", "supplier_no", "machine_number", "serial_number"
+    ]
+    # Set when the code was a machine label or nameplate serial, so the dialog
+    # can say which unit rather than only naming its type.
+    machine_number: str | None = None
+    # True when the code resolved through a merged duplicate. The old shelf
+    # label still works, and the screen says so instead of silently showing a
+    # different article number than the sticker in the operator's hand.
+    via_merged_article_number: str | None = None
+
+
+class WerkstattArticleLookupCatalog(BaseModel):
+    """The wholesaler's Datanorm knows it; we have never stocked it."""
+
+    kind: Literal["catalog"] = "catalog"
+    code: str
+    groups: list[WerkstattCatalogGroupOut]
+    matched_by: Literal["catalog_ean", "catalog_article_no"]
+
+
+class WerkstattArticleLookupExternal(BaseModel):
+    kind: Literal["external"] = "external"
+    code: str
+    hit: WerkstattExternalHitOut
+
+
+class WerkstattArticleLookupNone(BaseModel):
+    kind: Literal["none"] = "none"
+    code: str
+    # Why nothing external was tried, when nothing was: "not_a_gtin" (the code
+    # is not a barcode — an SP number, a crate code, a typo with a bad check
+    # digit), "disabled" (no source configured) or "not_requested" (the caller
+    # asked for a cheap internal answer). Null when providers ran and simply
+    # did not know it. The dialog wording differs for each, and the last two
+    # are emphatically not the same fact: one is a setting somebody has to
+    # change, the other is this request's own choice.
+    external_skipped: Literal["not_a_gtin", "disabled", "not_requested"] | None = None
+
+
+WerkstattArticleLookupOut = (
+    WerkstattArticleLookupExisting
+    | WerkstattArticleLookupCatalog
+    | WerkstattArticleLookupExternal
+    | WerkstattArticleLookupNone
+)
 
 
 class WerkstattSimilarArticleOut(BaseModel):

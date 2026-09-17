@@ -74,12 +74,14 @@ from app.schemas.station import (
     STATION_MOVEMENT_TYPES,
     StationArticleFromCatalogOut,
     StationArticleFromCatalogRequest,
+    StationArticleFromLookupOut,
+    StationArticleFromLookupRequest,
     StationBoxHandoverRequest,
     StationCrewMemberOut,
     StationMovementOut,
     StationMovementRequest,
 )
-from app.schemas.werkstatt import ScanResolveResult
+from app.schemas.werkstatt import ScanResolveResult, WerkstattArticleLookupOut
 from app.schemas.werkstatt_boxes import (
     WerkstattBoxItemCreate,
     WerkstattBoxItemOut,
@@ -98,6 +100,12 @@ from app.services.werkstatt_movements import (
     apply_movement,
     book_opening_stock,
 )
+from app.services import gtin
+from app.services.werkstatt_article_lookup import (
+    build_article_from_external_hit,
+    lookup_code,
+)
+from app.services.werkstatt_article_numbers import next_article_number
 from app.services.werkstatt_scan import _article_out, resolve_scan
 
 router = APIRouter(prefix="/station/werkstatt", tags=["station-werkstatt"])
@@ -684,3 +692,313 @@ def station_article_from_catalog(
         movement_id=movement_id,
         created=created,
     )
+
+
+# ---------------------------------------------------------------------------
+# Wareneingang for something nobody has ever stocked — the wider cascade
+# ---------------------------------------------------------------------------
+
+
+@router.get("/lookup", response_model=WerkstattArticleLookupOut)
+def station_lookup(
+    code: str = Query(..., min_length=1, max_length=64),
+    station: Station = Depends(get_current_station),
+    db: Session = Depends(get_db),
+) -> WerkstattArticleLookupOut:
+    """The same question the office asks, with the same answers.
+
+    Separate from ``/resolve`` because it is a different question: ``/resolve``
+    asks "which of our rows is this" and is what the screen runs on every scan,
+    hundreds of times a day, with no outbound traffic. This one may reach the
+    public webshop, so the screen asks it only at the moment a Wareneingang has
+    already failed to find anything.
+    """
+    _ = station  # auth enforcement only — a station sees the same cascade
+    result = lookup_code(db, code, allow_external=True)
+    # A lookup may have cached what the outside world said, including that it
+    # said nothing. Dropping that write would make the next box of the same
+    # unknown product scrape again.
+    db.commit()
+    return result
+
+
+@router.post("/articles/from-lookup", response_model=StationArticleFromLookupOut)
+def station_article_from_lookup(
+    payload: StationArticleFromLookupRequest,
+    station: Station = Depends(get_current_station),
+    db: Session = Depends(get_db),
+) -> StationArticleFromLookupOut:
+    """Book a delivery for a code the workshop has never stocked.
+
+    ``/articles/from-catalog`` closed this dead end for products a wholesaler's
+    Datanorm describes. This closes the rest of it: the box in the operator's
+    hands is real whether or not anybody has imported a file that mentions it.
+
+    Four outcomes, in the order the cascade finds them:
+
+    **existing** — somebody stocked it since the screen last looked, or the
+    scan was a variant spelling of an EAN we hold. Top up, do not duplicate.
+
+    **catalog** — a Datanorm row. The shared builder copies its identity and
+    links its supplier, exactly as the from-catalog endpoint does; where the
+    same product sits in several suppliers' files, the one whose supplier has
+    the most rows wins, because that is the file most likely to be current.
+
+    **external** — the public webshop recognised the barcode. The article is
+    created from the suggestion with ``image_source='external'`` and a note
+    naming the source, so the row itself records that its name was scraped.
+
+    **nothing** — refused with a German sentence, UNLESS the operator typed a
+    name. The rack panel has a keyboard and the person is holding the product;
+    a typed name is a better record than a placeholder called "Unbekannt", and
+    it is accepted only here, only when every source came up empty.
+
+    Same four guards as ``station_article_from_catalog``: a person's name on
+    the row (409 without one), the station marker on the note, ``station_id``
+    on the movement, and one transaction for all of it.
+    """
+    replay = _replay_of(db, payload.request_id)
+    if replay is not None:
+        return replay
+
+    user_id = resolve_station_user_id(db, station)
+    notes = _station_notes(station, payload.notes)
+    found = lookup_code(db, payload.code, allow_external=True)
+
+    typed_name = (payload.item_name or "").strip()
+    if found.kind == "none" and not typed_name:
+        # The cache row the lookup may have written is worth keeping even
+        # though the request fails: the next scan of this code, two boxes
+        # later, must not pay for another scrape.
+        db.commit()
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Kein Artikel zu „{payload.code}“ gefunden — bitte Bezeichnung eintippen "
+                "oder im SMPL unter Bestand → Neuer Artikel anlegen."
+            ),
+        )
+
+    try:
+        article, movement, origin, source = _stock_from_lookup(
+            db,
+            found=found,
+            payload=payload,
+            typed_name=typed_name,
+            user_id=user_id,
+            notes=notes,
+        )
+    except MovementError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Stamped here for the same reason ``station_movement`` stamps it here:
+    # ``apply_movement`` is the shared ledger implementation and knows nothing
+    # about stations, and it flushes without committing, so this UPDATE joins
+    # the same transaction. ``quantity`` is ge=1, so a booking always wrote a
+    # row; a None here would mean that bound had been loosened, and silently
+    # returning a movement-less "gebucht" to the rack is the one outcome an
+    # operator cannot detect.
+    assert movement is not None, "station intake booked no movement"
+    movement.station_id = station.id
+    # The retry token rides on the ledger row, in the same transaction as the
+    # booking it identifies — so "was this already booked?" is answered by the
+    # same commit that booked it, with no second table to fall out of step.
+    movement.client_request_id = payload.request_id or None
+    db.add(movement)
+
+    movement_id = movement.id
+    db.commit()
+    db.refresh(article)
+    return StationArticleFromLookupOut(
+        article=_article_out(db, article),
+        movement_id=movement_id,
+        created=origin != "existing",
+        origin=origin,
+        source=source,
+        internal_code=article.internal_code,
+    )
+
+
+def _replay_of(db: Session, request_id: str | None) -> StationArticleFromLookupOut | None:
+    """The answer this exact attempt already got, if it got one.
+
+    Not a cache: it reads the ledger row the first attempt wrote. ``created``
+    is False and ``origin`` is "existing" on a replay because that is what the
+    second attempt actually achieved — nothing. The wall then says
+    "Wareneingang 3" rather than "Artikel angelegt", which is the truth for a
+    scan that repeated a booking the operator could not see.
+    """
+    token = (request_id or "").strip()
+    if not token:
+        return None
+    movement = db.scalar(
+        select(WerkstattMovement).where(WerkstattMovement.client_request_id == token)
+    )
+    if movement is None:
+        return None
+    article = db.get(WerkstattArticle, movement.article_id)
+    if article is None:
+        return None
+    return StationArticleFromLookupOut(
+        article=_article_out(db, article),
+        movement_id=movement.id,
+        created=False,
+        origin="existing",
+        source=None,
+        internal_code=article.internal_code,
+    )
+
+
+def _stock_from_lookup(
+    db: Session,
+    *,
+    found: WerkstattArticleLookupOut,
+    payload: StationArticleFromLookupRequest,
+    typed_name: str,
+    user_id: int,
+    notes: str,
+):
+    """Turn a lookup result into (article, movement, origin, source).
+
+    Split out so the endpoint above reads as the policy it is — who may call,
+    whose name goes on the row, what happens on each outcome — rather than as
+    four branches of article construction.
+    """
+    if found.kind == "existing":
+        article = db.get(WerkstattArticle, found.article.id)
+        if article is None:
+            raise HTTPException(status_code=404, detail="Artikel nicht gefunden")
+        if bool(article.is_archived):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"„{article.item_name}“ ist archiviert — bitte im SMPL reaktivieren, "
+                    "bevor eine Lieferung darauf gebucht wird."
+                ),
+            )
+        movement = book_opening_stock(
+            db, article, payload.quantity, user_id=user_id, notes=notes
+        )
+        return article, movement, "existing", None
+
+    if found.kind == "catalog":
+        catalog_item = _preferred_catalog_row(db, found)
+        if catalog_item is None:
+            raise HTTPException(status_code=404, detail="Katalog-Eintrag nicht gefunden")
+        # The same guard ``station_article_from_catalog`` applies, and for the
+        # same reason: ``build_article_from_catalog_item`` deliberately leaves
+        # the EAN-uniqueness question to its caller. Without it, a shipping
+        # label scanned by its supplier article number resolves to a Datanorm
+        # row whose EAN another article already holds, the partial-unique index
+        # rejects the INSERT, and the rack shows "HTTP 500" for a delivery
+        # standing in front of somebody. A repeat is a top-up, not a refusal.
+        existing = _article_holding_ean(db, catalog_item.ean)
+        if existing is not None:
+            if bool(existing.is_archived):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"„{existing.item_name}“ ist archiviert — bitte im SMPL reaktivieren, "
+                        "bevor eine Lieferung darauf gebucht wird."
+                    ),
+                )
+            movement = book_opening_stock(
+                db, existing, payload.quantity, user_id=user_id, notes=notes
+            )
+            return existing, movement, "existing", None
+        article, movement = build_article_from_catalog_item(
+            db,
+            catalog_item=catalog_item,
+            user_id=user_id,
+            stock_total=payload.quantity,
+            opening_notes=notes,
+        )
+        return article, movement, "catalog", "catalog"
+
+    if found.kind == "external":
+        article = build_article_from_external_hit(
+            db, hit=found.hit, user_id=user_id, notes=notes
+        )
+        movement = book_opening_stock(
+            db, article, payload.quantity, user_id=user_id, notes=notes
+        )
+        return article, movement, "external", found.hit.source
+
+    # Nothing found anywhere, and somebody typed a name. A consumable, never
+    # serialized: a machine is a thing with its own label and its own
+    # inspection dates, and a wall screen is not where one gets created.
+    article = WerkstattArticle(
+        article_number=next_article_number(db),
+        ean=payload.code.strip() if gtin.is_gtin(payload.code) else None,
+        item_name=typed_name,
+        unit=(payload.unit or "").strip() or None,
+        stock_total=0,
+        stock_available=0,
+        stock_out=0,
+        stock_repair=0,
+        stock_min=0,
+        is_serialized=False,
+        currency="EUR",
+        notes=f"{notes} — an der Station angelegt",
+        created_by=user_id,
+    )
+    db.add(article)
+    db.flush()
+    movement = book_opening_stock(db, article, payload.quantity, user_id=user_id, notes=notes)
+    return article, movement, "manual", None
+
+
+def _article_holding_ean(db: Session, ean: str | None) -> WerkstattArticle | None:
+    """The article that already carries this barcode, in any spelling.
+
+    Variant-aware like the desktop endpoint's check: an article stored under
+    the zero-padded EAN-13 and a Datanorm row carrying the 12-digit UPC-A are
+    the same product, and creating the second row is the duplicate the merge
+    screen then has to clean up. An eanless Datanorm row (about a tenth of
+    them) must never dedupe — ``WHERE ean IS NULL`` would make every one of
+    them the same product.
+    """
+    code = (ean or "").strip()
+    if not code:
+        return None
+    return db.scalar(
+        select(WerkstattArticle).where(WerkstattArticle.ean.in_(gtin.variants(code)))
+    )
+
+
+def _preferred_catalog_row(db: Session, found) -> MaterialCatalogItem | None:
+    """Which supplier's row to copy when several describe the same product.
+
+    The supplier with the most catalogue rows: that is the wholesaler whose
+    Datanorm was imported most recently and most completely, so its naming and
+    its unit are the ones the rest of the workshop already reads. A tie, or no
+    supplier at all, falls back to the hero row the grouping picked — which is
+    simply the first, and is still a real product.
+    """
+    ids = [
+        row.id
+        for group in found.groups
+        for row in ([group.hero] + list(group.suppliers))
+        if row.id is not None
+    ]
+    if not ids:
+        return None
+    rows = list(
+        db.scalars(select(MaterialCatalogItem).where(MaterialCatalogItem.id.in_(ids))).all()
+    )
+    if not rows:
+        return None
+    supplier_ids = {row.supplier_id for row in rows if row.supplier_id is not None}
+    counts: dict[int, int] = {}
+    if supplier_ids:
+        counts = {
+            supplier_id: int(total or 0)
+            for supplier_id, total in db.execute(
+                select(MaterialCatalogItem.supplier_id, func.count(MaterialCatalogItem.id))
+                .where(MaterialCatalogItem.supplier_id.in_(supplier_ids))
+                .group_by(MaterialCatalogItem.supplier_id)
+            ).all()
+        }
+    rows.sort(key=lambda row: (-counts.get(row.supplier_id or -1, 0), row.id))
+    return rows[0]

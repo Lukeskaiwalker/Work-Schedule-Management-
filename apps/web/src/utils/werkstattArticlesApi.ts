@@ -11,7 +11,11 @@
 // them all" stops working quietly rather than loudly.
 
 import { apiFetch } from "../api/client";
-import type { WerkstattArticleSupplier } from "../types/werkstatt";
+import type {
+  WerkstattArticle,
+  WerkstattArticleSupplier,
+  WerkstattImageSource,
+} from "../types/werkstatt";
 
 /** Mirrors WerkstattStockStatus in apps/api/app/schemas/werkstatt.py. */
 export type WerkstattStockStatus = "available" | "low" | "empty" | "out" | "unavailable";
@@ -41,6 +45,14 @@ export interface WerkstattArticleLite {
    *  this article. Null (or absent) otherwise — the question has no answer
    *  without a supplier, and null under one means "no link yet". */
   supplier_article_no?: string | null;
+  /** A machine TYPE rather than a consumable: its units carry their own
+   *  labels, inspection dates and history. The Bestand page asks the server
+   *  for consumables only; the row keeps the marker so the edit dialog can
+   *  explain where machines live instead of silently offering the wrong form. */
+  is_serialized?: boolean;
+  /** Out of service. Only ever true in a list fetched with `includeArchived`;
+   *  the row carries it so such a list can mark WHICH rows those are. */
+  is_archived?: boolean;
 }
 
 export interface ArticleListOptions {
@@ -54,6 +66,10 @@ export interface ArticleListOptions {
    *  stocked article that has no link yet. */
   annotateSupplierId?: number | null;
   status?: WerkstattStockStatus | null;
+  /** "consumable" hides machine types, "machine" shows only them. Omitted,
+   *  the list is everything — which is what the order picker and the
+   *  machine-type search still want. */
+  kind?: "consumable" | "machine" | null;
   includeArchived?: boolean;
   limit?: number;
 }
@@ -71,6 +87,7 @@ export async function listArticles(
     params.set("annotate_supplier_id", String(options.annotateSupplierId));
   }
   if (options.status) params.set("status", options.status);
+  if (options.kind) params.set("kind", options.kind);
   if (options.includeArchived) params.set("include_archived", "true");
   if (options.limit != null) params.set("limit", String(options.limit));
   const qs = params.toString();
@@ -284,4 +301,162 @@ export async function updateArticleSupplierLink(
     token,
     { method: "PATCH", body: JSON.stringify(patch) },
   );
+}
+
+
+/* ─────────────────────────────────────────────────────────────────────
+   Article CRUD — creating, editing and retiring a stock article
+   ────────────────────────────────────────────────────────────────────
+
+   These call the endpoints that have existed in
+   `workflow_werkstatt_articles.py` since the Werkstatt shipped; what was
+   missing was any client for them, which is why "Neuer Artikel" saved
+   nothing and why a wrong name could only be fixed in the database.
+
+   The counters are NOT here. Stock is the ledger's answer — `stock_total` on
+   a create is booked as an opening `intake` movement server-side, and every
+   later change goes through `adjustArticleStock`. There is deliberately no
+   way from this module to assign a stock figure.
+*/
+
+/** Mirrors `WerkstattArticleSupplierCreate`. */
+export interface ArticleSupplierLinkInput {
+  supplier_id: number;
+  supplier_article_no?: string | null;
+  typical_price_cents?: number | null;
+  is_preferred?: boolean;
+  source_catalog_item_id?: number | null;
+}
+
+/** Mirrors `WerkstattArticleCreate` — the consumable half of it. */
+export interface ArticleCreateInput {
+  item_name: string;
+  ean?: string | null;
+  manufacturer?: string | null;
+  category_id?: number | null;
+  location_id?: number | null;
+  unit?: string | null;
+  image_url?: string | null;
+  image_source?: WerkstattImageSource | null;
+  /** Booked as an opening intake movement; never assigned to a counter. */
+  stock_total?: number;
+  stock_min?: number;
+  purchase_price_cents?: number | null;
+  notes?: string | null;
+  /** Audit only: which external source suggested these fields. The server
+   *  appends a German sentence to the notes so the row records that a human
+   *  accepted a scraped suggestion rather than typing the name. */
+  lookup_source?: string | null;
+  supplier_links?: ArticleSupplierLinkInput[];
+}
+
+/** `PATCH` sends only what changed; `null` clears a nullable field. */
+export type ArticleUpdateInput = Partial<
+  Omit<ArticleCreateInput, "stock_total" | "supplier_links" | "lookup_source">
+> & {
+  /** Reactivating an archived article — the answer to an EAN clash that
+   *  names one, rather than making somebody create a second row. */
+  is_archived?: boolean;
+};
+
+export async function getArticle(
+  token: string | null,
+  articleId: number,
+): Promise<WerkstattArticle> {
+  return apiFetch<WerkstattArticle>(`/werkstatt/articles/${articleId}`, token);
+}
+
+export async function createArticle(
+  token: string | null,
+  input: ArticleCreateInput,
+): Promise<WerkstattArticle> {
+  return apiFetch<WerkstattArticle>("/werkstatt/articles", token, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export async function updateArticle(
+  token: string | null,
+  articleId: number,
+  patch: ArticleUpdateInput,
+): Promise<WerkstattArticle> {
+  return apiFetch<WerkstattArticle>(`/werkstatt/articles/${articleId}`, token, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
+}
+
+/** Soft-archive. The row stays: the ledger references it and its number may
+ *  be on a printed label. `updateArticle(id, { is_archived: false })` undoes it. */
+export async function archiveArticle(
+  token: string | null,
+  articleId: number,
+): Promise<WerkstattArticle> {
+  return apiFetch<WerkstattArticle>(`/werkstatt/articles/${articleId}`, token, {
+    method: "DELETE",
+  });
+}
+
+/** Mirrors `WerkstattArticleFromCatalogCreate`. */
+export interface ArticleFromCatalogInput {
+  catalog_item_id: number;
+  category_id?: number | null;
+  location_id?: number | null;
+  stock_total?: number;
+  stock_min?: number;
+  notes?: string | null;
+  supplier_links?: ArticleSupplierLinkInput[];
+}
+
+/**
+ * Create an article FROM a wholesaler's catalogue row.
+ *
+ * Separate endpoint rather than a create with pre-filled fields, because the
+ * server does more than copy: it links the row's supplier, and folds in every
+ * other supplier's Datanorm row carrying the same EAN — so one article ends up
+ * holding supplier A's article number and supplier B's, which is what the
+ * reorder and scan paths need.
+ */
+export async function createArticleFromCatalog(
+  token: string | null,
+  input: ArticleFromCatalogInput,
+): Promise<WerkstattArticle> {
+  return apiFetch<WerkstattArticle>("/werkstatt/articles/from-catalog", token, {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+/** Attach an existing article to a catalogue row; blanks are backfilled. */
+export async function linkArticleCatalog(
+  token: string | null,
+  articleId: number,
+  catalogItemId: number,
+): Promise<WerkstattArticle> {
+  return apiFetch<WerkstattArticle>(`/werkstatt/articles/${articleId}/link-catalog`, token, {
+    method: "POST",
+    body: JSON.stringify({ catalog_item_id: catalogItemId }),
+  });
+}
+
+/** Re-fetch the picture from the linked catalogue row. Never deletes one. */
+export async function refreshArticleImage(
+  token: string | null,
+  articleId: number,
+): Promise<WerkstattArticle> {
+  return apiFetch<WerkstattArticle>(`/werkstatt/articles/${articleId}/refresh-image`, token, {
+    method: "POST",
+  });
+}
+
+/** `DELETE /werkstatt/articles/{id}/suppliers/{link_id}` — drop one link. */
+export async function removeArticleSupplierLink(
+  token: string | null,
+  articleId: number,
+  linkId: number,
+): Promise<void> {
+  await apiFetch<unknown>(`/werkstatt/articles/${articleId}/suppliers/${linkId}`, token, {
+    method: "DELETE",
+  });
 }

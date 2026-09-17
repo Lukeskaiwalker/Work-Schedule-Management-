@@ -67,6 +67,30 @@ from app.services.werkstatt_unit_numbers import UNIT_PATTERN, normalize_scanned_
 # ──────────────────────────────────────────────────────────────────────────
 
 
+def _follow_merge(db: Session, article: WerkstattArticle) -> WerkstattArticle:
+    """The article this row was merged into, or the row itself.
+
+    A merge archives the duplicate and moves its ledger onto the survivor, but
+    the duplicate's SP-number is already printed on a label stuck to a shelf.
+    Without this hop that label resolves to an archived row holding no stock —
+    the scanner would say "0 verfügbar" about a full bin.
+
+    Exactly ONE hop, because ``merge_articles`` refuses to merge into an
+    article that is itself merged. That refusal is what makes a loop
+    impossible here, so this needs no visited-set and no depth limit; if the
+    invariant were ever broken the worst case is that one label points at an
+    archived row again, which is where we started.
+
+    ``matched_by`` is deliberately NOT changed: the question "how did this code
+    resolve" is about the code, and it resolved by SP-number whether or not the
+    row it named has since been folded into another.
+    """
+    if article.merged_into_id is None or article.merged_into_id == article.id:
+        return article
+    survivor = db.get(WerkstattArticle, article.merged_into_id)
+    return survivor if survivor is not None else article
+
+
 def resolve_scan(db: Session, code: str) -> ScanResolveResult:
     """Run the scan cascade and return a ``ScanResolveResult``.
 
@@ -103,7 +127,7 @@ def resolve_scan(db: Session, code: str) -> ScanResolveResult:
     ).first()
     if article is not None:
         return ScanResolveWerkstatt(
-            article=_article_out(db, article),
+            article=_article_out(db, _follow_merge(db, article)),
             matched_by="sp",
         )
 
@@ -117,7 +141,7 @@ def resolve_scan(db: Session, code: str) -> ScanResolveResult:
     ).first()
     if article is not None:
         return ScanResolveWerkstatt(
-            article=_article_out(db, article),
+            article=_article_out(db, _follow_merge(db, article)),
             matched_by="internal_code",
         )
 
@@ -127,7 +151,7 @@ def resolve_scan(db: Session, code: str) -> ScanResolveResult:
     ).first()
     if article is not None:
         return ScanResolveWerkstatt(
-            article=_article_out(db, article),
+            article=_article_out(db, _follow_merge(db, article)),
             matched_by="ean",
         )
 
@@ -145,7 +169,7 @@ def resolve_scan(db: Session, code: str) -> ScanResolveResult:
         article = db.get(WerkstattArticle, supplier_link.article_id)
         if article is not None:
             return ScanResolveWerkstatt(
-                article=_article_out(db, article),
+                article=_article_out(db, _follow_merge(db, article)),
                 matched_by="supplier_no",
             )
 

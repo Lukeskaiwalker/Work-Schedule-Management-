@@ -892,3 +892,169 @@ class TestACatalogueRowCarriesNoArticleId(unittest.TestCase):
 
     def test_the_catalogue_id_is_not_mistaken_for_one(self):
         self.assertNotEqual(smpl_werkstatt.article_id_of(self.payload), 6617633)
+
+
+# --------------------------------------------------------------------------
+# The wider cascade: a code no Datanorm describes
+# --------------------------------------------------------------------------
+
+
+class TestLookup(ClientCase):
+    """`resolve` and `lookup` are two calls because they cost two things.
+
+    `resolve` runs on every scan and touches only SMPL's own tables. `lookup`
+    may make the server fetch a product page from a public shop, so the screen
+    asks it once, after a Wareneingang scan has already come back empty — and
+    a client that quietly used one for the other would put an outbound scrape
+    on the scan path.
+    """
+
+    routes = {
+        ("GET", P["boxes"]): ok_boxes,
+        ("GET", "/api/station/werkstatt/lookup"):
+            lambda p, q, h: (200, {"kind": "external", "code": q.get("code"),
+                                   "hit": {"item_name": "WAGO 221-413",
+                                           "ean": q.get("code"),
+                                           "source": "unielektro_shop"}}),
+    }
+
+    def test_it_asks_the_lookup_route_with_the_code(self):
+        found = self.client.lookup("4045454121006")
+        self.assertEqual(found["kind"], "external")
+        method, path, _headers, _payload = self.stub.requests[-1]
+        self.assertEqual((method, path), ("GET", "/api/station/werkstatt/lookup"))
+
+    def test_an_empty_code_never_reaches_the_network(self):
+        before = len(self.stub.requests)
+        self.assertIsNone(self.client.lookup("   "))
+        self.assertEqual(len(self.stub.requests), before)
+
+
+class TestLookupDegrades(ClientCase):
+    routes = {
+        ("GET", P["boxes"]): ok_boxes,
+        ("GET", "/api/station/werkstatt/lookup"): lambda p, q, h: (500, {"detail": "boom"}),
+    }
+
+    def test_a_server_error_is_None_rather_than_an_exception(self):
+        self.assertIsNone(self.client.lookup("4045454121006"))
+
+
+class TestStockFromLookup(ClientCase):
+    routes = {
+        ("GET", P["boxes"]): ok_boxes,
+        ("POST", "/api/station/werkstatt/articles/from-lookup"):
+            lambda p, q, h: (200, {"article": {"id": 91, "item_name": "WAGO 221-413"},
+                                   "movement_id": 6001, "created": True,
+                                   "origin": "external", "source": "unielektro_shop"}),
+    }
+
+    def test_it_sends_the_code_and_the_quantity(self):
+        result = self.client.stock_from_lookup("4045454121006", 3)
+        self.assertTrue(result.ok)
+        method, path, _headers, payload = self.stub.requests[-1]
+        self.assertEqual((method, path),
+                         ("POST", "/api/station/werkstatt/articles/from-lookup"))
+        self.assertEqual(payload, {"code": "4045454121006", "quantity": 3})
+
+    def test_the_answer_says_where_the_identity_came_from(self):
+        result = self.client.stock_from_lookup("4045454121006", 1)
+        self.assertEqual(result.data["origin"], "external")
+        self.assertEqual(result.data["source"], "unielektro_shop")
+
+    def test_a_typed_name_and_unit_ride_along_capped(self):
+        self.client.stock_from_lookup("4045454121006", 1,
+                                      item_name="x" * 400, unit="u" * 90)
+        payload = self.stub.requests[-1][3]
+        self.assertEqual(len(payload["item_name"]), 200)
+        self.assertEqual(len(payload["unit"]), 32)
+
+    def test_a_blank_name_is_simply_absent_rather_than_empty(self):
+        """An empty string would read as "the operator typed nothing on purpose".
+
+        The server treats a present name as the last-resort override, so
+        sending "" would make every ordinary intake look like one.
+        """
+        self.client.stock_from_lookup("4045454121006", 1, item_name="   ")
+        self.assertNotIn("item_name", self.stub.requests[-1][3])
+
+    def test_rubbish_codes_and_quantities_never_reach_the_network(self):
+        before = len(self.stub.requests)
+        for bad in ("", "   ", None):
+            self.assertFalse(self.client.stock_from_lookup(bad, 1).ok)
+        for bad_qty in (0, -3, "many"):
+            self.assertFalse(self.client.stock_from_lookup("4045454121006", bad_qty).ok)
+        self.assertEqual(len(self.stub.requests), before)
+
+    def test_stocking_invalidates_the_box_cache_like_any_other_write(self):
+        self.client.boxes()
+        fresh = len(self.stub.requests)
+        self.client.stock_from_lookup("4045454121006", 1)
+        self.client.boxes()
+        self.assertGreater(len(self.stub.requests), fresh + 1)
+
+
+    def test_a_retry_token_rides_along_capped(self):
+        self.client.stock_from_lookup("4045454121006", 1, request_id="t" * 200)
+        payload = self.stub.requests[-1][3]
+        self.assertEqual(len(payload["request_id"]), 64)
+
+    def test_no_token_means_no_field_rather_than_an_empty_one(self):
+        self.client.stock_from_lookup("4045454121006", 1)
+        self.assertNotIn("request_id", self.stub.requests[-1][3])
+
+
+class TestTheOutboundCallsWaitLongerThanTheRest(unittest.TestCase):
+    """The two calls that may reach the public internet get their own clock.
+
+    Everything else here is a local database read and four seconds is plenty.
+    `lookup` and `from_lookup` are not: the server may ask a webshop, bounded
+    by its own EAN_LOOKUP_TIMEOUT_SECONDS (6 s by default) plus the handler
+    around it. A client timeout SHORTER than the server's budget is the worst
+    of both worlds — the request runs to completion over there while this end
+    reports a failure, so the wall says "Nicht angelegt" for a delivery that
+    was booked and the operator's natural retry books it a second time.
+    """
+
+    def test_the_lookup_timeout_is_past_the_servers_own_budget(self):
+        client = smpl_werkstatt.WerkstattClient("https://smpl.example")
+        self.assertGreaterEqual(client.lookup_timeout, 15.0)
+        self.assertGreater(client.lookup_timeout, client.timeout)
+
+    def test_it_can_never_be_configured_below_the_ordinary_one(self):
+        client = smpl_werkstatt.WerkstattClient(
+            "https://smpl.example", timeout=8.0, lookup_timeout=2.0)
+        self.assertEqual(client.lookup_timeout, 8.0)
+
+    def test_the_slow_routes_use_it_and_the_others_do_not(self):
+        """Read off the transport, so the wiring is pinned and not just the value."""
+        seen = []
+        client = smpl_werkstatt.WerkstattClient("https://smpl.example")
+
+        def fake_urlopen(request, timeout=None):
+            seen.append((request.full_url, timeout))
+            raise RuntimeError("stop here — the timeout is what is under test")
+
+        original = smpl_werkstatt.urllib.request.urlopen
+        smpl_werkstatt.urllib.request.urlopen = fake_urlopen
+        try:
+            client.resolve("4045454121006")
+            client.lookup("4045454121006")
+            client.stock_from_lookup("4045454121006", 1)
+        finally:
+            smpl_werkstatt.urllib.request.urlopen = original
+
+        by_path = {url.split("/api", 1)[1].split("?", 1)[0]: wait for url, wait in seen}
+        self.assertEqual(by_path["/station/werkstatt/resolve"], client.timeout)
+        self.assertEqual(by_path["/station/werkstatt/lookup"], client.lookup_timeout)
+        self.assertEqual(
+            by_path["/station/werkstatt/articles/from-lookup"], client.lookup_timeout
+        )
+
+
+class TestStockFromLookupUnconfigured(unittest.TestCase):
+    def test_an_unpaired_station_says_so_rather_than_calling(self):
+        client = smpl_werkstatt.WerkstattClient("", token_provider=lambda: None)
+        result = client.stock_from_lookup("4045454121006", 1)
+        self.assertFalse(result.ok)
+        self.assertIsNotNone(result.error)

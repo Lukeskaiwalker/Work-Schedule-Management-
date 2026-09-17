@@ -150,6 +150,33 @@ crate panel off the screen. The rack's direction codes (`SMPL-CMD-EIN`,
 posts `{"screen":"kisten","action":"handover"}` to `/screen/action` and ends in
 exactly the same place as the scanned code.
 
+**Wareneingang for something nobody stocks.** A code the rack scans at
+Wareneingang that SMPL does not know is no longer a dead end. The agent asks
+SMPL to look further (`GET /api/station/werkstatt/lookup`, which may consult
+the wholesaler's public webshop server-side — the station never talks to a
+shop itself) and only then books the delivery with
+`POST /api/station/werkstatt/articles/from-lookup`. While that runs the rack
+shows a flash at level `busy`, which — alone among the four levels — does not
+clear itself: it is replaced by the outcome.
+
+Asking first is deliberate. The scrape is the slow half and the GET changes
+nothing but a cache row, so a timeout on it has cost nothing and re-scanning
+is free; the POST that follows reads that cache and is quick. Both calls wait
+20 s rather than the agent's usual 4 — a client timeout shorter than the
+server's own webshop budget means the wall reports a failure for a delivery
+the server went on to book. The POST also carries a `request_id`: one token per
+attempt, reused on its one retry, so a connection that dies with the answer
+already written replays it instead of booking the pallet twice.
+
+If even the webshop knows nothing, the rack asks for a name. That panel has a
+keyboard bolted to it and the crate screen does not, which is the whole reason
+the prompt exists only there: the alternative is a placeholder article called
+"Unbekannt (4045…)" that nobody ever goes back to fix. The form posts
+`{"screen":"regal","action":"name_article","value":{"item_name":"…","unit":"…"}}`
+to `/screen/action`; the code and the quantity come from the prompt, never
+from the body, so the panel may name what it is holding but not choose which
+code the name lands on. `"action":"cancel_name"` drops the prompt.
+
 ```sh
 curl -s localhost:8765/health
 curl -s -X POST localhost:8765/resolve -d '{"code":"4011923456789"}'

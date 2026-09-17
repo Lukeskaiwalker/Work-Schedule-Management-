@@ -525,6 +525,22 @@ def _extract_upcitemdb_product_image(client: httpx.Client, url: str) -> str | No
     return candidate
 
 
+def is_public_http_url(url: str) -> bool:
+    """Public name for the SSRF guard, for services outside this module.
+
+    The EAN-lookup providers make the same kind of outbound call this module
+    does and must apply exactly the same rule; a second implementation of
+    "is this host allowed" is the sort of duplication that gets one of the two
+    copies fixed when the next bypass is found.
+    """
+    return _is_public_http_url(url)
+
+
+def bing_search_links(client: httpx.Client, query: str) -> list[str]:
+    """Public name for the RSS-backed web search used to find product pages."""
+    return _bing_search_links(client, query)
+
+
 def _bing_search_links(client: httpx.Client, query: str) -> list[str]:
     url = f"https://www.bing.com/search?format=rss&q={quote_plus(query)}"
     try:

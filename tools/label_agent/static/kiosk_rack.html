@@ -215,6 +215,49 @@ main{flex:1 1 auto; min-height:0; overflow:hidden;
 .l-dir.is-warn{color:var(--warn)}
 .l-name{flex:1 1 auto; min-width:0; font-weight:700}
 .l-qty{flex:0 0 auto; font-weight:850; font-variant-numeric:tabular-nums}
+
+/* ---------- "Suche im Webshop..." ---------- */
+/* Ein vierter Blitz-Zustand, und der einzige, der NICHT von selbst
+   verschwindet: er sagt nicht, was passiert ist, sondern dass gerade
+   etwas laeuft. Wuerde er nach drei Sekunden abraeumen, stuende der
+   Bildschirm waehrend der Suche wieder auf "Bereit" und der naechste
+   Scan liefe in die halbfertige Buchung hinein. Er wird ersetzt, nicht
+   ausgeblendet. Neutral eingefaerbt - gruen waere eine Zusage, die noch
+   niemand geben kann. */
+.flash.lvl-busy{border-color:var(--line); background:var(--surface2)}
+.flash.lvl-busy .fmark{background:var(--dim2); color:var(--surface)}
+.flash.lvl-busy .ftitle{color:var(--dim)}
+
+/* ---------- Bezeichnung eintippen ---------- */
+/* Der einzige Platz im ganzen Kiosk, an dem jemand etwas schreibt.
+   Genau deshalb sitzt er hier und nicht auf dem Kistenbildschirm: an
+   diesem Panel haengt eine Tastatur, an dem anderen nicht. Er ersetzt
+   keinen Scan - er faengt den einen Fall auf, in dem weder SMPL noch
+   der Lieferanten-Shop den Code kennen und trotzdem eine Kiste vor
+   einem steht. */
+.namebox{
+  position:fixed; left:var(--pad); right:var(--pad); bottom:var(--pad);
+  z-index:40; display:flex; flex-direction:column; gap:10px;
+  padding:14px 16px; border-radius:var(--r);
+  background:var(--surface2); border:2px solid var(--warn);
+}
+.namebox .nb-head{display:flex; align-items:baseline; gap:10px; flex-wrap:wrap}
+.namebox .nb-title{font-size:1.15rem; font-weight:850; color:var(--warn)}
+.namebox .nb-sub{font-size:.9rem; font-weight:650; color:var(--dim2); min-width:0}
+.namebox .nb-row{display:flex; gap:10px; align-items:stretch; flex-wrap:wrap}
+.namebox input{
+  flex:1 1 260px; min-width:0; font-family:inherit; font-size:1.15rem;
+  font-weight:700; padding:10px 12px; border-radius:var(--r-sm);
+  border:1px solid var(--line); background:var(--surface); color:var(--ink);
+}
+.namebox input.nb-unit{flex:0 0 110px}
+.namebox button{
+  appearance:none; cursor:pointer; font-family:inherit; font-size:1rem;
+  font-weight:800; padding:10px 18px; border-radius:var(--r-sm);
+  border:1px solid var(--line); background:transparent; color:var(--dim);
+}
+.namebox button.nb-go{background:var(--ok); border-color:var(--ok); color:var(--ok-ink)}
+.namebox button[disabled]{opacity:.5; cursor:default}
 </style>
 </head>
 <body>
@@ -315,6 +358,21 @@ main{flex:1 1 auto; min-height:0; overflow:hidden;
   </span>
 </div>
 
+<form class="namebox" id="namebox" hidden autocomplete="off">
+  <div class="nb-head">
+    <span class="nb-title">Artikel unbekannt</span>
+    <span class="nb-sub" id="nbSub"></span>
+  </div>
+  <div class="nb-row">
+    <input id="nbName" type="text" maxlength="200" placeholder="Bezeichnung, z. B. Sonderklemme grau"
+           autocomplete="off" autocorrect="off" spellcheck="false">
+    <input id="nbUnit" class="nb-unit" type="text" maxlength="32" placeholder="Einheit"
+           autocomplete="off" autocorrect="off" spellcheck="false">
+    <button type="submit" class="nb-go" id="nbGo">Anlegen</button>
+    <button type="button" id="nbCancel">Abbrechen</button>
+  </div>
+</form>
+
 <input id="sink" class="sink" aria-label="Scanner-Eingabe" autocomplete="off"
        autocorrect="off" autocapitalize="off" spellcheck="false" inputmode="none">
 
@@ -334,6 +392,12 @@ var CFG = {
   backoffMin:    700,
   backoffMax:    20000,
   actionTimeout: 5000,
+  /* Wareneingang fuer einen unbekannten Code darf den Webshop fragen. Der
+     Server begrenzt das selbst (EAN_LOOKUP_TIMEOUT_SECONDS), der Agent wartet
+     bis zu 20 s - ein kuerzeres Limit hier bricht die Anfrage ab, waehrend
+     sie drueben weiterlaeuft, und die Wand meldet einen Fehler fuer eine
+     Lieferung, die gebucht wurde. */
+  lookupTimeout: 25000,
   npMs:          5000,   /* "Jetzt laeuft" ist Beiwerk - selten holen  */
   watchdogMs:    350,
   gapResetMs:    1500,   /* Tastaturpuffer verwerfen                   */
@@ -921,13 +985,13 @@ function renderLog(){
 }
 
 /* ---------- Blitzmeldung ---------- */
-var MARKS = {ok:'✓', warn:'!', error:'✕'};
+var MARKS = {ok:'✓', warn:'!', error:'✕', busy:'…'};
 function renderFlash(){
   var f = snap && snap.flash;
   if(!f){ hideFlash(); return; }
 
   var lvl = str(f.level);
-  if(lvl !== 'warn' && lvl !== 'error') lvl = 'ok';
+  if(lvl !== 'warn' && lvl !== 'error' && lvl !== 'busy') lvl = 'ok';
   var key = str(f.at) + '|' + str(f.title) + '|' + str(f.detail) + '|' + str(f.code);
   if(key === flashDone || key === flashKey) return;
 
@@ -941,9 +1005,13 @@ function renderFlash(){
   setText($('flashCode'), str(f.code));
   show($('flashCode'), !!str(f.code));
   show(node, true);
-  beep(lvl);
+  beep(lvl === 'busy' ? 'tick' : lvl);
 
   if(flashTimer) clearTimeout(flashTimer);
+  /* "busy" laeuft nicht ab. Es beschreibt keinen Ausgang, sondern einen
+     Vorgang, und der Ausgang ersetzt es - haetten wir es nach drei
+     Sekunden abgeraeumt, stuende waehrend der Suche wieder "Bereit" da. */
+  if(lvl === 'busy') return;
   flashTimer = setTimeout(function(){
     flashDone = flashKey;
     hideFlash();
@@ -958,6 +1026,64 @@ function hideFlash(){
   show($('flash'), false);
 }
 
+/* ---------- Bezeichnung eintippen ---------- *
+ * Ein Formular auf einem Bildschirm, der sich jede Sekunde neu rendert:
+ * der Inhalt darf also nur dann angefasst werden, wenn sich der ANLASS
+ * geaendert hat. Sonst loescht die naechste Antwort des Servers genau
+ * das Wort, das jemand gerade tippt. */
+var namePromptCode = null;
+var nameBusy = false;
+
+function renderNamePrompt(){
+  var prompt = snap && snap.name_prompt;
+  var box = $('namebox');
+  if(!prompt){
+    if(namePromptCode !== null){
+      namePromptCode = null;
+      $('nbName').value = '';
+      $('nbUnit').value = '';
+    }
+    show(box, false);
+    return;
+  }
+  var code = str(prompt.code);
+  if(code !== namePromptCode){
+    namePromptCode = code;
+    $('nbName').value = '';
+    $('nbUnit').value = '';
+    setText($('nbSub'), code + ' · Wareneingang ' + num(prompt.qty, 1));
+    show(box, true);
+    try{ $('nbName').focus(); }catch(e){}
+  }
+  show(box, true);
+  $('nbGo').disabled = nameBusy;
+}
+
+function submitName(e){
+  if(e) e.preventDefault();
+  if(nameBusy) return;
+  var name = str($('nbName').value).trim();
+  if(name.length < 2){ try{ $('nbName').focus(); }catch(e2){} return; }
+  nameBusy = true;
+  $('nbGo').disabled = true;
+  api('/screen/action', {method:'POST', timeout: CFG.lookupTimeout,
+      body:{screen: SCREEN, action:'name_article',
+            value:{item_name: name, unit: str($('nbUnit').value).trim()}}})
+    .then(function(){ nameBusy = false; render(); })
+    .catch(function(){ nameBusy = false; $('nbGo').disabled = false; });
+}
+
+function cancelName(){
+  nameBusy = false;
+  api('/screen/action', {method:'POST', timeout: CFG.actionTimeout,
+      body:{screen: SCREEN, action:'cancel_name'}});
+  namePromptCode = null;
+  show($('namebox'), false);
+}
+
+$('namebox').addEventListener('submit', submitName);
+$('nbCancel').addEventListener('click', cancelName);
+
 function render(){
   if(!snap) return;
   settle();
@@ -967,6 +1093,7 @@ function render(){
   renderCard();
   renderLog();
   renderFlash();
+  renderNamePrompt();
 }
 
 /* ================================================================== *
@@ -1023,6 +1150,8 @@ $('crew').addEventListener('click', function(e){
   setAssignee(n === null ? raw : n);
 });
 $('flash').addEventListener('click', function(){
+  /* Waehrend der Suche gibt es nichts wegzutippen: das Ergebnis kommt. */
+  if(snap && snap.flash && str(snap.flash.level) === 'busy') return;
   flashDone = flashKey;
   hideFlash();
   api('/screen/action', {method:'POST', timeout: CFG.actionTimeout,
@@ -1048,7 +1177,7 @@ function routeCode(code){
   var c = sanitizeCode(code);
   if(!c) return;
   beep('tick');
-  api('/scan/route', {method:'POST', timeout: CFG.actionTimeout,
+  api('/scan/route', {method:'POST', timeout: CFG.lookupTimeout,
       body:{code: c, source:'wedge'}});
 }
 function isTextField(node){

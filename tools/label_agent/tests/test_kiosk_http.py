@@ -1850,14 +1850,39 @@ CATALOG_HIT = {
 class _FakeWerkstatt:
     """Stands in for WerkstattClient: configured, and records what it was asked."""
 
-    def __init__(self, result=None):
+    #: Distinguishes "the caller did not care" from "the read came back None",
+    #: which is exactly the distinction the agent now has to make.
+    DEFAULT_FOUND = {"kind": "external"}
+
+    def __init__(self, result=None, lookup_result=None, found=DEFAULT_FOUND):
         self.configured = True
         self.calls = []
+        # The wider cascade is a separate call with a separate answer: the
+        # catalogue path must stay reachable without one, and the lookup path
+        # must be provably NOT taken when the catalogue already answered.
+        self.lookup_calls = []
+        # The READ that now precedes the write. `found` is what the server's
+        # `/station/werkstatt/lookup` answered — or None for "unreachable",
+        # which is the case that used to be indistinguishable from a 404.
+        self.reads = []
+        self.tokens = []
         self._result = result
+        self._lookup_result = lookup_result
+        self._found = found
 
     def stock_from_catalog(self, catalog_item_id, qty, notes=""):
         self.calls.append((catalog_item_id, qty))
         return self._result
+
+    def lookup(self, code):
+        self.reads.append(code)
+        return self._found
+
+    def stock_from_lookup(self, code, qty=1, *, item_name="", unit="", notes="",
+                          request_id=""):
+        self.lookup_calls.append((code, qty, item_name, unit))
+        self.tokens.append(request_id)
+        return self._lookup_result
 
     def status(self):
         """The upstream chip the rack renders beside the flash.
@@ -1876,11 +1901,12 @@ class TestACatalogueHitAtWareneingang(KioskCase):
         return Decision(code="3250617811163", screen="regal", action="movement",
                         qty=qty, movement_type="intake")
 
-    def _arrange(self, result, direction="wareneingang"):
+    def _arrange(self, result, direction="wareneingang", lookup_result=None,
+                 found=_FakeWerkstatt.DEFAULT_FOUND):
         import smpl_werkstatt
 
         agent = self.agent
-        fake = _FakeWerkstatt(result)
+        fake = _FakeWerkstatt(result, lookup_result, found)
         agent.werkstatt = fake
         agent.router.set_direction(direction)
         return agent, fake, smpl_werkstatt
@@ -1980,12 +2006,224 @@ class TestACatalogueHitAtWareneingang(KioskCase):
         self.assertEqual(state["flash"]["level"], "error")
         self.assertIn("nicht mit SMPL verbunden", state["flash"]["detail"])
 
-    def test_a_code_smpl_does_not_know_says_exactly_that(self):
-        agent, fake, _ = self._arrange(None)
+    def test_a_code_smpl_does_not_know_is_looked_up_further(self):
+        """The dead end this whole path exists to remove.
+
+        The screen used to stop at "SMPL kennt diesen Code nicht" and send the
+        operator to the office. A Wareneingang scan now asks the server to look
+        further — which is where the public webshop is consulted, server-side,
+        once — and only gives up when even that comes back empty.
+        """
+        import smpl_werkstatt
+
+        hit = smpl_werkstatt.Result(True, data={
+            "article": {"id": 91, "item_name": "WAGO 221-413"},
+            "movement_id": 6001, "created": True, "origin": "external",
+            "source": "unielektro_shop"})
+        agent, fake, _ = self._arrange(None, lookup_result=hit)
+
+        agent._unstocked(self._decision(qty=3),
+                         {"kind": "not_found", "code": "3250617811163"})
+
+        # The catalogue path was not taken: there was no catalogue row.
+        self.assertEqual(fake.calls, [])
+        # Read first, write second: the scrape happens on a call that changes
+        # nothing, so a timeout on it cannot leave a booking nobody can see.
+        self.assertEqual(fake.reads, ["3250617811163"])
+        self.assertEqual(fake.lookup_calls, [("3250617811163", 3, "", "")])
+        self.assertTrue(fake.tokens[0])
+        flash = self.flash()
+        self.assertEqual(flash["level"], "ok")
+        self.assertIn("angelegt", flash["detail"])
+        self.assertIn("Unielektro", flash["detail"])
+        self.assertIsNone(agent.kiosk.name_prompt())
+
+    def test_a_code_nobody_knows_asks_the_panel_for_a_name(self):
+        """The rack has a keyboard; a placeholder article would never be fixed.
+
+        A 404 from the server means every source came up empty, which is not
+        something re-scanning can change — so the screen asks for the one thing
+        only the person standing there can supply.
+        """
+        import smpl_werkstatt
+
+        miss = smpl_werkstatt.Result(False, error="Kein Artikel gefunden", status=404)
+        agent, fake, _ = self._arrange(None, lookup_result=miss,
+                                       found={"kind": "none", "code": "3250617811163"})
+
+        agent._unstocked(self._decision(qty=2),
+                         {"kind": "not_found", "code": "3250617811163"})
+
+        # The READ settled it, so nothing was written to find that out.
+        self.assertEqual(fake.reads, ["3250617811163"])
+        self.assertEqual(fake.lookup_calls, [])
+        flash = self.flash()
+        self.assertEqual(flash["level"], "warn")
+        prompt = agent.kiosk.name_prompt()
+        self.assertEqual(prompt["code"], "3250617811163")
+        self.assertEqual(prompt["qty"], 2)
+        # And the rack screen is told about it, so it can render the field.
+        self.assertIsNotNone(agent.kiosk.snapshot("regal")["name_prompt"])
+
+    def test_the_typed_name_creates_the_article_the_prompt_named(self):
+        import smpl_werkstatt
+
+        miss = smpl_werkstatt.Result(False, error="Kein Artikel gefunden", status=404)
+        agent, fake, _ = self._arrange(None, lookup_result=miss,
+                                       found={"kind": "none", "code": "3250617811163"})
+        agent._unstocked(self._decision(qty=2),
+                         {"kind": "not_found", "code": "3250617811163"})
+
+        fake._lookup_result = smpl_werkstatt.Result(True, data={
+            "article": {"id": 92, "item_name": "Sonderklemme grau"},
+            "movement_id": 6002, "created": True, "origin": "manual"})
+        answer = agent.screen_action("regal", "name_article",
+                                     {"item_name": "Sonderklemme grau", "unit": "Stk"})
+
+        self.assertTrue(answer["ok"])
+        # The code and the quantity come from the PROMPT, never from the body:
+        # the panel may name what it is holding, not choose which code it lands
+        # on.
+        self.assertEqual(fake.lookup_calls[-1],
+                         ("3250617811163", 2, "Sonderklemme grau", "Stk"))
+        self.assertEqual(self.flash()["level"], "ok")
+        self.assertIsNone(agent.kiosk.name_prompt())
+
+    def test_a_name_with_no_prompt_is_refused(self):
+        agent, _fake, _ = self._arrange(None)
+        with self.assertRaises(server.ApiError):
+            agent.screen_action("regal", "name_article", {"item_name": "Irgendwas"})
+
+    def test_cancelling_the_prompt_clears_it(self):
+        import smpl_werkstatt
+
+        miss = smpl_werkstatt.Result(False, error="nichts", status=404)
+        agent, _fake, _ = self._arrange(None, lookup_result=miss,
+                                        found={"kind": "none", "code": "3250617811163"})
+        agent._unstocked(self._decision(), {"kind": "not_found", "code": "3250617811163"})
+
+        agent.screen_action("regal", "cancel_name", None)
+        self.assertIsNone(agent.kiosk.name_prompt())
+
+    def test_the_crate_screen_may_not_type_a_name(self):
+        """Not a permission — that screen simply has no keyboard."""
+        agent, _fake, _ = self._arrange(None)
+        with self.assertRaises(server.ApiError):
+            agent.screen_action("kisten", "name_article", {"item_name": "Irgendwas"})
+
+    def test_an_unreachable_lookup_books_nothing_and_says_so(self):
+        """A timeout on the READ is the safe failure, and now the only one.
+
+        The rack's own HTTP timeout used to be shorter than the server's
+        webshop budget, so the common outcome of a cold scrape was a red
+        "Nicht angelegt" over a delivery the server had gone on to book — and
+        the operator, holding the box, scanned it again.
+        """
+        agent, fake, _ = self._arrange(None, found=None)
+
+        agent._unstocked(self._decision(qty=3),
+                         {"kind": "not_found", "code": "3250617811163"})
+
+        self.assertEqual(fake.lookup_calls, [])
+        self.assertIsNone(agent.kiosk.name_prompt())
+        flash = self.flash()
+        self.assertEqual(flash["level"], "error")
+        self.assertIn("noch einmal scannen", flash["detail"])
+
+    def test_a_write_that_dies_in_transport_retries_under_the_same_token(self):
+        """One retry, same token — so the server replays instead of re-booking."""
+        import smpl_werkstatt
+
+        dead = smpl_werkstatt.Result(False, error="SMPL ist nicht erreichbar (TimeoutError).")
+        agent, fake, _ = self._arrange(None, lookup_result=dead)
+
+        agent._unstocked(self._decision(qty=3),
+                         {"kind": "not_found", "code": "3250617811163"})
+
+        self.assertEqual(len(fake.lookup_calls), 2)
+        self.assertEqual(fake.tokens[0], fake.tokens[1])
+        self.assertTrue(fake.tokens[0])
+        flash = self.flash()
+        self.assertEqual(flash["level"], "error")
+        # Not "scan it again" — a fresh scan carries a NEW token and could
+        # book the pallet a second time.
+        self.assertIn("prüfen", flash["detail"])
+
+    def test_the_typed_name_reuses_the_token_minted_with_the_prompt(self):
+        import smpl_werkstatt
+
+        agent, fake, _ = self._arrange(None,
+                                       found={"kind": "none", "code": "3250617811163"})
+        agent._unstocked(self._decision(qty=2),
+                         {"kind": "not_found", "code": "3250617811163"})
+        prompt_token = agent.kiosk.name_prompt()["request_id"]
+        self.assertTrue(prompt_token)
+
+        fake._lookup_result = smpl_werkstatt.Result(True, data={
+            "article": {"id": 93, "item_name": "Sonderklemme grau"},
+            "movement_id": 6003, "created": True, "origin": "manual"})
+        agent.screen_action("regal", "name_article", {"item_name": "Sonderklemme grau"})
+
+        self.assertEqual(fake.tokens[-1], prompt_token)
+
+    def test_an_answer_the_panel_cannot_read_falls_back_to_the_keyboard(self):
+        """Booking on an answer this process does not understand is the one
+        move it must not make: the keyboard path shows the operator what they
+        are creating before it exists."""
+        agent, fake, _ = self._arrange(None, found={"kind": 42})
 
         agent._unstocked(self._decision(), {"kind": "not_found", "code": "3250617811163"})
 
-        self.assertEqual(fake.calls, [])
-        state = {"flash": self.flash()}
-        self.assertEqual(state["flash"]["level"], "error")
-        self.assertIn("kennt diesen Code nicht", state["flash"]["detail"])
+        self.assertEqual(fake.lookup_calls, [])
+        self.assertIsNotNone(agent.kiosk.name_prompt())
+
+    def test_ausgabe_points_at_the_wareneingang_instead_of_looking_up(self):
+        """Conjuring an article to hand OUT is a different, worse act."""
+        agent, fake, _ = self._arrange(None)
+        agent.router.set_direction("aus")
+
+        agent._unstocked(self._decision(), {"kind": "not_found", "code": "3250617811163"})
+
+        self.assertEqual(fake.lookup_calls, [])
+        self.assertEqual(fake.reads, [])
+        flash = self.flash()
+        self.assertEqual(flash["level"], "error")
+        self.assertIn("Wareneingang", flash["detail"])
+
+
+class TestTheRackPageCanAskForAName(unittest.TestCase):
+    """The page half of the keyboard path, pinned against the agent half.
+
+    Three things have to line up or the feature is invisible on the wall: the
+    page has to carry the form at all, it has to post the action name the agent
+    accepts, and it has to render the fourth flash level the agent now emits —
+    a page that normalises "busy" to "ok" would show a green tick while the
+    search was still running.
+    """
+
+    PAGE = pathlib.Path(__file__).resolve().parents[1] / "static" / "kiosk_rack.html"
+
+    def setUp(self) -> None:
+        self.html = self.PAGE.read_text(encoding="utf-8")
+
+    def test_the_page_carries_the_name_form(self):
+        self.assertIn('id="namebox"', self.html)
+        self.assertIn('id="nbName"', self.html)
+        self.assertIn('id="nbUnit"', self.html)
+
+    def test_it_posts_the_actions_the_agent_accepts(self):
+        for action in ("name_article", "cancel_name"):
+            self.assertIn("'%s'" % action, self.html)
+            self.assertIn(action, server.ACTION_SCREEN)
+            self.assertEqual(server.ACTION_SCREEN[action], server.SCREEN_RACK)
+
+    def test_it_renders_the_busy_level_instead_of_flattening_it_to_ok(self):
+        self.assertIn("lvl-busy", self.html)
+        self.assertIn("busy:'…'", self.html.replace('"', "'"))
+        # And it must not auto-dismiss: the outcome replaces it.
+        self.assertIn("if(lvl === 'busy') return;", self.html)
+
+    def test_the_crate_page_has_no_name_form(self):
+        """It has no keyboard bolted to it — that is the whole reason."""
+        boxes = self.PAGE.with_name("kiosk_boxes.html").read_text(encoding="utf-8")
+        self.assertNotIn("namebox", boxes)

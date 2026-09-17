@@ -82,10 +82,14 @@ describe("NeueMaschineModal — a type that does not exist yet", () => {
 
     await waitFor(() => expect(screen.getByRole("button", { name: "Create" })).toBeEnabled());
     expect(screen.queryByText("Pick a type first.")).not.toBeInTheDocument();
-    // The chosen type is the one just created, with nothing but a name sent.
+    // The chosen type is the one just created, and it is created as a MACHINE
+    // type. `is_serialized` from the start matters now that the Bestand page
+    // asks the server for consumables only: without it the new type would sit
+    // in the consumables list and be missing from the Maschinen tab until
+    // somebody happened to add a unit to it.
     expect(screen.getByText("Hilti TE 6-A22")).toBeInTheDocument();
     const post = calls.find((c) => c.method === "POST");
-    expect(post?.body).toEqual({ item_name: "Hilti TE 6-A22" });
+    expect(post?.body).toEqual({ item_name: "Hilti TE 6-A22", is_serialized: true });
   });
 
   it("points a user without the article right somewhere useful", async () => {
@@ -94,7 +98,9 @@ describe("NeueMaschineModal — a type that does not exist yet", () => {
     fireEvent.change(screen.getByPlaceholderText(/article number or manufacturer/i), {
       target: { value: "Hilti TE 6-A22" },
     });
-    await screen.findByText(/Create it under Workshop/);
+    // The hint names where machine types are created — here — rather than
+    // sending people to the consumables dialog, which cannot make one.
+    await screen.findByText(/New machine types are created here/);
     expect(screen.queryByRole("button", { name: /as a new type/ })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Create" })).toBeDisabled();
   });

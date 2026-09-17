@@ -1,0 +1,531 @@
+/* ── Bestand: create/edit dialog, lookup outcomes, duplicate review ────────
+ *
+ * Page-local sheet, imported from WerkstattInventarPage.tsx rather than
+ * appended to src/styles.css — the same arrangement as styles/orders.css and
+ * styles/pi-station.css, and for the same reason: styles.css is shared by
+ * every area and a separate file is the one shape of change that cannot
+ * conflict.
+ *
+ * Everything the existing werkstatt-modal / werkstatt-field / werkstatt-katalog
+ * rules already cover is reused BY CLASS NAME and not redefined here. What is
+ * new: the three-step create dialog's own rows, the four lookup outcome cards,
+ * the duplicate pair cards, and the phone-width full-screen variant — the
+ * owner asked to scan and add stock from a phone, and a 720px dialog centred
+ * in a 390px viewport is not that.
+ *
+ * Colours come from the tokens in styles.css; the literals below are tints
+ * for card backgrounds, which have no token of their own.
+ */
+
+/* ── The create/edit dialog ───────────────────────────────────────────── */
+
+.stock-modal .werkstatt-modal-head small {
+  display: block;
+  margin-top: 2px;
+}
+
+.stock-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.stock-form-row {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+
+.stock-form-row > .werkstatt-field {
+  min-width: 0;
+}
+
+.stock-form-field--half {
+  flex: 1 1 46%;
+}
+
+.stock-form-field--third {
+  flex: 1 1 30%;
+}
+
+.stock-form-field--quarter {
+  flex: 1 1 18%;
+  min-width: 130px;
+}
+
+.stock-form-inline {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.stock-form-inline > select {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.stock-form-add {
+  white-space: nowrap;
+}
+
+/* The EAN field's "ändern": a button rendered in the suffix slot, so the
+   locked state reads as one control rather than as a disabled field with an
+   unrelated link beside it. */
+button.stock-form-unlock {
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  padding: 0 8px;
+}
+
+.stock-form-readonly {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-height: 34px;
+  padding: 6px 0;
+}
+
+.stock-form-notes {
+  resize: vertical;
+  font: inherit;
+}
+
+.stock-form-image {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.stock-form-image img {
+  width: 56px;
+  height: 56px;
+  object-fit: contain;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #fff;
+}
+
+.stock-modal-error {
+  margin: 10px 0 0;
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.stock-modal-error.muted {
+  color: var(--muted);
+}
+
+/* ── Step 1: the code ─────────────────────────────────────────────────── */
+
+.stock-code-step {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.stock-code-form {
+  display: flex;
+  gap: 12px;
+  align-items: flex-end;
+  flex-wrap: wrap;
+}
+
+.stock-code-input {
+  font-size: 16px; /* 16px stops iOS zooming the page when it gets focus. */
+  letter-spacing: 0.02em;
+}
+
+.stock-code-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.stock-code-hint {
+  font-size: 12px;
+}
+
+.stock-code-error {
+  color: var(--danger);
+  font-size: 12px;
+  margin: 0;
+}
+
+/* ── Step 2: what the code turned out to be ───────────────────────────── */
+
+.stock-lookup {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-bottom: 12px;
+  background: var(--surface-2, #f7f9fc);
+}
+
+.stock-lookup--existing {
+  border-color: var(--ok-line, #9fd0b4);
+  background: var(--ok-bg, #eef8f2);
+}
+
+.stock-lookup--external {
+  border-color: #e8cf9a;
+  background: #fff8ea;
+}
+
+.stock-lookup-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.stock-lookup-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: #fff;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.stock-lookup-badge--existing {
+  color: #256b45;
+  border-color: var(--ok-line, #9fd0b4);
+}
+
+.stock-lookup-badge--external {
+  color: #8a6110;
+  border-color: #e8cf9a;
+}
+
+.stock-lookup-sub,
+.stock-lookup-source {
+  font-size: 12px;
+}
+
+/* An archived hit is still "already in stock" and must not read like a live
+   row: the reason somebody scanned it is usually that they are about to book
+   a delivery onto it. */
+.stock-lookup-sub--archived {
+  padding: 1px 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg-subtle, #f1f3f6);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 700;
+}
+
+/* Rows only present because "Archivierte anzeigen" is on. */
+.werkstatt-row--archived {
+  opacity: 0.62;
+}
+
+.stock-archived-tag {
+  margin-left: 6px;
+  padding: 1px 5px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* "nur die ersten 100 von …" — a queue that was cut off has to say so. */
+.stock-duplicates-truncated {
+  margin: 0 0 8px;
+  font-size: 12px;
+}
+
+.stock-lookup-line {
+  margin: 8px 0 0;
+  font-size: 14px;
+}
+
+.stock-lookup-note {
+  margin: 6px 0 0;
+  font-size: 12px;
+}
+
+.stock-lookup-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+/* ── Linked suppliers on the edit dialog ──────────────────────────────── */
+
+.stock-suppliers {
+  margin-top: 14px;
+}
+
+.stock-suppliers-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.stock-suppliers-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.stock-suppliers-list li > .muted {
+  font-size: 12px;
+}
+
+/* ── Duplicates ───────────────────────────────────────────────────────── */
+
+.stock-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.stock-duplicates-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.stock-duplicates-pair {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.stock-duplicates-reason {
+  margin: 0 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.stock-duplicates-sides {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+/* A whole card is the radio's label: on a tablet the 14px circle alone is a
+   miss-tap away from merging the wrong article. */
+.stock-duplicates-card {
+  flex: 1 1 260px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  cursor: pointer;
+  background: #fff;
+}
+
+.stock-duplicates-card.is-survivor {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.stock-duplicates-keep {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.stock-duplicates-card.is-survivor .stock-duplicates-keep {
+  color: var(--accent);
+}
+
+.stock-duplicates-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* ── The merge confirmation ───────────────────────────────────────────── */
+
+.stock-merge-lead {
+  margin: 0 0 10px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.stock-merge-facts {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.stock-merge-warning {
+  font-weight: 700;
+  color: var(--danger);
+}
+
+/* ── Archive confirmation inside the edit dialog ──────────────────────── */
+
+.werkstatt-confirm {
+  position: absolute;
+  inset: auto 0 0;
+  padding: 14px 16px;
+  border-top: 1px solid var(--line);
+  background: #fff8ea;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.stock-modal {
+  position: relative;
+}
+
+/* ── Phone width ──────────────────────────────────────────────────────── */
+/* The owner asked to scan and add stock from the phone. A centred 720px
+   dialog is not that, so under 768px the create/edit dialogs take the whole
+   screen and the rows stack. */
+
+@media (max-width: 767px) {
+  .stock-modal,
+  .stock-duplicates {
+    width: 100%;
+    max-width: 100%;
+    height: 100%;
+    max-height: 100%;
+    border-radius: 0;
+  }
+
+  .stock-form-row,
+  .stock-code-form {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .stock-form-field--half,
+  .stock-form-field--third,
+  .stock-form-field--quarter {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .stock-code-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .stock-code-actions > button:first-child {
+    grid-column: 1 / -1;
+  }
+
+  .stock-duplicates-sides {
+    flex-direction: column;
+  }
+}
+
+/* The mobile scanner's "Als Lagerartikel anlegen" — on the dark camera page,
+   so it carries its own light-on-dark treatment rather than the page chrome's. */
+.werkstatt-mobile-scan-create {
+  display: block;
+  margin: 10px auto 0;
+  padding: 10px 18px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.werkstatt-mobile-scan-create:active {
+  background: rgba(255, 255, 255, 0.24);
+}
+
+/* ── Katalog verknüpfen (edit dialog) ─────────────────────────────────── */
+/* A hand-typed article has no supplier number, no refreshable picture and no
+   place in the reorder flow until it is attached to a catalogue row. This is
+   the only way to give it one after the fact, so it is a plain visible field
+   rather than something behind a menu. */
+
+.stock-catalog-link {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.stock-catalog-hits {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+
+.stock-catalog-hits li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.stock-catalog-hits li > span {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.stock-catalog-hits li small {
+  font-size: 12px;
+}
+
+/* The add-a-supplier row sits under the linked list, so it aligns with the
+   form rows above rather than with the list's own compact spacing. */
+.stock-supplier-add {
+  margin-top: 12px;
+  align-items: flex-end;
+}

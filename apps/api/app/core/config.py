@@ -15,6 +15,11 @@ _WEAK_SECRET_KEYS = {"", "change-me", "dev-secret-change-me", "replace-with-long
 _WEAK_ADMIN_PASSWORDS = {"", "admin123", "changeme123!", "password", "admin"}
 _MIN_SECRET_KEY_LENGTH = 32
 
+# Paid/free GTIN databases the `ean_lookup` cascade knows how to speak to.
+# Kept here rather than imported from the service so importing settings cannot
+# pull in httpx; the service asserts the same set.
+_EAN_LOOKUP_PROVIDERS = {"opengtindb", "ean_search", "upcitemdb"}
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
@@ -81,6 +86,23 @@ class Settings(BaseSettings):
     # client opens no pool (memory note: the api container is capped).
     station_agent_connect_timeout_seconds: float = 3.0
     station_agent_read_timeout_seconds: float = 15.0
+    # ── EAN lookup for "Neuer Artikel" and the rack's Wareneingang ─────────
+    # A scanned code nobody stocks and no Datanorm lists is a dead end: the
+    # person holding the box has to type nine fields or give up. These settings
+    # govern where a suggestion may be fetched from.
+    #
+    # The webshop scraper is free, needs no credential and is on by default.
+    # The provider slot is a placeholder for a paid GTIN database: empty means
+    # disabled, and nothing about the feature depends on one existing. NO
+    # credential is ever sent to the webshop — see services/ean_lookup.
+    #
+    # The budget is a *total* for the whole cascade, not per provider: this
+    # runs inside a request on a memory-capped, worker-capped container, so a
+    # slow shop must cost one slow request rather than a wedged worker.
+    ean_lookup_unielektro_enabled: bool = True
+    ean_lookup_provider: str = ""
+    ean_lookup_api_key: str = ""
+    ean_lookup_timeout_seconds: float = 6.0
     app_release_version: str = ""
     app_release_commit: str = ""
     update_repo_owner: str = "Lukeskaiwalker"
@@ -164,6 +186,35 @@ class Settings(BaseSettings):
     audit_alerts_send_telegram: bool = True
     audit_alerts_send_email: bool = False
     audit_alerts_email_recipient: str = ""
+
+    @model_validator(mode="after")
+    def _enforce_ean_lookup_provider(self) -> "Settings":
+        """A named GTIN provider must be usable, or it must not be named.
+
+        Runs in every environment, unlike the secret checks below: this one is
+        not about production hygiene but about a setting that can only have
+        been typed on purpose. A provider name with no key answers every
+        lookup with an authentication error the operator never sees — the
+        cascade is fail-soft by design — so the article form would quietly
+        stay as empty as it was before anybody paid for the subscription.
+
+        ``opengtindb`` is exempt: it authenticates with a free, public user id
+        the provider module defaults, so a key is optional there.
+        """
+        provider = (self.ean_lookup_provider or "").strip().lower()
+        if not provider:
+            return self
+        if provider not in _EAN_LOOKUP_PROVIDERS:
+            raise ValueError(
+                f"EAN_LOOKUP_PROVIDER '{provider}' is unknown; expected one of "
+                + ", ".join(sorted(_EAN_LOOKUP_PROVIDERS))
+                + " (or empty to disable)"
+            )
+        if provider != "opengtindb" and not (self.ean_lookup_api_key or "").strip():
+            raise ValueError(
+                f"EAN_LOOKUP_API_KEY must be set when EAN_LOOKUP_PROVIDER is '{provider}'"
+            )
+        return self
 
     @model_validator(mode="after")
     def _enforce_production_secrets(self) -> "Settings":

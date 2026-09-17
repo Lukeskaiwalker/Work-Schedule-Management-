@@ -44,12 +44,22 @@ export function WerkstattKatalogPage() {
     deleteMaterialCatalogImage,
     setNotice,
     token,
+    user,
     activeProjects,
   } = useAppContext();
 
+  /* POST /werkstatt/articles (and /articles/from-catalog) need
+   * `werkstatt:manage`. Offering the dialog without it costs a filled-in
+   * dialog to learn that — the same rule the Bestand page's row menu keeps. */
+  const canManageStock = (user?.effective_permissions ?? []).includes("werkstatt:manage");
+
   const [activeSupplier, setActiveSupplier] = useState<string | null>(null);
   const [neuerArtikelOpen, setNeuerArtikelOpen] = useState(false);
-  const [neuerArtikelSeed, setNeuerArtikelSeed] = useState<MockCatalogEntry | null>(null);
+  /* The seed is the catalogue ROW, not the folded display entry: creating an
+   * article needs a real `material_catalog_items.id`, which is what brings the
+   * wholesaler's article number and their supplier link with it. The folded
+   * entry is a display shape and has neither. */
+  const [neuerArtikelSeed, setNeuerArtikelSeed] = useState<MaterialCatalogItem | null>(null);
   // "Zum Projekt-Bedarf": the catalogue is where somebody realises a site is
   // short of something, and until now the only way to record that was to wait
   // for a fitter to file a report.
@@ -78,6 +88,29 @@ export function WerkstattKatalogPage() {
     }
     return map;
   }, [materialCatalogRows]);
+
+  /* One stable object per seed. Built with useMemo rather than inline in the
+   * JSX because the dialog keys its "resolve what I was handed" effect on the
+   * seed, and a new object on every render would re-run it. */
+  const catalogSeedLite = useMemo(
+    () =>
+      neuerArtikelSeed
+        ? {
+            id: neuerArtikelSeed.id,
+            external_key: neuerArtikelSeed.external_key ?? "",
+            supplier_id: null,
+            supplier_name: null,
+            article_no: neuerArtikelSeed.article_no ?? null,
+            item_name: neuerArtikelSeed.item_name,
+            ean: neuerArtikelSeed.ean ?? null,
+            manufacturer: neuerArtikelSeed.manufacturer ?? null,
+            unit: neuerArtikelSeed.unit ?? null,
+            price_text: neuerArtikelSeed.price_text ?? null,
+            image_url: neuerArtikelSeed.image_url ?? null,
+          }
+        : null,
+    [neuerArtikelSeed],
+  );
 
   async function submitBedarf(input: NeuerBedarfSubmit) {
     setBedarfBusy(true);
@@ -470,16 +503,27 @@ export function WerkstattKatalogPage() {
                   >
                     {de ? "Zum Projekt-Bedarf" : "To project needs"}
                   </button>
-                  <button
-                    type="button"
-                    className="werkstatt-action-btn werkstatt-action-btn--primary"
-                    onClick={() => {
-                      setNeuerArtikelSeed(entry);
-                      setNeuerArtikelOpen(true);
-                    }}
-                  >
-                    {de ? "In Werkstatt anlegen" : "Add to workshop"}
-                  </button>
+                  {canManageStock && (
+                    <button
+                      type="button"
+                      className="werkstatt-action-btn werkstatt-action-btn--primary"
+                      disabled={!sourceRow}
+                      title={
+                        sourceRow
+                          ? undefined
+                          : de
+                            ? "Für diese Zeile ist kein Katalog-Eintrag geladen."
+                            : "No catalogue row is loaded for this entry."
+                      }
+                      onClick={() => {
+                        if (!sourceRow) return;
+                        setNeuerArtikelSeed(sourceRow);
+                        setNeuerArtikelOpen(true);
+                      }}
+                    >
+                      {de ? "In Werkstatt anlegen" : "Add to workshop"}
+                    </button>
+                  )}
                 </div>
                 {isMulti && (
                   <ul className="werkstatt-katalog-offers">
@@ -532,18 +576,20 @@ export function WerkstattKatalogPage() {
 
       <NeuerArtikelModal
         open={neuerArtikelOpen}
-        onClose={() => setNeuerArtikelOpen(false)}
-        language={language}
-        onSave={(payload) => {
+        onClose={() => {
           setNeuerArtikelOpen(false);
-          const seedName = neuerArtikelSeed?.item_name ?? payload.item_name;
+          setNeuerArtikelSeed(null);
+        }}
+        language={language}
+        token={token}
+        seedCatalogItem={catalogSeedLite}
+        onCreated={(article) => {
+          setNeuerArtikelSeed(null);
           setNotice(
             de
-              ? `Artikel "${seedName}" mit Lieferanten verknüpft (API folgt)`
-              : `Article "${seedName}" linked to suppliers (API pending)`,
+              ? `${article.article_number} „${article.item_name}“ im Bestand angelegt`
+              : `${article.article_number} “${article.item_name}” added to stock`,
           );
-          // TODO(werkstatt): POST /api/werkstatt/articles/from-catalog with
-          //   { catalog_item_id: neuerArtikelSeed.catalog_item_id, supplier_links[] }
         }}
       />
 

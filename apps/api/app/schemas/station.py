@@ -506,3 +506,58 @@ class StationBoxHandoverRequest(BaseModel):
     somebody is carrying it out."""
 
     notes: str | None = Field(default=None, max_length=500)
+
+
+class StationArticleFromLookupRequest(BaseModel):
+    """A delivery for something neither SMPL nor its Datanorm has ever seen.
+
+    The rack screen sends the raw code and the server does the looking — the
+    device never chooses a source and never sees a URL, which is what keeps
+    the station's power the same size it was: it books a delivery, and the
+    identity of what it booked comes from somewhere accountable.
+
+    ``item_name`` and ``unit`` are the one exception, and a narrow one. When
+    the lookup finds nothing at all the operator is standing at a screen that
+    HAS a keyboard (the rack panel does; the crate screen does not) with a box
+    in their hands, and the alternative is a placeholder article called
+    "Unbekannt (4006381333931)" that nobody ever goes back to fix. A typed name
+    is only accepted when every other source came up empty; if the lookup
+    resolves, what it found wins.
+    """
+
+    code: str = Field(min_length=1, max_length=64)
+    # Same cap and the same reason as StationMovementRequest.quantity: intake
+    # has no counter to fast-fail against, so an unbounded value reaches
+    # db.flush() and returns as an unhandled 500.
+    quantity: int = Field(default=1, ge=1, le=STATION_MAX_QUANTITY)
+    item_name: str | None = Field(default=None, max_length=200)
+    unit: str | None = Field(default=None, max_length=32)
+    notes: str | None = Field(default=None, max_length=500)
+    # One attempt's idempotency token, minted by the station and reused
+    # verbatim on its retries. This endpoint can spend several seconds asking
+    # the outside world, which is long enough for the Pi's own HTTP timeout to
+    # fire while the server goes on to create the article and commit the
+    # intake. The wall then says "nicht angelegt" for a delivery that WAS
+    # booked, and the operator scans again — so a repeat carrying the same
+    # token replays the first answer instead of booking twice. Omitted, the
+    # endpoint behaves exactly as before.
+    request_id: str | None = Field(default=None, min_length=8, max_length=64)
+
+
+class StationArticleFromLookupOut(StationArticleFromCatalogOut):
+    """The stocked article, the ledger row, and where its identity came from.
+
+    ``origin`` drives one sentence on the wall: "Artikel angelegt (Unielektro)"
+    reads differently from "eingebucht", and an operator who scans the same
+    pallet twice should be able to see that the second scan topped up rather
+    than duplicated.
+
+    ``internal_code`` is carried because a freshly created article usually has
+    no barcode of its own on the box — the api, not the Pi, mints and prints
+    those, so the response hands the station the code a later label job needs
+    instead of making it ask again.
+    """
+
+    origin: Literal["existing", "catalog", "external", "manual"]
+    source: str | None = None
+    internal_code: str | None = None

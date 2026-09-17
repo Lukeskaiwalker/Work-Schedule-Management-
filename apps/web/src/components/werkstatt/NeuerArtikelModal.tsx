@@ -1,163 +1,310 @@
-import { useState } from "react";
-import { KatalogPicker } from "./KatalogPicker";
-import { NeuerArtikelManualTab } from "./NeuerArtikelManualTab";
-import { useBarcodeScanner } from "../../hooks/useBarcodeScanner";
-import {
-  MOCK_CATALOG_ENTRIES,
-  MOCK_SUPPLIERS,
-} from "./mockData";
-
 /**
- * NeuerArtikelModal — "Artikel anlegen" dialog. Ported from Paper 9ZD-0.
+ * "Neuer Lagerartikel" — the consumables-only create dialog.
  *
- * Three entry tabs:
- *   - Manuell — direct form (name, EAN, category, location, counts)
- *   - Aus Katalog — embeds <KatalogPicker /> for a multi-supplier pick
- *   - QR-Scan — a code slab + auto-resolve when a scan lands
+ * Two things were wrong with the dialog this replaces, and they compounded.
+ * It saved nothing (an error toast and a TODO), and it asked for the wrong
+ * things: a Seriennummer, a BG-Prüfpflicht toggle and free-text taxonomies,
+ * which are a machine's fields, not a box of terminals'. Machines are created
+ * in the Maschinen tab, where units get labels and inspection dates; this
+ * dialog never sets `is_serialized`, so what it makes is always a consumable.
  *
- * The primary action label swaps based on the active tab:
- *   - Manuell / QR   → "Artikel speichern"
- *   - Aus Katalog    → "Artikel anlegen + verknüpfen"
+ * Three steps, because a code answers a question before the form can:
  *
- * Pure presenter. Caller controls visibility and wires the save payload —
- * TODO(werkstatt): dispatch to /api/werkstatt/articles once BE endpoints land.
+ *   Code    — scan (wedge or camera), type, or skip. The camera is a
+ *             first-class button: the workshop tablet has no wedge.
+ *   Treffer — what the code turned out to be. An article we already stock
+ *             ends the flow here, with the action somebody actually wanted.
+ *   Daten   — the form, prefilled from whatever the lookup found.
+ *
+ * The dialog owns the requests but not the news: it reports the created
+ * article upward and lets the page decide what to say and what to reload.
  */
-type EntryTab = "manual" | "catalog" | "scan";
+import { useCallback, useEffect, useState } from "react";
+
+import { ApiError } from "../../api/client";
+import type {
+  MaterialCatalogItemLite,
+  WerkstattArticle,
+  WerkstattArticleLookup,
+  WerkstattCatalogGroup,
+} from "../../types/werkstatt";
+import {
+  createArticle,
+  createArticleFromCatalog,
+} from "../../utils/werkstattArticlesApi";
+import { lookupArticleCode } from "../../utils/werkstattArticleLookupApi";
+import { searchWerkstattCatalog } from "../../utils/werkstattCatalogApi";
+import { ArtikelCodeStep } from "./ArtikelCodeStep";
+import { ArtikelFormFields } from "./ArtikelFormFields";
+import { ArtikelLookupResult } from "./ArtikelLookupResult";
+import { ArtikelKatalogSchritt } from "./ArtikelKatalogSchritt";
+import {
+  artikelFormError,
+  artikelFormFromHit,
+  emptyArtikelForm,
+  toCreateInput,
+  type ArtikelFormValues,
+} from "./artikelForm";
+import { useArtikelStammdaten } from "./useArtikelStammdaten";
+import { useTaxonomieSchnellanlage } from "./useTaxonomieSchnellanlage";
+import "../../styles/stock.css";
+
+type Step = "code" | "result" | "form";
 
 export interface NeuerArtikelModalProps {
   open: boolean;
   onClose: () => void;
   language: "de" | "en";
-  /** Called on primary CTA click with the current form snapshot. */
-  onSave: (payload: {
-    tab: EntryTab;
-    item_name: string;
-    article_number: string;
-    ean: string | null;
-    manufacturer: string | null;
-    category_name: string | null;
-    location_name: string | null;
-    stock_total: number;
-    stock_min: number;
-    purchase_price_cents: number | null;
-    catalog_entry_id: string | null;
-    linked_supplier_ids: string[];
-  }) => void;
+  token: string | null;
+  /** A code the caller already has — from the mobile scanner, say. The
+   *  dialog resolves it on open instead of asking for it again. */
+  seedCode?: string | null;
+  /** A catalogue row the caller already picked (the Katalog page's
+   *  "In Werkstatt anlegen"). Skips straight to the catalogue branch. */
+  seedCatalogItem?: MaterialCatalogItemLite | null;
+  onCreated: (article: WerkstattArticle) => void;
+  /** An `existing` hit hands off rather than offering a duplicate. */
+  onAdjustStock?: (articleId: number) => void;
+  onEditArticle?: (articleId: number) => void;
 }
 
 export function NeuerArtikelModal({
   open,
   onClose,
   language,
-  onSave,
+  token,
+  seedCode = null,
+  seedCatalogItem = null,
+  onCreated,
+  onAdjustStock,
+  onEditArticle,
 }: NeuerArtikelModalProps) {
-  const [tab, setTab] = useState<EntryTab>("manual");
+  const de = language === "de";
+  const stammdaten = useArtikelStammdaten(token, open);
 
-  // Manual form state
-  const [itemName, setItemName] = useState("Hilti TE 30 Bohrhammer SDS-plus");
-  const [articleNumber, setArticleNumber] = useState("SP-0201");
-  const [ean, setEan] = useState("");
-  const [manufacturer] = useState("Hilti");
-  const [categoryName, setCategoryName] = useState("Elektrowerkzeug · Bohrhammer");
-  const [locationName, setLocationName] = useState("Halle 1 · Werkzeugwand");
-  const [stockTotal, setStockTotal] = useState(4);
-  const [stockMin, setStockMin] = useState(2);
-  const [priceEur, setPriceEur] = useState("1248,00");
-  // MOCK_SUPPLIERS is intentionally empty since v2.0.0 — fall back to "" so
-  // the modal mounts cleanly. Real supplier pick is driven by the parent
-  // once the Werkstatt BE endpoints land.
-  const [supplierId, setSupplierId] = useState<string>(MOCK_SUPPLIERS[0]?.id ?? "");
-  const [supplierArticleNo, setSupplierArticleNo] = useState("26190");
-  const [bgRequired, setBgRequired] = useState(true);
+  const [step, setStep] = useState<Step>("code");
+  const [lookup, setLookup] = useState<WerkstattArticleLookup | null>(null);
+  const [values, setValues] = useState<ArtikelFormValues>(emptyArtikelForm());
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  // Catalog picker state
-  const [selectedEntryId, setSelectedEntryId] = useState<string | null>(null);
-  const [selectedOffers, setSelectedOffers] = useState<ReadonlySet<string>>(new Set());
+  // Catalogue branch state: which group is chosen and which suppliers' rows
+  // get linked. Two levels, because the group decides what the article IS and
+  // the ticks decide which article numbers it will carry.
+  const [groups, setGroups] = useState<WerkstattCatalogGroup[]>([]);
+  const [catalogQuery, setCatalogQuery] = useState("");
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [pickedGroup, setPickedGroup] = useState<WerkstattCatalogGroup | null>(null);
+  const [pickedSuppliers, setPickedSuppliers] = useState<ReadonlySet<number>>(new Set());
 
-  // Scan tab state
-  const [lastScannedCode, setLastScannedCode] = useState<string | null>(null);
-
-  // TODO(werkstatt): replace with real /api/werkstatt/scan/resolve call.
-  useBarcodeScanner({
-    enabled: open && tab === "scan",
-    onScan: (code) => {
-      setLastScannedCode(code);
+  const taxonomy = useTaxonomieSchnellanlage({
+    token,
+    language,
+    categories: stammdaten.categories,
+    locations: stammdaten.locations,
+    onCategoryCreated: (category) => {
+      stammdaten.addCategory(category);
+      setValues((prev) => ({ ...prev, category_id: category.id }));
     },
+    onLocationCreated: (location) => {
+      stammdaten.addLocation(location);
+      setValues((prev) => ({ ...prev, location_id: location.id }));
+    },
+    onError: setError,
   });
+
+  const reset = useCallback(() => {
+    setStep("code");
+    setLookup(null);
+    setValues(emptyArtikelForm());
+    setError(null);
+    setBusy(false);
+    setGroups([]);
+    setCatalogQuery("");
+    setPickedGroup(null);
+    setPickedSuppliers(new Set());
+  }, []);
+
+  const runLookup = useCallback(
+    async (code: string) => {
+      setBusy(true);
+      setError(null);
+      try {
+        const found = await lookupArticleCode(token, code);
+        setLookup(found);
+        if (found.kind === "catalog") {
+          setGroups(found.groups);
+          setPickedGroup(found.groups[0] ?? null);
+          setPickedSuppliers(new Set(found.groups[0]?.suppliers.map((row) => row.id) ?? []));
+          setStep("result");
+        } else if (found.kind === "external") {
+          setValues(artikelFormFromHit(found.hit));
+          setStep("form");
+        } else if (found.kind === "existing") {
+          setStep("result");
+        } else {
+          setValues(emptyArtikelForm({ ean: code.trim(), ean_locked: true }));
+          setStep("form");
+        }
+        return {
+          ok: found.kind !== "existing",
+          label:
+            found.kind === "existing"
+              ? de
+                ? `Schon im Bestand: ${found.article.article_number}`
+                : `Already stocked: ${found.article.article_number}`
+              : de
+                ? "Code übernommen"
+                : "Code accepted",
+        };
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        setError(detail);
+        return { ok: false, label: detail };
+      } finally {
+        setBusy(false);
+      }
+    },
+    [token, de],
+  );
+
+  /* Opening with a code or a catalogue row means the first question is already
+   * answered; asking it again would be the dialog ignoring what it was handed.
+   *
+   * Keyed on the seed's ID, never on the object: a caller that builds the seed
+   * inline in JSX hands us a new object on every render, and an effect
+   * depending on the object would re-run, set state, re-render, and loop. The
+   * id is what actually changed when the seed changed. */
+  const seedCatalogItemId = seedCatalogItem?.id ?? null;
+  useEffect(() => {
+    if (!open) {
+      reset();
+      return;
+    }
+    if (seedCatalogItem) {
+      const group: WerkstattCatalogGroup = {
+        ean: seedCatalogItem.ean,
+        hero: seedCatalogItem,
+        suppliers: [seedCatalogItem],
+      };
+      setGroups([group]);
+      setPickedGroup(group);
+      setPickedSuppliers(new Set([seedCatalogItem.id]));
+      setLookup({
+        kind: "catalog",
+        code: seedCatalogItem.ean ?? seedCatalogItem.article_no ?? "",
+        groups: [group],
+        matched_by: "catalog_ean",
+      });
+      setStep("result");
+      return;
+    }
+    if (seedCode) void runLookup(seedCode);
+    // `runLookup` and `seedCatalogItem` are read but deliberately not depended
+    // on: re-running this would refire a lookup that can reach a webshop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, seedCode, seedCatalogItemId, reset]);
+
+  const searchCatalog = useCallback(
+    async (query: string) => {
+      setCatalogQuery(query);
+      if (query.trim().length < 2) return;
+      setCatalogLoading(true);
+      try {
+        setGroups(await searchWerkstattCatalog(token, { q: query.trim(), limit: 40 }));
+      } catch {
+        // The picker keeps whatever it had; the create path does not depend
+        // on the catalogue being reachable.
+        setGroups([]);
+      } finally {
+        setCatalogLoading(false);
+      }
+    },
+    [token],
+  );
+
+  const saveFromCatalog = useCallback(async () => {
+    if (!pickedGroup || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const extra = pickedGroup.suppliers.filter(
+        (row) => pickedSuppliers.has(row.id) && row.supplier_id != null,
+      );
+      const article = await createArticleFromCatalog(token, {
+        catalog_item_id: pickedGroup.hero.id,
+        category_id: values.category_id,
+        location_id: values.location_id,
+        stock_total: Number.parseInt(values.stock_total, 10) || 0,
+        stock_min: Number.parseInt(values.stock_min, 10) || 0,
+        supplier_links: extra.map((row, index) => ({
+          supplier_id: row.supplier_id as number,
+          supplier_article_no: row.article_no,
+          source_catalog_item_id: row.id,
+          is_preferred: index === 0,
+        })),
+      });
+      onCreated(article);
+      onClose();
+    } catch (err) {
+      setError(errorText(err, de));
+    } finally {
+      setBusy(false);
+    }
+  }, [pickedGroup, pickedSuppliers, busy, token, values, onCreated, onClose, de]);
+
+  const saveForm = useCallback(async () => {
+    if (busy) return;
+    const invalid = artikelFormError(values, de);
+    if (invalid) {
+      setError(invalid);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const external = lookup?.kind === "external" ? lookup.hit.source : null;
+      const article = await createArticle(
+        token,
+        toCreateInput(values, {
+          lookupSource: external,
+          imageSource: external ? "external" : null,
+        }),
+      );
+      onCreated(article);
+      onClose();
+    } catch (err) {
+      setError(errorText(err, de));
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, values, de, lookup, token, onCreated, onClose]);
 
   if (!open) return null;
 
-  const de = language === "de";
-  const primaryLabel =
-    tab === "catalog"
-      ? de
-        ? "Artikel anlegen + verknüpfen"
-        : "Create + link article"
-      : de
-        ? "Artikel speichern"
-        : "Save article";
-
-  function handleToggleOffer(_entryId: string, offerId: string) {
-    setSelectedOffers((prev) => {
-      const next = new Set(prev);
-      if (next.has(offerId)) next.delete(offerId);
-      else next.add(offerId);
-      return next;
-    });
-  }
-
-  function handleSave() {
-    const linkedSuppliers = tab === "catalog" ? Array.from(selectedOffers) : [supplierId];
-    const parsedPrice = Number.parseFloat(priceEur.replace(/\./g, "").replace(",", "."));
-    const priceCents = Number.isFinite(parsedPrice) ? Math.round(parsedPrice * 100) : null;
-    onSave({
-      tab,
-      item_name: itemName,
-      article_number: articleNumber,
-      ean: ean.trim() ? ean.trim() : null,
-      manufacturer: manufacturer.trim() ? manufacturer.trim() : null,
-      category_name: categoryName || null,
-      location_name: locationName || null,
-      stock_total: stockTotal,
-      stock_min: stockMin,
-      purchase_price_cents: priceCents,
-      catalog_entry_id: selectedEntryId,
-      linked_supplier_ids: linkedSuppliers,
-    });
-  }
-
-  const catalogFooterNote =
-    tab === "catalog" && selectedEntryId !== null
-      ? `1 ${de ? "Artikel ausgewählt" : "article selected"} · ${selectedOffers.size} ${de ? "Lieferanten verknüpft" : "suppliers linked"}`
-      : null;
-
-  // Suppress unused-variable noise while backend wires up.
-  void supplierArticleNo;
-  void setSupplierArticleNo;
+  const isCatalogStep = step === "result" && lookup?.kind === "catalog";
+  const title = de ? "Neuer Lagerartikel" : "New stock item";
 
   return (
     <div className="werkstatt-modal-backdrop" role="presentation" onClick={onClose}>
       <div
-        className="werkstatt-modal werkstatt-modal--wide"
+        className="werkstatt-modal werkstatt-modal--wide stock-modal"
         role="dialog"
         aria-modal="true"
-        aria-label={de ? "Artikel anlegen" : "Create article"}
+        aria-label={title}
         onClick={(event) => event.stopPropagation()}
       >
         <header className="werkstatt-modal-head">
           <div>
             <span className="werkstatt-sub-breadcrumb">
-              {de ? "WERKSTATT · NEUER ARTIKEL" : "WORKSHOP · NEW ARTICLE"}
+              {de ? "WERKSTATT · NEUER ARTIKEL" : "WORKSHOP · NEW ITEM"}
             </span>
-            <h2 className="werkstatt-modal-title">
-              {tab === "catalog"
-                ? de
-                  ? "Artikel aus Katalog wählen"
-                  : "Choose article from catalog"
-                : de
-                  ? "Artikel anlegen"
-                  : "Create article"}
-            </h2>
+            <h2 className="werkstatt-modal-title">{title}</h2>
+            <small className="muted">
+              {de
+                ? "Verbrauchs- und Lagerartikel. Maschinen werden unter „Maschinen“ angelegt."
+                : "Consumables and stock items. Machines are created under “Machines”."}
+            </small>
           </div>
           <button
             type="button"
@@ -169,153 +316,155 @@ export function NeuerArtikelModal({
           </button>
         </header>
 
-        <div className="werkstatt-modal-tabs" role="tablist">
-          <TabButton active={tab === "manual"} onClick={() => setTab("manual")}>
-            {de ? "Manuell" : "Manual"}
-          </TabButton>
-          <TabButton active={tab === "catalog"} onClick={() => setTab("catalog")}>
-            {de ? "Aus Katalog" : "From catalog"}
-          </TabButton>
-          <TabButton active={tab === "scan"} onClick={() => setTab("scan")}>
-            {de ? "QR-Scan" : "QR scan"}
-          </TabButton>
-        </div>
-
         <div className="werkstatt-modal-body">
-          {tab === "manual" && (
-            <NeuerArtikelManualTab
+          {step === "code" && (
+            <ArtikelCodeStep
               de={de}
-              itemName={itemName}
-              setItemName={setItemName}
-              articleNumber={articleNumber}
-              setArticleNumber={setArticleNumber}
-              ean={ean}
-              setEan={setEan}
-              categoryName={categoryName}
-              setCategoryName={setCategoryName}
-              locationName={locationName}
-              setLocationName={setLocationName}
-              stockTotal={stockTotal}
-              setStockTotal={setStockTotal}
-              stockMin={stockMin}
-              setStockMin={setStockMin}
-              priceEur={priceEur}
-              setPriceEur={setPriceEur}
-              supplierId={supplierId}
-              setSupplierId={setSupplierId}
-              bgRequired={bgRequired}
-              setBgRequired={setBgRequired}
-            />
-          )}
-          {tab === "catalog" && (
-            <KatalogPicker
-              entries={MOCK_CATALOG_ENTRIES}
-              selectedEntryId={selectedEntryId}
-              selectedOfferIds={selectedOffers}
-              onToggleOffer={handleToggleOffer}
-              onSelectEntry={(entryId) => {
-                setSelectedEntryId(entryId);
-                // Auto-select the preferred offer (if any) on first pick.
-                const entry = MOCK_CATALOG_ENTRIES.find((e) => e.id === entryId);
-                if (entry) {
-                  const preferred = entry.offers.find((o) => o.is_preferred);
-                  if (preferred) setSelectedOffers(new Set([preferred.id]));
-                }
-              }}
               language={language}
-              embedded={false}
-              supplierChips={MOCK_SUPPLIERS.map((s) => ({
-                id: s.id,
-                name: s.name,
-                count: s.article_count,
-              }))}
+              busy={busy}
+              error={error}
+              onSubmit={runLookup}
+              onSkip={() => {
+                setLookup(null);
+                setValues(emptyArtikelForm());
+                setStep("form");
+              }}
             />
           )}
-          {tab === "scan" && (
-            <ScanTab de={de} lastCode={lastScannedCode} />
+
+          {step === "result" && lookup && (
+            <>
+              <ArtikelLookupResult
+                de={de}
+                result={lookup}
+                onAdjustStock={
+                  onAdjustStock
+                    ? (articleId) => {
+                        onClose();
+                        onAdjustStock(articleId);
+                      }
+                    : undefined
+                }
+                onEditArticle={
+                  onEditArticle
+                    ? (articleId) => {
+                        onClose();
+                        onEditArticle(articleId);
+                      }
+                    : undefined
+                }
+                onBack={() => setStep("code")}
+              />
+              {isCatalogStep && (
+                <ArtikelKatalogSchritt
+                  de={de}
+                  language={language}
+                  groups={groups}
+                  pickedGroup={pickedGroup}
+                  pickedSuppliers={pickedSuppliers}
+                  loading={catalogLoading}
+                  busy={busy}
+                  values={values}
+                  categories={stammdaten.categories}
+                  locations={stammdaten.locations}
+                  search={{ value: catalogQuery, onChange: (value) => void searchCatalog(value) }}
+                  onPickGroup={(group) => {
+                    setPickedGroup(group);
+                    setPickedSuppliers(new Set(group.suppliers.map((row) => row.id)));
+                  }}
+                  onToggleSupplier={(id) =>
+                    setPickedSuppliers((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(id)) next.delete(id);
+                      else next.add(id);
+                      return next;
+                    })
+                  }
+                  onChangeValues={setValues}
+                />
+              )}
+            </>
+          )}
+
+          {step === "form" && (
+            <>
+              {lookup && <ArtikelLookupResult de={de} result={lookup} onBack={() => setStep("code")} />}
+              <ArtikelFormFields
+                de={de}
+                values={values}
+                onChange={setValues}
+                categories={stammdaten.categories}
+                locations={stammdaten.locations}
+                suppliers={stammdaten.suppliers}
+                mode="create"
+                disabled={busy}
+                onCreateCategory={taxonomy.openCategory}
+                onCreateLocation={taxonomy.openLocation}
+              />
+            </>
+          )}
+
+          {error && step !== "code" && (
+            <p className="stock-modal-error" role="alert">
+              {error}
+            </p>
+          )}
+          {stammdaten.error && (
+            <p className="stock-modal-error muted" role="status">
+              {de
+                ? "Kategorien, Lagerorte oder Lieferanten konnten nicht geladen werden — der Artikel lässt sich trotzdem anlegen."
+                : "Categories, locations or suppliers could not be loaded — the article can still be created."}
+            </p>
           )}
         </div>
 
         <footer className="werkstatt-modal-foot">
-          <small className="muted">{catalogFooterNote ?? ""}</small>
+          <small className="muted">
+            {isCatalogStep && pickedGroup
+              ? de
+                ? `1 Artikel gewählt · ${pickedSuppliers.size} Lieferanten verknüpft`
+                : `1 article selected · ${pickedSuppliers.size} suppliers linked`
+              : ""}
+          </small>
           <div className="werkstatt-modal-foot-actions">
-            {tab === "manual" && (
-              <button type="button" className="werkstatt-action-btn">
-                <span aria-hidden="true">▥</span> {de ? "QR-Etikett drucken" : "Print QR label"}
-              </button>
-            )}
             <button type="button" className="werkstatt-action-btn" onClick={onClose}>
               {de ? "Abbrechen" : "Cancel"}
             </button>
-            <button
-              type="button"
-              className="werkstatt-action-btn werkstatt-action-btn--primary"
-              onClick={handleSave}
-              disabled={tab === "catalog" && selectedEntryId === null}
-            >
-              {primaryLabel}
-            </button>
+            {isCatalogStep && (
+              <button
+                type="button"
+                className="werkstatt-action-btn werkstatt-action-btn--primary"
+                disabled={busy || !pickedGroup}
+                onClick={() => void saveFromCatalog()}
+              >
+                {de ? "Artikel anlegen + verknüpfen" : "Create + link article"}
+              </button>
+            )}
+            {step === "form" && (
+              <button
+                type="button"
+                className="werkstatt-action-btn werkstatt-action-btn--primary"
+                disabled={busy || !values.item_name.trim()}
+                onClick={() => void saveForm()}
+              >
+                {busy ? (de ? "Speichern…" : "Saving…") : de ? "Artikel speichern" : "Save article"}
+              </button>
+            )}
           </div>
         </footer>
       </div>
+      {taxonomy.modals}
     </div>
   );
 }
 
-function TabButton({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      role="tab"
-      aria-selected={active}
-      className={`werkstatt-modal-tab${active ? " werkstatt-modal-tab--active" : ""}`}
-      onClick={onClick}
-    >
-      {children}
-    </button>
-  );
-}
-
-function ScanTab({ de, lastCode }: { de: boolean; lastCode: string | null }) {
-  return (
-    <div className="werkstatt-scan-tab">
-      <div className="werkstatt-scan-slab">
-        <svg width="40" height="40" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <rect x="3.5" y="3.5" width="17" height="17" rx="2" stroke="#2F70B7" strokeWidth="1.8" />
-          <path d="M8 3.5v17M16 3.5v17M3.5 8h17M3.5 16h17" stroke="#2F70B7" strokeWidth="1.8" />
-        </svg>
-        <b>
-          {de
-            ? "Scanner bereit — halte den Artikel vor das Lesegerät."
-            : "Scanner ready — point the item at the reader."}
-        </b>
-        <small>
-          {de
-            ? "EAN, SP-Nummer oder Lieferanten-Nr. werden erkannt."
-            : "EAN, SP number or supplier number are detected."}
-        </small>
-      </div>
-      {lastCode && (
-        <div className="werkstatt-scan-result">
-          <span className="werkstatt-scan-result-label">
-            {de ? "Letzter Scan" : "Last scan"}
-          </span>
-          <code>{lastCode}</code>
-          <span className="muted">
-            {de
-              ? "Auflösung steht aus — BE Endpoint fehlt noch"
-              : "Resolution pending — BE endpoint not yet wired"}
-          </span>
-        </div>
-      )}
-    </div>
-  );
+/**
+ * The server's own sentence, which is in German and names the article an EAN
+ * already belongs to. Falling back to a generic message would throw away the
+ * only part of the answer the user can act on.
+ */
+function errorText(err: unknown, de: boolean): string {
+  if (err instanceof ApiError && typeof err.detail === "string") return err.detail;
+  if (err instanceof Error && err.message) return err.message;
+  return de ? "Speichern fehlgeschlagen." : "Saving failed.";
 }

@@ -195,6 +195,18 @@ class WerkstattArticle(Base):
     notes: Mapped[str | None] = mapped_column(Text)
     is_archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
 
+    # Set when this row was folded into another by a merge. The row itself is
+    # kept (movements and order lines reference it with ondelete=RESTRICT, and
+    # its SP-number may be on a printed shelf label), so this is what lets the
+    # scan cascade forward an old label to the surviving article instead of
+    # answering with an archived row holding no stock.
+    #
+    # Deliberately ONE hop: `merge_articles` refuses a survivor that is itself
+    # merged, so no chain can form and no resolver needs a loop.
+    merged_into_id: Mapped[int | None] = mapped_column(
+        ForeignKey("werkstatt_articles.id", ondelete="SET NULL"), index=True
+    )
+
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
     created_by: Mapped[int | None] = mapped_column(
@@ -306,6 +318,17 @@ class WerkstattMovement(Base):
     station_id: Mapped[int | None] = mapped_column(
         ForeignKey("stations.id", ondelete="SET NULL"), index=True
     )
+
+    # One booking ATTEMPT's token, minted by the caller and reused verbatim on
+    # its retries. The scan station needs it because the two ends disagree
+    # about what a timeout means: the Pi gives up on a slow answer and says
+    # "nicht angelegt", while the server has already created the article and
+    # committed the intake — and the operator, holding the box in front of a
+    # screen that says it failed, scans again. Unique, so the second request
+    # replays the first answer instead of booking the delivery twice; NULL for
+    # every caller that has no retry problem, and NULLs do not collide in a
+    # unique index on either SQLite or PostgreSQL.
+    client_request_id: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
 
     notes: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False, index=True)
@@ -720,3 +743,86 @@ class WerkstattArticleUnit(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow, onupdate=utcnow, nullable=False
     )
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# External EAN lookups — cache, so the wall screen never re-scrapes
+# ──────────────────────────────────────────────────────────────────────────
+
+
+class WerkstattEanLookup(Base):
+    """What an external source said about one GTIN, hit or miss.
+
+    Both outcomes are cached, and the miss is the important half. A code
+    nothing knows is exactly the code somebody scans again ten seconds later
+    at the rack, and again tomorrow when the next box of the same thing
+    arrives — without a cached miss each of those is a fresh scrape, paid for
+    inside a request, on a container with two workers.
+
+    The two TTLs differ because the facts differ. A product's name does not
+    change, so a hit is good for a month. A miss can be undone at any moment
+    by the shop adding the article, so it is good for a day.
+
+    Keyed on the EAN-13 spelling of the code (``services/gtin.to_ean13``) so a
+    scanner emitting UPC-A and a Datanorm row carrying the padded form share
+    one row instead of scraping twice for one product.
+    """
+
+    __tablename__ = "werkstatt_ean_lookups"
+
+    ean: Mapped[str] = mapped_column(String(32), primary_key=True)
+    # Which source answered — "unielektro_shop", "ean_search", … Null on a
+    # miss, because a miss is the absence of an answer, not one source's.
+    provider: Mapped[str | None] = mapped_column(String(64))
+    # True when nobody recognised the code. Stored rather than inferred from
+    # a null name: "we asked and got nothing" and "we have never asked" have
+    # to be tellable apart or the cache cannot suppress a retry.
+    miss: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, index=True)
+
+    item_name: Mapped[str | None] = mapped_column(String(500))
+    manufacturer: Mapped[str | None] = mapped_column(String(255))
+    unit: Mapped[str | None] = mapped_column(String(64))
+    image_url: Mapped[str | None] = mapped_column(String(1000))
+    source_url: Mapped[str | None] = mapped_column(String(1000))
+
+    fetched_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Duplicate review — pairs a human has already judged
+# ──────────────────────────────────────────────────────────────────────────
+
+
+class WerkstattDuplicateDismissal(Base):
+    """"These two are not the same product" — recorded so it stays answered.
+
+    The duplicate finder compares names, and two genuinely different articles
+    with near-identical names (a 1.5 mm² and a 2.5 mm² of the same cable, with
+    the gauge only in the description) will be offered as a pair forever. Once
+    somebody has looked at them and said no, asking again is how a review queue
+    becomes the screen nobody opens.
+
+    Stored as an unordered pair: ``low_article_id`` < ``high_article_id`` is
+    enforced by the writer, so dismissing (A, B) also dismisses (B, A) — the
+    finder does not promise which way round it will offer them next time.
+
+    Rows are deleted, not flagged, when somebody undoes a dismissal: the pair
+    then simply reappears, which is precisely what "undo" means here.
+    """
+
+    __tablename__ = "werkstatt_duplicate_dismissals"
+    __table_args__ = (
+        UniqueConstraint("low_article_id", "high_article_id", name="uq_wdd_pair"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    low_article_id: Mapped[int] = mapped_column(
+        ForeignKey("werkstatt_articles.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    high_article_id: Mapped[int] = mapped_column(
+        ForeignKey("werkstatt_articles.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    dismissed_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), index=True
+    )
+    dismissed_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)

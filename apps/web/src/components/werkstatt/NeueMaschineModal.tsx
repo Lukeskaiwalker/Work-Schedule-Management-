@@ -247,7 +247,16 @@ export function NeueMaschineModal({
       const created = await apiFetch<ArticleHit & { category_name?: string | null }>(
         "/werkstatt/articles",
         token,
-        { method: "POST", body: JSON.stringify({ item_name: name }) },
+        {
+          method: "POST",
+          /* `is_serialized` from the start, not as a side effect of the first
+             unit. The Bestand page now asks the server for consumables only,
+             so a type created without it would be a machine sitting in the
+             consumables list — countable, editable as a consumable, and
+             invisible in the Maschinen tab until somebody happened to add a
+             unit to it. */
+          body: JSON.stringify({ item_name: name, is_serialized: true }),
+        },
       );
       setArticle({
         id: created.id,
@@ -498,8 +507,8 @@ export function NeueMaschineModal({
                     ) : (
                       <p className="werkstatt-field-hint">
                         {de
-                          ? "Unter Werkstatt → Bestand → „Neuer Artikel“ anlegen, dann hier auswählen."
-                          : "Create it under Workshop → Stock → “New item”, then pick it here."}
+                          ? "Neuen Maschinentyp hier anlegen (Feld oben) — dafür fehlt die Berechtigung. „Bestand → Neuer Artikel“ ist nur für Verbrauchsmaterial."
+                          : "New machine types are created here (field above) — you lack the permission. “Stock → New item” is for consumables only."}
                       </p>
                     )}
                     {createTypeError && (

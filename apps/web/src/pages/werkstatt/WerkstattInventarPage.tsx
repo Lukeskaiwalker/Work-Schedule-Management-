@@ -5,12 +5,21 @@ import { useBarcodeScanner } from "../../hooks/useBarcodeScanner";
 import { useKeptRow } from "../../hooks/useKeptRow";
 import { unitLabel } from "../../components/werkstatt/unitLabel";
 import { NeuerArtikelModal } from "../../components/werkstatt/NeuerArtikelModal";
+import { ArtikelBearbeitenModal } from "../../components/werkstatt/ArtikelBearbeitenModal";
+import { DuplikateModal } from "../../components/werkstatt/DuplikateModal";
 import { EntnehmenModal } from "../../components/werkstatt/EntnehmenModal";
 import { BestandAnpassenModal } from "../../components/werkstatt/BestandAnpassenModal";
+import {
+  StockFilterBar,
+  type StockFilterDef,
+  type StockFilterKey,
+} from "../../components/werkstatt/StockFilterBar";
+import { StockTableRow } from "../../components/werkstatt/StockTableRow";
 import { type MockInventoryRow, type MockStockTone } from "../../components/werkstatt/mockData";
 import {
   adjustArticleStock,
   checkoutArticle,
+  getArticle,
   listArticles,
   printArticleLabel,
   type StockAdjustmentInput,
@@ -21,7 +30,18 @@ import {
   staleStockMessage,
   stockAdjustmentNotice,
 } from "../../components/werkstatt/stockNotices";
+import {
+  CSV_BOM,
+  stockExportFilename,
+  stockRowsToCsv,
+} from "../../components/werkstatt/stockExport";
+import {
+  DUPLICATE_PAGE_LIMIT,
+  listDuplicateCandidates,
+} from "../../utils/werkstattDuplicatesApi";
+import { lookupArticleCode } from "../../utils/werkstattArticleLookupApi";
 import { expectedReturnIso } from "../../utils/werkstattReturnDates";
+import "../../styles/stock.css";
 
 /**
  * WerkstattInventarPage — full inventory list. Ported from Paper 7RO-0
@@ -34,22 +54,42 @@ import { expectedReturnIso } from "../../utils/werkstattReturnDates";
  * from the rows actually fetched, which is the only way the two can never
  * disagree again.
  *
- * External HID barcode scans are routed through useBarcodeScanner — a scan
- * outside any input jumps to the matching SP-/EAN-lookup. Until the BE
- * scan-resolve endpoint exists, the callback is a stub (see TODO below).
+ * External HID barcode scans are routed through useBarcodeScanner. A scan
+ * outside any input puts the code in the search box and resolves it against
+ * SMPL's own rows only (no webshop — this fires on every scan): a hit leaves
+ * the filtered list showing it, a miss opens the create dialog with the code
+ * already in hand, which is the whole point of scanning at a desk.
  */
-type FilterKey = "all" | "available" | "low" | "empty" | "out";
-
-type FilterDef = {
-  key: FilterKey;
-  label_de: string;
-  label_en: string;
-  count: number;
+/**
+ * What the "Bestand anpassen" dialog needs to know about an article.
+ *
+ * Narrower than a table row on purpose: the dialog is also opened for articles
+ * that are NOT in the table — a machine type, or anything the current filter
+ * excludes — and a row is the wrong thing to demand there. `MockInventoryRow`
+ * satisfies it structurally, so the table path is unchanged.
+ */
+type StockDialogSubject = {
+  article_id: number;
+  article_no: string;
+  item_name: string;
+  category: string;
+  stock_total: number;
+  stock_available: number;
+  unit: string | null;
 };
 
 export function WerkstattInventarPage() {
-  const { mainView, language, werkstattTab, projects, setNotice, setError, token, user } =
-    useAppContext();
+  const {
+    mainView,
+    language,
+    werkstattTab,
+    setWerkstattTab,
+    projects,
+    setNotice,
+    setError,
+    token,
+    user,
+  } = useAppContext();
 
   /* The movements endpoint is gated on `werkstatt:manage`. Offering the
    * dialog to everyone meant an apprentice could pick a kind, type a count and
@@ -61,7 +101,7 @@ export function WerkstattInventarPage() {
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState<string>("all");
   const [location, setLocation] = useState<string>("all");
-  const [activeFilter, setActiveFilter] = useState<FilterKey>("all");
+  const [activeFilter, setActiveFilter] = useState<StockFilterKey>("all");
   const [articles, setArticles] = useState<WerkstattArticleLite[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -69,6 +109,15 @@ export function WerkstattInventarPage() {
   /* Modal state — each modal gets its own slot; Entnehmen + BestandAnpassen
    * hold the row the user is acting on (null when closed). */
   const [neuerArtikelOpen, setNeuerArtikelOpen] = useState(false);
+  /* A code the create dialog should resolve on open — set when a scan landed
+   * on this page and found nothing, so the dialog starts from what was
+   * scanned instead of asking for it again. */
+  const [neuerArtikelCode, setNeuerArtikelCode] = useState<string | null>(null);
+  const [editId, setEditId] = useState<number | null>(null);
+  const [editArchiveFirst, setEditArchiveFirst] = useState(false);
+  const [duplicatesOpen, setDuplicatesOpen] = useState(false);
+  const [showArchived, setShowArchived] = useState(false);
+  const [duplicateCount, setDuplicateCount] = useState<number | null>(null);
   const [printingId, setPrintingId] = useState<number | null>(null);
   const [labelNotice, setLabelNotice] = useState<string>("");
   /* The dialogs remember an ARTICLE ID, not a captured row. The row itself is
@@ -85,21 +134,48 @@ export function WerkstattInventarPage() {
   const [entnehmenError, setEntnehmenError] = useState<string | null>(null);
   const [bestandError, setBestandError] = useState<string | null>(null);
 
-  // TODO(werkstatt): replace stub with real /api/werkstatt/scan/resolve call.
+  /* A scan on this page used to be dropped into the search box, which is a
+   * fine signal and a poor answer: the common case at a desk is a code for
+   * something not stocked yet, and searching for it shows an empty list. The
+   * code is now resolved — cheaply, `allowExternal: false`, because this fires
+   * on every scan and the external half can make the server fetch a product
+   * page. A hit narrows the list to the article the lookup actually matched
+   * (by ITS number, not by the raw scan: a 13-digit scan against a stored
+   * 12-digit UPC-A would otherwise leave an empty list with the code in the
+   * box and no explanation). A miss opens the create dialog with the code
+   * already in hand. */
   useBarcodeScanner({
-    /* Disarmed while a dialog is open. The scanner is armed for the whole tab
-     * and a stray scan lands in the search box, which refetches the list — so
-     * a scanner nudged on the bench could rewrite the list under a dialog
-     * somebody was mid-way through filling in. Nothing on either dialog reads
-     * a scan anyway, so listening for one there buys nothing. */
+    /* Disarmed while ANY of this page's dialogs is open. The scanner is armed
+     * for the whole tab and `useBarcodeScanner` only suppresses itself while
+     * focus sits in a text field — so after the create dialog reaches its
+     * "Treffer" step (buttons only) a scan from the bench re-seeded the dialog
+     * and replaced every field the person had typed. Nothing on any of these
+     * dialogs reads a scan, so listening for one there buys nothing. */
     enabled:
       mainView === "werkstatt" &&
       werkstattTab === "inventar" &&
       entnehmenId === null &&
-      bestandId === null,
+      bestandId === null &&
+      editId === null &&
+      !neuerArtikelOpen &&
+      !duplicatesOpen,
     onScan: (code) => {
-      // Placeholder: route the scan to the search box so users see a signal.
       setSearch(code);
+      void lookupArticleCode(token, code, { allowExternal: false })
+        .then((found) => {
+          if (found.kind === "existing") {
+            // The row's own number always matches the list's search; the
+            // spelling on the sticker may not.
+            setSearch(found.article.article_number);
+            return;
+          }
+          setNeuerArtikelCode(code);
+          setNeuerArtikelOpen(true);
+        })
+        .catch(() => {
+          // The search box already holds the code; a failed lookup must not
+          // take that away, and there is nothing else to say about it.
+        });
     },
   });
 
@@ -111,7 +187,21 @@ export function WerkstattInventarPage() {
     try {
       // Server-side search: the article table grows with every stock-take, so
       // fetching everything and filtering here would fail quietly as it grows.
-      const rows = await listArticles(token, { q: search.trim() || undefined, limit: 500 });
+      // Consumables only. The Bestand page is "what we use up"; machine
+      // TYPES live in the Maschinen tab, where units carry their own labels
+      // and inspection dates. Filtered server-side so the counts under the
+      // filter chips describe the list somebody is actually looking at.
+      const rows = await listArticles(token, {
+        q: search.trim() || undefined,
+        kind: "consumable",
+        // Archived rows are out of the way by default and reachable on
+        // demand: "Archivieren" promises the article can be brought back, and
+        // without this there was no list it could be brought back FROM — the
+        // EAN-clash message telling somebody to go and reactivate SP-0042
+        // named a row no screen could open.
+        includeArchived: showArchived,
+        limit: 500,
+      });
       setArticles(rows);
       setLoadError(null);
     } catch (err) {
@@ -122,12 +212,34 @@ export function WerkstattInventarPage() {
     } finally {
       setLoading(false);
     }
-  }, [active, token, search]);
+  }, [active, token, search, showArchived]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => void reload(), search ? 250 : 0);
     return () => window.clearTimeout(timer);
   }, [reload, search]);
+
+  /* The duplicate scan is an O(n²) name comparison server-side, so it runs
+   * when the tab is opened and never while somebody types. The badge is the
+   * only thing that makes the review queue discoverable — without it the
+   * feature is a button nobody has a reason to press. */
+  const loadDuplicateCount = useCallback(async () => {
+    if (!active || !canManageStock) return;
+    try {
+      // The SAME limit the dialog asks for. A badge counted to 200 over a list
+      // capped at 50 promised work the screen could not show, and left a badge
+      // reading 13 with nothing to act on.
+      setDuplicateCount((await listDuplicateCandidates(token, DUPLICATE_PAGE_LIMIT)).length);
+    } catch {
+      // A failed count hides the badge rather than claiming zero: "no
+      // duplicates" is a finding, and this is not one.
+      setDuplicateCount(null);
+    }
+  }, [active, canManageStock, token]);
+
+  useEffect(() => {
+    void loadDuplicateCount();
+  }, [loadDuplicateCount]);
 
   /** API row → the presentational shape this page already renders.
    *
@@ -173,6 +285,8 @@ export function WerkstattInventarPage() {
           // Either identifier makes the article findable with a scanner; with
           // neither, it can only be found by typing its name.
           scannable: Boolean(a.ean || a.internal_code),
+          // Only ever true while "Archivierte anzeigen" is on.
+          is_archived: Boolean(a.is_archived),
         };
       }),
     [articles, language],
@@ -184,7 +298,7 @@ export function WerkstattInventarPage() {
     return by;
   }, [allRows]);
 
-  const filters: ReadonlyArray<FilterDef> = useMemo(
+  const filters: ReadonlyArray<StockFilterDef> = useMemo(
     () => [
       { key: "all", label_de: "Alle", label_en: "All", count: allRows.length },
       { key: "available", label_de: "Verfügbar", label_en: "Available", count: counts.available },
@@ -231,6 +345,44 @@ export function WerkstattInventarPage() {
     ),
     bestandId,
   );
+
+  /* The create dialog's "Bereits im Bestand" card can name an article this
+   * list does not contain — a filtered list, or a machine type (the list is
+   * fetched with kind="consumable"). Deriving the dialog's subject from the
+   * list alone meant the create dialog closed, no dialog opened, and nothing
+   * was said: the person pressed the one button the card told them they
+   * wanted and the screen went back to the list. So: fetch it by id. */
+  const [bestandFetched, setBestandFetched] = useState<StockDialogSubject | null>(null);
+  useEffect(() => {
+    if (bestandId === null || bestandRow !== null) {
+      setBestandFetched(null);
+      return;
+    }
+    let cancelled = false;
+    void getArticle(token, bestandId)
+      .then((article) => {
+        if (cancelled) return;
+        setBestandFetched({
+          article_id: article.id,
+          article_no: article.article_number,
+          item_name: article.item_name,
+          category: article.category_name ?? "—",
+          stock_total: article.stock_total,
+          stock_available: article.stock_available,
+          unit: article.unit,
+        });
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setBestandFetched(null);
+        setBestandError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [bestandId, bestandRow, token]);
+
+  const bestandSubject: StockDialogSubject | null = bestandRow ?? bestandFetched;
 
   // Everything below is a hook, so it must sit ABOVE the early return.
   // React counts hooks per render: one extra on the renders where this
@@ -338,7 +490,7 @@ export function WerkstattInventarPage() {
   /** Book a manual stock adjustment. Closes the dialog only on success. */
   const handleAdjustStock = useCallback(
     async (
-      row: MockInventoryRow,
+      row: StockDialogSubject,
       payload: {
         kind: "intake" | "defect" | "inventory";
         amount: number;
@@ -413,7 +565,25 @@ export function WerkstattInventarPage() {
         // stands: nothing here closes anything. See `staleStockMessage`.
         const stale = err instanceof ApiError && err.status === 409;
         setBestandError(stale ? staleStockMessage(detail, de) : detail);
-        if (stale) await reload();
+        if (stale) {
+          await reload();
+          // A subject that came from `getArticle` is not in the list, so the
+          // refetch above cannot refresh it — and the whole point of a 409 is
+          // that the figures on screen are the ones the server just called
+          // stale. Ask for its row again by id.
+          const fresh = await getArticle(token, row.article_id).catch(() => null);
+          if (fresh) {
+            setBestandFetched((prev) =>
+              prev === null || prev.article_id !== fresh.id
+                ? prev
+                : {
+                    ...prev,
+                    stock_total: fresh.stock_total,
+                    stock_available: fresh.stock_available,
+                  },
+            );
+          }
+        }
       } finally {
         setSaving(false);
       }
@@ -422,6 +592,31 @@ export function WerkstattInventarPage() {
   );
 
   if (mainView !== "werkstatt" || werkstattTab !== "inventar") return null;
+
+  /** Download the FILTERED rows. The button sits beside the filters, so the
+   *  narrowed list is what somebody pressing it means. */
+  function exportCsv() {
+    const blob = new Blob([CSV_BOM + stockRowsToCsv(rows, de)], {
+      type: "text/csv;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = stockExportFilename(new Date());
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    /* Deferred: Safari — the browser on the workshop iPad — fetches the blob
+     * AFTER the click handler returns, so revoking in the same tick yielded
+     * nothing and no file was saved, while the notice below still claimed one
+     * had been. A tick is enough for every engine to have taken it. */
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    setNotice(
+      de
+        ? `${rows.length} Artikel exportiert.`
+        : `Exported ${rows.length} articles.`,
+    );
+  }
 
 
   const categoryOptions = Array.from(new Set(allRows.map((r) => r.category))).sort();
@@ -437,82 +632,79 @@ export function WerkstattInventarPage() {
           <h1 className="werkstatt-sub-title">
             {de ? "Alle Artikel" : "All items"}
           </h1>
+          <small className="muted">
+            {de
+              ? "Verbrauchs- und Lagerartikel — Maschinen unter „Maschinen“"
+              : "Consumables and stock items — machines live under “Machines”"}
+          </small>
         </div>
         <div className="werkstatt-sub-actions">
-          <button type="button" className="werkstatt-action-btn">
-            {de ? "Exportieren" : "Export"}
-          </button>
+          {canManageStock && (
+            <button
+              type="button"
+              className="werkstatt-action-btn"
+              onClick={() => setDuplicatesOpen(true)}
+            >
+              {de ? "Duplikate prüfen" : "Review duplicates"}
+              {duplicateCount != null && duplicateCount > 0 && (
+                <span className="stock-badge">{duplicateCount}</span>
+              )}
+            </button>
+          )}
           <button
             type="button"
-            className="werkstatt-action-btn werkstatt-action-btn--primary"
-            onClick={() => setNeuerArtikelOpen(true)}
+            className="werkstatt-action-btn"
+            disabled={rows.length === 0}
+            onClick={exportCsv}
           >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-              <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-            </svg>
-            {de ? "Neuer Artikel" : "New item"}
+            {de ? "Exportieren" : "Export"}
           </button>
+          {/* Behind the same gate as the row menu, and for the reason stated
+              there: POST /werkstatt/articles requires `werkstatt:manage`, so
+              without it this button can only end in a 403 — after somebody
+              has scanned a code, checked a webshop suggestion, picked a
+              Lagerort and typed a Startbestand. A sentence naming who can do
+              it is worth more than a dialog that throws the work away. */}
+          {canManageStock ? (
+            <button
+              type="button"
+              className="werkstatt-action-btn werkstatt-action-btn--primary"
+              onClick={() => {
+                setNeuerArtikelCode(null);
+                setNeuerArtikelOpen(true);
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+              </svg>
+              {de ? "Neuer Artikel" : "New item"}
+            </button>
+          ) : (
+            <small className="muted">
+              {de
+                ? "Neue Artikel legt das Büro an (Berechtigung „Werkstatt verwalten“)."
+                : "New items are created by the office (permission “manage workshop”)."}
+            </small>
+          )}
         </div>
       </header>
 
-      <div className="werkstatt-filter-bar">
-        <div className="werkstatt-search">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <circle cx="11" cy="11" r="6.3" stroke="#5C7895" strokeWidth="1.8" />
-            <path d="m15.6 15.6 4 4" stroke="#5C7895" strokeWidth="1.8" strokeLinecap="round" />
-          </svg>
-          <input
-            type="text"
-            value={search}
-            onChange={(event) => setSearch(event.target.value)}
-            placeholder={
-              de
-                ? "Nach Name, Artikelnummer, Lagerort oder Kategorie suchen…"
-                : "Search by name, number, location or category…"
-            }
-          />
-        </div>
-        <label className="werkstatt-select">
-          <span className="werkstatt-select-label">
-            {de ? "Kategorie:" : "Category:"}
-          </span>
-          <select value={category} onChange={(event) => setCategory(event.target.value)}>
-            <option value="all">{de ? "Alle" : "All"}</option>
-            {categoryOptions.map((option) => (
-              <option key={option} value={option}>
-                {option}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="werkstatt-select">
-          <span className="werkstatt-select-label">
-            {de ? "Lagerort:" : "Location:"}
-          </span>
-          <select value={location} onChange={(event) => setLocation(event.target.value)}>
-            <option value="all">{de ? "Alle" : "All"}</option>
-            {locationOptions.map((option) => (
-              <option key={option} value={option}>
-                {option}
-              </option>
-            ))}
-          </select>
-        </label>
-        <div className="werkstatt-segmented werkstatt-segmented--fill" role="tablist">
-          {filters.map((def) => (
-            <button
-              key={def.key}
-              type="button"
-              role="tab"
-              aria-selected={activeFilter === def.key}
-              className={`werkstatt-segmented-btn${activeFilter === def.key ? " werkstatt-segmented-btn--active" : ""}`}
-              onClick={() => setActiveFilter(def.key)}
-            >
-              {(de ? def.label_de : def.label_en)} · {def.count}
-            </button>
-          ))}
-        </div>
-      </div>
+      <StockFilterBar
+        de={de}
+        search={search}
+        onSearch={setSearch}
+        category={category}
+        categoryOptions={categoryOptions}
+        onCategory={setCategory}
+        location={location}
+        locationOptions={locationOptions}
+        onLocation={setLocation}
+        showArchived={showArchived}
+        onShowArchived={setShowArchived}
+        filters={filters}
+        activeFilter={activeFilter}
+        onFilter={setActiveFilter}
+      />
 
       <div className="werkstatt-table-card">
         <div className="werkstatt-table-head" role="row">
@@ -550,100 +742,30 @@ export function WerkstattInventarPage() {
         )}
         <ul className="werkstatt-table-body">
           {rows.map((row) => (
-            <li
+            <StockTableRow
               key={row.id}
-              className="werkstatt-row werkstatt-row--clickable"
-              role="row"
-              onClick={(event) => {
-                // Row click opens Entnehmen, BUT don't hijack clicks on the
-                // checkbox / overflow button / other interactive children.
-                const target = event.target as HTMLElement;
-                if (target.closest("input, button")) return;
+              row={row}
+              de={de}
+              printingId={printingId}
+              canManage={canManageStock}
+              onCheckout={(articleId) => {
                 setEntnehmenError(null);
-                setEntnehmenId(row.article_id);
+                setEntnehmenId(articleId);
               }}
-            >
-              <span className="werkstatt-col werkstatt-col-checkbox">
-                <input type="checkbox" aria-label={row.item_name} />
-              </span>
-              <span className="werkstatt-col werkstatt-col-item">
-                <span className="werkstatt-row-thumb" aria-hidden="true">
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
-                    <path
-                      d="M12 3 3 7.5v9L12 21l9-4.5v-9L12 3Z"
-                      stroke="#5C7895"
-                      strokeWidth="1.6"
-                      strokeLinejoin="round"
-                    />
-                    <path d="M3 7.5 12 12l9-4.5M12 12v9" stroke="#5C7895" strokeWidth="1.6" />
-                  </svg>
-                </span>
-                <span className="werkstatt-row-main">
-                  <b className="werkstatt-row-name">{row.item_name}</b>
-                  <small className="werkstatt-row-meta">
-                    {row.article_no} · {row.sub_meta}
-                  </small>
-                </span>
-              </span>
-              <span className="werkstatt-col werkstatt-col-category">{row.category}</span>
-              <span className="werkstatt-col werkstatt-col-location">{row.location}</span>
-              <span className="werkstatt-col werkstatt-col-stock">
-                <span className={`werkstatt-stock-pill werkstatt-stock-pill--${row.stock_tone}`}>
-                  <span className="werkstatt-stock-pill-dot" aria-hidden="true" />
-                  {row.stock_label}
-                </span>
-              </span>
-              <span className="werkstatt-col werkstatt-col-out">
-                {row.out_initials ? (
-                  <span className="werkstatt-initials" aria-hidden="true">
-                    {row.out_initials}
-                  </span>
-                ) : (
-                  <span className="werkstatt-initials werkstatt-initials--empty" aria-hidden="true" />
-                )}
-                <span className="werkstatt-row-out-label">{row.out_label}</span>
-              </span>
-              <span className="werkstatt-col werkstatt-col-actions">
-                {/* Unscannable stock is the actionable case, so that button is
-                    the prominent one; for everything else this is a reprint. */}
-                <button
-                  type="button"
-                  className={`werkstatt-row-label-btn${row.scannable ? "" : " is-missing"}`}
-                  disabled={printingId !== null}
-                  aria-label={
-                    row.scannable
-                      ? de ? "Etikett erneut drucken" : "Reprint label"
-                      : de ? "Etikett drucken – Artikel ist nicht scannbar" : "Print label – article is not scannable"
-                  }
-                  title={
-                    row.scannable
-                      ? de ? "Etikett erneut drucken" : "Reprint label"
-                      : de ? "Kein Barcode – Etikett drucken" : "No barcode – print a label"
-                  }
-                  onClick={() => void handlePrintLabel(row)}
-                >
-                  {printingId === row.article_id ? "…" : "⎙"}
-                </button>
-                {/* Hidden without `werkstatt:manage`: the endpoint behind it
-                    requires that permission, and a button that can only end
-                    in a 403 is worse than no button — it costs a filled-in
-                    dialog to find out. */}
-                {canManageStock && (
-                  <button
-                    type="button"
-                    className="werkstatt-row-overflow"
-                    aria-label={de ? "Bestand anpassen" : "Adjust stock"}
-                    title={de ? "Bestand anpassen" : "Adjust stock"}
-                    onClick={() => {
-                      setBestandError(null);
-                      setBestandId(row.article_id);
-                    }}
-                  >
-                    …
-                  </button>
-                )}
-              </span>
-            </li>
+              onAdjustStock={(articleId) => {
+                setBestandError(null);
+                setBestandId(articleId);
+              }}
+              onEdit={(articleId) => {
+                setEditArchiveFirst(false);
+                setEditId(articleId);
+              }}
+              onArchive={(articleId) => {
+                setEditArchiveFirst(true);
+                setEditId(articleId);
+              }}
+              onPrintLabel={(target) => void handlePrintLabel(target)}
+            />
           ))}
           {rows.length === 0 && loading && (
             <li className="werkstatt-row werkstatt-row--empty muted">
@@ -674,23 +796,92 @@ export function WerkstattInventarPage() {
       {/* Modals */}
       <NeuerArtikelModal
         open={neuerArtikelOpen}
-        onClose={() => setNeuerArtikelOpen(false)}
-        language={language}
-        onSave={(payload) => {
-          // TODO(werkstatt): POST /api/werkstatt/articles.
-          //
-          // Until that exists, this saves NOTHING — and says so. It used to
-          // report "gespeichert (API folgt)" in the green success toast, which
-          // next to two dialogs that now really do book stock is a lie the
-          // user has no way to catch. The error toast is the honest channel:
-          // they pressed save and nothing was stored. The dialog stays open so
-          // what they typed is still there to copy out.
-          setError(
-            de
-              ? `Neue Artikel können noch nicht angelegt werden — "${payload.item_name || "Neuer Artikel"}" wurde NICHT gespeichert.`
-              : `Creating articles is not wired up yet — "${payload.item_name || "New item"}" was NOT saved.`,
-          );
+        onClose={() => {
+          setNeuerArtikelOpen(false);
+          setNeuerArtikelCode(null);
         }}
+        language={language}
+        token={token}
+        seedCode={neuerArtikelCode}
+        onCreated={(article) => {
+          setNotice(
+            de
+              ? `${article.article_number} „${article.item_name}“ angelegt`
+              : `${article.article_number} “${article.item_name}” created`,
+          );
+          /* An article with no EAN cannot be found by scanning anything, so
+           * the next useful step is a shelf label — said once, here, rather
+           * than discovered weeks later at the rack. */
+          if (!article.ean) {
+            setLabelNotice(
+              de
+                ? `${article.article_number} hat keinen Barcode — Etikett drucken?`
+                : `${article.article_number} has no barcode — print a label?`,
+            );
+          }
+          setNeuerArtikelCode(null);
+          void reload();
+          void loadDuplicateCount();
+        }}
+        onAdjustStock={(articleId) => {
+          setBestandError(null);
+          setBestandId(articleId);
+        }}
+        onEditArticle={(articleId) => {
+          setEditArchiveFirst(false);
+          setEditId(articleId);
+        }}
+      />
+
+      <ArtikelBearbeitenModal
+        open={editId !== null}
+        articleId={editId}
+        language={language}
+        token={token}
+        startArchiveConfirm={editArchiveFirst}
+        onClose={() => {
+          setEditId(null);
+          setEditArchiveFirst(false);
+        }}
+        onSaved={(article) => {
+          setNotice(
+            de
+              ? `${article.article_number} gespeichert`
+              : `${article.article_number} saved`,
+          );
+          void reload();
+        }}
+        onArchived={(article) => {
+          setNotice(
+            de
+              ? `${article.article_number} „${article.item_name}“ archiviert`
+              : `${article.article_number} “${article.item_name}” archived`,
+          );
+          void reload();
+          void loadDuplicateCount();
+        }}
+        onOpenStockDialog={(articleId) => {
+          setEditId(null);
+          setBestandError(null);
+          setBestandId(articleId);
+        }}
+        onOpenMachines={() => {
+          setEditId(null);
+          setWerkstattTab("maschinen");
+        }}
+      />
+
+      <DuplikateModal
+        open={duplicatesOpen}
+        language={language}
+        token={token}
+        onClose={() => setDuplicatesOpen(false)}
+        onMerged={(message) => {
+          setNotice(message);
+          void reload();
+          void loadDuplicateCount();
+        }}
+        onError={(message) => setError(message)}
       />
 
       {/* Both dialogs are handed the row's REAL counters. They used to get the
@@ -722,7 +913,7 @@ export function WerkstattInventarPage() {
         />
       )}
 
-      {bestandRow && (
+      {bestandSubject && (
         <BestandAnpassenModal
           open={true}
           onClose={() => {
@@ -731,17 +922,36 @@ export function WerkstattInventarPage() {
           }}
           language={language}
           article={{
-            item_name: bestandRow.item_name,
-            article_number: bestandRow.article_no,
-            category_name: bestandRow.category,
-            stock_total: bestandRow.stock_total,
-            stock_available: bestandRow.stock_available,
-            unit: bestandRow.unit,
+            item_name: bestandSubject.item_name,
+            article_number: bestandSubject.article_no,
+            category_name: bestandSubject.category,
+            stock_total: bestandSubject.stock_total,
+            stock_available: bestandSubject.stock_available,
+            unit: bestandSubject.unit,
           }}
           submitting={saving}
           error={bestandError}
-          onConfirm={(payload) => void handleAdjustStock(bestandRow, payload)}
+          onConfirm={(payload) => void handleAdjustStock(bestandSubject, payload)}
         />
+      )}
+      {/* The id is set, the list does not hold it and the fetch failed: say so
+          rather than leaving the person looking at a list that just closed a
+          dialog on them. */}
+      {bestandId !== null && bestandSubject === null && bestandError && (
+        <p className="werkstatt-label-notice" role="alert">
+          {bestandError}
+          <button
+            type="button"
+            className="werkstatt-label-notice-close"
+            aria-label={de ? "Hinweis schließen" : "Dismiss"}
+            onClick={() => {
+              setBestandId(null);
+              setBestandError(null);
+            }}
+          >
+            ×
+          </button>
+        </p>
       )}
     </section>
   );

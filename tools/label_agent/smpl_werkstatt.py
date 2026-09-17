@@ -55,6 +55,12 @@ PATHS = {
     "movements": BASE + "/movements",
     "crew": BASE + "/crew",
     "from_catalog": BASE + "/articles/from-catalog",
+    # The wider cascade: `resolve` answers "which of SMPL's rows is this" and
+    # never leaves the building; `lookup` may also ask the public webshop, so
+    # the screen only reaches for it at the moment a Wareneingang has already
+    # found nothing. `from_lookup` is the write that follows.
+    "lookup": BASE + "/lookup",
+    "from_lookup": BASE + "/articles/from-lookup",
 }
 
 #: The movement vocabulary SMPL accepts. Checked here so a typo in a screen
@@ -70,6 +76,18 @@ PATHS = {
 MOVEMENT_TYPES = frozenset(("checkout", "return", "intake"))
 
 DEFAULT_TIMEOUT_S = 4.0
+#: What the two calls that may reach the public internet are allowed to take.
+#:
+#: Everything else here is a local database read and four seconds is generous.
+#: `lookup` and `from_lookup` are not: the server may ask a webshop, bounded by
+#: its own `EAN_LOOKUP_TIMEOUT_SECONDS` (6 s by default) plus the handler
+#: around it. A client timeout SHORTER than the server's budget is the worst
+#: of both worlds — the request runs to completion on the server while this
+#: end reports a failure, so the wall says "Nicht angelegt" for a delivery that
+#: was booked and the operator's natural retry books it a second time. Twenty
+#: seconds is comfortably past any answer the server is willing to give; if
+#: nothing has come back by then, nothing is coming.
+DEFAULT_LOOKUP_TIMEOUT_S = 20.0
 DEFAULT_BOX_TTL_S = 15.0
 # The crew changes when somebody is hired, not while a crate is packed, so it
 # is cached far longer than the boxes are.
@@ -262,7 +280,9 @@ class WerkstattClient:
     """Boxes, resolves, crate lines and movements — all of them optional."""
 
     def __init__(self, base_url: str, *, token_provider: Optional[Callable[[], str]] = None,
-                 timeout: float = DEFAULT_TIMEOUT_S, box_ttl_s: float = DEFAULT_BOX_TTL_S,
+                 timeout: float = DEFAULT_TIMEOUT_S,
+                 lookup_timeout: float = DEFAULT_LOOKUP_TIMEOUT_S,
+                 box_ttl_s: float = DEFAULT_BOX_TTL_S,
                  crew_ttl_s: float = DEFAULT_CREW_TTL_S,
                  user_agent: str = "smpl-label-agent",
                  clock: Callable[[], float] = time.time,
@@ -270,6 +290,9 @@ class WerkstattClient:
         self.base_url = (base_url or "").rstrip("/")
         self._token_provider = token_provider
         self.timeout = float(timeout)
+        # Never below the ordinary timeout: a caller lowering this would
+        # re-open the double-booking window the token exists to close.
+        self.lookup_timeout = max(float(lookup_timeout), float(timeout))
         self.box_ttl_s = float(box_ttl_s)
         self.crew_ttl_s = float(crew_ttl_s)
         self.user_agent = user_agent
@@ -513,10 +536,69 @@ class WerkstattClient:
             payload["notes"] = str(notes)[:500]
         return self._write(PATHS["from_catalog"], payload)
 
-    def _write(self, path: str, payload: Dict[str, Any]) -> Result:
+    def lookup(self, code: str) -> Optional[Dict[str, Any]]:
+        """The wider cascade, including the webshop. None if unreachable.
+
+        Separate from :meth:`resolve` because the two cost different things.
+        ``resolve`` runs on every scan and touches only SMPL's own tables;
+        this one may make the server fetch a product page, so the screen asks
+        it once, after a Wareneingang scan has already come back empty.
+        """
+        if not self.configured or not (code or "").strip():
+            return None
+        result = self._request("GET", PATHS["lookup"], query={"code": code},
+                               timeout=self.lookup_timeout)
+        if not result.ok or not isinstance(result.data, dict):
+            return None
+        return result.data
+
+    def stock_from_lookup(self, code: str, quantity: int = 1, *,
+                          item_name: str = "", unit: str = "",
+                          notes: str = "", request_id: str = "") -> Result:
+        """Book a delivery for a code nothing here has ever stocked.
+
+        The station sends the CODE and lets the server do the looking: it never
+        picks a source, never sees a URL, and cannot be talked into creating an
+        article for something no source describes. The server answers with the
+        same ``{article, movement_id, created}`` shape a catalogue intake does,
+        plus ``origin`` — "existing", "catalog", "external" or "manual" — which
+        is how the screen knows which sentence to say.
+
+        ``item_name`` is the last resort and only the rack panel has it: that
+        screen has a keyboard, and a name somebody typed while holding the box
+        is a far better record than a placeholder called "Unbekannt (…)" that
+        nobody ever goes back to fix. The server ignores it whenever the
+        lookup resolved.
+
+        ``request_id`` identifies one ATTEMPT and is reused verbatim on its
+        retries. Booking a delivery is not idempotent, and the two ends of this
+        call can disagree about whether it happened: a slow answer times out
+        here while the server commits. With the token, the retry replays the
+        first answer instead of booking the pallet twice.
+        """
+        token = (code or "").strip()
+        if not token:
+            return Result(False, error="Kein Code angegeben.")
+        qty = _as_qty(quantity)
+        if qty is None:
+            return Result(False, error="Ungültige Menge.")
+        payload: Dict[str, Any] = {"code": token[:64], "quantity": qty}
+        if (item_name or "").strip():
+            payload["item_name"] = str(item_name).strip()[:200]
+        if (unit or "").strip():
+            payload["unit"] = str(unit).strip()[:32]
+        if notes:
+            payload["notes"] = str(notes)[:500]
+        if (request_id or "").strip():
+            payload["request_id"] = str(request_id).strip()[:64]
+        return self._write(PATHS["from_lookup"], payload,
+                           timeout=self.lookup_timeout)
+
+    def _write(self, path: str, payload: Dict[str, Any],
+               *, timeout: Optional[float] = None) -> Result:
         if not self.configured:
             return Result(False, error=NOT_CONFIGURED)
-        result = self._request("POST", path, payload=payload)
+        result = self._request("POST", path, payload=payload, timeout=timeout)
         if result.ok:
             self.invalidate_boxes()
         return result
@@ -524,7 +606,8 @@ class WerkstattClient:
     # -- transport --------------------------------------------------------
 
     def _request(self, method: str, path: str, *, query: Optional[Dict[str, str]] = None,
-                 payload: Optional[Dict[str, Any]] = None) -> Result:
+                 payload: Optional[Dict[str, Any]] = None,
+                 timeout: Optional[float] = None) -> Result:
         url = self.base_url + path
         if query:
             url += "?" + urllib.parse.urlencode(query)
@@ -539,7 +622,8 @@ class WerkstattClient:
             request.add_header("Authorization", "Bearer %s" % bearer)
 
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as handle:  # noqa: S310
+            wait = float(timeout) if timeout else self.timeout
+            with urllib.request.urlopen(request, timeout=wait) as handle:  # noqa: S310
                 raw = handle.read(MAX_RESPONSE_BYTES)
                 status = handle.status
         except urllib.error.HTTPError as exc:
