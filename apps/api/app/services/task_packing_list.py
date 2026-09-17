@@ -211,12 +211,16 @@ def _task_title(task: Any) -> str:
 
 
 def _task_schedule(task: Any) -> str | None:
-    """The task's date(s) as one line: due date with time and duration, then
-    the planning week when the task is pinned to one."""
+    """The task's date(s) as one line: due date (or the Von – Bis window of a
+    multi-day task) with the daily time and duration, then the planning week
+    when the task is pinned to one."""
     parts: list[str] = []
     due_date = getattr(task, "due_date", None)
     if due_date is not None:
         text = due_date.strftime(_DATE_FMT)
+        end_date = getattr(task, "end_date", None)
+        if end_date is not None and end_date > due_date:
+            text += f" – {end_date.strftime(_DATE_FMT)}"
         start_time = getattr(task, "start_time", None)
         if start_time is not None:
             text += f", {start_time.strftime('%H:%M')} Uhr"

@@ -20,6 +20,7 @@ from app.services.task_packing_list import (
     PackingLine,
     lines_from_free_text,
     render_packing_list,
+    _task_schedule,
 )
 from tests.test_tasks_construction_box import (
     _box,
@@ -261,3 +262,10 @@ def test_free_text_lines_drop_blanks_and_bullets():
     assert all(line.quantity is None for line in lines)
     assert lines_from_free_text(None) == []
     assert lines_from_free_text("  \n ") == []
+
+
+def test_the_schedule_line_prints_a_multi_day_window():
+    task = _task_stub(due_date=date(2026, 10, 1), end_date=date(2026, 10, 3), start_time=time(8, 0), estimated_hours=8)
+    assert _task_schedule(task) == "01.10.2026 – 03.10.2026, 08:00 Uhr (ca. 8 h)"
+    # A same-day "end" is not a window and must not print twice.
+    assert _task_schedule(_task_stub(end_date=date(2026, 9, 10))) == "10.09.2026, 08:00 Uhr (ca. 4,5 h)"

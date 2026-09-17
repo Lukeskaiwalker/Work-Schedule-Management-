@@ -230,9 +230,72 @@ export function isTaskOverdue(task: Task, referenceIsoDate: string) {
   const status = canonicalTaskStatus(task.status);
   if (status === "overdue") return true;
   if (isTaskDoneStatus(status)) return false;
+  // Same rule as the api's _task_is_overdue: the LAST day decides, so day two
+  // of a three-day job is not red.
+  const lastDay = taskEndDate(task);
+  if (!lastDay) return false;
+  return lastDay < referenceIsoDate;
+}
+
+/** The last day of the task's window: end_date, else due_date, else "". */
+export function taskEndDate(task: Pick<Task, "due_date" | "end_date">): string {
   const dueDate = String(task.due_date || "").trim();
-  if (!dueDate) return false;
-  return dueDate < referenceIsoDate;
+  if (!dueDate) return "";
+  const endDate = String(task.end_date || "").trim();
+  return endDate && endDate > dueDate ? endDate : dueDate;
+}
+
+/** True when the ISO day lies inside [due_date, end_date]. Undated → false. */
+export function taskSpansDay(task: Pick<Task, "due_date" | "end_date">, isoDay: string): boolean {
+  const dueDate = String(task.due_date || "").trim();
+  if (!dueDate || !isoDay) return false;
+  return dueDate <= isoDay && isoDay <= taskEndDate(task);
+}
+
+function isoDayNumber(isoDate: string): number {
+  // Whole days since the epoch, computed in UTC so DST never yields 0.96 days.
+  return Math.round(Date.UTC(
+    Number(isoDate.slice(0, 4)),
+    Number(isoDate.slice(5, 7)) - 1,
+    Number(isoDate.slice(8, 10)),
+  ) / 86_400_000);
+}
+
+/** Number of calendar days the task covers; 1 for a single day, 0 when undated. */
+export function taskDayCount(task: Pick<Task, "due_date" | "end_date">): number {
+  const dueDate = String(task.due_date || "").trim();
+  if (!dueDate) return 0;
+  const lastDay = taskEndDate(task);
+  return Math.max(1, isoDayNumber(lastDay) - isoDayNumber(dueDate) + 1);
+}
+
+/**
+ * "Tag 2/3" for the given day of a multi-day task; "" for a single-day task
+ * or a day outside the window, so callers can render it unconditionally.
+ */
+export function taskDayIndexLabel(
+  task: Pick<Task, "due_date" | "end_date">,
+  isoDay: string,
+  language: Language,
+): string {
+  const total = taskDayCount(task);
+  if (total <= 1 || !taskSpansDay(task, isoDay)) return "";
+  const index = isoDayNumber(isoDay) - isoDayNumber(String(task.due_date)) + 1;
+  return `${language === "de" ? "Tag" : "Day"} ${index}/${total}`;
+}
+
+/**
+ * The task's date(s) for a row: "2026-10-01" for a single day and
+ * "2026-10-01 – 2026-10-03" for a window — ISO in both languages, on purpose.
+ * Every list prints single days in ISO, so a dotted window would put two date
+ * systems into one column, a one-day row directly above a three-day one.
+ * "" when undated.
+ */
+export function formatTaskDateRange(task: Pick<Task, "due_date" | "end_date">): string {
+  const dueDate = String(task.due_date || "").trim();
+  if (!dueDate) return "";
+  const lastDay = taskEndDate(task);
+  return lastDay === dueDate ? dueDate : `${dueDate} – ${lastDay}`;
 }
 
 export function taskStatusLabel(value: string, language: Language) {
@@ -295,6 +358,7 @@ export function taskNotificationDigest(rows: Task[]) {
         task.status || "",
         task.planning_status || "",
         task.due_date || "",
+        task.end_date || "",
         task.start_time || "",
         task.end_time || "",
         task.estimated_hours ?? "",

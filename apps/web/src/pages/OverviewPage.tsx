@@ -1,9 +1,8 @@
-import { useMemo } from "react";
 import { useAppContext } from "../context/AppContext";
 import { SidebarNavIcon } from "../components/icons";
 import { formatServerDateTime, parseServerDateTime } from "../utils/dates";
-import { formatProjectTitleParts, statusLabel } from "../utils/projects";
 import { CriticalDot } from "../components/project/CriticalDot";
+import { MyTasksOverviewCard } from "../components/tasks/MyTasksOverviewCard";
 
 function formatHours(value: number) {
   return `${value.toFixed(1)}h`;
@@ -21,10 +20,6 @@ export function OverviewPage() {
     timeCurrent,
     recentConstructionReports,
     recentAssignedProjects,
-    filteredDetailedOverview,
-    overviewStatusOptions,
-    overviewStatusFilter,
-    setOverviewStatusFilter,
     recentReportProjectTitleParts,
     projectTitleParts: buildProjectTitleParts,
     filePreviewUrl,
@@ -37,16 +32,7 @@ export function OverviewPage() {
     clockOut,
     startBreak,
     endBreak,
-    projects,
   } = useAppContext();
-
-  // Look up the full Project (with is_critical / audit fields) from an
-  // overview row's project_id — overview rows don't carry the critical flag.
-  const projectsById = useMemo(() => {
-    const map = new Map<number, (typeof projects)[number]>();
-    for (const p of projects) map.set(p.id, p);
-    return map;
-  }, [projects]);
 
   if (mainView !== "overview") return null;
 
@@ -83,7 +69,6 @@ export function OverviewPage() {
 
   const latestReports = recentConstructionReports.slice(0, 2);
   const myProjects = recentAssignedProjects.slice(0, 3);
-  const overviewProjects = filteredDetailedOverview.slice(0, 6);
 
   return (
     <section className="overview-layout">
@@ -254,82 +239,9 @@ export function OverviewPage() {
           </div>
         </article>
 
-        <article className="overview-card overview-projects-card">
-          <div className="overview-projects-head">
-            <h3>{de ? "Projektübersicht" : "Projects overview"}</h3>
-            <div className="overview-projects-controls">
-              <label className="overview-state-filter">
-                <span>{de ? "Status:" : "State:"}</span>
-                <select value={overviewStatusFilter} onChange={(event) => setOverviewStatusFilter(event.target.value)}>
-                  <option value="all">{de ? "Alle" : "All"}</option>
-                  {overviewStatusOptions.map((statusValue) => (
-                    <option key={statusValue} value={statusValue}>
-                      {statusLabel(statusValue, language)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button
-                type="button"
-                className="overview-open-full-btn"
-                onClick={() => {
-                  setProjectBackView(null);
-                  setMainView("projects_all");
-                }}
-              >
-                <span aria-hidden="true">≡</span>
-                <span>{de ? "Liste" : "List"}</span>
-              </button>
-            </div>
-          </div>
-
-          <div className="overview-projects-list">
-            {overviewProjects.map((row) => {
-              const projectId = Number(row.project_id);
-              const projectNumber = row.project_number ?? row.project_id;
-              const projectLabel = formatProjectTitleParts(
-                String(projectNumber),
-                String(row.customer_name ?? ""),
-                String(row.project_name ?? ""),
-                projectId,
-              );
-              const normalizedStatus = String(row.status ?? "unknown").replace(/_/g, "-").toLowerCase();
-              return (
-                <button
-                  key={row.project_id}
-                  type="button"
-                  className="overview-project-row"
-                  onClick={() => {
-                    if (!projectId) return;
-                    openProjectById(projectId, null);
-                  }}
-                >
-                  <div className="overview-project-row-copy">
-                    <strong>
-                      {projectLabel.title}
-                      {projectsById.get(projectId) && (
-                        <CriticalDot project={projectsById.get(projectId)!} />
-                      )}
-                    </strong>
-                    <small>
-                      {String(row.customer_name ?? "").trim() || projectLabel.subtitle || (de ? "Ohne Kunde" : "No customer")} ·{" "}
-                      {row.open_tasks} {de ? "Aufgaben" : "tasks"} · {row.sites}{" "}
-                      {de ? (Number(row.sites) === 1 ? "Ort" : "Orte") : Number(row.sites) === 1 ? "site" : "sites"}
-                    </small>
-                  </div>
-                  <span className={`overview-status-badge status-${normalizedStatus}`}>
-                    {statusLabel(String(row.status ?? ""), language)}
-                  </span>
-                </button>
-              );
-            })}
-            {overviewProjects.length === 0 ? (
-              <div className="overview-empty-state">
-                {de ? "Keine Projekte in diesem Status." : "No projects in this state."}
-              </div>
-            ) : null}
-          </div>
-        </article>
+        {/* The projects list lived here; the field worker's first question
+            is "what is on for me", and the full list is one click away. */}
+        <MyTasksOverviewCard />
       </div>
     </section>
   );

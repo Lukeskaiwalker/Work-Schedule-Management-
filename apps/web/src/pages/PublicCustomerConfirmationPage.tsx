@@ -28,6 +28,8 @@ type PublicView = {
   task_title: string;
   task_description: string | null;
   due_date: string | null;
+  /** Set for a multi-day appointment; the page then reads "vom … bis …". */
+  end_date: string | null;
   start_time: string | null;
   estimated_hours: number | null;
   worker_display_names: string[];
@@ -213,8 +215,17 @@ export function PublicCustomerConfirmationPage() {
             {de ? "TERMIN" : "APPOINTMENT"}
           </div>
           <div style={{ marginTop: 4, fontSize: 18, fontWeight: 600 }}>
-            {formatDate(view.due_date, view.language)}
-            {view.start_time && ` · ${formatTime(view.start_time)}`}
+            {view.end_date && view.due_date && view.end_date > view.due_date
+              ? `${de ? "vom" : "from"} ${formatDate(view.due_date, view.language)} ${de ? "bis" : "to"} ${formatDate(view.end_date, view.language)}`
+              : formatDate(view.due_date, view.language)}
+            {view.start_time &&
+              ` · ${formatTime(view.start_time)}${
+                view.end_date && view.due_date && view.end_date > view.due_date
+                  ? de
+                    ? " täglich"
+                    : " daily"
+                  : ""
+              }`}
           </div>
           <div style={{ marginTop: 8 }}>
             <b>{de ? "Geplante Arbeit: " : "Planned work: "}</b>

@@ -205,6 +205,9 @@ class DayActivityTaskOut(BaseModel):
     status: str
     task_type: str
     due_date: date | None = None
+    # Last day of a multi-day task (None = single-day). The viewed day lies
+    # somewhere inside [due_date, end_date]; the UI says which day it is.
+    end_date: date | None = None
     project_id: int | None = None
     project_number: str | None = None
     project_name: str | None = None

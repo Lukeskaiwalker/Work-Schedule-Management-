@@ -88,13 +88,20 @@ def render_customer_confirmation_email(
     confirmation_token: str,
     company_name: str,
     company_phone: str | None = None,
+    end_date: date | None = None,
 ) -> tuple[str, str]:
     """Build (subject, body) for the confirmation email. Pure function —
     no DB access, no side effects — so it's straightforward to unit-test
-    against snapshot strings."""
+    against snapshot strings.
+
+    ``end_date`` past ``due_date`` turns the one-day wording into a window
+    ("vom … bis …"); the start time then describes the DAILY slot, which is
+    what the crew actually keeps on every day of a multi-day job."""
     url = _public_confirmation_url(confirmation_token)
     date_str = _format_date(due_date, language)
     time_str = _format_time(start_time)
+    multi_day = due_date is not None and end_date is not None and end_date > due_date
+    end_str = _format_date(end_date, language) if multi_day else ""
     when = f"{date_str} {time_str}".strip() if time_str else date_str
     duration = _format_hours(estimated_hours, language)
     workers = ", ".join(name for name in worker_display_names if name.strip())
@@ -105,11 +112,17 @@ def render_customer_confirmation_email(
             if customer_name
             else "Sehr geehrte Damen und Herren,"
         )
-        subject = f"Terminbestätigung am {date_str}"
+        if multi_day:
+            subject = f"Terminbestätigung {date_str} – {end_str}"
+            daily = f", täglich ab {time_str} Uhr" if time_str else ""
+            when_line = f"wir möchten Ihren Termin vom {date_str} bis {end_str}{daily} bestätigen."
+        else:
+            subject = f"Terminbestätigung am {date_str}"
+            when_line = f"wir möchten Ihren Termin am {when} bestätigen."
         body_lines = [
             salutation,
             "",
-            f"wir möchten Ihren Termin am {when} bestätigen.",
+            when_line,
             "",
             f"Geplante Arbeit: {task_title}",
         ]
@@ -133,11 +146,17 @@ def render_customer_confirmation_email(
         ]
     else:
         salutation = f"Dear {customer_name}," if customer_name else "Dear customer,"
-        subject = f"Appointment confirmation for {date_str}"
+        if multi_day:
+            subject = f"Appointment confirmation {date_str} – {end_str}"
+            daily = f", daily from {time_str}" if time_str else ""
+            when_line = f"We would like to confirm your appointment from {date_str} to {end_str}{daily}."
+        else:
+            subject = f"Appointment confirmation for {date_str}"
+            when_line = f"We would like to confirm your appointment on {when}."
         body_lines = [
             salutation,
             "",
-            f"We would like to confirm your appointment on {when}.",
+            when_line,
             "",
             f"Planned work: {task_title}",
         ]
@@ -177,6 +196,7 @@ def send_customer_confirmation_email(
     confirmation_token: str,
     company_name: str = "SMPL",
     company_phone: str | None = None,
+    end_date: date | None = None,
 ) -> EmailSendResult:
     """Compose + send the customer-confirmation email.
 
@@ -191,6 +211,7 @@ def send_customer_confirmation_email(
         task_title=task_title,
         task_description=task_description,
         due_date=due_date,
+        end_date=end_date,
         start_time=start_time,
         estimated_hours=estimated_hours,
         worker_display_names=worker_display_names,

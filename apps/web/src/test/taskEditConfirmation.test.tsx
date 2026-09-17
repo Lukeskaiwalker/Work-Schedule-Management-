@@ -70,6 +70,7 @@ function formWith(overrides: Partial<TaskEditFormState>): TaskEditFormState {
     class_template_id: "",
     status: "open",
     due_date: "2026-09-20",
+    end_date: "",
     start_time: "",
     estimated_hours: "",
     priority: "normal",

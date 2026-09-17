@@ -2,12 +2,16 @@ import { useMemo, useRef, useEffect } from "react";
 import { useAppContext } from "../../context/AppContext";
 import { addDaysISO, formatDayLabel, formatShortIsoDate, startOfWeekISO } from "../../utils/dates";
 import {
+  formatTaskDateRange,
   formatTaskTimeRange,
   isTaskDoneStatus,
   isTaskOverdue,
   sortTasksByDueTime,
+  taskDayCount,
+  taskEndDate,
   taskEstimatedMinutes,
 } from "../../utils/tasks";
+import "../../styles/tasks.css";
 import { formatDurationLabel } from "../../utils/gantt";
 
 // The guard only bounds the loop against a malformed end date; it must be large
@@ -67,7 +71,12 @@ export function ProjectGanttTab() {
 
   const timelineDays = useMemo(() => {
     const firstDate = scheduledTasks[0]?.due_date ?? "";
-    const lastDate = scheduledTasks[scheduledTasks.length - 1]?.due_date ?? "";
+    // Sorted by start, so the last START is not the last day: a long task
+    // early in the list can end after everything that starts later.
+    const lastDate = scheduledTasks.reduce((latest, row) => {
+      const lastDay = taskEndDate(row);
+      return lastDay > latest ? lastDay : latest;
+    }, "");
     if (!firstDate || !lastDate) {
       const fallbackStart = startOfWeekISO(new Date());
       return buildTimelineDays(fallbackStart, addDaysISO(fallbackStart, 6));
@@ -218,6 +227,11 @@ export function ProjectGanttTab() {
                   const durationText = formatDurationLabel(durationMin);
                   const timeText = task.start_time ? formatTaskTimeRange(task) : "";
                   const subtaskCount = (task.subtasks ?? []).length;
+                  const dayCount = taskDayCount(task);
+                  const dateRangeText = dayCount > 1 ? formatTaskDateRange(task) : "";
+                  // Never past the axis: a bar that ends after the last
+                  // column would spill out of the grid.
+                  const barSpan = dayIndex >= 0 ? Math.min(dayCount, timelineDays.length - dayIndex) : 1;
 
                   const statusClass = isDone
                     ? "gantt-row-done"
@@ -245,6 +259,7 @@ export function ProjectGanttTab() {
                         <div className="gantt-label-content">
                           <div className="gantt-label-title">{task.title}</div>
                           <div className="gantt-label-meta">
+                            {dateRangeText && <span className="task-day-chip">{dateRangeText}</span>}
                             {timeText && <small>{timeText}</small>}
                             {durationText && <span className="gantt-duration-badge">{durationText}</span>}
                             {subtaskCount > 0 && (
@@ -282,7 +297,7 @@ export function ProjectGanttTab() {
                               isMine ? "gantt-bar-mine" : "",
                               isDone ? "gantt-bar-done" : isOverdueTask ? "gantt-bar-overdue" : "",
                             ].filter(Boolean).join(" ")}
-                            style={{ gridColumn: `${dayIndex + 1} / span 1` }}
+                            style={{ gridColumn: `${dayIndex + 1} / span ${barSpan}` }}
                           >
                             <button
                               type="button"
@@ -296,7 +311,7 @@ export function ProjectGanttTab() {
                                 if (isMine && !isDone) openTaskFromProject(task);
                               }}
                               aria-label={actionLabel}
-                              title={`${task.title}\n${timeText}${durationText ? ` \u00B7 ${durationText}` : ""}`}
+                              title={`${task.title}\n${dateRangeText ? `${dateRangeText}\n` : ""}${timeText}${durationText ? ` \u00B7 ${durationText}` : ""}`}
                             >
                               <b className="gantt-bar-title">{task.title}</b>
                               <small className="gantt-bar-detail">

@@ -33,6 +33,7 @@
  *                         to. The modal is where that note stays readable.
  */
 import type { Language, Task } from "../../types";
+import { formatTaskDateRange } from "../../utils/tasks";
 import { resolveTerminBadge } from "../../utils/terminBadge";
 
 /**
@@ -42,6 +43,8 @@ import { resolveTerminBadge } from "../../utils/terminBadge";
  */
 export type TerminBadgeTask = Pick<
   Task,
+  | "due_date"
+  | "end_date"
   | "planning_status"
   | "customer_confirmation_status"
   | "customer_confirmation_at"
@@ -106,12 +109,23 @@ function customerProvenanceLines(task: TerminBadgeTask, de: boolean): string[] {
   return lines;
 }
 
+/**
+ * Which date the pill is talking about. A multi-day task is settled or not
+ * as a whole window, and the row's meta line may sit a line away — so the
+ * tooltip names the window itself ("Termin: 2026-10-01 – 2026-10-03").
+ */
+function dateWindowLine(task: TerminBadgeTask, language: Language): string[] {
+  const range = formatTaskDateRange(task);
+  if (!range) return [];
+  return [(language === "de" ? "Termin: " : "Date: ") + range];
+}
+
 export function TerminBadge({ task, language }: Props) {
   const badge = resolveTerminBadge(task, language);
   if (!badge) return null;
 
   const de = language === "de";
-  const title = [badge.title, ...customerProvenanceLines(task, de)].join("\n");
+  const title = [badge.title, ...dateWindowLine(task, language), ...customerProvenanceLines(task, de)].join("\n");
 
   return (
     <span

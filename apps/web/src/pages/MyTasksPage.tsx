@@ -1,11 +1,10 @@
 import { useMemo, useState } from "react";
 import { useAppContext } from "../context/AppContext";
-import { taskDisplayStatus, isTaskOverdue, taskStatusLabel, formatTaskTimeRange, isTaskDoneStatus } from "../utils/tasks";
+import { taskDisplayStatus, isTaskOverdue, isTaskDoneStatus } from "../utils/tasks";
 import { taskMaterialsDisplay } from "../utils/reports";
 import { estimateTravelMinutesFromAddresses, projectLocationAddress } from "../utils/projects";
 import { BackIcon, PenIcon } from "../components/icons";
-import { PartnerTaskChip } from "../components/partners/PartnerTaskChip";
-import { TerminBadge } from "../components/tasks/TerminBadge";
+import { TaskRowSummary } from "../components/tasks/TaskRowSummary";
 import { TaskMaterialList } from "../components/tasks/TaskMaterialList";
 import { taskBoxDisplay } from "../utils/boxes";
 
@@ -41,15 +40,16 @@ export function MyTasksPage() {
     () =>
       sortedTasks.filter((task) => {
         if (!isTaskAssignedToCurrentUser(task)) return false;
+        // This page is the open list (view=my). The overview loads my_all into
+        // the same `tasks` state, and although loadTasks drops a stale
+        // response, a done row must never show here whatever arrived.
+        if (isTaskDoneStatus(task.status)) return false;
         if (partnerOnly && (task.partners ?? []).length === 0) return false;
         return true;
       }),
     [isTaskAssignedToCurrentUser, sortedTasks, partnerOnly],
   );
-  const openTaskCount = useMemo(
-    () => visibleTasks.filter((task) => !isTaskDoneStatus(task.status)).length,
-    [visibleTasks],
-  );
+  const openTaskCount = visibleTasks.length;
 
   const travelHintsByTaskId = useMemo(() => {
     const projectsById = new Map(projects.map((project) => [project.id, project]));
@@ -191,38 +191,14 @@ export function MyTasksPage() {
                   onClick={() => setExpandedMyTaskId(expanded ? null : task.id)}
                   aria-expanded={expanded}
                 >
-                  <div className="tasks-page-row-title-block">
-                    <div className="tasks-page-row-title-line">
-                      <span className="tasks-page-row-title">{task.title}</span>
-                      <TerminBadge task={task} language={language} />
-                      {displayStatus === "overdue" && (
-                        <span className="tasks-page-row-badge tasks-page-row-badge--overdue">
-                          {de ? "ÜBERFÄLLIG" : "OVERDUE"}
-                        </span>
-                      )}
-                      {displayStatus === "done" && (
-                        <span className="tasks-page-row-badge tasks-page-row-badge--done">
-                          {de ? "ERLEDIGT" : "DONE"}
-                        </span>
-                      )}
-                    </div>
-                    <span className="tasks-page-row-meta">
-                      {de ? "Projekt" : "Project"}: {taskProjectLabel.title}
-                      {"  |  "}
-                      {de ? "Fällig" : "Due"}: {task.due_date ?? "-"}
-                      {task.start_time ? ` ${de ? "um" : "at"} ${formatTaskTimeRange(task)}` : ""}
-                      {"  |  "}
-                      {de ? "Status" : "Status"}: {taskStatusLabel(displayStatus, language)}
-                    </span>
-                    {task.partners && task.partners.length > 0 && (
-                      <span className="tasks-page-row-partner-line">
-                        <PartnerTaskChip partners={task.partners} language={de ? "de" : "en"} />
-                      </span>
-                    )}
-                    {taskProjectLabel.subtitle && (
-                      <span className="tasks-page-row-subtitle">{taskProjectLabel.subtitle}</span>
-                    )}
-                  </div>
+                  {/* Shared with the overview card, so both surfaces agree
+                      on badges and on how a date window reads. */}
+                  <TaskRowSummary
+                    task={task}
+                    language={language}
+                    todayIso={todayIso}
+                    projectLabel={taskProjectLabel}
+                  />
                   <span className="tasks-page-row-chevron" aria-hidden="true">
                     {expanded ? "▾" : "▸"}
                   </span>

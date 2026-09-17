@@ -9,9 +9,11 @@ import {
   formatTimeInputForBlur,
   addMinutesToHHMM,
   planningStatusLabel,
+  formatTaskDateRange,
 } from "../../utils/tasks";
 import { PartnerMultiSelect } from "../partners/PartnerMultiSelect";
 import { ConstructionBoxPicker } from "../tasks/ConstructionBoxPicker";
+import "../../styles/tasks.css";
 
 function priorityLabel(value: TaskPriority, language: "de" | "en"): string {
   if (value === "low") return language === "de" ? "Niedrig" : "Low";
@@ -57,6 +59,7 @@ export function TaskModal() {
     taskModalAssigneeSuggestions,
     assignableUsers,
     projects,
+    customers,
     canCreateProject,
     canManageTasks,
     closeTaskModal,
@@ -86,14 +89,28 @@ export function TaskModal() {
   if (!taskModalOpen) return null;
 
   const de = language === "de";
+  // A copied task may carry a project that is not in the loaded list; its
+  // label still names it, and "Neues Projekt" would be wrong there.
   const eyebrowProjectLabel = selectedTaskModalProject
     ? projectSearchLabel(selectedTaskModalProject)
-    : de
-      ? "Neues Projekt"
-      : "New project";
+    : taskModalForm.project_id && taskModalForm.project_query
+      ? taskModalForm.project_query
+      : de
+        ? "Neues Projekt"
+        : "New project";
 
   const priorityOptions: TaskPriority[] = ["low", "normal", "high", "urgent"];
   const activePriority = taskModalForm.priority ?? "normal";
+  // A copy of a customer-only task carries its customer instead of a project.
+  const anchoredCustomer =
+    taskModalForm.customer_id != null
+      ? (customers.find((entry) => entry.id === taskModalForm.customer_id) ?? null)
+      : null;
+  const anchoredCustomerLabel = anchoredCustomer
+    ? anchoredCustomer.name
+    : taskModalForm.customer_id != null
+      ? `${de ? "Kunde" : "Customer"} #${taskModalForm.customer_id}`
+      : "";
 
   return (
     <div
@@ -190,16 +207,39 @@ export function TaskModal() {
             </label>
           </section>
 
-          {/* Due date / Start time / Duration / Priority */}
+          {/* Von / Bis / Start time / Duration — the daily slot repeats on
+              every day of a multi-day window. */}
           <section className="task-modal-section task-modal-section--grid4">
             <label className="task-modal-field">
-              <span className="task-modal-field-label">{de ? "Fälligkeitsdatum" : "Due date"}</span>
+              <span className="task-modal-field-label">{de ? "Von" : "From"}</span>
               <input
                 className="task-modal-input"
                 type="date"
                 value={taskModalForm.due_date}
-                onChange={(event) => updateTaskModalField("due_date", event.target.value)}
+                onChange={(event) => {
+                  const nextDueDate = event.target.value;
+                  setTaskModalOverlapWarning(null);
+                  // Clearing Von clears Bis: an end without a start is meaningless.
+                  setTaskModalForm((current) => ({
+                    ...current,
+                    due_date: nextDueDate,
+                    end_date: nextDueDate ? current.end_date : "",
+                  }));
+                }}
               />
+            </label>
+            <label className="task-modal-field task-modal-field--bis">
+              <span className="task-modal-field-label">{de ? "Bis" : "To"}</span>
+              <input
+                className="task-modal-input"
+                type="date"
+                value={taskModalForm.end_date}
+                min={taskModalForm.due_date || undefined}
+                placeholder={taskModalForm.due_date}
+                disabled={!taskModalForm.due_date}
+                onChange={(event) => updateTaskModalField("end_date", event.target.value)}
+              />
+              <span className="task-modal-field-hint">{de ? "leer = eintägig" : "empty = single day"}</span>
             </label>
             <label className="task-modal-field">
               <span className="task-modal-field-label">{de ? "Startzeit" : "Start time"}</span>
@@ -228,6 +268,10 @@ export function TaskModal() {
                 placeholder="1.5"
               />
             </label>
+          </section>
+
+          {/* Priority — moved off the date row when Bis arrived. */}
+          <section className="task-modal-section task-modal-section--grid2">
             <label className="task-modal-field">
               <span className="task-modal-field-label">{de ? "Priorität" : "Priority"}</span>
               <div className="task-modal-priority-wrap">
@@ -340,6 +384,30 @@ export function TaskModal() {
                   >
                     {projectSearchLabel(selectedTaskModalProject) + " ×"}
                   </button>
+                ) : taskModalForm.project_id && taskModalForm.project_query ? (
+                  // A copy of a task whose project is not in the loaded list
+                  // (archived, or opened from a customer/partner page): the id
+                  // is set and the POST carries it, so the chip shows the row's
+                  // own label rather than "Noch kein Projekt ausgewählt.".
+                  <button
+                    type="button"
+                    className="assignee-chip"
+                    onClick={() =>
+                      setTaskModalForm((current) => ({
+                        ...current,
+                        project_id: "",
+                        project_query: "",
+                        class_template_id: "",
+                      }))
+                    }
+                    title={de ? "Entfernen" : "Remove"}
+                  >
+                    {taskModalForm.project_query + " ×"}
+                  </button>
+                ) : anchoredCustomerLabel ? (
+                  <span className="assignee-chip" title={de ? "Kundenaufgabe ohne Projekt" : "Customer task without a project"}>
+                    {`${de ? "Kunde" : "Customer"}: ${anchoredCustomerLabel}`}
+                  </span>
                 ) : (
                   <small className="muted">{de ? "Noch kein Projekt ausgewählt." : "No project selected yet."}</small>
                 )}
@@ -611,6 +679,7 @@ export function TaskModal() {
                       <small>
                         {[
                           project ? projectSearchLabel(project) : `#${overlap.project_id}`,
+                          overlap.end_date ? formatTaskDateRange(overlap) : "",
                           overlap.start_time && overlap.end_time
                             ? `${formatTimeInputForBlur(overlap.start_time)}-${formatTimeInputForBlur(overlap.end_time)}`
                             : "",

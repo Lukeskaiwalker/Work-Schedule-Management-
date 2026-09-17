@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useAppContext } from "../../context/AppContext";
-import { taskDisplayStatus, isTaskOverdue, taskStatusLabel, formatTaskTimeRange } from "../../utils/tasks";
+import { taskDisplayStatus, isTaskOverdue, taskStatusLabel, formatTaskTimeRange, formatTaskDateRange } from "../../utils/tasks";
 import { taskMaterialsDisplay } from "../../utils/reports";
 import { PenIcon } from "../../components/icons";
 import { PartnerTaskChip } from "../../components/partners/PartnerTaskChip";
@@ -179,7 +179,7 @@ export function ProjectTasksTab() {
                       </button>
                     </span>
                     <span>
-                      {language === "de" ? "Fällig" : "Due"}: {task.due_date ?? "-"}
+                      {language === "de" ? "Fällig" : "Due"}: {formatTaskDateRange(task) || "-"}
                       {task.start_time ? ` ${language === "de" ? "um" : "at"} ${formatTaskTimeRange(task)}` : ""}
                     </span>
                     <span>

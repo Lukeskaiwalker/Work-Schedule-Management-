@@ -1,9 +1,10 @@
 import { Fragment, useMemo, useState, useEffect, useCallback } from "react";
 import { useAppContext } from "../context/AppContext";
 import { addDaysISO, normalizeWeekStartISO, isoWeekInfo, isoWeekdayMondayFirst } from "../utils/dates";
-import { sortTasksByDueTime, formatTaskTimeRange, normalizeTaskTypeValue } from "../utils/tasks";
+import { sortTasksByDueTime, formatTaskTimeRange, normalizeTaskTypeValue, taskDayIndexLabel } from "../utils/tasks";
 import { TeamCalendarView } from "./TeamCalendarView";
 import type { Language } from "../types";
+import "../styles/tasks.css";
 
 const EN_DAY_COLS = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"] as const;
 const DE_DAY_COLS = ["MO", "DI", "MI", "DO", "FR", "SA", "SO"] as const;
@@ -428,6 +429,11 @@ export function CalendarPage() {
                                     <span>
                                       {task.title}
                                       {timeSuffix}
+                                      {taskDayIndexLabel(task, day.date, language) ? (
+                                        <span className="task-day-chip">
+                                          {taskDayIndexLabel(task, day.date, language)}
+                                        </span>
+                                      ) : null}
                                     </span>
                                   </li>
                                 );

@@ -25,7 +25,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -41,7 +41,11 @@ from app.routers.time_tracking import (
     _local_period_bounds_utc,
     _work_summary,
 )
-from app.routers.workflow_helpers import _content_disposition, _expand_school_absence_days
+from app.routers.workflow_helpers import (
+    _content_disposition,
+    _expand_school_absence_days,
+    _task_days_in_window,
+)
 from app.schemas.training import (
     ApprenticeOut,
     ApprenticeSettingsUpdate,
@@ -665,11 +669,14 @@ def get_week_prefill(
         school_days.update(_expand_school_absence_days(absence, period_start=monday, period_end=saturday))
 
     # Suggested lines — the week's tasks and construction reports, two queries
-    # bucketed in Python.
+    # bucketed in Python. A task counts when its window (due_date .. end_date)
+    # touches the week, and it is suggested on EVERY day it covers: a
+    # three-day installation is three days of Berufsschulheft.
     assigned_ids = select(TaskAssignment.task_id).where(TaskAssignment.user_id == current_user.id)
     tasks = db.scalars(
         select(Task).where(
-            Task.due_date.between(monday, saturday),
+            Task.due_date <= saturday,
+            func.coalesce(Task.end_date, Task.due_date) >= monday,
             (Task.assignee_id == current_user.id) | (Task.id.in_(assigned_ids)),
         )
     ).all()
@@ -682,8 +689,9 @@ def get_week_prefill(
 
     lines_by_day: dict[date, list[str]] = {day: [] for day in week_days}
     for task in tasks:
-        if task.due_date in lines_by_day:
-            lines_by_day[task.due_date].append(task.title)
+        for day in _task_days_in_window(task, monday, saturday):
+            if day in lines_by_day:
+                lines_by_day[day].append(task.title)
     for construction_report in reports:
         summary = _work_summary(
             construction_report.payload if isinstance(construction_report.payload, dict) else {}

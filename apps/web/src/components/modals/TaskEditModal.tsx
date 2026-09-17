@@ -11,11 +11,13 @@ import {
   addMinutesToHHMM,
   taskStatusLabel,
   planningStatusLabel,
+  formatTaskDateRange,
 } from "../../utils/tasks";
 import { formatServerDateTime } from "../../utils/dates";
 import { PartnerMultiSelect } from "../partners/PartnerMultiSelect";
 import { ConstructionBoxPicker } from "../tasks/ConstructionBoxPicker";
 import { TaskMaterialList } from "../tasks/TaskMaterialList";
+import "../../styles/tasks.css";
 
 function priorityLabel(value: TaskPriority, language: "de" | "en"): string {
   if (value === "low") return language === "de" ? "Niedrig" : "Low";
@@ -72,6 +74,7 @@ export function TaskEditModal() {
     closeTaskEditModal,
     saveTaskEdit,
     deleteTaskFromEdit,
+    copyTaskFromEdit,
     updateTaskEditField,
     updateTaskEditMaterialRow,
     addTaskEditMaterialRow,
@@ -550,18 +553,39 @@ export function TaskEditModal() {
             </section>
           )}
 
-          {/* Due date / Start time / Duration / Priority */}
+          {/* Von / Bis / Start time / Duration — the daily slot repeats on
+              every day of a multi-day window. */}
           <section className="task-modal-section task-modal-section--grid4">
             <label className="task-modal-field">
-              <span className="task-modal-field-label">
-                {de ? "Fälligkeitsdatum" : "Due date"}
-              </span>
+              <span className="task-modal-field-label">{de ? "Von" : "From"}</span>
               <input
                 className="task-modal-input"
                 type="date"
                 value={taskEditForm.due_date}
-                onChange={(event) => updateTaskEditField("due_date", event.target.value)}
+                onChange={(event) => {
+                  const nextDueDate = event.target.value;
+                  setTaskEditOverlapWarning(null);
+                  // Clearing Von clears Bis: an end without a start is meaningless.
+                  setTaskEditForm((current) => ({
+                    ...current,
+                    due_date: nextDueDate,
+                    end_date: nextDueDate ? current.end_date : "",
+                  }));
+                }}
               />
+            </label>
+            <label className="task-modal-field task-modal-field--bis">
+              <span className="task-modal-field-label">{de ? "Bis" : "To"}</span>
+              <input
+                className="task-modal-input"
+                type="date"
+                value={taskEditForm.end_date}
+                min={taskEditForm.due_date || undefined}
+                placeholder={taskEditForm.due_date}
+                disabled={!taskEditForm.due_date}
+                onChange={(event) => updateTaskEditField("end_date", event.target.value)}
+              />
+              <span className="task-modal-field-hint">{de ? "leer = eintägig" : "empty = single day"}</span>
             </label>
             <label className="task-modal-field">
               <span className="task-modal-field-label">{de ? "Startzeit" : "Start time"}</span>
@@ -596,6 +620,10 @@ export function TaskEditModal() {
                 placeholder="1.5"
               />
             </label>
+          </section>
+
+          {/* Priority — moved off the date row when Bis arrived. */}
+          <section className="task-modal-section task-modal-section--grid2">
             <label className="task-modal-field">
               <span className="task-modal-field-label">{de ? "Priorität" : "Priority"}</span>
               <div className="task-modal-priority-wrap">
@@ -1331,6 +1359,7 @@ export function TaskEditModal() {
                           project
                             ? `${project.project_number} - ${project.name}`
                             : `#${overlap.project_id}`,
+                          overlap.end_date ? formatTaskDateRange(overlap) : "",
                           overlap.start_time && overlap.end_time
                             ? `${formatTimeInputForBlur(overlap.start_time)}-${formatTimeInputForBlur(overlap.end_time)}`
                             : "",
@@ -1386,6 +1415,16 @@ export function TaskEditModal() {
                 onClick={() => void deleteTaskFromEdit()}
               >
                 {de ? "Löschen" : "Delete"}
+              </button>
+            )}
+            {canManageTasks && (
+              <button
+                type="button"
+                className="task-modal-btn task-modal-btn--ghost"
+                onClick={copyTaskFromEdit}
+                title={de ? "Als neue Aufgabe kopieren (ohne Datum und Kiste)" : "Copy as a new task (without date and box)"}
+              >
+                {de ? "Kopieren" : "Copy"}
               </button>
             )}
             <div className="project-modal-footer-spacer" />

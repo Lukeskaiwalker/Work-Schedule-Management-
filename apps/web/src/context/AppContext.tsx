@@ -1007,6 +1007,10 @@ export interface AppContextValue {
   selectTaskModalProject: (project: Project) => void;
   openTaskEditModal: (task: Task) => void;
   closeTaskEditModal: () => void;
+  /** "Aufgabe kopieren": prefill the create modal from the task open in the
+   *  edit modal (title, crew, daily slot, anchor — never date, crate or the
+   *  customer's answer) and swap the modals. */
+  copyTaskFromEdit: () => void;
   onTaskEditModalBackdropPointerDown: (event: PointerEvent<HTMLDivElement>) => void;
   onTaskEditModalBackdropPointerUp: (event: PointerEvent<HTMLDivElement>) => void;
   resetTaskEditModalBackdropPointerState: () => void;
@@ -1101,6 +1105,9 @@ export interface AppContextValue {
   loadBaseData: () => Promise<void>;
   loadProjectClassTemplates: (projectId: number) => Promise<ProjectClassTemplate[]>;
   loadTasks: (mode: TaskView, projectId: number | null) => Promise<void>;
+  /** The current user's tasks for the overview / Meine Aufgaben: "my_all"
+   *  (done rows included) on the overview, "my" everywhere else. */
+  loadMyTasks: () => Promise<void>;
   loadMaterialNeeds: () => Promise<void>;
   loadMaterialCatalog: (query: string) => Promise<void>;
   uploadMaterialCatalogImage: (externalKey: string, file: File) => Promise<MaterialCatalogItem | null>;
@@ -1184,6 +1191,9 @@ export interface AppContextValue {
   createWeeklyPlanTask: (confirmOverlap?: boolean) => Promise<void>;
   saveTaskEdit: (confirmOverlap?: boolean) => Promise<void>;
   markTaskDone: (task: Task, options?: { openReportFromTask?: Task; reportBackView?: MainView | null }) => Promise<void>;
+  /** The one PATCH that completes a task; markTaskDone and the post-report
+   *  completion both go through it so a later wrapper can insert a dialog. */
+  completeTask: (taskId: number, extraPatch?: Record<string, unknown>) => Promise<void>;
   deleteTaskFromEdit: () => Promise<void>;
   exportTaskCalendar: (task: Task) => Promise<void>;
   createTicket: (event: FormEvent<HTMLFormElement>) => Promise<void>;

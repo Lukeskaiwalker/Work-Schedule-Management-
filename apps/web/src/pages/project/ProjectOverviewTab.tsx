@@ -1,7 +1,7 @@
 import { useAppContext } from "../../context/AppContext";
 import { formatDayLabel, formatServerDateTime } from "../../utils/dates";
 import { statusLabel, projectSiteAccessDisplay, activityEventLabel } from "../../utils/projects";
-import { formatTaskTimeRange } from "../../utils/tasks";
+import { formatTaskDateRange, formatTaskTimeRange, taskDayCount } from "../../utils/tasks";
 import { weatherDescriptionLabel } from "../../utils/weather";
 import { PenIcon, CopyIcon } from "../../components/icons";
 
@@ -77,7 +77,11 @@ export function ProjectOverviewTab() {
                         <b>{task.title}</b>
                         <small>
                           {task.due_date
-                            ? `${language === "de" ? "Fällig" : "Due"}: ${formatDayLabel(task.due_date, language)}`
+                            ? `${language === "de" ? "Fällig" : "Due"}: ${
+                                taskDayCount(task) > 1
+                                  ? formatTaskDateRange(task)
+                                  : formatDayLabel(task.due_date, language)
+                              }`
                             : language === "de"
                               ? "Ohne Fälligkeitsdatum"
                               : "No due date"}

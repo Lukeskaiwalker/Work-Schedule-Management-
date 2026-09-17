@@ -31,6 +31,13 @@ class Task(Base):
             "project_id IS NOT NULL OR customer_id IS NOT NULL",
             name="ck_tasks_project_or_customer",
         ),
+        # A window needs a start, and may not end before it. Mirrors the
+        # schema/router rule so a stray UPDATE cannot leave a range the
+        # readers (overdue, overlap, week board) would have to guess at.
+        CheckConstraint(
+            "end_date IS NULL OR (due_date IS NOT NULL AND end_date >= due_date)",
+            name="ck_tasks_end_date_after_due_date",
+        ),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -85,6 +92,12 @@ class Task(Base):
     # or the customer-confirmation reset on a due_date change.
     planning_status: Mapped[str | None] = mapped_column(String(16))
     due_date: Mapped[date | None] = mapped_column(Date)
+    # Last day of a multi-day task. NULL = single-day (Bis = Von), which is
+    # what every row written before v2.15 is. Never set while due_date is
+    # NULL — the CHECK above and _validate_task_date_range both enforce it.
+    # A start_time/estimated_hours on a multi-day task describes the DAILY
+    # slot and repeats on every day of the window.
+    end_date: Mapped[date | None] = mapped_column(Date)
     start_time: Mapped[time | None] = mapped_column(Time)
     estimated_hours: Mapped[float | None] = mapped_column(Float)
     assignee_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)

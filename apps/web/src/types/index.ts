@@ -1,5 +1,6 @@
 export type Language = "en" | "de";
-export type TaskView = "my" | "all_open" | "completed" | "projects_overview";
+/** "my_all" = mine in every status (done rows capped server-side to the recent past). */
+export type TaskView = "my" | "my_all" | "all_open" | "completed" | "projects_overview";
 export type TaskType = "construction" | "office" | "customer_appointment";
 
 export type AbsenceType = {
@@ -398,6 +399,10 @@ export type Task = {
    *  objects from before the field existed still type-check. */
   planning_status?: PlanningStatus | null;
   due_date?: string | null;
+  /** Last day of a multi-day task (ISO date). Null/absent = single day
+   *  (Bis = Von). The daily slot (start_time/estimated_hours) repeats on
+   *  every day of the window. */
+  end_date?: string | null;
   start_time?: string | null;
   estimated_hours?: number | null;
   end_time?: string | null;
@@ -434,6 +439,7 @@ export type TaskOverlap = {
   project_id: number;
   title: string;
   due_date?: string | null;
+  end_date?: string | null;
   start_time?: string | null;
   end_time?: string | null;
   estimated_hours?: number | null;
@@ -1098,7 +1104,12 @@ export type TaskModalState = {
   class_template_id: string;
   project_id: string;
   project_query: string;
+  /** Customer anchor for a project-less task (a copy of a customer task).
+   *  Null in the ordinary project flow; the server accepts either anchor. */
+  customer_id: number | null;
   due_date: string;
+  /** "Bis"; "" = single day. Never sent when due_date is empty. */
+  end_date: string;
   start_time: string;
   estimated_hours: string;
   priority: TaskPriority;
@@ -1130,6 +1141,8 @@ export type TaskEditFormState = {
   class_template_id: string;
   status: string;
   due_date: string;
+  /** "Bis"; "" = single day. */
+  end_date: string;
   start_time: string;
   estimated_hours: string;
   priority: TaskPriority;

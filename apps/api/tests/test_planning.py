@@ -577,3 +577,40 @@ def test_planning_assign_week_checks_travel_overlap(client: TestClient, admin_to
     assert detail["assignment_index"] == 0
     assert detail["overlaps"][0]["overlap_type"] == "travel_overlap"
     assert detail["overlaps"][0]["travel_minutes"] == 12
+
+
+def test_my_all_view_shows_an_employee_their_own_done_tasks(client: TestClient, admin_token: str):
+    """The overview card's "Erledigt" filter needs my done rows too — but only
+    mine, and view=my must keep hiding them."""
+    worker = _create_user(client, admin_token, "worker-myall@example.com", "employee")
+    other = _create_user(client, admin_token, "worker-other@example.com", "employee")
+    worker_token = _login(client, "worker-myall@example.com")
+    project = client.post(
+        "/api/projects",
+        headers=auth_headers(admin_token),
+        json={"project_number": "2026-3009", "name": "Project MyAll", "status": "active"},
+    )
+    assert project.status_code == 200
+    project_id = project.json()["id"]
+
+    def _task(title: str, status: str, assignee_id: int) -> int:
+        response = client.post(
+            "/api/tasks",
+            headers=auth_headers(admin_token),
+            json={"project_id": project_id, "title": title, "status": status, "assignee_ids": [assignee_id]},
+        )
+        assert response.status_code == 200, response.text
+        return response.json()["id"]
+
+    mine_open = _task("Mine open", "open", worker["id"])
+    mine_done = _task("Mine done", "done", worker["id"])
+    theirs_done = _task("Theirs done", "done", other["id"])
+
+    my_all = client.get("/api/tasks?view=my_all", headers=auth_headers(worker_token))
+    assert my_all.status_code == 200, my_all.text
+    ids = {row["id"] for row in my_all.json()}
+    assert ids == {mine_open, mine_done}
+    assert theirs_done not in ids
+
+    my_open = client.get("/api/tasks?view=my", headers=auth_headers(worker_token))
+    assert {row["id"] for row in my_open.json()} == {mine_open}

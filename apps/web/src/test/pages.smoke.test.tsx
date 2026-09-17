@@ -27,6 +27,7 @@ import { WerkstattPage } from "../pages/WerkstattPage";
 import { TimePage } from "../pages/TimePage";
 import { CustomersPage } from "../pages/CustomersPage";
 import { MyTasksPage } from "../pages/MyTasksPage";
+import { OverviewPage } from "../pages/OverviewPage";
 import { OfficeTasksPage } from "../pages/OfficeTasksPage";
 import { ReportsPage } from "../pages/ReportsPage";
 import { MessagesPage } from "../pages/MessagesPage";
@@ -75,6 +76,15 @@ const PAGES: PageCase[] = [
   // stays mounted while mainView changes and its own guard is what flips.
   { name: "Zeiterfassung", Component: TimePage, visible: { mainView: "time" }, hidden: { mainView: "overview" } },
   { name: "Kunden", Component: CustomersPage, visible: { mainView: "customers" }, hidden: { mainView: "overview" } },
+  // The overview now carries the "Meine Aufgaben" card, which calls
+  // taskProjectTitleParts as a function; the stub's plural-name guess would
+  // hand it an array, so the entry supplies a real one.
+  {
+    name: "Übersicht",
+    Component: OverviewPage,
+    visible: { mainView: "overview", taskProjectTitleParts: () => ({ title: "", subtitle: "" }) },
+    hidden: { mainView: "my_tasks" },
+  },
   { name: "Meine Aufgaben", Component: MyTasksPage, visible: { mainView: "my_tasks" }, hidden: { mainView: "overview" } },
   { name: "Aufgaben (Büro)", Component: OfficeTasksPage, visible: { mainView: "office_tasks" }, hidden: { mainView: "overview" } },
   { name: "Berichte", Component: ReportsPage, visible: { mainView: "reports" }, hidden: { mainView: "overview" } },

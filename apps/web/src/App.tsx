@@ -146,12 +146,18 @@ import {
   normalizeTimeHHMM,
   taskDisplayStatus,
   isTaskOverdue,
+  isTaskDoneStatus,
   formatTaskStartTime,
   formatTaskTimeRange,
+  formatTaskDateRange,
+  taskDayCount,
+  taskSpansDay,
   canonicalTaskStatus,
   buildTaskStatusOptions,
   TASK_STATUS_ORDER,
 } from "./utils/tasks";
+import { buildTaskModalCopyStateFromEditForm, taskCopyNotice } from "./utils/taskCopy";
+import { createRequestSequence } from "./utils/latestRequest";
 import {
   normalizeMaterialNeedStatus,
 } from "./utils/materials";
@@ -178,7 +184,9 @@ import {
   buildEmptyProjectTaskFormState,
   buildTaskModalFormState,
   buildTaskEditFormState,
+  taskModalStateWithProject,
   taskEditPayloadFromForm,
+  taskEndDatePayload,
   TASK_EDIT_PATCH_KEYS,
   reportDraftFromProject,
   sameNumberSet,
@@ -435,6 +443,9 @@ export function App() {
 
   const [taskView, setTaskView] = useState<TaskView>("my");
   const [tasks, setTasks] = useState<Task[]>([]);
+  // Ticket counter for loadTasks: several views fill `tasks` with different
+  // row sets, and only the newest request may write (utils/latestRequest).
+  const [tasksRequestSequence] = useState(createRequestSequence);
   const [officeTaskStatusFilter, setOfficeTaskStatusFilter] = useState<string>("all");
   const [officeTaskAssigneeFilter, setOfficeTaskAssigneeFilter] = useState<string>("all");
   const [officeTaskDueDateFilter, setOfficeTaskDueDateFilter] = useState<string>("");
@@ -674,6 +685,10 @@ export function App() {
   ]);
   const [taskEditFormBase, setTaskEditFormBase] = useState<TaskEditFormState | null>(null);
   const [taskEditExpectedUpdatedAt, setTaskEditExpectedUpdatedAt] = useState<string | null>(null);
+  // The Task row the edit modal was opened from. The form state above is a
+  // flattened copy; "Kopieren" needs the original (assignees, partners,
+  // customer anchor) to prefill the create modal.
+  const [taskEditSourceTask, setTaskEditSourceTask] = useState<Task | null>(null);
   const [projectBackView, setProjectBackView] = useState<MainView | null>(null);
   const [reportProjectId, setReportProjectId] = useState<string>("");
   // Reports are customer-owned with an optional project, so the customer is the
@@ -1155,6 +1170,9 @@ export function App() {
   const recentAssignedProjects = useMemo(() => {
     const assignedIds = new Set<number>();
     tasks.forEach((task) => {
+      // The overview loads view=my_all (done rows included) for its task
+      // card; "Meine Projekte" must keep meaning projects with open work.
+      if (isTaskDoneStatus(task.status)) return;
       if (task.project_id) assignedIds.add(task.project_id);
     });
     return Array.from(assignedIds)
@@ -1297,8 +1315,9 @@ export function App() {
   // Null is normal — the create modal before a project is picked, or a legacy
   // project that carries only a free-text customer name.
   const taskModalCustomerId = useMemo(
-    () => selectedTaskModalProject?.customer_id ?? null,
-    [selectedTaskModalProject],
+    // The form's own customer_id covers a project-less copy of a customer task.
+    () => selectedTaskModalProject?.customer_id ?? taskModalForm.customer_id ?? null,
+    [selectedTaskModalProject, taskModalForm.customer_id],
   );
   const taskEditCustomerId = useMemo(() => {
     if (taskEditForm.customer_id != null) return taskEditForm.customer_id;
@@ -1538,7 +1557,8 @@ export function App() {
       }
       if (officeTaskNoDueDateFilter) {
         if (task.due_date) return false;
-      } else if (officeTaskDueDateFilter && String(task.due_date || "") !== officeTaskDueDateFilter) {
+      } else if (officeTaskDueDateFilter && !taskSpansDay(task, officeTaskDueDateFilter)) {
+        // A multi-day task is "due" on every day of its window.
         return false;
       }
       if (
@@ -2848,7 +2868,7 @@ export function App() {
   useEffect(() => {
     if (!token || !user) return;
     if (mainView !== "overview" && mainView !== "my_tasks") return;
-    void loadTasks("my", null);
+    void loadMyTasks();
   }, [mainView, token, user]);
 
   useEffect(() => {
@@ -2978,7 +2998,7 @@ export function App() {
       }
 
       if (mainView === "overview" || mainView === "my_tasks") {
-        await loadTasks("my", null);
+        await loadMyTasks();
         if (mainView === "overview") {
           await loadRecentConstructionReports(10);
         }
@@ -3349,12 +3369,30 @@ export function App() {
 
   async function loadTasks(mode: TaskView, projectId: number | null) {
     const projectQuery = projectId ? `&project_id=${projectId}` : "";
+    // The overview (my_all) and Meine Aufgaben (my) write different row sets
+    // into the one `tasks` state. A response that is no longer the newest
+    // request's is dropped, so a slow overview fetch cannot land its done
+    // rows on the list after the list's own fetch already answered.
+    const ticket = tasksRequestSequence.issue();
     try {
       const taskData = await apiFetch<Task[]>(`/tasks?view=${mode}${projectQuery}`, token);
+      if (!tasksRequestSequence.isCurrent(ticket)) return;
       setTasks(taskData);
     } catch (err: any) {
+      if (!tasksRequestSequence.isCurrent(ticket)) return;
       setError(err.message ?? "Failed to load tasks");
     }
+  }
+
+  /**
+   * The current user's tasks. The overview's "Meine Aufgaben" card has an
+   * "Erledigt" filter, so there the api's my_all view (done rows of the last
+   * 30 days included) is loaded; Meine Aufgaben itself keeps the open-only
+   * "my" view. One shared `tasks` state, so consumers on the overview must
+   * tolerate done rows (recentAssignedProjects filters them).
+   */
+  async function loadMyTasks() {
+    await loadTasks(mainView === "overview" ? "my_all" : "my", null);
   }
 
   async function loadMaterialNeeds() {
@@ -5190,9 +5228,15 @@ export function App() {
     const endTime = formatTaskStartTime(task.end_time || "") || "";
     const dtStamp = toIcsUtcDateTime(new Date());
     const uid = `task-${task.id}-${Date.now()}@smpl.local`;
+    // A multi-day task becomes one all-day span (DTEND is exclusive, so the
+    // day after Bis); its daily hours go into the description, because a
+    // single VEVENT cannot say "08:00–16:00 on each of these days" without
+    // an RRULE that calendar clients render inconsistently.
+    const multiDay = Boolean(task.due_date) && taskDayCount(task) > 1;
+    const lastDayIso = multiDay ? String(task.end_date) : dueDateIso;
 
     let eventDateLines = "";
-    if (startTime) {
+    if (startTime && !multiDay) {
       const startAt = new Date(`${dueDateIso}T${startTime}:00`);
       const endAt = endTime
         ? new Date(`${dueDateIso}T${endTime}:00`)
@@ -5200,7 +5244,7 @@ export function App() {
       eventDateLines = `DTSTART:${toIcsUtcDateTime(startAt)}\r\nDTEND:${toIcsUtcDateTime(endAt)}`;
     } else {
       const startDay = new Date(`${dueDateIso}T00:00:00`);
-      const endDay = new Date(startDay);
+      const endDay = new Date(`${lastDayIso}T00:00:00`);
       endDay.setDate(endDay.getDate() + 1);
       eventDateLines = `DTSTART;VALUE=DATE:${toIcsDate(startDay)}\r\nDTEND;VALUE=DATE:${toIcsDate(endDay)}`;
     }
@@ -5215,8 +5259,8 @@ export function App() {
       `Status: ${taskDisplayStatus(task, todayIso)}`,
       project ? `Project: ${projectLabel}` : `Project ID: ${task.project_id}`,
       project?.customer_name ? `Customer: ${project.customer_name}` : "",
-      `Due: ${task.due_date ?? "-"}`,
-      startTime ? `Time: ${formatTaskTimeRange(task)}` : "",
+      multiDay ? `From/To: ${formatTaskDateRange(task)}` : `Due: ${task.due_date ?? "-"}`,
+      startTime ? `Time: ${formatTaskTimeRange(task)}${multiDay ? " daily" : ""}` : "",
       task.description ? `Info: ${task.description}` : "",
       materialsSummary ? `Materials: ${materialsSummary}` : "",
       taskBoxDisplay(task) ? `Construction box: ${taskBoxDisplay(task)}` : "",
@@ -5315,6 +5359,51 @@ export function App() {
     setTaskModalOverlapWarning(null);
   }
 
+  /**
+   * Label for a task's project when the project row itself may be missing
+   * from `projects` — archived, or simply not loaded on the page the edit
+   * modal was opened from (customer card, partner overlay). The row's own
+   * label still names it; a bare id becomes "Projekt #id".
+   */
+  function taskProjectFallbackLabel(task: Task): string {
+    if (task.project_id == null) return "";
+    const title = taskProjectTitleParts(task).title;
+    if (title && title !== String(task.project_id)) return title;
+    return `${language === "de" ? "Projekt" : "Project"} #${task.project_id}`;
+  }
+
+  /**
+   * "Aufgabe kopieren": swap the edit modal for the create modal, prefilled
+   * from the task being edited. The copy lands in the form, not in the api —
+   * the operator sets the new date and crew before anything persists.
+   *
+   * Prefilled from the LIVE edit form, not from the stored row: the button
+   * sits next to Speichern and reads as "take this", so an unsaved rewrite of
+   * the description travels into the copy instead of being dropped by the
+   * close below. The stored row only supplies what the form does not hold —
+   * the project label when the project is not in the loaded list.
+   */
+  function copyTaskFromEdit() {
+    const source = taskEditSourceTask;
+    if (!source) return;
+    const form = taskEditForm;
+    const projectId = form.project_id ?? null;
+    const sourceProject =
+      projectId != null ? (projects.find((project) => project.id === projectId) ?? null) : null;
+    const base = buildTaskModalFormState({
+      projectId,
+      projectQuery: sourceProject ? projectSearchLabel(sourceProject) : taskProjectFallbackLabel(source),
+      taskType: form.task_type,
+    });
+    const nextForm = buildTaskModalCopyStateFromEditForm(form, base);
+    closeTaskEditModal();
+    setTaskModalForm(nextForm);
+    setTaskModalOverlapWarning(null);
+    setTaskModalMaterialRows(parseReportMaterialRows(nextForm.materials_required, "materials"));
+    setTaskModalOpen(true);
+    setNotice(taskCopyNotice(nextForm.title.trim() || source.title, language));
+  }
+
   function onTaskModalBackdropPointerDown(event: PointerEvent<HTMLDivElement>) {
     taskModalBackdropPointerDownRef.current = event.target === event.currentTarget;
   }
@@ -5410,6 +5499,7 @@ export function App() {
 
   function openTaskEditModal(task: Task) {
     const nextForm = buildTaskEditFormState(task);
+    setTaskEditSourceTask(task);
     setTaskEditForm(nextForm);
     setTaskEditFormBase(nextForm);
     setTaskEditOverlapWarning(null);
@@ -5420,6 +5510,7 @@ export function App() {
 
   function closeTaskEditModal() {
     setTaskEditModalOpen(false);
+    setTaskEditSourceTask(null);
     setTaskEditFormBase(null);
     setTaskEditExpectedUpdatedAt(null);
     setTaskEditOverlapWarning(null);
@@ -5521,18 +5612,9 @@ export function App() {
   }
 
   function selectTaskModalProject(project: Project) {
-    setTaskModalForm((current) => ({
-      ...current,
-      project_id: String(project.id),
-      project_query: projectSearchLabel(project),
-      class_template_id: "",
-      // Switching project switches customer, so a box picked for the previous
-      // one must not survive.
-      construction_box_id: "",
-      create_project_from_task: false,
-      new_project_name: "",
-      new_project_number: "",
-    }));
+    // Switching project switches customer: the crate picked for the previous
+    // one and a copied customer anchor must not survive (utils/reports).
+    setTaskModalForm((current) => taskModalStateWithProject(current, project.id, projectSearchLabel(project)));
   }
 
   function addOfficeTaskProjectFilter(projectId: number) {
@@ -6135,6 +6217,11 @@ export function App() {
       setError(language === "de" ? "Für eine Dauer muss auch eine Startzeit gesetzt sein" : "Duration requires a start time");
       return;
     }
+    const endDate = taskEndDatePayload(dueDate, taskModalForm.end_date);
+    if (endDate && dueDate && endDate < dueDate) {
+      setError(language === "de" ? "Das Enddatum darf nicht vor dem Startdatum liegen" : "The end date must not be before the start date");
+      return;
+    }
     const targetWeekStart = dueDate ? normalizeWeekStartISO(dueDate) : null;
     const classTemplateId =
       taskModalForm.class_template_id.trim().length > 0 ? Number(taskModalForm.class_template_id) : null;
@@ -6186,17 +6273,21 @@ export function App() {
         console.info("[task-create] project created", { id: projectId });
       }
 
-      if (!projectId) {
+      // A copy of a customer-only task carries its customer instead of a
+      // project; the api accepts either anchor (schemas/task.py:_require_anchor).
+      const customerId = !projectId && taskModalForm.customer_id != null ? taskModalForm.customer_id : null;
+      if (!projectId && customerId == null) {
         setError(language === "de" ? "Projekt ist erforderlich" : "Project is required");
         return;
       }
 
       currentStep = "task";
-      console.info("[task-create] creating task", { project_id: projectId, title: taskModalForm.title.trim() });
+      console.info("[task-create] creating task", { project_id: projectId || null, customer_id: customerId, title: taskModalForm.title.trim() });
       await apiFetch("/tasks", token, {
         method: "POST",
         body: JSON.stringify({
-          project_id: projectId,
+          project_id: projectId || null,
+          ...(customerId != null ? { customer_id: customerId } : {}),
           title: taskModalForm.title.trim(),
           description: taskModalForm.description.trim() || null,
           subtasks,
@@ -6208,6 +6299,7 @@ export function App() {
           assignee_ids: taskModalForm.assignee_ids,
           partner_ids: taskModalForm.partner_ids,
           due_date: dueDate,
+          end_date: endDate,
           start_time: startTime,
           estimated_hours: estimatedHours,
           week_start: targetWeekStart,
@@ -6279,6 +6371,12 @@ export function App() {
       setError(language === "de" ? "Für eine Dauer muss auch eine Startzeit gesetzt sein" : "Duration requires a start time");
       return;
     }
+    const editDueDate = taskEditForm.due_date.trim() || null;
+    const editEndDate = taskEndDatePayload(editDueDate, taskEditForm.end_date);
+    if (editEndDate && editDueDate && editEndDate < editDueDate) {
+      setError(language === "de" ? "Das Enddatum darf nicht vor dem Startdatum liegen" : "The end date must not be before the start date");
+      return;
+    }
     const baseStartTime =
       taskEditFormBase && taskEditFormBase.start_time.trim().length > 0
         ? normalizeTimeHHMM(taskEditFormBase.start_time)
@@ -6333,7 +6431,7 @@ export function App() {
         await loadProjectOverview(activeProjectId);
       }
       if (mainView === "my_tasks" || mainView === "overview") {
-        await loadTasks("my", null);
+        await loadMyTasks();
       }
       if (mainView === "planning") {
         await loadPlanningWeek(null, planningWeekStart, planningTaskTypeView === "all" ? null : planningTaskTypeView);
@@ -6401,6 +6499,19 @@ export function App() {
     setMainView("construction");
   }
 
+  /**
+   * The one request that completes a task. Both completion paths — the
+   * "Als erledigt markieren" button and the post-report completion — go
+   * through here, so a later step (a material-settlement dialog) can wrap
+   * this single call instead of two code paths.
+   */
+  async function completeTask(taskId: number, extraPatch: Record<string, unknown> = {}) {
+    await apiFetch(`/tasks/${taskId}`, token, {
+      method: "PATCH",
+      body: JSON.stringify({ status: "done", ...extraPatch }),
+    });
+  }
+
   async function markTaskDone(
     task: Task,
     options?: { openReportFromTask?: Task; reportBackView?: MainView | null },
@@ -6416,21 +6527,17 @@ export function App() {
       return;
     }
 
-    const payload: Record<string, unknown> = { status: "done" };
-    if (task.updated_at !== null && task.updated_at !== undefined) {
-      payload.expected_updated_at = task.updated_at;
-    }
     try {
-      await apiFetch(`/tasks/${task.id}`, token, {
-        method: "PATCH",
-        body: JSON.stringify(payload),
-      });
+      await completeTask(
+        task.id,
+        task.updated_at !== null && task.updated_at !== undefined ? { expected_updated_at: task.updated_at } : {},
+      );
       if (mainView === "project" && activeProjectId) {
         await loadTasks(activeProjectTaskView, activeProjectId);
         await loadProjectOverview(activeProjectId);
       }
       if (mainView === "my_tasks" || mainView === "overview") {
-        await loadTasks("my", null);
+        await loadMyTasks();
       }
       if (mainView === "planning") {
         await loadPlanningWeek(null, planningWeekStart, planningTaskTypeView === "all" ? null : planningTaskTypeView);
@@ -6465,7 +6572,7 @@ export function App() {
         await loadProjectOverview(activeProjectId);
       }
       if (mainView === "my_tasks" || mainView === "overview") {
-        await loadTasks("my", null);
+        await loadMyTasks();
       }
       if (mainView === "planning") {
         await loadPlanningWeek(null, planningWeekStart, planningTaskTypeView === "all" ? null : planningTaskTypeView);
@@ -7738,11 +7845,8 @@ export function App() {
         const task = planningWeek?.days.flatMap((d) => d.tasks).find((t) => t.id === taskToMarkDone)
           ?? null;
         try {
-          await apiFetch(`/tasks/${taskToMarkDone}`, token, {
-            method: "PATCH",
-            body: JSON.stringify({ status: "done" }),
-          });
-          await loadTasks("my", null);
+          await completeTask(taskToMarkDone);
+          await loadMyTasks();
           setNotice(
             language === "de"
               ? "Aufgabe als erledigt markiert"
@@ -10117,6 +10221,7 @@ export function App() {
     selectTaskModalProject,
     openTaskEditModal,
     closeTaskEditModal,
+    copyTaskFromEdit,
     onTaskEditModalBackdropPointerDown,
     onTaskEditModalBackdropPointerUp,
     resetTaskEditModalBackdropPointerState,
@@ -10204,6 +10309,7 @@ export function App() {
     loadBaseData,
     loadProjectClassTemplates,
     loadTasks,
+    loadMyTasks,
     loadMaterialNeeds,
     loadMaterialCatalog,
     uploadMaterialCatalogImage,
@@ -10270,6 +10376,7 @@ export function App() {
     createWeeklyPlanTask,
     saveTaskEdit,
     markTaskDone,
+    completeTask,
     deleteTaskFromEdit,
     exportTaskCalendar,
     createTicket,

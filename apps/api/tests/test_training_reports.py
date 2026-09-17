@@ -818,3 +818,36 @@ def test_an_out_of_range_week_is_a_400_not_a_500(client: TestClient, admin_token
 
     prefill = client.get("/api/training/prefill?week_start=9999-12-31", headers=_auth(token))
     assert prefill.status_code == 400, prefill.text
+
+
+def test_prefill_suggests_a_multi_day_task_on_every_day_it_covers(client: TestClient, admin_token: str) -> None:
+    """A Tuesday–Thursday job is three days of Heft, not one line on Tuesday."""
+
+    from app.core.db import SessionLocal
+    from app.models.entities import Project, Task
+
+    user, token = _apprentice_with_token(client, admin_token, "azubi-window@example.com")
+    with SessionLocal() as db:
+        project = Project(project_number="AZUBI-W", name="Fensterbaustelle", status="active")
+        db.add(project)
+        db.flush()
+        db.add(
+            Task(
+                project_id=project.id,
+                title="Unterverteilung setzen",
+                status="open",
+                due_date=date(2026, 8, 11),
+                end_date=date(2026, 8, 13),
+                assignee_id=user["id"],
+            )
+        )
+        db.commit()
+
+    prefill = client.get(f"/api/training/prefill?week_start={MONDAY}", headers=_auth(token))
+    assert prefill.status_code == 200, prefill.text
+    days = {d["day"]: d["suggested_lines"] for d in prefill.json()["days"]}
+    assert days[MONDAY] == []
+    assert days["2026-08-11"] == ["Unterverteilung setzen"]
+    assert days[WEDNESDAY] == ["Unterverteilung setzen"]
+    assert days["2026-08-13"] == ["Unterverteilung setzen"]
+    assert days["2026-08-14"] == []

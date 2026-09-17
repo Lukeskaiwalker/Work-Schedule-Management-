@@ -11,12 +11,15 @@ import { describe, expect, it } from "vitest";
 import {
   TASK_EDIT_PATCH_KEYS,
   buildTaskEditFormState,
+  buildTaskModalFormState,
   consumedMaterialsPayload,
   createReportMaterialRow,
   reportRowsFromTaskMaterials,
   reportUploadProgressText,
   storedMaterialRowSnapshot,
   taskEditPayloadFromForm,
+  taskEndDatePayload,
+  taskModalStateWithProject,
 } from "../utils/reports";
 import type { Task, TaskMaterial } from "../types";
 
@@ -182,6 +185,10 @@ describe("TASK_EDIT_PATCH_KEYS", () => {
     expect(TASK_EDIT_PATCH_KEYS).toContain("request_customer_confirmation");
   });
 
+  it("routes the end date into the PATCH, so moving only Bis reaches the api", () => {
+    expect(TASK_EDIT_PATCH_KEYS).toContain("end_date");
+  });
+
   it("only names keys the payload actually produces", () => {
     const payload = taskEditPayloadFromForm(buildTaskEditFormState(taskRow()), null);
     TASK_EDIT_PATCH_KEYS.forEach((key) => expect(payload).toHaveProperty(key));
@@ -220,5 +227,65 @@ describe("reportUploadProgressText", () => {
 
   it("treats no phase like the plain upload, so the bar never goes blank mid-submit", () => {
     expect(reportUploadProgressText(null, 12, true)).toBe("Upload läuft: 12%");
+  });
+});
+
+/**
+ * "Bis" through the edit form. The api stores a single day as end_date NULL,
+ * so the form must fold "same day spelled twice" onto null too — otherwise
+ * opening and saving a single-day task would PATCH an end_date and reset the
+ * customer's confirmation for a date that never moved.
+ */
+describe("taskEditPayloadFromForm / end_date", () => {
+  it("seeds the stored window and emits it back", () => {
+    const form = buildTaskEditFormState(taskRow({ due_date: "2026-10-01", end_date: "2026-10-03" }));
+    expect(form.end_date).toBe("2026-10-03");
+    expect(taskEditPayloadFromForm(form, null).end_date).toBe("2026-10-03");
+  });
+
+  it("is null for a single day, for Bis equal to Von, and whenever Von is empty", () => {
+    const base = buildTaskEditFormState(taskRow({ due_date: "2026-10-01" }));
+    expect(base.end_date).toBe("");
+    expect(taskEditPayloadFromForm(base, null).end_date).toBeNull();
+    expect(taskEditPayloadFromForm({ ...base, end_date: "2026-10-01" }, null).end_date).toBeNull();
+    expect(taskEditPayloadFromForm({ ...base, due_date: "", end_date: "2026-10-03" }, null).end_date).toBeNull();
+    expect(taskEndDatePayload("2026-10-01", " 2026-10-04 ")).toBe("2026-10-04");
+  });
+});
+
+describe("taskModalStateWithProject", () => {
+  it("drops the copied customer anchor and the crate when a project is picked", () => {
+    // Kopieren on a customer-only task leaves customer_id=7 in the form. Picking
+    // a legacy project without a customer must not keep the box picker on
+    // customer 7's crates — the api would refuse the crate on POST.
+    const copied = {
+      ...buildTaskModalFormState(),
+      customer_id: 7,
+      construction_box_id: "31",
+      class_template_id: "2",
+      create_project_from_task: true,
+      new_project_name: "Entwurf",
+      new_project_number: "T-1",
+    };
+    const next = taskModalStateWithProject(copied, 12, "P-12 · Legacy");
+    expect(next).toMatchObject({
+      project_id: "12",
+      project_query: "P-12 · Legacy",
+      customer_id: null,
+      construction_box_id: "",
+      class_template_id: "",
+      create_project_from_task: false,
+      new_project_name: "",
+      new_project_number: "",
+    });
+  });
+
+  it("keeps everything the project does not imply, and does not mutate the input", () => {
+    const current = { ...buildTaskModalFormState(), title: "Zählerschrank", assignee_ids: [4], customer_id: 7 };
+    const next = taskModalStateWithProject(current, 12, "P-12");
+    expect(next.title).toBe("Zählerschrank");
+    expect(next.assignee_ids).toEqual([4]);
+    expect(current.customer_id).toBe(7);
+    expect(current.project_id).toBe("");
   });
 });

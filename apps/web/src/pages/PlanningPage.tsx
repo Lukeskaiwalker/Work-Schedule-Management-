@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { useAppContext } from "../context/AppContext";
 import { addDaysISO, normalizeWeekStartISO, formatDayLabel, isoWeekdayMondayFirst } from "../utils/dates";
-import { sortTasksByDueTime, formatTaskTimeRange } from "../utils/tasks";
+import { sortTasksByDueTime, formatTaskTimeRange, taskDayIndexLabel } from "../utils/tasks";
 import { PenIcon } from "../components/icons";
 import { TerminBadge } from "../components/tasks/TerminBadge";
 import type { Language, Task } from "../types";
+import "../styles/tasks.css";
 
 /** Weekly board rendering mode. */
 type BoardMode = "einsaetze" | "tasks";
@@ -209,6 +210,19 @@ export function PlanningPage() {
     const start = starts.slice().sort()[0];
     const end = ends.length > 0 ? ends.slice().sort().reverse()[0] : null;
     return end && end > start ? `${hhmm(start)} – ${hhmm(end)}` : hhmm(start);
+  }
+
+  /**
+   * "Tag 2/3" for the multi-day tasks in an Einsatz, one chip per distinct
+   * label. The server places a Mo–Mi installation on all three days; without
+   * this the board shows three identical "Müller · 1 Aufgabe" rows with no
+   * sign that they are one job.
+   */
+  function einsatzDayChips(einsatz: Einsatz): string[] {
+    const labels = einsatz.tasks
+      .map((task) => taskDayIndexLabel(task, einsatz.date, language))
+      .filter((label) => label.length > 0);
+    return Array.from(new Set(labels));
   }
 
   const [isPhoneViewport, setIsPhoneViewport] = useState(() => {
@@ -612,6 +626,11 @@ export function PlanningPage() {
                               : taskCount === 1
                                 ? "task"
                                 : "tasks"}
+                            {einsatzDayChips(einsatz).map((chip) => (
+                              <span key={chip} className="task-day-chip">
+                                {chip}
+                              </span>
+                            ))}
                           </span>
                         </li>
                       );
@@ -660,6 +679,12 @@ export function PlanningPage() {
                             <b>
                               {task.title}
                               <TerminBadge task={task} language={language} />
+                              {/* The server places a multi-day task on every
+                                  day it covers; the chip says which day this
+                                  column is. Empty for single-day tasks. */}
+                              {taskDayIndexLabel(task, day.date, language) ? (
+                                <span className="task-day-chip">{taskDayIndexLabel(task, day.date, language)}</span>
+                              ) : null}
                             </b>
                             <small>
                               <button
@@ -802,6 +827,9 @@ export function PlanningPage() {
                     <b>
                       {task.title}
                       <TerminBadge task={task} language={language} />
+                      {taskDayIndexLabel(task, openEinsatz.date, language) ? (
+                        <span className="task-day-chip">{taskDayIndexLabel(task, openEinsatz.date, language)}</span>
+                      ) : null}
                     </b>
                     <small>
                       {/* A customer can run several projects in one day — the

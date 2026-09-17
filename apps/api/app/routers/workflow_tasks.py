@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter
+from sqlalchemy import and_, func, or_
 
 from app.core.events import notify
 from app.models.notification import Notification
@@ -76,6 +77,7 @@ def list_tasks(
     task_type: str | None = None,
     has_partners: bool | None = None,
     partner_id: int | None = None,
+    done_since_days: int = Query(default=30, ge=0, le=3650),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -97,6 +99,15 @@ def list_tasks(
     if view == "my":
         stmt = stmt.where(_my_task_filter(current_user.id))
         stmt = stmt.where(Task.status != "done")
+    elif view == "my_all":
+        # Mine in every status, for the overview card's "Erledigt" filter.
+        # Done rows are capped to the recent past (``done_since_days``, on
+        # updated_at because that is when the status flipped) so the box
+        # cannot grow forever; an older done task lives in the project's
+        # completed view.
+        done_cutoff = utcnow() - timedelta(days=done_since_days)
+        stmt = stmt.where(_my_task_filter(current_user.id))
+        stmt = stmt.where(or_(Task.status != "done", Task.updated_at >= done_cutoff))
     elif view == "all_open":
         stmt = stmt.where(Task.status != "done")
         if own_tasks_only:
@@ -164,6 +175,7 @@ def create_task(
             db,
             project_id=payload.project_id,
             due_date=payload.due_date,
+            end_date=payload.end_date,
             start_time=payload.start_time,
             estimated_hours=payload.estimated_hours,
             assignee_ids=assignee_ids,
@@ -195,7 +207,10 @@ def create_task(
     )
     # ``planning_status`` rides along in ``task_data``: the schema already
     # pinned it to "tentative" | "confirmed" | None, so nothing to normalise.
+    # ``end_date`` rides along too; the schema refused a bad range, and this
+    # folds an end equal to the start onto the canonical NULL.
     task = Task(**task_data)
+    _validate_task_date_range(task)
     # Validated AFTER the anchor checks above, because the mismatch rule needs
     # the task's resolved customer. Linking never drives the box FSM, so no
     # stock moves here.
@@ -280,6 +295,7 @@ def update_task(
     previous_start_time = task.start_time.isoformat() if task.start_time else None
     previous_estimated_hours = task.estimated_hours
     previous_due_date_value = task.due_date
+    previous_end_date_value = task.end_date
     previous_confirmation_status = task.customer_confirmation_status
     # Set by the request_customer_confirmation branch below when the toggle
     # actually did something. A toggle that resolved to a no-op leaves this
@@ -368,6 +384,11 @@ def update_task(
             task.planning_status = payload.planning_status
         if "due_date" in payload.model_fields_set:
             task.due_date = payload.due_date
+        # Same absent/null contract as planning_status. The cross-field rule
+        # is settled by _validate_task_date_range below, once BOTH ends of
+        # the window are known.
+        if "end_date" in payload.model_fields_set:
+            task.end_date = payload.end_date
         if "start_time" in payload.model_fields_set:
             task.start_time = payload.start_time
         # v2.5.0: explicit toggle of "request customer confirmation"
@@ -444,11 +465,13 @@ def update_task(
             existing_partner_ids = next_partner_ids
 
         _validate_task_schedule(start_time=task.start_time, estimated_hours=task.estimated_hours)
+        _validate_task_date_range(task)
         overlaps = (
             _find_task_overlaps(
                 db,
                 project_id=task.project_id,
                 due_date=task.due_date,
+                end_date=task.end_date,
                 start_time=task.start_time,
                 estimated_hours=task.estimated_hours,
                 assignee_ids=existing_assignee_ids,
@@ -477,6 +500,19 @@ def update_task(
         and "due_date" in payload.model_fields_set
         and payload.due_date != previous_due_date_value
     )
+    # The window moved at EITHER end. A yes for 1.–3.10. is not a yes for
+    # 1.–5.10., so moving only "Bis" voids the customer's answer exactly as
+    # moving "Von" does (owner decision; same rule as
+    # project_task_state_axes). Compared on the settled row, not the payload,
+    # because _validate_task_date_range folds end == start onto NULL — a
+    # PATCH that spells the same single day as an explicit end is no move.
+    # planning_status is deliberately untouched by either.
+    end_date_changed = (
+        can_manage
+        and "end_date" in payload.model_fields_set
+        and task.end_date != previous_end_date_value
+    )
+    date_range_changed = due_date_changed or end_date_changed
     # Only a toggle that actually wrote something counts as having handled
     # the confirmation state. Ticking the box on an already-answered task
     # is a no-op (see above), and a no-op must not stand in for the
@@ -485,7 +521,7 @@ def update_task(
     # over to date Y.
     already_handled_via_toggle = confirmation_toggle_handled
     if (
-        due_date_changed
+        date_range_changed
         and not already_handled_via_toggle
         and previous_confirmation_status in {"pending", "confirmed", "declined"}
     ):
@@ -531,9 +567,13 @@ def update_task(
                 message=f"Material abgerechnet: {task.title}",
                 details={"task_id": task.id, **settlement.as_details()},
             )
-    if task.status != previous_status or (task.due_date.isoformat() if task.due_date else None) != previous_due_date or (
-        task.start_time.isoformat() if task.start_time else None
-    ) != previous_start_time or task.estimated_hours != previous_estimated_hours:
+    if (
+        task.status != previous_status
+        or (task.due_date.isoformat() if task.due_date else None) != previous_due_date
+        or task.end_date != previous_end_date_value
+        or (task.start_time.isoformat() if task.start_time else None) != previous_start_time
+        or task.estimated_hours != previous_estimated_hours
+    ):
         _record_project_activity(
             db,
             project_id=task.project_id,
@@ -544,6 +584,7 @@ def update_task(
                 "task_id": task.id,
                 "status": task.status,
                 "due_date": task.due_date.isoformat() if task.due_date else None,
+                "end_date": task.end_date.isoformat() if task.end_date else None,
                 "start_time": task.start_time.isoformat() if task.start_time else None,
                 "estimated_hours": task.estimated_hours,
             },
@@ -617,12 +658,15 @@ def planning_assign_week(
         partner_ids = _normalize_partner_ids(list(assignment.partner_ids or []))
         _validate_partner_ids(db, partner_ids)
         _validate_task_schedule(start_time=assignment.start_time, estimated_hours=assignment.estimated_hours)
+        # The schema already refused an end_date without a due_date, so the
+        # week_start fallback can never land a start after a client's end.
         due_date = assignment.due_date or week_start
         overlaps = (
             _find_task_overlaps(
                 db,
                 project_id=assignment.project_id,
                 due_date=due_date,
+                end_date=assignment.end_date,
                 start_time=assignment.start_time,
                 estimated_hours=assignment.estimated_hours,
                 assignee_ids=assignee_ids,
@@ -671,6 +715,9 @@ def planning_assign_week(
         )
         if class_template and not (task.materials_required or "").strip():
             task.materials_required = _class_template_materials_text(class_template) or None
+        # end_date came through assignment_data; fold end == start onto NULL
+        # exactly as create_task does.
+        _validate_task_date_range(task)
         # Same rule as create_task — this is the second path that builds a Task
         # from TaskCreate, so without it the mismatch check is bypassable.
         if assignment.construction_box_id is not None:
@@ -708,7 +755,20 @@ def planning_week_view(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    stmt = select(Task).where(Task.week_start == week_start)
+    week_end = week_start + timedelta(days=6)
+    # A task belongs to this week when it is pinned here (week_start) OR its
+    # date window touches the week. The second arm is what puts a multi-day
+    # task on every day it covers, and a task spanning Sunday/Monday into
+    # both weeks — one row per week, like the absences.
+    stmt = select(Task).where(
+        or_(
+            Task.week_start == week_start,
+            and_(
+                Task.due_date <= week_end,
+                func.coalesce(Task.end_date, Task.due_date) >= week_start,
+            ),
+        )
+    )
     if project_id is not None:
         assert_project_access(db, current_user, project_id)
         stmt = stmt.where(Task.project_id == project_id)
@@ -722,9 +782,14 @@ def planning_week_view(
     task_out_rows = _tasks_out(db, tasks)
     by_day: dict[date, list[TaskOut]] = {}
     for task in task_out_rows:
-        target_day = task.due_date if task.due_date else week_start
-        by_day.setdefault(target_day, []).append(task)
-    week_end = week_start + timedelta(days=6)
+        if task.due_date is None:
+            # Undated but pinned to the week: keep the Monday fallback.
+            by_day.setdefault(week_start, []).append(task)
+            continue
+        # A pinned task whose dates fall outside the week yields no days here
+        # and stays off the board — the behaviour it had before.
+        for day in _task_days_in_window(task, week_start, week_end):
+            by_day.setdefault(day, []).append(task)
     absences_by_day = _planning_absences_by_day(
         db,
         current_user=current_user,
@@ -874,6 +939,7 @@ def _public_task_view(
         task_title=task.title or "",
         task_description=task.description,
         due_date=task.due_date,
+        end_date=task.end_date,
         start_time=task.start_time,
         estimated_hours=task.estimated_hours,
         worker_display_names=worker_names,

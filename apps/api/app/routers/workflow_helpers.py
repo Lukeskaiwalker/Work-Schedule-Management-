@@ -73,6 +73,7 @@ from app.models.entities import (
     WerkstattConstructionBox,
     WikiPage,
 )
+from app.schemas.task import TASK_DATE_RANGE_DETAIL
 from app.schemas.api import (
     AssignableUserOut,
     EmployeeGroupOut,
@@ -2220,7 +2221,10 @@ def _task_is_overdue(task: Task, *, today: date | None = None) -> bool:
         return False
     if task.due_date is None:
         return False
-    return task.due_date < (today or date.today())
+    # A multi-day task is overdue once its LAST day has passed — a crew still
+    # on site on day two of three must not see the row turn red.
+    last_day = task.end_date or task.due_date
+    return last_day < (today or date.today())
 
 
 def _normalize_task_type(raw_task_type: str | None, *, default: str = "construction") -> str:
@@ -2806,6 +2810,68 @@ def _validate_task_schedule(*, start_time: time | None, estimated_hours: float |
     _task_end_time(start_time, estimated_hours)
 
 
+# TASK_DATE_RANGE_DETAIL is defined next to the create schema (app.schemas.task)
+# so the create 422 and this PATCH 400 are guaranteed to say the same thing.
+
+
+def _validate_task_date_range(task: Task) -> None:
+    """Settle a task's window after every field write and before it is read.
+
+    Runs on the resolved row rather than on the payload because a PATCH may
+    move only one end: the rule needs the final due_date AND the final
+    end_date. Three outcomes, in order:
+
+      * no due_date  → there is no window; a stray end_date is dropped rather
+                       than refused, because clearing "Von" is how a task goes
+                       back to undated and the client should not have to send
+                       two nulls for that.
+      * end < start  → 400 with the German detail the modal shows verbatim.
+      * end == start → stored as NULL. "NULL = single-day" is the canonical
+                       form every reader relies on, and keeping one spelling
+                       is what makes the date-range-changed comparison in
+                       update_task honest.
+    """
+    if task.due_date is None:
+        task.end_date = None
+        return
+    if task.end_date is None:
+        return
+    if task.end_date < task.due_date:
+        raise HTTPException(status_code=400, detail=TASK_DATE_RANGE_DETAIL)
+    if task.end_date == task.due_date:
+        task.end_date = None
+
+
+def _task_last_day(task: object) -> date | None:
+    """The last day of a task's window: end_date, else due_date, else None.
+    Accepts anything with those two attributes (Task rows and TaskOut alike)."""
+    due_date = getattr(task, "due_date", None)
+    if due_date is None:
+        return None
+    return getattr(task, "end_date", None) or due_date
+
+
+def _task_days_in_window(task: object, period_start: date, period_end: date) -> list[date]:
+    """Every calendar day the task covers inside [period_start, period_end].
+
+    Mirrors the vacation expansion in _planning_absences_by_day: a window is
+    clipped to the period and walked day by day, so a task spanning a week
+    boundary lands on the right days of BOTH weeks. An undated task yields
+    nothing — its placement (week_start fallback) is the caller's decision.
+    """
+    due_date = getattr(task, "due_date", None)
+    last_day = _task_last_day(task)
+    if due_date is None or last_day is None:
+        return []
+    cursor = max(due_date, period_start)
+    stop = min(last_day, period_end)
+    days: list[date] = []
+    while cursor <= stop:
+        days.append(cursor)
+        cursor += timedelta(days=1)
+    return days
+
+
 def _find_task_overlaps(
     db: Session,
     *,
@@ -2814,6 +2880,7 @@ def _find_task_overlaps(
     start_time: time | None,
     estimated_hours: float | None,
     assignee_ids: list[int],
+    end_date: date | None = None,
     exclude_task_id: int | None = None,
 ) -> list[dict[str, object]]:
     if due_date is None or start_time is None or estimated_hours is None or not assignee_ids:
@@ -2824,9 +2891,21 @@ def _find_task_overlaps(
     end_minutes = start_minutes + (_task_duration_minutes(estimated_hours) or 0)
     assignee_set = set(assignee_ids)
 
+    # Candidates are every dated task whose window touches ours. The daily
+    # slot (start_time + duration) repeats on every day of a multi-day task,
+    # so once the windows intersect the time comparison below is the same
+    # as for two single-day tasks on that shared day.
+    window_start = due_date
+    window_end = end_date or due_date
     stmt = (
         select(Task)
-        .where(Task.due_date == due_date, Task.start_time.is_not(None), Task.estimated_hours.is_not(None), Task.status != "done")
+        .where(
+            Task.due_date <= window_end,
+            func.coalesce(Task.end_date, Task.due_date) >= window_start,
+            Task.start_time.is_not(None),
+            Task.estimated_hours.is_not(None),
+            Task.status != "done",
+        )
         .order_by(Task.start_time.asc(), Task.id.asc())
     )
     if exclude_task_id is not None:
@@ -2861,6 +2940,7 @@ def _find_task_overlaps(
                 "project_id": candidate.project_id,
                 "title": candidate.title,
                 "due_date": candidate.due_date.isoformat() if candidate.due_date else None,
+                "end_date": candidate.end_date.isoformat() if candidate.end_date else None,
                 "start_time": candidate.start_time.isoformat() if candidate.start_time else None,
                 "end_time": _task_end_time(candidate.start_time, candidate.estimated_hours).isoformat()
                 if candidate.start_time and candidate.estimated_hours is not None
@@ -3051,6 +3131,7 @@ def _task_out(
         planning_status=task.planning_status,
         is_overdue=_task_is_overdue(task),
         due_date=task.due_date,
+        end_date=task.end_date,
         start_time=task.start_time,
         estimated_hours=task.estimated_hours,
         end_time=_task_end_time(task.start_time, task.estimated_hours)
@@ -3078,7 +3159,11 @@ def _task_confirmation_expired(task: Task) -> bool:
     DAY of the task's due_date — once today catches up, the customer
     can no longer confirm via the link and must call. Tasks without a
     due_date have no expiry (the token stays valid until a date is
-    actually set)."""
+    actually set).
+
+    Deliberately the START day, not end_date, for a multi-day task: the
+    crew arrives on day one, so a yes that arrives on day two is a yes
+    to an appointment already under way — it belongs on the phone."""
     if task.due_date is None:
         return False
     from app.core.time import utcnow
@@ -3312,6 +3397,7 @@ def dispatch_customer_confirmation_email(
         task_title=task.title or "",
         task_description=task.description,
         due_date=task.due_date,
+        end_date=task.end_date,
         start_time=task.start_time,
         estimated_hours=task.estimated_hours,
         worker_display_names=worker_names,

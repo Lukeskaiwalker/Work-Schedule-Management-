@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { PartnerListItem, Task } from "../../types";
 import { PartnerTradePill } from "../../components/partners/PartnerTradePill";
 import { listPartnerTasks } from "../../utils/partnersApi";
+import { formatTaskDateRange } from "../../utils/tasks";
 import { useAppContext } from "../../context/AppContext";
 
 type Props = {
@@ -242,7 +243,7 @@ export function PartnerDetailOverlay({ partner, onClose }: Props) {
                     : task.project_id != null
                       ? `#${task.project_id}`
                       : ""}
-                  {task.due_date ? ` · ${task.due_date}` : ""}
+                  {task.due_date ? ` · ${formatTaskDateRange(task)}` : ""}
                 </small>
               </li>
             );

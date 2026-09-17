@@ -238,7 +238,9 @@ export function buildTaskModalFormState(defaults?: {
     class_template_id: "",
     project_id: defaults?.projectId ? String(defaults.projectId) : "",
     project_query: defaults?.projectQuery ?? "",
+    customer_id: null,
     due_date: defaults?.dueDate ?? "",
+    end_date: "",
     start_time: "",
     estimated_hours: "",
     priority: "normal",
@@ -246,6 +248,36 @@ export function buildTaskModalFormState(defaults?: {
     assignee_query: "",
     assignee_ids: [],
     partner_ids: [],
+    create_project_from_task: false,
+    new_project_name: "",
+    new_project_number: "",
+  };
+}
+
+/**
+ * The create form after the operator picks a project.
+ *
+ * Everything the previous anchor implied goes with it: the class template
+ * (they are per project), the crate (bound to the previous customer) and the
+ * customer anchor itself. The last one matters for a copy of a customer-only
+ * task: the copy carries customer_id, and if picking a project left it in
+ * place the box picker would keep offering that customer's crates for a
+ * project that belongs to somebody else — the api then refuses the crate
+ * with "belongs to a different customer". The project decides the customer
+ * from here on, exactly as the server resolves it.
+ */
+export function taskModalStateWithProject(
+  current: TaskModalState,
+  projectId: number,
+  projectQuery: string,
+): TaskModalState {
+  return {
+    ...current,
+    project_id: String(projectId),
+    project_query: projectQuery,
+    class_template_id: "",
+    construction_box_id: "",
+    customer_id: null,
     create_project_from_task: false,
     new_project_name: "",
     new_project_number: "",
@@ -282,6 +314,7 @@ export function buildTaskEditFormState(task?: Task | null): TaskEditFormState {
     // here, so this never registers as a change on its own.
     status: canonicalTaskStatus(task?.status) || "open",
     due_date: task?.due_date ?? "",
+    end_date: task?.end_date ?? "",
     start_time: task?.start_time ? formatTaskStartTime(task.start_time) : "",
     estimated_hours: task?.estimated_hours != null ? String(task.estimated_hours) : "",
     priority: "normal",
@@ -309,6 +342,18 @@ export function buildTaskEditFormState(task?: Task | null): TaskEditFormState {
   };
 }
 
+/**
+ * "Bis" as the api stores it: null for a single day. Requires a "Von" (an end
+ * without a start is meaningless and the api refuses it) and folds an end
+ * equal to the start onto null, so the form's "same day spelled twice" never
+ * registers as a change on save.
+ */
+export function taskEndDatePayload(dueDate: string | null, endDate: string): string | null {
+  const trimmed = endDate.trim();
+  if (!dueDate || !trimmed || trimmed === dueDate) return null;
+  return trimmed;
+}
+
 export function taskEditPayloadFromForm(form: TaskEditFormState, normalizedStartTime: string | null) {
   const dueDate = form.due_date.trim() || null;
   const estimatedHours =
@@ -331,6 +376,7 @@ export function taskEditPayloadFromForm(form: TaskEditFormState, normalizedStart
     class_template_id: classTemplateId,
     status: canonicalTaskStatus(form.status) || "open",
     due_date: dueDate,
+    end_date: taskEndDatePayload(dueDate, form.end_date),
     start_time: normalizedStartTime,
     estimated_hours: estimatedHours,
     assignee_ids: form.assignee_ids,
@@ -367,6 +413,7 @@ export const TASK_EDIT_PATCH_KEYS: readonly (keyof TaskEditPayload)[] = [
   "class_template_id",
   "status",
   "due_date",
+  "end_date",
   "start_time",
   "estimated_hours",
   "assignee_ids",

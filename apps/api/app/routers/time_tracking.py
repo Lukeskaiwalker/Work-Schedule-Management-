@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -2133,6 +2133,7 @@ def _day_activity_task_out(db: Session, task: Task) -> DayActivityTaskOut:
         status=task.status,
         task_type=task.task_type,
         due_date=task.due_date,
+        end_date=task.end_date,
         project_id=task.project_id,
         project_number=project.project_number if project else None,
         project_name=project.name if project else None,
@@ -2194,15 +2195,17 @@ def get_day_activity(
 
     target_user_id = _resolve_target_user_id(current_user, user_id)
 
-    # A task belongs to this day+person when it is due that day and the person
-    # is on it — via the modern many-assignee join OR the legacy single-assignee
+    # A task belongs to this day+person when the day lies inside its window
+    # (due_date .. end_date, end_date NULL = single day) and the person is on
+    # it — via the modern many-assignee join OR the legacy single-assignee
     # column, since older rows only populate the latter.
     assigned_task_ids = select(TaskAssignment.task_id).where(TaskAssignment.user_id == target_user_id)
     tasks = list(
         db.scalars(
             select(Task)
             .where(
-                Task.due_date == day,
+                Task.due_date <= day,
+                func.coalesce(Task.end_date, Task.due_date) >= day,
                 or_(Task.assignee_id == target_user_id, Task.id.in_(assigned_task_ids)),
             )
             .order_by(Task.start_time.is_(None), Task.start_time.asc(), Task.id.asc())

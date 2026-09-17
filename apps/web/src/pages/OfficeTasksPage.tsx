@@ -7,6 +7,7 @@ import {
   taskTypeLabel,
   normalizeTaskTypeValue,
   formatTaskTimeRange,
+  formatTaskDateRange,
   canonicalTaskStatus,
 } from "../utils/tasks";
 import { taskMaterialsDisplay } from "../utils/reports";
@@ -299,7 +300,7 @@ export function OfficeTasksPage() {
                     {taskProjectLabel.title}
                   </button>
                   {"  ·  "}
-                  {de ? "Fällig" : "Due"}: {task.due_date ?? "-"}
+                  {de ? "Fällig" : "Due"}: {formatTaskDateRange(task) || "-"}
                   {task.start_time ? ` ${de ? "um" : "at"} ${formatTaskTimeRange(task)}` : ""}
                   {"  ·  "}
                   {de ? "Mitarbeiter" : "Assignees"}: {hasAssignees ? getTaskAssigneeLabel(task) : "—"}

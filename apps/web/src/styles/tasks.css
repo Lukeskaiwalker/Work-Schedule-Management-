@@ -1,0 +1,97 @@
+/* ══════════════════════════════════════════════════════════════════════════
+   Tasks area (v2.15): the "Meine Aufgaben" card on the construction overview,
+   the "Tag n/N" chip a multi-day task wears on the board and calendar, and
+   the Von/Bis pair in both task modals.
+
+   Lives here rather than in styles.css (frozen for the wave). Imported by the
+   components that use these classes; Vite dedupes the import.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Meine Aufgaben card (components/tasks/MyTasksOverviewCard) ──────────
+   Reuses .overview-card / .overview-projects-head / .overview-state-filter /
+   .overview-open-full-btn / .tasks-page-list / .tasks-page-row from styles.css;
+   only the card-specific density lives here. */
+.my-tasks-card .tasks-page-row-header {
+  padding: 10px 14px;
+  gap: 10px;
+}
+
+.my-tasks-card .tasks-page-row-title {
+  font-size: 14px;
+}
+
+.my-tasks-card-count {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background-color: #e34b4b;
+  color: #ffffff;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.my-tasks-card-head-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.my-tasks-card-more {
+  appearance: none;
+  width: 100%;
+  padding: 10px 14px;
+  border: 0;
+  border-top: 1px solid #edf4ff;
+  background: transparent;
+  color: #2f70b7;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.my-tasks-card-more:hover,
+.my-tasks-card-more:focus-visible {
+  background: #f7fbff;
+}
+
+/* ── "Tag n/N" chip on the board, the calendar and the row meta ────────── */
+.task-day-chip {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #e8f0fb;
+  color: #2f70b7;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 14px;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.calendar-page-event .task-day-chip,
+.planning-task .task-day-chip,
+.planning-einsatz-meta .task-day-chip,
+.planning-einsatz-task .task-day-chip {
+  margin-left: 4px;
+}
+
+/* ── Done row a non-manager cannot expand ──────────────────────────────
+   Meine Aufgaben never loads done tasks, so the click only leads to the
+   list; the row reads as information, not as a door into the task. */
+.my-tasks-card-row-header--list-only .tasks-page-row-title-block {
+  opacity: 0.72;
+}
+
+/* ── Von/Bis in the task modals ────────────────────────────────────────── */
+.task-modal-field--bis input:placeholder-shown {
+  color: #8fa2ba;
+}

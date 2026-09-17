@@ -205,3 +205,36 @@ def test_an_empty_day_returns_empty_lists(client: TestClient, admin_token: str) 
     assert body["tasks"] == []
     assert body["reports"] == []
     assert body["day"] == DAY
+
+
+def test_a_multi_day_task_shows_on_every_day_of_its_window(client: TestClient, admin_token: str) -> None:
+    """A three-day installation is scheduled on its middle day too — the
+    window (due_date .. end_date) is what "that day" matches against."""
+
+    employee = _employee(client, admin_token, "tag-window@example.com")
+    project_id = _project(client, admin_token, "TAG-5")
+    resp = client.post(
+        "/api/tasks",
+        headers=_auth(admin_token),
+        json={
+            "project_id": project_id,
+            "title": "Drei Tage Montage",
+            "status": "open",
+            "due_date": "2026-05-11",
+            "end_date": "2026-05-13",
+            "assignee_ids": [employee["id"]],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    task_id = resp.json()["id"]
+
+    token = _login(client, "tag-window@example.com")
+    middle = client.get(f"/api/time/day-activity?day={DAY}", headers=_auth(token))
+    assert middle.status_code == 200, middle.text
+    rows = {t["id"]: t for t in middle.json()["tasks"]}
+    assert task_id in rows
+    assert rows[task_id]["end_date"] == "2026-05-13"
+
+    after = client.get("/api/time/day-activity?day=2026-05-14", headers=_auth(token))
+    assert after.status_code == 200, after.text
+    assert task_id not in {t["id"] for t in after.json()["tasks"]}, "the day after the window is empty"

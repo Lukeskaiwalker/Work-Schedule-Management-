@@ -97,4 +97,10 @@ describe("labels and done-checks agree on the canonical form", () => {
     const task = { id: 1, project_id: 1, title: "T", status: "Erledigt", due_date: "2026-01-01" } as Task;
     expect(taskDisplayStatus(task, "2026-09-12")).toBe("done");
   });
+
+  it("keeps a multi-day task in its plain status until its last day has passed", () => {
+    const window = { id: 2, project_id: 1, title: "T", status: "open", due_date: "2026-09-10", end_date: "2026-09-14" } as Task;
+    expect(taskDisplayStatus(window, "2026-09-12")).toBe("open");
+    expect(taskDisplayStatus(window, "2026-09-15")).toBe("overdue");
+  });
 });

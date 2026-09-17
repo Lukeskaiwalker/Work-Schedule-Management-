@@ -7,6 +7,27 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from app.schemas.partner import PartnerOut
 
 
+# The German the modal shows verbatim. One source for both paths — the create
+# schema (pydantic → 422) and the router's PATCH rule (400) — so the same rule
+# never surfaces in two languages depending on which verb hit it.
+TASK_DATE_RANGE_DETAIL = "Das Enddatum darf nicht vor dem Startdatum liegen"
+TASK_END_WITHOUT_START_DETAIL = "Das Enddatum braucht ein Startdatum"
+
+
+def validate_task_date_range(*, due_date: date | None, end_date: date | None) -> None:
+    """The one rule for a task window on create: an end needs a start, and may
+    not precede it. Raises ValueError so pydantic turns it into a 422 carrying
+    the same German text the PATCH path answers with (TASK_DATE_RANGE_DETAIL).
+    The router's update path folds a stray end onto None instead of refusing
+    it, because there clearing "Von" is how a task goes back to undated."""
+    if end_date is None:
+        return
+    if due_date is None:
+        raise ValueError(TASK_END_WITHOUT_START_DETAIL)
+    if end_date < due_date:
+        raise ValueError(TASK_DATE_RANGE_DETAIL)
+
+
 class TaskCreate(BaseModel):
     # v2.4.5: a task is anchored to a project, a customer, or both.
     # The model_validator below enforces "at least one is set" so the
@@ -33,6 +54,10 @@ class TaskCreate(BaseModel):
     # this schema, so it carries the field too.
     planning_status: Literal["tentative", "confirmed"] | None = None
     due_date: date | None = None
+    # Last day of a multi-day task; None = single-day. Needs a due_date and
+    # may not lie before it — checked below so the client sees a 422 with a
+    # message instead of the DB CHECK's opaque IntegrityError.
+    end_date: date | None = None
     start_time: time | None = None
     estimated_hours: float | None = None
     assignee_id: int | None = None
@@ -50,6 +75,11 @@ class TaskCreate(BaseModel):
     def _require_anchor(self) -> "TaskCreate":
         if self.project_id is None and self.customer_id is None:
             raise ValueError("project_id or customer_id is required")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_date_range(self) -> "TaskCreate":
+        validate_task_date_range(due_date=self.due_date, end_date=self.end_date)
         return self
 
     @field_validator("estimated_hours")
@@ -91,6 +121,10 @@ class TaskUpdate(BaseModel):
     # nullable field here. Not in the employee allow-list: managers only.
     planning_status: Literal["tentative", "confirmed"] | None = None
     due_date: date | None = None
+    # Absent = unchanged, explicit null clears (same model_fields_set contract
+    # as planning_status). The cross-field rule against due_date is checked
+    # in the router, because only there is the task's FINAL due_date known.
+    end_date: date | None = None
     start_time: time | None = None
     estimated_hours: float | None = None
     assignee_id: int | None = None
@@ -141,6 +175,9 @@ class TaskOut(BaseModel):
     planning_status: str | None = None
     is_overdue: bool = False
     due_date: date | None = None
+    # Last day of the window; None = single-day. is_overdue is computed
+    # against this day, not due_date.
+    end_date: date | None = None
     start_time: time | None = None
     estimated_hours: float | None = None
     end_time: time | None = None
@@ -218,6 +255,8 @@ class PublicCustomerConfirmationOut(BaseModel):
     task_title: str
     task_description: str | None = None
     due_date: date | None = None
+    # Set only for a multi-day appointment; the page then reads "vom … bis …".
+    end_date: date | None = None
     start_time: time | None = None
     estimated_hours: float | None = None
     worker_display_names: list[str] = Field(default_factory=list)
