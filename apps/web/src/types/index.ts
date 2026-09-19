@@ -658,6 +658,8 @@ export type ProjectFile = {
   project_id: number | null;
   customer_id?: number | null;
   task_id?: number | null;
+  /** Uploader's user id; a task file may be removed by them without files:manage. */
+  uploaded_by?: number | null;
   folder?: string;
   path?: string;
   file_name: string;

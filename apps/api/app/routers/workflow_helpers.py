@@ -428,6 +428,9 @@ def _attachment_out(attachment: Attachment) -> dict:
         "project_id": attachment.project_id,
         "customer_id": attachment.customer_id,
         "task_id": attachment.task_id,
+        # Who uploaded it: the task attachments UI shows the remove control to
+        # the uploader (delete_file lets them take their own task file back).
+        "uploaded_by": attachment.uploaded_by,
         "folder": folder,
         "path": virtual_path,
         "file_name": attachment.file_name,
