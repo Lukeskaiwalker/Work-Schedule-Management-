@@ -108,13 +108,16 @@ All registered in `main.py` under the `/api` prefix.
 | `workflow_projects.py` | Project CRUD, finance, members, weather, class templates |
 | `workflow_tasks.py` | Task CRUD, assignment, planning week |
 | `workflow_chat.py` | Threads, messages, attachments, read state |
-| `workflow_files.py` | File upload, download, preview, folders |
+| `workflow_files.py` | Project file upload, download, preview, folders; `/files/{id}/…` serve every scope |
+| `workflow_customer_files.py` | Customer-level folders and files (`/customers/{id}/folders`, `/files`) |
+| `workflow_task_files.py` | Files on a task (`/tasks/{id}/files`), dual-anchored on the task's project or customer |
 | `workflow_materials.py` | Material catalog, project material needs |
 | `workflow_notifications.py` | `GET /notifications`, `PATCH /notifications/read-all`, `PATCH /notifications/{id}/read`, `PATCH /notifications/{id}/dismiss` |
 | `workflow_reports.py` | Construction reports |
 | `workflow_sites.py` | Sites, job tickets |
 | `workflow_wiki.py` | Wiki pages, library files |
-| `workflow_webdav.py` | WebDAV file mounting |
+| `workflow_webdav.py` | WebDAV project tree (`/api/dav/projects/`) |
+| `workflow_webdav_customers.py` | WebDAV customer tree (`/api/dav/customers/<id - name>/` with the project folders inside) |
 | `workflow_system.py` | Rate limiting, system config |
 | `workflow_helpers.py` | Shared utilities used by other routers |
 | `workflow.py` | Legacy shim — do not add new endpoints here |
@@ -199,7 +202,7 @@ Key state variables in `App.tsx`:
 | `modals/ProjectModal.tsx` | Create / edit project |
 | `modals/TaskModal.tsx` | Create task |
 | `modals/TaskEditModal.tsx` | Edit task |
-| `modals/FileUploadModal.tsx` | File drag-and-drop upload |
+| `modals/FileUploadModal.tsx` | Context-bound wrapper around `files/UploadFilesDialog.tsx` for the project tab |
 | `modals/ThreadModal.tsx` | Create / edit chat thread |
 | `modals/ArchivedThreadsModal.tsx` | Browse archived threads |
 | `modals/AvatarModal.tsx` | Profile picture upload / crop |
@@ -319,3 +322,32 @@ Latest migration: `20260920_0088_werkstatt_article_lookup_and_merge.py`
 | `components/schaltplan/TerminalList.tsx`, `TerminalGroupCard.tsx`, `LabelPrintTerminals.tsx`, `StripSvg.tsx`, `useLabelPrinting.ts` | The „Klemmen" tab, its BOM, and label printing in terminal mode |
 | `components/station/StationEditForm.tsx` | Name / location / manual agent address |
 | `styles/*.css` | Page-local stylesheets (`tasks`, `orders`, `boxes`, `bedarfe`, `stock`, `schaltplan-terminals`, `pi-station`) — `styles.css` is no longer the only sheet |
+
+## Files — customer and task scopes (2026-09, docs/FILE_SCOPES.md)
+
+Every file used to hang off a project. `attachments` now carries one scope
+anchor per row — `project_id`, `customer_id`, or `task_id` plus the task's
+project/customer — and `customer_folders` mirrors `project_folders`. The
+customer folder is the level above the project folder; the hierarchy is
+virtual (nothing moved on disk). Migration `20260921_0089`.
+
+### Backend
+
+| Module | Role |
+|---|---|
+| `models/files.py` | `Attachment` (+ `customer_id`, `task_id`), `ProjectFolder`, `CustomerFolder` |
+| `services/customer_files.py` | Customer-folder registration/defaults, visible paths, latest-file-by-path, `customers_visible_to_user` |
+| `services/task_attachments.py` | Batched `attachment_count`, per-task rows, delete-with-task |
+| `routers/workflow_helpers.py` | `_resolve_attachment_for_access`, `_assert_customer_files_access`, `_user_is_assigned_to_task` — the access rules |
+| `routers/workflow_customer_files.py` / `workflow_task_files.py` / `workflow_webdav_customers.py` | The endpoints (see the router table) |
+
+### Frontend
+
+| Module | Role |
+|---|---|
+| `components/files/FileLightbox.tsx` (+ `lightboxTypes.ts`, `utils/filePreview.ts`, `styles/files.css`) | Click-through viewer: images, PDFs (framed or paged), text, download for the rest |
+| `components/files/FileBrowser.tsx` (+ `FileBrowserFiles`, `FileRow`, `GalleryTile`, `FileViewToggle`, `folderGroups`, `useFileViewPrefs`, `useFileViewer`, `WebdavHelp`, `UploadFilesDialog`) | Scope-agnostic list/gallery browser shared by the project tab and the customer card |
+| `pages/project/ProjectFilesTab.tsx` | The project tab, now `FileBrowser` + `FileLightbox` over the App context |
+| `components/customers/CustomerFilesCard.tsx` (+ `CustomerProjectFolders.tsx`, `hooks/useCustomerFiles.ts`) | The customer folder on the customer page: project folders + customer folders |
+| `components/tasks/TaskAttachments*.tsx`, `taskAttachmentsApi.ts`, `taskAttachmentsModel.ts` | The "Anhänge" section of both task modals, pending-upload mode for new tasks, paperclip badge |
+
