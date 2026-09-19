@@ -12,6 +12,7 @@ import { FileBrowserFiles } from "../files/FileBrowserFiles";
 import { fileCountLabel } from "../files/folderGroups";
 import type { CustomerProjectSummary } from "../../utils/customersApi";
 import type { Language, StoredFile } from "../../types";
+import { statusLabel } from "../../utils/projects";
 
 type ProjectFilesLoad =
   | { kind: "loading" }
@@ -83,7 +84,9 @@ export function CustomerProjectFolders({
               >
                 <span className="file-folder-chevron">{expanded ? "▼" : "▶"}</span>
                 <span className="file-folder-name">📁 {projectFolderName(project)}</span>
-                {project.status && <span className="file-browser-chip">{project.status}</span>}
+                {project.status && (
+                  <span className="file-browser-chip">{statusLabel(project.status, language)}</span>
+                )}
                 {load?.kind === "ready" && (
                   <span className="file-folder-count">
                     {fileCountLabel(load.rows.length, language)}

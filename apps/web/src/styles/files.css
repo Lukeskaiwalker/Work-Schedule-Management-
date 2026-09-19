@@ -709,6 +709,30 @@
   white-space: nowrap;
 }
 
+/* On a phone the chip and the "Im Projekt öffnen" link ate the whole row
+   and the project name ellipsised down to "…". Let the name wrap and drop
+   the link under the folder instead. */
+@media (max-width: 560px) {
+  .file-browser-project {
+    flex-wrap: wrap;
+  }
+
+  .file-browser-project .file-browser-folder {
+    flex-basis: 100%;
+    flex-wrap: wrap;
+  }
+
+  .file-browser-folder--project .file-folder-name {
+    white-space: normal;
+    overflow: visible;
+    flex-basis: calc(100% - 2rem);
+  }
+
+  .file-browser-project-open {
+    margin-left: 2rem;
+  }
+}
+
 .file-browser-chip {
   flex-shrink: 0;
   padding: 0.08rem 0.45rem;
