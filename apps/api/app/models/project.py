@@ -71,6 +71,25 @@ class ProjectActivity(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
 
+class ProjectNote(Base):
+    """One entry of the project's internal note feed.
+
+    The "Interne Notiz" used to be a single text that everyone overwrote,
+    so nobody could tell who had written what, or when. A note is now a
+    row: posted once, by someone, at a time — a chat you read top-down.
+    The activity log records the posting too, which is what puts it on the
+    customer's cross-project log.
+    """
+
+    __tablename__ = "project_notes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True, nullable=False)
+    author_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False, index=True)
+
+
 class ProjectWeatherCache(Base):
     __tablename__ = "project_weather_cache"
 

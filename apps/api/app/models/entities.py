@@ -10,6 +10,7 @@ from app.models.partner import Partner, TaskPartner
 from app.models.project import (
     Project,
     ProjectActivity,
+    ProjectNote,
     ProjectClassAssignment,
     ProjectClassTemplate,
     ProjectFinance,
@@ -104,6 +105,7 @@ __all__ = [
     "Partner",
     "Project",
     "ProjectActivity",
+    "ProjectNote",
     "ProjectClassAssignment",
     "ProjectClassTemplate",
     "ProjectFinance",

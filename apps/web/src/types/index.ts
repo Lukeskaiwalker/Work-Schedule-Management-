@@ -235,6 +235,22 @@ export type ProjectActivity = {
   created_at: string;
 };
 
+/** One posting of the project's internal note feed ("Interne Notizen"). */
+export type ProjectNote = {
+  id: number;
+  project_id: number;
+  author_user_id?: number | null;
+  author_name?: string | null;
+  body: string;
+  created_at: string;
+};
+
+/** A project activity seen from the customer: the same row plus which project it belongs to. */
+export type CustomerActivity = ProjectActivity & {
+  project_number?: string | null;
+  project_name?: string | null;
+};
+
 export type ProjectOfficeNote = {
   report_id: number;
   report_number?: number | null;
@@ -251,6 +267,8 @@ export type ProjectOverviewDetails = {
   finance: ProjectFinance;
   office_notes: ProjectOfficeNote[];
   recent_changes: ProjectActivity[];
+  /** Newest first; the overview carries the latest ones, GET /projects/{id}/notes the rest. */
+  notes?: ProjectNote[];
 };
 
 export type ProjectWeatherDay = {
