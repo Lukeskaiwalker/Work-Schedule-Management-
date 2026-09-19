@@ -426,6 +426,8 @@ def _attachment_out(attachment: Attachment) -> dict:
     return {
         "id": attachment.id,
         "project_id": attachment.project_id,
+        "customer_id": attachment.customer_id,
+        "task_id": attachment.task_id,
         "folder": folder,
         "path": virtual_path,
         "file_name": attachment.file_name,
@@ -502,6 +504,58 @@ def _convert_heic_to_jpeg(raw: bytes) -> bytes | None:
         return None
 
 
+def _user_is_assigned_to_task(db: Session, user: User, task_id: int) -> bool:
+    task = db.get(Task, task_id)
+    if task is None:
+        return False
+    if task.assignee_id == user.id:
+        return True
+    assignment = db.scalars(
+        select(TaskAssignment.id).where(TaskAssignment.task_id == task_id, TaskAssignment.user_id == user.id)
+    ).first()
+    return assignment is not None
+
+
+def _user_can_see_customer_files(db: Session, user: User, customer_id: int) -> bool:
+    """Who may open a customer's own files — see docs/FILE_SCOPES.md.
+
+    Customers have no membership of their own, so the rule is borrowed from
+    what the user can already see: anyone with global project authority or
+    ``files:manage``, anyone who can see at least one of the customer's
+    projects, and anyone assigned to a customer-anchored task (a call-back
+    reminder is reason enough to open the customer's folder).
+    """
+    if has_global_project_access(user.id, user.role) or has_permission_for_user(
+        user.id, user.role, "files:manage"
+    ):
+        return True
+    customer_project_ids = set(db.scalars(select(Project.id).where(Project.customer_id == customer_id)).all())
+    if customer_project_ids and (customer_project_ids & _project_ids_visible_to_user(db, user)):
+        return True
+    assigned = select(TaskAssignment.task_id).where(TaskAssignment.user_id == user.id)
+    own_task = db.scalars(
+        select(Task.id).where(
+            Task.customer_id == customer_id,
+            or_(Task.assignee_id == user.id, Task.id.in_(assigned)),
+        )
+    ).first()
+    return own_task is not None
+
+
+def _assert_customer_files_access(
+    db: Session, user: User, customer_id: int, *, folder_path: str = ""
+) -> Customer:
+    customer = db.get(Customer, customer_id)
+    if customer is None:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    if not _user_can_see_customer_files(db, user, customer_id):
+        raise HTTPException(status_code=403, detail="Customer file access denied")
+    normalized = _normalize_project_folder_path(folder_path, allow_empty=True)
+    if _folder_path_is_protected(normalized) and not _can_access_project_protected_folder(user):
+        raise HTTPException(status_code=403, detail="Folder access denied")
+    return customer
+
+
 def _resolve_attachment_for_access(db: Session, current_user: User, attachment_id: int) -> Attachment:
     attachment = db.get(Attachment, attachment_id)
     if not attachment:
@@ -513,13 +567,19 @@ def _resolve_attachment_for_access(db: Session, current_user: User, attachment_i
             if thread is not None:
                 _assert_thread_access(db, current_user, thread)
                 return attachment
-    if attachment.project_id is not None:
+    folder = _normalize_project_folder_path(attachment.folder_path, allow_empty=True)
+    if attachment.task_id is not None and _user_is_assigned_to_task(db, current_user, attachment.task_id):
+        # The assignee opens the plan on their task even without any project
+        # membership — that is the point of attaching it to the task.
+        pass
+    elif attachment.project_id is not None:
         assert_project_access(db, current_user, attachment.project_id)
-        folder = _normalize_project_folder_path(attachment.folder_path, allow_empty=True)
-        if _folder_path_is_protected(folder) and not _can_access_project_protected_folder(current_user):
-            raise HTTPException(status_code=403, detail="File access denied")
+    elif attachment.customer_id is not None:
+        _assert_customer_files_access(db, current_user, attachment.customer_id)
     elif attachment.construction_report_id is not None and not _can_access_reports(current_user, write=False):
         raise HTTPException(status_code=403, detail="Report access denied")
+    if _folder_path_is_protected(folder) and not _can_access_project_protected_folder(current_user):
+        raise HTTPException(status_code=403, detail="File access denied")
     return attachment
 
 

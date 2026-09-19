@@ -255,25 +255,32 @@ def delete_file(
     attachment = db.get(Attachment, attachment_id)
     if not attachment:
         raise HTTPException(status_code=404, detail="File not found")
-    # Only project files can be deleted via this endpoint (not chat attachments)
-    if attachment.project_id is None:
+    # Project, customer and task files can be deleted here; chat and report
+    # attachments belong to their message / report and are not files to manage.
+    if attachment.project_id is None and attachment.customer_id is None and attachment.task_id is None:
         raise HTTPException(status_code=403, detail="Cannot delete this file type")
-    assert_project_access(db, current_user, attachment.project_id)
     folder = _normalize_project_folder_path(attachment.folder_path, allow_empty=True)
-    if _folder_path_is_protected(folder) and not _can_access_project_protected_folder(current_user):
-        raise HTTPException(status_code=403, detail="File access denied")
-    if not has_permission_for_user(current_user.id, current_user.role, "files:manage"):
+    # Same read gate as preview/download (scope access + protected folder) —
+    # nobody deletes what they could not open.
+    _resolve_attachment_for_access(db, current_user, attachment.id)
+    can_manage = has_permission_for_user(current_user.id, current_user.role, "files:manage")
+    # A task file may also be removed by whoever attached it: the crew member
+    # who added a photo to their own task must be able to take it back without
+    # holding files:manage, which only the office has.
+    own_task_file = attachment.task_id is not None and attachment.uploaded_by == current_user.id
+    if not can_manage and not own_task_file:
         raise HTTPException(status_code=403, detail="File management permission required")
 
     stored_path = attachment.stored_path
-    _record_project_activity(
-        db,
-        project_id=attachment.project_id,
-        actor_user_id=current_user.id,
-        event_type="file.deleted",
-        message=f"File deleted: {attachment.file_name}",
-        details={"file_name": attachment.file_name, "folder": folder},
-    )
+    if attachment.project_id is not None:
+        _record_project_activity(
+            db,
+            project_id=attachment.project_id,
+            actor_user_id=current_user.id,
+            event_type="file.deleted",
+            message=f"File deleted: {attachment.file_name}",
+            details={"file_name": attachment.file_name, "folder": folder},
+        )
     db.delete(attachment)
     db.commit()
 

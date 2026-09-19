@@ -440,6 +440,8 @@ export type Task = {
   /** Box contents imported by the server. Optional: cached task objects
    *  from before the field existed simply have none. */
   materials?: TaskMaterial[];
+  /** How many files hang off the task (plan, picture); the rows come from GET /tasks/{id}/files. */
+  attachment_count?: number;
 };
 
 export type TaskOverlap = {
@@ -648,15 +650,23 @@ export type ProjectFolder = {
   is_protected: boolean;
 };
 
+// One stored file, whichever scope it hangs off. The name predates customer
+// and task files; a customer file has `project_id: null`, a task file carries
+// `task_id` AND its task's project or customer. See docs/FILE_SCOPES.md.
 export type ProjectFile = {
   id: number;
-  project_id: number;
+  project_id: number | null;
+  customer_id?: number | null;
+  task_id?: number | null;
   folder?: string;
   path?: string;
   file_name: string;
   content_type: string;
   created_at: string;
 };
+
+/** Alias for readers who find `ProjectFile` misleading on a customer or task file. */
+export type StoredFile = ProjectFile;
 
 export type VacationRequest = {
   id: number;

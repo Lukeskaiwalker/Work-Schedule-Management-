@@ -17,6 +17,9 @@ from app.routers.workflow_tasks import (
 from app.routers.workflow_sites import router as sites_router
 from app.routers.workflow_files import router as files_router
 from app.routers.workflow_webdav import router as webdav_router
+from app.routers.workflow_customer_files import router as customer_files_router
+from app.routers.workflow_task_files import router as task_files_router
+from app.routers.workflow_webdav_customers import router as webdav_customers_router
 from app.routers.workflow_wiki import router as wiki_router
 from app.routers.workflow_chat import router as chat_router
 from app.routers.workflow_line_items import router as line_items_router
@@ -63,6 +66,9 @@ router.include_router(public_confirmations_router)
 router.include_router(sites_router)
 router.include_router(files_router)
 router.include_router(webdav_router)
+router.include_router(customer_files_router)
+router.include_router(task_files_router)
+router.include_router(webdav_customers_router)
 router.include_router(wiki_router)
 router.include_router(chat_router)
 # Register the more-specific extract router BEFORE the generic CRUD
