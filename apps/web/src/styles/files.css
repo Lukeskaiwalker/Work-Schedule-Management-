@@ -428,3 +428,290 @@
     transition: none;
   }
 }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   File browser (components/files/FileBrowser): the list/gallery shared by
+   the project files tab and the customer files card.
+
+   Own class names on purpose. The old .file-row / .file-folder-header rules
+   in styles.css carry min-width: 820px, which is why the header row was cut
+   off on an iPad beside the sidebar ("Hochgeladen" showing as "Ho", the
+   action column off the card). These rows may shrink to any width from about
+   560 px up: columns are minmax(0, …) with an ellipsis on the name, and
+   below ~760 px of card the row folds to two lines with the actions kept at
+   the right. Container queries, because the width that matters is the
+   card's, not the viewport's — the sidebar takes a third of an iPad.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+.file-browser {
+  position: relative;
+  min-width: 0;
+}
+
+.file-browser-title {
+  margin: 0;
+}
+
+/* ── Lists and folder groups ── */
+
+.file-browser-list {
+  display: grid;
+  gap: 0.45rem;
+  min-width: 0;
+  container-type: inline-size;
+}
+
+.file-browser-group {
+  display: contents;
+}
+
+/* The same shape as the old folder header, without its fixed minimum. */
+.file-browser-folder {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  min-width: 0;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--ink);
+  transition: background-color 0.15s;
+}
+
+.file-browser-folder:hover {
+  background: #e4eef8;
+}
+
+.file-browser-folder:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.file-browser-folder .file-folder-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-browser-folder--report {
+  background: #f4f6f8;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.file-browser-folder--report:hover {
+  background: #eaecef;
+}
+
+.file-browser-folder--report .file-folder-count {
+  background: rgba(0, 0, 0, 0.05);
+  border-color: rgba(0, 0, 0, 0.1);
+  color: var(--muted);
+}
+
+/* ── Rows ── */
+
+.file-browser-row {
+  display: grid;
+  grid-template-columns:
+    minmax(0, 2fr) minmax(0, 1.2fr) minmax(0, 0.8fr) minmax(0, 1.1fr) auto;
+  gap: 0.5rem;
+  align-items: center;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  padding: 0.5rem 0.6rem;
+}
+
+.file-browser-row > *,
+.file-browser-row-meta > * {
+  min-width: 0;
+}
+
+.file-browser-row--head {
+  background: var(--surface-2);
+}
+
+/* Folder, type and date sit in the row grid on a wide card and fold into
+   one line under the name on a narrow one; the wrapper is what makes the
+   second shape possible. */
+.file-browser-row-meta {
+  display: contents;
+}
+
+.file-browser-row-name {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-height: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: inherit;
+}
+
+.file-browser-row-folder,
+.file-browser-row-type,
+.file-browser-row-date {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The actions and, above them, the "Aktion" header cell sit flush right. */
+.file-browser-row > :last-child {
+  justify-self: end;
+  text-align: right;
+}
+
+.file-browser-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.4rem;
+}
+
+@container (max-width: 760px) {
+  .file-browser-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "name actions"
+      "meta actions";
+    row-gap: 0.15rem;
+  }
+
+  .file-browser-row--head {
+    display: none;
+  }
+
+  .file-browser-row-name {
+    grid-area: name;
+  }
+
+  .file-browser-row-meta {
+    grid-area: meta;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.1rem 0.35rem;
+    color: var(--muted);
+  }
+
+  .file-browser-row-meta > small + small::before {
+    content: "·";
+    margin-right: 0.35rem;
+  }
+
+  .file-browser-row-actions {
+    grid-area: actions;
+  }
+}
+
+/* ── Tiles ── */
+
+/* A tile is a button now (it opens the viewer); the .gallery-tile rules in
+   styles.css draw it, this only takes the button chrome away. */
+.file-browser-tile {
+  appearance: none;
+  width: 100%;
+  min-height: 0;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.file-browser-tile:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* ── Loading, failure, sections ── */
+
+.file-browser-status {
+  display: grid;
+  gap: 0.3rem;
+  justify-items: start;
+  padding: 0.5rem 0;
+}
+
+.file-browser-status--error {
+  color: var(--danger);
+}
+
+.file-browser-status--error small {
+  color: var(--muted);
+}
+
+.file-browser-section {
+  display: grid;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.file-browser-section-title {
+  margin: 0.35rem 0 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+/* One project folder of the customer card: the toggle and, beside it, the
+   way to the project itself. Two buttons, because one may not nest the other. */
+.file-browser-project {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-width: 0;
+}
+
+.file-browser-project .file-browser-folder {
+  flex: 1 1 auto;
+}
+
+.file-browser-project-open {
+  flex: 0 0 auto;
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+.file-browser-chip {
+  flex-shrink: 0;
+  padding: 0.08rem 0.45rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #fff;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.file-browser-project-body {
+  display: grid;
+  gap: 0.45rem;
+  min-width: 0;
+  margin-left: 0.5rem;
+  padding-left: 0.75rem;
+  border-left: 2px solid var(--line);
+}
+
+/* Keeps a WebDAV link's label on its URL row inside the tooltip's grid. */
+.webdav-help-link {
+  display: grid;
+  gap: 0.25rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .file-browser-folder {
+    transition: none;
+  }
+}

@@ -5,6 +5,7 @@ import { CustomerProjectRow } from "../components/customers/CustomerProjectRow";
 import { CustomerTasksCard } from "../components/customers/CustomerTasksCard";
 import { CustomerReportsCard } from "../components/customers/CustomerReportsCard";
 import { CustomerBoxesCard } from "../components/customers/CustomerBoxesCard";
+import { CustomerFilesCard } from "../components/customers/CustomerFilesCard";
 import {
   getCustomer,
   listCustomerProjects,
@@ -309,6 +310,12 @@ export function CustomerDetailPage() {
           </section>
         </div>
       </div>
+
+      {/* The customer's folder — with every project folder that lands in it.
+          Full width below the grid: the file browser needs the room for its
+          rows, and on a tablet beside the sidebar a column would clip it.
+          Keyed so a switch to another customer starts the card afresh. */}
+      <CustomerFilesCard key={customer.id} customerId={customer.id} />
     </section>
   );
 }
