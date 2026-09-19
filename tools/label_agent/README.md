@@ -17,7 +17,10 @@ all Python standard library; the only third-party code is pyusb and Pillow,
 and both are reached through the two sibling modules (`brother_raster.py`,
 `label_render.py`). If either is missing the agent still boots, still scans,
 still counts — you just cannot print. That is deliberate: **the SQLite file is
-the product, the printer is an accessory.**
+the product, the printer is an accessory.** The command codes the wall screen
+is driven with (`barcode128.py`, `qrcode_svg.py`) are drawn with the standard
+library alone for the same reason: a broken wheel must not be able to blank
+the only input device that screen has.
 
 The same process runs on macOS and on Raspberry Pi OS. On the Pi it gains two
 things it does not need on a bench: a SMPL identity it can obtain without
@@ -132,8 +135,9 @@ Three design choices carry that budget:
 The wall screens have their own routes — `/regal`, `/kisten`, `/screen/state`,
 `/screen/action`, `/scan/route`, `/box/session`, `/box/item`,
 `/box/item/remove`, `/rack/movement`, `/boxes/state`, `/barcode.svg`,
-`/now-playing` — and all of them are **local-only**: the agent answers `403` to
-any caller that is not this machine, on `GET` and `HEAD` exactly as on `POST`.
+`/qr.svg`, `/now-playing` — and all of them are **local-only**: the agent
+answers `403` to any caller that is not this machine, on `GET` and `HEAD`
+exactly as on `POST`.
 They drive two screens that book stock and list every customer's crate, so
 "it only reads" was never the right test. The table above is the half that is
 meant to be reachable from a laptop. See `docs/PI_STATION.md` for the
@@ -142,9 +146,17 @@ reasoning and the full matrix.
 ### Wall screens: the scanned commands
 
 The two kiosk screens (`/regal`, `/kisten`) have a scanner and no keyboard, so
-every command is a barcode. `scan_router.py` owns the vocabulary; the box
-screen prints these four on the glass, and `POST /scan/route` routes them
-before any code is looked up.
+every command is a code the scanner reads. `scan_router.py` owns the
+vocabulary; the box screen draws these four on the glass, and `POST
+/scan/route` routes them before any code is looked up.
+
+The crate screen embeds them as QR codes from `/qr.svg?text=…&m=4`
+(`qrcode_svg.py`, stdlib only): the handheld is a 2D imager and reads a QR
+symbol off the glass in one frame at any angle, where the Code 128 they used
+to be had to be swept level across a reflecting screen above eye height.
+`/barcode.svg` (`barcode128.py`) stays for the printed sheets and for any
+screen that still wants a one-dimensional code; both routes take the same
+`text`, refuse the same lengths, and cache for a day.
 
 | Code | What it does |
 |---|---|
@@ -353,7 +365,7 @@ python3 server.py --make-fixtures /tmp/cards      # sample Benning + Metrel card
 python3 -m unittest discover -s tests
 ```
 
-128 tests. No hardware, no network, no printing, no fixed ports — the HTTP
+755 tests. No hardware, no network, no printing, no fixed ports — the HTTP
 tests bind port 0 and the pairing tests run against a stub SMPL that can be
 told to behave like a canonical implementation, like a plausible one with
 different field names, like a server that has never heard of pairing, or like

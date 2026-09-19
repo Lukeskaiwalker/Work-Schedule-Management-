@@ -273,8 +273,12 @@ the wrong code.
 
 **What was measured.** The scanner on this Pi is USB `1a86:5456`,
 `NT USB Keyboard`, a 2D imager: it reads both a machine's DataMatrix and an
-SMPL Code label. Two real scans, captured read-only from `/dev/input/event4`
-on 2026-09-10 and decoded with a US keycode table:
+SMPL Code label. Being an imager is also why the command codes on the crate
+screen are QR codes: it reads a QR symbol off the glass in one frame at any
+angle, where the Code 128 they used to be had to be swept level across a
+reflecting screen above eye height, and missed. Two real scans, captured
+read-only from `/dev/input/event4` on 2026-09-10 and decoded with a US
+keycode table:
 
 ```
 label reads M-0062       keycodes 50 53 11 11 7 3                     → "M/0062"
@@ -579,14 +583,16 @@ Two consequences, both of which look like faults if you do not know:
 
 **The buttons on the crate page cannot be pressed from where it hangs.** The
 two actions that belong to that screen — the pack-in/take-out mode and closing
-a crate — are on the page as barcodes as well, drawn by the station itself and
+a crate — are on the page as QR codes as well, drawn by the station itself and
 big enough to scan off the glass at arm's length, next to the quantity
 commands. Same codes as [the laminated card](#the-command-barcode-card) and
 the same handler behind them; the card is the copy that travels, the screen is
-the copy that is always there. Those barcodes are served from `/barcode.svg`
-on the station itself, which is refused to every caller that is not this
-machine — a command barcode reachable from the office network is a command
-barcode somebody can print at their desk.
+the copy that is always there. Those symbols are served from `/qr.svg` on the
+station itself (`/barcode.svg`, the Code 128 they used to be, stays for
+printed sheets — the imager reads a QR code off the glass at any angle, the
+bars it had to sweep level), and both routes are refused to every caller that
+is not this machine — a command code reachable from the office network is a
+command code somebody can print at their desk.
 
 **The mouse pointer does not stay on the rack screen by itself**, which is
 what the pointer guard is for.
@@ -1115,7 +1121,8 @@ is; the guard used to live in `do_POST` alone, which left every read open.
 | `POST /rack/movement` | **no — 403** | it writes the ledger |
 | `GET /regal`, `/kisten`, `/screen/state`, `/boxes/state` | **no — 403** | not "they only read": the crate list is the customer, the project and every packed item of every open job, and `/screen/state` is a 25-second long poll on a threaded server — one held thread per caller, which is a lever against the two screens as much as it is a leak |
 | `GET /now-playing`, `/now-playing/cover.jpg` | **no — 403** | the same kiosk furniture, and it says what is playing in the workshop |
-| `GET /barcode.svg` | **no — 403** | it draws the command codes onto the crate screen. Reachable, it is a barcode generator anyone on the LAN can point at a printer — and the codes it draws move stock |
+| `GET /barcode.svg` | **no — 403** | it draws the command codes as Code 128, for printed sheets and any screen that wants bars. Reachable, it is a barcode generator anyone on the LAN can point at a printer — and the codes it draws move stock |
+| `GET /qr.svg` | **no — 403** | the same command codes as QR symbols, which is what the crate screen embeds now; same generator, same reasoning |
 | `POST /pair/start`, `/pair/cancel`, `/pair/forget` | **no — 403** | `/pair/forget` deletes the station credential from disk. A route that unpairs a Pi from the far side of the workshop LAN is not a route, it is a prank |
 | `GET /pair/status` | yes | the readable half of pairing: paired or not, and whether a code is outstanding. It writes nothing and holds no thread |
 | `GET /health`, `/sessions`, `/session/…`, `/export/…` | yes | monitoring, and copying counts off the box — and what SMPL's Scan-Station page reads for *Hardware prüfen* and the session list |

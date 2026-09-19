@@ -173,6 +173,21 @@ BARCODE_DEFAULT_M = 3
 BARCODE_MIN_M = 1
 BARCODE_MAX_M = 6
 BARCODE_MAX_AGE_S = 86400
+# /qr.svg: the same command codes as QR symbols, which is what the crate
+# screen embeds now.
+#
+# The handheld is a 2D imager. It reads a QR code as a picture - one frame,
+# any angle - where a Code 128 had to be swept level across a screen that
+# hangs above eye height behind a reflection, and the misses were the
+# complaint. Same text rules and the same limit as /barcode.svg. `m` is the
+# module size in CSS pixels: a version-2 symbol at m=4 is 132 px square with
+# its quiet zone, one module about 1.3 mm on the 4K panel, which the imager
+# reads from arm's length; below 2 the modules blur into one another, above
+# 12 a card is taller than the strip. `h` means nothing to a square symbol
+# and is ignored.
+QR_DEFAULT_M = 4
+QR_MIN_M = 2
+QR_MAX_M = 12
 # The crew changes when somebody is hired, not while a crate is packed.
 CREW_REFRESH_S = 60.0
 SESSION_IDLE_S = float(os.environ.get("STATION_SESSION_IDLE_S", "600"))
@@ -216,8 +231,9 @@ LOOPBACK_ONLY = frozenset((
     # belongs on the same footing as the page that embeds it. Nothing outside
     # this Pi has a reason to ask the agent to draw a command code, and a
     # command barcode reachable from the LAN is a command barcode somebody can
-    # print out and carry to the wrong screen.
-    "/barcode.svg",
+    # print out and carry to the wrong screen. /qr.svg is the same codes as
+    # QR symbols and stands on exactly the same footing.
+    "/barcode.svg", "/qr.svg",
 ))
 
 # One word per direction, everywhere: the screens, the flashes and
@@ -2566,6 +2582,7 @@ class Handler(BaseHTTPRequestHandler):
             "/now-playing": self._get_now_playing,
             "/now-playing/cover.jpg": self._get_cover,
             "/barcode.svg": self._get_barcode,
+            "/qr.svg": self._get_qr,
         }
 
         def run() -> None:
@@ -2760,13 +2777,8 @@ class Handler(BaseHTTPRequestHandler):
             self._plain(503, "barcode128 is unavailable: %s" % module_error("barcode128"))
             return
 
-        text = (query.get("text") or "").strip()
-        if not text:
-            self._plain(400, "'text' query parameter is required")
-            return
-        if len(text) > BARCODE_MAX_CHARS:
-            self._plain(400, "'text' is %d characters; the limit is %d"
-                             % (len(text), BARCODE_MAX_CHARS))
+        text = self._symbol_text(query)
+        if text is None:
             return
 
         # A quantity is clamped, but a character the symbology cannot carry is
@@ -2782,8 +2794,46 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._plain(400, str(exc))
             return
+        self._send_symbol(body)
 
-        # Deliberately not the API's ``no-store``: these six codes are fixed
+    def _get_qr(self, query: dict) -> None:
+        """Draw a QR code of a command for the crate screen to be scanned off.
+
+        The same codes as ``/barcode.svg`` and the same contract - text
+        rules, plain-text errors, a day of caching, HEAD - in the symbology
+        the handheld actually reads well off a screen. The page switched to
+        this; ``/barcode.svg`` stays for printed sheets and for any screen
+        that still wants a one-dimensional code.
+        """
+        qr = module("qrcode_svg")
+        if qr is None:
+            self._plain(503, "qrcode_svg is unavailable: %s" % module_error("qrcode_svg"))
+            return
+
+        text = self._symbol_text(query)
+        if text is None:
+            return
+        try:
+            body = qr.svg(text, module_px=self._qr_module(query)).encode("utf-8")
+        except ValueError as exc:
+            self._plain(400, str(exc))
+            return
+        self._send_symbol(body)
+
+    def _symbol_text(self, query: dict):
+        """The text both symbol routes draw, or ``None`` once a 400 is sent."""
+        text = (query.get("text") or "").strip()
+        if not text:
+            self._plain(400, "'text' query parameter is required")
+            return None
+        if len(text) > BARCODE_MAX_CHARS:
+            self._plain(400, "'text' is %d characters; the limit is %d"
+                             % (len(text), BARCODE_MAX_CHARS))
+            return None
+        return text
+
+    def _send_symbol(self, body: bytes) -> None:
+        # Deliberately not the API's ``no-store``: the command codes are fixed
         # for the life of the vocabulary, and a wall screen that redraws them
         # on every reload is asking the Pi for work that never changes.
         self.send_response(200)
@@ -2829,6 +2879,24 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 module = BARCODE_DEFAULT_M
         return max(BARCODE_MIN_M, min(BARCODE_MAX_M, module))
+
+    @staticmethod
+    def _qr_module(query: dict) -> int:
+        """``m`` for a QR symbol, the module size in pixels: clamped, never refused.
+
+        Its own range, not the barcode's: a QR module is a square the imager
+        samples, and the crate page lays the cards out for four pixels of
+        it, so the floor and ceiling are what still scans and what still
+        fits, not what a bar needs.
+        """
+        raw = (query.get("m") or "").strip()
+        module = QR_DEFAULT_M
+        if raw:
+            try:
+                module = int(float(raw))
+            except ValueError:
+                module = QR_DEFAULT_M
+        return max(QR_MIN_M, min(QR_MAX_M, module))
 
     def _plain(self, status: int, reason: str) -> None:
         self._send(status, "text/plain; charset=utf-8", (reason + "\n").encode("utf-8"))

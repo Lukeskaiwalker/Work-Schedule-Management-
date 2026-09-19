@@ -176,25 +176,29 @@ main{flex:1 1 auto; min-height:0; display:grid; grid-template-rows:minmax(0,1fr)
 /* ---------- Befehlsstreifen: der Bildschirm als Tastatur ---------- *
  * An diesem Panel haengt weder Maus noch Tastatur - die Tastatur steht
  * drei Meter weiter am Regal. Die einzige Eingabe hier ist der Handscanner,
- * also stehen die Befehle als Code 128 auf dem Bildschirm und werden von
- * dort abgescannt. Nur waehrend einer Sitzung: in der Uebersicht gibt es
- * nichts zu befehlen, und Codes, die nichts tun, gehoeren nicht an die Wand.
+ * also stehen die Befehle als QR-Codes auf dem Bildschirm und werden von
+ * dort abgescannt. QR und nicht mehr Code 128: der Handscanner ist ein
+ * 2D-Imager und liest ein QR-Symbol als Bild, in einem Zug und aus jedem
+ * Winkel. Den Strichcode musste er waagerecht ueberstreichen - an einer
+ * Scheibe ueber Augenhoehe, mit Spiegelung, ging das oft genug daneben.
+ * Nur waehrend einer Sitzung: in der Uebersicht gibt es nichts zu
+ * befehlen, und Codes, die nichts tun, gehoeren nicht an die Wand.
  */
-/* Ein Riegel, keine Gestaltung. Wie breit ein Code wird, entscheidet der
-   Endpunkt ueber seine Modulbreite (m=), nicht diese Seite - CSS darf das
-   Bild nicht kleiner rechnen, sonst verwaschen die Balken und der Scanner
+/* Ein Riegel, keine Gestaltung. Wie gross ein Code wird, entscheidet der
+   Endpunkt ueber seine Modulgroesse (m=), nicht diese Seite - CSS darf das
+   Bild nicht kleiner rechnen, sonst verwaschen die Module und der Scanner
    gibt auf.
 
    Groessen, nachgemessen auf diesem Panel: ein CSS-Pixel sind zwei
-   Geraetepixel, also rund 0,32 mm - NICHT 0,7 mm, wie hier frueher stand.
-   Mit m=2 ist ein Modul rund 0,65 mm breit; das liest der Imager bequem vom
-   Glas. Die drei Codes werden dann 400-444 px breit, stehen zusammen in
-   einer Reihe und lassen dem Kistenfeld den Platz, der ihm gehoert.
+   Geraetepixel, also rund 0,32 mm. Mit m=4 ist ein Modul rund 1,3 mm gross;
+   das liest der Imager bequem vom Glas. Ein Befehl (Version 2, 25 Module)
+   ist mit seiner Ruhezone von vier Modulen 132 px im Quadrat - niedriger
+   als die 140 px des alten Strichcodes, der Streifen wird also nicht
+   hoeher als vorher, und drei Karten nebeneinander brauchen keine 600 px.
 
-   Warum nur drei: bei fuenf Codes passt die Reihe nicht mehr in eine Zeile,
-   sie bricht um, und abgeschnittene Befehle sind schlimmer als gar keine.
-   Menge 5/10/50 stehen deshalb auf der gedruckten Karte neben dem Regal,
-   nicht auf dem Bildschirm. */
+   Warum nur vier: Menge 5/10/50 stehen auf der gedruckten Karte neben dem
+   Regal, nicht auf dem Bildschirm - jede weitere Karte drueckt das
+   Kistenfeld nach oben, ohne dass jemand danach gefragt haette. */
 .cmds{
   /* No max-height and no overflow:hidden. An earlier version clipped the
      strip to 26vh, and because the codes were drawn three times wider than
@@ -227,13 +231,15 @@ main{flex:1 1 auto; min-height:0; display:grid; grid-template-rows:minmax(0,1fr)
   font-size:var(--t-kick); letter-spacing:.13em; text-transform:uppercase;
   font-weight:800; color:var(--dim2); min-height:1.15em; line-height:1.15;
 }
-/* Der weisse Grund und das Polster gehoeren zum Code: schwarze Balken auf
-   dunklem Blau liest kein Scanner, und ohne Ruhezone bricht Code 128 ab.
-   Das Bild behaelt seine Naturgroesse - herunterskalierte Balken
-   verwaschen genau so weit, bis der Scanner aufgibt. */
+/* Der weisse Grund und das Polster gehoeren zum Code: schwarze Module auf
+   dunklem Blau liest kein Scanner, und ohne weisse Ruhezone rundherum
+   findet der Imager das Symbol nicht. Das Bild behaelt seine Naturgroesse -
+   herunterskalierte Module verwaschen genau so weit, bis der Scanner
+   aufgibt. Das Polster ist auf allen Seiten gleich, das Symbol ist ein
+   Quadrat. */
 .cmd-img{
   display:block; flex:none; max-width:none;
-  background:#fff; border-radius:4px; padding:8px 12px;
+  background:#fff; border-radius:4px; padding:8px;
 }
 .cmd-code{font-size:var(--t-kick); color:var(--dim2); font-weight:700; letter-spacing:.04em}
 .cmd-fail{
@@ -339,12 +345,12 @@ main{flex:1 1 auto; min-height:0; display:grid; grid-template-rows:minmax(0,1fr)
     <div class="strip scroll" id="strip"></div>
 
     <!-- Die Befehle stehen fest im Dokument, nicht im Renderer: diese
-         fuenf Codes aendern sich nie, und ein Neuaufbau bei jedem
+         vier Codes aendern sich nie, und ein Neuaufbau bei jedem
          Zustandswechsel wuerde die Bilder flackern lassen. Der Renderer
          fasst nur den Umschalter an. MENGE-50 kennt der scan_router zwar,
-         aber eine sechste Karte drueckt die Kiste nach oben, ohne dass
-         jemand danach gefragt haette. Die Hoehe von 140 px liefert der
-         Endpunkt, sie wird nicht in CSS nachgerechnet. -->
+         aber eine fuenfte Karte drueckt die Kiste nach oben, ohne dass
+         jemand danach gefragt haette. Die Groesse (132 px im Quadrat bei
+         m=4) liefert der Endpunkt, sie wird nicht in CSS nachgerechnet. -->
     <section class="cmds" id="cmds">
       <span class="kick">Befehle &ndash; diese Codes vom Bildschirm scannen</span>
       <div class="cmd-row">
@@ -352,42 +358,42 @@ main{flex:1 1 auto; min-height:0; display:grid; grid-template-rows:minmax(0,1fr)
         <div class="cmd">
           <span class="cmd-cap">Zur&uuml;ck zur &Uuml;bersicht</span>
           <span class="cmd-now"></span>
-          <img class="cmd-img" alt="" src="/barcode.svg?text=SMPL-CMD-FERTIG&amp;h=140&amp;m=2">
-          <span class="cmd-fail" hidden>Barcode nicht verf&uuml;gbar</span>
+          <img class="cmd-img" alt="" src="/qr.svg?text=SMPL-CMD-FERTIG&amp;m=4">
+          <span class="cmd-fail" hidden>QR-Code nicht verf&uuml;gbar</span>
           <span class="cmd-code mono">SMPL-CMD-FERTIG</span>
         </div>
 
         <div class="cmd">
           <span class="cmd-cap">Letzte Position zur&uuml;cknehmen</span>
           <span class="cmd-now"></span>
-          <img class="cmd-img" alt="" src="/barcode.svg?text=SMPL-CMD-ABBRUCH&amp;h=140&amp;m=2">
-          <span class="cmd-fail" hidden>Barcode nicht verf&uuml;gbar</span>
+          <img class="cmd-img" alt="" src="/qr.svg?text=SMPL-CMD-ABBRUCH&amp;m=4">
+          <span class="cmd-fail" hidden>QR-Code nicht verf&uuml;gbar</span>
           <span class="cmd-code mono">SMPL-CMD-ABBRUCH</span>
         </div>
 
         <div class="cmd" id="cmdToggle">
           <span class="cmd-cap">Entnehmen / Einlagern umschalten</span>
           <span class="cmd-now" id="cmdToggleNow"></span>
-          <img class="cmd-img" alt="" src="/barcode.svg?text=SMPL-CMD-ENTNAHME&amp;h=140&amp;m=2">
-          <span class="cmd-fail" hidden>Barcode nicht verf&uuml;gbar</span>
+          <img class="cmd-img" alt="" src="/qr.svg?text=SMPL-CMD-ENTNAHME&amp;m=4">
+          <span class="cmd-fail" hidden>QR-Code nicht verf&uuml;gbar</span>
           <span class="cmd-code mono">SMPL-CMD-ENTNAHME</span>
         </div>
 
       </div>
 
-      <!-- Zweite Reihe, nicht vierte Karte in der ersten: vier Codes sind
-           zusammen breiter als das Panel, und eine Reihe, die selbst umbricht,
-           schneidet Karten unten ab. Der Streifen waechst stattdessen nach
-           oben - das Kistenfeld gibt nach. MITNEHMEN steht bewusst unten und
-           nicht neben FERTIG: es ist der einzige Code hier, der Bestand
-           bucht. -->
+      <!-- Zweite Reihe, nicht vierte Karte in der ersten. Breit genug waere
+           die Reihe seit den QR-Codes (vier Karten zu rund 170 px), aber
+           MITNEHMEN steht bewusst unten und nicht neben FERTIG: es ist der
+           einzige Code hier, der Bestand bucht, und ein Scan, der einen
+           Zentimeter daneben landet, soll nicht die Kiste ausbuchen. Der
+           Streifen waechst nach oben - das Kistenfeld gibt nach. -->
       <div class="cmd-row">
 
         <div class="cmd" id="cmdTake">
           <span class="cmd-cap">Kiste mitnehmen &ndash; Bestand ausbuchen</span>
           <span class="cmd-now" id="cmdTakeNow"></span>
-          <img class="cmd-img" alt="" src="/barcode.svg?text=SMPL-CMD-MITNEHMEN&amp;h=140&amp;m=2">
-          <span class="cmd-fail" hidden>Barcode nicht verf&uuml;gbar</span>
+          <img class="cmd-img" alt="" src="/qr.svg?text=SMPL-CMD-MITNEHMEN&amp;m=4">
+          <span class="cmd-fail" hidden>QR-Code nicht verf&uuml;gbar</span>
           <span class="cmd-code mono">SMPL-CMD-MITNEHMEN</span>
         </div>
 

@@ -38,6 +38,9 @@ import smpl_werkstatt  # noqa: E402
 # what lets /barcode.svg be tested for what it actually serves - a symbol that
 # scans back as the command - rather than for merely being well-formed XML.
 from test_barcode128 import decode_svg  # noqa: E402
+# Same arrangement for the QR route: the reader that turns a served SVG back
+# into modules and text lives with the encoder's own tests.
+from test_qrcode_svg import FINDER, decode as decode_qr, read_svg as read_qr_svg  # noqa: E402
 from test_smpl_werkstatt import StubSmpl  # noqa: E402
 from test_station_http import QuietHandler, RunningAgent, StationHttpCase  # noqa: E402
 
@@ -244,14 +247,15 @@ class TestLoopbackOnly(KioskCase):
     # The kiosk's reads. /kisten and /screen/state hand out the whole crate
     # list — customer, project, every packed item — and /screen/state is an
     # unauthenticated 25-second long poll on a threaded server.
-    # /barcode.svg is in the list because it is drawn for the crate screen and
-    # embedded by it: it belongs on the same footing as the page it appears
-    # on, and a command barcode the whole workshop LAN can render is one
-    # somebody can print and carry to the wrong screen.
+    # /barcode.svg and /qr.svg are in the list because they are drawn for the
+    # crate screen and embedded by it: they belong on the same footing as the
+    # page they appear on, and a command code the whole workshop LAN can
+    # render is one somebody can print and carry to the wrong screen.
     KIOSK_READS = (
         "/regal", "/kisten", "/screen/state?screen=regal&wait=0",
         "/boxes/state", "/now-playing", "/now-playing/cover.jpg",
         "/barcode.svg?text=SMPL-CMD-FERTIG&h=140",
+        "/qr.svg?text=SMPL-CMD-FERTIG&m=4",
     )
 
     def test_loopback_reaches_every_mutating_route(self):
@@ -302,6 +306,18 @@ class TestLoopbackOnly(KioskCase):
             status, _raw = self._request_from(
                 "192.168.2.99", method, "/screen/state?screen=regal&wait=0", None)
             self.assertEqual(status, 403, method)
+
+    def test_the_two_symbol_routes_are_refused_alike_under_every_verb(self):
+        # /qr.svg replaced /barcode.svg on the crate page and must be locked
+        # exactly as hard - including a POST, which neither route has: from
+        # the LAN the guard answers before the 404 would.
+        for route in ("/barcode.svg?text=SMPL-CMD-FERTIG", "/qr.svg?text=SMPL-CMD-FERTIG&m=4"):
+            for method, payload in (("GET", None), ("HEAD", None), ("POST", {})):
+                status, _raw = self._request_from("192.168.2.99", method, route, payload)
+                self.assertEqual(status, 403, "%s %s" % (method, route))
+            for method in ("GET", "HEAD"):
+                status, _raw = self._request_from("127.0.0.1", method, route, None)
+                self.assertEqual(status, 200, "%s %s" % (method, route))
 
     def test_the_pairing_routes_are_loopback_only(self):
         for path, payload in self.PAIRING:
@@ -523,6 +539,140 @@ class TestBarcodeSvg(KioskCase):
             self.assertEqual(handle.status, 200)
             self.assertEqual(handle.headers["Content-Type"], "image/svg+xml")
             self.assertEqual(handle.read(), b"")
+
+
+# --------------------------------------------------------------------------
+# The same commands as QR codes - what the crate screen embeds now
+# --------------------------------------------------------------------------
+
+
+class TestQrSvg(KioskCase):
+    """The route the crate screen switched to when the imager kept missing bars.
+
+    The symbol is proven in test_qrcode_svg, by reading it back. What is
+    under test here is that /qr.svg keeps every promise /barcode.svg made
+    to the page - content type, caching, HEAD, plain-text refusals, sizes
+    clamped rather than refused - in the other symbology.
+    """
+
+    COMMANDS = ("SMPL-CMD-FERTIG", "SMPL-CMD-ABBRUCH", "SMPL-CMD-ENTNAHME", "SMPL-CMD-MITNEHMEN")
+    # A version-2 symbol is 25 modules; the route's quiet zone is four.
+    MODULES_WITH_QUIET = 25 + 8
+
+    def fetch(self, query: str):
+        return get(self.base() + "/qr.svg?" + query)
+
+    def test_it_serves_an_svg_with_the_content_type_an_img_tag_needs(self):
+        status, body, headers = self.fetch("text=SMPL-CMD-FERTIG&m=4")
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["Content-Type"], "image/svg+xml")
+        markup = body.decode("utf-8")
+        self.assertTrue(markup.startswith("<svg "))
+        self.assertTrue(markup.endswith("</svg>"))
+
+    def test_what_it_serves_reads_back_as_the_command(self):
+        # Through the socket, out of the query string, back through the
+        # reader that takes the drawn modules apart.
+        for code in self.COMMANDS:
+            _status, body, _headers = self.fetch("text=" + code + "&m=4")
+            self.assertEqual(decode_qr(read_qr_svg(body.decode("utf-8"), 4, 4)), code, code)
+
+    def test_the_finder_pattern_is_in_the_corner(self):
+        _status, body, _headers = self.fetch("text=SMPL-CMD-FERTIG&m=4")
+        modules = read_qr_svg(body.decode("utf-8"), 4, 4)
+        for r in range(7):
+            self.assertEqual("".join("1" if d else "0" for d in modules[r][:7]), FINDER[r], r)
+
+    def test_the_codes_are_cacheable_for_a_day(self):
+        _status, _body, headers = self.fetch("text=SMPL-CMD-FERTIG")
+        self.assertEqual(headers["Cache-Control"], "public, max-age=86400")
+
+    def test_an_over_long_text_is_a_400(self):
+        status, body, _headers = self.fetch("text=" + "K" * 49)
+        self.assertEqual(status, 400)
+        self.assertIn("48", body.decode("utf-8"))
+        status, _body, _headers = self.fetch("text=" + "K" * 48)
+        self.assertEqual(status, 200)
+
+    def test_an_empty_text_is_a_400(self):
+        for query in ("text=", "", "m=4", "text=%20%20"):
+            status, _body, _headers = self.fetch(query)
+            self.assertEqual(status, 400, query)
+
+    def test_the_400_is_plain_text_not_json(self):
+        status, body, headers = self.fetch("text=")
+        self.assertEqual(status, 400)
+        self.assertTrue(headers["Content-Type"].startswith("text/plain"))
+        with self.assertRaises(ValueError):
+            json.loads(body.decode("utf-8"))
+
+    def test_an_umlaut_is_carried_not_refused(self):
+        # The one thing the QR route can do that Code 128 set B cannot: the
+        # route is byte mode, UTF-8, so a crate id with an umlaut draws.
+        status, body, _headers = self.fetch("text=Gr%C3%B6%C3%9Fe&m=4")
+        self.assertEqual(status, 200)
+        self.assertEqual(decode_qr(read_qr_svg(body.decode("utf-8"), 4, 4)), "Größe")
+
+    def test_the_module_size_is_clamped_rather_than_refused(self):
+        for asked, expected in (("1", 2), ("2", 2), ("4", 4), ("12", 12), ("13", 12),
+                                ("99", 12), ("-3", 2), ("gross", 4), ("", 4)):
+            status, body, _headers = self.fetch("text=SMPL-CMD-FERTIG&m=" + asked)
+            self.assertEqual(status, 200, asked)
+            size = self.MODULES_WITH_QUIET * expected
+            self.assertIn('width="%d" height="%d"' % (size, size), body.decode("utf-8"), asked)
+
+    def test_the_default_is_four_pixel_modules_132_square(self):
+        _status, body, _headers = self.fetch("text=SMPL-CMD-FERTIG")
+        self.assertIn('width="132" height="132"', body.decode("utf-8"))
+
+    def test_a_height_means_nothing_to_a_square(self):
+        # The page used to ask /barcode.svg for h=140; a stale link must not
+        # stretch a QR code, it simply gets a square of the asked module size.
+        _status, body, _headers = self.fetch("text=SMPL-CMD-FERTIG&m=4&h=400")
+        self.assertIn('width="132" height="132"', body.decode("utf-8"))
+
+    def test_the_svg_carries_no_reference_off_the_pi(self):
+        _status, body, _headers = self.fetch("text=SMPL-CMD-ABBRUCH")
+        rest = body.decode("utf-8").replace('xmlns="http://www.w3.org/2000/svg"', "")
+        for forbidden in ("http://", "https://", "<script", "<image", "xlink:href"):
+            self.assertNotIn(forbidden, rest, forbidden)
+
+    def test_a_head_request_answers_without_a_body(self):
+        request = urllib.request.Request(
+            self.base() + "/qr.svg?text=SMPL-CMD-FERTIG&m=4", method="HEAD")
+        with urllib.request.urlopen(request, timeout=10) as handle:
+            self.assertEqual(handle.status, 200)
+            self.assertEqual(handle.headers["Content-Type"], "image/svg+xml")
+            self.assertEqual(handle.read(), b"")
+
+    def test_the_barcode_route_still_draws_bars(self):
+        # The switch is the page's, not the agent's: printed sheets and any
+        # other screen keep their Code 128.
+        _status, body, _headers = get(self.base() + "/barcode.svg?text=SMPL-CMD-FERTIG")
+        self.assertEqual(decode_svg(body.decode("utf-8")), "SMPL-CMD-FERTIG")
+
+
+class TestTheCratePageEmbedsQrCodes(unittest.TestCase):
+    PAGE = pathlib.Path(__file__).resolve().parents[1] / "static" / "kiosk_boxes.html"
+
+    def test_the_commands_are_qr_codes_and_no_barcode_is_left(self):
+        html = self.PAGE.read_text(encoding="utf-8")
+        self.assertIn('src="/qr.svg?text=SMPL-CMD-FERTIG&amp;m=4"', html)
+        for code in ("SMPL-CMD-ABBRUCH", "SMPL-CMD-ENTNAHME", "SMPL-CMD-MITNEHMEN"):
+            self.assertIn('src="/qr.svg?text=%s&amp;m=4"' % code, html, code)
+        self.assertNotIn("/barcode.svg", html)
+
+    def test_the_failure_text_names_what_is_missing(self):
+        html = self.PAGE.read_text(encoding="utf-8")
+        self.assertEqual(html.count("QR-Code nicht verf&uuml;gbar"), 4)
+        self.assertNotIn("Barcode nicht verf", html)
+
+    def test_the_image_keeps_a_white_ground_behind_the_quiet_zone(self):
+        html = self.PAGE.read_text(encoding="utf-8")
+        rule = re.search(r"\.cmd-img\{([^}]*)\}", html)
+        self.assertIsNotNone(rule, "no .cmd-img rule")
+        self.assertIn("background:#fff", rule.group(1))
+        self.assertIn("padding:", rule.group(1))
 
 
 # --------------------------------------------------------------------------
@@ -1759,20 +1909,24 @@ class TestTheCommandCodesFitTheWall(unittest.TestCase):
     declares itself; a row that has to wrap is the failure this pins, and the
     strip is free to grow downward (it has no max-height and the crate panel
     gives way - see the comment on .cmds in the page).
+
+    The codes are QR now, so a card is a square of (modules + quiet zone) *
+    m pixels rather than a run of bars; the arithmetic changed, the
+    property did not.
     """
 
     PANEL_CSS_WIDTH = 1920  # 3840 device px at --force-device-scale-factor=2
     PAGE = pathlib.Path(__file__).resolve().parents[1] / "static" / "kiosk_boxes.html"
 
     def _rows(self):
-        """The requested barcodes, grouped by the row they are declared in."""
+        """The requested command codes, grouped by the row they are declared in."""
         html = self.PAGE.read_text(encoding="utf-8")
         rows = []
         for chunk in html.split('class="cmd-row"')[1:]:
             row = []
-            for src in re.findall(r'src="(/barcode\.svg\?[^"]+)"', chunk.split("</section>")[0]):
+            for src in re.findall(r'src="(/qr\.svg\?[^"]+)"', chunk.split("</section>")[0]):
                 query = urllib.parse.parse_qs(src.split("?", 1)[1].replace("&amp;", "&"))
-                row.append((query["text"][0], int(query["m"][0]), int(query["h"][0])))
+                row.append((query["text"][0], int(query["m"][0])))
             rows.append(row)
         return rows
 
@@ -1781,29 +1935,41 @@ class TestTheCommandCodesFitTheWall(unittest.TestCase):
 
     def test_every_command_image_asks_for_an_explicit_module_width(self):
         asked = self._requested()
-        self.assertTrue(asked, "the box page shows no command barcodes at all")
-        for text, module, _height in asked:
+        self.assertTrue(asked, "the box page shows no command codes at all")
+        for text, module in asked:
             self.assertGreaterEqual(module, 2, "%s would be too fine to scan" % text)
 
     def test_every_row_fits_across_the_panel_without_wrapping(self):
-        import barcode128
+        import qrcode_svg
 
         rows = [row for row in self._rows() if row]
         self.assertTrue(rows, "the box page declares no command rows")
         for row in rows:
-            total = sum(barcode128.module_width(t) * m for t, m, _ in row)
+            total = sum(
+                (17 + 4 * qrcode_svg.version_for(t) + 2 * qrcode_svg.MIN_QUIET_MODULES) * m
+                for t, m in row
+            )
             # Leave room for the gaps and padding around each card.
             self.assertLess(
                 total, self.PANEL_CSS_WIDTH * 0.8,
                 "the row %s needs %d px of a %d px panel; it will wrap and be clipped"
-                % ([t for t, _m, _h in row], total, self.PANEL_CSS_WIDTH),
+                % ([t for t, _m in row], total, self.PANEL_CSS_WIDTH),
             )
+
+    def test_a_card_is_no_taller_than_the_barcode_it_replaced(self):
+        # The strip lifts the flash message by its own height and the crate
+        # panel gives way to it; 140 px was what both were laid out around.
+        import qrcode_svg
+
+        for text, m in self._requested():
+            side = (17 + 4 * qrcode_svg.version_for(text) + 2 * qrcode_svg.MIN_QUIET_MODULES) * m
+            self.assertLessEqual(side, 140, "%s is %d px tall" % (text, side))
 
     def test_each_one_is_a_command_the_router_actually_implements(self):
         source = (pathlib.Path(__file__).resolve().parents[1] / "scan_router.py").read_text(
             encoding="utf-8"
         )
-        for text, _m, _h in self._requested():
+        for text, _m in self._requested():
             self.assertIn(
                 text, source,
                 "the box screen offers %s but scan_router never mentions it" % text,
@@ -1813,7 +1979,7 @@ class TestTheCommandCodesFitTheWall(unittest.TestCase):
         """A packed crate is carried out by whoever walks past it, and that
         person has a scanner and no keyboard."""
         self.assertIn(
-            "SMPL-CMD-MITNEHMEN", [text for text, _m, _h in self._requested()],
+            "SMPL-CMD-MITNEHMEN", [text for text, _m in self._requested()],
             "the box screen has no way to book a handover",
         )
 
