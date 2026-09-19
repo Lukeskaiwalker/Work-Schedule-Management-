@@ -127,21 +127,20 @@ TERMINAL_PARTS: dict[str, TerminalPart] = {
         verified=True,
         source="https://heizung-billiger.de/770206-wago-verteiler-einspeiseklemme-2016-2016-7601-16mm2-800v-76a-12mm-grau-wago-2016-7601-4045454725082.html",
     ),
-    "2016-7606": TerminalPart(
-        id="2016-7606",
-        part_no="WAGO 2016-7606",
-        name="Endelement (2016-Serie)",
-        role="Ende der Gruppe bei einzelnem Drehstromabgang",
-        # UNVERIFIED. wago.com answers HTTP 410 Gone for /p/2016-7606 (checked
-        # 2026-09-17) and no distributor lists the number; the 2016 series'
-        # current end/intermediate plate is 2016-7692 (1 mm, orange):
-        # https://www.wago.com/global/rail-mount-terminal-blocks/end-and-intermediate-plate/p/2016-7692
-        # Kept under the owner's number until he confirms what is on the
-        # shelf. No marker either way, so nothing on the strip depends on it.
-        width_mm=0,
-        marker=False,
-        verified=False,
-        source="https://www.wago.com/global/rail-mount-terminal-blocks/end-and-intermediate-plate/p/2016-7692",
+    "2016-7607": TerminalPart(
+        id="2016-7607",
+        part_no="WAGO 2016-7607",
+        name="2-Leiter-Schutzleiterklemme, 16 mm², grün-gelb",
+        role="PE des einzelnen Drehstromabgangs",
+        # Breite 12 mm — wago.com/de/…/p/2016-7607, "Geometrische Daten": 12 mm /
+        # 0.472 inch (85,7 mm hoch, 40,8 mm ab Oberkante Tragschiene), read
+        # 2026-09-19. The owner confirmed the same day that 7607 is the part on
+        # the shelf and that "2016-7606" never existed. It has side and centre
+        # marking, so it gets a 12 mm "PE" segment on the strip.
+        width_mm=12,
+        marker=True,
+        verified=True,
+        source="https://www.wago.com/de/reihenklemmen/2-leiter-schutzleiterklemme/p/2016-7607",
     ),
 }
 
@@ -152,13 +151,13 @@ TERMINAL_PART_ORDER: tuple[str, ...] = (
     "2009-305",
     "2016-7601",
     "2016-7604",
-    "2016-7606",
+    "2016-7607",
     "2016-7714",
 )
 
 FEED_PART_IDS: frozenset[str] = frozenset({"2016-7714", "2016-7604"})
 OUTGOING_PART_IDS: frozenset[str] = frozenset({"2003-7641", "2003-7642", "2016-7601"})
-END_PART_IDS: frozenset[str] = frozenset({"2009-305", "2016-7606"})
+END_PART_IDS: frozenset[str] = frozenset({"2009-305"})
 
 # Kinds that may end on a Reihenklemme: MCB-protected outgoing circuits. An
 # RCBO is deliberately absent — its N is its own and must not sit on the FI

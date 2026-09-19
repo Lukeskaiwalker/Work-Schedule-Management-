@@ -32,7 +32,7 @@ export type TerminalPartId =
   | "2009-305"
   | "2016-7604"
   | "2016-7601"
-  | "2016-7606";
+  | "2016-7607";
 
 export interface TerminalPart {
   id: TerminalPartId;
@@ -130,21 +130,20 @@ export const TERMINAL_PARTS: Readonly<Record<TerminalPartId, TerminalPart>> = {
     verified: true,
     source: "https://heizung-billiger.de/770206-wago-verteiler-einspeiseklemme-2016-2016-7601-16mm2-800v-76a-12mm-grau-wago-2016-7601-4045454725082.html",
   },
-  "2016-7606": {
-    id: "2016-7606",
-    partNo: "WAGO 2016-7606",
-    name: "Endelement (2016-Serie)",
-    role: "Ende der Gruppe bei einzelnem Drehstromabgang",
-    // UNVERIFIED. wago.com answers HTTP 410 Gone for /p/2016-7606 (checked
-    // 2026-09-17) and no distributor lists the number; the 2016 series'
-    // current end/intermediate plate is 2016-7692 (1 mm, orange):
-    // https://www.wago.com/global/rail-mount-terminal-blocks/end-and-intermediate-plate/p/2016-7692
-    // Kept under the owner's number until he confirms what is on the shelf.
-    // No marker either way, so nothing on the strip depends on this width.
-    widthMm: 0,
-    marker: false,
-    verified: false,
-    source: "https://www.wago.com/global/rail-mount-terminal-blocks/end-and-intermediate-plate/p/2016-7692",
+  "2016-7607": {
+    id: "2016-7607",
+    partNo: "WAGO 2016-7607",
+    name: "2-Leiter-Schutzleiterklemme, 16 mm², grün-gelb",
+    role: "PE des einzelnen Drehstromabgangs",
+    // Breite 12 mm — wago.com/de/…/p/2016-7607, "Geometrische Daten": 12 mm /
+    // 0.472 inch (85,7 mm hoch, 40,8 mm ab Oberkante Tragschiene), read
+    // 2026-09-19. The owner confirmed the same day that 7607 is the part on
+    // the shelf and that "2016-7606" never existed. It has side and centre
+    // marking, so it gets a 12 mm "PE" segment on the strip.
+    widthMm: 12,
+    marker: true,
+    verified: true,
+    source: "https://www.wago.com/de/reihenklemmen/2-leiter-schutzleiterklemme/p/2016-7607",
   },
 };
 
@@ -155,13 +154,13 @@ export const TERMINAL_PART_ORDER: readonly TerminalPartId[] = [
   "2009-305",
   "2016-7601",
   "2016-7604",
-  "2016-7606",
+  "2016-7607",
   "2016-7714",
 ];
 
 export const FEED_PART_IDS: ReadonlySet<TerminalPartId> = new Set(["2016-7714", "2016-7604"]);
 export const OUTGOING_PART_IDS: ReadonlySet<TerminalPartId> = new Set(["2003-7641", "2003-7642", "2016-7601"]);
-export const END_PART_IDS: ReadonlySet<TerminalPartId> = new Set(["2009-305", "2016-7606"]);
+export const END_PART_IDS: ReadonlySet<TerminalPartId> = new Set(["2009-305"]);
 
 /**
  * Kinds that may end on a Reihenklemme: MCB-protected outgoing circuits.

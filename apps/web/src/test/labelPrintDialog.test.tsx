@@ -365,7 +365,7 @@ describe("LabelPrintDialog — Reihenklemmen", () => {
     expect(within(row as HTMLElement).getByText(/12 mm/)).toBeInTheDocument();
   });
 
-  it("warns once about a part whose width is not confirmed", () => {
+  it("prints the single 3-pole group without a width warning now that every part is confirmed", () => {
     const document = {
       ...emptyDocument(),
       rows: [
@@ -381,7 +381,7 @@ describe("LabelPrintDialog — Reihenklemmen", () => {
       ],
     };
     renderTerminalDialog({ document, initialRowIds: ["f1"] });
-    expect(screen.getByText(/Breite nicht bestätigt: WAGO 2016-7606/)).toBeInTheDocument();
+    expect(screen.queryByText(/Breite nicht bestätigt/)).not.toBeInTheDocument();
   });
 
   it("disables Drucken when no group has a text in the chosen mode", () => {

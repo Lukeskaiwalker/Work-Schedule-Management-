@@ -132,12 +132,12 @@ def test_part_table_carries_the_looked_up_widths_and_flags():
     assert TERMINAL_PARTS["2016-7714"].width_mm == 12
     assert TERMINAL_PARTS["2016-7604"].width_mm == 12
     assert TERMINAL_PARTS["2016-7601"].width_mm == 12
+    assert TERMINAL_PARTS["2016-7607"].width_mm == 12
     assert TERMINAL_PARTS["2009-305"].width_mm == 7.5
     assert not TERMINAL_PARTS["2009-305"].marker
-    assert not TERMINAL_PARTS["2016-7606"].marker
-    assert not TERMINAL_PARTS["2016-7606"].verified
+    assert TERMINAL_PARTS["2016-7607"].marker
     verified = sorted(part.id for part in TERMINAL_PARTS.values() if part.verified)
-    assert verified == sorted(["2003-7641", "2003-7642", "2009-305", "2016-7601", "2016-7604", "2016-7714"])
+    assert verified == sorted(["2003-7641", "2003-7642", "2009-305", "2016-7601", "2016-7604", "2016-7607", "2016-7714"])
     assert all(part.source.startswith("https://") for part in TERMINAL_PARTS.values())
 
 
@@ -184,8 +184,8 @@ def test_single_3pole_outgoing_gets_feed_pole_terminals_and_2016_end():
     groups = derive_terminals(_single3p_board())
     assert len(groups) == 1
     assert groups[0]["variant"] == "single3p"
-    assert _part_ids(groups) == ["2016-7604", "2016-7601", "2016-7601", "2016-7601", "2016-7606"]
-    assert [entry["pole"] for entry in groups[0]["terminals"]] == [None, "L1", "L2", "L3", None]
+    assert _part_ids(groups) == ["2016-7604", "2016-7601", "2016-7601", "2016-7601", "2016-7607"]
+    assert [entry["pole"] for entry in groups[0]["terminals"]] == [None, "L1", "L2", "L3", "PE"]
     pole = groups[0]["terminals"][1]
     assert (pole["device_id"], pole["label_bmk"], pole["label_circuit"], pole["width_mm"]) == ("w2", "L1", "L1", 12)
 
@@ -202,8 +202,8 @@ def test_single_4pole_outgoing_gets_four_pole_terminals_with_n():
         )
     )
     groups = derive_terminals(document)
-    assert _part_ids(groups) == ["2016-7604", "2016-7601", "2016-7601", "2016-7601", "2016-7601", "2016-7606"]
-    assert [entry["pole"] for entry in groups[0]["terminals"]] == [None, "L1", "L2", "L3", "N", None]
+    assert _part_ids(groups) == ["2016-7604", "2016-7601", "2016-7601", "2016-7601", "2016-7601", "2016-7607"]
+    assert [entry["pole"] for entry in groups[0]["terminals"]] == [None, "L1", "L2", "L3", "N", "PE"]
     assert [f for f in validate_document(document) if "polig" in f["message"]] == []
 
 
@@ -360,7 +360,9 @@ def test_counts_for_the_tab_badge():
 
 def test_unverified_parts_in_use():
     assert unverified_terminal_parts(derive_terminals(_standard_board())) == []
-    assert [part.id for part in unverified_terminal_parts(derive_terminals(_single3p_board()))] == ["2016-7606"]
+    # Every part is verified since the PE terminal was confirmed as 2016-7607;
+    # the function stays for the next part that is not.
+    assert unverified_terminal_parts(derive_terminals(_single3p_board())) == []
 
 
 def _ids(selection: dict) -> list[str]:
@@ -390,8 +392,9 @@ def test_strips_in_bmk_mode_keep_the_fi_bmk_on_the_feed():
 def test_strips_print_pole_names_for_the_single_3pole_variant():
     for mode in ("circuit", "bmk"):
         strip = terminal_strips(derive_terminals(_single3p_board()), mode)["strips"][0]
-        assert [text for text, _ in strip["segments"]] == ["F2", "L1", "L2", "L3"]
-        assert strip["length_mm"] == 48
+        # Feed + three poles + the PE terminal, 12 mm each.
+        assert [text for text, _ in strip["segments"]] == ["F2", "L1", "L2", "L3", "PE"]
+        assert strip["length_mm"] == 60
 
 
 def test_strips_skip_and_count_a_terminal_without_text_in_the_chosen_mode():

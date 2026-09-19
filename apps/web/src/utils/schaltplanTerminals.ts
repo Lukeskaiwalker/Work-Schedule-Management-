@@ -15,7 +15,7 @@
  *
  *   1. E empty → G emits nothing.
  *   2. Head is an FI and E is one device with ≥ 3 poles → "single3p":
- *      [2016-7604 (FI's BMK)] + [2016-7601 × poles (L1, L2, L3, N)] + [2016-7606].
+ *      [2016-7604 (FI's BMK)] + [2016-7601 × poles (L1, L2, L3, N)] + [2016-7607 (PE)].
  *   3. Head is an FI otherwise → "standard":
  *      [2016-7714 (FI's BMK)] + per device (2003-7641 for ≤ 2 poles,
  *      2003-7642 for ≥ 3) + [2009-305].
@@ -49,7 +49,7 @@ import {
 import { buildTopology, findRowOf } from "./schaltplanTopology";
 import type { PanelDevice, PanelDocument } from "../types/schaltplan";
 
-export type TerminalPole = "L1" | "L2" | "L3" | "N";
+export type TerminalPole = "L1" | "L2" | "L3" | "N" | "PE";
 
 export interface TerminalEntry {
   /** 1-based position along the group, feed terminal first. */
@@ -140,7 +140,7 @@ function sequence(variant: TerminalVariant, head: PanelDevice | null, children: 
     return [
       feedEntry(1, "2016-7604", head),
       ...poles.map((pole, index) => entry(index + 2, "2016-7601", device.id, pole, pole, pole)),
-      entry(poles.length + 2, "2016-7606", null, null, "", ""),
+      entry(poles.length + 2, "2016-7607", device.id, "PE", "PE", "PE"),
     ];
   }
   return [

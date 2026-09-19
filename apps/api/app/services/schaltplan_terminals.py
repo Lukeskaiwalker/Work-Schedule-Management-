@@ -13,7 +13,7 @@ flagged ``terminal_block``:
 
   1. E empty → G emits nothing.
   2. Head is an FI and E is one device with ≥ 3 poles → "single3p":
-     [2016-7604 (FI's BMK)] + [2016-7601 × poles (L1, L2, L3, N)] + [2016-7606].
+     [2016-7604 (FI's BMK)] + [2016-7601 × poles (L1, L2, L3, N)] + [2016-7607 (PE)].
   3. Head is an FI otherwise → "standard":
      [2016-7714 (FI's BMK)] + per device (2003-7641 for ≤ 2 poles,
      2003-7642 for ≥ 3) + [2009-305].
@@ -116,7 +116,7 @@ def _sequence(variant: str, head: dict[str, Any] | None, children: list[dict[str
         return [
             _feed_entry(1, "2016-7604", head),
             *[_entry(index + 2, "2016-7601", device_id, pole, pole, pole) for index, pole in enumerate(poles)],
-            _entry(len(poles) + 2, "2016-7606", None, None, "", ""),
+            _entry(len(poles) + 2, "2016-7607", device_id, "PE", "PE", "PE"),
         ]
     return [
         _feed_entry(1, "2016-7714", head),

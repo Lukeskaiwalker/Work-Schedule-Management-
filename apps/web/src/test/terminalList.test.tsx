@@ -156,7 +156,7 @@ describe("TerminalList", () => {
     expect(screen.queryByRole("link", { name: "Klemmenliste als PDF" })).toBeNull();
   });
 
-  it("says which part's width is not confirmed", () => {
+  it("shows the single 3-pole group with its PE terminal and no width warning", () => {
     const document: PanelDocument = {
       ...emptyDocument(),
       rows: [
@@ -173,9 +173,10 @@ describe("TerminalList", () => {
     };
     renderList({ document });
     expect(screen.getByText("Einzel-Drehstromabgang")).toBeInTheDocument();
-    expect(screen.getByText(/Breite nicht bestätigt: WAGO 2016-7606/)).toBeInTheDocument();
+    expect(screen.queryByText(/Breite nicht bestätigt/)).not.toBeInTheDocument();
     const bom = screen.getByRole("region", { name: "Stückliste Reihenklemmen" });
-    expect(within(bom).getByText("nicht bestätigt")).toBeInTheDocument();
+    expect(within(bom).getByText(/2016-7607/)).toBeInTheDocument();
+    expect(within(bom).queryByText("nicht bestätigt")).not.toBeInTheDocument();
   });
 
   it("flags a group without an FI", () => {

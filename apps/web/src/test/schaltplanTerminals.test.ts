@@ -151,16 +151,16 @@ describe("the part table", () => {
     expect(TERMINAL_PARTS["2016-7714"].widthMm).toBe(12);
     expect(TERMINAL_PARTS["2016-7604"].widthMm).toBe(12);
     expect(TERMINAL_PARTS["2016-7601"].widthMm).toBe(12);
+    expect(TERMINAL_PARTS["2016-7607"].widthMm).toBe(12);
     expect(TERMINAL_PARTS["2009-305"].widthMm).toBe(7.5);
   });
 
-  it("marks the end elements as marker-less and the retired 2016-7606 as unverified", () => {
+  it("marks the end clamp as marker-less, the PE terminal as marked, and every part as verified", () => {
     expect(TERMINAL_PARTS["2009-305"].marker).toBe(false);
-    expect(TERMINAL_PARTS["2016-7606"].marker).toBe(false);
-    expect(TERMINAL_PARTS["2016-7606"].verified).toBe(false);
+    expect(TERMINAL_PARTS["2016-7607"].marker).toBe(true);
     const verified = Object.values(TERMINAL_PARTS).filter((part) => part.verified).map((part) => part.id);
     expect(verified.sort()).toEqual(
-      ["2003-7641", "2003-7642", "2009-305", "2016-7601", "2016-7604", "2016-7714"].sort(),
+      ["2003-7641", "2003-7642", "2009-305", "2016-7601", "2016-7604", "2016-7607", "2016-7714"].sort(),
     );
     for (const part of Object.values(TERMINAL_PARTS)) {
       expect(part.source).toMatch(/^https:\/\//);
@@ -214,8 +214,8 @@ describe("deriveTerminals — single 3-pole outgoing under an FI", () => {
     const groups = deriveTerminals(single3pBoard());
     expect(groups).toHaveLength(1);
     expect(groups[0].variant).toBe("single3p");
-    expect(partIds(groups)).toEqual(["2016-7604", "2016-7601", "2016-7601", "2016-7601", "2016-7606"]);
-    expect(groups[0].terminals.map((entry) => entry.pole)).toEqual([null, "L1", "L2", "L3", null]);
+    expect(partIds(groups)).toEqual(["2016-7604", "2016-7601", "2016-7601", "2016-7601", "2016-7607"]);
+    expect(groups[0].terminals.map((entry) => entry.pole)).toEqual([null, "L1", "L2", "L3", "PE"]);
     expect(groups[0].terminals[1]).toMatchObject({ deviceId: "w2", labelBmk: "L1", labelCircuit: "L1", widthMm: 12 });
   });
 
@@ -231,8 +231,8 @@ describe("deriveTerminals — single 3-pole outgoing under an FI", () => {
       },
     ]);
     const groups = deriveTerminals(document);
-    expect(partIds(groups)).toEqual(["2016-7604", "2016-7601", "2016-7601", "2016-7601", "2016-7601", "2016-7606"]);
-    expect(groups[0].terminals.map((entry) => entry.pole)).toEqual([null, "L1", "L2", "L3", "N", null]);
+    expect(partIds(groups)).toEqual(["2016-7604", "2016-7601", "2016-7601", "2016-7601", "2016-7601", "2016-7607"]);
+    expect(groups[0].terminals.map((entry) => entry.pole)).toEqual([null, "L1", "L2", "L3", "N", "PE"]);
     // The per-pole variant honours the poles, so there is nothing to report.
     expect(terminalFindings(buildTopology(document))).toEqual([]);
   });
@@ -409,7 +409,9 @@ describe("terminalBom / terminalCounts", () => {
 
   it("lists the parts in use whose width could not be verified", () => {
     expect(unverifiedTerminalParts(deriveTerminals(standardBoard()))).toEqual([]);
-    expect(unverifiedTerminalParts(deriveTerminals(single3pBoard())).map((part) => part.id)).toEqual(["2016-7606"]);
+    // Every part in the table is verified since the PE terminal was confirmed
+    // as 2016-7607; the function stays for the next part that is not.
+    expect(unverifiedTerminalParts(deriveTerminals(single3pBoard()))).toEqual([]);
   });
 });
 
@@ -437,8 +439,9 @@ describe("terminalStrips", () => {
   it("prints pole names for the single-3-pole variant in either mode", () => {
     for (const mode of ["circuit", "bmk"] as const) {
       const [strip] = terminalStrips(deriveTerminals(single3pBoard()), mode).strips;
-      expect(strip.segments.map((segment) => segment.text)).toEqual(["F2", "L1", "L2", "L3"]);
-      expect(strip.lengthMm).toBe(48);
+      // Feed + three poles + the PE terminal, 12 mm each.
+      expect(strip.segments.map((segment) => segment.text)).toEqual(["F2", "L1", "L2", "L3", "PE"]);
+      expect(strip.lengthMm).toBe(60);
     }
   });
 
