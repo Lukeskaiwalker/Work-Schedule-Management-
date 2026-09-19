@@ -240,6 +240,7 @@ def list_customer_activity(
     customer_id: int,
     limit: int = Query(default=CUSTOMER_ACTIVITY_LIMIT_DEFAULT),
     before_id: int | None = Query(default=None, ge=1),
+    cursor: str | None = Query(default=None, max_length=120),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> list[CustomerActivityOut]:
@@ -262,6 +263,7 @@ def list_customer_activity(
         visible_project_ids=_project_ids_visible_to_user(db, current_user),
         limit=limit,
         before_id=before_id,
+        cursor=cursor,
     )
 
 

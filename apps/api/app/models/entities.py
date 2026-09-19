@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from app.models.user import User, UserActionToken
 from app.models.api_token import ApiToken
-from app.models.customer import Customer
+from app.models.customer import Customer, CustomerActivity, CustomerNote
 from app.models.partner import Partner, TaskPartner
 from app.models.project import (
     Project,
@@ -91,6 +91,8 @@ __all__ = [
     "ConstructionReport",
     "ConstructionReportJob",
     "Customer",
+    "CustomerActivity",
+    "CustomerNote",
     "CustomerFolder",
     "EmployeeGroup",
     "EmployeeGroupMember",

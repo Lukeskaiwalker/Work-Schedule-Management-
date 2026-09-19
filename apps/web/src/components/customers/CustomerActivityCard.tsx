@@ -161,7 +161,9 @@ export function CustomerActivityCard({ customerId }: Props) {
                   type="button"
                   className="customer-activity-project"
                   title={de ? "Projekt öffnen" : "Open project"}
-                  onClick={() => openProjectById(row.project_id, "customer_detail")}
+                  onClick={() => {
+                    if (row.project_id != null) openProjectById(row.project_id, "customer_detail");
+                  }}
                 >
                   {projectChipLabel(row)}
                 </button>

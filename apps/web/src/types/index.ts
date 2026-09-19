@@ -140,6 +140,14 @@ export type Customer = {
   /** Marktstammdatenregister "Marktakteur-Nummer" — populated for PV/energy
    *  customers that operate a registered installation. Null otherwise. */
   marktakteur_nummer: string | null;
+  /** "company" or "private"; null when never chosen (rows from before the field). */
+  customer_type?: "company" | "private" | null;
+  /** The number answered on site, next to the office line in `phone`. */
+  mobile?: string | null;
+  /** What the first visit to a new customer found — printed at the head of every Projektbericht. */
+  visit_summary?: string | null;
+  visit_date?: string | null;
+  visit_by_user_id?: number | null;
   /** ISO datetime when the row was archived, or null when active. */
   archived_at: string | null;
   created_by: number | null;
@@ -245,10 +253,26 @@ export type ProjectNote = {
   created_at: string;
 };
 
-/** A project activity seen from the customer: the same row plus which project it belongs to. */
-export type CustomerActivity = ProjectActivity & {
+/** One row of the customer's change log: a project activity with its project, or a customer-level event. */
+export type CustomerActivity = Omit<ProjectActivity, "project_id"> & {
+  project_id: number | null;
+  customer_id?: number | null;
   project_number?: string | null;
   project_name?: string | null;
+  /** "project" rows carry a project chip; "customer" rows are the customer's own events. */
+  source?: "project" | "customer";
+  /** Opaque keyset cursor of this row — pass the last row's as ?cursor= to load older ones. */
+  cursor?: string;
+};
+
+/** One posting of the customer's note feed — the customer-level twin of ProjectNote. */
+export type CustomerNote = {
+  id: number;
+  customer_id: number;
+  author_user_id?: number | null;
+  author_name?: string | null;
+  body: string;
+  created_at: string;
 };
 
 /** Whether and where the project's Projektbericht was finalized. */

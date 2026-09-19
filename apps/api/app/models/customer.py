@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from sqlalchemy import Date, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Date, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
@@ -47,6 +47,18 @@ class Customer(Base):
     # customer-facing communications go out in German unless explicitly
     # marked otherwise (driven by the customer-confirmation email flow).
     language: Mapped[str | None] = mapped_column(String(8))
+    # "company" or "private". The form used to treat every customer as a
+    # person; a firm needs a company name AND a contact person, a private
+    # customer only a name. Null = never chosen (rows from before the field).
+    customer_type: Mapped[str | None] = mapped_column(String(16))
+    # A second number: the office line and the phone that is actually
+    # answered on site are rarely the same.
+    mobile: Mapped[str | None] = mapped_column(String(128))
+    # What the first visit found. Written by whoever visited a new customer,
+    # and printed at the head of every Projektbericht of this customer.
+    visit_summary: Mapped[str | None] = mapped_column(Text)
+    visit_date: Mapped[date | None] = mapped_column(Date)
+    visit_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     archived_at: Mapped[datetime | None] = mapped_column(DateTime)
     created_by: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL")
@@ -57,3 +69,37 @@ class Customer(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow, onupdate=utcnow, nullable=False
     )
+
+
+class CustomerNote(Base):
+    """One entry of the customer's note feed — the customer-level twin of
+    ``ProjectNote``: posted once, by someone, at a time. The single
+    ``customers.notes`` text became the first entry (migration 0092)."""
+
+    __tablename__ = "customer_notes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    customer_id: Mapped[int] = mapped_column(ForeignKey("customers.id", ondelete="CASCADE"), index=True, nullable=False)
+    author_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
+    body: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False, index=True)
+
+
+class CustomerActivity(Base):
+    """A customer-level event for the customer's change log.
+
+    The log used to be the union of the project logs only; what happens to
+    the customer itself — a note, a change of Stammdaten, a customer-only
+    task — had no row anywhere. Same shape as ``ProjectActivity`` so the
+    two union cleanly in ``services/customer_activity``.
+    """
+
+    __tablename__ = "customer_activities"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    customer_id: Mapped[int] = mapped_column(ForeignKey("customers.id", ondelete="CASCADE"), index=True, nullable=False)
+    actor_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    message: Mapped[str] = mapped_column(String(255), nullable=False)
+    details: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False, index=True)

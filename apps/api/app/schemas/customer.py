@@ -11,6 +11,8 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from app.schemas.project import ProjectActivityOut
@@ -26,6 +28,12 @@ class CustomerCreate(BaseModel):
     notes: str | None = None
     birthday: date | None = None
     marktakteur_nummer: str | None = Field(default=None, max_length=64)
+    # "company" or "private"; None = never chosen.
+    customer_type: Literal["company", "private"] | None = None
+    mobile: str | None = Field(default=None, max_length=128)
+    # What the first visit found — printed at the head of the Projektbericht.
+    visit_summary: str | None = Field(default=None, max_length=8000)
+    visit_date: date | None = None
 
 
 class CustomerUpdate(BaseModel):
@@ -38,6 +46,12 @@ class CustomerUpdate(BaseModel):
     notes: str | None = None
     birthday: date | None = None
     marktakteur_nummer: str | None = Field(default=None, max_length=64)
+    # "company" or "private"; None = never chosen.
+    customer_type: Literal["company", "private"] | None = None
+    mobile: str | None = Field(default=None, max_length=128)
+    # What the first visit found — printed at the head of the Projektbericht.
+    visit_summary: str | None = Field(default=None, max_length=8000)
+    visit_date: date | None = None
 
 
 class CustomerOut(BaseModel):
@@ -51,6 +65,11 @@ class CustomerOut(BaseModel):
     notes: str | None = None
     birthday: date | None = None
     marktakteur_nummer: str | None = None
+    customer_type: str | None = None
+    mobile: str | None = None
+    visit_summary: str | None = None
+    visit_date: date | None = None
+    visit_by_user_id: int | None = None
     archived_at: datetime | None = None
     created_by: int | None = None
     created_at: datetime
@@ -67,6 +86,13 @@ class CustomerListItemOut(CustomerOut):
 
 class CustomerActivityOut(ProjectActivityOut):
     """One row of the customer's cross-project change log.
+    # Where the row comes from: the union of the customer's project logs and
+    # the customer's own events. A customer row has no project.
+    source: Literal["project", "customer"] = "project"
+    project_id: int | None = None
+    customer_id: int | None = None
+    # Opaque keyset cursor of this row; pass it as ?cursor= to page further back.
+    cursor: str = ""
 
     A project activity, plus the project it belongs to — on the customer page
     the rows of several projects sit in one list, so each has to say which

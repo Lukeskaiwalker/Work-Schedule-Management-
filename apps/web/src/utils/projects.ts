@@ -99,6 +99,11 @@ export function activityEventLabel(eventType: string, language: Language) {
     "project.note_posted": { de: "Notiz gepostet", en: "Note posted" },
     "project.note_deleted": { de: "Notiz gelöscht", en: "Note deleted" },
     "project.report_finalized": { de: "Projektbericht finalisiert", en: "Project report finalized" },
+    "customer.created": { de: "Kunde angelegt", en: "Customer created" },
+    "customer.updated": { de: "Stammdaten geändert", en: "Customer details changed" },
+    "customer.note_posted": { de: "Notiz gepostet", en: "Note posted" },
+    "customer.note_deleted": { de: "Notiz gelöscht", en: "Note deleted" },
+    "customer.visit_updated": { de: "Kundenbesuch erfasst", en: "Customer visit recorded" },
     "project.report_finalize_failed": {
       de: "Projektbericht konnte nicht abgelegt werden",
       en: "Project report could not be filed",
