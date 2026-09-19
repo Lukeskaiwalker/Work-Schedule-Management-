@@ -362,3 +362,13 @@ virtual (nothing moved on disk). Migration `20260921_0089`.
 | `apps/web/src/components/customers/CustomerActivityCard.tsx` | "Letzte Änderungen — alle Projekte dieses Kunden" on the customer page |
 | `tools/label_agent/qrcode_svg.py` + `/qr.svg` | Stdlib-only QR encoder; the crate wall screen's command cards embed it instead of `/barcode.svg` |
 
+## Projektbericht, task view, customer tabs (2026-09-19, round 3)
+
+| Module | Role |
+|---|---|
+| `apps/api/app/services/project_report_data.py` / `project_report_pdf.py` | The Projektbericht: pure data collection (all sections, German labels) and the ReportLab rendering; no photos, no finance, no Verwaltung file names |
+| `apps/api/app/routers/workflow_project_report.py` | `GET /projects/{id}/report[/preview|/preview-pages…]`, `POST …/report/finalize`; `finalize_project_report_on_status_change` runs from update_project when the status becomes abgeschlossen/archived (savepoint, never blocks the status change); migration `20260923_0091` |
+| `apps/web/src/components/project/ProjectReportCard.tsx` | Overview card: live preview in the viewer (LightboxFile `source` override), finalized report link, manual finalize for managers |
+| `apps/web/src/components/tasks/TaskAttachmentStrip.tsx` | Read-only "Anhänge" in the Meine-Aufgaben row; `TaskMaterialList` opens by default |
+| `apps/web/src/components/customers/CustomerDetailTabs.tsx` (+ `CustomerOverviewPanel`, `CustomerProjectsCard`) | The customer page's five tabs; only the open tab's cards mount; tab remembered in sessionStorage |
+
