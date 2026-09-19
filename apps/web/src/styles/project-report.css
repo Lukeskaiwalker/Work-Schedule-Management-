@@ -1,0 +1,43 @@
+/* Projektbericht — the derived report card on the project overview.
+ *
+ * A plain card below the note feed: one sentence on what the report is,
+ * the preview button, and — once the project has ended — the line that
+ * names the filed copy. Blue, not the note feed's yellow: this is the
+ * office's paperwork, not the crew's scratchpad. */
+
+.project-report-card {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.project-report-lead {
+  margin: 0;
+  font-size: 0.9rem;
+  line-height: 1.4;
+  opacity: 0.85;
+}
+
+.project-report-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* The filed copy: date, then the two ways to get at it. Wraps on a phone
+ * without pushing the card wider. */
+.project-report-final {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.35rem 0.75rem;
+  padding: 0.5rem 0.6rem;
+  border-radius: 8px;
+  background: rgba(47, 112, 183, 0.08);
+  border: 1px solid rgba(47, 112, 183, 0.2);
+  font-size: 0.9rem;
+}
+
+.project-report-final-label {
+  min-width: 0;
+}

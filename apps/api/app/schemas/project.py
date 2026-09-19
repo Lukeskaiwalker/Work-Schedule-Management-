@@ -188,6 +188,16 @@ class ProjectNoteOut(BaseModel):
     created_at: datetime
 
 
+class ProjectReportStateOut(BaseModel):
+    """Whether and where the Projektbericht was finalized. All three are
+    None while the project runs — the report exists only as a live preview
+    until the project is marked abgeschlossen or archived."""
+
+    finalized_at: datetime | None = None
+    attachment_id: int | None = None
+    file_name: str | None = None
+
+
 class ProjectOverviewOut(BaseModel):
     project: ProjectOut
     open_tasks: int = 0
@@ -197,6 +207,7 @@ class ProjectOverviewOut(BaseModel):
     recent_changes: list[ProjectActivityOut] = Field(default_factory=list)
     # Newest first; the overview carries the latest page, GET /projects/{id}/notes the rest.
     notes: list[ProjectNoteOut] = Field(default_factory=list)
+    project_report: ProjectReportStateOut = Field(default_factory=ProjectReportStateOut)
 
 
 class ProjectWeatherDayOut(BaseModel):

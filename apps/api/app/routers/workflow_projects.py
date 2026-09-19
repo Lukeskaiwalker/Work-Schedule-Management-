@@ -5,6 +5,10 @@ from fastapi import APIRouter
 from app.core.events import notify
 from app.routers.workflow_helpers import *  # noqa: F401,F403
 from app.routers.workflow_project_notes import OVERVIEW_NOTES_PAGE, project_notes_out
+from app.routers.workflow_project_report import (
+    finalize_project_report_on_status_change,
+    project_report_state_out,
+)
 from app.models.entities import Customer
 from app.services.project_membership import add_all_users_to_project
 from app.services.project_status import is_won_project_status, normalize_project_status
@@ -304,6 +308,16 @@ def update_project(
                         "to_status": next_status,
                     },
                 )
+        # The Projektbericht is filed the moment the project ends. After the
+        # state_changed activity, so the stored sheet's Verlauf shows the
+        # very change that closed it; never raises — see the hook.
+        finalize_project_report_on_status_change(
+            db,
+            project,
+            previous_status,
+            next_status,
+            actor_user_id=current_user.id,
+        )
     elif project.description != previous_description:
         _record_project_activity(
             db,
@@ -605,6 +619,7 @@ def project_overview_detail(
         office_notes=_recent_project_office_notes_out(db, project_id, limit=10),
         recent_changes=_recent_project_activities_out(db, project_id, limit=10),
         notes=project_notes_out(db, project_id, limit=OVERVIEW_NOTES_PAGE),
+        project_report=project_report_state_out(db, project),
     )
 
 @router.get("/projects/{project_id}/weather", response_model=ProjectWeatherOut)

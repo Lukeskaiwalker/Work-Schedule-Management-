@@ -24,13 +24,13 @@ import {
   PREFETCH_AHEAD,
   clampIndex,
   classifyLoadError,
-  fileDownloadUrl,
-  filePagesUrl,
-  filePreviewUrl,
   isEditableTarget,
   isImageType,
   isPdfType,
   isTextType,
+  lightboxDownloadUrl,
+  lightboxPagesUrl,
+  lightboxPreviewUrl,
   loadFailureText,
   loadPageCount,
   loadTextFile,
@@ -101,7 +101,7 @@ function DownloadLink({ file, language }: StageProps) {
   return (
     <a
       className="file-lightbox-action"
-      href={fileDownloadUrl(file.id)}
+      href={lightboxDownloadUrl(file)}
       download={file.file_name}
       target="_blank"
       rel="noreferrer"
@@ -144,7 +144,7 @@ function ImageStage({ file, language }: StageProps) {
     <>
       <AuthedImage
         className="file-lightbox-image"
-        src={filePreviewUrl(file.id)}
+        src={lightboxPreviewUrl(file)}
         alt={file.file_name}
         onError={() => setFailed(true)}
       />
@@ -161,15 +161,16 @@ function PdfFrameStage({ file, language }: StageProps) {
   // fetched with it and framed from an object URL — the trade the native
   // viewer makes. On the web the cookie rides along with the URL itself, so
   // there is nothing to wait for and the loader is a no-op.
+  const previewUrl = lightboxPreviewUrl(file);
   const blob = useLoaded<string>(
     file.id,
-    () => (IS_NATIVE_SHELL ? fetchAuthorizedBlobUrl(filePreviewUrl(file.id)) : Promise.resolve("")),
+    () => (IS_NATIVE_SHELL ? fetchAuthorizedBlobUrl(previewUrl) : Promise.resolve("")),
     (url) => url && URL.revokeObjectURL(url),
   );
   if (IS_NATIVE_SHELL && blob.status === "error") {
     return <FailurePanel file={file} language={language} failure={blob.failure} />;
   }
-  const src = IS_NATIVE_SHELL ? blob.status === "ready" && blob.value : filePreviewUrl(file.id);
+  const src = IS_NATIVE_SHELL ? blob.status === "ready" && blob.value : previewUrl;
   return (
     <>
       {src && (
@@ -200,7 +201,8 @@ function PagerButton({ label, glyph, disabled, onClick }: {
  */
 function PdfPagesStage({ file, language }: StageProps) {
   const de = language === "de";
-  const count = useLoaded<number>(file.id, () => loadPageCount(file.id));
+  const pagesUrl = lightboxPagesUrl(file);
+  const count = useLoaded<number>(file.id, () => loadPageCount(pagesUrl));
   const [page, setPage] = useState(1);
   const [pageUrl, setPageUrl] = useState("");
   // True only while a page the reader is waiting for is in flight; a
@@ -214,15 +216,14 @@ function PdfPagesStage({ file, language }: StageProps) {
   const acquire = useCallback(
     (wanted: number): Promise<string> => {
       if (!cacheRef.current) {
-        const base = filePagesUrl(file.id);
         cacheRef.current = createPageCache({
           maxEntries: MAX_CACHED_PAGES,
-          fetchPage: (n) => fetchAuthorizedBlobUrl(`${base}/${n}`),
+          fetchPage: (n) => fetchAuthorizedBlobUrl(`${pagesUrl}/${n}`),
         });
       }
       return cacheRef.current.acquire(wanted);
     },
-    [file.id],
+    [pagesUrl],
   );
 
   useEffect(() => () => cacheRef.current?.clear(), []);
@@ -305,7 +306,7 @@ function PdfPagesStage({ file, language }: StageProps) {
 }
 
 function TextStage({ file, language }: StageProps) {
-  const text = useLoaded<string>(file.id, () => loadTextFile(file.id, file.file_name));
+  const text = useLoaded<string>(file.id, () => loadTextFile(lightboxPreviewUrl(file), file.file_name));
   if (text.status === "loading") return <LoadingNote language={language} />;
   if (text.status === "error") {
     return <FailurePanel file={file} language={language} failure={text.failure} />;

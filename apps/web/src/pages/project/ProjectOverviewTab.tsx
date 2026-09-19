@@ -5,6 +5,7 @@ import { formatTaskDateRange, formatTaskTimeRange, taskDayCount } from "../../ut
 import { weatherDescriptionLabel } from "../../utils/weather";
 import { CopyIcon } from "../../components/icons";
 import { ProjectNotesCard } from "../../components/project/ProjectNotesCard";
+import { ProjectReportCard } from "../../components/project/ProjectReportCard";
 
 export function ProjectOverviewTab() {
   const {
@@ -101,6 +102,8 @@ export function ProjectOverviewTab() {
           </div>
 
           <ProjectNotesCard />
+
+          <ProjectReportCard />
 
           {workspaceMode === "office" && (
             <div className="card project-overview-office-notes">

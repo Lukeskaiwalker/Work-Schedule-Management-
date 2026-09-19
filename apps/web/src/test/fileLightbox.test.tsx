@@ -264,6 +264,42 @@ describe("FileLightbox", () => {
     expect((init?.headers as Record<string, string>).Authorization).toBe("Bearer t0k3n");
   });
 
+  it("reads a file's bytes from `source` when the host brings its own URLs", async () => {
+    // The Projektbericht preview is rendered on request and has no attachment
+    // id: the frame, the download link and the pager must all follow `source`.
+    const report: LightboxFile = {
+      id: -7,
+      file_name: "Projektbericht 2026-3001 (Vorschau).pdf",
+      content_type: "application/pdf",
+      source: {
+        previewUrl: "/api/projects/7/report/preview",
+        downloadUrl: "/api/projects/7/report/preview?download=1",
+        pagesUrl: "/api/projects/7/report/preview-pages",
+      },
+    };
+    const { unmount } = renderLightbox({ files: [report], index: 0 });
+    expect(screen.getByTitle(report.file_name).getAttribute("src")).toBe("/api/projects/7/report/preview");
+    expect(screen.getByRole("link", { name: "Herunterladen" }).getAttribute("href")).toBe(
+      "/api/projects/7/report/preview?download=1",
+    );
+    expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+    unmount();
+
+    setPdfViewerEnabled(false);
+    routeFetch((url) => {
+      if (url === "/api/projects/7/report/preview-pages") return jsonResponse({ page_count: 2 });
+      if (url === "/api/projects/7/report/preview-pages/1") return bytesResponse("image/png");
+      if (url === "/api/projects/7/report/preview-pages/2") return bytesResponse("image/png");
+      return undefined;
+    });
+    renderLightbox({ files: [report], index: 0 });
+    expect(await screen.findByText("Seite 1 / 2")).toBeInTheDocument();
+    const requested = vi.mocked(fetch).mock.calls.map(([input]) => String(input));
+    expect(requested).toContain("/api/projects/7/report/preview-pages");
+    expect(requested).toContain("/api/projects/7/report/preview-pages/1");
+    expect(requested.some((url) => url.includes("/api/files/"))).toBe(false);
+  });
+
   it("exposes the URL helpers and the previewable predicate", () => {
     expect(filePreviewUrl(5)).toBe("/api/files/5/preview");
     expect(fileDownloadUrl(5)).toBe("/api/files/5/download");

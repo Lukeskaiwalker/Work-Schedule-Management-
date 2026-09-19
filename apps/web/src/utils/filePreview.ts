@@ -7,6 +7,7 @@
  * shapes, a swipe threshold and two navigator probes are all things you want
  * to reason about — and test — without a dialog around them.
  */
+import type { LightboxFile } from "../components/files/lightboxTypes";
 import { fetchAuthorizedJson, fetchFile } from "../native/fileOpen";
 import { apiUrl } from "../native/shell";
 import type { UiLanguage } from "./uiLanguage";
@@ -57,6 +58,26 @@ export function filePagesUrl(id: number): string {
   return apiUrl(`/api/files/${id}/preview-pages`);
 }
 
+type Located = Pick<LightboxFile, "id" | "source">;
+
+/**
+ * Where a viewer file's bytes are: derived from the id, unless the host
+ * brought a `source`. The Projektbericht preview is rendered on request and
+ * has no attachment behind it, so its URLs cannot come from an id — and the
+ * viewer must not care, it reads these three and nothing else.
+ */
+export function lightboxPreviewUrl(file: Located): string {
+  return file.source?.previewUrl ?? filePreviewUrl(file.id);
+}
+
+export function lightboxDownloadUrl(file: Located): string {
+  return file.source?.downloadUrl ?? fileDownloadUrl(file.id);
+}
+
+export function lightboxPagesUrl(file: Located): string {
+  return file.source?.pagesUrl ?? filePagesUrl(file.id);
+}
+
 /* ── PDF capability probes ─────────────────────────────────────────────── */
 // Copies of the two probes in components/shared/NativeFileViewer.tsx, not
 // imports: scripts/check-pdf-preview-probes.mjs lifts them out of THAT file
@@ -104,8 +125,8 @@ export const MAX_CACHED_PAGES = 12;
 export const PREFETCH_AHEAD = 1;
 
 /** The page count, or a rejection — a document with no pages cannot be paged. */
-export async function loadPageCount(id: number): Promise<number> {
-  const meta = await fetchAuthorizedJson<{ page_count?: number }>(filePagesUrl(id));
+export async function loadPageCount(pagesUrl: string): Promise<number> {
+  const meta = await fetchAuthorizedJson<{ page_count?: number }>(pagesUrl);
   const count = Number(meta?.page_count) || 0;
   if (count < 1) throw new Error("no pages");
   return count;
@@ -119,8 +140,8 @@ export async function loadPageCount(id: number): Promise<number> {
  * `connect-src`, which does not list blob:, and that is how every text file
  * once reported "could not be loaded" while sitting decoded in memory.
  */
-export async function loadTextFile(id: number, name: string): Promise<string> {
-  const fetched = await fetchFile({ url: filePreviewUrl(id), name, intent: "view" });
+export async function loadTextFile(previewUrl: string, name: string): Promise<string> {
+  const fetched = await fetchFile({ url: previewUrl, name, intent: "view" });
   try {
     return await fetched.blob.text();
   } finally {
