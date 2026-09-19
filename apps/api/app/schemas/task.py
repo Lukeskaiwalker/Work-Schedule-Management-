@@ -295,6 +295,11 @@ class TaskOut(BaseModel):
     # The crate's contents, copied onto the task when a box is selected.
     # Empty for a task with no box, which is most of them.
     materials: list["TaskMaterialOut"] = []
+    # How many files hang on the task (attachments with this ``task_id``), for
+    # the paperclip badge. Lists get it batched from one grouped query
+    # (``services.task_attachments``); a single-task response fetches its one
+    # count. The files themselves come from GET /tasks/{id}/files.
+    attachment_count: int = 0
     # Set only on the PATCH that completed a task and settled its crate, so
     # the client can phrase its notice from what happened rather than from
     # what was asked for. Absent everywhere else, including the SSE payload.

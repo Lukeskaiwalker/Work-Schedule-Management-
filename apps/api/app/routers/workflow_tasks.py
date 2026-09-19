@@ -21,6 +21,12 @@ from app.services.task_material_settlement import (
     material_settlement_preview,
     settle_task_materials,
 )
+from app.services.task_attachments import (
+    attachment_counts,
+    delete_task_attachment_rows,
+    unlink_stored_files,
+    with_attachment_counts,
+)
 
 router = APIRouter(prefix="", tags=["tasks"])
 
@@ -149,7 +155,7 @@ def list_tasks(
         stmt = stmt.where(Task.id.notin_(select(TaskPartner.task_id)))
 
     tasks = list(db.scalars(stmt.order_by(Task.due_date.asc().nulls_last(), Task.id.desc())).all())
-    return _tasks_out(db, tasks)
+    return with_attachment_counts(db, _tasks_out(db, tasks))
 
 @router.post("/tasks", response_model=TaskOut)
 def create_task(
@@ -273,6 +279,9 @@ def create_task(
     db.commit()
     db.refresh(task)
     partner_rows = _load_partners_by_id(db, partner_ids)
+    # No attachment_count here: the task did not exist a moment ago, so
+    # nothing can hang on it yet — files picked before the task existed are
+    # uploaded right after this response.
     created = _task_out(
         task,
         assignee_ids,
@@ -642,6 +651,7 @@ def update_task(
         partners=[partner_rows[pid] for pid in existing_partner_ids if pid in partner_rows],
         box=_task_box_map(db, [task]).get(task.construction_box_id),
         materials=_task_materials_map(db, [task]).get(task.id, []),
+        attachment_count=attachment_counts(db, [task.id]).get(task.id, 0),
     )
     notify(db, "task.updated", updated.model_dump(mode="json"))
     for uid in added_assignee_ids:
@@ -711,22 +721,34 @@ def delete_task(
     task = db.get(Task, task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    assert_project_access(db, current_user, task.project_id, manage_required=True)
-    _record_project_activity(
-        db,
-        project_id=task.project_id,
-        actor_user_id=current_user.id,
-        event_type="task.deleted",
-        message=f"Task deleted: {task.title}",
-        details={"task_id": task.id},
-    )
+    # A customer-only task has no project to check against or to log into:
+    # ``ProjectActivity.project_id`` is NOT NULL, so recording one here used to
+    # fail the commit and the task could not be deleted at all. tasks:manage
+    # (the endpoint's own gate) is the whole rule for those.
+    if task.project_id is not None:
+        assert_project_access(db, current_user, task.project_id, manage_required=True)
+        _record_project_activity(
+            db,
+            project_id=task.project_id,
+            actor_user_id=current_user.id,
+            event_type="task.deleted",
+            message=f"Task deleted: {task.title}",
+            details={"task_id": task.id},
+        )
     project_id = task.project_id
     # Notifications carry a plain ``entity_id``, not a foreign key, so nothing
     # cleans them up when the task row goes away. Resolve them here or they
     # stay queryable forever and point at a task that no longer exists.
     resolved_notification_user_ids = _resolve_task_notifications(db, task.id)
+    # The task's files go with it. The FK would only SET NULL and leave them
+    # as anonymous rows in the project's "Aufgaben" folder, with the bytes on
+    # disk forever — so the rows leave in this transaction and the bytes are
+    # unlinked once it is committed.
+    stored_paths = delete_task_attachment_rows(db, task.id)
     db.delete(task)
     db.commit()
+    # Best-effort: remove the stored files from disk after the DB commit
+    unlink_stored_files(stored_paths)
     notify(db, "task.deleted", {"id": task_id, "project_id": project_id})
     for uid in resolved_notification_user_ids:
         notify(db, "notification.resolved", {"user_id": uid})
@@ -873,7 +895,7 @@ def planning_week_view(
         stmt = stmt.where(Task.task_type == _normalize_task_type(task_type))
 
     tasks = list(db.scalars(stmt.order_by(Task.due_date.asc().nulls_last(), Task.id.asc())).all())
-    task_out_rows = _tasks_out(db, tasks)
+    task_out_rows = with_attachment_counts(db, _tasks_out(db, tasks))
     by_day: dict[date, list[TaskOut]] = {}
     for task in task_out_rows:
         if task.due_date is None:
@@ -928,7 +950,7 @@ def send_task_customer_confirmation_email(
     sent, error = dispatch_customer_confirmation_email(db, task=task, reset_status=True)
     db.commit()
     db.refresh(task)
-    updated = _tasks_out(db, [task])[0]
+    updated = with_attachment_counts(db, _tasks_out(db, [task]))[0]
     # Both branches commit: success mints a token and stamps sent_at,
     # failure keeps the fresh round (a pre-wire failure restores the
     # previous one, which may leave the row byte-identical and so may not
@@ -993,7 +1015,7 @@ def record_task_customer_confirmation_manual(
     task.customer_confirmation_token = None
     db.commit()
     db.refresh(task)
-    updated = _tasks_out(db, [task])[0]
+    updated = with_attachment_counts(db, _tasks_out(db, [task]))[0]
     # Same event the PATCH path fires, with the same full-TaskOut payload:
     # a confirmation recorded here changes the pill on every open planning
     # board, and without this the board kept showing the old state until
@@ -1123,5 +1145,5 @@ def submit_public_customer_confirmation(
     # A task with no project_id sends ``project_id: null``, which
     # ``_should_deliver`` routes to admins only; that is the established
     # behaviour for customer-only tasks and is left as it is.
-    notify(db, "task.updated", _tasks_out(db, [task])[0].model_dump(mode="json"))
+    notify(db, "task.updated", with_attachment_counts(db, _tasks_out(db, [task]))[0].model_dump(mode="json"))
     return _public_task_view(db, task)

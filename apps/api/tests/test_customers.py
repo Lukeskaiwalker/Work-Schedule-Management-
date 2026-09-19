@@ -387,6 +387,28 @@ def test_customer_only_task_create_and_list(client: TestClient, admin_token: str
     assert all(row["customer_id"] == customer_id for row in rows)
 
 
+def test_customer_only_task_can_be_deleted(client: TestClient, admin_token: str):
+    """Deleting a customer-only task used to 500: the endpoint recorded a
+    project activity with project_id=None against a NOT NULL column."""
+    customer = _create_customer(client, admin_token, name="Delete Customer", phone="+49 30 7654321")
+    create = client.post(
+        "/api/tasks",
+        headers=auth_headers(admin_token),
+        json={"customer_id": customer["id"], "title": "Rückruf", "task_type": "office"},
+    )
+    assert create.status_code == 200, create.text
+    task_id = create.json()["id"]
+
+    deleted = client.delete(f"/api/tasks/{task_id}", headers=auth_headers(admin_token))
+    assert deleted.status_code == 200, deleted.text
+
+    listing = client.get(
+        f"/api/tasks?view=all_open&customer_id={customer['id']}", headers=auth_headers(admin_token)
+    )
+    assert listing.status_code == 200
+    assert all(row["id"] != task_id for row in listing.json())
+
+
 def test_task_requires_project_or_customer(client: TestClient, admin_token: str):
     """Pydantic model_validator must reject the neither-anchor case
     before it reaches the DB CHECK constraint, so the operator gets a

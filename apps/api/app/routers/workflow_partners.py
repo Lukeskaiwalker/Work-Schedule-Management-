@@ -159,6 +159,7 @@ def list_partner_tasks(
     db: Session = Depends(get_db),
 ):
     from app.routers.workflow_helpers import _tasks_out
+    from app.services.task_attachments import with_attachment_counts
 
     partner = db.get(Partner, partner_id)
     if partner is None:
@@ -171,7 +172,9 @@ def list_partner_tasks(
             .order_by(Task.due_date.asc().nullslast(), Task.id.desc())
         ).all()
     )
-    return _tasks_out(db, tasks)
+    # Same paperclip count the task list carries — a partner's board must not
+    # say "no files" about a task that has a plan on it.
+    return with_attachment_counts(db, _tasks_out(db, tasks))
 
 
 @router.post("/partners", response_model=PartnerOut)

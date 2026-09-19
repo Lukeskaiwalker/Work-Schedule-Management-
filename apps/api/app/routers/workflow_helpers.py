@@ -3181,6 +3181,9 @@ def _task_out(
     confirmation_by_display_name: str | None = None,
     box: ConstructionBoxRef | None = None,
     materials: list[TaskMaterialOut] | None = None,
+    # Callers that hold the batched count pass it; the default keeps every
+    # other caller honest only for tasks that cannot have files yet.
+    attachment_count: int = 0,
 ) -> TaskOut:
     partner_ids = partner_ids or []
     partner_rows = partners or []
@@ -3198,6 +3201,7 @@ def _task_out(
         construction_box_label=box.label if box else None,
         construction_box_status=box.status if box else None,
         materials=materials or [],
+        attachment_count=attachment_count,
         task_type=task.task_type,
         class_template_id=task.class_template_id,
         status=task.status,
