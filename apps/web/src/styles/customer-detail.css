@@ -1,0 +1,107 @@
+/* ══════════════════════════════════════════════════════════════════════════
+   Customer page: the tab strip under the header and the panels it opens
+   (components/customers/CustomerDetailTabs, pages/CustomerDetailPage).
+
+   Lives here rather than in styles.css (frozen for the wave). Imported by
+   the page; Vite dedupes the import. Everything is prefixed
+   customer-detail-tabs- / customer-tab- so it cannot collide with the
+   projects card's own Aktiv/Abgeschlossen/Archiviert switch — whose look
+   the strip deliberately copies: same pill, same white active tab, one
+   visual language for "choose what to see" on this page. The project
+   banner's dark strip is the model for the behaviour, not the look.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Strip ── The pill of .customer-projects-tabs, one size up in its
+   place on the page: it sits under the header, not inside a card. */
+.customer-detail-tabs {
+  display: flex;
+  gap: 2px;
+  background-color: #f3f7fc;
+  border: 1px solid #c9d9ea;
+  border-radius: 8px;
+  padding: 3px;
+  align-self: flex-start;
+  max-width: 100%;
+}
+
+/* Five tabs are wider than a phone, and a tablet beside the sidebar is not
+   much better. Wrapping keeps every tab visible and clickable at any width
+   — the answer the project banner settled on for its ten — instead of a
+   clipped last tab or a strip that has to scroll. A modifier of its own so
+   a test can hold the strip to it. */
+.customer-detail-tabs--wrap {
+  flex-wrap: wrap;
+}
+
+.customer-detail-tab {
+  appearance: none;
+  border: none;
+  background: transparent;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 6px;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  color: #5c7895;
+  cursor: pointer;
+  min-height: 0;
+  line-height: 16px;
+  display: inline-flex;
+  align-items: center;
+  white-space: nowrap;
+}
+
+.customer-detail-tab:hover:not(.customer-detail-tab--active) {
+  color: #14293d;
+}
+
+/* Roving tabindex: only the chosen tab is in the Tab order and the arrows
+   move along the strip, so the ring has to be seen where it lands. */
+.customer-detail-tab:focus-visible {
+  outline: 2px solid #2f70b7;
+  outline-offset: 1px;
+}
+
+.customer-detail-tab--active {
+  background-color: #ffffff;
+  color: #14293d;
+  box-shadow: 0 1px 2px rgba(20, 41, 61, 0.08);
+}
+
+/* ── Panels ── One mounted at a time, as wide as the page. */
+.customer-tab-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+/* Berichte & Kisten: two cards of the same shape, so side by side where
+   there is room, stacked where the overview grid stacks too. Each card
+   keeps its own height — a stretched .card spreads its rows apart. */
+.customer-tab-panel--reports {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .customer-tab-panel--reports {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* The tasks card has no shell of its own: on the overview it sat between
+   the contact and reports cards and read as part of that column. Alone in
+   its panel it needs the shell its former neighbours have — given from
+   here, so the card itself stays what it is. */
+.customer-tab-panel .customer-tasks-card {
+  background-color: #ffffff;
+  border-radius: 14px;
+  box-shadow: 0 1px 4px rgba(20, 41, 61, 0.06);
+  padding: 20px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}

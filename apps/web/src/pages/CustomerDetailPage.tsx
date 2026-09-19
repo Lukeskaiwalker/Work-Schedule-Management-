@@ -1,7 +1,14 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useAppContext } from "../context/AppContext";
-import { CustomerContactCard } from "../components/customers/CustomerContactCard";
-import { CustomerProjectRow } from "../components/customers/CustomerProjectRow";
+import {
+  CustomerDetailTabPanel,
+  CustomerDetailTabs,
+  readStoredCustomerTab,
+  storeCustomerTab,
+  type CustomerDetailTab,
+} from "../components/customers/CustomerDetailTabs";
+import { CustomerOverviewPanel } from "../components/customers/CustomerOverviewPanel";
+import type { CustomerProjectFilter } from "../components/customers/CustomerProjectsCard";
 import { CustomerTasksCard } from "../components/customers/CustomerTasksCard";
 import { CustomerReportsCard } from "../components/customers/CustomerReportsCard";
 import { CustomerBoxesCard } from "../components/customers/CustomerBoxesCard";
@@ -13,35 +20,20 @@ import {
   type CustomerProjectSummary,
 } from "../utils/customersApi";
 import type { CustomerListItem } from "../types";
-
-type ProjectTab = "active" | "completed" | "archived";
-
-function isActiveStatus(status: string): boolean {
-  const s = status.toLowerCase();
-  return !(
-    s === "completed" ||
-    s === "done" ||
-    s === "archived" ||
-    s === "on_hold" ||
-    s === "hold"
-  );
-}
-
-function isCompletedStatus(status: string): boolean {
-  const s = status.toLowerCase();
-  return s === "completed" || s === "done";
-}
-
-function isArchivedStatus(status: string): boolean {
-  const s = status.toLowerCase();
-  return s === "archived";
-}
+import "../styles/customer-detail.css";
 
 /**
  * Customer detail page. Self-gates on `mainView !== "customer_detail"`.
  * Loads its own detail + linked-projects data on mount / when the active
  * customer id changes. Uses context for navigation out (project open +
  * create-project-for-customer).
+ *
+ * Under the header a tab strip — Übersicht · Aufgaben · Berichte & Kisten ·
+ * Dateien · Änderungen — and only the chosen panel is mounted. Every card
+ * fetches on mount, so the overview no longer pays for the tasks, reports,
+ * boxes and change log, and Dateien is one click away instead of a scroll
+ * past all of them. The tab is the page's own state: a "Zum Kunden" jump
+ * from a project and `openProjectById` back only set mainView.
  */
 export function CustomerDetailPage() {
   const {
@@ -62,7 +54,10 @@ export function CustomerDetailPage() {
   const [customer, setCustomer] = useState<CustomerListItem | null>(null);
   const [projects, setProjects] = useState<CustomerProjectSummary[]>([]);
   const [loading, setLoading] = useState(false);
-  const [projectTab, setProjectTab] = useState<ProjectTab>("active");
+  const [projectFilter, setProjectFilter] = useState<CustomerProjectFilter>("active");
+  // Read once, before the first paint: the remembered tab is rendered from
+  // the start, not after a flash of the overview.
+  const [tab, setTab] = useState<CustomerDetailTab>(readStoredCustomerTab);
 
   useEffect(() => {
     if (mainView !== "customer_detail" || !activeCustomerId) return;
@@ -86,22 +81,17 @@ export function CustomerDetailPage() {
     };
   }, [mainView, activeCustomerId, customers, token]);
 
-  const active = useMemo(
-    () => projects.filter((p) => isActiveStatus(p.status)),
-    [projects],
-  );
-  const completed = useMemo(
-    () => projects.filter((p) => isCompletedStatus(p.status)),
-    [projects],
-  );
-  const archived = useMemo(
-    () => projects.filter((p) => isArchivedStatus(p.status)),
-    [projects],
-  );
+  // Another customer keeps the remembered tab — a reader comparing two
+  // customers' files wants Dateien on both — and starts on Übersicht only
+  // when nothing is remembered.
+  useEffect(() => {
+    setTab(readStoredCustomerTab());
+  }, [activeCustomerId]);
 
   if (mainView !== "customer_detail") return null;
 
   const de = language === "de";
+  const lang = de ? "de" : "en";
 
   if (!activeCustomerId || !customer) {
     return (
@@ -120,12 +110,11 @@ export function CustomerDetailPage() {
   }
 
   const isArchived = Boolean(customer.archived_at);
-  const shownProjects =
-    projectTab === "active"
-      ? active
-      : projectTab === "completed"
-        ? completed
-        : archived;
+
+  function selectTab(next: CustomerDetailTab) {
+    setTab(next);
+    storeCustomerTab(next);
+  }
 
   function handleNewProjectForCustomer() {
     // Open the project create modal and pre-fill the customer link + the
@@ -205,123 +194,41 @@ export function CustomerDetailPage() {
         </div>
       </header>
 
-      <div className="customer-detail-grid">
-        <div className="customer-detail-col customer-detail-col--left">
-          <CustomerContactCard
+      <CustomerDetailTabs active={tab} onChange={selectTab} language={lang} />
+
+      {/* Every card is keyed by the customer so a switch to another customer
+          starts it afresh instead of paging on from the old one. */}
+      <CustomerDetailTabPanel tab={tab}>
+        {tab === "overview" && (
+          <CustomerOverviewPanel
             customer={customer}
-            language={language === "de" ? "de" : "en"}
+            projects={projects}
+            projectFilter={projectFilter}
+            onProjectFilterChange={setProjectFilter}
+            language={lang}
+            onOpenProject={handleOpenProject}
           />
-
-          <section className="customer-notes-card">
-            <header className="customer-contact-card-head">
-              <h3 className="customer-contact-card-title">
-                {de ? "Notizen" : "Notes"}
-              </h3>
-            </header>
-            <div className="customer-notes-body">
-              {customer.notes ? (
-                customer.notes
-              ) : (
-                <span className="muted">
-                  {de ? "Keine Notizen." : "No notes yet."}
-                </span>
-              )}
-            </div>
-          </section>
-
-          {/* Customer-anchored tasks (v2.4.5+) — call-back reminders,
-              follow-ups, and other todo items that aren't tied to a
-              specific project. Lives on the left column to keep the
-              project list (right column) uncluttered. */}
-          <CustomerTasksCard customerId={customer.id} />
-          <CustomerReportsCard customerId={customer.id} />
-          <CustomerBoxesCard customerId={customer.id} />
-          {/* The change log across all of this customer's projects — what
-              every project overview shows for itself, merged. Keyed so a
-              switch to another customer starts the feed afresh instead of
-              paging on from the old one. */}
+        )}
+        {/* Customer-anchored tasks (v2.4.5+) — call-back reminders,
+            follow-ups, and other todo items that aren't tied to a
+            specific project. */}
+        {tab === "tasks" && <CustomerTasksCard key={customer.id} customerId={customer.id} />}
+        {tab === "reports" && (
+          <>
+            <CustomerReportsCard key={`reports-${customer.id}`} customerId={customer.id} />
+            <CustomerBoxesCard key={`boxes-${customer.id}`} customerId={customer.id} />
+          </>
+        )}
+        {/* The customer's folder — with every project folder that lands in
+            it. The file browser needs the full width for its rows; on a
+            tablet beside the sidebar a column would clip it. */}
+        {tab === "files" && <CustomerFilesCard key={customer.id} customerId={customer.id} />}
+        {/* The change log across all of this customer's projects — what
+            every project overview shows for itself, merged. */}
+        {tab === "activity" && (
           <CustomerActivityCard key={customer.id} customerId={customer.id} />
-        </div>
-
-        <div className="customer-detail-col customer-detail-col--right">
-          <section className="customer-projects-card">
-            <header className="customer-contact-card-head">
-              <h3 className="customer-contact-card-title">
-                {de ? "Projekte" : "Projects"}{" "}
-                <span className="customer-projects-count muted">
-                  ({projects.length})
-                </span>
-              </h3>
-            </header>
-            <div
-              className="customer-projects-tabs"
-              role="tablist"
-              aria-label={de ? "Projektfilter" : "Project filter"}
-            >
-              {(
-                [
-                  {
-                    key: "active" as const,
-                    labelDe: "Aktiv",
-                    labelEn: "Active",
-                    count: active.length,
-                  },
-                  {
-                    key: "completed" as const,
-                    labelDe: "Abgeschlossen",
-                    labelEn: "Completed",
-                    count: completed.length,
-                  },
-                  {
-                    key: "archived" as const,
-                    labelDe: "Archiviert",
-                    labelEn: "Archived",
-                    count: archived.length,
-                  },
-                ]
-              ).map((tab) => (
-                <button
-                  key={`customer-projects-tab-${tab.key}`}
-                  type="button"
-                  role="tab"
-                  aria-selected={projectTab === tab.key}
-                  className={
-                    projectTab === tab.key
-                      ? "customer-projects-tab customer-projects-tab--active"
-                      : "customer-projects-tab"
-                  }
-                  onClick={() => setProjectTab(tab.key)}
-                >
-                  {de ? tab.labelDe : tab.labelEn}
-                  <span className="customer-projects-tab-count">{tab.count}</span>
-                </button>
-              ))}
-            </div>
-            <div className="customer-projects-list">
-              {shownProjects.length === 0 ? (
-                <div className="customers-empty muted">
-                  {de ? "Keine Projekte." : "No projects."}
-                </div>
-              ) : (
-                shownProjects.map((project) => (
-                  <CustomerProjectRow
-                    key={`customer-project-${project.id}`}
-                    project={project}
-                    language={language === "de" ? "de" : "en"}
-                    onOpen={handleOpenProject}
-                  />
-                ))
-              )}
-            </div>
-          </section>
-        </div>
-      </div>
-
-      {/* The customer's folder — with every project folder that lands in it.
-          Full width below the grid: the file browser needs the room for its
-          rows, and on a tablet beside the sidebar a column would clip it.
-          Keyed so a switch to another customer starts the card afresh. */}
-      <CustomerFilesCard key={customer.id} customerId={customer.id} />
+        )}
+      </CustomerDetailTabPanel>
     </section>
   );
 }
