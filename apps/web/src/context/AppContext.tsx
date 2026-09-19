@@ -311,12 +311,6 @@ export interface AppContextValue {
   projectFinanceForm: ProjectFinanceFormState;
   setProjectFinanceForm: (form: ProjectFinanceFormState | ((current: ProjectFinanceFormState) => ProjectFinanceFormState)) => void;
 
-  // ── Project note ────────────────────────────────────────────────────────────
-  projectNoteEditing: boolean;
-  setProjectNoteEditing: (editing: boolean) => void;
-  projectNoteDraft: string;
-  setProjectNoteDraft: (draft: string) => void;
-
   // ── Project modal ───────────────────────────────────────────────────────────
   projectModalMode: "create" | "edit" | null;
   setProjectModalMode: (mode: "create" | "edit" | null) => void;
@@ -1187,7 +1181,6 @@ export interface AppContextValue {
   submitPublicInviteAccept: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   submitPublicPasswordReset: (event: FormEvent<HTMLFormElement>) => Promise<void>;
   submitProjectForm: (event: FormEvent<HTMLFormElement>) => Promise<void>;
-  saveProjectInternalNote: () => Promise<void>;
   saveProjectFinance: () => Promise<void>;
   saveProjectHours: () => Promise<void>;
   archiveActiveProject: () => Promise<void>;

@@ -2,7 +2,7 @@ from __future__ import annotations
 from datetime import date, datetime, time
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 class ProjectCreate(BaseModel):
     project_number: str = Field(min_length=1, max_length=64)
@@ -155,6 +155,39 @@ class ProjectOfficeNoteOut(BaseModel):
     office_next_steps: str | None = None
 
 
+# A note is a chat posting, not a document: long enough for a site report
+# in prose, short enough that the feed stays readable.
+PROJECT_NOTE_MAX_CHARS = 4000
+
+
+class ProjectNoteCreate(BaseModel):
+    body: str
+
+    @field_validator("body")
+    @classmethod
+    def _body_stripped_and_bounded(cls, value: str) -> str:
+        # Line endings as the browser sent them differ per platform; the
+        # stored text is what the feed shows and the preview is cut from,
+        # so it is normalised once, here.
+        text = value.replace("\r\n", "\n").replace("\r", "\n").strip()
+        if not text:
+            raise ValueError("Note body must not be empty")
+        if len(text) > PROJECT_NOTE_MAX_CHARS:
+            raise ValueError(f"Note body must be at most {PROJECT_NOTE_MAX_CHARS} characters")
+        return text
+
+
+class ProjectNoteOut(BaseModel):
+    id: int
+    project_id: int
+    author_user_id: int | None = None
+    # None for the note the migration carried over from the old text field:
+    # nobody knows who wrote that one.
+    author_name: str | None = None
+    body: str
+    created_at: datetime
+
+
 class ProjectOverviewOut(BaseModel):
     project: ProjectOut
     open_tasks: int = 0
@@ -162,6 +195,8 @@ class ProjectOverviewOut(BaseModel):
     finance: ProjectFinanceOut
     office_notes: list[ProjectOfficeNoteOut] = Field(default_factory=list)
     recent_changes: list[ProjectActivityOut] = Field(default_factory=list)
+    # Newest first; the overview carries the latest page, GET /projects/{id}/notes the rest.
+    notes: list[ProjectNoteOut] = Field(default_factory=list)
 
 
 class ProjectWeatherDayOut(BaseModel):

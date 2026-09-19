@@ -4,6 +4,7 @@ from fastapi import APIRouter
 
 from app.core.events import notify
 from app.routers.workflow_helpers import *  # noqa: F401,F403
+from app.routers.workflow_project_notes import OVERVIEW_NOTES_PAGE, project_notes_out
 from app.models.entities import Customer
 from app.services.project_membership import add_all_users_to_project
 from app.services.project_status import is_won_project_status, normalize_project_status
@@ -603,6 +604,7 @@ def project_overview_detail(
         finance=_project_finance_row_or_default(db, project_id),
         office_notes=_recent_project_office_notes_out(db, project_id, limit=10),
         recent_changes=_recent_project_activities_out(db, project_id, limit=10),
+        notes=project_notes_out(db, project_id, limit=OVERVIEW_NOTES_PAGE),
     )
 
 @router.get("/projects/{project_id}/weather", response_model=ProjectWeatherOut)

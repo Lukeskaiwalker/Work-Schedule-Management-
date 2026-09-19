@@ -3,7 +3,8 @@ import { formatDayLabel, formatServerDateTime } from "../../utils/dates";
 import { statusLabel, projectSiteAccessDisplay, activityEventLabel } from "../../utils/projects";
 import { formatTaskDateRange, formatTaskTimeRange, taskDayCount } from "../../utils/tasks";
 import { weatherDescriptionLabel } from "../../utils/weather";
-import { PenIcon, CopyIcon } from "../../components/icons";
+import { CopyIcon } from "../../components/icons";
+import { ProjectNotesCard } from "../../components/project/ProjectNotesCard";
 
 export function ProjectOverviewTab() {
   const {
@@ -20,11 +21,6 @@ export function ProjectOverviewTab() {
     activeProjectClassTemplates,
     projectWeatherLoading,
     projectWeather,
-    projectNoteEditing,
-    setProjectNoteEditing,
-    projectNoteDraft,
-    setProjectNoteDraft,
-    saveProjectInternalNote,
     projectOverviewDetails,
     workspaceMode,
     copyToClipboard,
@@ -104,42 +100,7 @@ export function ProjectOverviewTab() {
             </div>
           </div>
 
-          <div className="card project-overview-note">
-            <div className="project-overview-card-head">
-              <h3 className="project-overview-title">{language === "de" ? "Interne Notiz" : "Internal note"}</h3>
-              <button
-                type="button"
-                className="icon-btn"
-                onClick={() => {
-                  setProjectNoteDraft(activeProject.description ?? "");
-                  setProjectNoteEditing(!projectNoteEditing);
-                }}
-                aria-label={language === "de" ? "Notiz bearbeiten" : "Edit note"}
-                title={language === "de" ? "Notiz bearbeiten" : "Edit note"}
-              >
-                <PenIcon />
-              </button>
-            </div>
-            {projectNoteEditing ? (
-              <div className="project-note-edit">
-                <textarea
-                  value={projectNoteDraft}
-                  onChange={(event) => setProjectNoteDraft(event.target.value)}
-                  placeholder={language === "de" ? "Interne Notiz" : "Internal note"}
-                />
-                <div className="row wrap">
-                  <button type="button" onClick={() => void saveProjectInternalNote()}>
-                    {language === "de" ? "Speichern" : "Save"}
-                  </button>
-                  <button type="button" onClick={() => setProjectNoteEditing(false)}>
-                    {language === "de" ? "Abbrechen" : "Cancel"}
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <small>{(activeProject.description ?? "").trim() || "-"}</small>
-            )}
-          </div>
+          <ProjectNotesCard />
 
           {workspaceMode === "office" && (
             <div className="card project-overview-office-notes">

@@ -507,8 +507,6 @@ export function App() {
   const [projectFinanceForm, setProjectFinanceForm] = useState<ProjectFinanceFormState>(() => ({
     ...EMPTY_PROJECT_FINANCE_FORM,
   }));
-  const [projectNoteEditing, setProjectNoteEditing] = useState(false);
-  const [projectNoteDraft, setProjectNoteDraft] = useState("");
   const [fileUploadFolder, setFileUploadFolder] = useState("");
   const [newProjectFolderPath, setNewProjectFolderPath] = useState("");
   const [wikiFiles, setWikiFiles] = useState<WikiLibraryFile[]>([]);
@@ -2796,8 +2794,6 @@ export function App() {
     setProjectTrackedMaterials([]);
     setProjectFinanceEditing(false);
     setProjectFinanceForm({ ...EMPTY_PROJECT_FINANCE_FORM });
-    setProjectNoteEditing(false);
-    setProjectNoteDraft("");
   }, [activeProjectId]);
 
   useEffect(() => {
@@ -2876,11 +2872,6 @@ export function App() {
     if (availableIds.has(taskEditForm.construction_box_id)) return;
     setTaskEditForm((current) => ({ ...current, construction_box_id: "" }));
   }, [taskEditSelectableBoxes, taskEditBoxesLoading, taskEditForm.construction_box_id]);
-
-  useEffect(() => {
-    if (projectNoteEditing) return;
-    setProjectNoteDraft(activeProject?.description ?? "");
-  }, [activeProject?.description, projectNoteEditing]);
 
   useEffect(() => {
     if (expandedMyTaskId === null) return;
@@ -3811,8 +3802,6 @@ export function App() {
       setProjectHoursPlannedInput(
         details.finance?.planned_hours_total == null ? "" : String(details.finance.planned_hours_total),
       );
-      const baseNote = details.project.description ?? "";
-      setProjectNoteDraft(baseNote);
     } catch (err: any) {
       setProjectOverviewDetails(null);
       setProjectOverviewOpenTasks([]);
@@ -5937,36 +5926,6 @@ export function App() {
       }
     } catch (err: any) {
       setError(err?.message ?? (language === "de" ? "Markierung fehlgeschlagen" : "Failed to update critical flag"));
-    }
-  }
-
-  async function saveProjectInternalNote() {
-    if (!activeProjectId) return;
-    const expectedLastUpdatedAt =
-      projectOverviewDetails?.project?.last_updated_at ?? activeProject?.last_updated_at ?? null;
-    const payload: Record<string, unknown> = { description: projectNoteDraft };
-    if (expectedLastUpdatedAt !== null) {
-      payload.expected_last_updated_at = expectedLastUpdatedAt;
-    }
-    try {
-      await apiFetch<Project>(`/projects/${activeProjectId}`, token, {
-        method: "PATCH",
-        body: JSON.stringify(payload),
-      });
-      setProjectNoteEditing(false);
-      await loadBaseData();
-      await loadProjectOverview(activeProjectId);
-      setNotice(language === "de" ? "Notiz aktualisiert" : "Note updated");
-    } catch (err: any) {
-      if (err?.status === 409) {
-        setError(
-          language === "de"
-            ? "Projekt wurde in der Zwischenzeit geändert. Bitte neu laden und erneut speichern."
-            : "Project was changed in the meantime. Please reload and save again.",
-        );
-        return;
-      }
-      setError(err.message ?? "Failed to save note");
     }
   }
 
@@ -9800,12 +9759,6 @@ export function App() {
     projectFinanceForm,
     setProjectFinanceForm,
 
-    // ── Project note ──────────────────────────────────────────────────────────
-    projectNoteEditing,
-    setProjectNoteEditing,
-    projectNoteDraft,
-    setProjectNoteDraft,
-
     // ── Project modal ─────────────────────────────────────────────────────────
     projectModalMode,
     setProjectModalMode,
@@ -10523,7 +10476,6 @@ export function App() {
     submitPublicInviteAccept,
     submitPublicPasswordReset,
     submitProjectForm,
-    saveProjectInternalNote,
     saveProjectFinance,
     saveProjectHours,
     archiveActiveProject,

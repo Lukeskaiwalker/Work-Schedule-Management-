@@ -1,0 +1,92 @@
+/* Interne Notizen — the project's note feed on the overview.
+ *
+ * Sits on the same yellow paper as the old "Interne Notiz" card
+ * (.project-overview-note in styles.css) so the card keeps its place in the
+ * grid; everything below is the feed's own layout. */
+
+.project-notes-card {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.project-notes-count {
+  margin-left: 0.4rem;
+  font-weight: 400;
+  font-size: 0.85em;
+  opacity: 0.75;
+}
+
+.project-notes-composer {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.project-notes-composer textarea {
+  width: 100%;
+  min-height: 4.2rem;
+  resize: vertical;
+  font: inherit;
+  box-sizing: border-box;
+}
+
+.project-notes-composer-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.project-notes-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.project-notes-item {
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.5rem 0.6rem;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.55);
+  border: 1px solid rgba(122, 90, 0, 0.15);
+}
+
+.project-notes-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.project-notes-author {
+  color: #7a5a00;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-notes-time {
+  opacity: 0.8;
+  white-space: nowrap;
+}
+
+.project-notes-remove {
+  margin-left: auto;
+  line-height: 1;
+  font-size: 1.1rem;
+}
+
+/* A note is written with line breaks; the feed shows them as typed, and a
+ * long unbroken token (a URL, a serial) wraps instead of pushing the card. */
+.project-notes-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: #5c4400;
+  font-size: 0.92rem;
+}
+
+.project-notes-more {
+  justify-self: start;
+}

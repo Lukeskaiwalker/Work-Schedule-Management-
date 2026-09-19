@@ -5167,10 +5167,6 @@ label {
   margin: 0;
 }
 
-.project-note-edit {
-  display: grid;
-  gap: 0.55rem;
-}
 
 .project-overview-site-card {
   display: grid;
