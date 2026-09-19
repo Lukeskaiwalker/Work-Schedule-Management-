@@ -167,6 +167,13 @@ import {
   canonicalTaskStatus,
   buildTaskStatusOptions,
   TASK_STATUS_ORDER,
+  buildTaskAnchorPayload,
+  customerTaskFallbackLabel,
+  isCustomerOnlyTask,
+  taskCalendarAnchor,
+  taskCustomerAddress,
+  taskCustomerName,
+  type TaskAnchorRef,
 } from "./utils/tasks";
 import { buildTaskModalCopyStateFromEditForm, taskCopyNotice } from "./utils/taskCopy";
 import { uploadTaskAttachments } from "./components/tasks/taskAttachmentsApi";
@@ -470,6 +477,10 @@ export function App() {
   const [officeTaskNoDueDateFilter, setOfficeTaskNoDueDateFilter] = useState<boolean>(false);
   const [officeTaskProjectFilterQuery, setOfficeTaskProjectFilterQuery] = useState<string>("");
   const [officeTaskProjectFilterIds, setOfficeTaskProjectFilterIds] = useState<number[]>([]);
+  // Customers picked in the same "Projekt / Kunde" filter box: a customer-only
+  // task has no project id to match, so the project list alone could never
+  // find it.
+  const [officeTaskCustomerFilterIds, setOfficeTaskCustomerFilterIds] = useState<number[]>([]);
   const [expandedMyTaskId, setExpandedMyTaskId] = useState<number | null>(null);
   const [myTasksBackProjectId, setMyTasksBackProjectId] = useState<number | null>(null);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
@@ -992,6 +1003,13 @@ export function App() {
   const projectsById = useMemo(
     () => new Map<number, Project>(projects.map((project) => [project.id, project])),
     [projects],
+  );
+  // For the customer-task label and the calendar export: the api names the
+  // customer on each task row, but a row from before that (an older cached
+  // list, the partner overlay) still resolves through the loaded customers.
+  const customersById = useMemo(
+    () => new Map<number, CustomerListItem>(customers.map((customer) => [customer.id, customer])),
+    [customers],
   );
   const overviewProjectsById = useMemo(() => {
     const map = new Map<
@@ -1582,11 +1600,18 @@ export function App() {
         // A multi-day task is "due" on every day of its window.
         return false;
       }
-      if (
-        officeTaskProjectFilterIds.length > 0 &&
-        (task.project_id == null || !officeTaskProjectFilterIds.includes(task.project_id))
-      ) {
-        return false;
+      // One anchor filter, OR-ed across its chips: a task passes when it is
+      // in a picked project or belongs to a picked customer — its own
+      // customer anchor, or the customer of its project, so picking "Müller"
+      // shows Müller's project tasks next to the customer-only ones.
+      if (officeTaskProjectFilterIds.length > 0 || officeTaskCustomerFilterIds.length > 0) {
+        const inPickedProject =
+          task.project_id != null && officeTaskProjectFilterIds.includes(task.project_id);
+        const taskCustomerId =
+          task.customer_id ??
+          (task.project_id != null ? (projectsById.get(task.project_id)?.customer_id ?? null) : null);
+        const ofPickedCustomer = taskCustomerId != null && officeTaskCustomerFilterIds.includes(taskCustomerId);
+        if (!inPickedProject && !ofPickedCustomer) return false;
       }
       return true;
     });
@@ -1598,6 +1623,8 @@ export function App() {
     officeTaskDueDateFilter,
     officeTaskNoDueDateFilter,
     officeTaskProjectFilterIds,
+    officeTaskCustomerFilterIds,
+    projectsById,
     now,
   ]);
 
@@ -5154,6 +5181,23 @@ export function App() {
     return formatProjectTitleParts("", "", "", task.project_id);
   }
 
+  /**
+   * "Müller Haustechnik GmbH" for a customer-only task — the counterpart of
+   * taskProjectTitleParts, which is empty for those rows. The api names the
+   * customer on the row; a row without the name (an older cached list, the
+   * partner overlay) resolves through the loaded customers, and a customer
+   * that is not loaded either becomes "Kunde #id" rather than nothing.
+   * "" for a project task: its project label already names the customer.
+   */
+  function taskCustomerLabel(task: TaskAnchorRef): string {
+    if (!isCustomerOnlyTask(task)) return "";
+    return (
+      taskCustomerName(task) ||
+      customersById.get(task.customer_id ?? 0)?.name?.trim() ||
+      customerTaskFallbackLabel(task, language)
+    );
+  }
+
   function recentReportProjectTitleParts(report: RecentConstructionReport): ProjectTitleParts {
     const projectId = Number(report.project_id ?? 0);
     const project = projectId > 0 ? projectsById.get(projectId) : null;
@@ -5222,10 +5266,20 @@ export function App() {
       return;
     }
 
-    // Customer-only task (no project_id) → no project context to look
-    // up; project stays undefined and the calendar entry is generated
-    // without project metadata.
+    // A customer-only task has no project to look up; the event names the
+    // customer instead and takes the customer's address as its location.
     const project = task.project_id != null ? projectsById.get(task.project_id) : undefined;
+    const taskCustomer = customersById.get(task.customer_id ?? 0);
+    const anchor = taskCalendarAnchor(
+      task,
+      project,
+      isCustomerOnlyTask(task)
+        ? {
+            name: taskCustomerLabel(task),
+            address: taskCustomerAddress(task) || String(taskCustomer?.address ?? "").trim(),
+          }
+        : null,
+    );
     const dueDateIso = task.due_date || formatDateISOLocal(new Date());
     const startTime = formatTaskStartTime(task.start_time || "") || "";
     const endTime = formatTaskStartTime(task.end_time || "") || "";
@@ -5252,16 +5306,12 @@ export function App() {
       eventDateLines = `DTSTART;VALUE=DATE:${toIcsDate(startDay)}\r\nDTEND;VALUE=DATE:${toIcsDate(endDay)}`;
     }
 
-    const summaryBase = project ? `${project.project_number} - ${task.title}` : task.title;
-    const projectLabel = project
-      ? formatProjectTitle(project.project_number, project.customer_name, project.name, project.id)
-      : "";
+    const summaryBase = anchor.summaryBase;
     const materialsSummary = taskMaterialsDisplay(task.materials_required, "en");
     const lines: string[] = [
       `Task ID: #${task.id}`,
       `Status: ${taskDisplayStatus(task, todayIso)}`,
-      project ? `Project: ${projectLabel}` : `Project ID: ${task.project_id}`,
-      project?.customer_name ? `Customer: ${project.customer_name}` : "",
+      ...anchor.anchorLines,
       multiDay ? `From/To: ${formatTaskDateRange(task)}` : `Due: ${task.due_date ?? "-"}`,
       startTime ? `Time: ${formatTaskTimeRange(task)}${multiDay ? " daily" : ""}` : "",
       task.description ? `Info: ${task.description}` : "",
@@ -5270,7 +5320,7 @@ export function App() {
       `Assignees: ${getTaskAssigneeLabel(task)}`,
     ].filter((line) => line.length > 0);
 
-    const location = projectLocationAddress(project);
+    const location = anchor.location;
     const ics = [
       "BEGIN:VCALENDAR",
       "VERSION:2.0",
@@ -5290,7 +5340,7 @@ export function App() {
       .filter((line) => line.length > 0)
       .join("\r\n");
 
-    const fileNameSource = `${project?.project_number ?? "task"}-${task.id}`.replace(/[^a-zA-Z0-9_-]+/g, "-");
+    const fileNameSource = anchor.fileNameSource.replace(/[^a-zA-Z0-9_-]+/g, "-");
     const blob = new Blob([ics], { type: "text/calendar;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     try {
@@ -6270,21 +6320,21 @@ export function App() {
         console.info("[task-create] project created", { id: projectId });
       }
 
-      // A copy of a customer-only task carries its customer instead of a
-      // project; the api accepts either anchor (schemas/task.py:_require_anchor).
-      const customerId = !projectId && taskModalForm.customer_id != null ? taskModalForm.customer_id : null;
-      if (!projectId && customerId == null) {
-        setError(language === "de" ? "Projekt ist erforderlich" : "Project is required");
+      // A customer picked in the modal (or carried by a copy of a customer
+      // task) anchors the task instead of a project; the api accepts either
+      // (schemas/task.py:_require_anchor).
+      const anchorPayload = buildTaskAnchorPayload(taskModalForm, projectId);
+      if (anchorPayload.project_id == null && anchorPayload.customer_id == null) {
+        setError(language === "de" ? "Projekt oder Kunde ist erforderlich" : "A project or a customer is required");
         return;
       }
 
       currentStep = "task";
-      console.info("[task-create] creating task", { project_id: projectId || null, customer_id: customerId, title: taskModalForm.title.trim() });
+      console.info("[task-create] creating task", { ...anchorPayload, title: taskModalForm.title.trim() });
       const createdTask = await apiFetch<Task>("/tasks", token, {
         method: "POST",
         body: JSON.stringify({
-          project_id: projectId || null,
-          ...(customerId != null ? { customer_id: customerId } : {}),
+          ...anchorPayload,
           title: taskModalForm.title.trim(),
           description: taskModalForm.description.trim() || null,
           subtasks,
@@ -6687,11 +6737,15 @@ export function App() {
   }
 
   function openProjectFromTask(task: Task, backView: MainView | null = "my_tasks") {
-    // No project to open for customer-only tasks; click is a no-op
-    // there. The customer-detail page is the canonical landing for
-    // those rows.
-    if (task.project_id == null) return;
-    openProjectById(task.project_id, backView);
+    // The task's home: its project, or — for a customer-only task — its
+    // customer page, which is where those rows live. Every "open" link on a
+    // task row goes through here, so a customer task opens like a project
+    // task instead of the click doing nothing.
+    if (task.project_id != null) {
+      openProjectById(task.project_id, backView);
+      return;
+    }
+    if (task.customer_id != null) openCustomer(task.customer_id);
   }
 
   function openTaskFromProject(task: Task) {
@@ -9810,6 +9864,8 @@ export function App() {
     setOfficeTaskProjectFilterQuery,
     officeTaskProjectFilterIds,
     setOfficeTaskProjectFilterIds,
+    officeTaskCustomerFilterIds,
+    setOfficeTaskCustomerFilterIds,
     expandedMyTaskId,
     setExpandedMyTaskId,
     myTasksBackProjectId,
@@ -10291,6 +10347,7 @@ export function App() {
     projectTitleParts,
     projectTitle,
     taskProjectTitleParts,
+    taskCustomerLabel,
     recentReportProjectTitleParts,
     threadProjectTitleParts,
     ensureProjectVisibleById,

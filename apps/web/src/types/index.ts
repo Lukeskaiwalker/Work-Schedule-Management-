@@ -494,6 +494,9 @@ export type Task = {
   materials?: TaskMaterial[];
   /** How many files hang off the task (plan, picture); the rows come from GET /tasks/{id}/files. */
   attachment_count?: number;
+  /** The customer's name and address on a customer-only task (project_id null); null on project tasks. */
+  customer_name?: string | null;
+  customer_address?: string | null;
 };
 
 export type TaskOverlap = {

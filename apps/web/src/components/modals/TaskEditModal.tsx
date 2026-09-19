@@ -92,6 +92,8 @@ export function TaskEditModal() {
     assigneeAvailabilityHint,
     menuUserNameById,
     taskProjectTitleParts,
+    taskCustomerLabel,
+    openCustomer,
     onTaskEditModalBackdropPointerDown,
     onTaskEditModalBackdropPointerUp,
     resetTaskEditModalBackdropPointerState,
@@ -412,13 +414,28 @@ export function TaskEditModal() {
   const projectForEyebrow = taskEditForm.project_id
     ? projects.find((project) => project.id === taskEditForm.project_id) ?? null
     : null;
+  // A customer-only task: the eyebrow says "Kunde: …" where a project task
+  // shows its project, and "Zum Kunden" opens the customer page the way a
+  // project link opens the project. Resolved from the form's ids — the loaded
+  // customers name it, a customer not loaded is "Kunde #id".
+  const anchoredCustomerLabel = projectForEyebrow
+    ? ""
+    : taskCustomerLabel({ project_id: taskEditForm.project_id, customer_id: taskEditForm.customer_id });
   const eyebrowLabel = projectForEyebrow
     ? taskProjectTitleParts({
         project_id: projectForEyebrow.id,
       } as unknown as Parameters<typeof taskProjectTitleParts>[0]).title
-    : de
-      ? "Allgemeine Aufgabe"
-      : "General task";
+    : anchoredCustomerLabel
+      ? `${de ? "Kunde" : "Customer"}: ${anchoredCustomerLabel}`
+      : de
+        ? "Allgemeine Aufgabe"
+        : "General task";
+
+  function goToCustomer() {
+    if (taskEditForm.customer_id == null) return;
+    closeTaskEditModal();
+    openCustomer(taskEditForm.customer_id);
+  }
 
   return (
     <div
@@ -448,6 +465,11 @@ export function TaskEditModal() {
                 ·
               </span>
               <span className="task-modal-eyebrow-project">{eyebrowLabel}</span>
+              {anchoredCustomerLabel && (
+                <button type="button" className="linklike task-modal-anchor-link" onClick={goToCustomer}>
+                  {de ? "Zum Kunden" : "Open customer"}
+                </button>
+              )}
             </div>
             <h2 className="task-modal-title">
               {taskEditForm.title || (de ? "Aufgabe" : "Task")}

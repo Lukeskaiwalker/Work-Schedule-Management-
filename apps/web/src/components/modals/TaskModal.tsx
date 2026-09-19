@@ -11,6 +11,7 @@ import {
   planningStatusLabel,
   formatTaskDateRange,
 } from "../../utils/tasks";
+import { fuzzyFilterCustomers } from "../../utils/fuzzyMatch";
 import { PartnerMultiSelect } from "../partners/PartnerMultiSelect";
 import { ConstructionBoxPicker } from "../tasks/ConstructionBoxPicker";
 import { TaskAttachments } from "../tasks/TaskAttachments";
@@ -91,23 +92,16 @@ export function TaskModal() {
   } = useAppContext();
 
   const [partnerQuery, setPartnerQuery] = useState("");
+  // What the operator typed into the customer box. Local like the partner
+  // query: the picked customer lives in the form (customer_id), the search
+  // text does not outlive the modal.
+  const [customerQuery, setCustomerQuery] = useState("");
 
   if (!taskModalOpen) return null;
 
   const de = language === "de";
-  // A copied task may carry a project that is not in the loaded list; its
-  // label still names it, and "Neues Projekt" would be wrong there.
-  const eyebrowProjectLabel = selectedTaskModalProject
-    ? projectSearchLabel(selectedTaskModalProject)
-    : taskModalForm.project_id && taskModalForm.project_query
-      ? taskModalForm.project_query
-      : de
-        ? "Neues Projekt"
-        : "New project";
-
-  const priorityOptions: TaskPriority[] = ["low", "normal", "high", "urgent"];
-  const activePriority = taskModalForm.priority ?? "normal";
-  // A copy of a customer-only task carries its customer instead of a project.
+  // A task anchored to a customer instead of a project — picked here, or
+  // carried by a copy of a customer task.
   const anchoredCustomer =
     taskModalForm.customer_id != null
       ? (customers.find((entry) => entry.id === taskModalForm.customer_id) ?? null)
@@ -117,6 +111,46 @@ export function TaskModal() {
     : taskModalForm.customer_id != null
       ? `${de ? "Kunde" : "Customer"} #${taskModalForm.customer_id}`
       : "";
+  // A copied task may carry a project that is not in the loaded list; its
+  // label still names it, and "Neues Projekt" would be wrong there.
+  const eyebrowProjectLabel = selectedTaskModalProject
+    ? projectSearchLabel(selectedTaskModalProject)
+    : taskModalForm.project_id && taskModalForm.project_query
+      ? taskModalForm.project_query
+      : anchoredCustomerLabel
+        ? `${de ? "Kunde" : "Customer"}: ${anchoredCustomerLabel}`
+        : de
+          ? "Neues Projekt"
+          : "New project";
+  // Same search the customer pages use, over the customers already loaded;
+  // nothing to offer once a customer is picked (the chip is the answer).
+  const customerSuggestions =
+    taskModalForm.customer_id == null && customerQuery.trim() ? fuzzyFilterCustomers(customers, customerQuery, 8) : [];
+
+  function selectTaskModalCustomer(customerId: number) {
+    // Exactly one anchor: picking a customer drops the project and what it
+    // implied (class template, crate, the create-a-project toggle), the way
+    // taskModalStateWithProject drops the customer when a project is picked.
+    setTaskModalForm((current) => ({
+      ...current,
+      customer_id: customerId,
+      project_id: "",
+      project_query: "",
+      class_template_id: "",
+      construction_box_id: "",
+      create_project_from_task: false,
+      new_project_name: "",
+      new_project_number: "",
+    }));
+    setCustomerQuery("");
+  }
+
+  function clearTaskModalCustomer() {
+    setTaskModalForm((current) => ({ ...current, customer_id: null, construction_box_id: "" }));
+  }
+
+  const priorityOptions: TaskPriority[] = ["low", "normal", "high", "urgent"];
+  const activePriority = taskModalForm.priority ?? "normal";
 
   return (
     <div
@@ -329,10 +363,14 @@ export function TaskModal() {
             </section>
           )}
 
-          {/* Project picker — kept for non-project-scoped openings */}
+          {/* Anchor picker: a project, or a customer without one ("Rückruf
+              wegen Angebot" has no project yet). Exactly one of the two. */}
           <section className="task-modal-section task-modal-section--stack">
             <div className="task-modal-section-head">
-              <span className="task-modal-section-label">{de ? "PROJEKT" : "PROJECT"}</span>
+              <span className="task-modal-section-label">{de ? "PROJEKT ODER KUNDE" : "PROJECT OR CUSTOMER"}</span>
+              <span className="task-modal-section-hint">
+                {de ? "Eines von beiden" : "One of the two"}
+              </span>
             </div>
             <div className="task-modal-project-picker">
               <input
@@ -411,15 +449,66 @@ export function TaskModal() {
                     {taskModalForm.project_query + " ×"}
                   </button>
                 ) : anchoredCustomerLabel ? (
-                  <span className="assignee-chip" title={de ? "Kundenaufgabe ohne Projekt" : "Customer task without a project"}>
-                    {`${de ? "Kunde" : "Customer"}: ${anchoredCustomerLabel}`}
-                  </span>
+                  <button
+                    type="button"
+                    className="assignee-chip"
+                    onClick={clearTaskModalCustomer}
+                    title={de ? "Kundenaufgabe ohne Projekt – entfernen" : "Customer task without a project – remove"}
+                  >
+                    {`${de ? "Kunde" : "Customer"}: ${anchoredCustomerLabel} ×`}
+                  </button>
                 ) : (
-                  <small className="muted">{de ? "Noch kein Projekt ausgewählt." : "No project selected yet."}</small>
+                  <small className="muted">
+                    {de ? "Noch kein Projekt oder Kunde ausgewählt." : "No project or customer selected yet."}
+                  </small>
                 )}
               </div>
             </div>
-            {!selectedTaskModalProject && canCreateProject && (
+            {/* The customer search: the same box as the project search, over
+                the loaded customers. Hidden once a project is picked — the
+                project decides the customer from then on. */}
+            {!selectedTaskModalProject && !taskModalForm.project_id && (
+              <div className="task-modal-project-picker task-modal-customer-picker">
+                <input
+                  className="task-modal-input"
+                  value={customerQuery}
+                  onChange={(event) => setCustomerQuery(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter") return;
+                    event.preventDefault();
+                    const first = customerSuggestions[0];
+                    if (first) selectTaskModalCustomer(first.id);
+                  }}
+                  disabled={taskModalForm.customer_id != null}
+                  aria-label={de ? "Kunde suchen" : "Search customer"}
+                  placeholder={
+                    taskModalForm.customer_id != null
+                      ? de
+                        ? "Kunde ausgewählt"
+                        : "Customer selected"
+                      : de
+                        ? "Oder Kunde: Name, Adresse oder Telefon"
+                        : "Or a customer: name, address or phone"
+                  }
+                />
+                {customerSuggestions.length > 0 && (
+                  <div className="assignee-suggestions">
+                    {customerSuggestions.map((customer) => (
+                      <button
+                        key={`task-modal-customer-${customer.id}`}
+                        type="button"
+                        className="assignee-suggestion-btn"
+                        onClick={() => selectTaskModalCustomer(customer.id)}
+                      >
+                        {customer.name}
+                        {customer.address ? <small className="assignee-availability-note">{customer.address}</small> : null}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            {!selectedTaskModalProject && taskModalForm.customer_id == null && canCreateProject && (
               <>
                 <label className="checkbox-inline task-modal-create-project-toggle">
                   <input

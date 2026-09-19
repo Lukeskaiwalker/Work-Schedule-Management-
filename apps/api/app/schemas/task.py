@@ -247,6 +247,13 @@ class TaskOut(BaseModel):
     # always set — the DB CHECK constraint guarantees it.
     project_id: int | None = None
     customer_id: int | None = None
+    # The anchored customer's name and address, filled once per list from a
+    # single query (like ``attachment_count``) so a customer task can be
+    # labelled "Kunde: …" and its travel hint computed without a client-side
+    # lookup. Follow ``customer_id``: null on a task anchored only to a
+    # project — that label already names the project's customer.
+    customer_name: str | None = None
+    customer_address: str | None = None
     title: str
     description: str | None = None
     subtasks: list[str] = Field(default_factory=list)

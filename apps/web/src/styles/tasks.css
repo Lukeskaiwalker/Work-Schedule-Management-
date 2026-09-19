@@ -393,3 +393,22 @@
   font-weight: 500;
   color: #9aaec4;
 }
+
+/* ── Customer-anchored tasks ──────────────────────────────────────────────
+   "Zum Kunden" beside the eyebrow of the edit modal: the same link the
+   project link on a task row is (.linklike), sized to the eyebrow it sits
+   in. The customer search under the project search in the create modal
+   reuses .task-modal-project-picker; only the gap between the two is new. */
+.task-modal-anchor-link {
+  margin-left: 8px;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: nowrap;
+}
+
+.task-modal-customer-picker {
+  margin-top: 8px;
+}

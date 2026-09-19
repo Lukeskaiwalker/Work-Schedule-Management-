@@ -52,6 +52,9 @@ function guess(key: string): unknown {
   // the same treatment, lazily and to any depth, instead of this file growing
   // a case per form field.
   if (/(Form|Draft|Payload|Settings|Config|Prefs)$/.test(key)) return guessingProxy();
+  // A search box's text: the page trims it before it renders anything, and
+  // `undefined.trim()` is a crash the real context can never produce.
+  if (/Query$/.test(key)) return "";
   if (looksLikeCollection(key)) return [];
   if (/(Ref)$/.test(key)) return { current: null };
   // A real Date only where the page calls Date methods on it — a month cursor
@@ -101,6 +104,9 @@ export function makeAppContextStub(options: StubOptions = {}): unknown {
     now: new Date("2026-08-27T12:00:00Z"),
     setError: NOOP,
     setNotice: NOOP,
+    // Called on every task row; the guesser cannot tell a label helper from a
+    // value, and undefined() would take the page down with it.
+    taskCustomerLabel: () => "",
     ...options.overrides,
   } as Record<string, unknown>;
 

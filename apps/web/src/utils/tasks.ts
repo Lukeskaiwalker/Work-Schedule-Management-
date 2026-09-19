@@ -1,5 +1,123 @@
 import { HHMM_REGEX } from "../constants";
-import type { Language, PlanningStatus, Task, TaskType, ReportTaskChecklistItem } from "../types";
+import type {
+  Language,
+  PlanningStatus,
+  Project,
+  Task,
+  TaskModalState,
+  TaskType,
+  ReportTaskChecklistItem,
+} from "../types";
+import { formatProjectTitle, projectLocationAddress } from "./projects";
+
+// ── The customer anchor ───────────────────────────────────────────────────
+//
+// A task belongs to a project, a customer, or both. Every list used to label
+// only the project and fall silent on a customer-only task — the office could
+// not tell whose task it was without opening the customer. The api now sends
+// the customer's name and address on the row (TaskOut.customer_name /
+// customer_address, filled once per list); these helpers read them.
+
+/** The customer columns a TaskOut carries; read here until `Task` lists them. */
+export type TaskCustomerFields = {
+  customer_name?: string | null;
+  customer_address?: string | null;
+};
+
+/** What the anchor helpers need: the two ids and, when present, the name. */
+export type TaskAnchorRef = Pick<Task, "project_id" | "customer_id"> & TaskCustomerFields;
+
+/** Anchored to a customer and nothing else. A task with a project too is a
+ *  project task for labelling — the project title already names its customer. */
+export function isCustomerOnlyTask(task: TaskAnchorRef): boolean {
+  return task.project_id == null && task.customer_id != null;
+}
+
+/** The customer's name as the api sent it on the row; "" when it did not. */
+export function taskCustomerName(task: TaskAnchorRef): string {
+  return String(task.customer_name ?? "").trim();
+}
+
+export function taskCustomerAddress(task: TaskAnchorRef): string {
+  return String(task.customer_address ?? "").trim();
+}
+
+/** The last resort when neither the row nor the loaded customers name it. */
+export function customerTaskFallbackLabel(task: TaskAnchorRef, language: Language): string {
+  if (task.customer_id == null) return "";
+  return `${language === "de" ? "Kunde" : "Customer"} #${task.customer_id}`;
+}
+
+/**
+ * The anchor half of the create POST: exactly one of project / customer.
+ *
+ * The project wins when both are in the form (picking one clears the other,
+ * but a stale copy could carry both), and ``customer_id`` is omitted rather
+ * than nulled for a project task — the api accepts either anchor
+ * (schemas/task.py:_require_anchor) and treats an absent key as "none".
+ */
+export function buildTaskAnchorPayload(
+  form: Pick<TaskModalState, "customer_id">,
+  projectId: number,
+): { project_id: number | null; customer_id?: number } {
+  if (projectId) return { project_id: projectId };
+  if (form.customer_id != null) return { project_id: null, customer_id: form.customer_id };
+  return { project_id: null };
+}
+
+export type TaskCalendarCustomer = { name: string; address: string };
+
+export type TaskCalendarAnchor = {
+  /** "2026-0412 - Zählerwechsel" / "Müller GmbH - Rückruf" / the bare title. */
+  summaryBase: string;
+  /** The Project:/Customer:/Address: lines of the event description. */
+  anchorLines: string[];
+  /** The VEVENT LOCATION: the site, else the customer's address. */
+  location: string;
+  /** Stem of the .ics file name. */
+  fileNameSource: string;
+};
+
+/**
+ * What the calendar event says about where a task belongs. A project task
+ * names the project and its customer; a customer-only task names the
+ * customer and puts the customer's address on the event, so the entry in the
+ * fitter's phone can navigate there exactly as a project entry can.
+ */
+export function taskCalendarAnchor(
+  task: Pick<Task, "id" | "title" | "project_id" | "customer_id">,
+  project: Project | null | undefined,
+  customer: TaskCalendarCustomer | null,
+): TaskCalendarAnchor {
+  if (project) {
+    return {
+      summaryBase: `${project.project_number} - ${task.title}`,
+      anchorLines: [
+        `Project: ${formatProjectTitle(project.project_number, project.customer_name, project.name, project.id)}`,
+        project.customer_name ? `Customer: ${project.customer_name}` : "",
+      ].filter((line) => line.length > 0),
+      location: projectLocationAddress(project),
+      fileNameSource: `${project.project_number}-${task.id}`,
+    };
+  }
+  if (task.project_id == null && customer && customer.name) {
+    return {
+      summaryBase: `${customer.name} - ${task.title}`,
+      anchorLines: [`Customer: ${customer.name}`, customer.address ? `Address: ${customer.address}` : ""].filter(
+        (line) => line.length > 0,
+      ),
+      location: customer.address,
+      fileNameSource: `kunde-${task.customer_id ?? 0}-${task.id}`,
+    };
+  }
+  // A project task whose project is not loaded here: the id is all we have.
+  return {
+    summaryBase: task.title,
+    anchorLines: task.project_id != null ? [`Project ID: ${task.project_id}`] : [],
+    location: "",
+    fileNameSource: `task-${task.id}`,
+  };
+}
 
 /**
  * Canonical task statuses in display order. Every label, done-check and

@@ -46,20 +46,24 @@ function renderModal(form: TaskModalState) {
 }
 
 describe("TaskModal project chip", () => {
+  // The empty state names both anchors since the modal gained a customer picker.
+  const NOTHING_PICKED = "Noch kein Projekt oder Kunde ausgewählt.";
+
   it("shows the copied task's project label when the project itself is not loaded", () => {
     renderModal(buildTaskModalFormState({ projectId: 123, projectQuery: "2024-0815 - Archiv GmbH" }));
     expect(screen.getByRole("button", { name: "2024-0815 - Archiv GmbH ×" })).toBeInTheDocument();
-    expect(screen.queryByText("Noch kein Projekt ausgewählt.")).not.toBeInTheDocument();
+    expect(screen.queryByText(NOTHING_PICKED)).not.toBeInTheDocument();
   });
 
   it("still says so when there is genuinely no project", () => {
     renderModal(buildTaskModalFormState());
-    expect(screen.getByText("Noch kein Projekt ausgewählt.")).toBeInTheDocument();
+    expect(screen.getByText(NOTHING_PICKED)).toBeInTheDocument();
   });
 
   it("shows the customer chip for a copied customer-only task", () => {
     renderModal({ ...buildTaskModalFormState(), customer_id: 7 });
-    expect(screen.getByText("Kunde: Kunde #7")).toBeInTheDocument();
-    expect(screen.queryByText("Noch kein Projekt ausgewählt.")).not.toBeInTheDocument();
+    // The chip is removable now, like the project chip.
+    expect(screen.getByRole("button", { name: "Kunde: Kunde #7 ×" })).toBeInTheDocument();
+    expect(screen.queryByText(NOTHING_PICKED)).not.toBeInTheDocument();
   });
 });

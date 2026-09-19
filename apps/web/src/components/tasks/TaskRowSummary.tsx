@@ -11,9 +11,12 @@
  */
 import type { Language, ProjectTitleParts, Task } from "../../types";
 import {
+  customerTaskFallbackLabel,
   formatTaskDateRange,
   formatTaskTimeRange,
+  isCustomerOnlyTask,
   isTaskDoneStatus,
+  taskCustomerName,
   taskDayCount,
   taskDisplayStatus,
   taskStatusLabel,
@@ -28,13 +31,26 @@ type Props = {
   language: Language;
   todayIso: string;
   projectLabel: ProjectTitleParts;
+  /**
+   * The customer's name for a customer-only task, when the caller resolved
+   * it (App's taskCustomerLabel reads the loaded customers). Without it the
+   * row uses the name the api sent on the task, then "Kunde #id".
+   */
+  customerLabel?: string;
 };
 
-export function TaskRowSummary({ task, language, todayIso, projectLabel }: Props) {
+export function TaskRowSummary({ task, language, todayIso, projectLabel, customerLabel }: Props) {
   const de = language === "de";
   const displayStatus = taskDisplayStatus(task, todayIso);
   const dateRange = formatTaskDateRange(task);
   const dayCount = taskDayCount(task);
+  // Where a project task says "Projekt: 2026-0412 · Name", a customer task
+  // says "Kunde: Müller Haustechnik GmbH" — the row must name its anchor, or
+  // the fitter cannot tell whose task this is without opening it.
+  const customerName =
+    !projectLabel.title && isCustomerOnlyTask(task)
+      ? customerLabel || taskCustomerName(task) || customerTaskFallbackLabel(task, language)
+      : "";
   return (
     <div className="tasks-page-row-title-block">
       <div className="tasks-page-row-title-line">
@@ -56,6 +72,11 @@ export function TaskRowSummary({ task, language, todayIso, projectLabel }: Props
         {projectLabel.title ? (
           <>
             {de ? "Projekt" : "Project"}: {projectLabel.title}
+            {"  |  "}
+          </>
+        ) : customerName ? (
+          <>
+            {de ? "Kunde" : "Customer"}: {customerName}
             {"  |  "}
           </>
         ) : null}

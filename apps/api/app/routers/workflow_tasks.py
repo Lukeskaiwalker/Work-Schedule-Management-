@@ -21,6 +21,7 @@ from app.services.task_material_settlement import (
     material_settlement_preview,
     settle_task_materials,
 )
+from app.services.customer_activity import record_customer_activity
 from app.services.task_attachments import (
     attachment_counts,
     delete_task_attachment_rows,
@@ -29,6 +30,74 @@ from app.services.task_attachments import (
 )
 
 router = APIRouter(prefix="", tags=["tasks"])
+
+
+def _with_customer_names(db: Session, rows: list[TaskOut]) -> list[TaskOut]:
+    """The same rows with ``customer_name``/``customer_address`` filled from
+    one query — the twin of ``with_attachment_counts``, and copies for the
+    same reason: a row may already have been handed to a broadcast.
+
+    Every emitter of a TaskOut goes through here, the SSE payloads included:
+    the client swaps a ``task.updated`` payload into its list as it is, so a
+    payload without the name would blank the "Kunde: …" label the list had.
+    """
+    customer_ids = {row.customer_id for row in rows if row.customer_id is not None}
+    if not customer_ids:
+        return rows
+    customers = {
+        customer.id: customer
+        for customer in db.scalars(select(Customer).where(Customer.id.in_(customer_ids))).all()
+    }
+
+    def fill(row: TaskOut) -> TaskOut:
+        customer = customers.get(row.customer_id) if row.customer_id is not None else None
+        if customer is None:
+            return row
+        return row.model_copy(update={"customer_name": customer.name, "customer_address": customer.address})
+
+    return [fill(row) for row in rows]
+
+
+def _task_rows_out(db: Session, tasks: list[Task]) -> list[TaskOut]:
+    """Rows for a list response: assignees, partners, crate, files, customer."""
+    return _with_customer_names(db, with_attachment_counts(db, _tasks_out(db, tasks)))
+
+
+def _record_task_activity(
+    db: Session,
+    task: Task,
+    *,
+    actor_user_id: int | None,
+    event_type: str,
+    message: str,
+    details: dict | None = None,
+) -> None:
+    """The task's change-log entry, written where the task lives.
+
+    A project task logs into its project — the customer page unions the
+    project logs, so a second row on the customer would show the same event
+    twice. A customer-only task logs into the customer: ``ProjectActivity``
+    needs a project, and writing there with none is what used to fail the
+    commit, which left a customer task impossible to reschedule or complete.
+    """
+    if task.project_id is not None:
+        _record_project_activity(
+            db,
+            project_id=task.project_id,
+            actor_user_id=actor_user_id,
+            event_type=event_type,
+            message=message,
+            details=details,
+        )
+    elif task.customer_id is not None:
+        record_customer_activity(
+            db,
+            customer_id=task.customer_id,
+            actor_user_id=actor_user_id,
+            event_type=event_type,
+            message=message,
+            details=details,
+        )
 
 
 def _create_assignment_notifications(
@@ -155,7 +224,7 @@ def list_tasks(
         stmt = stmt.where(Task.id.notin_(select(TaskPartner.task_id)))
 
     tasks = list(db.scalars(stmt.order_by(Task.due_date.asc().nulls_last(), Task.id.desc())).all())
-    return with_attachment_counts(db, _tasks_out(db, tasks))
+    return _task_rows_out(db, tasks)
 
 @router.post("/tasks", response_model=TaskOut)
 def create_task(
@@ -264,32 +333,35 @@ def create_task(
     # inside the task modal when ready — explicit, never spam-on-save.
     if payload.request_customer_confirmation:
         set_task_confirmation_pending(task, reset_status=True)
-    # Project-activity is project-scoped — only record when the task
-    # actually has a project anchor. Customer-only tasks live without
-    # one (audit trail belongs to the customer record itself).
-    if task.project_id is not None:
-        _record_project_activity(
-            db,
-            project_id=task.project_id,
-            actor_user_id=current_user.id,
-            event_type="task.created",
-            message=f"Task created: {task.title}",
-            details={"task_id": task.id, "status": task.status},
-        )
+    # Into the project's log, or the customer's for a customer-only task —
+    # the customer page shows both.
+    _record_task_activity(
+        db,
+        task,
+        actor_user_id=current_user.id,
+        event_type="task.created",
+        message=f"Task created: {task.title}",
+        details={"task_id": task.id, "status": task.status},
+    )
     db.commit()
     db.refresh(task)
     partner_rows = _load_partners_by_id(db, partner_ids)
     # No attachment_count here: the task did not exist a moment ago, so
     # nothing can hang on it yet — files picked before the task existed are
     # uploaded right after this response.
-    created = _task_out(
-        task,
-        assignee_ids,
-        partner_ids=partner_ids,
-        partners=[partner_rows[pid] for pid in partner_ids if pid in partner_rows],
-        box=_task_box_map(db, [task]).get(task.construction_box_id),
-        materials=_task_materials_map(db, [task]).get(task.id, []),
-    )
+    created = _with_customer_names(
+        db,
+        [
+            _task_out(
+                task,
+                assignee_ids,
+                partner_ids=partner_ids,
+                partners=[partner_rows[pid] for pid in partner_ids if pid in partner_rows],
+                box=_task_box_map(db, [task]).get(task.construction_box_id),
+                materials=_task_materials_map(db, [task]).get(task.id, []),
+            )
+        ],
+    )[0]
     notify(db, "task.created", created.model_dump(mode="json"))
     for uid in assignee_ids:
         if uid != current_user.id:
@@ -608,10 +680,10 @@ def update_task(
             disposition=remainder.disposition if remainder is not None else "shelf",
             new_box_label=remainder.new_box_label if remainder is not None else None,
         )
-        if settlement is not None and task.project_id is not None:
-            _record_project_activity(
+        if settlement is not None:
+            _record_task_activity(
                 db,
-                project_id=task.project_id,
+                task,
                 actor_user_id=current_user.id,
                 event_type="task.materials_settled",
                 # The outcome belongs in the sentence: "abgerechnet" alone
@@ -626,9 +698,9 @@ def update_task(
         or (task.start_time.isoformat() if task.start_time else None) != previous_start_time
         or task.estimated_hours != previous_estimated_hours
     ):
-        _record_project_activity(
+        _record_task_activity(
             db,
-            project_id=task.project_id,
+            task,
             actor_user_id=current_user.id,
             event_type="task.updated",
             message=f"Task updated: {task.title}",
@@ -644,15 +716,20 @@ def update_task(
     db.commit()
     db.refresh(task)
     partner_rows = _load_partners_by_id(db, existing_partner_ids)
-    updated = _task_out(
-        task,
-        existing_assignee_ids,
-        partner_ids=existing_partner_ids,
-        partners=[partner_rows[pid] for pid in existing_partner_ids if pid in partner_rows],
-        box=_task_box_map(db, [task]).get(task.construction_box_id),
-        materials=_task_materials_map(db, [task]).get(task.id, []),
-        attachment_count=attachment_counts(db, [task.id]).get(task.id, 0),
-    )
+    updated = _with_customer_names(
+        db,
+        [
+            _task_out(
+                task,
+                existing_assignee_ids,
+                partner_ids=existing_partner_ids,
+                partners=[partner_rows[pid] for pid in existing_partner_ids if pid in partner_rows],
+                box=_task_box_map(db, [task]).get(task.construction_box_id),
+                materials=_task_materials_map(db, [task]).get(task.id, []),
+                attachment_count=attachment_counts(db, [task.id]).get(task.id, 0),
+            )
+        ],
+    )[0]
     notify(db, "task.updated", updated.model_dump(mode="json"))
     for uid in added_assignee_ids:
         if uid != current_user.id:
@@ -721,20 +798,19 @@ def delete_task(
     task = db.get(Task, task_id)
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    # A customer-only task has no project to check against or to log into:
-    # ``ProjectActivity.project_id`` is NOT NULL, so recording one here used to
-    # fail the commit and the task could not be deleted at all. tasks:manage
-    # (the endpoint's own gate) is the whole rule for those.
+    # A customer-only task has no project to check against: tasks:manage (the
+    # endpoint's own gate) is the whole rule for those. Its log entry goes to
+    # the customer — ``_record_task_activity`` picks the side.
     if task.project_id is not None:
         assert_project_access(db, current_user, task.project_id, manage_required=True)
-        _record_project_activity(
-            db,
-            project_id=task.project_id,
-            actor_user_id=current_user.id,
-            event_type="task.deleted",
-            message=f"Task deleted: {task.title}",
-            details={"task_id": task.id},
-        )
+    _record_task_activity(
+        db,
+        task,
+        actor_user_id=current_user.id,
+        event_type="task.deleted",
+        message=f"Task deleted: {task.title}",
+        details={"task_id": task.id},
+    )
     project_id = task.project_id
     # Notifications carry a plain ``entity_id``, not a foreign key, so nothing
     # cleans them up when the task row goes away. Resolve them here or they
@@ -763,9 +839,21 @@ def planning_assign_week(
 ):
     created_ids: list[int] = []
     for index, assignment in enumerate(assignments):
-        assert_project_access(db, current_user, assignment.project_id)
+        # Same anchor rule as create_task: the schema guaranteed one of the
+        # two, a project is access-checked, a customer must at least exist.
+        # A customer-only assignment used to reach ``_record_project_activity``
+        # with no project and fail the whole POST.
+        if assignment.project_id is not None:
+            assert_project_access(db, current_user, assignment.project_id)
+        if assignment.customer_id is not None:
+            _validate_customer_id(db, assignment.customer_id)
         class_template: ProjectClassTemplate | None = None
         if assignment.class_template_id is not None:
+            if assignment.project_id is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail="class_template_id requires a project_id",
+                )
             class_template = _resolve_project_class_template(
                 db, project_id=assignment.project_id, class_template_id=assignment.class_template_id
             )
@@ -777,6 +865,8 @@ def planning_assign_week(
         # The schema already refused an end_date without a due_date, so the
         # week_start fallback can never land a start after a client's end.
         due_date = assignment.due_date or week_start
+        # Overlap detection scans the project's tasks, so a customer-only
+        # assignment skips it — the same rule as create_task.
         overlaps = (
             _find_task_overlaps(
                 db,
@@ -787,7 +877,7 @@ def planning_assign_week(
                 estimated_hours=assignment.estimated_hours,
                 assignee_ids=assignee_ids,
             )
-            if not assignment.confirm_overlap
+            if (not assignment.confirm_overlap and assignment.project_id is not None)
             else []
         )
         if overlaps:
@@ -851,9 +941,9 @@ def planning_assign_week(
         _sync_task_box_materials(db, task, previous_box_id=None, user_id=current_user.id)
         _sync_task_assignments(db, task, assignee_ids)
         _sync_task_partners(db, task, partner_ids)
-        _record_project_activity(
+        _record_task_activity(
             db,
-            project_id=task.project_id,
+            task,
             actor_user_id=current_user.id,
             event_type="task.created",
             message=f"Task created: {task.title}",
@@ -895,7 +985,7 @@ def planning_week_view(
         stmt = stmt.where(Task.task_type == _normalize_task_type(task_type))
 
     tasks = list(db.scalars(stmt.order_by(Task.due_date.asc().nulls_last(), Task.id.asc())).all())
-    task_out_rows = with_attachment_counts(db, _tasks_out(db, tasks))
+    task_out_rows = _task_rows_out(db, tasks)
     by_day: dict[date, list[TaskOut]] = {}
     for task in task_out_rows:
         if task.due_date is None:
@@ -950,7 +1040,7 @@ def send_task_customer_confirmation_email(
     sent, error = dispatch_customer_confirmation_email(db, task=task, reset_status=True)
     db.commit()
     db.refresh(task)
-    updated = with_attachment_counts(db, _tasks_out(db, [task]))[0]
+    updated = _task_rows_out(db, [task])[0]
     # Both branches commit: success mints a token and stamps sent_at,
     # failure keeps the fresh round (a pre-wire failure restores the
     # previous one, which may leave the row byte-identical and so may not
@@ -1015,7 +1105,7 @@ def record_task_customer_confirmation_manual(
     task.customer_confirmation_token = None
     db.commit()
     db.refresh(task)
-    updated = with_attachment_counts(db, _tasks_out(db, [task]))[0]
+    updated = _task_rows_out(db, [task])[0]
     # Same event the PATCH path fires, with the same full-TaskOut payload:
     # a confirmation recorded here changes the pill on every open planning
     # board, and without this the board kept showing the old state until
@@ -1145,5 +1235,5 @@ def submit_public_customer_confirmation(
     # A task with no project_id sends ``project_id: null``, which
     # ``_should_deliver`` routes to admins only; that is the established
     # behaviour for customer-only tasks and is left as it is.
-    notify(db, "task.updated", with_attachment_counts(db, _tasks_out(db, [task]))[0].model_dump(mode="json"))
+    notify(db, "task.updated", _task_rows_out(db, [task])[0].model_dump(mode="json"))
     return _public_task_view(db, task)

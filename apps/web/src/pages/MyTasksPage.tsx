@@ -1,6 +1,13 @@
 import { useMemo, useState } from "react";
 import { useAppContext } from "../context/AppContext";
-import { taskDisplayStatus, isTaskOverdue, isTaskDoneStatus } from "../utils/tasks";
+import {
+  taskDisplayStatus,
+  isTaskOverdue,
+  isTaskDoneStatus,
+  isCustomerOnlyTask,
+  taskCustomerAddress,
+} from "../utils/tasks";
+import type { Task } from "../types";
 import { taskMaterialsDisplay } from "../utils/reports";
 import { estimateTravelMinutesFromAddresses, projectLocationAddress } from "../utils/projects";
 import { BackIcon, PenIcon } from "../components/icons";
@@ -14,6 +21,7 @@ export function MyTasksPage() {
     mainView,
     language,
     projects,
+    customers,
     sortedTasks,
     companySettings,
     todayIso,
@@ -24,6 +32,7 @@ export function MyTasksPage() {
     isTaskAssignedToCurrentUser,
     getTaskAssigneeLabel,
     taskProjectTitleParts,
+    taskCustomerLabel,
     setActiveProjectId,
     setProjectTab,
     setProjectBackView,
@@ -54,7 +63,16 @@ export function MyTasksPage() {
 
   const travelHintsByTaskId = useMemo(() => {
     const projectsById = new Map(projects.map((project) => [project.id, project]));
+    const customersById = new Map(customers.map((customer) => [customer.id, customer]));
     const companyAddress = String(companySettings?.company_address ?? "").trim();
+    // Where the task takes place: the project's site, or — for a customer-only
+    // task — the customer's address, which the api sends on the row and the
+    // loaded customers still know for a row that predates that.
+    const taskAddress = (task: Task): string => {
+      if (task.project_id != null) return projectLocationAddress(projectsById.get(task.project_id));
+      if (!isCustomerOnlyTask(task)) return "";
+      return taskCustomerAddress(task) || String(customersById.get(task.customer_id ?? 0)?.address ?? "").trim();
+    };
     const hints = new Map<number, { previous: number | null; next: number | null; previousLabel: string | null }>();
     const scheduledTasks = visibleTasks.filter((task) => String(task.due_date || "").trim() && String(task.start_time || "").trim());
 
@@ -70,15 +88,9 @@ export function MyTasksPage() {
       dayTasks.forEach((task, index) => {
         const previousTask = index > 0 ? dayTasks[index - 1] : null;
         const nextTask = index < dayTasks.length - 1 ? dayTasks[index + 1] : null;
-      // Customer-only tasks (v2.4.5+) have no project_id, so look-up
-      // returns null and the travel-distance hint just becomes empty.
-      const previousProject =
-        previousTask && previousTask.due_date === task.due_date && previousTask.project_id != null
-          ? projectsById.get(previousTask.project_id)
-          : null;
-        const currentProject = task.project_id != null ? projectsById.get(task.project_id) : null;
-        const previousProjectAddress = projectLocationAddress(previousProject);
-        const currentProjectAddress = projectLocationAddress(currentProject);
+        const previousProjectAddress =
+          previousTask && previousTask.due_date === task.due_date ? taskAddress(previousTask) : "";
+        const currentProjectAddress = taskAddress(task);
         const previousProjectMinutes =
           previousProjectAddress && currentProjectAddress
             ? estimateTravelMinutesFromAddresses(previousProjectAddress, currentProjectAddress)
@@ -95,10 +107,7 @@ export function MyTasksPage() {
             : companyAddress && currentProjectAddress
               ? (language === "de" ? "Fahrt vom Firmenstandort" : "Travel from company")
               : null;
-        const nextProjectAddress =
-          nextTask && nextTask.due_date === task.due_date && nextTask.project_id != null
-            ? projectLocationAddress(projectsById.get(nextTask.project_id))
-            : "";
+        const nextProjectAddress = nextTask && nextTask.due_date === task.due_date ? taskAddress(nextTask) : "";
         const next =
           currentProjectAddress && nextProjectAddress
             ? estimateTravelMinutesFromAddresses(currentProjectAddress, nextProjectAddress)
@@ -108,7 +117,7 @@ export function MyTasksPage() {
     });
 
     return hints;
-  }, [companySettings?.company_address, language, projects, visibleTasks]);
+  }, [companySettings?.company_address, language, projects, customers, visibleTasks]);
 
   if (mainView !== "my_tasks") return null;
   const de = language === "de";
@@ -199,6 +208,7 @@ export function MyTasksPage() {
                     language={language}
                     todayIso={todayIso}
                     projectLabel={taskProjectLabel}
+                    customerLabel={taskCustomerLabel(task)}
                   />
                   <span className="tasks-page-row-chevron" aria-hidden="true">
                     {expanded ? "▾" : "▸"}
@@ -325,7 +335,13 @@ export function MyTasksPage() {
                           openProjectFromTask(task);
                         }}
                       >
-                        {de ? "Projekt öffnen" : "Open project"}
+                        {isCustomerOnlyTask(task)
+                          ? de
+                            ? "Kunde öffnen"
+                            : "Open customer"
+                          : de
+                            ? "Projekt öffnen"
+                            : "Open project"}
                       </button>
                     </div>
                   </div>

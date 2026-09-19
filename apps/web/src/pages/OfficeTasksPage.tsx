@@ -9,6 +9,7 @@ import {
   formatTaskTimeRange,
   formatTaskDateRange,
   canonicalTaskStatus,
+  isCustomerOnlyTask,
 } from "../utils/tasks";
 import { taskMaterialsDisplay } from "../utils/reports";
 import { PenIcon } from "../components/icons";
@@ -50,10 +51,68 @@ export function OfficeTasksPage() {
     removeOfficeTaskProjectFilter,
     addFirstMatchingOfficeTaskProjectFilter,
     setOfficeTaskProjectFilterIds,
+    officeTaskCustomerFilterIds,
+    setOfficeTaskCustomerFilterIds,
+    taskCustomerLabel,
+    tasks,
   } = useAppContext();
 
   const [partnerOnly, setPartnerOnly] = useState(false);
   const [nameQuery, setNameQuery] = useState("");
+
+  // The customers the filter can offer: those with a customer-only task in
+  // the loaded list, like the project options are the projects with tasks.
+  // Named through taskCustomerLabel so a row without the api's name still
+  // reads as the customer, not as an id.
+  const officeTaskCustomerOptions = useMemo(() => {
+    const byId = new Map<number, string>();
+    tasks.forEach((task) => {
+      if (!isCustomerOnlyTask(task) || task.customer_id == null || byId.has(task.customer_id)) return;
+      byId.set(task.customer_id, taskCustomerLabel(task));
+    });
+    return Array.from(byId, ([id, label]) => ({ id, label })).sort((left, right) =>
+      left.label.localeCompare(right.label, language === "de" ? "de" : "en"),
+    );
+  }, [tasks, taskCustomerLabel, language]);
+  const officeTaskCustomerSuggestions = useMemo(() => {
+    const query = officeTaskProjectFilterQuery.trim().toLowerCase();
+    if (!query) return [];
+    return officeTaskCustomerOptions
+      .filter((entry) => !officeTaskCustomerFilterIds.includes(entry.id))
+      .filter((entry) => entry.label.toLowerCase().includes(query))
+      .slice(0, 8);
+  }, [officeTaskCustomerOptions, officeTaskCustomerFilterIds, officeTaskProjectFilterQuery]);
+  const officeTaskSelectedCustomerFilters = useMemo(
+    () =>
+      officeTaskCustomerFilterIds.map((id) => ({
+        id,
+        label:
+          officeTaskCustomerOptions.find((entry) => entry.id === id)?.label ??
+          taskCustomerLabel({ project_id: null, customer_id: id }),
+      })),
+    [officeTaskCustomerFilterIds, officeTaskCustomerOptions, taskCustomerLabel],
+  );
+
+  function addOfficeTaskCustomerFilter(customerId: number) {
+    setOfficeTaskCustomerFilterIds((current) =>
+      current.includes(customerId) ? current : [...current, customerId],
+    );
+    setOfficeTaskProjectFilterQuery("");
+  }
+
+  function removeOfficeTaskCustomerFilter(customerId: number) {
+    setOfficeTaskCustomerFilterIds((current) => current.filter((entry) => entry !== customerId));
+  }
+
+  /** Enter in the shared box: the first project match, else the first customer. */
+  function addFirstMatchingOfficeTaskAnchorFilter() {
+    if (officeTaskProjectSuggestions.length > 0) {
+      addFirstMatchingOfficeTaskProjectFilter();
+      return;
+    }
+    const firstCustomer = officeTaskCustomerSuggestions[0];
+    if (firstCustomer) addOfficeTaskCustomerFilter(firstCustomer.id);
+  }
   const visibleTasks = useMemo(() => {
     const trimmed = nameQuery.trim().toLowerCase();
     let rows = officeFilteredTasks;
@@ -165,18 +224,20 @@ export function OfficeTasksPage() {
           </label>
         </label>
         <div className="office-task-filter-field office-task-filter-field-project">
-          <span>{language === "de" ? "Projekte" : "Projects"}</span>
+          <span>{language === "de" ? "Projekt / Kunde" : "Project / customer"}</span>
           <input
             value={officeTaskProjectFilterQuery}
             onChange={(event) => setOfficeTaskProjectFilterQuery(event.target.value)}
             onKeyDown={(event) => {
               if (event.key !== "Enter") return;
               event.preventDefault();
-              addFirstMatchingOfficeTaskProjectFilter();
+              addFirstMatchingOfficeTaskAnchorFilter();
             }}
-            placeholder={language === "de" ? "Projekt suchen und auswählen" : "Search and select project"}
+            placeholder={
+              language === "de" ? "Projekt oder Kunde suchen und auswählen" : "Search and select a project or customer"
+            }
           />
-          {officeTaskProjectSuggestions.length > 0 && (
+          {(officeTaskProjectSuggestions.length > 0 || officeTaskCustomerSuggestions.length > 0) && (
             <div className="assignee-suggestions">
               {officeTaskProjectSuggestions.map((entry) => (
                 <button
@@ -186,6 +247,19 @@ export function OfficeTasksPage() {
                   onClick={() => addOfficeTaskProjectFilter(entry.id)}
                 >
                   {entry.label}
+                </button>
+              ))}
+              {/* Customer-only tasks have no project to pick; the customer is
+                  the chip that finds them. Prefixed so a firm and a project
+                  named after it stay apart in the list. */}
+              {officeTaskCustomerSuggestions.map((entry) => (
+                <button
+                  key={`office-task-customer-suggestion-${entry.id}`}
+                  type="button"
+                  className="assignee-suggestion-btn"
+                  onClick={() => addOfficeTaskCustomerFilter(entry.id)}
+                >
+                  {language === "de" ? "Kunde" : "Customer"}: {entry.label}
                 </button>
               ))}
             </div>
@@ -202,8 +276,21 @@ export function OfficeTasksPage() {
                 {entry.label} ×
               </button>
             ))}
-            {officeTaskSelectedProjectFilters.length === 0 && (
-              <small className="muted">{language === "de" ? "Alle Projekte" : "All projects"}</small>
+            {officeTaskSelectedCustomerFilters.map((entry) => (
+              <button
+                key={`office-task-customer-chip-${entry.id}`}
+                type="button"
+                className="assignee-chip"
+                onClick={() => removeOfficeTaskCustomerFilter(entry.id)}
+                title={language === "de" ? "Entfernen" : "Remove"}
+              >
+                {language === "de" ? "Kunde" : "Customer"}: {entry.label} ×
+              </button>
+            ))}
+            {officeTaskSelectedProjectFilters.length === 0 && officeTaskSelectedCustomerFilters.length === 0 && (
+              <small className="muted">
+                {language === "de" ? "Alle Projekte und Kunden" : "All projects and customers"}
+              </small>
             )}
           </div>
         </div>
@@ -229,6 +316,7 @@ export function OfficeTasksPage() {
             setOfficeTaskNoDueDateFilter(false);
             setOfficeTaskProjectFilterQuery("");
             setOfficeTaskProjectFilterIds([]);
+            setOfficeTaskCustomerFilterIds([]);
             setPartnerOnly(false);
             setNameQuery("");
           }}
@@ -274,6 +362,10 @@ export function OfficeTasksPage() {
 
           const taskMaterials = taskMaterialsDisplay(task.materials_required, language);
           const taskProjectLabel = taskProjectTitleParts(task);
+          // A customer-only task has no project label; its anchor is the
+          // customer, and the link opens the customer page the way the
+          // project link opens the project.
+          const customerLabel = taskProjectLabel.title ? "" : taskCustomerLabel(task);
           const rowClass = [
             "tasks-page-row",
             "tasks-page-row--office",
@@ -293,13 +385,13 @@ export function OfficeTasksPage() {
                   </span>
                 </div>
                 <span className="tasks-page-row-meta">
-                  {de ? "Projekt" : "Project"}:{" "}
+                  {customerLabel ? (de ? "Kunde" : "Customer") : de ? "Projekt" : "Project"}:{" "}
                   <button
                     type="button"
                     className="linklike tasks-page-row-project-link"
                     onClick={() => openProjectFromTask(task, "office_tasks")}
                   >
-                    {taskProjectLabel.title}
+                    {customerLabel || taskProjectLabel.title}
                   </button>
                   {"  ·  "}
                   {de ? "Fällig" : "Due"}: {formatTaskDateRange(task) || "-"}

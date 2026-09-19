@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useAppContext } from "../context/AppContext";
 import { addDaysISO, normalizeWeekStartISO, formatDayLabel, isoWeekdayMondayFirst } from "../utils/dates";
-import { sortTasksByDueTime, formatTaskTimeRange, taskDayIndexLabel } from "../utils/tasks";
+import { sortTasksByDueTime, formatTaskTimeRange, taskCustomerName, taskDayIndexLabel } from "../utils/tasks";
 import { PenIcon } from "../components/icons";
 import { TaskAttachmentBadge } from "../components/tasks/TaskAttachmentBadge";
 import { TerminBadge } from "../components/tasks/TerminBadge";
@@ -70,6 +70,7 @@ export function PlanningPage() {
     isTaskAssignedToCurrentUser,
     getTaskAssigneeLabel,
     taskProjectTitleParts,
+    taskCustomerLabel,
     customers,
     projects,
     openTaskFromPlanning,
@@ -151,7 +152,10 @@ export function PlanningPage() {
       let label: string;
       if (customerId != null) {
         key = `customer:${customerId}`;
+        // The row's own name first: the api sends it on a customer task, so
+        // the Einsatz is named even before the customers list has loaded.
         label =
+          taskCustomerName(task) ||
           customerNameById.get(customerId) ||
           (task.project_id != null ? projectById.get(task.project_id)?.customer_name : null) ||
           projectLabel.title ||
@@ -641,6 +645,9 @@ export function PlanningPage() {
                   {boardMode === "tasks" &&
                     visibleTaskRows.map((task) => {
                         const projectLabel = taskProjectTitleParts(task);
+                        // A customer-only task has no project label; the link
+                        // names the customer and opens the customer page.
+                        const customerLabel = projectLabel.title ? "" : taskCustomerLabel(task);
                         const isMine = isTaskAssignedToCurrentUser(task);
                         // Managers edit any task by clicking its row directly
                         // (opens the shared TaskEditModal — no detour). Non-
@@ -697,7 +704,7 @@ export function PlanningPage() {
                                   openProjectFromTask(task, null);
                                 }}
                               >
-                                {projectLabel.title}
+                                {customerLabel ? `${de ? "Kunde" : "Customer"}: ${customerLabel}` : projectLabel.title}
                               </button>
                               {task.start_time ? ` · ${formatTaskTimeRange(task)}` : ""}
                               {" · "}
@@ -836,8 +843,10 @@ export function PlanningPage() {
                     </b>
                     <small>
                       {/* A customer can run several projects in one day — the
-                          project is shown per task rather than in the header. */}
-                      {projectLabel.title}
+                          project is shown per task rather than in the header.
+                          A customer-only task says so instead. */}
+                      {projectLabel.title ||
+                        (taskCustomerLabel(task) ? `${de ? "Kunde" : "Customer"}: ${taskCustomerLabel(task)}` : "")}
                       {task.start_time ? ` · ${formatTaskTimeRange(task)}` : ""}
                       {" · "}
                       {getTaskAssigneeLabel(task)}

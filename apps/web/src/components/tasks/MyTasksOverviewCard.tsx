@@ -70,6 +70,7 @@ export function MyTasksOverviewCard() {
     todayIso,
     isTaskAssignedToCurrentUser,
     taskProjectTitleParts,
+    taskCustomerLabel,
     canManageTasks,
     openTaskEditModal,
     setExpandedMyTaskId,
@@ -185,6 +186,7 @@ export function MyTasksOverviewCard() {
                   language={language}
                   todayIso={todayIso}
                   projectLabel={taskProjectTitleParts(task)}
+                  customerLabel={taskCustomerLabel(task)}
                 />
               </button>
             </li>

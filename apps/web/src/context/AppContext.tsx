@@ -362,6 +362,9 @@ export interface AppContextValue {
   setOfficeTaskProjectFilterQuery: (query: string) => void;
   officeTaskProjectFilterIds: number[];
   setOfficeTaskProjectFilterIds: (ids: number[] | ((current: number[]) => number[])) => void;
+  /** Customers picked in the office "Projekt / Kunde" filter; a customer-only task has no project id to match. */
+  officeTaskCustomerFilterIds: number[];
+  setOfficeTaskCustomerFilterIds: (ids: number[] | ((current: number[]) => number[])) => void;
   expandedMyTaskId: number | null;
   setExpandedMyTaskId: (id: number | null) => void;
   myTasksBackProjectId: number | null;
@@ -967,6 +970,8 @@ export interface AppContextValue {
   projectTitleParts: (project: Project | null | undefined) => ProjectTitleParts;
   projectTitle: (project: Project | null | undefined) => string;
   taskProjectTitleParts: (task: Task) => ProjectTitleParts;
+  /** "Müller Haustechnik GmbH" for a customer-only task; "" for a project task (its label names the customer). */
+  taskCustomerLabel: (task: Pick<Task, "project_id" | "customer_id"> & { customer_name?: string | null }) => string;
   recentReportProjectTitleParts: (report: RecentConstructionReport) => ProjectTitleParts;
   threadProjectTitleParts: (thread: Thread) => ProjectTitleParts;
   ensureProjectVisibleById: (projectId: number) => void;

@@ -158,8 +158,7 @@ def list_partner_tasks(
     _: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    from app.routers.workflow_helpers import _tasks_out
-    from app.services.task_attachments import with_attachment_counts
+    from app.routers.workflow_tasks import _task_rows_out
 
     partner = db.get(Partner, partner_id)
     if partner is None:
@@ -172,9 +171,9 @@ def list_partner_tasks(
             .order_by(Task.due_date.asc().nullslast(), Task.id.desc())
         ).all()
     )
-    # Same paperclip count the task list carries — a partner's board must not
-    # say "no files" about a task that has a plan on it.
-    return with_attachment_counts(db, _tasks_out(db, tasks))
+    # The same rows the task list serves — paperclip count and the customer's
+    # name on a customer-only task — so a partner's board reads like the rest.
+    return _task_rows_out(db, tasks)
 
 
 @router.post("/partners", response_model=PartnerOut)
