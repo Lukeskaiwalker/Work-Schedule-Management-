@@ -235,3 +235,40 @@ def test_webdav_protected_folder_blocks_employee_write_and_direct_access(client:
     )
     assert admin_get_ok.status_code == 200
     assert admin_get_ok.content == b"private data"
+
+
+def test_webdav_delete_removes_the_stored_bytes(client: TestClient, admin_token: str):
+    """A DELETE over WebDAV used to drop the row and leave the encrypted blob
+    on disk forever — the REST delete unlinked it, the DAV one did not."""
+    from app.core.db import SessionLocal
+    from app.models.entities import Attachment
+
+    project = client.post(
+        "/api/projects",
+        headers=auth_headers(admin_token),
+        json={"project_number": "2026-2190", "name": "DAV Delete", "description": "d", "status": "active"},
+    )
+    assert project.status_code == 200
+    project_number = project.json()["project_number"]
+
+    put = client.put(
+        f"/api/dav/projects/{project_number}/Bilder/foto.txt",
+        auth=("admin@example.com", "ChangeMe123!"),
+        content=b"bytes on disk",
+        headers={"Content-Type": "text/plain"},
+    )
+    assert put.status_code == 201, put.text
+
+    with SessionLocal() as db:
+        row = db.query(Attachment).filter(Attachment.file_name == "foto.txt").order_by(Attachment.id.desc()).first()
+        assert row is not None
+        stored_path = row.stored_path
+    assert os.path.exists(stored_path)
+
+    removed = client.request(
+        "DELETE",
+        f"/api/dav/projects/{project_number}/Bilder/foto.txt",
+        auth=("admin@example.com", "ChangeMe123!"),
+    )
+    assert removed.status_code == 204, removed.text
+    assert not os.path.exists(stored_path)

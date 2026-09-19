@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter
 
 from app.routers.workflow_helpers import *  # noqa: F401,F403
@@ -457,8 +459,16 @@ async def webdav_project_file(
             message=f"File deleted: {latest.file_name}",
             details={"file_name": latest.file_name, "folder": latest.folder_path},
         )
+        stored_path = latest.stored_path
         db.delete(latest)
         db.commit()
+        # Same as the REST delete: the row is gone, now the bytes. This was
+        # missing here, so every file removed from a mounted drive stayed on
+        # disk as an unreachable encrypted blob.
+        try:
+            Path(stored_path).unlink(missing_ok=True)
+        except OSError:
+            pass
         return Response(status_code=204, headers=_dav_headers())
 
     raise HTTPException(status_code=405, detail="Method not allowed")

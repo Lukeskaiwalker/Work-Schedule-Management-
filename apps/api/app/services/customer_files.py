@@ -11,11 +11,12 @@ See docs/FILE_SCOPES.md.
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models.entities import Attachment, CustomerFolder, User
+from app.core.permissions import has_global_project_access, has_permission_for_user
+from app.models.entities import Attachment, Customer, CustomerFolder, Project, Task, TaskAssignment, User
 
 # What a fresh customer folder offers before anyone uploads. ``Verwaltung``
 # is protected exactly like the project one (files:view_protected).
@@ -147,3 +148,49 @@ def latest_customer_file_by_path(db: Session, customer_id: int, user: User) -> d
         path_value = f"{folder}/{row.file_name}" if folder else row.file_name
         by_path.setdefault(path_value, row)
     return by_path
+
+
+def customers_visible_to_user(db: Session, user: User) -> list[Customer]:
+    """Every customer whose files the user may open — the WebDAV root.
+
+    The set form of ``_user_can_see_customer_files``: the same three doors
+    (global project authority or ``files:manage``; a visible project of the
+    customer; a customer-anchored task of one's own), evaluated once for all
+    customers rather than once per row. Finder asks for the root listing on
+    every step, and the per-row check costs half a dozen queries each, so
+    the per-row rule cannot simply be mapped over the customer table. Keep
+    the two in step.
+
+    Archived customers are left out, as archived projects are at the project
+    root: they stay reachable by ref, they are just not offered.
+    """
+    stmt = select(Customer).where(Customer.archived_at.is_(None)).order_by(Customer.name.asc(), Customer.id.asc())
+    if has_global_project_access(user.id, user.role) or has_permission_for_user(
+        user.id, user.role, "files:manage"
+    ):
+        return list(db.scalars(stmt).all())
+    customer_ids = _customer_ids_behind_visible_projects(db, user) | _customer_ids_of_own_tasks(db, user)
+    if not customer_ids:
+        return []
+    return list(db.scalars(stmt.where(Customer.id.in_(customer_ids))).all())
+
+
+def _customer_ids_behind_visible_projects(db: Session, user: User) -> set[int]:
+    project_ids = _helpers()._project_ids_visible_to_user(db, user)
+    if not project_ids:
+        return set()
+    rows = db.scalars(
+        select(Project.customer_id).where(Project.id.in_(project_ids), Project.customer_id.is_not(None))
+    ).all()
+    return {int(value) for value in rows}
+
+
+def _customer_ids_of_own_tasks(db: Session, user: User) -> set[int]:
+    assigned = select(TaskAssignment.task_id).where(TaskAssignment.user_id == user.id)
+    rows = db.scalars(
+        select(Task.customer_id).where(
+            Task.customer_id.is_not(None),
+            or_(Task.assignee_id == user.id, Task.id.in_(assigned)),
+        )
+    ).all()
+    return {int(value) for value in rows}
