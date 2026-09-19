@@ -1066,7 +1066,7 @@ export interface AppContextValue {
   fileDownloadUrl: (fileId: number) => string;
   filePreviewUrl: (fileId: number) => string;
   isPreviewable: (file: any) => boolean;
-  deleteFile: (fileId: number) => Promise<void>;
+  deleteFile: (fileId: number) => Promise<boolean>;
   wikiFileUrl: (path: string, download?: boolean) => string;
   formatFileSize: (sizeBytes: number) => string;
   updateReportWorker: (index: number, field: keyof ReportWorker, value: string) => void;

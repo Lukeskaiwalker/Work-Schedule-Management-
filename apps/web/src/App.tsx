@@ -7424,12 +7424,17 @@ export function App() {
     );
   }
 
-  async function deleteFile(fileId: number) {
+  // True when the row is gone. The viewer host removes a file from its
+  // sequence only on true — a failed DELETE must not make the viewer drop a
+  // file the list still shows.
+  async function deleteFile(fileId: number): Promise<boolean> {
     try {
       await apiFetch<void>(`/files/${fileId}`, token, { method: "DELETE" });
       setFiles((current) => current.filter((f) => f.id !== fileId));
+      return true;
     } catch (err: any) {
       setError(err.message ?? "Failed to delete file");
+      return false;
     }
   }
 

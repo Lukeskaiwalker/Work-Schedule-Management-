@@ -63,8 +63,7 @@ export function ProjectFilesTab() {
   }
 
   async function deleteFromViewer(id: number) {
-    await deleteFile(id);
-    viewer.remove(id);
+    if (await deleteFile(id)) viewer.remove(id);
   }
 
   return (
