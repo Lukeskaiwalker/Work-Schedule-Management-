@@ -3,6 +3,7 @@ import { useAppContext } from "../context/AppContext";
 import { addDaysISO, normalizeWeekStartISO, formatDayLabel, isoWeekdayMondayFirst } from "../utils/dates";
 import { sortTasksByDueTime, formatTaskTimeRange, taskDayIndexLabel } from "../utils/tasks";
 import { PenIcon } from "../components/icons";
+import { TaskAttachmentBadge } from "../components/tasks/TaskAttachmentBadge";
 import { TerminBadge } from "../components/tasks/TerminBadge";
 import type { Language, Task } from "../types";
 import "../styles/tasks.css";
@@ -679,6 +680,7 @@ export function PlanningPage() {
                             <b>
                               {task.title}
                               <TerminBadge task={task} language={language} />
+                              <TaskAttachmentBadge task={task} language={language} />
                               {/* The server places a multi-day task on every
                                   day it covers; the chip says which day this
                                   column is. Empty for single-day tasks. */}
@@ -827,6 +829,7 @@ export function PlanningPage() {
                     <b>
                       {task.title}
                       <TerminBadge task={task} language={language} />
+                      <TaskAttachmentBadge task={task} language={language} />
                       {taskDayIndexLabel(task, openEinsatz.date, language) ? (
                         <span className="task-day-chip">{taskDayIndexLabel(task, openEinsatz.date, language)}</span>
                       ) : null}

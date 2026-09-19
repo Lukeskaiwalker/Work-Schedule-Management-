@@ -395,6 +395,13 @@ export interface AppContextValue {
   setTaskModalForm: (form: TaskModalState | ((current: TaskModalState) => TaskModalState)) => void;
   taskModalMaterialRows: ReportMaterialRow[];
   setTaskModalMaterialRows: (rows: ReportMaterialRow[] | ((current: ReportMaterialRow[]) => ReportMaterialRow[])) => void;
+  /** Files picked in the create modal before the task exists. createWeeklyPlanTask
+   *  uploads them to /tasks/{id}/files right after the POST; cleared whenever
+   *  the modal opens or closes, so nothing leaks into the next task. */
+  taskModalPendingFiles: File[];
+  setTaskModalPendingFiles: (files: File[] | ((current: File[]) => File[])) => void;
+  /** True while those files are going up, so the section can say so. */
+  taskModalAttachmentsUploading: boolean;
 
   // ── Task edit modal ──────────────────────────────────────────────────────────
   taskEditModalOpen: boolean;

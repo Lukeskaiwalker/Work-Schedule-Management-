@@ -13,6 +13,7 @@ import {
 } from "../../utils/tasks";
 import { PartnerMultiSelect } from "../partners/PartnerMultiSelect";
 import { ConstructionBoxPicker } from "../tasks/ConstructionBoxPicker";
+import { TaskAttachments } from "../tasks/TaskAttachments";
 import "../../styles/tasks.css";
 
 function priorityLabel(value: TaskPriority, language: "de" | "en"): string {
@@ -64,6 +65,11 @@ export function TaskModal() {
     canManageTasks,
     closeTaskModal,
     createWeeklyPlanTask,
+    // Attachments for a task that does not exist yet: held here, uploaded by
+    // createWeeklyPlanTask once the POST has an id.
+    taskModalPendingFiles,
+    setTaskModalPendingFiles,
+    taskModalAttachmentsUploading,
     updateTaskModalField,
     updateTaskModalMaterialRow,
     addTaskModalMaterialRow,
@@ -532,6 +538,13 @@ export function TaskModal() {
               ))}
             </div>
           </section>
+
+          {/* Attachments — picked now, uploaded right after the task is created. */}
+          <TaskAttachments
+            pendingFiles={taskModalPendingFiles}
+            onPendingFilesChange={setTaskModalPendingFiles}
+            uploading={taskModalAttachmentsUploading}
+          />
 
           {/* Assignees */}
           <section className="task-modal-section task-modal-section--stack">

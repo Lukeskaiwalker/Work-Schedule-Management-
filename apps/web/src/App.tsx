@@ -169,6 +169,7 @@ import {
   TASK_STATUS_ORDER,
 } from "./utils/tasks";
 import { buildTaskModalCopyStateFromEditForm, taskCopyNotice } from "./utils/taskCopy";
+import { uploadTaskAttachments } from "./components/tasks/taskAttachmentsApi";
 import { createRequestSequence } from "./utils/latestRequest";
 import {
   normalizeMaterialNeedStatus,
@@ -694,6 +695,11 @@ export function App() {
   const [taskModalMaterialRows, setTaskModalMaterialRows] = useState<ReportMaterialRow[]>(() => [
     createReportMaterialRow("materials"),
   ]);
+  // Files picked for a task that does not exist yet; uploaded by
+  // createWeeklyPlanTask against the id the POST mints. Owned here, not in
+  // the modal, because the submit that needs them lives here.
+  const [taskModalPendingFiles, setTaskModalPendingFiles] = useState<File[]>([]);
+  const [taskModalAttachmentsUploading, setTaskModalAttachmentsUploading] = useState(false);
   const [taskEditModalOpen, setTaskEditModalOpen] = useState(false);
   const [taskEditForm, setTaskEditForm] = useState<TaskEditFormState>(() => buildTaskEditFormState());
   const [taskEditOverlapWarning, setTaskEditOverlapWarning] = useState<TaskOverlapConflictDetail | null>(null);
@@ -5359,12 +5365,16 @@ export function App() {
     setTaskModalForm(nextForm);
     setTaskModalOverlapWarning(null);
     setTaskModalMaterialRows(parseReportMaterialRows(nextForm.materials_required, "materials"));
+    setTaskModalPendingFiles([]);
     setTaskModalOpen(true);
   }
 
   function closeTaskModal() {
     setTaskModalOpen(false);
     setTaskModalOverlapWarning(null);
+    // Also on cancel: a photo picked for an abandoned task must not turn up
+    // on the next one.
+    setTaskModalPendingFiles([]);
   }
 
   /**
@@ -5409,7 +5419,7 @@ export function App() {
     setTaskModalOverlapWarning(null);
     setTaskModalMaterialRows(parseReportMaterialRows(nextForm.materials_required, "materials"));
     setTaskModalOpen(true);
-    setNotice(taskCopyNotice(nextForm.title.trim() || source.title, language));
+    setNotice(taskCopyNotice(nextForm.title.trim() || source.title, language, source.attachment_count ?? 0));
   }
 
   function onTaskModalBackdropPointerDown(event: PointerEvent<HTMLDivElement>) {
@@ -6203,6 +6213,26 @@ export function App() {
     }
   }
 
+  /**
+   * Push the create modal's pending files to the task the POST just made.
+   * True when there was nothing to push or everything went up; false, after
+   * logging, when the upload failed — the caller says so without treating it
+   * as a failed task, because the task IS saved and must stay.
+   */
+  async function uploadTaskModalPendingFiles(taskId: number): Promise<boolean> {
+    if (taskModalPendingFiles.length === 0) return true;
+    setTaskModalAttachmentsUploading(true);
+    try {
+      await uploadTaskAttachments(taskId, token, taskModalPendingFiles);
+      return true;
+    } catch (err: unknown) {
+      console.error("[task-create] attachment upload failed", { task_id: taskId, error: err });
+      return false;
+    } finally {
+      setTaskModalAttachmentsUploading(false);
+    }
+  }
+
   async function createWeeklyPlanTask(confirmOverlap = false) {
     if (!taskModalForm.title.trim()) {
       setError(language === "de" ? "Aufgabentitel ist erforderlich" : "Task title is required");
@@ -6291,7 +6321,7 @@ export function App() {
 
       currentStep = "task";
       console.info("[task-create] creating task", { project_id: projectId || null, customer_id: customerId, title: taskModalForm.title.trim() });
-      await apiFetch("/tasks", token, {
+      const createdTask = await apiFetch<Task>("/tasks", token, {
         method: "POST",
         body: JSON.stringify({
           project_id: projectId || null,
@@ -6318,13 +6348,26 @@ export function App() {
         }),
       });
       console.info("[task-create] task created successfully");
+      // Files picked before the task existed go up now, against the id the
+      // POST just minted. Their failure is NOT the task's: the task is saved
+      // and stays, so this never reaches the catch below — which would report
+      // a failed creation and delete a project it had just made.
+      const attachmentsUploaded = await uploadTaskModalPendingFiles(createdTask.id);
       closeTaskModal();
       await loadBaseData();
       if (targetWeekStart) {
         setPlanningWeekStart(targetWeekStart);
         await loadPlanningWeek(null, targetWeekStart, planningTaskTypeView === "all" ? null : planningTaskTypeView);
       }
-      setNotice(language === "de" ? "Aufgabe gespeichert" : "Task saved");
+      if (attachmentsUploaded) {
+        setNotice(language === "de" ? "Aufgabe gespeichert" : "Task saved");
+      } else {
+        setError(
+          language === "de"
+            ? "Aufgabe angelegt, Anhänge konnten nicht hochgeladen werden — bitte in der Aufgabe erneut hinzufügen"
+            : "Task created, but the attachments could not be uploaded — please add them again in the task",
+        );
+      }
     } catch (err: any) {
       const overlapDetail = getTaskOverlapConflictDetail(err);
       if (overlapDetail) {
@@ -9834,6 +9877,9 @@ export function App() {
     setTaskModalForm,
     taskModalMaterialRows,
     setTaskModalMaterialRows,
+    taskModalPendingFiles,
+    setTaskModalPendingFiles,
+    taskModalAttachmentsUploading,
 
     // ── Task edit modal ───────────────────────────────────────────────────────
     taskEditModalOpen,

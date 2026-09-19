@@ -18,6 +18,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { apiFetch } from "../../api/client";
 import { useAppContext } from "../../context/AppContext";
 import { TerminBadge } from "../tasks/TerminBadge";
+import { TaskAttachmentBadge } from "../tasks/TaskAttachmentBadge";
 import { formatTaskDateRange } from "../../utils/tasks";
 import type { Task } from "../../types";
 
@@ -169,6 +170,7 @@ export function CustomerTasksCard({ customerId }: Props) {
               <span style={{ flex: "1 1 auto" }}>
                 {task.title}
                 <TerminBadge task={task} language={language} />
+                <TaskAttachmentBadge task={task} language={language} />
                 {task.due_date && (
                   <small className="muted" style={{ marginLeft: 8 }}>
                     {formatTaskDateRange(task)}

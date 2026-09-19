@@ -19,6 +19,7 @@ import {
   taskStatusLabel,
 } from "../../utils/tasks";
 import { PartnerTaskChip } from "../partners/PartnerTaskChip";
+import { TaskAttachmentBadge } from "./TaskAttachmentBadge";
 import { TerminBadge } from "./TerminBadge";
 import "../../styles/tasks.css";
 
@@ -49,6 +50,7 @@ export function TaskRowSummary({ task, language, todayIso, projectLabel }: Props
             {de ? "ERLEDIGT" : "DONE"}
           </span>
         )}
+        <TaskAttachmentBadge task={task} language={language} />
       </div>
       <span className="tasks-page-row-meta">
         {projectLabel.title ? (

@@ -95,3 +95,269 @@
 .task-modal-field--bis input:placeholder-shown {
   color: #8fa2ba;
 }
+
+/* ── Anhänge in the task modals (components/tasks/TaskAttachments) ─────────
+   The plan or the photo for the person doing the task. Tiles wrap on the
+   phone; the drop zone is the desktop's shortcut and folds to a plain button
+   where nothing can be dragged. The progress bar and the inline error reuse
+   .file-upload-progress / .file-upload-error from the upload dialog. */
+.task-attachments-grid {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+  gap: 10px;
+}
+
+.task-attachments-tile {
+  position: relative;
+  min-width: 0;
+}
+
+.task-attachments-tile-open {
+  appearance: none;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  padding: 0;
+  border: 1px solid #c9d9ea;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #14293d;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  text-align: left;
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color 80ms ease, box-shadow 80ms ease;
+}
+
+.task-attachments-tile-open:hover,
+.task-attachments-tile-open:focus-visible {
+  border-color: #2f70b7;
+  box-shadow: 0 6px 14px -8px rgba(15, 23, 42, 0.25);
+  outline: none;
+}
+
+.task-attachments-tile-thumb {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  background: #f1f5f9;
+}
+
+.task-attachments-tile-glyph {
+  font-size: 28px;
+  line-height: 1;
+}
+
+.task-attachments-tile-image {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.task-attachments-tile-name {
+  padding: 6px 8px 0;
+  font-size: 12px;
+  line-height: 1.25;
+  word-break: break-word;
+  /* Two lines, so a long file name cannot stretch one tile past its row. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.task-attachments-tile-date {
+  padding: 2px 8px 8px;
+  font-size: 11px;
+  color: #9aaec4;
+}
+
+.task-attachments-tile-remove {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(20, 41, 61, 0.72);
+  color: #ffffff;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.task-attachments-tile-remove:hover,
+.task-attachments-tile-remove:focus-visible {
+  background: #e34b4b;
+  outline: none;
+}
+
+.task-attachments-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.task-attachments-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  padding: 12px 14px;
+  border: 2px dashed #c9d9ea;
+  border-radius: 12px;
+  background: #f8fbff;
+  transition: background-color 80ms ease, border-color 80ms ease;
+}
+
+.task-attachments-add--drag {
+  border-color: #2f70b7;
+  background: #eaf4ff;
+}
+
+.task-attachments-add-btn {
+  appearance: none;
+  min-height: 40px;
+  padding: 0 14px;
+  border: 1px solid #2f70b7;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #2f70b7;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.task-attachments-add-btn:hover:not(:disabled),
+.task-attachments-add-btn:focus-visible {
+  background: #eaf4ff;
+}
+
+.task-attachments-add-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.task-attachments-add-hint {
+  font-size: 12px;
+  color: #9aaec4;
+}
+
+/* No pointer to drag with: the button is the whole control. */
+@media (hover: none) {
+  .task-attachments-add {
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
+
+  .task-attachments-add-hint {
+    display: none;
+  }
+}
+
+.task-attachments-retry {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+}
+
+.task-attachments-retry .file-upload-error {
+  margin: 0;
+}
+
+.task-attachments-state,
+.task-attachments-empty {
+  font-size: 13px;
+  color: #5c7895;
+}
+
+.task-attachments-state--error {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  color: #b91c1c;
+}
+
+.task-attachments-pending-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.task-attachments-pending-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: #f4f7fb;
+  font-size: 13px;
+}
+
+.task-attachments-pending-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.task-attachments-pending-note {
+  font-size: 11px;
+  color: #9aaec4;
+  white-space: nowrap;
+}
+
+.task-attachments-pending-remove {
+  border: 0;
+  background: transparent;
+  color: #6b7280;
+  font-size: 1.2rem;
+  line-height: 1;
+  padding: 0 6px;
+  cursor: pointer;
+}
+
+.task-attachments-pending-remove:hover:not(:disabled) {
+  color: #b91c1c;
+}
+
+/* ── "📎 n" on a task row (components/tasks/TaskAttachmentBadge) ─────────
+   Sits with the Termin pill and the day chip; same family as .task-day-chip. */
+.task-attachment-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: #e8f0fb;
+  color: #2f70b7;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 14px;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.planning-task .task-attachment-badge,
+.planning-einsatz-task .task-attachment-badge {
+  margin-left: 4px;
+}

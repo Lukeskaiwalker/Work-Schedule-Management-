@@ -206,4 +206,15 @@ describe("taskCopyNotice", () => {
     expect(taskCopyNotice("Zählerschrank", "de")).toBe("Kopie von „Zählerschrank“ vorbereitet – Datum und Zuweisung prüfen");
     expect(taskCopyNotice("Meter board", "en")).toBe("Copy of “Meter board” prepared – check date and assignment");
   });
+
+  it("says the attachments stay behind when the original has any", () => {
+    expect(taskCopyNotice("Zählerschrank", "de", 2)).toBe(
+      "Kopie von „Zählerschrank“ vorbereitet – Datum und Zuweisung prüfen. Anhänge werden nicht mitkopiert.",
+    );
+    expect(taskCopyNotice("Meter board", "en", 1)).toBe(
+      "Copy of “Meter board” prepared – check date and assignment. Attachments are not copied.",
+    );
+    // Nothing to leave behind, nothing to say.
+    expect(taskCopyNotice("Zählerschrank", "de", 0)).toBe("Kopie von „Zählerschrank“ vorbereitet – Datum und Zuweisung prüfen");
+  });
 });

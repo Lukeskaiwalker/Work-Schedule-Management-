@@ -272,6 +272,7 @@ def delete_file(
         raise HTTPException(status_code=403, detail="File management permission required")
 
     stored_path = attachment.stored_path
+    task_id = attachment.task_id
     if attachment.project_id is not None:
         _record_project_activity(
             db,
@@ -289,3 +290,14 @@ def delete_file(
         Path(stored_path).unlink(missing_ok=True)
     except OSError:
         pass
+
+    # A task file leaving changes the task's paperclip count: send the same
+    # task.updated the upload sends, or every open board keeps showing the
+    # old count until its next full load.
+    if task_id is not None:
+        task = db.get(Task, task_id)
+        if task is not None:
+            from app.core.events import notify
+            from app.services.task_attachments import with_attachment_counts
+
+            notify(db, "task.updated", with_attachment_counts(db, _tasks_out(db, [task]))[0].model_dump(mode="json"))

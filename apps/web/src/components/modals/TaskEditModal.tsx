@@ -16,6 +16,7 @@ import {
 import { formatServerDateTime } from "../../utils/dates";
 import { PartnerMultiSelect } from "../partners/PartnerMultiSelect";
 import { ConstructionBoxPicker } from "../tasks/ConstructionBoxPicker";
+import { TaskAttachments } from "../tasks/TaskAttachments";
 import { TaskMaterialList } from "../tasks/TaskMaterialList";
 import "../../styles/tasks.css";
 
@@ -71,6 +72,10 @@ export function TaskEditModal() {
     projects,
     taskStatusOptions,
     canManageTasks,
+    // The attachments section shows its add controls by the api's own edit
+    // rule — tasks:manage, or being assigned — which needs to know who is
+    // looking.
+    user,
     closeTaskEditModal,
     saveTaskEdit,
     deleteTaskFromEdit,
@@ -350,6 +355,13 @@ export function TaskEditModal() {
   const de = language === "de";
   const priorityOptions: TaskPriority[] = ["low", "normal", "high", "urgent"];
   const activePriority = taskEditForm.priority ?? "normal";
+
+  // POST /tasks/{id}/files takes update_task's gate: tasks:manage, or being
+  // assigned. Judged on the SAVED assignment (the snapshot the modal opened
+  // with), because that is what the server checks — an assignee who removes
+  // themselves in the form is still the assignee until Save.
+  const savedAssigneeIds = (taskEditFormBase ?? taskEditForm).assignee_ids;
+  const canAddTaskAttachments = canManageTasks || (user != null && savedAssigneeIds.includes(user.id));
 
   // ── Kundenbestätigung: who may record one, and is there anybody to ask? ──
   // Three conditions, all load-bearing:
@@ -785,6 +797,16 @@ export function TaskEditModal() {
               ))}
             </div>
           </section>
+
+          {/* Attachments — the plan or the photo the assignee needs. Only for
+              a task that exists; the create modal keeps them pending. */}
+          {taskEditForm.id != null && (
+            <TaskAttachments
+              taskId={taskEditForm.id}
+              taskTitle={taskEditForm.title}
+              canAdd={canAddTaskAttachments}
+            />
+          )}
 
           {/* Assignees */}
           <section className="task-modal-section task-modal-section--stack">

@@ -21,6 +21,9 @@
  *                          settled per task (_validate_task_construction_box)
  *   confirmation fields    the customer said yes to the ORIGINAL date
  *   storage_box_number     legacy mirror of the crate slot, see above
+ *   attachments            rows of their own, bound to the original's id; the
+ *                          copy is a form, not a task yet, so nothing could
+ *                          carry them — the notice says so instead
  */
 import type { Task, TaskEditFormState, TaskModalState, TaskType } from "../types";
 import { normalizeTaskTypeValue, subtasksToTextareaValue, formatTaskStartTime } from "./tasks";
@@ -124,9 +127,19 @@ export function buildTaskModalCopyStateFromEditForm(
   return copyStateFromFields(editFormCopyFields(form), base);
 }
 
-/** The notice shown once the copy is in the create modal. */
-export function taskCopyNotice(title: string, language: "de" | "en"): string {
+/**
+ * The notice shown once the copy is in the create modal. Names the files the
+ * copy leaves behind when the original had any: this is the moment the
+ * operator would expect them in the copy, and finding the plan missing on
+ * site is the failure to prevent.
+ */
+export function taskCopyNotice(title: string, language: "de" | "en", attachmentCount = 0): string {
+  const prepared =
+    language === "de"
+      ? `Kopie von „${title}“ vorbereitet – Datum und Zuweisung prüfen`
+      : `Copy of “${title}” prepared – check date and assignment`;
+  if (attachmentCount <= 0) return prepared;
   return language === "de"
-    ? `Kopie von „${title}“ vorbereitet – Datum und Zuweisung prüfen`
-    : `Copy of “${title}” prepared – check date and assignment`;
+    ? `${prepared}. Anhänge werden nicht mitkopiert.`
+    : `${prepared}. Attachments are not copied.`;
 }
