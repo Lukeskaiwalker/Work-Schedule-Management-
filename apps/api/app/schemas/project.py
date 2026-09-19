@@ -1,8 +1,14 @@
 from __future__ import annotations
 from datetime import date, datetime, time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+
+if TYPE_CHECKING:
+    # Only for the annotation on ProjectOverviewOut: schemas.customer imports
+    # this module for ProjectActivityOut, so the import cannot run at import
+    # time. schemas.customer completes the model once CustomerOut exists.
+    from app.schemas.customer import CustomerOut
 
 class ProjectCreate(BaseModel):
     project_number: str = Field(min_length=1, max_length=64)
@@ -208,6 +214,9 @@ class ProjectOverviewOut(BaseModel):
     # Newest first; the overview carries the latest page, GET /projects/{id}/notes the rest.
     notes: list[ProjectNoteOut] = Field(default_factory=list)
     project_report: ProjectReportStateOut = Field(default_factory=ProjectReportStateOut)
+    # The linked customer row itself: the Kontakt card shows Mobil and
+    # Firma/Privatkunde, which the project's snapshot fields never had.
+    customer: CustomerOut | None = None
 
 
 class ProjectWeatherDayOut(BaseModel):

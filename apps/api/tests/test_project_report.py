@@ -14,6 +14,8 @@ again does; and a rendering failure never costs the status change.
 from __future__ import annotations
 
 import shutil
+import subprocess
+from datetime import date
 
 import pytest
 from fastapi.testclient import TestClient
@@ -408,3 +410,105 @@ def test_filename_is_project_number_and_date() -> None:
 
     assert build_project_report_filename("2026-7010", datetime(2026, 9, 19, 14, 5)) == "Projektbericht_2026-7010_2026-09-19.pdf"
     assert build_project_report_filename("Ärger/Nr 1", datetime(2026, 1, 2)) == "Projektbericht_rger_Nr_1_2026-01-02.pdf"
+
+
+# ── the customer on the sheet: the visit preface, the type, the mobile ──
+
+
+def _create_customer_with_visit(client: TestClient, admin_token: str, name: str) -> int:
+    response = client.post(
+        "/api/customers",
+        headers=auth_headers(admin_token),
+        json={
+            "name": name,
+            "customer_type": "private",
+            "address": "Hauptstr. 1, 12345 Musterstadt",
+            "contact_person": "Frau Muster",
+            "email": "muster@example.com",
+            "phone": "0123 456",
+            "mobile": "0171 2345678",
+            "visit_summary": "Altbau von 1962, Zählerschrank im Keller, Zuleitung muss neu.",
+            "visit_date": "2026-09-01",
+        },
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["id"]
+
+
+def _report_data(project_id: int):
+    with SessionLocal() as db:
+        data = collect_project_report_data(db, project_id)
+        project = db.get(Project, project_id)
+        assert project is not None
+        return data, project.created_at
+
+
+def _pdf_text(pdf: bytes, tmp_path) -> str:
+    """The rendered sheet as text, in print order — poppler reads it back."""
+    if shutil.which("pdftotext") is None:
+        pytest.skip("poppler not available")
+    path = tmp_path / "report.pdf"
+    path.write_bytes(pdf)
+    return subprocess.run(["pdftotext", "-layout", str(path), "-"], capture_output=True, text=True, check=True).stdout
+
+
+def test_visit_section_comes_first_when_the_customer_has_a_summary(client: TestClient, admin_token: str, tmp_path) -> None:
+    customer_id = _create_customer_with_visit(client, admin_token, "Besuchte Person")
+    project_id = _create_project(client, admin_token, "2026-7101", customer_id=customer_id)
+
+    data, created_at = _report_data(project_id)
+    assert data.visit is not None
+    assert data.visit.summary == "Altbau von 1962, Zählerschrank im Keller, Zuleitung muss neu."
+    assert data.visit.visit_date == date(2026, 9, 1)
+    assert data.visit.visited_by == "Initial Admin"
+    assert data.customer.type_label == "Privatkunde"
+    assert data.customer.mobile == "0171 2345678"
+    assert data.customer.phone == "0123 456"
+
+    text = _pdf_text(render_project_report_pdf(data, final=False, generated_at=created_at), tmp_path)
+    assert "KUNDENBESUCH" in text
+    assert text.index("KUNDENBESUCH") < text.index("PROJEKT & KUNDE")
+    assert "Besuch am 01.09.2026" in text and "Initial Admin" in text
+    assert "Altbau von 1962" in text
+    assert "Privatkunde" in text
+    assert "Mobil" in text and "0171 2345678" in text
+    assert text.index("Telefon") < text.index("Mobil")
+
+
+def test_visit_section_is_absent_without_a_summary(client: TestClient, admin_token: str, tmp_path) -> None:
+    customer_id = _create_customer(client, admin_token, "Nie besucht GmbH")
+    project_id = _create_project(client, admin_token, "2026-7102", customer_id=customer_id)
+
+    data, created_at = _report_data(project_id)
+    assert data.visit is None
+    assert data.customer.type_label == ""
+    assert data.customer.mobile == ""
+
+    text = _pdf_text(render_project_report_pdf(data, final=False, generated_at=created_at), tmp_path)
+    assert "KUNDENBESUCH" not in text
+    assert "Kundentyp" not in text
+    assert "Mobil" not in text
+    assert "PROJEKT & KUNDE" in text
+
+    # No customer at all: nothing to preface with either.
+    alone_id = _create_project(client, admin_token, "2026-7103")
+    alone, _ = _report_data(alone_id)
+    assert alone.visit is None and alone.customer.type_label == "" and alone.customer.mobile == ""
+
+
+def test_overview_carries_the_linked_customer(client: TestClient, admin_token: str) -> None:
+    customer_id = _create_customer_with_visit(client, admin_token, "Kontakt Person")
+    project_id = _create_project(client, admin_token, "2026-7104", customer_id=customer_id)
+
+    overview = client.get(f"/api/projects/{project_id}/overview", headers=auth_headers(admin_token))
+    assert overview.status_code == 200, overview.text
+    customer = overview.json()["customer"]
+    assert customer["id"] == customer_id
+    assert customer["customer_type"] == "private"
+    assert customer["mobile"] == "0171 2345678"
+    assert customer["visit_summary"].startswith("Altbau von 1962")
+
+    alone_id = _create_project(client, admin_token, "2026-7105")
+    alone = client.get(f"/api/projects/{alone_id}/overview", headers=auth_headers(admin_token))
+    assert alone.status_code == 200, alone.text
+    assert alone.json()["customer"] is None

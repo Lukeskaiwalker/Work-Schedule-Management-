@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 from app.models.entities import (
     Attachment,
     ConstructionReport,
+    Customer,
     ProjectActivity,
     ProjectClassAssignment,
     ProjectClassTemplate,
@@ -90,6 +91,11 @@ SITE_ACCESS_LABELS: dict[str, str] = {
     "call_before_departure": "Anrufen vor Abfahrt",
 }
 
+CUSTOMER_TYPE_LABELS: dict[str, str] = {
+    "company": "Firma",
+    "private": "Privatkunde",
+}
+
 ACTIVITY_LABELS: dict[str, str] = {
     "project.created": "Projekt erstellt",
     "project.state_changed": "Status geändert",
@@ -111,6 +117,21 @@ class ReportCustomer:
     contact: str
     email: str
     phone: str
+    # From the linked Customer row — the project's snapshot fields have no
+    # mobile number and no type. Empty when the project has no customer or
+    # the customer never chose a type.
+    mobile: str = ""
+    type_label: str = ""
+
+
+@dataclass(frozen=True)
+class ReportVisit:
+    """What the first visit found — the preface of every report of this
+    customer, so the reader opens the sheet with the site in mind."""
+
+    summary: str
+    visit_date: date | None
+    visited_by: str
 
 
 @dataclass(frozen=True)
@@ -209,6 +230,9 @@ class ProjectReportData:
     site_access: str
     classes: tuple[str, ...]
     extra_attributes: tuple[tuple[str, str], ...]
+    # None when the customer has no write-up: the report then opens with
+    # the project, not with an empty box.
+    visit: ReportVisit | None = None
     members: tuple[ReportMember, ...] = ()
     tasks: tuple[ReportTask, ...] = ()
     notes: tuple[ReportNote, ...] = ()
@@ -239,6 +263,7 @@ def collect_project_report_data(db: Session, project_id: int) -> ProjectReportDa
     if project is None:
         raise ProjectNotFound(project_id)
     names = _UserNames(db)
+    customer = db.get(Customer, project.customer_id) if project.customer_id is not None else None
     return ProjectReportData(
         project_id=project.id,
         project_number=project.project_number,
@@ -248,17 +273,12 @@ def collect_project_report_data(db: Session, project_id: int) -> ProjectReportDa
         critical_since=project.critical_since,
         created_at=project.created_at,
         last_updated_at=project.last_updated_at,
-        customer=ReportCustomer(
-            name=_text(project.customer_name),
-            address=_text(project.customer_address),
-            contact=_text(project.customer_contact),
-            email=_text(project.customer_email),
-            phone=_text(project.customer_phone),
-        ),
+        customer=_customer(project, customer),
         site_address=_text(project.construction_site_address),
         site_access=site_access_display(project.site_access_type, project.site_access_note),
         classes=_class_names(db, project.id),
         extra_attributes=_extra_attribute_pairs(project.extra_attributes),
+        visit=_visit(customer, names),
         members=_members(db, project.id, names),
         tasks=_tasks(db, project.id, names),
         notes=_notes(db, project.id, names),
@@ -275,6 +295,39 @@ def project_status_label(raw: str | None) -> str:
         return "—"
     normalized = normalize_project_status(value)
     return PROJECT_STATUS_LABELS.get(normalized.lower(), value)
+
+
+def customer_type_label(raw: str | None) -> str:
+    """``Firma`` or ``Privatkunde``; empty when the customer never chose."""
+    return CUSTOMER_TYPE_LABELS.get((raw or "").strip().lower(), "")
+
+
+def _customer(project: Project, customer: Customer | None) -> ReportCustomer:
+    # Name, address and contact stay the project's snapshot: that is what
+    # the project showed, and the sync keeps it in step with the customer.
+    # Only what the snapshot never had comes from the customer row.
+    return ReportCustomer(
+        name=_text(project.customer_name),
+        address=_text(project.customer_address),
+        contact=_text(project.customer_contact),
+        email=_text(project.customer_email),
+        phone=_text(project.customer_phone),
+        mobile=_text(customer.mobile) if customer is not None else "",
+        type_label=customer_type_label(customer.customer_type) if customer is not None else "",
+    )
+
+
+def _visit(customer: Customer | None, names: _UserNames) -> ReportVisit | None:
+    if customer is None:
+        return None
+    summary = _text(customer.visit_summary)
+    if not summary:
+        return None
+    return ReportVisit(
+        summary=summary,
+        visit_date=customer.visit_date,
+        visited_by=names.of(customer.visit_by_user_id, fallback=""),
+    )
 
 
 def site_access_display(access_type: str | None, note: str | None) -> str:

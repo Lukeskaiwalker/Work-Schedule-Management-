@@ -10,6 +10,7 @@ from app.routers.workflow_project_report import (
     project_report_state_out,
 )
 from app.models.entities import Customer
+from app.schemas.customer import CustomerOut
 from app.services.project_membership import add_all_users_to_project
 from app.services.project_status import is_won_project_status, normalize_project_status
 from app.services.customers import (
@@ -611,6 +612,7 @@ def project_overview_detail(
         )
         or 0
     )
+    customer = db.get(Customer, project.customer_id) if project.customer_id is not None else None
     return ProjectOverviewOut(
         project=ProjectOut.model_validate(project),
         open_tasks=open_tasks,
@@ -620,6 +622,9 @@ def project_overview_detail(
         recent_changes=_recent_project_activities_out(db, project_id, limit=10),
         notes=project_notes_out(db, project_id, limit=OVERVIEW_NOTES_PAGE),
         project_report=project_report_state_out(db, project),
+        # The row itself, not the snapshot: Mobil and the customer type live
+        # only on the customer.
+        customer=CustomerOut.model_validate(customer) if customer is not None else None,
     )
 
 @router.get("/projects/{project_id}/weather", response_model=ProjectWeatherOut)

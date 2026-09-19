@@ -46,6 +46,10 @@ from app.services.project_report_data import (
 )
 
 TITLE = "Projektbericht"
+# The preface: what the first visit found. Unnumbered and printed only when
+# there is a write-up, so section 1 is PROJEKT & KUNDE in every report and
+# an old customer's sheet does not open with an empty box.
+VISIT_TITLE = "KUNDENBESUCH"
 # Printed where a section has nothing to show, so the reader knows the
 # section was considered rather than dropped.
 EMPTY = "keine"
@@ -104,6 +108,7 @@ def render_project_report_pdf(
 
     elements: list[Any] = []
     elements.extend(_header(styles, data, width, logo_path=logo_path, generated_at=generated_at))
+    elements.extend(_section_kundenbesuch(styles, data, width))
     elements.extend(_section_kopf(styles, data, width))
     elements.extend(_section_team(styles, data, width))
     elements.extend(_section_aufgaben(styles, data, width))
@@ -248,6 +253,21 @@ def _section_heading(styles, number: int, title: str, width: float) -> Any:
     return row
 
 
+def _preface_heading(styles, title: str, width: float) -> Any:
+    """A section rule without a number badge: the preface stands outside
+    the numbering, so the numbered sections read the same in every report."""
+    row = Table([[Paragraph(f"<b>{escape(title)}</b>", styles["SectionTitle"])]], colWidths=[width])
+    row.setStyle(TableStyle([
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LINEBELOW", (0, 0), (-1, -1), 0.6, _COLOR_BOX_BORDER),
+        ("LEFTPADDING", (0, 0), (-1, -1), 0),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+        ("TOPPADDING", (0, 0), (-1, -1), 8),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+    ]))
+    return row
+
+
 def _key_value(rows: list[tuple[str, str]], width: float) -> Table:
     table = Table([[_cell(k, bold=True), _cell(v or "—")] for k, v in rows], colWidths=[width * 0.28, width * 0.72])
     table.setStyle(TableStyle([
@@ -288,16 +308,44 @@ def _section(styles, number: int, title: str, width: float, body: list[Any]) -> 
 # ── Sections ─────────────────────────────────────────────────────────────────
 
 
+def _section_kundenbesuch(styles, data: ProjectReportData, width: float) -> list[Any]:
+    """The write-up of the first visit, ahead of the numbered sections —
+    only when there is one."""
+    visit = data.visit
+    if visit is None:
+        return []
+    when = f"Besuch am {_fmt_date(visit.visit_date)}" if visit.visit_date else ""
+    meta = " · ".join(bit for bit in (when, visit.visited_by) if bit)
+    body: list[Any] = [_para(meta, _MUTED_STYLE)] if meta else []
+    body.append(_para(visit.summary))
+    return [KeepTogether([_preface_heading(styles, VISIT_TITLE, width), Spacer(0, 3), body[0]]), *body[1:], Spacer(0, 4)]
+
+
+def _customer_rows(data: ProjectReportData) -> list[tuple[str, str]]:
+    """The customer's lines of the Kopf block. Type and Mobil appear only
+    when the customer has them — an old row prints as it always did."""
+    customer = data.customer
+    rows = [("Kunde", _or_dash(customer.name))]
+    if customer.type_label:
+        rows.append(("Kundentyp", customer.type_label))
+    rows.extend([
+        ("Kundenadresse", _or_dash(customer.address)),
+        ("Ansprechpartner", _or_dash(customer.contact)),
+        ("E-Mail", _or_dash(customer.email)),
+        ("Telefon", _or_dash(customer.phone)),
+    ])
+    if customer.mobile:
+        rows.append(("Mobil", customer.mobile))
+    return rows
+
+
 def _section_kopf(styles, data: ProjectReportData, width: float) -> list[Any]:
     customer = data.customer
-    contact_bits = [bit for bit in (customer.contact, customer.email, customer.phone) if bit]
     rows = [
         ("Projektnummer", data.project_number),
         ("Name", data.name),
         ("Status", data.status_label),
-        ("Kunde", _or_dash(customer.name)),
-        ("Kundenadresse", _or_dash(customer.address)),
-        ("Ansprechpartner", " / ".join(contact_bits) or "—"),
+        *_customer_rows(data),
         ("Baustellenadresse", _or_dash(data.site_address or customer.address)),
         ("Zugang", _or_dash(data.site_access)),
         ("Angelegt am", _fmt_datetime(data.created_at)),

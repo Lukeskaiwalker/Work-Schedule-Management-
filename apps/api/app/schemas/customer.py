@@ -15,7 +15,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
-from app.schemas.project import ProjectActivityOut
+from app.schemas.project import ProjectActivityOut, ProjectNoteCreate, ProjectOverviewOut
 
 
 class CustomerCreate(BaseModel):
@@ -34,6 +34,8 @@ class CustomerCreate(BaseModel):
     # What the first visit found — printed at the head of the Projektbericht.
     visit_summary: str | None = Field(default=None, max_length=8000)
     visit_date: date | None = None
+    # Who visited. Left out, whoever writes the summary is the visitor.
+    visit_by_user_id: int | None = None
 
 
 class CustomerUpdate(BaseModel):
@@ -52,6 +54,8 @@ class CustomerUpdate(BaseModel):
     # What the first visit found — printed at the head of the Projektbericht.
     visit_summary: str | None = Field(default=None, max_length=8000)
     visit_date: date | None = None
+    # Who visited. Left out, whoever writes the summary is the visitor.
+    visit_by_user_id: int | None = None
 
 
 class CustomerOut(BaseModel):
@@ -85,19 +89,44 @@ class CustomerListItemOut(CustomerOut):
 
 
 class CustomerActivityOut(ProjectActivityOut):
-    """One row of the customer's cross-project change log.
-    # Where the row comes from: the union of the customer's project logs and
-    # the customer's own events. A customer row has no project.
+    """One row of the customer's change log.
+
+    The log is the union of the customer's project logs and the customer's
+    own events, so on the customer page each row has to say where it came
+    from: a project row names its project, a customer row has none.
+    Mirrors `CustomerActivity` in the web types.
+    """
+
+    # "project" rows carry a project chip; "customer" rows are the
+    # customer's own events, which have no project to name.
     source: Literal["project", "customer"] = "project"
     project_id: int | None = None
     customer_id: int | None = None
+    project_number: str | None = None
+    project_name: str | None = None
     # Opaque keyset cursor of this row; pass it as ?cursor= to page further back.
     cursor: str = ""
 
-    A project activity, plus the project it belongs to — on the customer page
-    the rows of several projects sit in one list, so each has to say which
-    one it came from. Mirrors `CustomerActivity` in the web types.
-    """
 
-    project_number: str | None = None
-    project_name: str | None = None
+class CustomerNoteCreate(ProjectNoteCreate):
+    """A posting on the customer's feed. The body rule — stripped,
+    normalised line endings, 1..4000 characters — is the project note's,
+    inherited so the two feeds can never drift apart on what a note holds."""
+
+
+class CustomerNoteOut(BaseModel):
+    id: int
+    customer_id: int
+    author_user_id: int | None = None
+    # None for the entry migration 0092 carried over from the old notes
+    # text: nobody knows who wrote that one.
+    author_name: str | None = None
+    body: str
+    created_at: datetime
+
+
+# ``ProjectOverviewOut.customer`` names CustomerOut, but schemas.project
+# cannot import this module — this module imports it for ProjectActivityOut.
+# So the overview keeps the name as a forward reference and is completed
+# here, once CustomerOut exists.
+ProjectOverviewOut.model_rebuild(_types_namespace={"CustomerOut": CustomerOut})

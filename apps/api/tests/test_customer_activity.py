@@ -1,14 +1,18 @@
 """The customer's cross-project change log — ``GET /customers/{id}/activity``.
 
-What must hold: the events of all the customer's projects come back as one
-list, newest first, each row saying which project it is from; another
+What must hold: the events of all the customer's projects and the
+customer's own events come back as one list, newest first, each row saying
+which side it is from and, for a project row, which project; another
 customer's projects stay out; an employee gets only the projects they can
 see (membership is what draws that line, so the tests add and remove it on
-purpose); ``before_id`` pages backwards and the last page is shorter; the
+purpose); ``cursor`` pages backwards across both sources without a gap or
+a repeat, ``before_id`` still pages the project rows for the old card; the
 limit is clamped rather than rejected; an unknown customer is a 404.
 """
 
 from __future__ import annotations
+
+from urllib.parse import quote
 
 from fastapi.testclient import TestClient
 
@@ -115,6 +119,8 @@ def test_customer_activity_unions_the_customer_projects_newest_first(client: Tes
         ("task.created", "2026-3101"),
         ("project.created", "2026-3102"),
         ("project.created", "2026-3101"),
+        # The customer's own creation, before any project existed.
+        ("customer.created", None),
     ]
     assert [row["project_name"] for row in rows] == [
         "Projekt 2026-3102",
@@ -123,6 +129,7 @@ def test_customer_activity_unions_the_customer_projects_newest_first(client: Tes
         "Projekt 2026-3101",
         "Projekt 2026-3102",
         "Projekt 2026-3101",
+        None,
     ]
     assert [row["project_id"] for row in rows] == [
         second["id"],
@@ -131,10 +138,15 @@ def test_customer_activity_unions_the_customer_projects_newest_first(client: Tes
         first["id"],
         second["id"],
         first["id"],
+        None,
     ]
+    assert [row["source"] for row in rows] == ["project"] * 6 + ["customer"]
     assert all(row["actor_name"] for row in rows)
+    assert all(row["customer_id"] == customer["id"] for row in rows)
     assert rows[0]["message"] == "Task created: Material bestellen"
-    assert [row["id"] for row in rows] == sorted((row["id"] for row in rows), reverse=True)
+    # Ids only order within a source — the two tables count separately.
+    project_ids = [row["id"] for row in rows if row["source"] == "project"]
+    assert project_ids == sorted(project_ids, reverse=True)
 
 
 def test_customer_activity_excludes_the_projects_of_other_customers(client: TestClient, admin_token: str):
@@ -148,9 +160,10 @@ def test_customer_activity_excludes_the_projects_of_other_customers(client: Test
 
     rows = _activity(client, admin_token, customer["id"])
 
-    assert [row["event_type"] for row in rows] == ["task.created", "project.created"]
-    assert {row["project_id"] for row in rows} == {own_project["id"]}
+    assert [row["event_type"] for row in rows] == ["task.created", "project.created", "customer.created"]
+    assert {row["project_id"] for row in rows if row["source"] == "project"} == {own_project["id"]}
     assert rows[0]["message"] == "Task created: Eigene Aufgabe"
+    assert rows[-1]["message"] == "Kunde angelegt: Eigener Kunde"
 
 
 def test_employee_sees_only_the_projects_they_are_on(client: TestClient, admin_token: str):
@@ -166,16 +179,21 @@ def test_employee_sees_only_the_projects_they_are_on(client: TestClient, admin_t
     employee_rows = _activity(client, _login(client, "employee-activity@example.com"), customer["id"])
     admin_rows = _activity(client, admin_token, customer["id"])
 
-    # Creation plus the task: two rows, both of the visible project.
-    assert [row["project_id"] for row in employee_rows] == [visible["id"], visible["id"]]
-    assert [row["event_type"] for row in employee_rows] == ["task.created", "project.created"]
-    assert {row["project_id"] for row in admin_rows} == {visible["id"], hidden["id"]}
+    # Creation plus the task of the visible project, then the customer's
+    # own creation, which no project membership guards.
+    assert [row["project_id"] for row in employee_rows] == [visible["id"], visible["id"], None]
+    assert [row["event_type"] for row in employee_rows] == ["task.created", "project.created", "customer.created"]
+    assert {row["project_id"] for row in admin_rows if row["source"] == "project"} == {visible["id"], hidden["id"]}
 
 
 def test_customer_activity_pages_backwards_by_before_id(client: TestClient, admin_token: str):
+    """The old card's cursor: a project-row id. It cannot place a customer
+    row, so a client paging by it gets the project rows only — five here,
+    the customer's own creation is not among them — and never a repeat."""
     customer = _create_customer(client, admin_token, "Seitenweise")
     project = _create_project(client, admin_token, "2026-3131", customer["id"])
-    # Four tasks plus the creation: five rows, so pages of two end in a short one.
+    # Four tasks plus the project's creation: five project rows, so pages
+    # of two end in a short one.
     for index in range(4):
         _create_task(client, admin_token, project["id"], f"Aufgabe {index}")
 
@@ -191,6 +209,7 @@ def test_customer_activity_pages_backwards_by_before_id(client: TestClient, admi
         f"Task created: Aufgabe {index}" for index in (3, 2, 1, 0)
     ]
     assert last_page[0]["event_type"] == "project.created"
+    assert all(row["source"] == "project" for row in first_page + second_page + last_page)
 
     beyond = _activity(client, admin_token, customer["id"], f"?before_id={last_page[-1]['id']}")
     assert beyond == []
@@ -201,8 +220,8 @@ def test_customer_activity_clamps_the_limit(client: TestClient, admin_token: str
     project = _create_project(client, admin_token, "2026-3141", customer["id"])
     for index in range(3):
         _create_task(client, admin_token, project["id"], f"Aufgabe {index}")
-    # Three tasks plus the creation.
-    total_rows = 4
+    # Three tasks, the project's creation and the customer's.
+    total_rows = 5
 
     assert len(_activity(client, admin_token, customer["id"], "?limit=0")) == 1
     assert len(_activity(client, admin_token, customer["id"], "?limit=-5")) == 1
@@ -210,11 +229,90 @@ def test_customer_activity_clamps_the_limit(client: TestClient, admin_token: str
     assert len(_activity(client, admin_token, customer["id"])) == total_rows
 
 
-def test_customer_activity_of_a_customer_without_projects_is_empty(client: TestClient, admin_token: str):
+def test_customer_activity_of_a_customer_without_projects_is_its_creation(client: TestClient, admin_token: str):
     customer = _create_customer(client, admin_token, "Ohne Projekte")
-    assert _activity(client, admin_token, customer["id"]) == []
+    rows = _activity(client, admin_token, customer["id"])
+    assert [(row["event_type"], row["source"], row["project_id"]) for row in rows] == [("customer.created", "customer", None)]
+    assert rows[0]["customer_id"] == customer["id"]
+    assert rows[0]["cursor"]
 
 
 def test_customer_activity_of_an_unknown_customer_is_404(client: TestClient, admin_token: str):
     response = client.get("/api/customers/999999/activity", headers=auth_headers(admin_token))
     assert response.status_code == 404
+
+
+# ── the two sources in one feed ──────────────────────────────────────────
+
+
+def _patch_customer(client: TestClient, token: str, customer_id: int, payload: dict) -> None:
+    response = client.patch(f"/api/customers/{customer_id}", headers=auth_headers(token), json=payload)
+    assert response.status_code == 200, response.text
+
+
+def _post_customer_note(client: TestClient, token: str, customer_id: int, body: str) -> None:
+    response = client.post(f"/api/customers/{customer_id}/notes", headers=auth_headers(token), json={"body": body})
+    assert response.status_code == 200, response.text
+
+
+def _interleaved_customer(client: TestClient, admin_token: str, name: str, number: str) -> tuple[dict, dict]:
+    """Customer and project events written turn and turn about, so the
+    feed has to merge the two logs by time, not append one to the other."""
+    customer = _create_customer(client, admin_token, name)  # customer.created
+    project = _create_project(client, admin_token, number, customer["id"])  # project.created
+    _patch_customer(client, admin_token, customer["id"], {"phone": "030 1"})  # customer.updated
+    _create_task(client, admin_token, project["id"], "Angebot schreiben")  # task.created
+    _post_customer_note(client, admin_token, customer["id"], "Kunde ruft zurück")  # customer.note_posted
+    return customer, project
+
+
+def test_customer_and_project_events_interleave_newest_first(client: TestClient, admin_token: str):
+    customer, project = _interleaved_customer(client, admin_token, "Verzahnt", "2026-3151")
+
+    rows = _activity(client, admin_token, customer["id"])
+
+    assert [(row["event_type"], row["source"]) for row in rows] == [
+        ("customer.note_posted", "customer"),
+        ("task.created", "project"),
+        ("customer.updated", "customer"),
+        ("project.created", "project"),
+        ("customer.created", "customer"),
+    ]
+    for row in rows:
+        assert row["customer_id"] == customer["id"]
+        assert row["actor_name"]
+        assert row["cursor"]
+        if row["source"] == "project":
+            assert row["project_id"] == project["id"] and row["project_number"] == "2026-3151"
+        else:
+            assert row["project_id"] is None and row["project_number"] is None and row["project_name"] is None
+    assert len({row["cursor"] for row in rows}) == 5
+
+
+def test_cursor_pages_across_the_sources_without_duplicates_or_gaps(client: TestClient, admin_token: str):
+    customer, project = _interleaved_customer(client, admin_token, "Blättern", "2026-3161")
+    _create_task(client, admin_token, project["id"], "Material bestellen")  # task.created
+    _patch_customer(client, admin_token, customer["id"], {"mobile": "0171 1"})  # customer.updated
+    # Seven rows, alternating sources — pages of three cut across a boundary twice.
+    full = _activity(client, admin_token, customer["id"], "?limit=50")
+    assert len(full) == 7
+
+    pages: list[list[dict]] = []
+    cursor: str | None = None
+    while True:
+        query = "?limit=3" + (f"&cursor={quote(cursor)}" if cursor else "")
+        page = _activity(client, admin_token, customer["id"], query)
+        if not page:
+            break
+        pages.append(page)
+        cursor = page[-1]["cursor"]
+
+    assert [len(page) for page in pages] == [3, 3, 1]
+    keys = [(row["source"], row["id"]) for page in pages for row in page]
+    assert keys == [(row["source"], row["id"]) for row in full]
+    assert len(set(keys)) == 7
+    # The second page starts across a source boundary from the first's end.
+    assert pages[0][-1]["source"] != pages[1][0]["source"]
+
+    # A cursor nobody issued shows the first page, like an out-of-range limit.
+    assert _activity(client, admin_token, customer["id"], "?limit=3&cursor=nonsense") == pages[0]

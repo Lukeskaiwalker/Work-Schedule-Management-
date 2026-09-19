@@ -11,9 +11,16 @@ Included from `workflow.py` under the `/api` prefix. Endpoints:
   POST  /api/customers/{id}/archive soft-archive
   POST  /api/customers/{id}/unarchive clear archive
 
+The note feed (`/api/customers/{id}/notes`) lives in
+`workflow_customer_notes.py`.
+
 No hard delete. Permission piggy-backs on `projects:manage` —
 customers are a sub-concept of the project lifecycle. Archiving a
 customer does NOT cascade: linked projects keep their customer_id.
+
+Every change to the customer itself — creation, Stammdaten, the visit
+write-up, archiving — leaves a `customer.*` row in `customer_activities`,
+which the change log unions with the project logs.
 """
 
 from __future__ import annotations
@@ -37,6 +44,7 @@ from app.schemas.project import ProjectOut
 from app.services.customer_activity import (
     CUSTOMER_ACTIVITY_LIMIT_DEFAULT,
     customer_activity_page,
+    record_customer_activity,
 )
 from app.services.customers import sync_project_from_customer
 from app.services.search_matching import (
@@ -50,6 +58,10 @@ from app.services.search_matching import (
 
 router = APIRouter(prefix="", tags=["customers"])
 
+# The visit write-up is an event of its own on the change log, not a
+# Stammdaten edit — see `_record_customer_changes`.
+VISIT_FIELDS = frozenset({"visit_summary", "visit_date", "visit_by_user_id"})
+
 
 def _customer_list_item(
     row: Customer,
@@ -58,27 +70,93 @@ def _customer_list_item(
     active_project_count: int,
     last_project_activity_at,
 ) -> CustomerListItemOut:
-    return CustomerListItemOut.model_validate(
-        {
-            "id": row.id,
-            "name": row.name,
-            "address": row.address,
-            "contact_person": row.contact_person,
-            "email": row.email,
-            "phone": row.phone,
-            "tax_id": row.tax_id,
-            "notes": row.notes,
-            "birthday": row.birthday,
-            "marktakteur_nummer": row.marktakteur_nummer,
-            "archived_at": row.archived_at,
-            "created_by": row.created_by,
-            "created_at": row.created_at,
-            "updated_at": row.updated_at,
-            "project_count": project_count,
-            "active_project_count": active_project_count,
-            "last_project_activity_at": last_project_activity_at,
-        }
+    # Built from CustomerOut so a column added to the customer reaches the
+    # list without a second field list to keep in step.
+    return CustomerListItemOut(
+        **CustomerOut.model_validate(row).model_dump(),
+        project_count=project_count,
+        active_project_count=active_project_count,
+        last_project_activity_at=last_project_activity_at,
     )
+
+
+def _assert_known_user(db: Session, user_id: int | None) -> None:
+    """A visitor the payload names must exist — a bad id is a 400 here,
+    not a foreign-key error on commit."""
+    if user_id is not None and db.get(User, user_id) is None:
+        raise HTTPException(status_code=400, detail="Unknown visit_by_user_id")
+
+
+def _visit_author(summary: str | None, given: int | None, *, actor_user_id: int) -> int | None:
+    """Whoever writes the summary is the visitor unless the payload names
+    someone else; a cleared summary has no visitor."""
+    if given is not None:
+        return given
+    return actor_user_id if (summary or "").strip() else None
+
+
+def _blank_to_none(value):
+    return None if value == "" else value
+
+
+def _same_value(current, incoming) -> bool:
+    """Blank and absent are the same thing to the log: a form that sends
+    "" for a field that was never filled has not changed it."""
+    return _blank_to_none(current) == _blank_to_none(incoming)
+
+
+def _normalized_update(payload: CustomerUpdate) -> dict:
+    """The PATCH body as column values: only what was sent, the name
+    stripped and required, the email as a plain string."""
+    data = payload.model_dump(exclude_unset=True)
+    overrides: dict = {}
+    if "name" in data:
+        name = (data["name"] or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="Name is required")
+        overrides["name"] = name
+    if data.get("email") is not None:
+        overrides["email"] = str(data["email"])
+    return {**data, **overrides}
+
+
+def _visit_message(customer: Customer) -> str:
+    if not (customer.visit_summary or "").strip():
+        return "Kundenbesuch entfernt"
+    if customer.visit_date is not None:
+        return f"Kundenbesuch am {customer.visit_date.strftime('%d.%m.%Y')}"
+    return "Kundenbesuch erfasst"
+
+
+def _record_customer_changes(db: Session, customer: Customer, *, actor_user_id: int, changed: list[str]) -> None:
+    """What the PATCH did, for the change log: the Stammdaten as one
+    ``customer.updated`` naming the fields, the visit as its own
+    ``customer.visit_updated`` — a visit written up is a moment in the
+    customer's story, not a field edit. Nothing changed, nothing logged."""
+    stammdaten = [field for field in changed if field not in VISIT_FIELDS]
+    if stammdaten:
+        record_customer_activity(
+            db,
+            customer_id=customer.id,
+            actor_user_id=actor_user_id,
+            event_type="customer.updated",
+            message=f"Stammdaten geändert: {', '.join(stammdaten)}",
+            details={"changed": stammdaten},
+        )
+    visit = [field for field in changed if field in VISIT_FIELDS]
+    if visit:
+        record_customer_activity(
+            db,
+            customer_id=customer.id,
+            actor_user_id=actor_user_id,
+            event_type="customer.visit_updated",
+            message=_visit_message(customer),
+            details={
+                "changed": visit,
+                "visit_date": customer.visit_date.isoformat() if customer.visit_date else None,
+                "visit_by_user_id": customer.visit_by_user_id,
+            },
+        )
 
 
 def _aggregate_project_stats(
@@ -276,6 +354,7 @@ def create_customer(
     name = payload.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="Name is required")
+    _assert_known_user(db, payload.visit_by_user_id)
     row = Customer(
         name=name,
         address=(payload.address or None),
@@ -286,9 +365,23 @@ def create_customer(
         notes=(payload.notes or None),
         birthday=payload.birthday,
         marktakteur_nummer=(payload.marktakteur_nummer or None),
+        customer_type=payload.customer_type,
+        mobile=(payload.mobile or None),
+        visit_summary=(payload.visit_summary or None),
+        visit_date=payload.visit_date,
+        visit_by_user_id=_visit_author(payload.visit_summary, payload.visit_by_user_id, actor_user_id=current_user.id),
         created_by=current_user.id,
     )
     db.add(row)
+    db.flush()
+    record_customer_activity(
+        db,
+        customer_id=row.id,
+        actor_user_id=current_user.id,
+        event_type="customer.created",
+        message=f"Kunde angelegt: {name}",
+        details={"name": name, "customer_type": row.customer_type},
+    )
     db.commit()
     db.refresh(row)
     return row
@@ -298,23 +391,21 @@ def create_customer(
 def update_customer(
     customer_id: int,
     payload: CustomerUpdate,
-    _: User = Depends(require_permission("projects:manage")),
+    current_user: User = Depends(require_permission("projects:manage")),
     db: Session = Depends(get_db),
 ) -> Customer:
     row = db.get(Customer, customer_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Customer not found")
-    data = payload.model_dump(exclude_unset=True)
-    if "name" in data:
-        if data["name"] is None:
-            raise HTTPException(status_code=400, detail="Name is required")
-        data["name"] = data["name"].strip()
-        if not data["name"]:
-            raise HTTPException(status_code=400, detail="Name is required")
-    if "email" in data and data["email"] is not None:
-        data["email"] = str(data["email"])
+    data = _normalized_update(payload)
+    _assert_known_user(db, data.get("visit_by_user_id"))
+    # Compared before the write, so the log names what actually changed
+    # and a PATCH that re-sends the form untouched leaves no row.
+    changed = [field for field, value in data.items() if not _same_value(getattr(row, field), value)]
     for field, value in data.items():
         setattr(row, field, value)
+    if "visit_summary" in changed and "visit_by_user_id" not in data:
+        row.visit_by_user_id = _visit_author(row.visit_summary, None, actor_user_id=current_user.id)
     row.updated_at = utcnow()
     db.add(row)
     # Keep linked projects' denormalised mirror in step.
@@ -325,6 +416,7 @@ def update_customer(
         sync_project_from_customer(project, row)
         project.last_updated_at = utcnow()
         db.add(project)
+    _record_customer_changes(db, row, actor_user_id=current_user.id, changed=changed)
     db.commit()
     db.refresh(row)
     return row
@@ -333,7 +425,7 @@ def update_customer(
 @router.post("/customers/{customer_id}/archive", response_model=CustomerOut)
 def archive_customer(
     customer_id: int,
-    _: User = Depends(require_permission("projects:manage")),
+    current_user: User = Depends(require_permission("projects:manage")),
     db: Session = Depends(get_db),
 ) -> Customer:
     row = db.get(Customer, customer_id)
@@ -343,6 +435,13 @@ def archive_customer(
         row.archived_at = utcnow()
         row.updated_at = utcnow()
         db.add(row)
+        record_customer_activity(
+            db,
+            customer_id=row.id,
+            actor_user_id=current_user.id,
+            event_type="customer.archived",
+            message="Kunde archiviert",
+        )
         db.commit()
         db.refresh(row)
     return row
@@ -351,7 +450,7 @@ def archive_customer(
 @router.post("/customers/{customer_id}/unarchive", response_model=CustomerOut)
 def unarchive_customer(
     customer_id: int,
-    _: User = Depends(require_permission("projects:manage")),
+    current_user: User = Depends(require_permission("projects:manage")),
     db: Session = Depends(get_db),
 ) -> Customer:
     row = db.get(Customer, customer_id)
@@ -361,6 +460,13 @@ def unarchive_customer(
         row.archived_at = None
         row.updated_at = utcnow()
         db.add(row)
+        record_customer_activity(
+            db,
+            customer_id=row.id,
+            actor_user_id=current_user.id,
+            event_type="customer.unarchived",
+            message="Archivierung aufgehoben",
+        )
         db.commit()
         db.refresh(row)
     return row

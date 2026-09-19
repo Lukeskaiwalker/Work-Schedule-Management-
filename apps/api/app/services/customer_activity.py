@@ -5,11 +5,10 @@ Every project overview has a "Letzte Änderungen" card fed by
 that customer's projects — the office asks "what happened at Müller lately",
 not "what happened in 2026-0412".
 
-There are no customer-level events yet: nothing records a customer's own
-edits, so this feed is exactly the union of the project logs. When customer
-events arrive (a nullable `customer_id` on the activity row, or a table of
-their own) this module is where they join the feed — the router and the card
-only see `CustomerActivityOut`.
+Since the customer got a log of its own (`customer_activities`: creation,
+Stammdaten, the visit write-up, notes, archiving) the feed is the union of
+that and the project logs, merged by time. The router and the card only
+see `CustomerActivityOut`; ``source`` says which side a row came from.
 
 The caller hands in the project ids the user may see; the feed never widens
 past them. That intersection, not a permission on the endpoint, is what
@@ -153,7 +152,13 @@ def customer_activity_page(
     if cursor_key is not None:
         cstmt = cstmt.where(CustomerActivity.created_at <= cursor_key[0])
     cstmt = cstmt.order_by(CustomerActivity.created_at.desc(), CustomerActivity.id.desc()).limit(page + 1)
-    customer_rows = list(db.scalars(cstmt).all())
+    # ``before_id`` is a project-row id and the customer table counts its
+    # own, so that cursor cannot place a customer row: a client paging by
+    # it gets the project-only feed it was written for, without a customer
+    # row repeating on every page. ``cursor`` pages both sources.
+    customer_rows: list[CustomerActivity] = []
+    if cursor_key is not None or before_id is None:
+        customer_rows = list(db.scalars(cstmt).all())
 
     merged: list[tuple[tuple[datetime, str, int], ProjectActivity | CustomerActivity, str]] = []
     for row in project_rows:

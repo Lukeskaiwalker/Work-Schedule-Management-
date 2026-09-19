@@ -571,3 +571,170 @@ def test_customer_search_treats_a_percent_as_a_literal(client, admin_token):
     _create_customer(client, admin_token, name="Nothing To Do With It", address="Nebenstr 2")
 
     assert _phone_names(client, admin_token, "50%25") == {"Rabatt 50% GmbH"}
+
+
+# ── customers that work like projects: type, mobile, the visit, the log ──
+#
+# Every change to the customer itself leaves a `customer.*` row on the
+# customer's change log. The tests read that log back through the activity
+# endpoint, which is what the customer page shows.
+
+
+def _activity(client: TestClient, admin_token: str, customer_id: int) -> list[dict]:
+    response = client.get(f"/api/customers/{customer_id}/activity", headers=auth_headers(admin_token))
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _events(client: TestClient, admin_token: str, customer_id: int, event_type: str) -> list[dict]:
+    return [row for row in _activity(client, admin_token, customer_id) if row["event_type"] == event_type]
+
+
+def _patch(client: TestClient, admin_token: str, customer_id: int, payload: dict) -> dict:
+    response = client.patch(f"/api/customers/{customer_id}", headers=auth_headers(admin_token), json=payload)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_customer_create_round_trips_type_mobile_and_visit(client: TestClient, admin_token: str):
+    response = client.post(
+        "/api/customers",
+        headers=auth_headers(admin_token),
+        json={
+            "name": "Privat Person",
+            "customer_type": "private",
+            "mobile": "0171 2345678",
+            "visit_summary": "Altbau, Zähler im Keller",
+            "visit_date": "2026-09-01",
+        },
+    )
+    assert response.status_code == 200, response.text
+    created = response.json()
+    assert created["customer_type"] == "private"
+    assert created["mobile"] == "0171 2345678"
+    assert created["visit_summary"] == "Altbau, Zähler im Keller"
+    assert created["visit_date"] == "2026-09-01"
+    # Nobody named the visitor, so whoever wrote the summary is.
+    assert created["visit_by_user_id"] == created["created_by"]
+
+    detail = client.get(f"/api/customers/{created['id']}", headers=auth_headers(admin_token)).json()
+    assert {key: detail[key] for key in ("customer_type", "mobile", "visit_summary", "visit_date", "visit_by_user_id")} == {
+        "customer_type": "private",
+        "mobile": "0171 2345678",
+        "visit_summary": "Altbau, Zähler im Keller",
+        "visit_date": "2026-09-01",
+        "visit_by_user_id": created["created_by"],
+    }
+
+    rows = _activity(client, admin_token, created["id"])
+    assert [row["event_type"] for row in rows] == ["customer.created"]
+    assert rows[0]["source"] == "customer"
+    assert rows[0]["project_id"] is None
+    assert rows[0]["message"] == "Kunde angelegt: Privat Person"
+    assert rows[0]["details"] == {"name": "Privat Person", "customer_type": "private"}
+    assert rows[0]["actor_name"]
+
+
+def test_customer_type_must_be_company_or_private(client: TestClient, admin_token: str):
+    refused = client.post("/api/customers", headers=auth_headers(admin_token), json={"name": "Verein", "customer_type": "club"})
+    assert refused.status_code == 422, refused.text
+    # Never chosen is allowed — rows from before the field have no type.
+    untyped = client.post("/api/customers", headers=auth_headers(admin_token), json={"name": "Ohne Typ"})
+    assert untyped.status_code == 200, untyped.text
+    assert untyped.json()["customer_type"] is None
+
+
+def test_customer_list_item_carries_type_and_mobile(client: TestClient, admin_token: str):
+    response = client.post(
+        "/api/customers",
+        headers=auth_headers(admin_token),
+        json={"name": "Listen GmbH", "customer_type": "company", "contact_person": "Herr List", "mobile": "0160 1"},
+    )
+    assert response.status_code == 200, response.text
+
+    listing = client.get("/api/customers?q=Listen", headers=auth_headers(admin_token))
+    assert listing.status_code == 200, listing.text
+    rows = [row for row in listing.json() if row["name"] == "Listen GmbH"]
+    assert rows and rows[0]["customer_type"] == "company" and rows[0]["mobile"] == "0160 1"
+
+
+def test_update_records_the_changed_fields(client: TestClient, admin_token: str):
+    customer = _create_customer(client, admin_token, name="Alt GmbH", phone="030 1")
+
+    # address: None for a field that was never filled is not a change.
+    _patch(client, admin_token, customer["id"], {"name": "Neu GmbH", "phone": "030 2", "address": None})
+
+    updated = _events(client, admin_token, customer["id"], "customer.updated")
+    assert len(updated) == 1
+    assert updated[0]["message"] == "Stammdaten geändert: name, phone"
+    assert updated[0]["details"] == {"changed": ["name", "phone"]}
+    assert updated[0]["source"] == "customer"
+    assert updated[0]["actor_name"]
+
+
+def test_unchanged_patch_leaves_no_row(client: TestClient, admin_token: str):
+    customer = _create_customer(client, admin_token, name="Gleich GmbH", phone="030 1")
+
+    # The form re-sent untouched: same values, "" for what was never filled.
+    _patch(client, admin_token, customer["id"], {"name": "Gleich GmbH", "phone": "030 1", "address": "", "notes": ""})
+
+    assert [row["event_type"] for row in _activity(client, admin_token, customer["id"])] == ["customer.created"]
+
+
+def test_visit_update_sets_the_visitor_and_is_its_own_event(client: TestClient, admin_token: str):
+    customer = _create_customer(client, admin_token, name="Besucht GmbH")
+    assert customer["visit_by_user_id"] is None
+
+    written = _patch(client, admin_token, customer["id"], {"visit_summary": "Zählerschrank im Keller", "visit_date": "2026-09-15"})
+    assert written["visit_by_user_id"] == customer["created_by"]
+
+    visits = _events(client, admin_token, customer["id"], "customer.visit_updated")
+    assert len(visits) == 1
+    assert visits[0]["message"] == "Kundenbesuch am 15.09.2026"
+    assert visits[0]["details"] == {
+        "changed": ["visit_summary", "visit_date"],
+        "visit_date": "2026-09-15",
+        "visit_by_user_id": customer["created_by"],
+    }
+    # The visit is not a Stammdaten edit.
+    assert _events(client, admin_token, customer["id"], "customer.updated") == []
+
+    # A named visitor is kept as named.
+    colleague = client.post(
+        "/api/admin/users",
+        headers=auth_headers(admin_token),
+        json={"email": "visitor@example.com", "password": "Password123!", "full_name": "Vera Vorort", "role": "employee"},
+    )
+    assert colleague.status_code == 200, colleague.text
+    named = _patch(client, admin_token, customer["id"], {"visit_summary": "Zweiter Besuch", "visit_by_user_id": colleague.json()["id"]})
+    assert named["visit_by_user_id"] == colleague.json()["id"]
+
+    # A cleared summary has no visitor.
+    cleared = _patch(client, admin_token, customer["id"], {"visit_summary": None})
+    assert cleared["visit_by_user_id"] is None
+    assert _events(client, admin_token, customer["id"], "customer.visit_updated")[0]["message"] == "Kundenbesuch entfernt"
+
+
+def test_unknown_visitor_is_rejected(client: TestClient, admin_token: str):
+    refused = client.post(
+        "/api/customers", headers=auth_headers(admin_token), json={"name": "Geist GmbH", "visit_by_user_id": 999999}
+    )
+    assert refused.status_code == 400, refused.text
+    customer = _create_customer(client, admin_token, name="Echt GmbH")
+    patched = client.patch(
+        f"/api/customers/{customer['id']}", headers=auth_headers(admin_token), json={"visit_by_user_id": 999999}
+    )
+    assert patched.status_code == 400, patched.text
+
+
+def test_archive_and_unarchive_are_recorded_once(client: TestClient, admin_token: str):
+    customer = _create_customer(client, admin_token, name="Archiv GmbH")
+
+    for _ in range(2):
+        assert client.post(f"/api/customers/{customer['id']}/archive", headers=auth_headers(admin_token)).status_code == 200
+    for _ in range(2):
+        assert client.post(f"/api/customers/{customer['id']}/unarchive", headers=auth_headers(admin_token)).status_code == 200
+
+    rows = _activity(client, admin_token, customer["id"])
+    assert [row["event_type"] for row in rows] == ["customer.unarchived", "customer.archived", "customer.created"]
+    assert [row["message"] for row in rows[:2]] == ["Archivierung aufgehoben", "Kunde archiviert"]
