@@ -1,0 +1,430 @@
+/* ══════════════════════════════════════════════════════════════════════════
+   Files area: the click-through viewer (components/files/FileLightbox).
+
+   Lives here rather than in styles.css (frozen for the wave). Imported by the
+   component; Vite dedupes the import. Every class is prefixed file-lightbox-
+   so nothing here can collide with the chat lightbox or the native viewer,
+   both of which it deliberately resembles.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Overlay ──────────────────────────────────────────────────────────────
+   Rendered through a portal at the end of <body>, so it sits above whichever
+   host opened it (a page, or the task modal) by document order alone and can
+   take the modal tier instead of a raw number. Toasts and the native shell's
+   own viewer (400) stay above it on purpose: in the shell, "Herunterladen"
+   hands the file to that viewer, and it has to paint on top of this one.
+
+   Dark by design, like the chat lightbox — the app has no dark theme, and a
+   photo reads better against near-black than against the page tint. The
+   colours are therefore local tokens rather than the page's. */
+.file-lightbox-backdrop {
+  --file-lightbox-ink: #f2f7fc;
+  --file-lightbox-muted: #b9c8d8;
+  --file-lightbox-control: rgba(255, 255, 255, 0.12);
+  --file-lightbox-control-hover: rgba(255, 255, 255, 0.24);
+  --file-lightbox-danger: #ff9b9b;
+  --file-lightbox-focus: #8fc1ee;
+  --file-lightbox-paper: #ffffff;
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  background-color: rgba(7, 14, 22, 0.92);
+  color: var(--file-lightbox-ink);
+  padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+    env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+  outline: none;
+}
+
+/* ── Toolbar ── */
+
+.file-lightbox-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 56px;
+  padding: 10px 12px;
+}
+
+.file-lightbox-counter {
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--file-lightbox-muted);
+}
+
+.file-lightbox-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+
+/* One control family for everything tappable on the dark ground: pills for
+   the words, circles for the glyphs. 40px is the touch-target floor the rest
+   of the mobile shell uses. */
+.file-lightbox-action,
+.file-lightbox-close,
+.file-lightbox-nav,
+.file-lightbox-pager-btn {
+  appearance: none;
+  border: 0;
+  background: var(--file-lightbox-control);
+  color: var(--file-lightbox-ink);
+  font: inherit;
+  cursor: pointer;
+  transition: background-color 0.12s ease;
+}
+
+.file-lightbox-action:hover,
+.file-lightbox-close:hover,
+.file-lightbox-nav:hover,
+.file-lightbox-pager-btn:hover:not(:disabled) {
+  background: var(--file-lightbox-control-hover);
+}
+
+.file-lightbox-action:focus-visible,
+.file-lightbox-close:focus-visible,
+.file-lightbox-nav:focus-visible,
+.file-lightbox-pager-btn:focus-visible {
+  outline: 2px solid var(--file-lightbox-focus);
+  outline-offset: 2px;
+}
+
+.file-lightbox-action {
+  display: inline-flex;
+  align-items: center;
+  min-height: 40px;
+  padding: 8px 14px;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.file-lightbox-action:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.file-lightbox-action--danger {
+  color: var(--file-lightbox-danger);
+}
+
+.file-lightbox-close {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  font-size: 24px;
+  line-height: 1;
+}
+
+/* ── Stage ── */
+
+.file-lightbox-stage {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 0;
+  /* Gutters for the arrows on a wide screen; the phone rule below removes
+     them and lets the arrows overlay the content instead. */
+  padding: 0 64px;
+  /* Horizontal swipes are ours; vertical panning (a tall page, a long text)
+     and pinch-zoom stay with the browser. Without this the engine claims the
+     gesture for panning and the pointer sequence ends in pointercancel. */
+  touch-action: pan-y pinch-zoom;
+}
+
+.file-lightbox-content {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.file-lightbox-nav {
+  position: absolute;
+  top: 50%;
+  z-index: 1;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  font-size: 28px;
+  line-height: 1;
+  transform: translateY(-50%);
+}
+
+.file-lightbox-nav--prev {
+  left: 10px;
+}
+
+.file-lightbox-nav--next {
+  right: 10px;
+}
+
+/* ── What the stage shows ── */
+
+.file-lightbox-image {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 6px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+}
+
+/* The loading note is hidden the moment an image element exists beside it:
+   in the shell AuthedImage renders nothing until the bytes arrive, and an
+   empty stage would look like the tap did nothing. */
+.file-lightbox-image ~ .file-lightbox-note {
+  display: none;
+}
+
+/* Above the loading note and transparent until the engine's viewer paints:
+   the note shows through an unloaded frame and is covered the moment the
+   document renders, whether or not the frame ever reports `load`. */
+.file-lightbox-frame {
+  position: relative;
+  z-index: 1;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+}
+
+.file-lightbox-text {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 16px;
+  overflow: auto;
+  border-radius: 6px;
+  background: var(--file-lightbox-paper);
+  color: var(--ink);
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Paged PDF (engines whose frame cannot draw one): the page above, the
+   pager below, the page canvas taking whatever height is left. */
+.file-lightbox-pages {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.file-lightbox-page-canvas {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.file-lightbox-page-image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+  background: var(--file-lightbox-paper);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+  transition: opacity 0.12s ease;
+}
+
+/* The outgoing page stays on screen, dimmed, while the next one loads —
+   blanking to a spinner made every page turn feel like a fresh load. */
+.file-lightbox-page-image.is-stale {
+  opacity: 0.45;
+}
+
+.file-lightbox-pager {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
+.file-lightbox-pager-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  font-size: 24px;
+  line-height: 1;
+}
+
+.file-lightbox-pager-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.file-lightbox-pager-label {
+  min-width: 7ch;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  color: var(--file-lightbox-muted);
+}
+
+/* ── Notes and panels ── */
+
+/* Fills the stage behind whatever is loading, so it is never blank — and
+   never in the way: it takes no pointer events, so nothing it lingers over
+   becomes untappable. */
+.file-lightbox-note {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  display: flex;
+  pointer-events: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 24px;
+  text-align: center;
+  color: var(--file-lightbox-muted);
+}
+
+/* No preview, or a failed one: the name, one line of why, the way out. */
+.file-lightbox-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  max-width: 32rem;
+  padding: 24px;
+  text-align: center;
+  color: var(--file-lightbox-muted);
+}
+
+.file-lightbox-panel-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--file-lightbox-ink);
+  overflow-wrap: anywhere;
+}
+
+.file-lightbox-panel-text {
+  margin: 0;
+  font-size: 14px;
+}
+
+.file-lightbox-error {
+  margin: 0;
+  font-size: 13px;
+  color: var(--file-lightbox-danger);
+}
+
+.file-lightbox-spinner {
+  width: 26px;
+  height: 26px;
+  border: 2px solid rgba(255, 255, 255, 0.25);
+  border-top-color: var(--file-lightbox-ink);
+  border-radius: 50%;
+  animation: file-lightbox-spin 0.7s linear infinite;
+}
+
+@keyframes file-lightbox-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ── Caption ── */
+
+.file-lightbox-caption {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  min-height: 48px;
+  padding: 10px 16px 14px;
+  text-align: center;
+}
+
+/* The name wraps to two lines rather than truncating: a tooltip is no use
+   on a phone, and the tail of "…_Schaltplan_v3_final.pdf" is the part that
+   tells the files apart. */
+.file-lightbox-caption-name {
+  display: -webkit-box;
+  max-width: 100%;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  font-size: 14px;
+  font-weight: 600;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.file-lightbox-caption-subtitle {
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 12px;
+  color: var(--file-lightbox-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Phone ──────────────────────────────────────────────────────────────
+   No gutters — the arrows overlay the content, on a darker disc so they
+   stay legible over a white page — and the toolbar tightens so the close
+   button never leaves the screen beside two word pills. */
+@media (max-width: 767px) {
+  .file-lightbox-stage {
+    padding: 0 8px;
+  }
+
+  .file-lightbox-nav {
+    width: 40px;
+    height: 40px;
+    background: rgba(7, 14, 22, 0.55);
+  }
+
+  .file-lightbox-nav--prev {
+    left: 12px;
+  }
+
+  .file-lightbox-nav--next {
+    right: 12px;
+  }
+
+  .file-lightbox-toolbar {
+    padding: 8px 10px;
+  }
+
+  .file-lightbox-action {
+    padding: 8px 12px;
+    font-size: 13px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .file-lightbox-spinner {
+    animation-duration: 2.4s;
+  }
+
+  .file-lightbox-page-image,
+  .file-lightbox-action,
+  .file-lightbox-close,
+  .file-lightbox-nav,
+  .file-lightbox-pager-btn {
+    transition: none;
+  }
+}
