@@ -1072,6 +1072,11 @@ body::before {
 .project-banner-bottom {
   display: flex;
   align-items: stretch;
+  /* Stats + tab strip are wider than the banner on ~900–1700 px viewports
+     (iPad landscape, small laptops) and .project-banner clips its overflow,
+     so on one row the rightmost tabs were unreachable. Let the strip drop
+     to its own row instead of being cut off. */
+  flex-wrap: wrap;
 }
 
 .project-banner-stat {
@@ -1112,6 +1117,10 @@ body::before {
 .project-banner-tabs {
   display: flex;
   align-items: stretch;
+  /* Ten tabs still exceed the banner width on their own row on tablets and
+     narrow laptops; wrapping keeps every tab visible and clickable — no
+     clipping and no scroll strip above the phone breakpoint. */
+  flex-wrap: wrap;
   margin-left: auto;
   gap: 0;
 }
@@ -17471,13 +17480,9 @@ td {
     grid-template-columns: 1fr;
   }
 
-  .project-banner-bottom {
-    overflow-x: auto;
-  }
-
-  .project-banner-tabs {
-    flex-shrink: 0;
-  }
+  /* .project-banner-bottom / .project-banner-tabs: no overflow-x or
+     flex-shrink override here on purpose — the base rules wrap the tab
+     strip, so at 768–899 px nothing is clipped and nothing has to scroll. */
 
   .sidebar-toggle {
     display: inline-flex;
@@ -17950,6 +17955,7 @@ td {
   /* Tab bar — scrollable strip with right-edge fade hint */
   .project-banner-tabs {
     display: flex;
+    flex-wrap: nowrap; /* phones scroll the strip instead of wrapping it */
     overflow-x: auto;
     -webkit-overflow-scrolling: touch;
     flex-shrink: 0;
@@ -18173,6 +18179,50 @@ td {
     --content-pad-x: 1rem;
     padding-left: var(--content-pad-x);
     padding-right: var(--content-pad-x);
+  }
+}
+
+/* Phone-width tab strip on a pointer device (a narrow desktop window, an
+   iPad with a trackpad): the touch layout hides the scrollbar, which leaves
+   a mouse user nothing to grab. Show a thin one under the tabs; the fade +
+   chevron stay as the "more to the right" hint. scrollbar-width stays
+   `auto` on purpose — a non-auto value makes Chromium ignore the
+   ::-webkit-scrollbar rules; Firefox (no ::-webkit-scrollbar) gets the
+   standard properties instead. */
+@media (max-width: 767px) and (hover: hover) {
+  .project-banner-tabs {
+    scrollbar-width: auto;
+  }
+
+  .project-banner-tabs::-webkit-scrollbar {
+    display: block;
+    height: 6px;
+  }
+
+  .project-banner-tabs::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .project-banner-tabs::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.3);
+    border-radius: 3px;
+  }
+
+  .project-banner-tabs:hover::-webkit-scrollbar-thumb,
+  .project-banner-tabs:focus-within::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.55);
+  }
+
+  @supports not selector(::-webkit-scrollbar) {
+    .project-banner-tabs {
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255, 255, 255, 0.3) transparent;
+    }
+  }
+
+  /* Keep the fade + chevron over the tab row, clear of the scrollbar. */
+  .project-banner::after {
+    bottom: 6px;
   }
 }
 
