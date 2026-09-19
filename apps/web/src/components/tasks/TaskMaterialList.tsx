@@ -19,7 +19,7 @@ type TaskMaterialListProps = {
   /** Optional because cached task objects may predate the field. */
   materials: TaskMaterial[] | undefined;
   language: Language;
-  /** Card surfaces start folded behind "Material (N)"; the modal shows the table outright. */
+  /** Card surfaces get a fold toggle "Material (N)"; the modal shows the table outright. */
   collapsible?: boolean;
 };
 
@@ -53,7 +53,10 @@ export function TaskMaterialList({
   language,
   collapsible = false,
 }: TaskMaterialListProps) {
-  const [open, setOpen] = useState(!collapsible);
+  // Open at first on every surface: the crew reads this list in the row of
+  // Meine Aufgaben, and what came out of the box must not hide behind a tap.
+  // `collapsible` only decides whether it can be put away.
+  const [open, setOpen] = useState(true);
   const rows = materials ?? [];
   const de = language === "de";
   if (rows.length === 0) return null;

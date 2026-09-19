@@ -6,6 +6,7 @@ import { estimateTravelMinutesFromAddresses, projectLocationAddress } from "../u
 import { BackIcon, PenIcon } from "../components/icons";
 import { TaskRowSummary } from "../components/tasks/TaskRowSummary";
 import { TaskMaterialList } from "../components/tasks/TaskMaterialList";
+import { TaskAttachmentStrip } from "../components/tasks/TaskAttachmentStrip";
 import { taskBoxSummary } from "../utils/boxes";
 
 export function MyTasksPage() {
@@ -251,6 +252,11 @@ export function MyTasksPage() {
                         ))}
                       </ul>
                     )}
+                    {/* The plan or the photo the office attached. The edit
+                        modal is closed to most of the crew, so the row is
+                        where they see it; a task without files shows no
+                        block, and a folded row loads none. */}
+                    <TaskAttachmentStrip task={task} />
                     <TaskMaterialList
                       taskId={task.id}
                       materials={task.materials}

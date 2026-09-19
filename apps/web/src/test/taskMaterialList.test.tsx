@@ -95,12 +95,17 @@ describe("TaskMaterialList", () => {
     expect(openServerFile).toHaveBeenCalledWith("/api/tasks/42/packing-list.pdf", expect.stringMatching(/\.pdf$/));
   });
 
-  it("starts folded on a card and unfolds on demand, keeping the PDF button reachable", () => {
+  // Open at first since the field-worker view: the crew reads this list on
+  // the card and must not have to tap for it; the fold is for putting it away.
+  it("starts open on a card and folds on demand, keeping the PDF button reachable", () => {
     render(<TaskMaterialList taskId={42} materials={[material()]} language="de" collapsible />);
-    expect(screen.queryByRole("table")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Packliste (PDF)" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /Material \(1\)/ }));
     expect(screen.getByRole("table")).toBeInTheDocument();
     expect(screen.getByText("100 m")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Packliste (PDF)" })).toBeInTheDocument();
+    const toggle = screen.getByRole("button", { name: /Material \(1\)/ });
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(toggle);
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Packliste (PDF)" })).toBeInTheDocument();
   });
 });

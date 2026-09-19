@@ -361,3 +361,35 @@
 .planning-einsatz-task .task-attachment-badge {
   margin-left: 4px;
 }
+
+/* ── Anhänge in the expanded row of Meine Aufgaben (components/tasks/TaskAttachmentStrip)
+   The modal's tiles (.task-attachments-grid / -tile above) read-only, under a
+   heading in the row's own register — the "Material (n)" line beside it —
+   rather than the modal's uppercase section label. The loading and error
+   lines are the modal's too, so the two surfaces fail the same way. */
+.task-attachment-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+}
+
+.task-attachment-strip-head {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 2px 8px;
+}
+
+.task-attachment-strip-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #14293d;
+}
+
+.task-attachment-strip-hint {
+  font-size: 11px;
+  font-weight: 500;
+  color: #9aaec4;
+}
