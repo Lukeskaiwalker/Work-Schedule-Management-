@@ -372,3 +372,14 @@ virtual (nothing moved on disk). Migration `20260921_0089`.
 | `apps/web/src/components/tasks/TaskAttachmentStrip.tsx` | Read-only "Anhänge" in the Meine-Aufgaben row; `TaskMaterialList` opens by default |
 | `apps/web/src/components/customers/CustomerDetailTabs.tsx` (+ `CustomerOverviewPanel`, `CustomerProjectsCard`) | The customer page's five tabs; only the open tab's cards mount; tab remembered in sessionStorage |
 
+## Customers like projects (2026-09-20)
+
+| Module | Role |
+|---|---|
+| `apps/api/app/models/customer.py` → `customer_type`, `mobile`, `visit_*`, `CustomerNote`, `CustomerActivity`; migration `20260924_0092` | Firm vs person, second phone, the Kundenbesuch, the note feed (old `notes` backfilled as the first entry), customer-level events |
+| `apps/api/app/routers/workflow_customer_notes.py` | `GET/POST/DELETE /customers/{id}/notes` |
+| `apps/api/app/services/customer_activity.py` | `record_customer_activity`; the change log unions customer events with the project logs behind an opaque `cursor` |
+| `apps/api/app/routers/workflow_tasks.py` → `_task_rows_out`, `_record_task_activity` | `TaskOut.customer_name/customer_address` on every list; customer-only tasks log to the customer, project tasks to the project |
+| `apps/web/src/components/customers/CustomerNotesCard.tsx`, `CustomerVisitCard.tsx`, `CustomerTypeBadge.tsx`, `modals/CustomerModal.tsx` (+ `customerModalDraft.ts`) | The customer page's feed, visit card, type badge and the Firma/Privatperson form with Telefon + Mobil |
+| `apps/web/src/utils/tasks.ts` → `buildTaskAnchorPayload`, `taskCalendarAnchor`, `taskCustomerName` | One anchor (project or customer) per task, used by the create modal, the calendar export and every list's "Kunde: …" label |
+
