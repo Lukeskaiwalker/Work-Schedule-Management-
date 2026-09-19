@@ -251,6 +251,13 @@ export type CustomerActivity = ProjectActivity & {
   project_name?: string | null;
 };
 
+/** Whether and where the project's Projektbericht was finalized. */
+export type ProjectReportState = {
+  finalized_at: string | null;
+  attachment_id: number | null;
+  file_name: string | null;
+};
+
 export type ProjectOfficeNote = {
   report_id: number;
   report_number?: number | null;
@@ -269,6 +276,7 @@ export type ProjectOverviewDetails = {
   recent_changes: ProjectActivity[];
   /** Newest first; the overview carries the latest ones, GET /projects/{id}/notes the rest. */
   notes?: ProjectNote[];
+  project_report?: ProjectReportState;
 };
 
 export type ProjectWeatherDay = {

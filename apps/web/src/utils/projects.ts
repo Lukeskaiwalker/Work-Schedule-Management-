@@ -98,6 +98,7 @@ export function activityEventLabel(eventType: string, language: Language) {
     "project.note_updated": { de: "Notiz aktualisiert", en: "Note updated" },
     "project.note_posted": { de: "Notiz gepostet", en: "Note posted" },
     "project.note_deleted": { de: "Notiz gelöscht", en: "Note deleted" },
+    "project.report_finalized": { de: "Projektbericht finalisiert", en: "Project report finalized" },
     "project.critical_set": { de: "Als kritisch markiert", en: "Marked as critical" },
     "project.critical_cleared": { de: "Kritisch-Markierung entfernt", en: "Critical flag cleared" },
     "task.created": { de: "Aufgabe erstellt", en: "Task created" },

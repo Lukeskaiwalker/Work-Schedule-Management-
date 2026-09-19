@@ -19,6 +19,7 @@ from app.routers.workflow_files import router as files_router
 from app.routers.workflow_webdav import router as webdav_router
 from app.routers.workflow_customer_files import router as customer_files_router
 from app.routers.workflow_project_notes import router as project_notes_router
+from app.routers.workflow_project_report import router as project_report_router
 from app.routers.workflow_task_files import router as task_files_router
 from app.routers.workflow_webdav_customers import router as webdav_customers_router
 from app.routers.workflow_wiki import router as wiki_router
@@ -69,6 +70,7 @@ router.include_router(files_router)
 router.include_router(webdav_router)
 router.include_router(customer_files_router)
 router.include_router(project_notes_router)
+router.include_router(project_report_router)
 router.include_router(task_files_router)
 router.include_router(webdav_customers_router)
 router.include_router(wiki_router)

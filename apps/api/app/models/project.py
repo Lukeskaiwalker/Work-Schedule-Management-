@@ -40,6 +40,15 @@ class Project(Base):
     )
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    # The Projektbericht is rendered live from the project's data for as long
+    # as the project runs; when it is marked abgeschlossen or archived the
+    # rendering of that moment is stored as a PDF in the project's files and
+    # these two point at it. Re-opening and finishing again stores a new one.
+    report_finalized_at: Mapped[datetime | None] = mapped_column(DateTime)
+    report_attachment_id: Mapped[int | None] = mapped_column(
+        ForeignKey("attachments.id", ondelete="SET NULL", use_alter=True, name="fk_projects_report_attachment_id"),
+        index=True,
+    )
 
 
 class ProjectFinance(Base):

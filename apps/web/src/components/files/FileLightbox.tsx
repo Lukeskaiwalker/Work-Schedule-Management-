@@ -343,7 +343,19 @@ function NavButton({ direction, language, onClick }: {
       aria-label={label}
       title={label}
     >
-      {direction < 0 ? "‹" : "›"}
+      {/* A drawn chevron, not a text glyph: "‹" sits high and left of the
+          circle's centre because of its side bearings and baseline, and no
+          amount of line-height fixes what the font decided. */}
+      <svg className="file-lightbox-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path
+          d={direction < 0 ? "M15 5 L8 12 L15 19" : "M9 5 L16 12 L9 19"}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
     </button>
   );
 }
@@ -489,7 +501,9 @@ export function FileLightbox({
             aria-label={de ? "Schließen" : "Close"}
             title={de ? "Schließen" : "Close"}
           >
-            ×
+            <svg className="file-lightbox-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M6 6 L18 18 M18 6 L6 18" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" />
+            </svg>
           </button>
         </div>
       </div>
