@@ -1,0 +1,97 @@
+/* ══════════════════════════════════════════════════════════════════════════
+   Customer page: the cross-project change log
+   (components/customers/CustomerActivityCard).
+
+   Lives here rather than in styles.css (frozen for the wave). Imported by the
+   card; Vite dedupes the import. Every class is prefixed customer-activity-
+   so nothing here can collide with the project overview's own change list,
+   which this card deliberately resembles — same row anatomy, plus the chip
+   that says which project a row came from, because here several projects
+   share one list.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Head ── The hint sits beside the title, not under it: it qualifies
+   the title ("across all projects") rather than explaining the card. */
+.customer-activity-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.customer-activity-hint {
+  font-size: 11px;
+  line-height: 14px;
+}
+
+/* ── Rows ── The project overview's .project-change-row, with the chip as a
+   fourth line. Wrapping is allowed: a message here can be a note's first
+   line, and cutting it to one line would hide what the row is about. */
+.customer-activity-row {
+  display: grid;
+  gap: 0.1rem;
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+}
+
+.customer-activity-row b {
+  color: #14293d;
+  font-size: 13px;
+  line-height: 17px;
+}
+
+.customer-activity-row small {
+  color: #4f657c;
+  font-size: 11px;
+  line-height: 14px;
+  overflow-wrap: anywhere;
+}
+
+/* ── Project chip ── A button dressed as a tag: the row belongs to a
+   project, and clicking the name is the obvious way to go there. */
+.customer-activity-project {
+  justify-self: start;
+  margin-top: 2px;
+  padding: 1px 8px;
+  border: 1px solid #d6e4f5;
+  border-radius: 999px;
+  background: #f4f8fd;
+  color: #2f70b7;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.customer-activity-project:hover,
+.customer-activity-project:focus-visible {
+  border-color: #bfd4ea;
+  background: #e9f2fc;
+}
+
+/* ── Footer ── "Mehr laden" and a failed page's retry sit under the rows,
+   where the reader's eye already is when the list runs out. */
+.customer-activity-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 2px 0.6rem 0;
+  font-size: 12px;
+}
+
+.customer-activity-error {
+  display: grid;
+  gap: 2px;
+  padding: 12px 18px;
+  color: #14293d;
+  font-size: 12px;
+  line-height: 16px;
+}

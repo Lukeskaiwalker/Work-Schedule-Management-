@@ -5,6 +5,7 @@ Included from `workflow.py` under the `/api` prefix. Endpoints:
   GET   /api/customers              list (aggregates project counts)
   GET   /api/customers/{id}         detail
   GET   /api/customers/{id}/projects linked projects
+  GET   /api/customers/{id}/activity change log across the linked projects
   POST  /api/customers              create
   PATCH /api/customers/{id}         partial update
   POST  /api/customers/{id}/archive soft-archive
@@ -26,12 +27,17 @@ from app.core.deps import get_current_user, require_permission
 from app.core.time import utcnow
 from app.models.entities import Customer, Project, User
 from app.schemas.customer import (
+    CustomerActivityOut,
     CustomerCreate,
     CustomerListItemOut,
     CustomerOut,
     CustomerUpdate,
 )
 from app.schemas.project import ProjectOut
+from app.services.customer_activity import (
+    CUSTOMER_ACTIVITY_LIMIT_DEFAULT,
+    customer_activity_page,
+)
 from app.services.customers import sync_project_from_customer
 from app.services.search_matching import (
     PHONE_MIN_DIGITS,
@@ -227,6 +233,36 @@ def list_customer_projects(
 
     visible_ids = _project_ids_visible_to_user(db, current_user)
     return [project for project in rows if project.id in visible_ids]
+
+
+@router.get("/customers/{customer_id}/activity", response_model=list[CustomerActivityOut])
+def list_customer_activity(
+    customer_id: int,
+    limit: int = Query(default=CUSTOMER_ACTIVITY_LIMIT_DEFAULT),
+    before_id: int | None = Query(default=None, ge=1),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> list[CustomerActivityOut]:
+    """The customer's change log across all of their projects, newest first.
+
+    Any signed-in user may ask — that is `get_customer`'s rule too. The
+    protection is the same object-level scoping as the project list above:
+    an employee gets the events of the customer's projects they can see,
+    nothing of the others. `before_id` pages backwards from the last row the
+    card holds; `limit` is clamped, not rejected.
+    """
+    customer = db.get(Customer, customer_id)
+    if customer is None:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    from app.routers.workflow_helpers import _project_ids_visible_to_user
+
+    return customer_activity_page(
+        db,
+        customer_id=customer_id,
+        visible_project_ids=_project_ids_visible_to_user(db, current_user),
+        limit=limit,
+        before_id=before_id,
+    )
 
 
 @router.post("/customers", response_model=CustomerOut)

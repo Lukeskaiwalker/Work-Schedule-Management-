@@ -13,6 +13,8 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
+from app.schemas.project import ProjectActivityOut
+
 
 class CustomerCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
@@ -61,3 +63,15 @@ class CustomerListItemOut(CustomerOut):
     project_count: int = 0
     active_project_count: int = 0
     last_project_activity_at: datetime | None = None
+
+
+class CustomerActivityOut(ProjectActivityOut):
+    """One row of the customer's cross-project change log.
+
+    A project activity, plus the project it belongs to — on the customer page
+    the rows of several projects sit in one list, so each has to say which
+    one it came from. Mirrors `CustomerActivity` in the web types.
+    """
+
+    project_number: str | None = None
+    project_name: str | None = None

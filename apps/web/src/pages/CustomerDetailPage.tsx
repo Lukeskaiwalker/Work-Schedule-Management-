@@ -5,6 +5,7 @@ import { CustomerProjectRow } from "../components/customers/CustomerProjectRow";
 import { CustomerTasksCard } from "../components/customers/CustomerTasksCard";
 import { CustomerReportsCard } from "../components/customers/CustomerReportsCard";
 import { CustomerBoxesCard } from "../components/customers/CustomerBoxesCard";
+import { CustomerActivityCard } from "../components/customers/CustomerActivityCard";
 import { CustomerFilesCard } from "../components/customers/CustomerFilesCard";
 import {
   getCustomer,
@@ -235,6 +236,11 @@ export function CustomerDetailPage() {
           <CustomerTasksCard customerId={customer.id} />
           <CustomerReportsCard customerId={customer.id} />
           <CustomerBoxesCard customerId={customer.id} />
+          {/* The change log across all of this customer's projects — what
+              every project overview shows for itself, merged. Keyed so a
+              switch to another customer starts the feed afresh instead of
+              paging on from the old one. */}
+          <CustomerActivityCard key={customer.id} customerId={customer.id} />
         </div>
 
         <div className="customer-detail-col customer-detail-col--right">
