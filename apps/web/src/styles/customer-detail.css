@@ -105,3 +105,100 @@
   flex-direction: column;
   gap: 14px;
 }
+
+/* ── Firma / Privatkunde ── The pill next to a customer's name
+   (components/customers/CustomerTypeBadge): in the contact card's header
+   and in the list row. Two tints, so the eye sorts a list without
+   reading; a row from before the field shows no pill at all. */
+.customer-type-badge {
+  display: inline-block;
+  vertical-align: middle;
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.customer-type-badge--company {
+  background-color: #e4edf8;
+  color: #2f5a8c;
+}
+
+.customer-type-badge--private {
+  background-color: #efe9f8;
+  color: #5c4a8a;
+}
+
+/* ── Kundenbesuch ── (components/customers/CustomerVisitCard) The card
+   under the contact card: prose about the first appointment, in the
+   contact card's shell. It is read far more often than written, so the
+   edit is a small link in the header and the text takes the room. */
+.customer-visit-card {
+  background-color: #ffffff;
+  border-radius: 14px;
+  box-shadow: 0 1px 4px rgba(20, 41, 61, 0.06);
+  padding: 20px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.customer-visit-meta {
+  font-size: 12px;
+  color: #5c7895;
+}
+
+/* Written with line breaks and shown as typed — it goes to print like this. */
+.customer-visit-body {
+  font-size: 14px;
+  color: #14293d;
+  white-space: pre-wrap;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.customer-visit-empty {
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.customer-visit-form {
+  display: grid;
+  gap: 10px;
+}
+
+.customer-visit-form textarea,
+.customer-visit-form input {
+  width: 100%;
+  font: inherit;
+  box-sizing: border-box;
+}
+
+.customer-visit-form textarea {
+  min-height: 6rem;
+  resize: vertical;
+}
+
+.customer-visit-field {
+  display: grid;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #5c7895;
+}
+
+.customer-visit-hint {
+  font-size: 11px;
+  color: #8fa2ba;
+}
+
+.customer-visit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}

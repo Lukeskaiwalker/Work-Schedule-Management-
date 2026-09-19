@@ -37,6 +37,7 @@ const BOXES_PATH = "/customers/7/boxes";
 const FILES_PATH = "/customers/7/files";
 const FOLDERS_PATH = "/customers/7/folders";
 const ACTIVITY_PATH = "/customers/7/activity?limit=30";
+const NOTES_PATH = "/customers/7/notes?limit=20";
 /** What the panels other than Übersicht request on mount. */
 const OFF_OVERVIEW_PATHS = [TASKS_PATH, REPORTS_PATH, BOXES_PATH, FILES_PATH, FOLDERS_PATH, ACTIVITY_PATH];
 
@@ -80,6 +81,10 @@ function routesFor(id: number, detail: CustomerListItem): Routes {
     [`/customers/${id}/construction-reports`]: () => [],
     [`/customers/${id}/boxes`]: () => [],
     [`/customers/${id}/activity?limit=30`]: () => [],
+    // The old notes text is the feed's first entry (migration 0092).
+    [`/customers/${id}/notes?limit=20`]: () => [
+      { id: 1, customer_id: id, author_user_id: null, author_name: null, body: detail.notes, created_at: "2026-09-01T08:00:00" },
+    ],
   };
 }
 
@@ -150,15 +155,19 @@ describe("CustomerDetailPage tabs", () => {
     expect(selectedTab()).toBe("Übersicht");
     expect(screen.getByRole("tabpanel", { name: "Übersicht" })).toBeInTheDocument();
 
-    // Kontaktdaten, Notizen and Projekte with its own filter: the overview.
+    // Kontaktdaten, Kundenbesuch, the note feed and Projekte with its own
+    // filter: the overview.
     expect(screen.getByRole("heading", { level: 3, name: "Kontaktdaten" })).toBeInTheDocument();
-    expect(screen.getByText("Ruft nur vormittags an.")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 3, name: "Kundenbesuch" })).toBeInTheDocument();
+    expect(await screen.findByText("Ruft nur vormittags an.")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 3, name: /^Notizen/ })).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 3, name: /^Projekte/ })).toBeInTheDocument();
     expect(screen.getByRole("tablist", { name: "Projektfilter" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Müller Garage/ })).toBeInTheDocument();
 
     expect(apiFetchMock).toHaveBeenCalledWith("/customers/7", TOKEN);
     expect(apiFetchMock).toHaveBeenCalledWith("/customers/7/projects", TOKEN);
+    expect(apiFetchMock).toHaveBeenCalledWith(NOTES_PATH, TOKEN);
     // Nothing of the other panels is fetched while they are closed.
     OFF_OVERVIEW_PATHS.forEach((path) => expect(callsTo(path)).toBe(0));
   });

@@ -1,10 +1,17 @@
 /**
- * Übersicht on the customer page: what you look at first. Kontaktdaten and
- * Notizen on the left, the projects with their Aktiv/Abgeschlossen/Archiviert
- * switch on the right — the top of the old one-long-scroll page, and nothing
- * below it. Everything that used to follow has a tab of its own now.
+ * Übersicht on the customer page: what you look at first. Kontaktdaten, the
+ * Kundenbesuch and the note feed on the left, the projects with their
+ * Aktiv/Abgeschlossen/Archiviert switch on the right — the top of the old
+ * one-long-scroll page, and nothing below it. Everything that used to
+ * follow has a tab of its own now.
+ *
+ * The cards on the left are keyed by the customer: a switch to another
+ * customer starts the feed and a half-edited visit afresh instead of
+ * carrying them over.
  */
 import { CustomerContactCard } from "./CustomerContactCard";
+import { CustomerVisitCard } from "./CustomerVisitCard";
+import { CustomerNotesCard } from "./CustomerNotesCard";
 import { CustomerProjectsCard, type CustomerProjectFilter } from "./CustomerProjectsCard";
 import type { CustomerProjectSummary } from "../../utils/customersApi";
 import type { CustomerListItem } from "../../types";
@@ -16,6 +23,8 @@ type Props = {
   onProjectFilterChange: (filter: CustomerProjectFilter) => void;
   language: "de" | "en";
   onOpenProject: (projectId: number) => void;
+  /** The row the visit card saved: the page replaces its customer with it. */
+  onCustomerSaved: (customer: CustomerListItem) => void;
 };
 
 export function CustomerOverviewPanel({
@@ -25,26 +34,19 @@ export function CustomerOverviewPanel({
   onProjectFilterChange,
   language,
   onOpenProject,
+  onCustomerSaved,
 }: Props) {
-  const de = language === "de";
-
   return (
     <div className="customer-detail-grid">
       <div className="customer-detail-col customer-detail-col--left">
         <CustomerContactCard customer={customer} language={language} />
-
-        <section className="customer-notes-card">
-          <header className="customer-contact-card-head">
-            <h3 className="customer-contact-card-title">{de ? "Notizen" : "Notes"}</h3>
-          </header>
-          <div className="customer-notes-body">
-            {customer.notes ? (
-              customer.notes
-            ) : (
-              <span className="muted">{de ? "Keine Notizen." : "No notes yet."}</span>
-            )}
-          </div>
-        </section>
+        <CustomerVisitCard
+          key={`visit-${customer.id}`}
+          customer={customer}
+          language={language}
+          onSaved={onCustomerSaved}
+        />
+        <CustomerNotesCard key={`notes-${customer.id}`} customerId={customer.id} />
       </div>
 
       <div className="customer-detail-col customer-detail-col--right">

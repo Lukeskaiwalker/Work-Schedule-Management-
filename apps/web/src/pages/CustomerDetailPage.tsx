@@ -207,6 +207,7 @@ export function CustomerDetailPage() {
             onProjectFilterChange={setProjectFilter}
             language={lang}
             onOpenProject={handleOpenProject}
+            onCustomerSaved={setCustomer}
           />
         )}
         {/* Customer-anchored tasks (v2.4.5+) — call-back reminders,

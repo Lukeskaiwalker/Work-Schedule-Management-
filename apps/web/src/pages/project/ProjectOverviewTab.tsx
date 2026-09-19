@@ -6,6 +6,43 @@ import { weatherDescriptionLabel } from "../../utils/weather";
 import { CopyIcon } from "../../components/icons";
 import { ProjectNotesCard } from "../../components/project/ProjectNotesCard";
 import { ProjectReportCard } from "../../components/project/ProjectReportCard";
+import { customerTypeLabel } from "../../components/customers/CustomerTypeBadge";
+import type { Customer, Language, Project, ProjectOverviewDetails } from "../../types";
+
+type ContactRow = { label: string; value: string };
+
+/**
+ * The Kontakt card from the customer's own row: Firma with its
+ * Ansprechpartner, or Privatkunde without one, and both numbers. This is
+ * what the customer page shows, so the two never disagree.
+ */
+function customerContactRows(customer: Customer, language: Language): ContactRow[] {
+  const de = language === "de";
+  const dash = (value: string | null | undefined) => (value ?? "").trim() || "-";
+  return [
+    { label: customerTypeLabel(customer.customer_type, language), value: dash(customer.name) },
+    ...(customer.customer_type === "private"
+      ? []
+      : [{ label: de ? "Ansprechpartner" : "Contact person", value: dash(customer.contact_person) }]),
+    { label: de ? "Telefon" : "Phone", value: dash(customer.phone) },
+    { label: de ? "Mobil" : "Mobile", value: dash(customer.mobile) },
+    { label: de ? "E-Mail" : "E-mail", value: dash(customer.email) },
+    { label: de ? "Kundenadresse" : "Customer addr.", value: dash(customer.address) },
+  ];
+}
+
+/** The snapshot the project took when it was created — all a project without a linked row has. */
+function snapshotContactRows(project: Project, language: Language): ContactRow[] {
+  const de = language === "de";
+  const dash = (value: string | null | undefined) => (value ?? "").trim() || "-";
+  return [
+    { label: de ? "Firma" : "Company", value: dash(project.customer_name) },
+    { label: de ? "Kontaktperson" : "Contact person", value: dash(project.customer_contact) },
+    { label: de ? "Telefon" : "Phone", value: dash(project.customer_phone) },
+    { label: de ? "E-Mail" : "E-mail", value: dash(project.customer_email) },
+    { label: de ? "Kundenadresse" : "Customer addr.", value: dash(project.customer_address) },
+  ];
+}
 
 export function ProjectOverviewTab() {
   const {
@@ -33,7 +70,6 @@ export function ProjectOverviewTab() {
   if (mainView !== "project" || !activeProject || projectTab !== "overview") return null;
 
   const openTasksCount = projectOverviewDetails?.open_tasks ?? projectOverviewOpenTasks.length;
-  const customerName = (activeProject.customer_name ?? "").trim() || "-";
   const siteAddress = (activeProject.construction_site_address ?? "").trim();
   const customerAddress = (activeProject.customer_address ?? "").trim();
   const projectState = (activeProjectLastState ?? "").trim();
@@ -48,6 +84,12 @@ export function ProjectOverviewTab() {
     typeof activeProject.customer_id === "number" && activeProject.customer_id > 0
       ? activeProject.customer_id
       : null;
+  // The overview carries the linked customer's row once GET /projects/{id}/
+  const linkedCustomer =
+    projectOverviewDetails?.customer ?? null;
+  const contactRows = linkedCustomer
+    ? customerContactRows(linkedCustomer, language)
+    : snapshotContactRows(activeProject, language);
 
   return (
     <section className="project-overview-shell">
@@ -230,21 +272,11 @@ export function ProjectOverviewTab() {
                 </button>
               )}
             </div>
-            <small>
-              {language === "de" ? "Firma" : "Company"}: <b>{customerName}</b>
-            </small>
-            <small>
-              {language === "de" ? "Kontaktperson" : "Contact person"}: <b>{(activeProject.customer_contact ?? "").trim() || "-"}</b>
-            </small>
-            <small>
-              {language === "de" ? "Telefon" : "Phone"}: <b>{(activeProject.customer_phone ?? "").trim() || "-"}</b>
-            </small>
-            <small>
-              {language === "de" ? "E-Mail" : "E-mail"}: <b>{(activeProject.customer_email ?? "").trim() || "-"}</b>
-            </small>
-            <small>
-              {language === "de" ? "Kundenadresse" : "Customer addr."}: <b>{customerAddress || "-"}</b>
-            </small>
+            {contactRows.map((row) => (
+              <small key={`project-contact-${row.label}`}>
+                {row.label}: <b>{row.value}</b>
+              </small>
+            ))}
           </div>
 
           <div className="card project-overview-meta">

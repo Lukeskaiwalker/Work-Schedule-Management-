@@ -1,4 +1,5 @@
 import type { CustomerListItem } from "../../types";
+import { CustomerTypeBadge } from "./CustomerTypeBadge";
 
 type Props = {
   customer: CustomerListItem;
@@ -43,7 +44,10 @@ export function CustomerListRow({
           className="customer-list-name-btn"
           onClick={() => onOpen(customer.id)}
         >
-          <span className="customer-list-name">{customer.name}</span>
+          <span className="customer-list-name">
+            {customer.name}
+            <CustomerTypeBadge type={customer.customer_type} language={language} compact />
+          </span>
           {customer.contact_person && (
             <span className="customer-list-subname">{customer.contact_person}</span>
           )}

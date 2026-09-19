@@ -1,11 +1,12 @@
 /**
  * The "Letzte Änderungen" card of the customer page. What must hold: it
- * loads the customer's cross-project log for the id it was given; each row
- * shows the event's label, time and actor, the message and a chip naming
- * the project; the chip opens that project from the customer page; "Mehr
- * laden" asks for what is older than the last row and disappears once a
- * page comes back short; a failed load is shown with a retry; an empty log
- * says so; and another customer id starts the feed afresh.
+ * loads the customer's merged log for the id it was given; each project
+ * row shows the event's label, time and actor, the message and a chip
+ * naming the project, and the customer's own rows the same without a chip;
+ * the chip opens that project from the customer page; "Mehr laden" hands
+ * the last row's cursor back and disappears once a page comes back short
+ * or its last row has no cursor; a failed load is shown with a retry; an
+ * empty log says so; and another customer id starts the feed afresh.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -36,8 +37,22 @@ function activity(id: number, overrides: Partial<CustomerActivity> = {}): Custom
     created_at: "2026-09-18T09:30:00",
     project_number: "2026-0001",
     project_name: "Müller",
+    source: "project",
+    cursor: `c${id}`,
     ...overrides,
   };
+}
+
+/** One of the customer's own events: no project behind it. */
+function customerEvent(id: number, overrides: Partial<CustomerActivity> = {}): CustomerActivity {
+  return activity(id, {
+    source: "customer",
+    project_id: null,
+    project_number: null,
+    project_name: null,
+    customer_id: CUSTOMER_ID,
+    ...overrides,
+  });
 }
 
 const TASK_IN_MUELLER = activity(42);
@@ -103,7 +118,7 @@ describe("CustomerActivityCard", () => {
     await screen.findByText("Task created: Aufgabe 42");
     expect(apiFetchMock).toHaveBeenCalledWith(FIRST_PAGE_PATH, TOKEN);
     expect(screen.getByRole("heading", { level: 3 })).toHaveTextContent("Letzte Änderungen");
-    expect(screen.getByText("alle Projekte dieses Kunden")).toBeInTheDocument();
+    expect(screen.getByText("der Kunde und alle seine Projekte")).toBeInTheDocument();
 
     const rows = container.querySelectorAll(".customer-activity-row");
     expect(rows).toHaveLength(3);
@@ -125,6 +140,23 @@ describe("CustomerActivityCard", () => {
     expect(screen.queryByRole("button", { name: "Mehr laden" })).not.toBeInTheDocument();
   });
 
+  it("renders the customer's own events without a project chip", async () => {
+    const visit = customerEvent(50, { event_type: "customer.visit_updated", message: "Kundenbesuch: Dach prüfen" });
+    const archived = customerEvent(49, { event_type: "customer.archived", message: "Archiviert: Müller GmbH", actor_name: null });
+    routeApi({ [FIRST_PAGE_PATH]: () => [visit, TASK_IN_MUELLER, archived] });
+    const { container } = renderCard();
+
+    await screen.findByText("Kundenbesuch: Dach prüfen");
+    const rows = container.querySelectorAll(".customer-activity-row");
+    expect(rows).toHaveLength(3);
+    expect(within(rows[0] as HTMLElement).getByText("Kundenbesuch erfasst")).toBeInTheDocument();
+    expect(rows[0]).toHaveTextContent("· Anna Admin");
+    expect(within(rows[0] as HTMLElement).queryByRole("button")).not.toBeInTheDocument();
+    expect(within(rows[1] as HTMLElement).getByRole("button", { name: "2026-0001 · Müller" })).toBeInTheDocument();
+    expect(within(rows[2] as HTMLElement).getByText("Kunde archiviert")).toBeInTheDocument();
+    expect(within(rows[2] as HTMLElement).queryByRole("button")).not.toBeInTheDocument();
+  });
+
   it("opens the row's project from the customer page when the chip is clicked", async () => {
     routeApi({ [FIRST_PAGE_PATH]: () => [FILE_IN_GARAGE] });
     const { openProjectById } = renderCard();
@@ -136,7 +168,7 @@ describe("CustomerActivityCard", () => {
   it("loads more after the last row and stops offering once a page comes back short", async () => {
     const firstPage = page(130, PAGE_SIZE);
     const secondPage = page(100, 2);
-    const secondPagePath = `${FIRST_PAGE_PATH}&before_id=101`;
+    const secondPagePath = `${FIRST_PAGE_PATH}&cursor=c101`;
     routeApi({ [FIRST_PAGE_PATH]: () => firstPage, [secondPagePath]: () => secondPage });
     const { container } = renderCard();
 
@@ -157,6 +189,16 @@ describe("CustomerActivityCard", () => {
     expect(screen.queryByRole("button", { name: "Mehr laden" })).not.toBeInTheDocument();
   });
 
+  it("does not offer more when the last row of a full page carries no cursor", async () => {
+    const page = Array.from({ length: PAGE_SIZE }, (_, index) => activity(130 - index, { cursor: undefined }));
+    routeApi({ [FIRST_PAGE_PATH]: () => page });
+    const { container } = renderCard();
+
+    await screen.findByText("Task created: Aufgabe 130");
+    expect(rowTexts(container)).toHaveLength(PAGE_SIZE);
+    expect(screen.queryByRole("button", { name: "Mehr laden" })).not.toBeInTheDocument();
+  });
+
   it("shows a failed load in the API's words and reloads on retry", async () => {
     apiFetchMock.mockRejectedValueOnce(new Error("Nicht erreichbar"));
     renderCard();
@@ -174,7 +216,7 @@ describe("CustomerActivityCard", () => {
   });
 
   it("keeps the rows it has when loading more fails, and retries that page", async () => {
-    const secondPagePath = `${FIRST_PAGE_PATH}&before_id=101`;
+    const secondPagePath = `${FIRST_PAGE_PATH}&cursor=c101`;
     let secondPageFails = true;
     routeApi({
       [FIRST_PAGE_PATH]: () => page(130, PAGE_SIZE),
@@ -201,7 +243,7 @@ describe("CustomerActivityCard", () => {
     routeApi({ [FIRST_PAGE_PATH]: () => [] });
     renderCard();
 
-    await screen.findByText("Noch keine Änderungen in den Projekten dieses Kunden.");
+    await screen.findByText("Noch keine Änderungen bei diesem Kunden.");
     expect(screen.queryByRole("button", { name: "Mehr laden" })).not.toBeInTheDocument();
   });
 

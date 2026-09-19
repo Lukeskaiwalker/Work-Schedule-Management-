@@ -1,0 +1,78 @@
+/* ══════════════════════════════════════════════════════════════════════════
+   Customer form (components/modals/CustomerModal): the Firma / Privatperson
+   switch and the Kundenbesuch block at the end.
+
+   Lives here rather than in styles.css (frozen for the wave). Imported by
+   the modal; Vite dedupes the import. The switch copies the pill of the
+   customer list's Aktiv/Archiviert filter — one look for "choose one of
+   two" on customers — under its own prefix so the two never drift apart
+   by accident when one of them is tuned.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+.customer-type-switch {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.customer-type-switch-pill {
+  display: inline-flex;
+  background-color: #f3f7fc;
+  border: 1px solid #c9d9ea;
+  border-radius: 8px;
+  padding: 3px;
+  gap: 2px;
+}
+
+.customer-type-switch-btn {
+  appearance: none;
+  border: none;
+  background: transparent;
+  height: 30px;
+  padding: 0 14px;
+  border-radius: 6px;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  color: #5c7895;
+  cursor: pointer;
+  min-height: 0;
+  line-height: 16px;
+}
+
+.customer-type-switch-btn:focus-visible {
+  outline: 2px solid #2f70b7;
+  outline-offset: 1px;
+}
+
+.customer-type-switch-btn--active {
+  background-color: #ffffff;
+  color: #14293d;
+  box-shadow: 0 1px 2px rgba(20, 41, 61, 0.08);
+}
+
+/* A row from before the field: neither side chosen, and the form says so
+   instead of quietly pre-selecting one the office would have to undo. */
+.customer-type-unset {
+  font-size: 12px;
+}
+
+/* ── Kundenbesuch ── Set off from the Stammdaten above by a rule and its
+   own small heading: it is a different kind of entry — prose about a day
+   on site, not a field of the record — and it prints at the head of the
+   Projektbericht, which the hint under the textarea says. */
+.customer-visit-section {
+  border-top: 1px solid #e3ebf4;
+  padding-top: 14px;
+}
+
+.customer-modal-subhead {
+  margin: 0 0 2px;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #5c7895;
+}

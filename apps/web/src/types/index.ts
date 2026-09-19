@@ -301,6 +301,8 @@ export type ProjectOverviewDetails = {
   /** Newest first; the overview carries the latest ones, GET /projects/{id}/notes the rest. */
   notes?: ProjectNote[];
   project_report?: ProjectReportState;
+  /** The linked customer row, for Mobil and Firma/Privatkunde on the Kontakt card. */
+  customer?: Customer | null;
 };
 
 export type ProjectWeatherDay = {

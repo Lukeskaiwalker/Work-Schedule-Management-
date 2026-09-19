@@ -1,17 +1,20 @@
 /**
- * CustomerActivityCard — "Letzte Änderungen" across all of the customer's
- * projects.
+ * CustomerActivityCard — "Letzte Änderungen" of the customer and all of
+ * its projects.
  *
  * Every project overview has this card for its own log. The customer page
  * gets the union: the office asks "what happened at Müller lately", not
  * "what happened in 2026-0412". The rows are the project card's rows, plus
  * a chip naming the project — several projects share the list here, so each
- * row has to say where it came from; the chip opens that project.
+ * row has to say where it came from; the chip opens that project. The
+ * customer's own events (Stammdaten, notes, the visit, archiving) are in
+ * the same list and carry no chip: they happened here, on this page.
  *
- * Pages backwards by id ("Mehr laden" asks for what is older than the last
- * row held), so a row posted between two requests can never shift the next
- * page. The server clamps the page size; the card treats a full page as
- * "there may be more" and a short one as the end.
+ * Two logs are merged, so an id cannot order the union; each row carries an
+ * opaque keyset cursor instead, and "Mehr laden" hands the last row's back
+ * to ask for what is older. A row posted between two requests can never
+ * shift the next page. The server clamps the page size; the card treats a
+ * full page as "there may be more" and a short one as the end.
  *
  * What is shown is what the server lets this user see: an employee gets the
  * projects they are on, nothing of the others. The card never filters.
@@ -32,9 +35,19 @@ type Props = {
   customerId: number;
 };
 
-function activityPath(customerId: number, beforeId: number | null): string {
-  const cursor = beforeId === null ? "" : `&before_id=${beforeId}`;
-  return `/customers/${customerId}/activity?limit=${PAGE_SIZE}${cursor}`;
+function activityPath(customerId: number, cursor: string | null): string {
+  const page = cursor === null ? "" : `&cursor=${encodeURIComponent(cursor)}`;
+  return `/customers/${customerId}/activity?limit=${PAGE_SIZE}${page}`;
+}
+
+/** A full page whose last row can be asked after: there may be more. */
+function pageMayContinue(page: CustomerActivity[]): boolean {
+  return page.length >= PAGE_SIZE && Boolean(page[page.length - 1]?.cursor);
+}
+
+/** The row stands for a project when it came from one: a customer-level event has no chip. */
+function hasProjectChip(row: CustomerActivity): boolean {
+  return row.source !== "customer" && row.project_id != null;
 }
 
 function errorText(err: unknown): string {
@@ -75,7 +88,7 @@ export function CustomerActivityCard({ customerId }: Props) {
       .then((page) => {
         if (generation.current !== ticket) return;
         setRows(page);
-        setHasMore(page.length >= PAGE_SIZE);
+        setHasMore(pageMayContinue(page));
       })
       .catch((err: unknown) => {
         if (generation.current !== ticket) return;
@@ -93,15 +106,16 @@ export function CustomerActivityCard({ customerId }: Props) {
 
   async function loadMore() {
     const last = rows[rows.length - 1];
-    if (!last || loadingMore) return;
+    // Without the last row's cursor there is nothing to ask for.
+    if (!last?.cursor || loadingMore) return;
     const ticket = generation.current;
     setLoadingMore(true);
     setError(null);
     try {
-      const page = await apiFetch<CustomerActivity[]>(activityPath(customerId, last.id), token);
+      const page = await apiFetch<CustomerActivity[]>(activityPath(customerId, last.cursor), token);
       if (generation.current !== ticket) return;
       setRows((current) => [...current, ...page]);
-      setHasMore(page.length >= PAGE_SIZE);
+      setHasMore(pageMayContinue(page));
     } catch (err: unknown) {
       if (generation.current !== ticket) return;
       setError(errorText(err));
@@ -124,7 +138,7 @@ export function CustomerActivityCard({ customerId }: Props) {
       <div className="overview-card-head customer-activity-head">
         <h3>{de ? "Letzte Änderungen" : "Recent changes"}</h3>
         <span className="muted customer-activity-hint">
-          {de ? "alle Projekte dieses Kunden" : "all of this customer's projects"}
+          {de ? "der Kunde und alle seine Projekte" : "the customer and all of their projects"}
         </span>
       </div>
 
@@ -143,8 +157,8 @@ export function CustomerActivityCard({ customerId }: Props) {
       ) : rows.length === 0 ? (
         <div className="overview-empty-state">
           {de
-            ? "Noch keine Änderungen in den Projekten dieses Kunden."
-            : "No changes in this customer's projects yet."}
+            ? "Noch keine Änderungen bei diesem Kunden."
+            : "No changes for this customer yet."}
         </div>
       ) : (
         <>
@@ -157,16 +171,18 @@ export function CustomerActivityCard({ customerId }: Props) {
                   {row.actor_name ? ` · ${row.actor_name}` : ""}
                 </small>
                 <small>{row.message}</small>
-                <button
-                  type="button"
-                  className="customer-activity-project"
-                  title={de ? "Projekt öffnen" : "Open project"}
-                  onClick={() => {
-                    if (row.project_id != null) openProjectById(row.project_id, "customer_detail");
-                  }}
-                >
-                  {projectChipLabel(row)}
-                </button>
+                {hasProjectChip(row) && (
+                  <button
+                    type="button"
+                    className="customer-activity-project"
+                    title={de ? "Projekt öffnen" : "Open project"}
+                    onClick={() => {
+                      if (row.project_id != null) openProjectById(row.project_id, "customer_detail");
+                    }}
+                  >
+                    {projectChipLabel(row)}
+                  </button>
+                )}
               </li>
             ))}
           </ul>

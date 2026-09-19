@@ -1,40 +1,52 @@
 import type { Customer } from "../../types";
+import { CustomerTypeBadge } from "./CustomerTypeBadge";
+import "../../styles/customer-detail.css";
 
 type Props = {
   customer: Customer;
   language: "de" | "en";
 };
 
+/** ISO YYYY-MM-DD as the office writes dates; the raw string if it does not parse. */
+function formatIsoDate(iso: string | null | undefined, language: "de" | "en"): string | null {
+  if (!iso) return null;
+  const parsed = new Date(`${iso}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) return iso;
+  return parsed.toLocaleDateString(language === "de" ? "de-DE" : "en-GB", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
+}
+
+function telHref(number: string | null | undefined): string | null {
+  return number ? `tel:${number.replace(/\s+/g, "")}` : null;
+}
+
 /**
  * "Kontaktdaten" card used on the customer detail page. Pure presentational —
  * renders every field with a label, gracefully falling back to an em-dash
- * when a field is null.
+ * when a field is null. The header says whether this is a Firma or a
+ * Privatkunde; only a company has an Ansprechpartner row (a row from before
+ * the field keeps it, since nobody has said yet what it is).
  */
 export function CustomerContactCard({ customer, language }: Props) {
   const de = language === "de";
-  // Birthday comes from the API as ISO YYYY-MM-DD; format it for display
-  // using the user's preferred locale. Falls back to the raw string if
-  // parsing fails (defensive — the input came from a `<input type="date">`).
-  const birthdayDisplay = (() => {
-    if (!customer.birthday) return null;
-    const parsed = new Date(`${customer.birthday}T00:00:00`);
-    if (Number.isNaN(parsed.getTime())) return customer.birthday;
-    return parsed.toLocaleDateString(de ? "de-DE" : "en-GB", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-    });
-  })();
+  const isPrivate = customer.customer_type === "private";
 
   const rows: Array<{ label: string; value: string | null; href?: string | null }> = [
     {
       label: de ? "Adresse" : "Address",
       value: customer.address,
     },
-    {
-      label: de ? "Ansprechpartner" : "Contact person",
-      value: customer.contact_person,
-    },
+    ...(isPrivate
+      ? []
+      : [
+          {
+            label: de ? "Ansprechpartner" : "Contact person",
+            value: customer.contact_person,
+          },
+        ]),
     {
       label: de ? "E-Mail" : "Email",
       value: customer.email,
@@ -43,11 +55,16 @@ export function CustomerContactCard({ customer, language }: Props) {
     {
       label: de ? "Telefon" : "Phone",
       value: customer.phone,
-      href: customer.phone ? `tel:${customer.phone.replace(/\s+/g, "")}` : null,
+      href: telHref(customer.phone),
+    },
+    {
+      label: de ? "Mobil" : "Mobile",
+      value: customer.mobile ?? null,
+      href: telHref(customer.mobile),
     },
     {
       label: de ? "Geburtstag" : "Birthday",
-      value: birthdayDisplay,
+      value: formatIsoDate(customer.birthday, language),
     },
     {
       label: de ? "Steuer-ID" : "Tax ID",
@@ -68,6 +85,7 @@ export function CustomerContactCard({ customer, language }: Props) {
         <h3 className="customer-contact-card-title">
           {de ? "Kontaktdaten" : "Contact details"}
         </h3>
+        <CustomerTypeBadge type={customer.customer_type} language={language} />
       </header>
       <dl className="customer-contact-card-list">
         {rows.map((row) => (

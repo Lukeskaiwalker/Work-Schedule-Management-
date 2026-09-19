@@ -1,0 +1,119 @@
+/* ══════════════════════════════════════════════════════════════════════════
+   Customer page: the note feed (components/customers/CustomerNotesCard).
+
+   Lives here rather than in styles.css (frozen for the wave). Imported by
+   the card; Vite dedupes the import. The feed is the project's "Interne
+   Notizen" (styles/project-notes.css) moved onto the customer page, so
+   the anatomy is the same — composer on top, one row per posting — but
+   in the white shell of the cards around it, not on the project's yellow
+   paper: this card belongs to the customer page's column, not to a
+   project overview. Prefixed customer-notes- so nothing here can collide
+   with the project feed it copies.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+.customer-notes-card {
+  background-color: #ffffff;
+  border-radius: 14px;
+  box-shadow: 0 1px 4px rgba(20, 41, 61, 0.06);
+  padding: 20px 22px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.customer-notes-count {
+  margin-left: 0.4rem;
+  font-weight: 400;
+  font-size: 0.85em;
+  color: #5c7895;
+}
+
+.customer-notes-composer {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.customer-notes-composer textarea {
+  width: 100%;
+  min-height: 4.2rem;
+  resize: vertical;
+  font: inherit;
+  box-sizing: border-box;
+}
+
+.customer-notes-composer-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.customer-notes-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.customer-notes-item {
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.5rem 0.6rem;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: #fbfcfe;
+}
+
+.customer-notes-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.customer-notes-author {
+  color: #14293d;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.customer-notes-time {
+  color: #5c7895;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.customer-notes-remove {
+  margin-left: auto;
+  line-height: 1;
+  font-size: 1.1rem;
+}
+
+/* A note is written with line breaks; the feed shows them as typed, and a
+ * long unbroken token (a URL, a serial) wraps instead of pushing the card. */
+.customer-notes-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: #14293d;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.customer-notes-more {
+  justify-self: start;
+  align-self: flex-start;
+}
+
+.customer-notes-empty {
+  font-size: 13px;
+}
+
+.customer-notes-error {
+  display: grid;
+  gap: 2px;
+  font-size: 12px;
+  color: #14293d;
+}
