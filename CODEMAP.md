@@ -351,3 +351,14 @@ virtual (nothing moved on disk). Migration `20260921_0089`.
 | `components/customers/CustomerFilesCard.tsx` (+ `CustomerProjectFolders.tsx`, `hooks/useCustomerFiles.ts`) | The customer folder on the customer page: project folders + customer folders |
 | `components/tasks/TaskAttachments*.tsx`, `taskAttachmentsApi.ts`, `taskAttachmentsModel.ts` | The "Anhänge" section of both task modals, pending-upload mode for new tasks, paperclip badge |
 
+## Project note feed, customer change log, QR command codes (2026-09-19)
+
+| Module | Role |
+|---|---|
+| `apps/api/app/models/project.py` → `ProjectNote`, migration `20260922_0090` | The "Interne Notizen" feed: one row per posting with author and time; the old `description` note is backfilled as the first entry |
+| `apps/api/app/routers/workflow_project_notes.py` | `GET/POST /projects/{id}/notes`, `DELETE …/{note_id}`; posts record `project.note_posted` |
+| `apps/api/app/services/customer_activity.py` + `GET /customers/{id}/activity` | The customer's change log = the union of its visible projects' `project_activities`, keyset-paged |
+| `apps/web/src/components/project/ProjectNotesCard.tsx` | The feed card on the project overview (replaced the inline note editor) |
+| `apps/web/src/components/customers/CustomerActivityCard.tsx` | "Letzte Änderungen — alle Projekte dieses Kunden" on the customer page |
+| `tools/label_agent/qrcode_svg.py` + `/qr.svg` | Stdlib-only QR encoder; the crate wall screen's command cards embed it instead of `/barcode.svg` |
+
