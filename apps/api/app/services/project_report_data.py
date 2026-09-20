@@ -40,6 +40,7 @@ from app.models.entities import (
 )
 from app.models.project import Project
 from app.services.construction_report_pdf import format_work_done_for_report
+from app.services.customer_visits import report_visits
 from app.services.project_status import normalize_project_status
 
 # The history the Verlauf section tells: how the project came to be, how its
@@ -126,8 +127,10 @@ class ReportCustomer:
 
 @dataclass(frozen=True)
 class ReportVisit:
-    """What the first visit found — the preface of every report of this
-    customer, so the reader opens the sheet with the site in mind."""
+    """One write-up of a visit at the customer — the preface of the report,
+    so the reader opens the sheet with the site in mind. A project's report
+    carries the entries linked to it and the unlinked ones (about the
+    customer as such); entries of the customer's other projects stay out."""
 
     summary: str
     visit_date: date | None
@@ -230,9 +233,9 @@ class ProjectReportData:
     site_access: str
     classes: tuple[str, ...]
     extra_attributes: tuple[tuple[str, str], ...]
-    # None when the customer has no write-up: the report then opens with
-    # the project, not with an empty box.
-    visit: ReportVisit | None = None
+    # Empty when nothing was written up: the report then opens with the
+    # project, not with an empty box.
+    visits: tuple[ReportVisit, ...] = ()
     members: tuple[ReportMember, ...] = ()
     tasks: tuple[ReportTask, ...] = ()
     notes: tuple[ReportNote, ...] = ()
@@ -278,7 +281,7 @@ def collect_project_report_data(db: Session, project_id: int) -> ProjectReportDa
         site_access=site_access_display(project.site_access_type, project.site_access_note),
         classes=_class_names(db, project.id),
         extra_attributes=_extra_attribute_pairs(project.extra_attributes),
-        visit=_visit(customer, names),
+        visits=_visits(db, project, customer, names),
         members=_members(db, project.id, names),
         tasks=_tasks(db, project.id, names),
         notes=_notes(db, project.id, names),
@@ -317,16 +320,18 @@ def _customer(project: Project, customer: Customer | None) -> ReportCustomer:
     )
 
 
-def _visit(customer: Customer | None, names: _UserNames) -> ReportVisit | None:
+def _visits(db: Session, project: Project, customer: Customer | None, names: _UserNames) -> tuple[ReportVisit, ...]:
     if customer is None:
-        return None
-    summary = _text(customer.visit_summary)
-    if not summary:
-        return None
-    return ReportVisit(
-        summary=summary,
-        visit_date=customer.visit_date,
-        visited_by=names.of(customer.visit_by_user_id, fallback=""),
+        return ()
+    rows = report_visits(db, customer_id=customer.id, project_id=project.id)
+    return tuple(
+        ReportVisit(
+            summary=_text(row.summary),
+            visit_date=row.visit_date,
+            visited_by=names.of(row.visit_by_user_id, fallback=""),
+        )
+        for row in rows
+        if _text(row.summary)
     )
 
 

@@ -54,11 +54,6 @@ class Customer(Base):
     # A second number: the office line and the phone that is actually
     # answered on site are rarely the same.
     mobile: Mapped[str | None] = mapped_column(String(128))
-    # What the first visit found. Written by whoever visited a new customer,
-    # and printed at the head of every Projektbericht of this customer.
-    visit_summary: Mapped[str | None] = mapped_column(Text)
-    visit_date: Mapped[date | None] = mapped_column(Date)
-    visit_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     archived_at: Mapped[datetime | None] = mapped_column(DateTime)
     created_by: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL")
@@ -83,6 +78,32 @@ class CustomerNote(Base):
     author_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
     body: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False, index=True)
+
+
+class CustomerVisit(Base):
+    """One write-up of a visit at the customer — the Kundenbesuch feed.
+
+    The visit used to be three columns on the customer (one write-up, over-
+    written on every edit); migration 0093 made that write-up the first
+    entry here. Each entry may name one of the customer's projects: a
+    project's Projektbericht opens with the entries linked to it plus the
+    unlinked ones, which are about the customer as such. ``visit_by_user_id``
+    is who went — the poster unless the payload names someone else — and
+    the one who may edit the entry besides a project manager.
+    """
+
+    __tablename__ = "customer_visits"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    customer_id: Mapped[int] = mapped_column(ForeignKey("customers.id", ondelete="CASCADE"), index=True, nullable=False)
+    # SET NULL, not CASCADE: a deleted project leaves the write-up with the
+    # customer, where it was made.
+    project_id: Mapped[int | None] = mapped_column(ForeignKey("projects.id", ondelete="SET NULL"), index=True)
+    visit_date: Mapped[date | None] = mapped_column(Date)
+    visit_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
 
 
 class CustomerActivity(Base):

@@ -13,9 +13,76 @@ from datetime import date, datetime
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from app.schemas.project import ProjectActivityOut, ProjectNoteCreate, ProjectOverviewOut
+
+
+# A write-up is prose about a day on site; the cap is generous but finite so
+# a pasted document does not become "the visit".
+CUSTOMER_VISIT_MAX_CHARS = 8000
+
+
+def _normalized_summary(value: str) -> str:
+    # Line endings as the browser sent them differ per platform; the stored
+    # text is what the feed shows and the report prints, so it is
+    # normalised once, here.
+    text = value.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        raise ValueError("Visit summary must not be empty")
+    if len(text) > CUSTOMER_VISIT_MAX_CHARS:
+        raise ValueError(f"Visit summary must be at most {CUSTOMER_VISIT_MAX_CHARS} characters")
+    return text
+
+
+class CustomerVisitCreate(BaseModel):
+    """One entry of the Kundenbesuch feed as it is posted."""
+
+    summary: str
+    visit_date: date | None = None
+    # One of the customer's projects — the write-up is about that job — or
+    # None: about the customer as such, printed in every project's report.
+    project_id: int | None = None
+    # Who went. Left out, whoever posts the entry is the visitor.
+    visit_by_user_id: int | None = None
+
+    @field_validator("summary")
+    @classmethod
+    def _summary_stripped_and_bounded(cls, value: str) -> str:
+        return _normalized_summary(value)
+
+
+class CustomerVisitUpdate(BaseModel):
+    """A partial edit: only the fields sent change; ``project_id: None``
+    unlinks the entry from its project."""
+
+    summary: str | None = None
+    visit_date: date | None = None
+    project_id: int | None = None
+    visit_by_user_id: int | None = None
+
+    @field_validator("summary")
+    @classmethod
+    def _summary_stripped_and_bounded(cls, value: str | None) -> str | None:
+        return None if value is None else _normalized_summary(value)
+
+
+class CustomerVisitOut(BaseModel):
+    id: int
+    customer_id: int
+    project_id: int | None = None
+    # The linked project's number and name, so a row can be labelled
+    # without a second request; None when the entry is not linked.
+    project_number: str | None = None
+    project_name: str | None = None
+    visit_date: date | None = None
+    visit_by_user_id: int | None = None
+    # None for a visitor no longer in the system, and for the entry
+    # migration 0093 carried over without one.
+    visit_by_name: str | None = None
+    summary: str
+    created_at: datetime
+    updated_at: datetime
 
 
 class CustomerCreate(BaseModel):
@@ -31,11 +98,10 @@ class CustomerCreate(BaseModel):
     # "company" or "private"; None = never chosen.
     customer_type: Literal["company", "private"] | None = None
     mobile: str | None = Field(default=None, max_length=128)
-    # What the first visit found — printed at the head of the Projektbericht.
-    visit_summary: str | None = Field(default=None, max_length=8000)
-    visit_date: date | None = None
-    # Who visited. Left out, whoever writes the summary is the visitor.
-    visit_by_user_id: int | None = None
+    # The first visit, written up in the same form the customer is created
+    # in: one request, one transaction. The entry cannot name a project —
+    # the customer has none yet.
+    visit: CustomerVisitCreate | None = None
 
 
 class CustomerUpdate(BaseModel):
@@ -51,11 +117,6 @@ class CustomerUpdate(BaseModel):
     # "company" or "private"; None = never chosen.
     customer_type: Literal["company", "private"] | None = None
     mobile: str | None = Field(default=None, max_length=128)
-    # What the first visit found — printed at the head of the Projektbericht.
-    visit_summary: str | None = Field(default=None, max_length=8000)
-    visit_date: date | None = None
-    # Who visited. Left out, whoever writes the summary is the visitor.
-    visit_by_user_id: int | None = None
 
 
 class CustomerOut(BaseModel):
@@ -71,9 +132,6 @@ class CustomerOut(BaseModel):
     marktakteur_nummer: str | None = None
     customer_type: str | None = None
     mobile: str | None = None
-    visit_summary: str | None = None
-    visit_date: date | None = None
-    visit_by_user_id: int | None = None
     archived_at: datetime | None = None
     created_by: int | None = None
     created_at: datetime

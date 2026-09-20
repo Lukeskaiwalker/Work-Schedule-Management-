@@ -12,15 +12,16 @@ Included from `workflow.py` under the `/api` prefix. Endpoints:
   POST  /api/customers/{id}/unarchive clear archive
 
 The note feed (`/api/customers/{id}/notes`) lives in
-`workflow_customer_notes.py`.
+`workflow_customer_notes.py`, the Kundenbesuch feed
+(`/api/customers/{id}/visits`) in `workflow_customer_visits.py`.
 
 No hard delete. Permission piggy-backs on `projects:manage` —
 customers are a sub-concept of the project lifecycle. Archiving a
 customer does NOT cascade: linked projects keep their customer_id.
 
-Every change to the customer itself — creation, Stammdaten, the visit
-write-up, archiving — leaves a `customer.*` row in `customer_activities`,
-which the change log unions with the project logs.
+Every change to the customer itself — creation, Stammdaten, archiving —
+leaves a `customer.*` row in `customer_activities`, which the change log
+unions with the project logs.
 """
 
 from __future__ import annotations
@@ -46,6 +47,7 @@ from app.services.customer_activity import (
     customer_activity_page,
     record_customer_activity,
 )
+from app.routers.workflow_customer_visits import add_customer_visit
 from app.services.customers import sync_project_from_customer
 from app.services.search_matching import (
     PHONE_MIN_DIGITS,
@@ -57,11 +59,6 @@ from app.services.search_matching import (
 )
 
 router = APIRouter(prefix="", tags=["customers"])
-
-# The visit write-up is an event of its own on the change log, not a
-# Stammdaten edit — see `_record_customer_changes`.
-VISIT_FIELDS = frozenset({"visit_summary", "visit_date", "visit_by_user_id"})
-
 
 def _customer_list_item(
     row: Customer,
@@ -78,21 +75,6 @@ def _customer_list_item(
         active_project_count=active_project_count,
         last_project_activity_at=last_project_activity_at,
     )
-
-
-def _assert_known_user(db: Session, user_id: int | None) -> None:
-    """A visitor the payload names must exist — a bad id is a 400 here,
-    not a foreign-key error on commit."""
-    if user_id is not None and db.get(User, user_id) is None:
-        raise HTTPException(status_code=400, detail="Unknown visit_by_user_id")
-
-
-def _visit_author(summary: str | None, given: int | None, *, actor_user_id: int) -> int | None:
-    """Whoever writes the summary is the visitor unless the payload names
-    someone else; a cleared summary has no visitor."""
-    if given is not None:
-        return given
-    return actor_user_id if (summary or "").strip() else None
 
 
 def _blank_to_none(value):
@@ -120,42 +102,18 @@ def _normalized_update(payload: CustomerUpdate) -> dict:
     return {**data, **overrides}
 
 
-def _visit_message(customer: Customer) -> str:
-    if not (customer.visit_summary or "").strip():
-        return "Kundenbesuch entfernt"
-    if customer.visit_date is not None:
-        return f"Kundenbesuch am {customer.visit_date.strftime('%d.%m.%Y')}"
-    return "Kundenbesuch erfasst"
-
-
 def _record_customer_changes(db: Session, customer: Customer, *, actor_user_id: int, changed: list[str]) -> None:
-    """What the PATCH did, for the change log: the Stammdaten as one
-    ``customer.updated`` naming the fields, the visit as its own
-    ``customer.visit_updated`` — a visit written up is a moment in the
-    customer's story, not a field edit. Nothing changed, nothing logged."""
-    stammdaten = [field for field in changed if field not in VISIT_FIELDS]
-    if stammdaten:
+    """What the PATCH did, for the change log: one ``customer.updated``
+    naming the fields. Nothing changed, nothing logged. (The Kundenbesuch
+    is a feed of its own with its own events — see workflow_customer_visits.)"""
+    if changed:
         record_customer_activity(
             db,
             customer_id=customer.id,
             actor_user_id=actor_user_id,
             event_type="customer.updated",
-            message=f"Stammdaten geändert: {', '.join(stammdaten)}",
-            details={"changed": stammdaten},
-        )
-    visit = [field for field in changed if field in VISIT_FIELDS]
-    if visit:
-        record_customer_activity(
-            db,
-            customer_id=customer.id,
-            actor_user_id=actor_user_id,
-            event_type="customer.visit_updated",
-            message=_visit_message(customer),
-            details={
-                "changed": visit,
-                "visit_date": customer.visit_date.isoformat() if customer.visit_date else None,
-                "visit_by_user_id": customer.visit_by_user_id,
-            },
+            message=f"Stammdaten geändert: {', '.join(changed)}",
+            details={"changed": changed},
         )
 
 
@@ -354,7 +312,8 @@ def create_customer(
     name = payload.name.strip()
     if not name:
         raise HTTPException(status_code=400, detail="Name is required")
-    _assert_known_user(db, payload.visit_by_user_id)
+    if payload.visit is not None and payload.visit.project_id is not None:
+        raise HTTPException(status_code=400, detail="A new customer has no project to link the visit to")
     row = Customer(
         name=name,
         address=(payload.address or None),
@@ -367,9 +326,6 @@ def create_customer(
         marktakteur_nummer=(payload.marktakteur_nummer or None),
         customer_type=payload.customer_type,
         mobile=(payload.mobile or None),
-        visit_summary=(payload.visit_summary or None),
-        visit_date=payload.visit_date,
-        visit_by_user_id=_visit_author(payload.visit_summary, payload.visit_by_user_id, actor_user_id=current_user.id),
         created_by=current_user.id,
     )
     db.add(row)
@@ -382,6 +338,10 @@ def create_customer(
         message=f"Kunde angelegt: {name}",
         details={"name": name, "customer_type": row.customer_type},
     )
+    # The first visit, in the same transaction as the customer: the form
+    # that creates a new customer is filled in after that visit.
+    if payload.visit is not None:
+        add_customer_visit(db, customer=row, payload=payload.visit, actor_user_id=current_user.id)
     db.commit()
     db.refresh(row)
     return row
@@ -398,14 +358,11 @@ def update_customer(
     if row is None:
         raise HTTPException(status_code=404, detail="Customer not found")
     data = _normalized_update(payload)
-    _assert_known_user(db, data.get("visit_by_user_id"))
     # Compared before the write, so the log names what actually changed
     # and a PATCH that re-sends the form untouched leaves no row.
     changed = [field for field, value in data.items() if not _same_value(getattr(row, field), value)]
     for field, value in data.items():
         setattr(row, field, value)
-    if "visit_summary" in changed and "visit_by_user_id" not in data:
-        row.visit_by_user_id = _visit_author(row.visit_summary, None, actor_user_id=current_user.id)
     row.updated_at = utcnow()
     db.add(row)
     # Keep linked projects' denormalised mirror in step.

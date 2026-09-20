@@ -46,10 +46,11 @@ from app.services.project_report_data import (
 )
 
 TITLE = "Projektbericht"
-# The preface: what the first visit found. Unnumbered and printed only when
-# there is a write-up, so section 1 is PROJEKT & KUNDE in every report and
-# an old customer's sheet does not open with an empty box.
+# The preface: what the visits at the customer found. Unnumbered and printed
+# only when there is a write-up, so section 1 is PROJEKT & KUNDE in every
+# report and an old customer's sheet does not open with an empty box.
 VISIT_TITLE = "KUNDENBESUCH"
+VISITS_TITLE = "KUNDENBESUCHE"
 # Printed where a section has nothing to show, so the reader knows the
 # section was considered rather than dropped.
 EMPTY = "keine"
@@ -308,17 +309,29 @@ def _section(styles, number: int, title: str, width: float, body: list[Any]) -> 
 # ── Sections ─────────────────────────────────────────────────────────────────
 
 
-def _section_kundenbesuch(styles, data: ProjectReportData, width: float) -> list[Any]:
-    """The write-up of the first visit, ahead of the numbered sections —
-    only when there is one."""
-    visit = data.visit
-    if visit is None:
-        return []
+def _visit_paragraphs(visit) -> list[Any]:
+    """One entry: its date and visitor on a muted line, then the write-up."""
     when = f"Besuch am {_fmt_date(visit.visit_date)}" if visit.visit_date else ""
     meta = " · ".join(bit for bit in (when, visit.visited_by) if bit)
     body: list[Any] = [_para(meta, _MUTED_STYLE)] if meta else []
     body.append(_para(visit.summary))
-    return [KeepTogether([_preface_heading(styles, VISIT_TITLE, width), Spacer(0, 3), body[0]]), *body[1:], Spacer(0, 4)]
+    return body
+
+
+def _section_kundenbesuch(styles, data: ProjectReportData, width: float) -> list[Any]:
+    """The write-ups of the visits, ahead of the numbered sections — only
+    when there are any. Several entries read in date order with a little
+    air between them; the heading travels with the first."""
+    visits = data.visits
+    if not visits:
+        return []
+    title = VISIT_TITLE if len(visits) == 1 else VISITS_TITLE
+    body: list[Any] = []
+    for index, visit in enumerate(visits):
+        if index:
+            body.append(Spacer(0, 6))
+        body.extend(_visit_paragraphs(visit))
+    return [KeepTogether([_preface_heading(styles, title, width), Spacer(0, 3), body[0]]), *body[1:], Spacer(0, 4)]
 
 
 def _customer_rows(data: ProjectReportData) -> list[tuple[str, str]]:

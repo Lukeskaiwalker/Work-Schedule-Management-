@@ -427,12 +427,21 @@ def _create_customer_with_visit(client: TestClient, admin_token: str, name: str)
             "email": "muster@example.com",
             "phone": "0123 456",
             "mobile": "0171 2345678",
-            "visit_summary": "Altbau von 1962, Zählerschrank im Keller, Zuleitung muss neu.",
-            "visit_date": "2026-09-01",
+            "visit": {"summary": "Altbau von 1962, Zählerschrank im Keller, Zuleitung muss neu.", "visit_date": "2026-09-01"},
         },
     )
     assert response.status_code == 200, response.text
     return response.json()["id"]
+
+
+def _post_visit(client: TestClient, admin_token: str, customer_id: int, summary: str, *, visit_date: str | None, project_id: int | None) -> dict:
+    response = client.post(
+        f"/api/customers/{customer_id}/visits",
+        headers=auth_headers(admin_token),
+        json={"summary": summary, "visit_date": visit_date, "project_id": project_id},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
 
 
 def _report_data(project_id: int):
@@ -457,10 +466,10 @@ def test_visit_section_comes_first_when_the_customer_has_a_summary(client: TestC
     project_id = _create_project(client, admin_token, "2026-7101", customer_id=customer_id)
 
     data, created_at = _report_data(project_id)
-    assert data.visit is not None
-    assert data.visit.summary == "Altbau von 1962, Zählerschrank im Keller, Zuleitung muss neu."
-    assert data.visit.visit_date == date(2026, 9, 1)
-    assert data.visit.visited_by == "Initial Admin"
+    assert len(data.visits) == 1
+    assert data.visits[0].summary == "Altbau von 1962, Zählerschrank im Keller, Zuleitung muss neu."
+    assert data.visits[0].visit_date == date(2026, 9, 1)
+    assert data.visits[0].visited_by == "Initial Admin"
     assert data.customer.type_label == "Privatkunde"
     assert data.customer.mobile == "0171 2345678"
     assert data.customer.phone == "0123 456"
@@ -480,7 +489,7 @@ def test_visit_section_is_absent_without_a_summary(client: TestClient, admin_tok
     project_id = _create_project(client, admin_token, "2026-7102", customer_id=customer_id)
 
     data, created_at = _report_data(project_id)
-    assert data.visit is None
+    assert data.visits == ()
     assert data.customer.type_label == ""
     assert data.customer.mobile == ""
 
@@ -493,7 +502,44 @@ def test_visit_section_is_absent_without_a_summary(client: TestClient, admin_tok
     # No customer at all: nothing to preface with either.
     alone_id = _create_project(client, admin_token, "2026-7103")
     alone, _ = _report_data(alone_id)
-    assert alone.visit is None and alone.customer.type_label == "" and alone.customer.mobile == ""
+    assert alone.visits == () and alone.customer.type_label == "" and alone.customer.mobile == ""
+
+
+def test_report_prints_the_visits_of_this_project_and_the_unlinked_ones_in_date_order(
+    client: TestClient, admin_token: str, tmp_path
+) -> None:
+    """A returning customer: the general write-up from the first contact,
+    one visit for this job, one for another job of the same customer. This
+    project's sheet opens with the first two, oldest first, under the plural
+    heading; the other job's visit is that job's business."""
+    customer_id = _create_customer(client, admin_token, "Stammkunde GmbH")
+    this_id = _create_project(client, admin_token, "2026-7106", customer_id=customer_id)
+    other_id = _create_project(client, admin_token, "2026-7107", customer_id=customer_id)
+    _post_visit(client, admin_token, customer_id, "Für dieses Projekt: Zuleitung im Hof.", visit_date="2026-09-10", project_id=this_id)
+    _post_visit(client, admin_token, customer_id, "Erster Kontakt: Altbau, Zähler im Keller.", visit_date="2026-09-01", project_id=None)
+    _post_visit(client, admin_token, customer_id, "Für das andere Projekt: Dachfläche.", visit_date="2026-09-05", project_id=other_id)
+    _post_visit(client, admin_token, customer_id, "Undatiert nachgetragen.", visit_date=None, project_id=None)
+
+    data, created_at = _report_data(this_id)
+    assert [visit.summary for visit in data.visits] == [
+        "Erster Kontakt: Altbau, Zähler im Keller.",
+        "Für dieses Projekt: Zuleitung im Hof.",
+        "Undatiert nachgetragen.",
+    ]
+
+    text = _pdf_text(render_project_report_pdf(data, final=False, generated_at=created_at), tmp_path)
+    assert "KUNDENBESUCHE" in text
+    assert text.index("KUNDENBESUCHE") < text.index("PROJEKT & KUNDE")
+    assert text.index("Erster Kontakt") < text.index("Zuleitung im Hof") < text.index("Undatiert nachgetragen")
+    assert "Dachfläche" not in text
+
+    # The other job's sheet: the general one and its own, nothing of this one.
+    other, _ = _report_data(other_id)
+    assert [visit.summary for visit in other.visits] == [
+        "Erster Kontakt: Altbau, Zähler im Keller.",
+        "Für das andere Projekt: Dachfläche.",
+        "Undatiert nachgetragen.",
+    ]
 
 
 def test_overview_carries_the_linked_customer(client: TestClient, admin_token: str) -> None:
@@ -506,7 +552,8 @@ def test_overview_carries_the_linked_customer(client: TestClient, admin_token: s
     assert customer["id"] == customer_id
     assert customer["customer_type"] == "private"
     assert customer["mobile"] == "0171 2345678"
-    assert customer["visit_summary"].startswith("Altbau von 1962")
+    # The visit is not on the customer row any more; the report reads the feed.
+    assert "visit_summary" not in customer
 
     alone_id = _create_project(client, admin_token, "2026-7105")
     alone = client.get(f"/api/projects/{alone_id}/overview", headers=auth_headers(admin_token))

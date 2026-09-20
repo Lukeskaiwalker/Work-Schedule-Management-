@@ -596,7 +596,7 @@ def _patch(client: TestClient, admin_token: str, customer_id: int, payload: dict
     return response.json()
 
 
-def test_customer_create_round_trips_type_mobile_and_visit(client: TestClient, admin_token: str):
+def test_customer_create_round_trips_type_mobile_and_first_visit(client: TestClient, admin_token: str):
     response = client.post(
         "/api/customers",
         headers=auth_headers(admin_token),
@@ -604,35 +604,44 @@ def test_customer_create_round_trips_type_mobile_and_visit(client: TestClient, a
             "name": "Privat Person",
             "customer_type": "private",
             "mobile": "0171 2345678",
-            "visit_summary": "Altbau, Zähler im Keller",
-            "visit_date": "2026-09-01",
+            "visit": {"summary": "Altbau, Zähler im Keller", "visit_date": "2026-09-01"},
         },
     )
     assert response.status_code == 200, response.text
     created = response.json()
     assert created["customer_type"] == "private"
     assert created["mobile"] == "0171 2345678"
-    assert created["visit_summary"] == "Altbau, Zähler im Keller"
-    assert created["visit_date"] == "2026-09-01"
-    # Nobody named the visitor, so whoever wrote the summary is.
-    assert created["visit_by_user_id"] == created["created_by"]
+    # The visit is a feed of its own now, not three fields on the row.
+    assert "visit_summary" not in created and "visit_date" not in created
 
     detail = client.get(f"/api/customers/{created['id']}", headers=auth_headers(admin_token)).json()
-    assert {key: detail[key] for key in ("customer_type", "mobile", "visit_summary", "visit_date", "visit_by_user_id")} == {
-        "customer_type": "private",
-        "mobile": "0171 2345678",
-        "visit_summary": "Altbau, Zähler im Keller",
-        "visit_date": "2026-09-01",
-        "visit_by_user_id": created["created_by"],
-    }
+    assert {key: detail[key] for key in ("customer_type", "mobile")} == {"customer_type": "private", "mobile": "0171 2345678"}
+
+    visits = client.get(f"/api/customers/{created['id']}/visits", headers=auth_headers(admin_token)).json()
+    assert len(visits) == 1
+    assert visits[0]["summary"] == "Altbau, Zähler im Keller"
+    assert visits[0]["visit_date"] == "2026-09-01"
+    assert visits[0]["project_id"] is None
+    # Nobody named the visitor, so whoever wrote the summary is.
+    assert visits[0]["visit_by_user_id"] == created["created_by"]
 
     rows = _activity(client, admin_token, created["id"])
-    assert [row["event_type"] for row in rows] == ["customer.created"]
-    assert rows[0]["source"] == "customer"
-    assert rows[0]["project_id"] is None
-    assert rows[0]["message"] == "Kunde angelegt: Privat Person"
-    assert rows[0]["details"] == {"name": "Privat Person", "customer_type": "private"}
-    assert rows[0]["actor_name"]
+    assert [row["event_type"] for row in rows] == ["customer.visit_posted", "customer.created"]
+    assert rows[1]["source"] == "customer"
+    assert rows[1]["project_id"] is None
+    assert rows[1]["message"] == "Kunde angelegt: Privat Person"
+    assert rows[1]["details"] == {"name": "Privat Person", "customer_type": "private"}
+    assert rows[1]["actor_name"]
+    assert rows[0]["message"] == "Kundenbesuch am 01.09.2026"
+
+
+def test_first_visit_on_creation_cannot_name_a_project(client: TestClient, admin_token: str):
+    refused = client.post(
+        "/api/customers",
+        headers=auth_headers(admin_token),
+        json={"name": "Neu GmbH", "visit": {"summary": "Besuch", "project_id": 1}},
+    )
+    assert refused.status_code == 400, refused.text
 
 
 def test_customer_type_must_be_company_or_private(client: TestClient, admin_token: str):
@@ -681,50 +690,15 @@ def test_unchanged_patch_leaves_no_row(client: TestClient, admin_token: str):
     assert [row["event_type"] for row in _activity(client, admin_token, customer["id"])] == ["customer.created"]
 
 
-def test_visit_update_sets_the_visitor_and_is_its_own_event(client: TestClient, admin_token: str):
+def test_visit_fields_are_no_longer_on_the_customer(client: TestClient, admin_token: str):
+    """The old three-field PATCH is ignored, not honoured: the Kundenbesuch
+    is the feed under /visits (tests in test_customer_visits.py)."""
     customer = _create_customer(client, admin_token, name="Besucht GmbH")
-    assert customer["visit_by_user_id"] is None
-
-    written = _patch(client, admin_token, customer["id"], {"visit_summary": "Zählerschrank im Keller", "visit_date": "2026-09-15"})
-    assert written["visit_by_user_id"] == customer["created_by"]
-
-    visits = _events(client, admin_token, customer["id"], "customer.visit_updated")
-    assert len(visits) == 1
-    assert visits[0]["message"] == "Kundenbesuch am 15.09.2026"
-    assert visits[0]["details"] == {
-        "changed": ["visit_summary", "visit_date"],
-        "visit_date": "2026-09-15",
-        "visit_by_user_id": customer["created_by"],
-    }
-    # The visit is not a Stammdaten edit.
+    assert "visit_summary" not in customer and "visit_by_user_id" not in customer
+    patched = _patch(client, admin_token, customer["id"], {"visit_summary": "Zählerschrank im Keller", "visit_date": "2026-09-15"})
+    assert "visit_summary" not in patched
     assert _events(client, admin_token, customer["id"], "customer.updated") == []
-
-    # A named visitor is kept as named.
-    colleague = client.post(
-        "/api/admin/users",
-        headers=auth_headers(admin_token),
-        json={"email": "visitor@example.com", "password": "Password123!", "full_name": "Vera Vorort", "role": "employee"},
-    )
-    assert colleague.status_code == 200, colleague.text
-    named = _patch(client, admin_token, customer["id"], {"visit_summary": "Zweiter Besuch", "visit_by_user_id": colleague.json()["id"]})
-    assert named["visit_by_user_id"] == colleague.json()["id"]
-
-    # A cleared summary has no visitor.
-    cleared = _patch(client, admin_token, customer["id"], {"visit_summary": None})
-    assert cleared["visit_by_user_id"] is None
-    assert _events(client, admin_token, customer["id"], "customer.visit_updated")[0]["message"] == "Kundenbesuch entfernt"
-
-
-def test_unknown_visitor_is_rejected(client: TestClient, admin_token: str):
-    refused = client.post(
-        "/api/customers", headers=auth_headers(admin_token), json={"name": "Geist GmbH", "visit_by_user_id": 999999}
-    )
-    assert refused.status_code == 400, refused.text
-    customer = _create_customer(client, admin_token, name="Echt GmbH")
-    patched = client.patch(
-        f"/api/customers/{customer['id']}", headers=auth_headers(admin_token), json={"visit_by_user_id": 999999}
-    )
-    assert patched.status_code == 400, patched.text
+    assert _events(client, admin_token, customer["id"], "customer.visit_updated") == []
 
 
 def test_archive_and_unarchive_are_recorded_once(client: TestClient, admin_token: str):

@@ -376,10 +376,11 @@ virtual (nothing moved on disk). Migration `20260921_0089`.
 
 | Module | Role |
 |---|---|
-| `apps/api/app/models/customer.py` → `customer_type`, `mobile`, `visit_*`, `CustomerNote`, `CustomerActivity`; migration `20260924_0092` | Firm vs person, second phone, the Kundenbesuch, the note feed (old `notes` backfilled as the first entry), customer-level events |
+| `apps/api/app/models/customer.py` → `customer_type`, `mobile`, `CustomerNote`, `CustomerVisit`, `CustomerActivity`; migrations `20260924_0092`, `20260925_0093` | Firm vs person, second phone, the note feed (old `notes` backfilled as the first entry), the Kundenbesuch feed (0093 moved the single write-up of 0092 into `customer_visits` and dropped the columns), customer-level events |
+| `apps/api/app/routers/workflow_customer_visits.py`, `services/customer_visits.py` | `GET/POST /customers/{id}/visits`, `PATCH/DELETE …/visits/{visit_id}`; an entry may name one of the customer's projects; logs on the project when linked (`project.visit_*`), on the customer when not (`customer.visit_*`); `report_visits` = the entries a project's Projektbericht opens with (linked to it + unlinked, date order); `POST /customers` takes a nested `visit` for the first one |
 | `apps/api/app/routers/workflow_customer_notes.py` | `GET/POST/DELETE /customers/{id}/notes` |
 | `apps/api/app/services/customer_activity.py` | `record_customer_activity`; the change log unions customer events with the project logs behind an opaque `cursor` |
 | `apps/api/app/routers/workflow_tasks.py` → `_task_rows_out`, `_record_task_activity` | `TaskOut.customer_name/customer_address` on every list; customer-only tasks log to the customer, project tasks to the project |
-| `apps/web/src/components/customers/CustomerNotesCard.tsx`, `CustomerVisitCard.tsx`, `CustomerTypeBadge.tsx`, `modals/CustomerModal.tsx` (+ `customerModalDraft.ts`) | The customer page's feed, visit card, type badge and the Firma/Privatperson form with Telefon + Mobil |
+| `apps/web/src/components/customers/CustomerNotesCard.tsx`, `CustomerVisitCard.tsx`, `CustomerTypeBadge.tsx`, `modals/CustomerModal.tsx` (+ `customerModalDraft.ts`) | The customer page's note feed, the Kundenbesuche feed (date, project picker, summary; edit/delete by the visitor or a manager), type badge and the Firma/Privatperson form with Telefon + Mobil (the first visit only on create) |
 | `apps/web/src/utils/tasks.ts` → `buildTaskAnchorPayload`, `taskCalendarAnchor`, `taskCustomerName` | One anchor (project or customer) per task, used by the create modal, the calendar export and every list's "Kunde: …" label |
 
