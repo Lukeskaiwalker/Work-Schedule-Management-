@@ -61,7 +61,8 @@
 /* ── Kundenbesuch ── Set off from the Stammdaten above by a rule and its
    own small heading: it is a different kind of entry — prose about a day
    on site, not a field of the record — and it prints at the head of the
-   Projektbericht, which the hint under the textarea says. */
+   Projektbericht, which the hint under the textarea says. Shown for a new
+   customer only: the row's visits are a feed on the customer page. */
 .customer-visit-section {
   border-top: 1px solid #e3ebf4;
   padding-top: 14px;

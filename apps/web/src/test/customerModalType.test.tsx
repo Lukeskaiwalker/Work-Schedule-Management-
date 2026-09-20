@@ -4,10 +4,13 @@
  * for a company, just a Name for a person; a new customer has to choose,
  * and the form says so instead of saving; a row from before the field
  * opens unset, says "(nicht festgelegt)" and may be saved as it is; the
- * payload carries the type, the Mobil number and the visit block, trimmed
- * and with empties as null, and clears the Ansprechpartner of a private
- * person; and the API helper writes those fields into the request while
- * leaving the legacy notes text alone unless a caller passes it.
+ * payload carries the type and the Mobil number, trimmed and with empties
+ * as null, and clears the Ansprechpartner of a private person; a new
+ * customer's Kundenbesuch rides along as `visit` only when a summary was
+ * written, and the block is not offered when editing — visits are a feed
+ * on the customer page; and the API helper writes those fields into the
+ * request, `visit` on a create only, while leaving the legacy notes text
+ * alone unless a caller passes it.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -36,9 +39,6 @@ function customer(overrides: Partial<CustomerListItem> = {}): CustomerListItem {
     marktakteur_nummer: null,
     customer_type: null,
     mobile: null,
-    visit_summary: null,
-    visit_date: null,
-    visit_by_user_id: null,
     archived_at: null,
     created_by: 1,
     created_at: "2026-09-01T08:00:00",
@@ -113,7 +113,7 @@ describe("CustomerModal — Firma / Privatperson", () => {
     expect(saveCustomer).not.toHaveBeenCalled();
   });
 
-  it("sends the type, Mobil and the visit block, trimmed, with the Ansprechpartner cleared for a person", async () => {
+  it("sends the type, Mobil and the first visit, trimmed, with the Ansprechpartner cleared for a person", async () => {
     const { saveCustomer, closeCustomerModal, setError } = renderModal();
     fireEvent.click(radio("Firma"));
     type("Ansprechpartner", "Max");
@@ -135,13 +135,26 @@ describe("CustomerModal — Firma / Privatperson", () => {
       contact_person: null,
       phone: "030 123",
       mobile: "0171 555",
-      visit_date: "2026-09-12",
-      visit_summary: "Dach prüfen, Zähler im Keller.",
+      visit: { summary: "Dach prüfen, Zähler im Keller.", visit_date: "2026-09-12" },
       email: null,
       birthday: null,
     });
+    expect(payload).not.toHaveProperty("visit_summary");
+    expect(payload).not.toHaveProperty("visit_date");
     // The feed owns the notes now: the form never sends the legacy text.
     expect(payload).not.toHaveProperty("notes");
+  });
+
+  it("leaves the visit out of a create when no summary was written, a date alone included", async () => {
+    const { saveCustomer } = renderModal();
+    fireEvent.click(radio("Firma"));
+    type("Firmenname *", "Müller GmbH");
+    type("Besuch am", "2026-09-12");
+    type("Zusammenfassung des Besuchs", "   ");
+    fireEvent.click(screen.getByRole("button", { name: "Kunde anlegen" }));
+
+    await waitFor(() => expect(saveCustomer).toHaveBeenCalled());
+    expect(saveCustomer.mock.calls[0][0]).not.toHaveProperty("visit");
   });
 
   it("keeps a company's Ansprechpartner in the payload", async () => {
@@ -170,44 +183,51 @@ describe("CustomerModal — Firma / Privatperson", () => {
     const [payload, id] = saveCustomer.mock.calls[0];
     expect(id).toBe(7);
     expect(payload).toMatchObject({ customer_type: null, contact_person: "Max Müller", mobile: "0171 1" });
+    expect(payload).not.toHaveProperty("visit");
   });
 
-  it("opens an existing company checked, with its visit block filled", () => {
-    renderModal(customer({ customer_type: "company", visit_date: "2026-09-12", visit_summary: "Dach prüfen" }));
+  it("opens an existing company checked and without the Kundenbesuch block", () => {
+    renderModal(customer({ customer_type: "company" }));
     expect(radio("Firma")).toHaveAttribute("aria-checked", "true");
     expect(screen.queryByText("(nicht festgelegt)")).not.toBeInTheDocument();
-    expect(screen.getByLabelText("Besuch am")).toHaveValue("2026-09-12");
-    expect(screen.getByLabelText("Zusammenfassung des Besuchs")).toHaveValue("Dach prüfen");
-    expect(screen.getByText("Wird am Anfang des Projektberichts gedruckt")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { level: 3, name: "Kundenbesuch" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Besuch am")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Zusammenfassung des Besuchs")).not.toBeInTheDocument();
+  });
+
+  it("offers the Kundenbesuch block to a new customer, with the hint for an unlinked visit", () => {
+    renderModal();
+    expect(screen.getByRole("heading", { level: 3, name: "Kundenbesuch" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Besuch am")).toHaveValue("");
+    expect(screen.getByLabelText("Zusammenfassung des Besuchs")).toHaveValue("");
+    expect(screen.getByText("Wird am Anfang jedes Projektberichts dieses Kunden gedruckt")).toBeInTheDocument();
   });
 });
 
 describe("customersApi.saveCustomer payload", () => {
-  it("writes the new fields and leaves the legacy notes out unless given", async () => {
+  it("writes the new fields, sends the visit on a create only, and leaves the legacy notes out unless given", async () => {
     apiFetchMock.mockResolvedValue({} as never);
-    await apiSaveCustomer(
-      "t",
-      { name: "Müller GmbH", customer_type: "company", mobile: "0171", visit_summary: "Dach", visit_date: "2026-09-12" },
-      7,
-    );
+    const visit = { summary: "Dach", visit_date: "2026-09-12" };
+    await apiSaveCustomer("t", { name: "Müller GmbH", customer_type: "company", mobile: "0171", visit }, 7);
     const [path, , init] = apiFetchMock.mock.calls[0] as [string, string, { method: string; body: string }];
     expect(path).toBe("/customers/7");
     expect(init.method).toBe("PATCH");
     const body = JSON.parse(init.body);
-    expect(body).toMatchObject({
-      name: "Müller GmbH",
-      customer_type: "company",
-      mobile: "0171",
-      visit_summary: "Dach",
-      visit_date: "2026-09-12",
-      contact_person: null,
-    });
+    expect(body).toMatchObject({ name: "Müller GmbH", customer_type: "company", mobile: "0171", contact_person: null });
+    // An update knows no visit: the feed on the customer page owns them.
+    expect(body).not.toHaveProperty("visit");
+    expect(body).not.toHaveProperty("visit_summary");
+    expect(body).not.toHaveProperty("visit_date");
     expect(body).not.toHaveProperty("notes");
 
-    await apiSaveCustomer("t", { name: "Neu", notes: "alter Text" });
+    await apiSaveCustomer("t", { name: "Neu", notes: "alter Text", visit });
     const [createPath, , createInit] = apiFetchMock.mock.calls[1] as [string, string, { method: string; body: string }];
     expect(createPath).toBe("/customers");
     expect(createInit.method).toBe("POST");
-    expect(JSON.parse(createInit.body)).toMatchObject({ notes: "alter Text", customer_type: null, mobile: null });
+    expect(JSON.parse(createInit.body)).toMatchObject({ notes: "alter Text", customer_type: null, mobile: null, visit });
+
+    await apiSaveCustomer("t", { name: "Ohne Besuch" });
+    const [, , plainInit] = apiFetchMock.mock.calls[2] as [string, string, { method: string; body: string }];
+    expect(JSON.parse(plainInit.body)).not.toHaveProperty("visit");
   });
 });

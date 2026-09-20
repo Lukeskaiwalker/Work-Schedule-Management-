@@ -5,16 +5,20 @@
 //   GET    /customers?q=&archived=          → listCustomers
 //   GET    /customers/{id}                  → getCustomer
 //   GET    /customers/{id}/projects         → listCustomerProjects
-//   POST   /customers                       → saveCustomer (create)
-//   PATCH  /customers/{id}                  → saveCustomer (update), saveCustomerVisit
+//   POST   /customers                       → saveCustomer (create; may carry the first `visit`)
+//   PATCH  /customers/{id}                  → saveCustomer (update)
 //   POST   /customers/{id}/archive          → archiveCustomer
 //   POST   /customers/{id}/unarchive        → unarchiveCustomer
 //   GET    /customers/{id}/notes            → listCustomerNotes (newest first, ?before_id= pages back)
 //   POST   /customers/{id}/notes            → postCustomerNote
 //   DELETE /customers/{id}/notes/{noteId}   → deleteCustomerNote
+//   GET    /customers/{id}/visits           → listCustomerVisits (newest posted first, no paging)
+//   POST   /customers/{id}/visits           → postCustomerVisit
+//   PATCH  /customers/{id}/visits/{visitId} → updateCustomerVisit (partial)
+//   DELETE /customers/{id}/visits/{visitId} → deleteCustomerVisit
 
 import { apiFetch } from "../api/client";
-import type { Customer, CustomerListItem, CustomerNote, Project } from "../types";
+import type { Customer, CustomerListItem, CustomerNote, CustomerVisit, Project } from "../types";
 
 export type CustomerType = NonNullable<Customer["customer_type"]>;
 
@@ -38,14 +42,35 @@ export type CustomerWriteInput = {
   birthday?: string | null;
   /** Marktstammdatenregister "Marktakteur-Nummer" (PV/energy customers). */
   marktakteur_nummer?: string | null;
-  /** What the first visit found — printed at the head of every Projektbericht. */
-  visit_summary?: string | null;
-  /** ISO YYYY-MM-DD of that visit, or null. */
-  visit_date?: string | null;
+  /**
+   * The first Kundenbesuch, written with the customer in one go. Only a
+   * create (POST) carries it; an update never does — visits are a feed on
+   * the customer page (`listCustomerVisits` and friends) once the row exists.
+   */
+  visit?: CustomerFirstVisit | null;
 };
 
-/** The visit block on its own: what the overview card edits in place. */
-export type CustomerVisitInput = Pick<CustomerWriteInput, "visit_summary" | "visit_date">;
+/** What the customer form sends along with a new customer. */
+export type CustomerFirstVisit = {
+  summary: string;
+  /** ISO YYYY-MM-DD or null. */
+  visit_date: string | null;
+};
+
+/** What POST /customers/{id}/visits takes. */
+export type CustomerVisitCreate = {
+  /** Trimmed, 1..8000 characters. */
+  summary: string;
+  /** ISO YYYY-MM-DD or null. */
+  visit_date?: string | null;
+  /** One of this customer's projects, or null: applies to all of them. */
+  project_id?: number | null;
+  /** Who went; omitted = the poster. */
+  visit_by_user_id?: number | null;
+};
+
+/** PATCH /customers/{id}/visits/{visitId}: only the keys sent change; `project_id: null` unlinks. */
+export type CustomerVisitUpdate = Partial<CustomerVisitCreate>;
 
 /** Subset of `Project` used by `CustomerDetailPage`. The backend returns the
  *  full `ProjectOut`, so we widen this to the Project type — callers only
@@ -99,7 +124,7 @@ export async function saveCustomer(
   data: CustomerWriteInput,
   id?: number,
 ): Promise<CustomerListItem> {
-  const payload: Record<string, string | null> = {
+  const payload: Record<string, unknown> = {
     name: data.name,
     customer_type: data.customer_type ?? null,
     address: data.address ?? null,
@@ -110,8 +135,6 @@ export async function saveCustomer(
     tax_id: data.tax_id ?? null,
     birthday: data.birthday ?? null,
     marktakteur_nummer: data.marktakteur_nummer ?? null,
-    visit_summary: data.visit_summary ?? null,
-    visit_date: data.visit_date ?? null,
     ...(data.notes !== undefined ? { notes: data.notes } : {}),
   };
   if (id) {
@@ -120,24 +143,12 @@ export async function saveCustomer(
       body: JSON.stringify(payload),
     });
   }
+  // The first visit rides along only when a customer is created: the
+  // update endpoint knows no visit field.
+  const createPayload = data.visit ? { ...payload, visit: data.visit } : payload;
   return apiFetch<CustomerListItem>(`/customers`, token, {
     method: "POST",
-    body: JSON.stringify(payload),
-  });
-}
-
-/** PATCH only the visit block, so a card that edits it cannot touch the rest of the row. */
-export async function saveCustomerVisit(
-  token: string | null,
-  id: number,
-  visit: CustomerVisitInput,
-): Promise<CustomerListItem> {
-  return apiFetch<CustomerListItem>(`/customers/${id}`, token, {
-    method: "PATCH",
-    body: JSON.stringify({
-      visit_summary: visit.visit_summary ?? null,
-      visit_date: visit.visit_date ?? null,
-    }),
+    body: JSON.stringify(createPayload),
   });
 }
 
@@ -188,4 +199,44 @@ export async function deleteCustomerNote(
   await apiFetch<void>(`/customers/${id}/notes/${noteId}`, token, { method: "DELETE" });
 }
 
-export type { Customer, CustomerListItem, CustomerNote };
+/** Every visit of the customer, newest posted first — the server does not page this feed. */
+export async function listCustomerVisits(
+  token: string | null,
+  id: number,
+): Promise<CustomerVisit[]> {
+  return apiFetch<CustomerVisit[]>(`/customers/${id}/visits`, token);
+}
+
+export async function postCustomerVisit(
+  token: string | null,
+  id: number,
+  visit: CustomerVisitCreate,
+): Promise<CustomerVisit> {
+  return apiFetch<CustomerVisit>(`/customers/${id}/visits`, token, {
+    method: "POST",
+    body: JSON.stringify(visit),
+  });
+}
+
+/** Partial: only the keys in `changes` are touched on the server. */
+export async function updateCustomerVisit(
+  token: string | null,
+  id: number,
+  visitId: number,
+  changes: CustomerVisitUpdate,
+): Promise<CustomerVisit> {
+  return apiFetch<CustomerVisit>(`/customers/${id}/visits/${visitId}`, token, {
+    method: "PATCH",
+    body: JSON.stringify(changes),
+  });
+}
+
+export async function deleteCustomerVisit(
+  token: string | null,
+  id: number,
+  visitId: number,
+): Promise<void> {
+  await apiFetch<void>(`/customers/${id}/visits/${visitId}`, token, { method: "DELETE" });
+}
+
+export type { Customer, CustomerListItem, CustomerNote, CustomerVisit };

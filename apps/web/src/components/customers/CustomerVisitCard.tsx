@@ -1,86 +1,141 @@
 /**
- * "Kundenbesuch" on the customer page: what the first visit found.
+ * "Kundenbesuche" on the customer page: the customer's visit feed.
  *
- * Whoever goes out to a new customer writes a few lines about it, and
- * those lines open every Projektbericht for that customer — so they are
- * kept on the customer, not on a project, and this card is where they are
- * read and edited. The edit is inline (a date and a textarea) and PATCHes
- * only the visit block; the page's customer row is replaced by the answer
- * through `onSaved`, so the contact card and the form open with the same
- * row this card just changed.
+ * Whoever goes out to the customer writes a few lines about it. Each
+ * entry may be linked to one of the customer's projects — then it opens
+ * that project's Projektbericht — or to none, and then it opens every
+ * Projektbericht of the customer. The feed replaced the single visit text
+ * on the customer row that every new appointment overwrote.
+ *
+ * The card fetches its own list, newest posted first, and the answer of a
+ * post, an edit or a delete is folded into the list in place: no refetch,
+ * because the server does not page this feed. The composer opens at the
+ * top on "Besuch erfassen"; an entry's edit opens inline in its row, with
+ * the same form. Editing and deleting is for the named visitor or a
+ * project manager — the same rule the note feed applies to its delete.
  */
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { useAppContext } from "../../context/AppContext";
-import type { CustomerListItem } from "../../types";
-import { saveCustomerVisit } from "../../utils/customersApi";
+import type { CustomerVisit } from "../../types";
+import {
+  deleteCustomerVisit,
+  listCustomerVisits,
+  postCustomerVisit,
+  updateCustomerVisit,
+  type CustomerProjectSummary,
+} from "../../utils/customersApi";
+import { CustomerVisitEntry } from "./CustomerVisitEntry";
+import {
+  CustomerVisitForm,
+  EMPTY_VISIT_DRAFT,
+  visitWriteFromDraft,
+  type CustomerVisitDraft,
+  type CustomerVisitWrite,
+} from "./CustomerVisitForm";
 import "../../styles/customer-detail.css";
 
 type Props = {
-  customer: CustomerListItem;
+  customerId: number;
+  projects: CustomerProjectSummary[];
   language: "de" | "en";
-  onSaved: (customer: CustomerListItem) => void;
 };
 
 function messageOf(err: unknown, fallback: string): string {
   return err instanceof Error && err.message ? err.message : fallback;
 }
 
-/** ISO YYYY-MM-DD as the office writes dates; the raw string if it does not parse. */
-function formatIsoDate(iso: string, language: "de" | "en"): string {
-  const parsed = new Date(`${iso}T00:00:00`);
-  if (Number.isNaN(parsed.getTime())) return iso;
-  return parsed.toLocaleDateString(language === "de" ? "de-DE" : "en-GB", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-  });
-}
-
-export function CustomerVisitCard({ customer, language, onSaved }: Props) {
-  const { token, menuUserNameById, setError, setNotice } = useAppContext();
+export function CustomerVisitCard({ customerId, projects, language }: Props) {
+  const { token, user, canCreateProject, setError, setNotice } = useAppContext();
   const de = language === "de";
 
-  const [editing, setEditing] = useState(false);
-  const [summary, setSummary] = useState("");
-  const [date, setDate] = useState("");
+  const [visits, setVisits] = useState<CustomerVisit[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [composing, setComposing] = useState(false);
+  const [editingId, setEditingId] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
+  const [removingId, setRemovingId] = useState<number | null>(null);
+  // Which customer the in-flight requests belong to. A switch to another
+  // customer bumps it, and a late answer for the old one is dropped instead
+  // of landing in the new feed — together with any half-written form.
+  const generation = useRef(0);
 
-  const savedSummary = (customer.visit_summary ?? "").trim();
-  const savedDate = (customer.visit_date ?? "").trim();
-  const hasVisit = savedSummary.length > 0 || savedDate.length > 0;
+  useEffect(() => {
+    generation.current += 1;
+    const ticket = generation.current;
+    setVisits([]);
+    setComposing(false);
+    setEditingId(null);
+    setLoadError(null);
+    setLoading(true);
 
-  // The name of who went. The lookup answers "#id" for a user no longer in
-  // the menu — nothing worth printing next to the date, so it is left out.
-  const visitorName = (() => {
-    const userId = customer.visit_by_user_id;
-    if (userId == null || typeof menuUserNameById !== "function") return null;
-    const name = menuUserNameById(userId);
-    return name && !/^#\d+$/.test(name) ? name : null;
-  })();
+    listCustomerVisits(token, customerId)
+      .then((list) => {
+        if (generation.current !== ticket) return;
+        setVisits(list);
+      })
+      .catch((err: unknown) => {
+        if (generation.current !== ticket) return;
+        setLoadError(messageOf(err, de ? "Kundenbesuche konnten nicht geladen werden" : "Failed to load customer visits"));
+      })
+      .finally(() => {
+        if (generation.current !== ticket) return;
+        setLoading(false);
+      });
 
-  const metaParts = [
-    savedDate ? `${de ? "Besuch am" : "Visited on"} ${formatIsoDate(savedDate, language)}` : null,
-    visitorName,
-  ].filter((part): part is string => part !== null);
+    return () => {
+      generation.current += 1;
+    };
+  }, [customerId, token, reloadKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  function startEdit() {
-    setSummary(customer.visit_summary ?? "");
-    setDate(customer.visit_date ?? "");
-    setEditing(true);
+  function canEdit(visit: CustomerVisit): boolean {
+    const own = visit.visit_by_user_id != null && visit.visit_by_user_id === user?.id;
+    return own || canCreateProject;
   }
 
-  async function save() {
+  /** The draft trimmed and typed, or null with the refusal already reported. */
+  function writeFrom(draft: CustomerVisitDraft): CustomerVisitWrite | null {
+    const body = visitWriteFromDraft(draft);
+    if (!body.summary) {
+      setError(de ? "Bitte eine Zusammenfassung des Besuchs eintragen" : "Please enter a summary of the visit");
+      return null;
+    }
+    return body;
+  }
+
+  async function create(draft: CustomerVisitDraft) {
     if (saving) return;
+    const body = writeFrom(draft);
+    if (!body) return;
+    const ticket = generation.current;
     setSaving(true);
     try {
-      const updated = await saveCustomerVisit(token, customer.id, {
-        // Empty is "no visit": the API takes null to clear, and "" is not a date.
-        visit_summary: summary.trim() || null,
-        visit_date: date.trim() || null,
-      });
-      onSaved(updated);
-      setEditing(false);
+      const created = await postCustomerVisit(token, customerId, body);
+      if (generation.current !== ticket) return;
+      setVisits((current) => [created, ...current]);
+      setComposing(false);
+      setNotice(de ? "Kundenbesuch gespeichert" : "Customer visit saved");
+    } catch (err) {
+      // The form stays open: a failed save is retried, not retyped.
+      setError(messageOf(err, de ? "Kundenbesuch konnte nicht gespeichert werden" : "Failed to save customer visit"));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function update(visit: CustomerVisit, draft: CustomerVisitDraft) {
+    if (saving) return;
+    const body = writeFrom(draft);
+    if (!body) return;
+    const ticket = generation.current;
+    setSaving(true);
+    try {
+      const updated = await updateCustomerVisit(token, customerId, visit.id, body);
+      if (generation.current !== ticket) return;
+      setVisits((current) => current.map((row) => (row.id === updated.id ? updated : row)));
+      setEditingId(null);
       setNotice(de ? "Kundenbesuch gespeichert" : "Customer visit saved");
     } catch (err) {
       setError(messageOf(err, de ? "Kundenbesuch konnte nicht gespeichert werden" : "Failed to save customer visit"));
@@ -89,78 +144,106 @@ export function CustomerVisitCard({ customer, language, onSaved }: Props) {
     }
   }
 
-  const hint = de ? "Wird am Anfang des Projektberichts gedruckt" : "Printed at the head of the project report";
+  async function remove(visit: CustomerVisit) {
+    if (removingId !== null) return;
+    if (!window.confirm(de ? "Diesen Kundenbesuch löschen?" : "Delete this customer visit?")) return;
+    const ticket = generation.current;
+    setRemovingId(visit.id);
+    try {
+      await deleteCustomerVisit(token, customerId, visit.id);
+      if (generation.current !== ticket) return;
+      setVisits((current) => current.filter((row) => row.id !== visit.id));
+      setNotice(de ? "Kundenbesuch gelöscht" : "Customer visit deleted");
+    } catch (err) {
+      setError(messageOf(err, de ? "Kundenbesuch konnte nicht gelöscht werden" : "Failed to delete customer visit"));
+    } finally {
+      setRemovingId(null);
+    }
+  }
+
+  function openComposer() {
+    setEditingId(null);
+    setComposing(true);
+  }
+
+  function startEdit(visit: CustomerVisit) {
+    setComposing(false);
+    setEditingId(visit.id);
+  }
+
+  const recordLabel = de ? "Besuch erfassen" : "Record visit";
+  const showHeaderAction = !loading && loadError === null && !composing && visits.length > 0;
 
   return (
     <section className="customer-visit-card">
       <header className="customer-contact-card-head">
-        <h3 className="customer-contact-card-title">{de ? "Kundenbesuch" : "Customer visit"}</h3>
-        {hasVisit && !editing && (
-          <button type="button" className="linklike" onClick={startEdit}>
-            {de ? "Bearbeiten" : "Edit"}
+        <h3 className="customer-contact-card-title">{de ? "Kundenbesuche" : "Customer visits"}</h3>
+        {showHeaderAction && (
+          <button type="button" className="linklike" onClick={openComposer}>
+            {recordLabel}
           </button>
         )}
       </header>
 
-      {editing ? (
-        <div className="customer-visit-form">
-          <label className="customer-visit-field">
-            {de ? "Besuch am" : "Visited on"}
-            <input type="date" value={date} onChange={(event) => setDate(event.target.value)} disabled={saving} />
-          </label>
-          <label className="customer-visit-field">
-            {de ? "Zusammenfassung des Besuchs" : "Summary of the visit"}
-            <textarea
-              value={summary}
-              onChange={(event) => setSummary(event.target.value)}
-              disabled={saving}
-              aria-describedby="customer-visit-card-hint"
-              placeholder={
-                de
-                  ? "Was der erste Termin ergeben hat: Lage, Wünsche, Besonderheiten"
-                  : "What the first appointment found: situation, wishes, particulars"
-              }
-            />
-          </label>
-          <span className="customer-visit-hint" id="customer-visit-card-hint">
-            {hint}
-          </span>
-          <div className="customer-visit-actions">
-            <button type="button" className="customers-action-btn" onClick={() => setEditing(false)} disabled={saving}>
-              {de ? "Abbrechen" : "Cancel"}
-            </button>
-            <button
-              type="button"
-              className="customers-action-btn customers-action-btn--primary"
-              onClick={() => void save()}
-              disabled={saving}
-            >
-              {saving ? (de ? "Speichert…" : "Saving…") : de ? "Speichern" : "Save"}
-            </button>
-          </div>
+      {composing && (
+        <div className="customer-visit-composer">
+          <CustomerVisitForm
+            initial={EMPTY_VISIT_DRAFT}
+            projects={projects}
+            language={language}
+            saving={saving}
+            onSubmit={(draft) => void create(draft)}
+            onCancel={() => setComposing(false)}
+          />
         </div>
-      ) : hasVisit ? (
-        <>
-          {metaParts.length > 0 && <div className="customer-visit-meta">{metaParts.join(" · ")}</div>}
-          {savedSummary ? (
-            <div className="customer-visit-body">{savedSummary}</div>
-          ) : (
-            <small className="muted">{de ? "Ohne Zusammenfassung." : "No summary."}</small>
-          )}
-        </>
+      )}
+
+      {loading ? (
+        <small className="muted" role="status">
+          {de ? "Kundenbesuche werden geladen…" : "Loading customer visits…"}
+        </small>
+      ) : loadError !== null ? (
+        <div className="customer-visit-error" role="alert">
+          <span>{de ? "Kundenbesuche konnten nicht geladen werden." : "Customer visits could not be loaded."}</span>
+          <small className="muted">{loadError}</small>
+          <button type="button" className="linklike" onClick={() => setReloadKey((current) => current + 1)}>
+            {de ? "Erneut versuchen" : "Try again"}
+          </button>
+        </div>
+      ) : visits.length === 0 ? (
+        !composing && (
+          <>
+            <p className="muted customer-visit-empty">
+              {de
+                ? "Noch kein Besuch erfasst — was ein Termin beim Kunden ergeben hat, gehört hierher. Wird am Anfang des Projektberichts gedruckt."
+                : "No visit recorded yet — what an appointment at the customer found belongs here. Printed at the head of the project report."}
+            </p>
+            <div className="customer-visit-actions">
+              <button type="button" className="customers-action-btn" onClick={openComposer}>
+                {recordLabel}
+              </button>
+            </div>
+          </>
+        )
       ) : (
-        <>
-          <p className="muted customer-visit-empty">
-            {de
-              ? "Noch kein Besuch erfasst — was der erste Termin ergeben hat, gehört hierher. Wird am Anfang des Projektberichts gedruckt."
-              : "No visit recorded yet — what the first appointment found belongs here. Printed at the head of the project report."}
-          </p>
-          <div className="customer-visit-actions">
-            <button type="button" className="customers-action-btn" onClick={startEdit}>
-              {de ? "Besuch erfassen" : "Record visit"}
-            </button>
-          </div>
-        </>
+        <ul className="customer-visit-list">
+          {visits.map((visit) => (
+            <CustomerVisitEntry
+              key={`customer-visit-${visit.id}`}
+              visit={visit}
+              projects={projects}
+              language={language}
+              canEdit={canEdit(visit)}
+              editing={editingId === visit.id}
+              saving={saving && editingId === visit.id}
+              removing={removingId === visit.id}
+              onEdit={() => startEdit(visit)}
+              onCancelEdit={() => setEditingId(null)}
+              onSave={(draft) => void update(visit, draft)}
+              onDelete={() => void remove(visit)}
+            />
+          ))}
+        </ul>
       )}
     </section>
   );

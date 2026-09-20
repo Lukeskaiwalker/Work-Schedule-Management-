@@ -144,10 +144,6 @@ export type Customer = {
   customer_type?: "company" | "private" | null;
   /** The number answered on site, next to the office line in `phone`. */
   mobile?: string | null;
-  /** What the first visit to a new customer found — printed at the head of every Projektbericht. */
-  visit_summary?: string | null;
-  visit_date?: string | null;
-  visit_by_user_id?: number | null;
   /** ISO datetime when the row was archived, or null when active. */
   archived_at: string | null;
   created_by: number | null;
@@ -273,6 +269,27 @@ export type CustomerNote = {
   author_name?: string | null;
   body: string;
   created_at: string;
+};
+
+/**
+ * One Kundenbesuch of the customer's visit feed: what a day at the customer
+ * found. Linked to one of the customer's projects it prints at the head of
+ * that project's Projektbericht; unlinked (`project_id` null) it prints at
+ * the head of every Projektbericht of the customer.
+ */
+export type CustomerVisit = {
+  id: number;
+  customer_id: number;
+  project_id: number | null;
+  project_number: string | null;
+  project_name: string | null;
+  /** ISO calendar date (YYYY-MM-DD) of the visit, or null. */
+  visit_date: string | null;
+  visit_by_user_id: number | null;
+  visit_by_name: string | null;
+  summary: string;
+  created_at: string;
+  updated_at: string;
 };
 
 /** Whether and where the project's Projektbericht was finalized. */

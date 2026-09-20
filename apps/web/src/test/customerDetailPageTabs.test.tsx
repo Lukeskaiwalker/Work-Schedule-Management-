@@ -85,6 +85,7 @@ function routesFor(id: number, detail: CustomerListItem): Routes {
     [`/customers/${id}/notes?limit=20`]: () => [
       { id: 1, customer_id: id, author_user_id: null, author_name: null, body: detail.notes, created_at: "2026-09-01T08:00:00" },
     ],
+    [`/customers/${id}/visits`]: () => [],
   };
 }
 
@@ -155,10 +156,10 @@ describe("CustomerDetailPage tabs", () => {
     expect(selectedTab()).toBe("Übersicht");
     expect(screen.getByRole("tabpanel", { name: "Übersicht" })).toBeInTheDocument();
 
-    // Kontaktdaten, Kundenbesuch, the note feed and Projekte with its own
+    // Kontaktdaten, the visit feed, the note feed and Projekte with its own
     // filter: the overview.
     expect(screen.getByRole("heading", { level: 3, name: "Kontaktdaten" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 3, name: "Kundenbesuch" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 3, name: "Kundenbesuche" })).toBeInTheDocument();
     expect(await screen.findByText("Ruft nur vormittags an.")).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 3, name: /^Notizen/ })).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 3, name: /^Projekte/ })).toBeInTheDocument();
@@ -168,6 +169,7 @@ describe("CustomerDetailPage tabs", () => {
     expect(apiFetchMock).toHaveBeenCalledWith("/customers/7", TOKEN);
     expect(apiFetchMock).toHaveBeenCalledWith("/customers/7/projects", TOKEN);
     expect(apiFetchMock).toHaveBeenCalledWith(NOTES_PATH, TOKEN);
+    expect(apiFetchMock).toHaveBeenCalledWith("/customers/7/visits", TOKEN);
     // Nothing of the other panels is fetched while they are closed.
     OFF_OVERVIEW_PATHS.forEach((path) => expect(callsTo(path)).toBe(0));
   });

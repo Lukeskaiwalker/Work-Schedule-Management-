@@ -26,8 +26,9 @@ function isEmailish(value: string): boolean {
  * The choice is required for a new customer; a row from before the field
  * may stay unset, and says so, until someone decides. The notes textarea
  * is gone — the customer's notes are a feed on the page now, like the
- * project's — and the Kundenbesuch block closes the form: what the first
- * visit found, printed at the head of every Projektbericht.
+ * project's — and so are the visits: the Kundenbesuch block closes the
+ * form only for a new customer, whose first visit is created with the
+ * row. An existing customer's visits are edited on the customer page.
  */
 export function CustomerModal() {
   const {
@@ -303,44 +304,46 @@ export function CustomerModal() {
             </label>
           </section>
 
-          <section className="task-modal-section task-modal-section--stack customer-visit-section">
-            <h3 className="customer-modal-subhead">{de ? "Kundenbesuch" : "Customer visit"}</h3>
-            <label className="task-modal-field">
-              <span className="task-modal-field-label">
-                {de ? "Besuch am" : "Visited on"}
+          {!isEdit && (
+            <section className="task-modal-section task-modal-section--stack customer-visit-section">
+              <h3 className="customer-modal-subhead">{de ? "Kundenbesuch" : "Customer visit"}</h3>
+              <label className="task-modal-field">
+                <span className="task-modal-field-label">
+                  {de ? "Besuch am" : "Visited on"}
+                </span>
+                <input
+                  className="task-modal-input"
+                  type="date"
+                  value={draft.visit_date}
+                  onChange={(event) => updateField("visit_date", event.target.value)}
+                />
+              </label>
+              {/* The hint sits outside the label: inside it, it would become
+                  part of the field's name. */}
+              <label className="task-modal-field">
+                <span className="task-modal-field-label">
+                  {de ? "Zusammenfassung des Besuchs" : "Summary of the visit"}
+                </span>
+                <textarea
+                  className="task-modal-input task-modal-textarea"
+                  value={draft.visit_summary}
+                  onChange={(event) => updateField("visit_summary", event.target.value)}
+                  rows={4}
+                  aria-describedby="customer-visit-summary-hint"
+                  placeholder={
+                    de
+                      ? "Was der erste Termin ergeben hat: Lage, Wünsche, Besonderheiten"
+                      : "What the first appointment found: situation, wishes, particulars"
+                  }
+                />
+              </label>
+              <span className="task-modal-field-hint" id="customer-visit-summary-hint">
+                {de
+                  ? "Wird am Anfang jedes Projektberichts dieses Kunden gedruckt"
+                  : "Printed at the head of every project report of this customer"}
               </span>
-              <input
-                className="task-modal-input"
-                type="date"
-                value={draft.visit_date}
-                onChange={(event) => updateField("visit_date", event.target.value)}
-              />
-            </label>
-            {/* The hint sits outside the label: inside it, it would become
-                part of the field's name. */}
-            <label className="task-modal-field">
-              <span className="task-modal-field-label">
-                {de ? "Zusammenfassung des Besuchs" : "Summary of the visit"}
-              </span>
-              <textarea
-                className="task-modal-input task-modal-textarea"
-                value={draft.visit_summary}
-                onChange={(event) => updateField("visit_summary", event.target.value)}
-                rows={4}
-                aria-describedby="customer-visit-summary-hint"
-                placeholder={
-                  de
-                    ? "Was der erste Termin ergeben hat: Lage, Wünsche, Besonderheiten"
-                    : "What the first appointment found: situation, wishes, particulars"
-                }
-              />
-            </label>
-            <span className="task-modal-field-hint" id="customer-visit-summary-hint">
-              {de
-                ? "Wird am Anfang des Projektberichts gedruckt"
-                : "Printed at the head of the project report"}
-            </span>
-          </section>
+            </section>
+          )}
 
           <footer className="task-modal-footer">
             <div className="project-modal-footer-spacer" />

@@ -141,7 +141,7 @@ describe("CustomerActivityCard", () => {
   });
 
   it("renders the customer's own events without a project chip", async () => {
-    const visit = customerEvent(50, { event_type: "customer.visit_updated", message: "Kundenbesuch: Dach prüfen" });
+    const visit = customerEvent(50, { event_type: "customer.visit_posted", message: "Kundenbesuch: Dach prüfen" });
     const archived = customerEvent(49, { event_type: "customer.archived", message: "Archiviert: Müller GmbH", actor_name: null });
     routeApi({ [FIRST_PAGE_PATH]: () => [visit, TASK_IN_MUELLER, archived] });
     const { container } = renderCard();

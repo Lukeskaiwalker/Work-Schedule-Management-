@@ -1,13 +1,13 @@
 /**
  * Übersicht on the customer page: what you look at first. Kontaktdaten, the
- * Kundenbesuch and the note feed on the left, the projects with their
+ * Kundenbesuche and the note feed on the left, the projects with their
  * Aktiv/Abgeschlossen/Archiviert switch on the right — the top of the old
  * one-long-scroll page, and nothing below it. Everything that used to
  * follow has a tab of its own now.
  *
- * The cards on the left are keyed by the customer: a switch to another
- * customer starts the feed and a half-edited visit afresh instead of
- * carrying them over.
+ * The feeds on the left are keyed by the customer: a switch to another
+ * customer starts them afresh instead of carrying a half-written entry
+ * over. The visit card gets the projects so a visit can be linked to one.
  */
 import { CustomerContactCard } from "./CustomerContactCard";
 import { CustomerVisitCard } from "./CustomerVisitCard";
@@ -23,8 +23,6 @@ type Props = {
   onProjectFilterChange: (filter: CustomerProjectFilter) => void;
   language: "de" | "en";
   onOpenProject: (projectId: number) => void;
-  /** The row the visit card saved: the page replaces its customer with it. */
-  onCustomerSaved: (customer: CustomerListItem) => void;
 };
 
 export function CustomerOverviewPanel({
@@ -34,7 +32,6 @@ export function CustomerOverviewPanel({
   onProjectFilterChange,
   language,
   onOpenProject,
-  onCustomerSaved,
 }: Props) {
   return (
     <div className="customer-detail-grid">
@@ -42,9 +39,9 @@ export function CustomerOverviewPanel({
         <CustomerContactCard customer={customer} language={language} />
         <CustomerVisitCard
           key={`visit-${customer.id}`}
-          customer={customer}
+          customerId={customer.id}
+          projects={projects}
           language={language}
-          onSaved={onCustomerSaved}
         />
         <CustomerNotesCard key={`notes-${customer.id}`} customerId={customer.id} />
       </div>
