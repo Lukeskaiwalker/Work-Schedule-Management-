@@ -429,7 +429,7 @@ export function WerkstattDatanormImportPage() {
               <b>
                 {de ? "Datei ablegen oder auswählen" : "Drop file or choose"}
               </b>
-              <small>.ENP, .001, .002, .DNF · max. 25 MB</small>
+              <small>.ENP, .001, .002, .DNF · max. 150 MB</small>
               <input
                 ref={fileInputRef}
                 type="file"
@@ -480,7 +480,7 @@ export function WerkstattDatanormImportPage() {
                 onClick={() => void handleAnalyse()}
               >
                 {uploading
-                  ? de ? "Analysiere…" : "Analysing…"
+                  ? de ? "Analysiere… (große Kataloge brauchen eine Minute)" : "Analysing… (large catalogs take a minute)"
                   : de ? "Vorschau analysieren" : "Analyse preview"}
               </button>
             </div>
@@ -619,7 +619,7 @@ export function WerkstattDatanormImportPage() {
                     onClick={() => void handleCommit(true)}
                   >
                     {committing
-                      ? de ? "Import läuft…" : "Importing…"
+                      ? de ? "Import läuft… (bitte Seite offen lassen)" : "Importing… (keep this page open)"
                       : de
                         ? `✓ Import starten · ${preview.total_rows.toLocaleString("de-DE")} Artikel · ${preview.supplier_name}`
                         : `✓ Start import · ${preview.total_rows.toLocaleString("en-US")} items · ${preview.supplier_name}`}

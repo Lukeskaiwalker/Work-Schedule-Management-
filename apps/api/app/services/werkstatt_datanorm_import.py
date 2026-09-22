@@ -3,27 +3,32 @@
 Reuses `_iter_datanorm_rows` from `app.services.material_catalog` so we keep
 one parser. The flow is:
 
-1. FE uploads a Datanorm file + supplier_id → `create_preview(...)` parses
-   bytes, computes preview stats, and stores the parsed rows in a short-lived
-   in-process cache keyed by a random `import_token`. Preview tokens expire
-   after `PREVIEW_TTL_SECONDS` (default: 15 min) to free memory.
+1. The router streams the upload to a file and calls `create_preview(...)`,
+   which parses it ONCE, streaming: every parsed row goes to the preview's
+   JSONL file (services/werkstatt_datanorm_preview_store), and only the
+   counters, the first sample rows and the EAN set stay in memory. The
+   preview is on disk, so any worker can commit it.
 
-2. FE calls `commit_preview(token)` → replaces all `material_catalog_items`
-   rows for that supplier with the parsed rows inside one transaction, writes
-   an audit row (`WerkstattDatanormImport`). On failure the audit row gets
+2. `commit_preview(token)` claims the preview, replaces (or merges into) the
+   supplier's `material_catalog_items` inside one transaction — rows
+   streamed from the JSONL file and inserted in batches, the way the legacy
+   file-system import loaded a million rows — and writes an audit row
+   (`WerkstattDatanormImport`). On failure the audit row gets
    `status="failed"` + an error message.
+
+A supplier's catalog is a few hundred thousand rows (Brisch: 291k, 68 MB);
+nothing here may hold it as a list or touch the database once per row.
 """
 
 from __future__ import annotations
 
 import hashlib
-import secrets
-import threading
-from dataclasses import dataclass, field
+from collections.abc import Iterable
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import Iterator
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, insert, select
 from sqlalchemy.orm import Session
 
 from app.core.time import utcnow
@@ -33,60 +38,45 @@ from app.models.entities import (
     WerkstattSupplier,
 )
 from app.services.material_catalog import (
+    CATALOG_IMPORT_BATCH_SIZE,
     ParsedCatalogRow,
+    _decode_payload,
     _iter_datanorm_rows,
     _looks_like_datanorm_payload,
-    _decode_payload,
     _search_text_for_row,
 )
+from app.services.werkstatt_datanorm_preview_store import (
+    PREVIEW_TTL_SECONDS,
+    DatanormEanConflict,
+    DatanormPreview,
+    PreviewRowWriter,
+    claim_preview,
+    discard_preview,
+    iter_preview_rows,
+    load_preview,
+    save_preview_meta,
+)
 
-if TYPE_CHECKING:
-    pass
+__all__ = [
+    "DatanormEanConflict",
+    "DatanormPreview",
+    "PREVIEW_TTL_SECONDS",
+    "commit_preview",
+    "create_preview",
+    "discard_preview",
+    "get_preview",
+]
 
-
-PREVIEW_TTL_SECONDS = 15 * 60
 SAMPLE_ROW_LIMIT = 8
 EAN_CONFLICT_LIMIT = 20
+# EANs per conflict query. A catalog has hundreds of thousands; one IN list
+# that long is a multi-megabyte statement, so the check goes in slices.
+EAN_QUERY_CHUNK = 5000
+# Existing rows are read with a server-side cursor in slices of this many.
+EXISTING_ROWS_YIELD = 5000
 
 
-@dataclass(slots=True)
-class DatanormEanConflict:
-    ean: str
-    item_name: str
-    existing_supplier_id: int
-    existing_supplier_name: str
-    existing_article_no: str | None
-
-
-@dataclass(slots=True)
-class DatanormPreview:
-    token: str
-    supplier_id: int
-    supplier_name: str
-    filename: str
-    file_size_bytes: int
-    detected_version: str | None
-    detected_encoding: str | None
-    total_rows: int
-    rows_new: int
-    rows_updated: int
-    rows_unchanged: int
-    ean_conflicts: list[DatanormEanConflict]
-    sample_rows: list[ParsedCatalogRow]
-    uploaded_at: datetime
-    expires_at: datetime
-    # Internal: the full parsed row list, used at commit time.
-    rows: list[ParsedCatalogRow] = field(default_factory=list)
-
-
-_preview_cache: dict[str, DatanormPreview] = {}
-_preview_lock = threading.Lock()
-
-
-def _prune_expired_previews(now: datetime) -> None:
-    expired = [token for token, preview in _preview_cache.items() if preview.expires_at <= now]
-    for token in expired:
-        _preview_cache.pop(token, None)
+# ── Keys and fingerprints ────────────────────────────────────────────────────
 
 
 def _external_key_for_supplier_row(supplier_id: int, row: ParsedCatalogRow) -> str:
@@ -99,16 +89,89 @@ def _external_key_for_supplier_row(supplier_id: int, row: ParsedCatalogRow) -> s
     digest.update(b"|")
     digest.update(row.item_name.strip().lower().encode("utf-8", errors="ignore"))
     digest.update(b"|")
-    digest.update((row.unit or "").strip().lower().encode("utf-8", errors="ignore"))
-    digest.update(b"|")
-    digest.update((row.manufacturer or "").strip().lower().encode("utf-8", errors="ignore"))
-    digest.update(b"|")
     digest.update((row.ean or "").strip().lower().encode("utf-8", errors="ignore"))
     return digest.hexdigest()
 
 
+def _fingerprint(item_name: str | None, unit: str | None, manufacturer: str | None, ean: str | None, price_text: str | None) -> bytes:
+    """What "unchanged" compares: the five fields a Datanorm update can
+    change, blank and NULL alike. The same function fingerprints the
+    existing row (from a slim query) and the parsed one, so the two can
+    never disagree on normalisation."""
+    digest = hashlib.sha1()
+    for value in (item_name, unit, manufacturer, ean, price_text):
+        digest.update((value or "").encode("utf-8", errors="ignore"))
+        digest.update(b"\x1f")
+    return digest.digest()
+
+
+def _existing_fingerprints(db: Session, supplier_id: int) -> dict[str, bytes]:
+    """article_no (lower) → fingerprint of the supplier's current rows.
+    Columns, not ORM objects, streamed: a million-row supplier costs tens
+    of megabytes here, not a gigabyte."""
+    stmt = (
+        select(
+            MaterialCatalogItem.article_no,
+            MaterialCatalogItem.item_name,
+            MaterialCatalogItem.unit,
+            MaterialCatalogItem.manufacturer,
+            MaterialCatalogItem.ean,
+            MaterialCatalogItem.price_text,
+        )
+        .where(MaterialCatalogItem.supplier_id == supplier_id)
+        .execution_options(yield_per=EXISTING_ROWS_YIELD)
+    )
+    fingerprints: dict[str, bytes] = {}
+    for article_no, item_name, unit, manufacturer, ean, price_text in db.execute(stmt):
+        key = (article_no or "").strip().lower()
+        if key:
+            fingerprints[key] = _fingerprint(item_name, unit, manufacturer, ean, price_text)
+    return fingerprints
+
+
+def _existing_external_keys(db: Session, supplier_id: int) -> set[str]:
+    stmt = (
+        select(MaterialCatalogItem.external_key)
+        .where(MaterialCatalogItem.supplier_id == supplier_id)
+        .execution_options(yield_per=EXISTING_ROWS_YIELD)
+    )
+    return {str(key) for (key,) in db.execute(stmt)}
+
+
+def _preserved_images(db: Session, supplier_id: int) -> dict[str, tuple[str | None, str | None, datetime | None]]:
+    """The images already looked up for this supplier's rows, by external
+    key — a replace re-import would otherwise throw away every lookup and
+    start the slow image search from zero."""
+    stmt = (
+        select(
+            MaterialCatalogItem.external_key,
+            MaterialCatalogItem.image_url,
+            MaterialCatalogItem.image_source,
+            MaterialCatalogItem.image_checked_at,
+        )
+        .where(
+            MaterialCatalogItem.supplier_id == supplier_id,
+            (MaterialCatalogItem.image_url.is_not(None))
+            | (MaterialCatalogItem.image_checked_at.is_not(None))
+            | (MaterialCatalogItem.image_source.is_not(None)),
+        )
+        .execution_options(yield_per=EXISTING_ROWS_YIELD)
+    )
+    preserved: dict[str, tuple[str | None, str | None, datetime | None]] = {}
+    for external_key, image_url, image_source, image_checked_at in db.execute(stmt):
+        preserved[str(external_key)] = (
+            str(image_url).strip() if image_url else None,
+            str(image_source).strip() if image_source else None,
+            image_checked_at,
+        )
+    return preserved
+
+
+# ── Preview ──────────────────────────────────────────────────────────────────
+
+
 def _detect_encoding(raw: bytes) -> str | None:
-    for encoding in ("utf-8-sig", "utf-8", "cp1252", "latin-1"):
+    for encoding in ("utf-8-sig", "cp1252", "latin-1"):
         try:
             raw.decode(encoding)
             return encoding
@@ -118,13 +181,13 @@ def _detect_encoding(raw: bytes) -> str | None:
 
 
 def _detect_datanorm_version(text: str) -> str | None:
-    # First V-record line carries the version stamp in Datanorm files.
-    for line in text.splitlines()[:10]:
+    for line in text.splitlines()[:5]:
         stripped = line.strip()
-        if not stripped:
-            continue
         if stripped.startswith("V"):
-            return stripped[:64]
+            # Datanorm v4 header ends with "...04EUR"; v5 with "...05EUR".
+            tail = stripped[-5:]
+            if tail.startswith("0"):
+                return tail[:2]
     return None
 
 
@@ -133,90 +196,192 @@ def create_preview(
     *,
     supplier_id: int,
     filename: str,
-    file_bytes: bytes,
+    source_path: Path,
+    token: str,
 ) -> DatanormPreview:
-    """Parse a Datanorm upload and build a preview. Does not write to the DB."""
+    """Parse the uploaded file at ``source_path`` once and leave the preview
+    on disk under ``token``. Does not write to the DB."""
     supplier = db.get(WerkstattSupplier, supplier_id)
     if supplier is None:
         raise ValueError("Supplier not found")
     if supplier.is_archived:
         raise ValueError("Supplier is archived")
 
-    text = _decode_payload(file_bytes)
+    raw = source_path.read_bytes()
+    file_size_bytes = len(raw)
+    detected_encoding = _detect_encoding(raw)
+    text = _decode_payload(raw)
+    del raw  # the decoded text is all the parser needs; drop the bytes now
     if not text.strip():
         raise ValueError("Uploaded file is empty")
     if not _looks_like_datanorm_payload(text):
         raise ValueError("File does not look like a Datanorm payload")
+    detected_version = _detect_datanorm_version(text)
 
-    parsed_rows = list(_iter_datanorm_rows(text, filename))
-    if not parsed_rows:
+    existing = _existing_fingerprints(db, supplier_id)
+    rows_new = rows_updated = rows_unchanged = 0
+    sample_rows: list[ParsedCatalogRow] = []
+    ean_values: set[str] = set()
+
+    writer = PreviewRowWriter(token)
+    try:
+        for parsed in _iter_datanorm_rows(text, filename):
+            writer.write(parsed)
+            if len(sample_rows) < SAMPLE_ROW_LIMIT:
+                sample_rows.append(parsed)
+            if parsed.ean and parsed.ean.strip():
+                ean_values.add(parsed.ean.strip())
+            key = (parsed.article_no or "").strip().lower()
+            current = existing.get(key) if key else None
+            if current is None:
+                rows_new += 1
+            elif current == _fingerprint(parsed.item_name, parsed.unit, parsed.manufacturer, parsed.ean, parsed.price_text):
+                rows_unchanged += 1
+            else:
+                rows_updated += 1
+    except Exception:
+        writer.abandon()
+        raise
+    writer.close()
+    del text, existing
+
+    if writer.count == 0:
+        discard_preview(token)
         raise ValueError("No rows could be parsed from the Datanorm file")
 
-    # Classify against existing material_catalog_items for THIS supplier.
-    existing_by_article: dict[str, MaterialCatalogItem] = {}
-    existing_rows = db.scalars(
-        select(MaterialCatalogItem).where(MaterialCatalogItem.supplier_id == supplier_id)
-    ).all()
-    for row in existing_rows:
-        key = (row.article_no or "").strip().lower()
-        if key:
-            existing_by_article[key] = row
-
-    rows_new = 0
-    rows_updated = 0
-    rows_unchanged = 0
-    for parsed in parsed_rows:
-        key = (parsed.article_no or "").strip().lower()
-        existing = existing_by_article.get(key) if key else None
-        if existing is None:
-            rows_new += 1
-            continue
-        if _row_unchanged(existing, parsed):
-            rows_unchanged += 1
-        else:
-            rows_updated += 1
-
-    # EAN conflicts — same EAN owned by a different supplier.
-    ean_conflicts = _detect_ean_conflicts(db, parsed_rows=parsed_rows, supplier_id=supplier_id)
-
     now = utcnow()
-    token = secrets.token_urlsafe(32)
     preview = DatanormPreview(
         token=token,
         supplier_id=supplier_id,
         supplier_name=supplier.name,
         filename=filename,
-        file_size_bytes=len(file_bytes),
-        detected_version=_detect_datanorm_version(text),
-        detected_encoding=_detect_encoding(file_bytes),
-        total_rows=len(parsed_rows),
+        file_size_bytes=file_size_bytes,
+        detected_version=detected_version,
+        detected_encoding=detected_encoding,
+        total_rows=writer.count,
         rows_new=rows_new,
         rows_updated=rows_updated,
         rows_unchanged=rows_unchanged,
-        ean_conflicts=ean_conflicts[:EAN_CONFLICT_LIMIT],
-        sample_rows=parsed_rows[:SAMPLE_ROW_LIMIT],
+        ean_conflicts=_detect_ean_conflicts(db, ean_values=ean_values, supplier_id=supplier_id),
+        sample_rows=sample_rows,
         uploaded_at=now,
         expires_at=now + timedelta(seconds=PREVIEW_TTL_SECONDS),
-        rows=parsed_rows,
     )
-
-    with _preview_lock:
-        _prune_expired_previews(now)
-        _preview_cache[token] = preview
-
+    save_preview_meta(preview)
     return preview
 
 
 def get_preview(token: str) -> DatanormPreview | None:
-    now = utcnow()
-    with _preview_lock:
-        _prune_expired_previews(now)
-        return _preview_cache.get(token)
+    return load_preview(token, now=utcnow())
 
 
-def discard_preview(token: str) -> None:
-    with _preview_lock:
-        _preview_cache.pop(token, None)
+def _chunks(values: Iterable[str], size: int) -> Iterator[list[str]]:
+    batch: list[str] = []
+    for value in values:
+        batch.append(value)
+        if len(batch) >= size:
+            yield batch
+            batch = []
+    if batch:
+        yield batch
+
+
+def _detect_ean_conflicts(
+    db: Session,
+    *,
+    ean_values: set[str],
+    supplier_id: int,
+) -> list[DatanormEanConflict]:
+    """Same EAN owned by a different supplier — the first
+    ``EAN_CONFLICT_LIMIT`` of them, queried in slices."""
+    if not ean_values:
+        return []
+    conflicts: list[DatanormEanConflict] = []
+    seen_eans: set[str] = set()
+    for chunk in _chunks(sorted(ean_values), EAN_QUERY_CHUNK):
+        clashes = db.execute(
+            select(
+                MaterialCatalogItem.ean,
+                MaterialCatalogItem.item_name,
+                MaterialCatalogItem.article_no,
+                MaterialCatalogItem.supplier_id,
+                WerkstattSupplier.name,
+            )
+            .join(WerkstattSupplier, WerkstattSupplier.id == MaterialCatalogItem.supplier_id)
+            .where(
+                MaterialCatalogItem.ean.in_(chunk),
+                MaterialCatalogItem.supplier_id.is_not(None),
+                MaterialCatalogItem.supplier_id != supplier_id,
+            )
+        ).all()
+        for ean, item_name, article_no, other_supplier_id, other_supplier_name in clashes:
+            if ean in seen_eans:
+                continue
+            seen_eans.add(ean)
+            conflicts.append(
+                DatanormEanConflict(
+                    ean=ean,
+                    item_name=item_name,
+                    existing_supplier_id=other_supplier_id,
+                    existing_supplier_name=other_supplier_name,
+                    existing_article_no=article_no,
+                )
+            )
+            if len(conflicts) >= EAN_CONFLICT_LIMIT:
+                return conflicts
+    return conflicts
+
+
+# ── Commit ───────────────────────────────────────────────────────────────────
+
+
+def _insert_rows_in_batches(
+    db: Session,
+    *,
+    token: str,
+    supplier_id: int,
+    skip_keys: set[str],
+    preserved_images: dict[str, tuple[str | None, str | None, datetime | None]],
+) -> tuple[int, int]:
+    """Stream the preview's rows into the table, ``CATALOG_IMPORT_BATCH_SIZE``
+    per INSERT. ``skip_keys`` starts as the keys already in the table (merge
+    mode) and grows with every row written, so a duplicate inside the file
+    is skipped the way the old per-row SELECT skipped it — without the
+    SELECT. Returns (inserted, skipped)."""
+    pending: list[dict[str, object | None]] = []
+    inserted = skipped = 0
+    for row in iter_preview_rows(token):
+        external_key = _external_key_for_supplier_row(supplier_id, row)
+        if external_key in skip_keys:
+            skipped += 1
+            continue
+        skip_keys.add(external_key)
+        preserved = preserved_images.get(external_key)
+        pending.append(
+            {
+                "external_key": external_key,
+                "source_file": row.source_file,
+                "source_line": row.source_line,
+                "article_no": row.article_no,
+                "item_name": row.item_name,
+                "unit": row.unit,
+                "manufacturer": row.manufacturer,
+                "ean": row.ean,
+                "price_text": row.price_text,
+                "supplier_id": supplier_id,
+                "image_url": preserved[0] if preserved else None,
+                "image_source": preserved[1] if preserved else None,
+                "image_checked_at": preserved[2] if preserved else None,
+                "search_text": _search_text_for_row(row),
+            }
+        )
+        inserted += 1
+        if len(pending) >= CATALOG_IMPORT_BATCH_SIZE:
+            db.execute(insert(MaterialCatalogItem), pending)
+            pending = []
+    if pending:
+        db.execute(insert(MaterialCatalogItem), pending)
+    return inserted, skipped
 
 
 def commit_preview(
@@ -232,12 +397,13 @@ def commit_preview(
     `material_catalog_items` rows with the same `supplier_id`, then INSERT the
     parsed rows. Writes an audit row whether the commit succeeds or fails.
     """
-    preview = get_preview(token)
+    preview = claim_preview(token, now=utcnow())
     if preview is None:
         raise ValueError("Import token expired or unknown")
 
     supplier = db.get(WerkstattSupplier, preview.supplier_id)
     if supplier is None:
+        discard_preview(token)
         raise ValueError("Supplier no longer exists")
 
     audit = WerkstattDatanormImport(
@@ -256,34 +422,19 @@ def commit_preview(
 
     try:
         if replace_mode:
-            db.execute(
-                delete(MaterialCatalogItem).where(
-                    MaterialCatalogItem.supplier_id == preview.supplier_id
-                )
-            )
-        for row in preview.rows:
-            existing_key = _external_key_for_supplier_row(preview.supplier_id, row)
-            # Guard against same-file duplicates that survived the parser.
-            existing_same_key = db.scalar(
-                select(MaterialCatalogItem).where(MaterialCatalogItem.external_key == existing_key)
-            )
-            if existing_same_key is not None:
-                continue
-            item = MaterialCatalogItem(
-                external_key=existing_key,
-                source_file=row.source_file,
-                source_line=row.source_line,
-                article_no=row.article_no,
-                item_name=row.item_name,
-                unit=row.unit,
-                manufacturer=row.manufacturer,
-                ean=row.ean,
-                price_text=row.price_text,
-                supplier_id=preview.supplier_id,
-                search_text=_search_text_for_row(row),
-            )
-            db.add(item)
-
+            preserved_images = _preserved_images(db, preview.supplier_id)
+            db.execute(delete(MaterialCatalogItem).where(MaterialCatalogItem.supplier_id == preview.supplier_id))
+            skip_keys: set[str] = set()
+        else:
+            preserved_images = {}
+            skip_keys = _existing_external_keys(db, preview.supplier_id)
+        _insert_rows_in_batches(
+            db,
+            token=token,
+            supplier_id=preview.supplier_id,
+            skip_keys=skip_keys,
+            preserved_images=preserved_images,
+        )
         audit.status = "committed"
         audit.finished_at = utcnow()
         db.add(audit)
@@ -314,55 +465,3 @@ def commit_preview(
     discard_preview(token)
     db.refresh(audit)
     return audit
-
-
-def _row_unchanged(existing: MaterialCatalogItem, parsed: ParsedCatalogRow) -> bool:
-    return (
-        (existing.item_name or "") == (parsed.item_name or "")
-        and (existing.unit or "") == (parsed.unit or "")
-        and (existing.manufacturer or "") == (parsed.manufacturer or "")
-        and (existing.ean or "") == (parsed.ean or "")
-        and (existing.price_text or "") == (parsed.price_text or "")
-    )
-
-
-def _detect_ean_conflicts(
-    db: Session,
-    *,
-    parsed_rows: list[ParsedCatalogRow],
-    supplier_id: int,
-) -> list[DatanormEanConflict]:
-    ean_values = {row.ean.strip() for row in parsed_rows if row.ean and row.ean.strip()}
-    if not ean_values:
-        return []
-    clashes = db.execute(
-        select(
-            MaterialCatalogItem.ean,
-            MaterialCatalogItem.item_name,
-            MaterialCatalogItem.article_no,
-            MaterialCatalogItem.supplier_id,
-            WerkstattSupplier.name,
-        )
-        .join(WerkstattSupplier, WerkstattSupplier.id == MaterialCatalogItem.supplier_id)
-        .where(
-            MaterialCatalogItem.ean.in_(ean_values),
-            MaterialCatalogItem.supplier_id.is_not(None),
-            MaterialCatalogItem.supplier_id != supplier_id,
-        )
-    ).all()
-    conflicts: list[DatanormEanConflict] = []
-    seen_eans: set[str] = set()
-    for ean, item_name, article_no, other_supplier_id, other_supplier_name in clashes:
-        if ean in seen_eans:
-            continue
-        seen_eans.add(ean)
-        conflicts.append(
-            DatanormEanConflict(
-                ean=ean,
-                item_name=item_name,
-                existing_supplier_id=other_supplier_id,
-                existing_supplier_name=other_supplier_name,
-                existing_article_no=article_no,
-            )
-        )
-    return conflicts

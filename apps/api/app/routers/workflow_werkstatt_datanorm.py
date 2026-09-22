@@ -9,10 +9,13 @@
 
 from __future__ import annotations
 
+import secrets
+
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from app.core.db import get_db
 from app.core.deps import require_permission
@@ -33,11 +36,20 @@ from app.services.werkstatt_datanorm_import import (
     commit_preview,
     create_preview,
 )
+from app.services.werkstatt_datanorm_preview_store import (
+    PreviewStoreError,
+    discard_preview,
+    upload_path,
+)
 
 router = APIRouter(prefix="", tags=["werkstatt-desktop"])
 
 
-DATANORM_UPLOAD_MAX_BYTES = 25 * 1024 * 1024  # 25 MiB
+# A wholesaler's full Datanorm runs to tens of megabytes (Brisch: 68 MB for
+# 291k articles). The upload is streamed to disk, so the cap protects the
+# disk and the parse time, not the worker's memory.
+DATANORM_UPLOAD_MAX_BYTES = 150 * 1024 * 1024  # 150 MiB
+UPLOAD_CHUNK_BYTES = 1024 * 1024
 
 
 class DatanormCommitPayload(BaseModel):
@@ -54,20 +66,48 @@ async def upload_datanorm(
 ) -> DatanormImportPreviewOut:
     if not file.filename:
         raise HTTPException(status_code=400, detail="File name is required")
-    raw = await file.read()
-    if not raw:
-        raise HTTPException(status_code=400, detail="File body is required")
-    if len(raw) > DATANORM_UPLOAD_MAX_BYTES:
-        raise HTTPException(status_code=413, detail="File exceeds maximum upload size")
+    token = secrets.token_urlsafe(32)
     try:
-        preview = create_preview(
+        target = upload_path(token)
+    except PreviewStoreError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    try:
+        # Streamed to disk a megabyte at a time: the file never sits in the
+        # worker's memory, and an oversized one is refused as soon as the
+        # cap is crossed, not after the whole body arrived.
+        written = 0
+        with target.open("wb") as handle:
+            while True:
+                chunk = await file.read(UPLOAD_CHUNK_BYTES)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > DATANORM_UPLOAD_MAX_BYTES:
+                    raise HTTPException(status_code=413, detail="File exceeds maximum upload size")
+                handle.write(chunk)
+        if written == 0:
+            raise HTTPException(status_code=400, detail="File body is required")
+        # Parsing a large catalog takes seconds of CPU; off the event loop, so
+        # the worker keeps answering everyone else meanwhile.
+        preview = await run_in_threadpool(
+            create_preview,
             db,
             supplier_id=supplier_id,
             filename=file.filename,
-            file_bytes=raw,
+            source_path=target,
+            token=token,
         )
     except ValueError as exc:
+        discard_preview(token)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except HTTPException:
+        discard_preview(token)
+        raise
+    except PreviewStoreError as exc:
+        discard_preview(token)
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    finally:
+        target.unlink(missing_ok=True)
     return DatanormImportPreviewOut(
         import_token=preview.token,
         supplier_id=preview.supplier_id,

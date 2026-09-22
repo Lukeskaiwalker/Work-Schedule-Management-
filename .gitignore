@@ -57,6 +57,8 @@ config/*.key
 backups/
 data/
 Datanorm_Neuanlage/
+# Supplier Datanorm drops kept beside the repo for imports — never source.
+/Brisch Datanorm/
 *.tar
 *.tar.enc
 *.xlsx

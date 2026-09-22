@@ -52,6 +52,9 @@ class Settings(BaseSettings):
     uploads_dir: str = "/data/uploads"
     wiki_root_dir: str = "/data/wiki"
     material_catalog_dir: str = "/data/Datanorm_Neuanlage"
+    # Where a Datanorm upload's preview waits for its commit, shared by every
+    # worker of the container. Empty = a folder in the system temp dir.
+    datanorm_preview_dir: str = ""
     material_catalog_image_lookup_enabled: bool = True
     material_catalog_image_lookup_retry_hours: int = 168
     material_catalog_image_lookup_max_per_request: int = 4

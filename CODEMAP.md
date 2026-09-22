@@ -372,6 +372,14 @@ virtual (nothing moved on disk). Migration `20260921_0089`.
 | `apps/web/src/components/tasks/TaskAttachmentStrip.tsx` | Read-only "Anhänge" in the Meine-Aufgaben row; `TaskMaterialList` opens by default |
 | `apps/web/src/components/customers/CustomerDetailTabs.tsx` (+ `CustomerOverviewPanel`, `CustomerProjectsCard`) | The customer page's five tabs; only the open tab's cards mount; tab remembered in sessionStorage |
 
+## Datanorm import at catalog size (2026-09-22)
+
+| Module | Role |
+|---|---|
+| `apps/api/app/services/werkstatt_datanorm_preview_store.py` | The preview between "Vorschau analysieren" and "Import starten" lives on disk (`DATANORM_PREVIEW_DIR`, default a folder in the temp dir): `<token>.json` + `<token>.rows.jsonl`; shared by every uvicorn worker, swept by age after 15 min, claimed by rename so a token commits once |
+| `apps/api/app/services/werkstatt_datanorm_import.py` | `create_preview` parses the upload once, streaming rows to the JSONL and keeping only counters, samples and the EAN set (classification against fingerprints of the supplier's current rows, EAN conflicts in slices); `commit_preview` streams the rows into `material_catalog_items` in batches of 1000, keeps looked-up images across a replace |
+| `apps/api/app/routers/workflow_werkstatt_datanorm.py` | Upload streamed to disk a megabyte at a time (cap 150 MiB, refused mid-stream), parsed off the event loop; a wholesaler's full file (Brisch: 68 MB, 291k articles) analyses in ~13 s and commits in ~10 s |
+
 ## Customers like projects (2026-09-20)
 
 | Module | Role |
