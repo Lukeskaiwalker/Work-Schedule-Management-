@@ -496,12 +496,11 @@ def test_block_label_prints_as_one_piece_with_three_rows(client: TestClient, adm
     # 3 + 60 + 3 mm plus the 2 mm offset.
     assert abs(_q_length(block) - 68) <= 1
     assert b"^W11" in block
-    # Name row, X row, five cells — in the font engine's bold (style 1BE:
-    # rotated, Bold, UTF-8), where the Leiste prints regular (1E).
+    # Name row, X row, five cells — regular weight like the Leiste (both
+    # bold variants smeared on the physical strip).
     at_lines = [line for line in block.split(b"\r\n") if line.startswith(b"AT,")]
     assert [line.split(b",", 9)[-1] for line in at_lines] == [b"Wallbox Garage", b"X2", b"N", b"L1", b"L2", b"L3", b"PE"]
-    assert all(b",0,1BE,0,0," in line for line in at_lines)
-    assert all(b",0,1E,0,0," in line for line in leiste.split(b"\r\n") if line.startswith(b"AT,"))
+    assert all(b",0,1E,0,0," in line for line in at_lines)
     # Start and end marks, two rules between the rows, four cell marks in the bottom row.
     assert block.count(b"Lo,") == 2 + 2 + 4
     assert len(_at_sizes(leiste)) == 5

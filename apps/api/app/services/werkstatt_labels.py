@@ -724,10 +724,10 @@ _BLOCK_ROW_SIZE_MIN = 18
 _BLOCK_ROWS = 3
 TERMINAL_BLOCK_PAD_DOTS = 6
 # The block's own rules — between the rows and between the cells — are a
-# shade heavier than the strip's dividers, and its text is bold (owner, on
-# the first two prints: an overprinted fake bold smeared the glyphs; the
-# built-in font engine's own bold — style "B" in the AT command, EZPL
-# manual p. 40 — does not).
+# shade heavier than the strip's dividers (owner, on the first print). Its
+# text is the regular weight like every other strip text: both an
+# overprinted fake bold and the font engine's own bold (style "B" in the AT
+# command, EZPL manual p. 40) smeared on the 11 mm strip (2026-09-23).
 _BLOCK_LINE = 2  # half-thickness in dots (4 dots total)
 
 
@@ -741,10 +741,9 @@ def _hline(frame: _Frame, reading_x0: int, reading_x1: int, reading_y: int, *, h
     return f"Lo,{frame.xm(reading_y + half)},{frame.ym(reading_x0)},{frame.xm(reading_y - half)},{frame.ym(reading_x1)}"
 
 
-def _at_bold(frame: _Frame, reading_x: int, reading_y: int, size: int, text: str) -> list[str]:
-    """One rotated built-in-TTF text in the engine's bold: style ``1BE`` =
-    90°, Bold, UTF-8 (``1E`` is the regular weight used everywhere else)."""
-    return [f"AT,{frame.xm(reading_y)},{frame.ym(reading_x)},{size},{size},0,1BE,0,0,{text}"]
+def _block_text(frame: _Frame, reading_x: int, reading_y: int, size: int, text: str) -> list[str]:
+    """One block text, regular weight — see the note on _BLOCK_LINE."""
+    return [_at(frame, reading_x, reading_y, size, text)]
 
 
 def _fit_strip_text(text: str, budget_px: float, size_max: int, size_min: int) -> int:
@@ -779,7 +778,7 @@ def _render_block_label(
             continue
         size = _fit_strip_text(text, budget, _BLOCK_ROW_SIZE_MAX, _BLOCK_ROW_SIZE_MIN)
         left = int(round(lead_px + (body_px - _strip_text_w(text, size)) / 2))
-        lines.extend(_at_bold(frame, left, _row_top(row, row_h, size), size, text))
+        lines.extend(_block_text(frame, left, _row_top(row, row_h, size), size, text))
     # Two rules between the three rows, the width of the block.
     for row in (1, 2):
         lines.append(_hline(frame, lead_px, lead_px + body_px, row * row_h, half=_BLOCK_LINE))
@@ -791,7 +790,7 @@ def _render_block_label(
         if text:
             size = _fit_strip_text(text, cell_w - 2 * TERMINAL_BLOCK_PAD_DOTS, _BLOCK_ROW_SIZE_MAX, _BLOCK_ROW_SIZE_MIN)
             left = max(int(cursor) + _STRIP_TEXT_GUARD, int(round(cursor + (cell_w - _strip_text_w(text, size)) / 2)))
-            lines.extend(_at_bold(frame, left, _row_top(2, row_h, size), size, text))
+            lines.extend(_block_text(frame, left, _row_top(2, row_h, size), size, text))
         cursor += cell_w
         if index < len(cells) - 1:
             lines.append(_vline(frame, int(round(cursor)), cell_row_y0, h_px, half=_BLOCK_LINE))
