@@ -724,12 +724,11 @@ _BLOCK_ROW_SIZE_MIN = 18
 _BLOCK_ROWS = 3
 TERMINAL_BLOCK_PAD_DOTS = 6
 # The block's own rules — between the rows and between the cells — are a
-# shade heavier than the strip's dividers (owner, on the first print), and
-# its text is overprinted with a one-dot shift each way: the built-in TTF
-# has no bold, and the third impression is what reads as one on a strip
-# 11 mm high.
+# shade heavier than the strip's dividers, and its text is bold (owner, on
+# the first two prints: an overprinted fake bold smeared the glyphs; the
+# built-in font engine's own bold — style "B" in the AT command, EZPL
+# manual p. 40 — does not).
 _BLOCK_LINE = 2  # half-thickness in dots (4 dots total)
-_BOLD_SHIFTS: tuple[tuple[int, int], ...] = ((0, 0), (1, 0), (0, 1))
 
 
 def _vline(frame: _Frame, reading_x: int, reading_y0: int, reading_y1: int, *, half: int) -> str:
@@ -743,8 +742,9 @@ def _hline(frame: _Frame, reading_x0: int, reading_x1: int, reading_y: int, *, h
 
 
 def _at_bold(frame: _Frame, reading_x: int, reading_y: int, size: int, text: str) -> list[str]:
-    """The text three times, shifted a dot right and a dot down — a bold the printer cannot do itself."""
-    return [_at(frame, reading_x + dx, reading_y + dy, size, text) for dx, dy in _BOLD_SHIFTS]
+    """One rotated built-in-TTF text in the engine's bold: style ``1BE`` =
+    90°, Bold, UTF-8 (``1E`` is the regular weight used everywhere else)."""
+    return [f"AT,{frame.xm(reading_y)},{frame.ym(reading_x)},{size},{size},0,1BE,0,0,{text}"]
 
 
 def _fit_strip_text(text: str, budget_px: float, size_max: int, size_min: int) -> int:
