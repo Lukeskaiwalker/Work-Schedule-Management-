@@ -1,109 +1,121 @@
 /**
- * The Reihenklemmen half of the print sheet: the FI-group list and the strip
- * preview. `LabelPrintDialog` owns the sheet, the state and the buttons;
- * this file only knows how a group reads as a checkbox row and what its
- * strip looks like — derived from `utils/schaltplanTerminals.ts`, the same
- * rules the server prints with.
+ * The Reihenklemmen half of the print sheet: the strip list and the preview.
+ * `LabelPrintDialog` owns the sheet, the state and the buttons; this file
+ * only knows how a strip reads as a checkbox row and what it looks like
+ * printed — derived from `utils/schaltplanTerminals.ts`, the same rules the
+ * server prints with. A Leiste is drawn at the board font size with a
+ * divider on every boundary, exactly like the BMK strip; a Block is the
+ * owner's 60 mm blueprint with its three rows.
  */
-import { StripSvg, layoutSegments } from "./StripSvg";
+import { BlockSvg, StripSvg, layoutSegments } from "./StripSvg";
 import { STRIP_LEAD_MM, formatFontMm, formatMm, type BoardFontSize } from "../../utils/schaltplanStrip";
 import type { TerminalPart } from "../../utils/schaltplanTerminalRules";
 import {
-  terminalGroupTitle,
+  STRIP_KIND_BLOCK,
   terminalStrips,
   type TerminalGroup,
   type TerminalStrip,
-  type TerminalTextMode,
+  type TerminalStripItem,
 } from "../../utils/schaltplanTerminals";
 
-/** The only stock a terminal marker fits: the 11 mm strip, one per FI group. */
+/** The only stock a terminal marker fits: the 11 mm strip — one per Leiste, one 60 mm piece per Block. */
 export const TERMINAL_MATERIAL = {
   id: "wago-2009-110",
   label: "WAGO 2009-110",
-  hint: "11 mm Endlosstreifen — ein Streifen je FI-Gruppe, in den WAGO-Beschriftungsträger einschieben",
+  hint: "11 mm Endlosstreifen — ein Streifen je Klemmenleiste, ein 60-mm-Stück je Block, in den WAGO-Beschriftungsträger einschieben",
 } as const;
-
-export const TERMINAL_TEXT_OPTIONS: readonly { id: TerminalTextMode; label: string }[] = [
-  // Stromkreis-Nr. first: "7" fits a 5.2 mm terminal, "F1.12" does not.
-  { id: "circuit", label: "Stromkreis-Nr." },
-  { id: "bmk", label: "BMK" },
-];
 
 function terminalCountLabel(count: number): string {
   return count === 1 ? "1 Klemme" : `${count} Klemmen`;
 }
 
-/** "3 Klemmen · 1 ohne Beschriftung · 17,2 mm" — the group row's second line. */
-export function groupMeta(group: TerminalGroup, strip: TerminalStrip | undefined): string {
-  const markers = group.terminals.filter((terminal) => terminal.marker).length;
-  const labelled = strip?.segments.length ?? 0;
-  const parts = [terminalCountLabel(group.terminals.length)];
+/**
+ * The strip row's second line: "Block · 60 mm" for a Block, "6 Klemmen ·
+ * 1 ohne Beschriftung · 32,8 mm" for a Leiste (no length when nothing on
+ * it has a text).
+ */
+export function stripMeta(strip: TerminalStrip, item: TerminalStripItem | undefined): string {
+  if (strip.kind === STRIP_KIND_BLOCK) {
+    return `Block · ${formatMm(item?.lengthMm ?? 0)} mm`;
+  }
+  const markers = strip.terminals.filter((terminal) => terminal.marker).length;
+  const labelled = item?.segments.length ?? 0;
+  const parts = [terminalCountLabel(strip.terminals.length)];
   if (markers - labelled > 0) parts.push(`${markers - labelled} ohne Beschriftung`);
-  if (strip) parts.push(`${formatMm(strip.lengthMm)} mm`);
+  if (item) parts.push(`${formatMm(item.lengthMm)} mm`);
   return parts.join(" · ");
 }
 
-/** Total strip the printer feeds for one group: lead + printed length + lead. */
-export function stripTotal(strip: TerminalStrip): number {
-  return STRIP_LEAD_MM + strip.lengthMm + STRIP_LEAD_MM;
+/** Total strip the printer feeds for one piece: lead + printed length + lead. */
+export function stripTotal(item: TerminalStripItem): number {
+  return STRIP_LEAD_MM + item.lengthMm + STRIP_LEAD_MM;
+}
+
+/** Markers printed on a piece: the Leiste's segments, the Block's cells. */
+function printedMarkers(item: TerminalStripItem): number {
+  return item.kind === STRIP_KIND_BLOCK ? item.cells.length : item.segments.length;
 }
 
 /**
  * The preview's one-line total. `skipped` is the selection's count from
- * `terminalStrips`, not a sum over the strips: a ticked group with no text
+ * `terminalStrips`, not a sum over the strips: a ticked Leiste with no text
  * at all has no strip, and its terminals would otherwise vanish from the line.
  */
-export function terminalSummary(strips: readonly TerminalStrip[], board: BoardFontSize, skipped: number): string {
+export function terminalSummary(strips: readonly TerminalStripItem[], board: BoardFontSize, skipped: number): string {
   if (strips.length === 0) {
-    return skipped > 0 ? `Nichts zu drucken · ${skipped} ohne Beschriftung` : "Keine FI-Gruppe ausgewählt.";
+    return skipped > 0 ? `Nichts zu drucken · ${skipped} ohne Beschriftung` : "Keine Klemmenleiste ausgewählt.";
   }
-  const labelled = strips.reduce((sum, strip) => sum + strip.segments.length, 0);
+  const labelled = strips.reduce((sum, strip) => sum + printedMarkers(strip), 0);
   const total = strips.reduce((sum, strip) => sum + stripTotal(strip), 0);
   const tail = skipped > 0 ? ` · ${skipped} ohne Beschriftung` : "";
   return `${strips.length} Streifen · ${labelled} Klemmen · ${formatMm(total)} mm Material · Schriftgröße: ${formatFontMm(board.sizeDots)} mm${tail}`;
 }
 
+/** Every strip of the board in order — the list's rows and the "Alle" set. */
+export function boardStrips(groups: readonly TerminalGroup[]): TerminalStrip[] {
+  return groups.flatMap((group) => group.strips);
+}
+
 type ListProps = {
   groups: readonly TerminalGroup[];
-  mode: TerminalTextMode;
   selectedIds: readonly string[];
-  onToggle: (groupId: string) => void;
+  onToggle: (stripId: string) => void;
   onToggleAll: () => void;
 };
 
-export function TerminalGroupList({ groups, mode, selectedIds, onToggle, onToggleAll }: ListProps) {
-  const allSelected = groups.length > 0 && groups.every((group) => selectedIds.includes(group.groupId));
-  const stripsById = new Map(terminalStrips(groups, mode).strips.map((strip) => [strip.groupId, strip] as const));
+export function TerminalStripList({ groups, selectedIds, onToggle, onToggleAll }: ListProps) {
+  const strips = boardStrips(groups);
+  const allSelected = strips.length > 0 && strips.every((strip) => selectedIds.includes(strip.stripId));
+  const itemsById = new Map(terminalStrips(groups).strips.map((item) => [item.stripId, item] as const));
   return (
     <div className="sp-field">
       <div className="sp-label-rows-head">
-        <span className="sp-field-label">FI-Gruppen</span>
-        <button type="button" className="sp-label-toggle" onClick={onToggleAll} disabled={groups.length === 0}>
+        <span className="sp-field-label">Klemmenleisten</span>
+        <button type="button" className="sp-label-toggle" onClick={onToggleAll} disabled={strips.length === 0}>
           {allSelected ? "Keine" : "Alle"}
         </button>
       </div>
-      {groups.length === 0 ? (
+      {strips.length === 0 ? (
         <p className="sp-label-empty">
           Noch keine Reihenklemmen — im Gerätedialog „Reihenklemme am Abgang“ setzen oder auf dem Klemmen-Tab
           alle auf einmal.
         </p>
       ) : (
-        <ul className="sp-label-rows" aria-label="FI-Gruppen">
-          {groups.map((group) => {
-            const title = terminalGroupTitle(group);
-            const checked = selectedIds.includes(group.groupId);
+        <ul className="sp-label-rows" aria-label="Klemmenleisten">
+          {strips.map((strip) => {
+            const checked = selectedIds.includes(strip.stripId);
             return (
-              <li key={group.groupId} className={checked ? "sp-label-row sp-label-row--on" : "sp-label-row"}>
+              <li key={strip.stripId} className={checked ? "sp-label-row sp-label-row--on" : "sp-label-row"}>
                 <label className="sp-label-row-main">
                   <input
                     type="checkbox"
                     checked={checked}
-                    onChange={() => onToggle(group.groupId)}
-                    aria-label={`${title} drucken`}
+                    onChange={() => onToggle(strip.stripId)}
+                    aria-label={`${strip.title} drucken`}
                   />
                   <span className="sp-label-row-text">
-                    <b>{title}</b>
-                    <small>{groupMeta(group, stripsById.get(group.groupId))}</small>
+                    <b>{strip.title}</b>
+                    <small>{stripMeta(strip, itemsById.get(strip.stripId))}</small>
                   </span>
                 </label>
               </li>
@@ -116,13 +128,35 @@ export function TerminalGroupList({ groups, mode, selectedIds, onToggle, onToggl
 }
 
 type PreviewProps = {
-  strips: readonly TerminalStrip[];
-  /** The selection's unmarked terminals, dropped groups included (see `terminalSummary`). */
+  strips: readonly TerminalStripItem[];
+  /** The selection's unmarked Leiste terminals, dropped strips included (see `terminalSummary`). */
   skipped: number;
   board: BoardFontSize;
   fontPx: number;
   unverified: readonly TerminalPart[];
 };
+
+function StripPiece({ item, fontPx }: { item: TerminalStripItem; fontPx: number }) {
+  if (item.kind === STRIP_KIND_BLOCK) {
+    return (
+      <BlockSvg
+        label={item.label}
+        name={item.name}
+        xLabel={item.xLabel}
+        cells={layoutSegments(item.cells.map((cell, index) => ({ key: `${index}-${cell.text}`, ...cell })))}
+        lengthMm={item.lengthMm}
+      />
+    );
+  }
+  return (
+    <StripSvg
+      label={item.label}
+      segments={layoutSegments(item.segments.map((segment, index) => ({ key: `${index}-${segment.text}`, ...segment })))}
+      lengthMm={item.lengthMm}
+      fontPx={fontPx}
+    />
+  );
+}
 
 export function TerminalPreview({ strips, skipped, board, fontPx, unverified }: PreviewProps) {
   return (
@@ -141,23 +175,16 @@ export function TerminalPreview({ strips, skipped, board, fontPx, unverified }: 
           {`Zu lang für die Klemme bei einheitlicher Größe: ${board.overflowing.join(", ")}`}
         </p>
       )}
-      {strips.map((strip) => (
-        <div key={strip.groupId} className="sp-strip-preview">
+      {strips.map((item) => (
+        <div key={item.stripId} className="sp-strip-preview">
           <div className="sp-strip-head">
-            <b>{strip.label}</b>
+            <b>{item.label}</b>
             <small>
-              {`${formatMm(stripTotal(strip))} mm (${STRIP_LEAD_MM} + ${formatMm(strip.lengthMm)} + ${STRIP_LEAD_MM})`}
+              {`${formatMm(stripTotal(item))} mm (${STRIP_LEAD_MM} + ${formatMm(item.lengthMm)} + ${STRIP_LEAD_MM})`}
             </small>
           </div>
           <div className="sp-strip-scroll">
-            <StripSvg
-              label={strip.label}
-              segments={layoutSegments(
-                strip.segments.map((segment, index) => ({ key: `${index}-${segment.text}`, ...segment })),
-              )}
-              lengthMm={strip.lengthMm}
-              fontPx={fontPx}
-            />
+            <StripPiece item={item} fontPx={fontPx} />
           </div>
         </div>
       ))}

@@ -1,11 +1,13 @@
 /**
- * The "Klemmen" tab: which WAGO Reihenklemmen the board needs, per FI group.
+ * The "Klemmen" tab: which WAGO Reihenklemmen the board needs, strip by
+ * strip — X1, X2 … in board order.
  *
  * Derived, never entered — every terminal follows from a device's
- * `terminal_block` flag and its poles, so the list cannot drift from the
- * rail. The tab carries the two bulk switches (a 40-breaker board is a
- * two-tap job), the print button (opens the label sheet in Reihenklemmen
- * mode), the PDF link, and the Stückliste summed over the board.
+ * `terminal_block` flag, its poles and its rating, so the list cannot drift
+ * from the rail. The tab carries the two bulk switches (a 40-breaker board
+ * is a two-tap job), the print button (opens the label sheet in
+ * Reihenklemmen mode), the PDF link, and the Stückliste summed over the
+ * board.
  *
  * The rules and every number here come from `utils/schaltplanTerminals.ts`,
  * whose Python twin prints the strip and the PDF; a part whose width could
@@ -14,7 +16,7 @@
  */
 import { useMemo } from "react";
 
-import { TerminalGroupCard } from "./TerminalGroupCard";
+import { TerminalStripCard } from "./TerminalGroupCard";
 import { formatMm } from "../../utils/schaltplanStrip";
 import { isTerminalEligible, terminalFindings } from "../../utils/schaltplanTerminalRules";
 import {
@@ -41,8 +43,10 @@ type Props = {
 
 function summaryText(counts: TerminalCounts, eligible: number): string {
   if (counts.terminals === 0) return "Keine Reihenklemmen abgeleitet.";
+  const strips =
+    counts.strips === 1 ? "1 Klemmenleiste (X1)" : `${counts.strips} Klemmenleisten (X1–X${counts.strips})`;
   const groups = counts.groups === 1 ? "1 FI-Gruppe" : `${counts.groups} FI-Gruppen`;
-  return `${counts.terminals} Klemmen in ${groups} · ${counts.devices} von ${eligible} Abgängen`;
+  return `${counts.terminals} Klemmen · ${strips} · ${groups} · ${counts.devices} von ${eligible} Abgängen`;
 }
 
 function TerminalBom({ bom, counts }: { bom: TerminalBomRow[]; counts: TerminalCounts }) {
@@ -129,7 +133,7 @@ export function TerminalList({ document, readOnly, onSetAllTerminals, onPrint, p
             className="sp-btn sp-btn--primary"
             disabled={!hasTerminals || printing}
             onClick={onPrint}
-            title="Ein 2009-110-Streifen je FI-Gruppe — Gruppen und Text in der Vorschau wählen"
+            title="Ein 2009-110-Streifen je Klemmenleiste, ein 60-mm-Etikett je Block — Auswahl und Texte in der Vorschau"
           >
             {printing ? "Drucke…" : "Klemmen-Etiketten drucken"}
           </button>
@@ -162,9 +166,11 @@ export function TerminalList({ document, readOnly, onSetAllTerminals, onPrint, p
         </p>
       ) : (
         <>
-          {groups.map((group) => (
-            <TerminalGroupCard key={group.groupId} group={group} document={document} />
-          ))}
+          {groups.flatMap((group) =>
+            group.strips.map((strip) => (
+              <TerminalStripCard key={strip.stripId} group={group} strip={strip} document={document} />
+            )),
+          )}
           <TerminalBom bom={bom} counts={counts} />
         </>
       )}

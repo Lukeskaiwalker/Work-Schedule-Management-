@@ -69,6 +69,7 @@ from app.services.schaltplan_layout import (
     validate_document,
 )
 from app.services.schaltplan_terminals import (
+    STRIP_KIND_BLOCK,
     derive_terminals,
     terminal_bom,
     terminal_font_size,
@@ -397,6 +398,8 @@ class _PrintPlan:
     """
 
     strips: list[list[tuple[str, float]]] = field(default_factory=list)
+    # Terminal Block labels (name, X, cells) — printed after the strips.
+    blocks: list[dict[str, Any]] = field(default_factory=list)
     meta: list[PanelStripOut] = field(default_factory=list)
     skipped: int = 0
     font_size: int | None = None
@@ -453,8 +456,8 @@ def _terminal_print_plan(
     # An explicit empty selection is "nothing", never "everything": the sheet
     # sends exactly the ticked groups, and unticking them all must not print
     # the whole board.
-    if payload.group_ids is not None and not payload.group_ids:
-        raise HTTPException(status_code=400, detail="Keine FI-Gruppe ausgewählt — mindestens eine Gruppe wählen.")
+    if payload.strip_ids is not None and not payload.strip_ids:
+        raise HTTPException(status_code=400, detail="Keine Klemmenleiste ausgewählt — mindestens eine wählen.")
     groups = derive_terminals(document)
     if not groups:
         raise HTTPException(
@@ -462,21 +465,21 @@ def _terminal_print_plan(
             detail="Keine Reihenklemmen abgeleitet — erst Abgänge mit „Reihenklemme am Abgang“ markieren.",
         )
     plan = _PrintPlan(
-        empty_detail=(
-            "Keine Beschriftung für die gewählten Klemmen — Stromkreis-Nummern eintragen "
-            "oder BMK als Text wählen."
-        ),
+        empty_detail="Keine Beschriftung für die gewählten Klemmen — die Texte in der Vorschau prüfen.",
     )
-    plan.font_size, plan.overflowing = terminal_font_size(groups, payload.terminal_text, profile.width_mm)
-    selection = terminal_strips(groups, payload.terminal_text, payload.group_ids)
-    # Over the whole selection, not the strips: a group with no text at all
+    plan.font_size, plan.overflowing = terminal_font_size(groups, profile.width_mm)
+    selection = terminal_strips(groups, payload.strip_ids)
+    # Over the whole selection, not the strips: a Leiste with no text at all
     # produces no strip, but its terminals are still the ones left unmarked.
     plan.skipped = int(selection["skipped"])
     for strip in selection["strips"]:
-        plan.strips.append(list(strip["segments"]))
+        if strip["kind"] == STRIP_KIND_BLOCK:
+            plan.blocks.append({"name": strip["name"], "x_label": strip["x_label"], "cells": list(strip["cells"])})
+        else:
+            plan.strips.append(list(strip["segments"]))
         plan.meta.append(
             PanelStripOut(
-                row_id=str(strip["group_id"]),
+                row_id=str(strip["strip_id"]),
                 row_label=str(strip["label"]),
                 length_mm=round(float(strip["length_mm"]), 2),
                 part_count=int(strip["part_count"]),
@@ -512,12 +515,13 @@ def print_panel_labels(
     their segment even at the minimum size are listed in ``overflowing``.
 
     With ``target="reihenklemmen"`` the same path prints the WAGO terminal
-    markers: one strip per FI group at the terminals' real pitch (see
-    ``services/schaltplan_terminals.py``), ``strips[].row_id`` then being the
-    group id and ``skipped_without_bmk`` the terminals of the selected groups
-    that have no text in the chosen mode — a group with no text at all gets
-    no strip, but its terminals are counted. ``group_ids`` null = every
-    group; an explicit empty list is refused, not read as "all".
+    markers: one piece per strip at the terminals' real pitch (see
+    ``services/schaltplan_terminals.py``) — a Leiste reading X1, 1.1, 1.2 …
+    or a Block label (name, X, N L1 L2 L3 PE) — ``strips[].row_id`` then
+    being the strip id and ``skipped_without_bmk`` the Leiste terminals of
+    the selected strips whose text was blanked — a Leiste with no text at
+    all gets no strip, but its terminals are counted. ``strip_ids`` null =
+    every strip; an explicit empty list is refused, not read as "all".
     """
     plan = _get_plan_or_404(db, plan_id)
     _assert_readable(db, current_user, plan)
@@ -533,11 +537,11 @@ def print_panel_labels(
     else:
         print_plan = _bmk_print_plan(document, payload, profile)
 
-    if not print_plan.strips:
+    if not print_plan.strips and not print_plan.blocks:
         raise HTTPException(status_code=400, detail=print_plan.empty_detail)
     try:
         printed, printer = werkstatt_labels.print_marking_strips(
-            db, strips=print_plan.strips, material_id=material_id, size=print_plan.font_size
+            db, strips=print_plan.strips, material_id=material_id, size=print_plan.font_size, blocks=print_plan.blocks
         )
     except werkstatt_labels.LabelPrinterNotConfigured:
         raise HTTPException(status_code=503, detail="Kein Etikettendrucker konfiguriert")

@@ -575,16 +575,18 @@ def _draw_diagram_sheet(
 _LEGEND_COLUMNS: list[tuple[str, str, float]] = [
     ("circuit", "Nr.", 26),
     ("designation", "BMK", 34),
-    ("label", "Verbraucher / Bezeichnung", 104),
+    ("label", "Verbraucher / Bezeichnung", 84),
     ("room", "Raum", 60),
     ("device", "Gerät", 52),
     ("rating", "Absicherung", 52),
     ("rcd", "FI / RCD", 60),
-    # Same total width as before: 28 taken from the description, 12 from the
-    # cable column, so the sheet that gets glued in the door keeps its layout.
+    # Same total width as before: the Klemmen column took 20 from the
+    # description and 30 from the cable column, so the sheet that gets glued
+    # in the door keeps its layout.
     ("pre_fuse", "Vorsich.", 40),
-    ("cable", "Leitung", 80),
+    ("cable", "Leitung", 50),
     ("phase", "Ph.", 26),
+    ("terminals", "Klemmen", 50),
 ]
 
 

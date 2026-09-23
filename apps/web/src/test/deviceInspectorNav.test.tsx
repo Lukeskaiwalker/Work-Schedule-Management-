@@ -227,14 +227,17 @@ describe("DeviceInspector — Reihenklemme am Abgang", () => {
     expect(onChange).toHaveBeenCalledWith({ terminal_block: true });
   });
 
-  it("names the Etagenklemme the current poles resolve to", () => {
+  it("names the Etagenklemmen the current poles resolve to — two of them for three phases", () => {
     const { document, mcb } = board();
     const { unmount } = renderInspector(mcb, document);
-    expect(screen.getByText(/WAGO 2003-7641/)).toBeInTheDocument();
+    expect(screen.getByText(/Bei 1 Pol: WAGO 2003-7641 \(eine Etagenklemme\)/)).toBeInTheDocument();
     unmount();
+    // A wallbox is 3-pole by catalogue; without a rating above 16 A it stays on the Etagenklemmen.
     const wallbox = makeDevice("wallbox", { id: "w1", designation: "F1.2" });
     renderInspector(wallbox, document);
-    expect(screen.getByText(/Bei 3 Polen: WAGO 2003-7642/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/Bei 3 Polen: WAGO 2003-7641 \+ WAGO 2003-7642 \(zwei Etagenklemmen, zwei Marker\)/),
+    ).toBeInTheDocument();
   });
 
   it("is hidden on an RCBO — with a note — and on a fuse, without one", () => {

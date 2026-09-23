@@ -372,6 +372,17 @@ virtual (nothing moved on disk). Migration `20260921_0089`.
 | `apps/web/src/components/tasks/TaskAttachmentStrip.tsx` | Read-only "Anhänge" in the Meine-Aufgaben row; `TaskMaterialList` opens by default |
 | `apps/web/src/components/customers/CustomerDetailTabs.tsx` (+ `CustomerOverviewPanel`, `CustomerProjectsCard`) | The customer page's five tabs; only the open tab's cards mount; tab remembered in sessionStorage |
 
+## Reihenklemmen with X numbers (2026-09-23)
+
+| Module | Role |
+|---|---|
+| `apps/api/app/services/schaltplan_terminal_rules.py` → `outgoing_parts_for_poles`, `rating_amps`, `is_block_device` | One Etagenklemme (2003-7641) for one phase, two (7641 + 7642) for three; three phases above 16 A = the 16 mm² Block; variants are `standard` / `no_rcd` only |
+| `apps/api/app/services/schaltplan_terminals.py` | Every strip gets the next X in board order: a group's Leiste first (feed "X1", Etagenklemmen "1.1", "1.2" …, end clamp), then one Block per big outgoing ("N L1 L2 L3 PE", name + X rows); `document.terminal_labels` overrides any text by `override_key(device_id, slot)`; `terminal_strips` yields Leiste segments and Block cells; `device_terminal_labels` feeds the legend's "Klemmen" column |
+| `apps/api/app/services/werkstatt_labels.py` → `_render_block_label`, `print_marking_strips(blocks=…)` | The PV-block blueprint (`PV Block.wssl`, 2009-110): one 60 mm piece, three rows, short cell marks in the bottom third |
+| `apps/api/app/routers/workflow_schaltplan.py` → `_terminal_print_plan` | `strip_ids` instead of `group_ids`, no text modes; strips and blocks in one job |
+| `apps/api/app/services/schaltplan_pdf_terminals.py`, `schaltplan_pdf.py` legend | Terminal sheet per strip (Pos. · Klemme · Beschriftung · für); the Stromkreisliste has a "Klemmen" column (X1.1, X1.2) |
+| `apps/web/src/utils/schaltplanTerminals.ts` (+ rules twin), `components/schaltplan/LabelPrintDialog.tsx`, `TerminalGroupCard.tsx`, `LegendTable.tsx` | The TypeScript twin pinned on the same fixtures; the print sheet lists strips, previews Leisten and Blocks, and edits every marker text |
+
 ## Schrank-Etikett — the panel's type label (2026-09-23)
 
 | Module | Role |

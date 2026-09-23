@@ -299,3 +299,114 @@
     flex: 1 1 46%;
   }
 }
+
+/* ── Block card ──────────────────────────────────────────────────────────── */
+
+/* A 16 mm² Block is its own X number: the badge says so where a Leiste says
+   its variant. */
+.sp-terminal-variant--block {
+  color: var(--sp-accent-deep);
+  border-color: var(--sp-accent);
+  background: var(--sp-tint);
+}
+
+/* ── Block label preview ─────────────────────────────────────────────────── */
+
+/* The Block's three rows are set the way the printer fits them — each row
+   on its own size — so no board-wide weight applies; the divider between
+   two cells only crosses the bottom third, exactly like the printed mark. */
+.sp-block-cell-cut {
+  stroke-dasharray: none;
+}
+
+/* ── Marker editing list (print sheet) ───────────────────────────────────── */
+
+.sp-marker-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sp-marker-editor-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--sp-line);
+  border-radius: 11px;
+  background: var(--surface);
+}
+
+.sp-marker-editor-title {
+  font-size: 13.5px;
+}
+
+.sp-marker-edit-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sp-marker-edit {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+}
+
+.sp-marker-edit-main {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.sp-marker-edit-label {
+  font-size: 11.5px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Set like the printer sets a marker: plain, heavy, tabular. */
+.sp-marker-edit-input {
+  width: 100%;
+  min-height: 40px;
+  padding: 0 10px;
+  border: 1px solid var(--sp-line);
+  border-radius: 9px;
+  background: #fff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--sp-ink);
+}
+
+.sp-marker-edit--overridden .sp-marker-edit-input {
+  border-color: var(--sp-accent);
+  background: var(--sp-tint);
+}
+
+.sp-marker-edit-reset {
+  appearance: none;
+  min-height: 40px;
+  padding: 0 12px;
+  border: 1px solid var(--sp-line);
+  border-radius: 9px;
+  background: #fff;
+  color: var(--sp-accent-deep);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.sp-marker-edit-reset:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}

@@ -7,12 +7,12 @@
  * material.
  */
 import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { LabelPrintDialog } from "../components/schaltplan/LabelPrintDialog";
 import { emptyDocument, makeDevice } from "../utils/schaltplanDevices";
 
 /** The options every print reports alongside ids and material. */
-const BMK_OPTIONS = { target: "bmk", terminalText: "circuit" };
+const BMK_OPTIONS = { target: "bmk" };
 
 function twoRailBoard() {
   return {
@@ -296,12 +296,32 @@ function terminalBoard() {
         slots: 12,
         devices: [
           makeDevice("rcd", { id: "f1", designation: "F1" }),
-          makeDevice("mcb", { id: "a", designation: "F1.1", circuit: "1", terminal_block: true }),
+          makeDevice("mcb", { id: "a", designation: "F1.1", circuit: "1", label: "Licht Flur", rating: "B16", terminal_block: true }),
           makeDevice("rcd", { id: "f2", designation: "F2" }),
-          makeDevice("mcb", { id: "b", designation: "F2.1", circuit: "2", terminal_block: true }),
+          makeDevice("mcb", { id: "b", designation: "F2.1", circuit: "2", rating: "B16", terminal_block: true }),
         ],
       },
     ],
+  };
+}
+
+/** FI F1 with one small outgoing and one Wallbox above 16 A: a Leiste X1 and a Block X2. */
+function blockBoard(labels?: Record<string, string>) {
+  return {
+    ...emptyDocument(),
+    rows: [
+      {
+        id: "r1",
+        label: "Reihe 1",
+        slots: 12,
+        devices: [
+          makeDevice("rcd", { id: "f1", designation: "F1" }),
+          makeDevice("mcb", { id: "a", designation: "F1.1", circuit: "1", rating: "B16", terminal_block: true }),
+          makeDevice("wallbox", { id: "w", designation: "F1.2", circuit: "2", label: "Wallbox Garage", rating: "B32", terminal_block: true }),
+        ],
+      },
+    ],
+    ...(labels ? { terminal_labels: labels } : {}),
   };
 }
 
@@ -309,86 +329,148 @@ function renderTerminalDialog(overrides: Partial<Parameters<typeof LabelPrintDia
   return renderDialog({
     mode: "reihenklemmen",
     document: terminalBoard(),
-    initialRowIds: ["f1", "f2"],
+    initialRowIds: ["f1:leiste", "f2:leiste"],
+    onEditTerminalLabel: vi.fn(),
     ...overrides,
   });
 }
 
+function previewTexts(container: HTMLElement): string[] {
+  return Array.from(container.querySelectorAll("text.sp-strip-text")).map((node) => node.textContent ?? "");
+}
+
 describe("LabelPrintDialog — Reihenklemmen", () => {
-  it("lists FI groups instead of rails, and only the continuous strip", () => {
+  it("lists the terminal strips by X number instead of rails, and only the continuous strip", () => {
     renderTerminalDialog();
     expect(screen.getByRole("dialog", { name: "Klemmen-Etiketten drucken" })).toBeInTheDocument();
-    expect(screen.getByRole("checkbox", { name: "FI F1 · Reihe 1 drucken" })).toBeChecked();
-    expect(screen.getByRole("checkbox", { name: "FI F2 · Reihe 1 drucken" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "X1 · FI F1 · Reihe 1 drucken" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "X2 · FI F2 · Reihe 1 drucken" })).toBeChecked();
     expect(screen.queryByRole("checkbox", { name: "Reihe 1 drucken" })).toBeNull();
     expect(screen.getByRole("radio", { name: "WAGO 2009-110" })).toBeInTheDocument();
     expect(screen.queryByRole("radio", { name: "WAGO 210-805" })).toBeNull();
-    expect(screen.getByText(/ein Streifen je FI-Gruppe/)).toBeInTheDocument();
+    expect(screen.getByText(/ein Streifen je Klemmenleiste/)).toBeInTheDocument();
+    // No text-mode chips any more: the marker says the X numbering, editable below.
+    expect(screen.queryByRole("radiogroup", { name: "Text" })).toBeNull();
   });
 
-  it("previews one strip per group with the Stromkreis-Nr. by default, at the terminal pitch", () => {
+  it("previews one strip per Leiste with the X numbering, at the terminal pitch and the board size", () => {
     const { container } = renderTerminalDialog();
-    expect(screen.getByRole("img", { name: /Streifen FI F1 · Reihe 1/ })).toBeInTheDocument();
-    expect(screen.getByRole("img", { name: /Streifen FI F2 · Reihe 1/ })).toBeInTheDocument();
-    const texts = Array.from(container.querySelectorAll("text.sp-strip-text")).map((node) => node.textContent);
-    expect(texts).toEqual(["F1", "1", "F2", "2"]);
+    expect(screen.getByRole("img", { name: /Streifen X1 · FI F1 · Reihe 1/ })).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: /Streifen X2 · FI F2 · Reihe 1/ })).toBeInTheDocument();
+    expect(previewTexts(container)).toEqual(["X1", "1.1", "X2", "2.1"]);
     // 12 mm feed + 5.2 mm Etagenklemme = 17.2 mm between the end lines, 3 mm lead each side.
     expect(screen.getAllByText(/3 \+ 17,2 \+ 3/)).toHaveLength(2);
-    // "1" on 5.2 mm with the 0.5 mm pad fits at 90 dots → 7.5 mm.
-    expect(screen.getByText(/2 Streifen · 4 Klemmen · 46,4 mm Material · Schriftgröße: 7,5 mm/)).toBeInTheDocument();
-    expect(new Set(previewTextSizes(container))).toEqual(new Set(["18"]));
+    // "1.1" on 5.2 mm with the 0.5 mm pad fits at 36 dots → 3.0 mm, 7.2 px in the preview.
+    expect(screen.getByText(/2 Streifen · 4 Klemmen · 46,4 mm Material · Schriftgröße: 3,0 mm/)).toBeInTheDocument();
+    expect(new Set(previewTextSizes(container))).toEqual(new Set(["7.2"]));
+    // A divider on every boundary: one cut line per strip between X1 and 1.1.
+    expect(container.querySelectorAll("line.sp-strip-cut")).toHaveLength(2);
   });
 
-  it("switches the outgoings to their BMK from the text chips", () => {
-    const { container } = renderTerminalDialog();
-    fireEvent.click(screen.getByRole("radio", { name: "BMK" }));
-    const texts = Array.from(container.querySelectorAll("text.sp-strip-text")).map((node) => node.textContent);
-    expect(texts).toEqual(["F1", "F1.1", "F2", "F2.1"]);
-    expect(screen.getByText(/Schriftgröße: 2,1 mm/)).toBeInTheDocument();
+  it("draws a Block as one 60 mm piece with three rows and short dividers in the cell row", () => {
+    const { container } = renderTerminalDialog({ document: blockBoard(), initialRowIds: ["f1:leiste", "w:block"] });
+    const block = screen.getByRole("img", { name: "Block X2 · Block F1.2 Wallbox Garage, 66 mm" });
+    expect(block).toBeInTheDocument();
+    const rows = Array.from(block.querySelectorAll("text.sp-block-row")).map((node) => node.textContent);
+    expect(rows).toEqual(["Wallbox Garage", "X2"]);
+    const cells = Array.from(block.querySelectorAll("text.sp-block-cell")).map((node) => node.textContent);
+    expect(cells).toEqual(["N", "L1", "L2", "L3", "PE"]);
+    // Four dividers between five cells, crossing only the bottom third of the 26.4 px band.
+    const cuts = Array.from(block.querySelectorAll("line.sp-block-cell-cut"));
+    expect(cuts).toHaveLength(4);
+    expect(Number(cuts[0].getAttribute("y1"))).toBeCloseTo(6 + (26.4 / 3) * 2, 6);
+    expect(Number(cuts[0].getAttribute("y2"))).toBeCloseTo(6 + 26.4, 6);
+    // The Leiste before it is X1 with one Etagenklemme; the Block is listed as such.
+    expect(screen.getByText("Block · 60 mm")).toBeInTheDocument();
+    // (3 + 17.2 + 3) + (3 + 60 + 3) mm of strip.
+    expect(screen.getByText(/2 Streifen · 7 Klemmen · 89,2 mm Material/)).toBeInTheDocument();
+    expect(container.querySelectorAll("text.sp-strip-text")).toHaveLength(2 + 7);
   });
 
-  it("prints the selected groups with the terminal target and text mode", () => {
+  it("prints the ticked strips with the terminal target — no text mode", () => {
     const { onPrint } = renderTerminalDialog();
-    fireEvent.click(screen.getByRole("checkbox", { name: "FI F1 · Reihe 1 drucken" }));
-    fireEvent.click(screen.getByRole("radio", { name: "BMK" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "X1 · FI F1 · Reihe 1 drucken" }));
     fireEvent.click(screen.getByRole("button", { name: "Drucken" }));
-    expect(onPrint).toHaveBeenCalledWith(["f2"], "wago-2009-110", { target: "reihenklemmen", terminalText: "bmk" });
+    expect(onPrint).toHaveBeenCalledWith(["f2:leiste"], "wago-2009-110", { target: "reihenklemmen" });
   });
 
-  it("shows group metadata: terminals, unlabelled ones and the strip length", () => {
-    const document = terminalBoard();
-    document.rows[0].devices[1] = { ...document.rows[0].devices[1], circuit: "" };
-    renderTerminalDialog({ document });
-    const row = screen.getByRole("checkbox", { name: "FI F1 · Reihe 1 drucken" }).closest("li");
+  it("shows strip metadata: terminals, unlabelled ones and the strip length", () => {
+    renderTerminalDialog({ document: { ...terminalBoard(), terminal_labels: { "a:1": "" } } });
+    const row = screen.getByRole("checkbox", { name: "X1 · FI F1 · Reihe 1 drucken" }).closest("li");
     expect(within(row as HTMLElement).getByText(/3 Klemmen/)).toBeInTheDocument();
     expect(within(row as HTMLElement).getByText(/1 ohne Beschriftung/)).toBeInTheDocument();
     expect(within(row as HTMLElement).getByText(/12 mm/)).toBeInTheDocument();
   });
 
-  it("prints the single 3-pole group without a width warning now that every part is confirmed", () => {
-    const document = {
-      ...emptyDocument(),
-      rows: [
-        {
-          id: "r1",
-          label: "Reihe 1",
-          slots: 12,
-          devices: [
-            makeDevice("rcd", { id: "f1", designation: "F1" }),
-            makeDevice("wallbox", { id: "w", designation: "F1.1", circuit: "1", terminal_block: true }),
-          ],
-        },
-      ],
-    };
-    renderTerminalDialog({ document, initialRowIds: ["f1"] });
+  it("offers one input per marker under the preview, labelled by strip, position, part and device", () => {
+    const { onEditTerminalLabel } = renderTerminalDialog();
+    const feed = screen.getByLabelText("X1 · Pos. 1 · 2016-7714 · FI F1");
+    const first = screen.getByLabelText("X1 · Pos. 2 · 2003-7641 · F1.1 Licht Flur");
+    expect(feed).toHaveValue("X1");
+    expect(first).toHaveValue("1.1");
+    expect(first).toHaveAttribute("placeholder", "1.1");
+    // The end clamp carries no marker and gets no input.
+    expect(screen.queryByLabelText(/2009-305/)).toBeNull();
+    fireEvent.change(first, { target: { value: "7" } });
+    expect(onEditTerminalLabel).toHaveBeenCalledWith("a:1", "7");
+    // Without an override there is nothing to reset.
+    expect(screen.getByRole("button", { name: "X1 · Pos. 2 · 2003-7641 · F1.1 Licht Flur zurücksetzen" })).toBeDisabled();
+  });
+
+  it("shows the override in the input and the preview, and Zurücksetzen removes it", () => {
+    const document = { ...terminalBoard(), terminal_labels: { "a:1": "7 ", "f2:feed": "" } };
+    const { onEditTerminalLabel, container } = renderTerminalDialog({ document });
+    const first = screen.getByLabelText("X1 · Pos. 2 · 2003-7641 · F1.1 Licht Flur");
+    // The raw override, untrimmed, so a space being typed is not eaten; the preview shows the trimmed marker.
+    expect(first).toHaveValue("7 ");
+    expect(previewTexts(container)).toEqual(["X1", "7", "2.1"]);
+    // A blank override: empty input, the default as placeholder, the marker skipped and counted.
+    const feed2 = screen.getByLabelText("X2 · Pos. 1 · 2016-7714 · FI F2");
+    expect(feed2).toHaveValue("");
+    expect(feed2).toHaveAttribute("placeholder", "X2");
+    expect(screen.getByText(/1 ohne Beschriftung$/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "X1 · Pos. 2 · 2003-7641 · F1.1 Licht Flur zurücksetzen" }));
+    expect(onEditTerminalLabel).toHaveBeenCalledWith("a:1", null);
+  });
+
+  it("gives a Block its Name and X inputs plus its five cells", () => {
+    const { onEditTerminalLabel } = renderTerminalDialog({
+      document: blockBoard({ "w:name": "PV Block" }),
+      initialRowIds: ["w:block"],
+    });
+    const name = screen.getByLabelText("X2 · Name");
+    expect(name).toHaveValue("PV Block");
+    expect(name).toHaveAttribute("placeholder", "Wallbox Garage");
+    expect(screen.getByLabelText("X2 · X")).toHaveValue("X2");
+    expect(screen.getByLabelText("X2 · Pos. 1 · 2016-7604 · N · F1.2 Wallbox Garage")).toHaveValue("N");
+    expect(screen.getByLabelText("X2 · Pos. 5 · 2016-7607 · PE · F1.2 Wallbox Garage")).toHaveValue("PE");
+    // Only the ticked strip is listed: the Leiste's markers are not offered.
+    expect(screen.queryByLabelText(/2003-7641/)).toBeNull();
+    fireEvent.change(screen.getByLabelText("X2 · X"), { target: { value: "X9" } });
+    expect(onEditTerminalLabel).toHaveBeenCalledWith("w:x", "X9");
+    fireEvent.click(screen.getByRole("button", { name: "X2 · Name zurücksetzen" }));
+    expect(onEditTerminalLabel).toHaveBeenCalledWith("w:name", null);
+  });
+
+  it("keeps the editing list read-only without write access, and hides it without a handler", () => {
+    renderTerminalDialog({ readOnly: true });
+    expect(screen.getByLabelText("X1 · Pos. 1 · 2016-7714 · FI F1")).toBeDisabled();
+    expect(screen.getByRole("button", { name: /FI F1 zurücksetzen$/ })).toBeDisabled();
+    cleanup();
+    renderTerminalDialog({ onEditTerminalLabel: undefined });
+    expect(screen.queryByRole("region", { name: "Beschriftung" })).toBeNull();
+  });
+
+  it("prints the Block without a width warning now that every part is confirmed", () => {
+    renderTerminalDialog({ document: blockBoard(), initialRowIds: ["w:block"] });
     expect(screen.queryByText(/Breite nicht bestätigt/)).not.toBeInTheDocument();
   });
 
-  it("disables Drucken when no group has a text in the chosen mode", () => {
-    const document = terminalBoard();
-    document.rows[0].devices = document.rows[0].devices.map((device) => ({ ...device, designation: "", circuit: "" }));
+  it("disables Drucken when no ticked strip has a text", () => {
+    const document = { ...terminalBoard(), terminal_labels: { "f1:feed": "", "a:1": "", "f2:feed": "", "b:1": "" } };
     renderTerminalDialog({ document });
     expect(screen.getByRole("button", { name: "Drucken" })).toBeDisabled();
+    expect(screen.getByText("Nichts zu drucken · 4 ohne Beschriftung")).toBeInTheDocument();
   });
 
   it("shows the empty state on a board without terminals", () => {
@@ -399,12 +481,13 @@ describe("LabelPrintDialog — Reihenklemmen", () => {
 
   // The Reihenklemmen twin of "disables Drucken with nothing selected": an
   // empty selection used to preview and print EVERY group.
-  it("disables Drucken with no group ticked — nothing is nothing, not every group", () => {
+  it("disables Drucken with no strip ticked — nothing is nothing, not every strip", () => {
     const { onPrint } = renderTerminalDialog({ initialRowIds: [] });
     const print = screen.getByRole("button", { name: "Drucken" });
     expect(print).toBeDisabled();
     expect(screen.queryByRole("img", { name: /Streifen/ })).toBeNull();
-    expect(screen.getByText("Keine FI-Gruppe ausgewählt.")).toBeInTheDocument();
+    expect(screen.getByText("Keine Klemmenleiste ausgewählt.")).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Beschriftung" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Alle" }));
     expect(print).toBeEnabled();
     expect(screen.getAllByRole("img", { name: /Streifen/ })).toHaveLength(2);
@@ -415,40 +498,13 @@ describe("LabelPrintDialog — Reihenklemmen", () => {
     expect(onPrint).not.toHaveBeenCalled();
   });
 
-  it("counts the terminals of a ticked group that has nothing to print in the chosen mode", () => {
-    const document = {
-      ...emptyDocument(),
-      rows: [
-        {
-          id: "r1",
-          label: "Reihe 1",
-          slots: 12,
-          devices: [
-            makeDevice("rcd", { id: "f1", designation: "F1" }),
-            makeDevice("mcb", { id: "a", designation: "F1.1", circuit: "1", terminal_block: true }),
-            makeDevice("mcb", { id: "b", designation: "F1.2", circuit: "2", terminal_block: true }),
-          ],
-        },
-        {
-          id: "r2",
-          label: "Reihe 2",
-          slots: 12,
-          devices: [
-            makeDevice("hauptschalter", { id: "q1", designation: "Q1" }),
-            makeDevice("mcb", { id: "c", designation: "F0.1", circuit: "", terminal_block: true }),
-            makeDevice("mcb", { id: "d", designation: "F0.2", circuit: "", terminal_block: true }),
-          ],
-        },
-      ],
-    };
-    renderTerminalDialog({ document, initialRowIds: ["f1", "q1"] });
-    // Q1's group has no strip in circuit mode, but its two terminals are still unmarked.
-    expect(screen.getByText(/^1 Streifen · 3 Klemmen · .* · 2 ohne Beschriftung$/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("checkbox", { name: "FI F1 · Reihe 1 drucken" }));
+  it("counts the terminals of a ticked Leiste that has nothing to print", () => {
+    const document = { ...terminalBoard(), terminal_labels: { "f2:feed": "", "b:1": "" } };
+    renderTerminalDialog({ document });
+    // F2's Leiste has no strip, but its two markers are still unmarked.
+    expect(screen.getByText(/^1 Streifen · 2 Klemmen · .* · 2 ohne Beschriftung$/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("checkbox", { name: "X1 · FI F1 · Reihe 1 drucken" }));
     expect(screen.getByText("Nichts zu drucken · 2 ohne Beschriftung")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Drucken" })).toBeDisabled();
-    fireEvent.click(screen.getByRole("radio", { name: "BMK" }));
-    expect(screen.getByText(/^1 Streifen · 2 Klemmen · .* mm$/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Drucken" })).toBeEnabled();
   });
 });

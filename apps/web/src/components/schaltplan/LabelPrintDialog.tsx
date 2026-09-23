@@ -17,9 +17,12 @@
  * blocked: the electrician decides whether to shorten it or live with it.
  *
  * In `mode="reihenklemmen"` the same sheet prints the WAGO terminal markers:
- * the list is the FI groups instead of the rails, the material is the strip
- * only, a chip row picks what each marker says, and the preview comes from
- * `utils/schaltplanTerminals.ts` at the terminals' own pitch and pad.
+ * the list is the terminal strips (X1, X2 …) instead of the rails, the
+ * material is the strip only, the preview comes from
+ * `utils/schaltplanTerminals.ts` at the terminals' own pitch and pad, and
+ * an editing list under it lets every marker text be overridden in the
+ * document — the printer reads the saved document, so the edits travel
+ * through the page's autosave, not through the print request.
  *
  * Same bottom sheet as the palette and the inspector: it is the reachable
  * third of a phone held in front of an open board.
@@ -27,12 +30,8 @@
 import { useEffect, useMemo, useState } from "react";
 
 import { StripSvg, layoutSegments, previewFontPx } from "./StripSvg";
-import {
-  TERMINAL_MATERIAL,
-  TERMINAL_TEXT_OPTIONS,
-  TerminalGroupList,
-  TerminalPreview,
-} from "./LabelPrintTerminals";
+import { TerminalLabelEditor } from "./LabelPrintTerminalEditor";
+import { TERMINAL_MATERIAL, TerminalPreview, TerminalStripList, boardStrips } from "./LabelPrintTerminals";
 import {
   DEFAULT_LABEL_MATERIAL,
   LABEL_MATERIALS,
@@ -55,7 +54,6 @@ import {
   terminalFontSize,
   terminalStrips,
   unverifiedTerminalParts,
-  type TerminalTextMode,
 } from "../../utils/schaltplanTerminals";
 import type { PrintTarget } from "../../utils/schaltplanApi";
 import type { PanelDocument, PanelRow } from "../../types/schaltplan";
@@ -64,16 +62,19 @@ export type LabelPrintMode = "bmk" | "reihenklemmen";
 
 export interface LabelPrintOptions {
   target: PrintTarget;
-  terminalText: TerminalTextMode;
 }
 
 type Props = {
   open: boolean;
   document: PanelDocument;
-  /** Ticked when the sheet opens: rail ids in BMK mode, FI-group ids in Reihenklemmen mode. */
+  /** Ticked when the sheet opens: rail ids in BMK mode, strip ids in Reihenklemmen mode. */
   initialRowIds: string[];
   busy: boolean;
   mode?: LabelPrintMode;
+  /** Without write access the marker texts are shown but not editable. */
+  readOnly?: boolean;
+  /** Reihenklemmen: one marker override changed — `value` null removes it. Absent = no editing list. */
+  onEditTerminalLabel?: (key: string, value: string | null) => void;
   onPrint: (ids: string[], materialId: string, options: LabelPrintOptions) => void;
   onClose: () => void;
 };
@@ -167,13 +168,22 @@ function Chips<T extends string>({
   );
 }
 
-export function LabelPrintDialog({ open, document, initialRowIds, busy, mode = "bmk", onPrint, onClose }: Props) {
+export function LabelPrintDialog({
+  open,
+  document,
+  initialRowIds,
+  busy,
+  mode = "bmk",
+  readOnly = false,
+  onEditTerminalLabel,
+  onPrint,
+  onClose,
+}: Props) {
   const terminalMode = mode === "reihenklemmen";
   const [materialId, setMaterialId] = useState<LabelMaterialId>(DEFAULT_LABEL_MATERIAL);
-  const [terminalText, setTerminalText] = useState<TerminalTextMode>("circuit");
   const [selectedIds, setSelectedIds] = useState<string[]>(initialRowIds);
 
-  // Re-seed on every open: the toolbar preselects every rail (or group),
+  // Re-seed on every open: the toolbar preselects every rail (or strip),
   // the per-rail button just its own, and a selection left over from the
   // last print would quietly print the wrong rails. Keyed on the ids, not
   // the array, so a parent re-render with a fresh array does not undo a tick.
@@ -189,15 +199,12 @@ export function LabelPrintDialog({ open, document, initialRowIds, busy, mode = "
   const board = useMemo(() => boardFontSize(document, STRIP_HEIGHT_MM), [document]);
 
   const groups = useMemo(() => (terminalMode ? deriveTerminals(document) : []), [document, terminalMode]);
-  // Exactly the ticked groups: an empty selection is an empty preview and a
-  // disabled Drucken, never "every group" — the server reads [] the same way.
-  const selection = useMemo(
-    () => terminalStrips(groups, terminalText, selectedIds),
-    [groups, terminalText, selectedIds],
-  );
+  // Exactly the ticked strips: an empty selection is an empty preview and a
+  // disabled Drucken, never "every strip" — the server reads [] the same way.
+  const selection = useMemo(() => terminalStrips(groups, selectedIds), [groups, selectedIds]);
   const selectedStrips = selection.strips;
-  // Fitted over every group of the board in this text mode, not the ticked ones.
-  const terminalBoard = useMemo(() => terminalFontSize(groups, terminalText, STRIP_HEIGHT_MM), [groups, terminalText]);
+  // Fitted over every Leiste of the board, not the ticked ones.
+  const terminalBoard = useMemo(() => terminalFontSize(groups, STRIP_HEIGHT_MM), [groups]);
   const unverified = useMemo(() => unverifiedTerminalParts(groups), [groups]);
 
   if (!open) return null;
@@ -215,16 +222,13 @@ export function LabelPrintDialog({ open, document, initialRowIds, busy, mode = "
   const toggle = (id: string) =>
     setSelectedIds((current) => (current.includes(id) ? current.filter((entry) => entry !== id) : [...current, id]));
   const toggleAllRows = () => setSelectedIds(allSelected ? [] : rows.map((row) => row.id));
-  const toggleAllGroups = () => {
-    const every = groups.every((group) => selectedIds.includes(group.groupId));
-    setSelectedIds(every ? [] : groups.map((group) => group.groupId));
+  const toggleAllStrips = () => {
+    const stripIds = boardStrips(groups).map((entry) => entry.stripId);
+    const every = stripIds.every((id) => selectedIds.includes(id));
+    setSelectedIds(every ? [] : stripIds);
   };
 
-  const print = () =>
-    onPrint(selectedIds, material.id, {
-      target: terminalMode ? "reihenklemmen" : "bmk",
-      terminalText,
-    });
+  const print = () => onPrint(selectedIds, material.id, { target: terminalMode ? "reihenklemmen" : "bmk" });
 
   const title = terminalMode ? "Klemmen-Etiketten drucken" : "BMK-Etiketten drucken";
 
@@ -252,20 +256,12 @@ export function LabelPrintDialog({ open, document, initialRowIds, busy, mode = "
             )}
           </div>
 
-          {terminalMode && (
-            <div className="sp-field">
-              <span className="sp-field-label">Text</span>
-              <Chips name="Text" options={TERMINAL_TEXT_OPTIONS} active={terminalText} onPick={setTerminalText} />
-            </div>
-          )}
-
           {terminalMode ? (
-            <TerminalGroupList
+            <TerminalStripList
               groups={groups}
-              mode={terminalText}
               selectedIds={selectedIds}
               onToggle={toggle}
-              onToggleAll={toggleAllGroups}
+              onToggleAll={toggleAllStrips}
             />
           ) : (
             <div className="sp-field">
@@ -300,13 +296,24 @@ export function LabelPrintDialog({ open, document, initialRowIds, busy, mode = "
           )}
 
           {terminalMode ? (
-            <TerminalPreview
-              strips={selectedStrips}
-              skipped={selection.skipped}
-              board={terminalBoard}
-              fontPx={fontPx}
-              unverified={unverified}
-            />
+            <>
+              <TerminalPreview
+                strips={selectedStrips}
+                skipped={selection.skipped}
+                board={terminalBoard}
+                fontPx={fontPx}
+                unverified={unverified}
+              />
+              {onEditTerminalLabel && (
+                <TerminalLabelEditor
+                  groups={groups}
+                  selectedIds={selectedIds}
+                  document={document}
+                  readOnly={readOnly}
+                  onEdit={onEditTerminalLabel}
+                />
+              )}
+            </>
           ) : (
             <section className="sp-label-preview" aria-label="Vorschau">
               <div className="sp-label-rows-head">

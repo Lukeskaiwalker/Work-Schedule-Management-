@@ -749,7 +749,11 @@ def build_legend(document: dict[str, Any]) -> list[dict[str, str]]:
     what it feeds, which room, how it is protected, what cable runs to it.
     """
 
+    # Local import: the terminal derivation needs build_topology from here.
+    from app.services.schaltplan_terminals import derive_terminals, device_terminal_labels
+
     topology = build_topology(document)
+    terminal_labels = device_terminal_labels(derive_terminals(document))
     rows: list[dict[str, str]] = []
 
     for group in topology["groups"]:
@@ -795,6 +799,8 @@ def build_legend(document: dict[str, Any]) -> list[dict[str, str]]:
                     "group": group_label,
                     "pre_fuse": pre_fuse_label,
                     "note": _text(device.get("note")),
+                    # "X1.1, X1.2" — the Reihenklemmen this circuit ends on.
+                    "terminals": ", ".join(terminal_labels.get(str(device.get("id") or ""), [])),
                 }
             )
 

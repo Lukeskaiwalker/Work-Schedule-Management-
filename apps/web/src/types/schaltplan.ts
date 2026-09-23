@@ -113,6 +113,14 @@ export interface PanelDocument {
   version: number;
   supply: PanelSupply;
   rows: PanelRow[];
+  /**
+   * Reihenklemmen marker texts the user overrode, keyed `"<device id>:<slot>"`
+   * (see `overrideKey` in `utils/schaltplanTerminals.ts`): slot `feed` for the
+   * FI's feed terminal, `1`/`2` for an outgoing's Etagenklemmen, `N`/`L1`…/`PE`
+   * for a Block's cells, `name`/`x` for the Block's two text rows. A blank
+   * value means "no text". Absent on every document written before 2026-09-23.
+   */
+  terminal_labels?: Record<string, string>;
 }
 
 export interface PanelLegendRow {
@@ -129,6 +137,8 @@ export interface PanelLegendRow {
   /** "F0 35 A" when the circuit's FI has a Vorsicherung, else "—". */
   pre_fuse: string;
   note: string;
+  /** "X1.1, X1.2" — the Reihenklemmen the circuit ends on; "" without one. */
+  terminals: string;
 }
 
 export interface PanelFinding {

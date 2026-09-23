@@ -23,6 +23,7 @@ do not (``marker=False``) and therefore never get a segment on the strip.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -166,8 +167,14 @@ END_PART_IDS: frozenset[str] = frozenset({"2009-305"})
 TERMINAL_ELIGIBLE_KINDS: frozenset[str] = frozenset({"mcb", "wallbox", "sub_feed", "pv"})
 
 VARIANT_STANDARD = "standard"
-VARIANT_SINGLE_3P = "single3p"
 VARIANT_NO_RCD = "no_rcd"
+
+# Above this rating a 3-pole outgoing leaves the 2.5 mm² Etagenklemmen and
+# gets the 16 mm² block (owner's rule, 2026-09-23): "the terminals we use
+# for a 3-pole MCB with more than 16 A".
+BLOCK_MIN_AMPS_EXCLUSIVE = 16
+
+_AMPS_RE = re.compile(r"(\d+(?:[.,]\d+)?)")
 
 
 def is_terminal_eligible(device: dict[str, Any]) -> bool:
@@ -193,8 +200,30 @@ def poles_as_derived(poles: int) -> int:
     return 1 if poles <= 2 else 3
 
 
-def outgoing_part_for_poles(poles: int) -> str:
-    return "2003-7641" if poles_as_derived(poles) == 1 else "2003-7642"
+def outgoing_parts_for_poles(poles: int) -> tuple[str, ...]:
+    """The Etagenklemmen an outgoing needs: N/L/PE for one phase; for three
+    phases the N/L/PE terminal plus the L/L terminal carrying L2 and L3 —
+    two terminals, two markers."""
+    return ("2003-7641",) if poles_as_derived(poles) == 1 else ("2003-7641", "2003-7642")
+
+
+def rating_amps(rating: Any) -> float | None:
+    """The ampere figure in a rating as the office writes it — "B16", "C 32A",
+    "16 A", "63" — or None when there is no number in it."""
+    match = _AMPS_RE.search(str(rating or ""))
+    if match is None:
+        return None
+    try:
+        return float(match.group(1).replace(",", "."))
+    except ValueError:
+        return None
+
+
+def is_block_device(device: dict[str, Any]) -> bool:
+    """A 3- or 4-pole outgoing above 16 A ends on the 16 mm² block (N feed,
+    L1–L3, PE) instead of the Etagenklemmen."""
+    amps = rating_amps(device.get("rating"))
+    return device_poles(device) >= 3 and amps is not None and amps > BLOCK_MIN_AMPS_EXCLUSIVE
 
 
 def terminal_children(group: dict[str, Any]) -> list[dict[str, Any]]:
@@ -205,19 +234,18 @@ def terminal_children(group: dict[str, Any]) -> list[dict[str, Any]]:
 def terminal_variant(group: dict[str, Any], children: list[dict[str, Any]]) -> str | None:
     """Which rule a group follows, or None when nothing in it has a terminal.
 
-    ``single3p``: an FI with exactly one 3- or 4-pole outgoing — the 16 mm²
-    feed, one terminal per pole, the 2016 end element. ``standard``: any
-    other FI — N feed, one Etagenklemme per outgoing, the end clamp.
-    ``no_rcd``: a Hauptschalter/SLS/fuse/supply group — the per-device
-    terminals only; there is no FI whose N bus a feed terminal could open.
+    ``standard``: an FI — its Leiste opens with the N feed terminal, then
+    the Etagenklemmen of the small outgoings, then the end clamp; every
+    outgoing above 16 A with three phases gets a 16 mm² block of its own
+    (see ``is_block_device``). ``no_rcd``: a Hauptschalter/SLS/fuse/supply
+    group — the same terminals without a feed; there is no FI whose N bus a
+    feed terminal could open.
     """
     if not children:
         return None
     head = group.get("device")
     if head is None or str(head.get("kind") or "") != "rcd":
         return VARIANT_NO_RCD
-    if len(children) == 1 and device_poles(children[0]) >= 3:
-        return VARIANT_SINGLE_3P
     return VARIANT_STANDARD
 
 
@@ -263,12 +291,11 @@ def terminal_findings(groups: list[dict[str, Any]]) -> list[dict[str, str]]:
                     ),
                 }
             )
-        # The per-pole variant honours every pole; only the Etagenklemmen round.
-        if variant == VARIANT_SINGLE_3P:
-            continue
         for device in children:
             poles = device_poles(device)
-            if poles in (1, 3):
+            # The block honours its poles (N sits on the feed terminal); only
+            # the Etagenklemmen round.
+            if poles in (1, 3) or is_block_device(device):
                 continue
             findings.append(
                 {

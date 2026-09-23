@@ -1,18 +1,17 @@
 """The Reihenklemmen sheet of the Verteilerplan PDF (A4 portrait).
 
-Per FI group a heading ("FI F1 · Reihe 1 · Standard · 30 mA / Typ A") and
-the terminal sequence as Pos. | Klemme | Stromkreis-Nr. | BMK | für, then
-the board's Stückliste (Artikel | Bezeichnung | Anzahl | Breite). This is
-the sheet the workshop builds the terminal row from and orders the parts
-off, so it lists the exact WAGO article numbers the derivation resolved
+Per strip a heading ("X1 · FI F1 · Reihe 1 · Standard · 30 mA / Typ A" for
+a Leiste, "X2 · Block F1.4 Wallbox · Wallbox" for a Block) and the terminal
+sequence as Pos. | Klemme | Beschriftung | für, then the board's Stückliste
+(Artikel | Bezeichnung | Anzahl | Breite). This is the sheet the workshop
+builds the terminal row from and orders the parts off, so it lists the
+exact WAGO article numbers the derivation resolved
 (``services/schaltplan_terminals.py``) — the same sequence the marking
 strip prints — and flags a part whose width could not be confirmed.
 
-The two text columns are the two print modes, nothing else: what the
-marker says with "Stromkreis-Nr." chosen and what it says with "BMK"
-chosen, "—" where that mode prints nothing. A single "Beschriftung" column
-that fell back from one to the other promised a marker the default print
-did not produce. Same columns as the Klemmen tab
+The Beschriftung column is what the marker says — the X numbering with the
+document's overrides applied, "—" where the marker says nothing — never a
+fallback the print would not produce. Same columns as the Klemmen tab
 (``components/schaltplan/TerminalGroupCard.tsx``) — keep the twins alike.
 
 Drawn directly on the canvas like the other sheets; palette and text
@@ -49,35 +48,29 @@ from app.services.schaltplan_terminal_rules import (
     END_PART_IDS,
     FEED_PART_IDS,
     VARIANT_NO_RCD,
-    VARIANT_SINGLE_3P,
     VARIANT_STANDARD,
 )
 from app.services.schaltplan_terminals import (
-    TEXT_MODE_BMK,
-    TEXT_MODE_CIRCUIT,
+    STRIP_KIND_BLOCK,
     terminal_bom,
     terminal_counts,
-    terminal_group_title,
-    terminal_text,
     unverified_terminal_parts,
 )
 
 VARIANT_LABELS: dict[str, str] = {
     VARIANT_STANDARD: "Standard",
-    VARIANT_SINGLE_3P: "Einzel-Drehstromabgang",
     VARIANT_NO_RCD: "ohne FI",
 }
 
-# (key, title, width in points); both tables are 508 pt wide. The two text
-# columns are the two print modes — see the module docstring.
+# (key, title, width in points); both tables are 508 pt wide. The text
+# column is what the marker says — the X numbering, overrides applied.
 _COLUMNS: list[tuple[str, str, float]] = [
     ("position", "Pos.", 30),
     ("part", "Klemme", 150),
-    ("circuit", "Stromkreis-Nr.", 64),
-    ("bmk", "BMK", 64),
-    ("for", "für", 200),
+    ("label", "Beschriftung", 90),
+    ("for", "für", 238),
 ]
-_TEXT_KEYS = frozenset({"circuit", "bmk"})
+_TEXT_KEYS = frozenset({"label"})
 _BOM_COLUMNS: list[tuple[str, str, float]] = [
     ("part_no", "Artikel", 100),
     ("name", "Bezeichnung", 308),
@@ -100,11 +93,6 @@ def _rcd_detail(head: dict[str, Any] | None) -> str:
     return parts[0] if parts else ""
 
 
-def _mode_text(terminal: dict[str, Any], mode: str) -> str:
-    """What the marker says in that print mode — "—" where the mode prints nothing, no fallback."""
-    return terminal_text(terminal, mode) or "—"
-
-
 def _for_text(terminal: dict[str, Any], device_by_id: dict[str, dict[str, Any]], head: dict[str, Any] | None) -> str:
     part_id = str(terminal["part_id"])
     if part_id in END_PART_IDS:
@@ -120,12 +108,17 @@ def _for_text(terminal: dict[str, Any], device_by_id: dict[str, dict[str, Any]],
     return " · ".join(p for p in parts if p) or "—"
 
 
-def _group_heading_text(group: dict[str, Any]) -> str:
-    parts = [
-        terminal_group_title(group),
-        VARIANT_LABELS.get(str(group.get("variant") or ""), ""),
-        _rcd_detail(group.get("head_device")),
-    ]
+def _strip_heading_text(group: dict[str, Any], strip: dict[str, Any]) -> str:
+    """"X1 · FI F1 · Reihe 1 · Standard · 30 mA / Typ A" for a Leiste,
+    "X2 · Block F1.4 Wallbox · Wallbox" for a Block."""
+    if strip["kind"] == STRIP_KIND_BLOCK:
+        parts = [str(strip["title"]), str(strip.get("name") or "")]
+    else:
+        parts = [
+            str(strip["title"]),
+            VARIANT_LABELS.get(str(group.get("variant") or ""), ""),
+            _rcd_detail(group.get("head_device")),
+        ]
     return " · ".join(p for p in parts if p)
 
 
@@ -135,14 +128,13 @@ def row_values(
     """One terminal as the sheet's cells, keyed like ``_COLUMNS``.
 
     Public so the test can pin the columns without parsing content streams:
-    the Stromkreis-Nr. and BMK cells are exactly ``terminal_text`` in that
-    mode, never one filled in from the other.
+    the Beschriftung cell is exactly the terminal's ``label`` (overrides
+    applied), "—" where the marker says nothing.
     """
     return {
         "position": str(terminal["position"]),
         "part": str(terminal["part_no"]),
-        "circuit": _mode_text(terminal, TEXT_MODE_CIRCUIT),
-        "bmk": _mode_text(terminal, TEXT_MODE_BMK),
+        "label": str(terminal.get("label") or "") or "—",
         "for": _for_text(terminal, device_by_id, head),
     }
 
@@ -258,15 +250,15 @@ def draw_terminal_sheets(
         c.showPage()
         return
 
-    for group in groups:
+    for group, strip in ((group, strip) for group in groups for strip in group["strips"]):
         # Keep the heading with at least its header row and two terminals.
         y = ensure_room(y, 20 + 16 + 2 * _ROW_H)
         c.setFillColor(INK)
         c.setFont(FONT_BOLD, 9)
-        c.drawString(x0, y, wrap(_group_heading_text(group), FONT_BOLD, 9, total, 1)[0])
+        c.drawString(x0, y, wrap(_strip_heading_text(group, strip), FONT_BOLD, 9, total, 1)[0])
         y -= 14
         y = _table_header(c, x0, y, _COLUMNS)
-        for index, terminal in enumerate(group["terminals"]):
+        for index, terminal in enumerate(strip["terminals"]):
             if y - _ROW_H < _FOOT_Y:
                 c.showPage()
                 y = start_page()

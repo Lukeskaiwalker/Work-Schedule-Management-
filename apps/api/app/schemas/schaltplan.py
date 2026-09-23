@@ -27,6 +27,7 @@ SupplySystem = Literal["TN-S", "TN-C-S", "TT", "IT"]
 PhaseLabel = Literal["L1", "L2", "L3", "L1-L3", "L1/N", "N", "-"]
 
 MAX_ROWS = 60
+MAX_TERMINAL_OVERRIDES = 2000
 MAX_DEVICES_PER_ROW = 96
 
 
@@ -91,6 +92,17 @@ class PanelDocument(BaseModel):
     version: int = 1
     supply: PanelSupply = Field(default_factory=PanelSupply)
     rows: list[PanelRow] = Field(default_factory=list, max_length=MAX_ROWS)
+    # Marker-text overrides for the Reihenklemmen, "<device id>:<slot>" →
+    # text (see services/schaltplan_terminals.override_key). A blank text
+    # is "print nothing here"; a missing key is the derived default.
+    terminal_labels: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("terminal_labels")
+    @classmethod
+    def _bounded_overrides(cls, labels: dict[str, str]) -> dict[str, str]:
+        if len(labels) > MAX_TERMINAL_OVERRIDES:
+            raise ValueError("Zu viele Klemmenbeschriftungen")
+        return {str(key)[:80]: str(value)[:40] for key, value in labels.items()}
 
     @field_validator("rows")
     @classmethod
@@ -240,7 +252,6 @@ class DeviceCatalogEntry(BaseModel):
 
 
 PrintTarget = Literal["bmk", "reihenklemmen"]
-TerminalTextMode = Literal["bmk", "circuit"]
 
 
 class PanelLabelsPrintRequest(BaseModel):
@@ -252,19 +263,18 @@ class PanelLabelsPrintRequest(BaseModel):
     ``row_id`` is the pre-v2.15 single-rail form, still honoured.
 
     ``target="reihenklemmen"`` prints the WAGO terminal markers instead: one
-    strip per FI group (``group_ids`` absent or null = every group; an
-    explicit empty list = no group, refused with a 400, because the sheet
-    sends exactly the ticked groups), each marker saying the Stromkreis-Nr.
-    by default or the BMK on request (``terminal_text``). Continuous stock
-    only — a 5.2 mm terminal has no room for a 6 × 15 mm label.
+    piece per strip — a Leiste (X1, 1.1, 1.2 …) or a Block label (name, X,
+    N L1 L2 L3 PE) — ``strip_ids`` absent or null = every strip; an explicit
+    empty list = no strip, refused with a 400, because the sheet sends
+    exactly the ticked strips. Continuous stock only — a 5.2 mm terminal has
+    no room for a 6 × 15 mm label.
     """
 
     row_ids: list[str] | None = Field(default=None, max_length=64)
     row_id: str | None = None
     material_id: str | None = Field(default=None, max_length=64)
     target: PrintTarget = "bmk"
-    group_ids: list[str] | None = Field(default=None, max_length=256)
-    terminal_text: TerminalTextMode = "circuit"
+    strip_ids: list[str] | None = Field(default=None, max_length=256)
 
 
 class PanelTypeLabelInfoOut(BaseModel):

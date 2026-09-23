@@ -43,6 +43,7 @@ import io
 import logging
 import socket
 import zlib
+from typing import Any
 from dataclasses import dataclass
 from itertools import combinations
 from functools import lru_cache
@@ -710,12 +711,81 @@ def _render_rail_strip(
     return _sheet(profile, lines, length_mm=(w_px + frame.x_offset_px) / _DOTS_PER_MM)
 
 
+# ── Block label (the owner's "PV Block" blueprint on the 2009-110) ──────────
+#
+# One piece the width of a 16 mm² terminal block (5 × 12 mm), three rows on
+# the 11 mm strip: the consumer's name, the X number, one cell per terminal
+# (N L1 L2 L3 PE). Rows are the blueprint's thirds; each row's text is
+# centred on its cap band within its third, the cells additionally divided
+# by short marks in the bottom third only, so the two text rows read across
+# the whole block.
+_BLOCK_ROW_SIZE_MAX = 34
+_BLOCK_ROW_SIZE_MIN = 18
+_BLOCK_ROWS = 3
+TERMINAL_BLOCK_PAD_DOTS = 6
+
+
+def _vline(frame: _Frame, reading_x: int, reading_y0: int, reading_y1: int, *, half: int) -> str:
+    """A vertical mark between two reading-frame heights at reading x."""
+    return f"Lo,{frame.xm(reading_y1)},{frame.ym(reading_x) - half},{frame.xm(reading_y0)},{frame.ym(reading_x) + half}"
+
+
+def _fit_strip_text(text: str, budget_px: float, size_max: int, size_min: int) -> int:
+    em = text_width_em(text) or 0.6
+    return max(size_min, min(size_max, int(budget_px / em)))
+
+
+def _row_top(row: int, row_h: int, size: int) -> int:
+    """Reading-frame top edge that centres the cap band in the row's band."""
+    return max(0, int(round(row * row_h + row_h / 2 - size * (CAP_TOP_RATIO + CAP_HEIGHT_RATIO / 2))))
+
+
+def _render_block_label(
+    profile: MaterialProfile, *, name: str, x_label: str, cells: list[tuple[str, float]]
+) -> list[str]:
+    """The block label: end marks, three rows, cell marks in the bottom row."""
+    if not cells:
+        raise ValueError("a block needs at least one cell")
+    h_px = _mm(profile.width_mm) * _DOTS_PER_MM
+    lead_px = _STRIP_LEAD_MM * _DOTS_PER_MM
+    total_mm = sum(width for _, width in cells)
+    body_px = int(round(total_mm * _DOTS_PER_MM))
+    w_px = lead_px + body_px + lead_px
+    frame = _frame(profile, w_px=w_px)
+    row_h = h_px // _BLOCK_ROWS
+    budget = body_px - 2 * _STRIP_TEXT_GUARD - 2 * TERMINAL_BLOCK_PAD_DOTS
+
+    lines: list[str] = [_solid(frame, lead_px, half=_STRIP_END_LINE)]
+    for row, text in enumerate((name, x_label)):
+        text = _clean(text, 40)
+        if not text:
+            continue
+        size = _fit_strip_text(text, budget, _BLOCK_ROW_SIZE_MAX, _BLOCK_ROW_SIZE_MIN)
+        left = int(round(lead_px + (body_px - _strip_text_w(text, size)) / 2))
+        lines.append(_at(frame, left, _row_top(row, row_h, size), size, text))
+    cursor = float(lead_px)
+    cell_row_y0 = 2 * row_h
+    for index, (text, width_mm) in enumerate(cells):
+        cell_w = width_mm * _DOTS_PER_MM
+        text = _clean(text, 12)
+        if text:
+            size = _fit_strip_text(text, cell_w - 2 * TERMINAL_BLOCK_PAD_DOTS, _BLOCK_ROW_SIZE_MAX, _BLOCK_ROW_SIZE_MIN)
+            left = max(int(cursor) + _STRIP_TEXT_GUARD, int(round(cursor + (cell_w - _strip_text_w(text, size)) / 2)))
+            lines.append(_at(frame, left, _row_top(2, row_h, size), size, text))
+        cursor += cell_w
+        if index < len(cells) - 1:
+            lines.append(_vline(frame, int(round(cursor)), cell_row_y0, h_px, half=_STRIP_LINE))
+    lines.append(_solid(frame, int(round(cursor)), half=_STRIP_END_LINE))
+    return _sheet(profile, lines, length_mm=(w_px + frame.x_offset_px) / _DOTS_PER_MM)
+
+
 def print_marking_strips(
     db: Session,
     *,
     strips: list[list[tuple[str, float]]],
     material_id: str = MARKING_STRIP_MATERIAL_ID,
     size: int,
+    blocks: list[dict[str, Any]] | None = None,
 ) -> tuple[int, str]:
     """Print the BMK of rails, in ONE connection, on the named material.
 
@@ -741,6 +811,15 @@ def print_marking_strips(
             jobs.append(_render_rail_strip(profile, labelled, size=size))
         else:
             jobs.extend(_render_mini(profile, text) for text, _ in labelled)
+    # The terminal Block labels — continuous stock only, after the strips.
+    for block in blocks or []:
+        if not profile.continuous:
+            raise LabelFormatUnsupported("Klemmenblock-Etiketten werden nur auf Endlosstreifen gedruckt.")
+        cells = [(str(text), float(width)) for text, width in block.get("cells") or []]
+        if not cells:
+            continue
+        printed += len(cells)
+        jobs.append(_render_block_label(profile, name=str(block.get("name") or ""), x_label=str(block.get("x_label") or ""), cells=cells))
     if not jobs:
         raise ValueError("nothing to print")
     payload = b"".join(("\r\n".join(job) + "\r\n").encode(_ENCODING) for job in jobs)

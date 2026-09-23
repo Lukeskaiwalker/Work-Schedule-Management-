@@ -57,6 +57,35 @@ describe("schaltplan topology — explicit parent placed after its child", () =>
     expect(() => validateDocument(document)).not.toThrow();
   });
 
+  it("the legend names the Reihenklemmen a circuit ends on, and nothing without one", () => {
+    const document: PanelDocument = {
+      ...emptyDocument(),
+      rows: [
+        {
+          id: "r1",
+          label: "Reihe 1",
+          slots: 12,
+          devices: [
+            makeDevice("rcd", { id: "f1", designation: "F1" }),
+            makeDevice("mcb", { id: "c1", designation: "F1.1", circuit: "1", rating: "B16", terminal_block: true }),
+            makeDevice("mcb", { id: "c2", designation: "F1.2", circuit: "2", rating: "B16", poles: 3, terminal_block: true }),
+            makeDevice("wallbox", { id: "w", designation: "F1.3", circuit: "3", rating: "B32", terminal_block: true }),
+            makeDevice("mcb", { id: "c4", designation: "F1.4", circuit: "4" }),
+          ],
+        },
+      ],
+      terminal_labels: { "c1:1": "7" },
+    };
+    const rows = buildLegend(document);
+    // An override is printed as typed, so the legend says "X7", not "X1.7".
+    expect(rows.map((row) => [row.circuit, row.terminals])).toEqual([
+      ["1", "X7"],
+      ["2", "X1.2, X1.3"],
+      ["3", "X2"],
+      ["4", ""],
+    ]);
+  });
+
   it("still degrades a genuinely missing parent to the supply group", () => {
     const document = documentWithParentAfterChild();
     document.rows[0].devices[0] = makeDevice("rcbo", { id: "c1", circuit: "1", parent_id: "ghost" });

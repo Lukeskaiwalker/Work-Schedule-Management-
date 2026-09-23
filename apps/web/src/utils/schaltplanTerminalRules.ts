@@ -18,9 +18,10 @@
  *
  * Marking. All seven parts are TOPJOB S; their marker is the 2009-110 strip
  * (11 mm, continuous, snapped into the terminal's marker slot) — the same
- * stock the BMK strip uses, so one strip is printed per FI group and slid
- * along the row. Feed and Etagenklemmen carry a marker; the two end elements
- * do not (`marker: false`) and therefore never get a segment on the strip.
+ * stock the BMK strip uses, so one strip is printed per Leiste and slid
+ * along the row, and one 60 mm piece per 16 mm² Block. Feed and
+ * Etagenklemmen carry a marker; the end clamp does not (`marker: false`)
+ * and therefore never gets a segment on the strip.
  */
 import { catalogEntry } from "./schaltplanDevices";
 import type { DeviceKind, PanelDevice, PanelFinding, PanelGroup } from "../types/schaltplan";
@@ -56,7 +57,7 @@ export const TERMINAL_PARTS: Readonly<Record<TerminalPartId, TerminalPart>> = {
     id: "2003-7641",
     partNo: "WAGO 2003-7641",
     name: "Installations-Etagenklemme NT/L/PE, 2,5 mm²",
-    role: "je 1-poliger Abgang",
+    role: "je Abgang (erste Etagenklemme)",
     // Klemmbreite 5,2 mm (BAUHAUS datasheet copy; wago.com/us/…/p/2003-7641
     // names it "Multilevel installation terminal block; NT/L/PE" but keeps
     // the width in the download section).
@@ -69,10 +70,11 @@ export const TERMINAL_PARTS: Readonly<Record<TerminalPartId, TerminalPart>> = {
     id: "2003-7642",
     partNo: "WAGO 2003-7642",
     // The datasheet says L/L — two potentials on three levels — not
-    // "3-polig". The owner picked the part for the 3-pole outgoing; the name
-    // follows WAGO so nobody orders the wrong thing off the Stückliste.
+    // "3-polig". The owner picked the part for L2 and L3 of a three-phase
+    // outgoing; the name follows WAGO so nobody orders the wrong thing off
+    // the Stückliste.
     name: "Installations-Etagenklemme L/L, 2,5 mm²",
-    role: "je 3-poliger Abgang",
+    role: "je 3-poliger Abgang (zweite Etagenklemme, L2/L3)",
     // Breite 5,2 mm (elektroland24 datasheet copy; wago.com/us/…/p/2003-7642: L/L).
     widthMm: 5.2,
     marker: true,
@@ -110,7 +112,7 @@ export const TERMINAL_PARTS: Readonly<Record<TerminalPartId, TerminalPart>> = {
     id: "2016-7604",
     partNo: "WAGO 2016-7604",
     name: "N-Verteilereinspeiseklemme, 16 mm², blau (2-Leiter)",
-    role: "Einspeisung bei einzelnem Drehstromabgang",
+    role: "N des 16-mm²-Blocks",
     // Breite 12 mm (elektroland24; wago.com/us/…/p/2016-7604: blue, 16 mm²,
     // "side and center marking").
     widthMm: 12,
@@ -122,7 +124,7 @@ export const TERMINAL_PARTS: Readonly<Record<TerminalPartId, TerminalPart>> = {
     id: "2016-7601",
     partNo: "WAGO 2016-7601",
     name: "Verteilereinspeiseklemme, 16 mm², grau (2-Leiter)",
-    role: "je Pol des einzelnen Drehstromabgangs",
+    role: "je Außenleiter des 16-mm²-Blocks",
     // 12 mm (heizung-billiger datasheet copy; wago.com/global/…/p/2016-7601:
     // gray, 16 mm², "side and center marking").
     widthMm: 12,
@@ -134,12 +136,12 @@ export const TERMINAL_PARTS: Readonly<Record<TerminalPartId, TerminalPart>> = {
     id: "2016-7607",
     partNo: "WAGO 2016-7607",
     name: "2-Leiter-Schutzleiterklemme, 16 mm², grün-gelb",
-    role: "PE des einzelnen Drehstromabgangs",
+    role: "PE des 16-mm²-Blocks",
     // Breite 12 mm — wago.com/de/…/p/2016-7607, "Geometrische Daten": 12 mm /
     // 0.472 inch (85,7 mm hoch, 40,8 mm ab Oberkante Tragschiene), read
     // 2026-09-19. The owner confirmed the same day that 7607 is the part on
     // the shelf and that "2016-7606" never existed. It has side and centre
-    // marking, so it gets a 12 mm "PE" segment on the strip.
+    // marking, so it gets a 12 mm "PE" cell on the block label.
     widthMm: 12,
     marker: true,
     verified: true,
@@ -175,6 +177,18 @@ export const TERMINAL_ELIGIBLE_KINDS: ReadonlySet<DeviceKind> = new Set<DeviceKi
   "pv",
 ]);
 
+export type TerminalVariant = "standard" | "no_rcd";
+
+/**
+ * Above this rating a three-phase outgoing leaves the 2.5 mm² Etagenklemmen
+ * and gets the 16 mm² Block (owner's rule, 2026-09-23): "the terminals we
+ * use for a 3-pole MCB with more than 16 A".
+ */
+export const BLOCK_MIN_AMPS_EXCLUSIVE = 16;
+
+/** The first number in a rating, decimal comma or point: "B16" → 16, "C 32A" → 32, "0,5 A" → 0.5. */
+const AMPS_RE = /(\d+(?:[.,]\d+)?)/;
+
 export function isTerminalEligible(device: Pick<PanelDevice, "kind">): boolean {
   return TERMINAL_ELIGIBLE_KINDS.has(device.kind);
 }
@@ -198,8 +212,33 @@ export function polesAsDerived(poles: number): 1 | 3 {
   return poles <= 2 ? 1 : 3;
 }
 
-export function outgoingPartForPoles(poles: number): TerminalPartId {
-  return polesAsDerived(poles) === 1 ? "2003-7641" : "2003-7642";
+/**
+ * The Etagenklemmen an outgoing needs: the N/L/PE terminal for one phase;
+ * for three phases the N/L/PE terminal plus the L/L terminal carrying L2
+ * and L3 — two terminals, two markers.
+ */
+export function outgoingPartsForPoles(poles: number): TerminalPartId[] {
+  return polesAsDerived(poles) === 1 ? ["2003-7641"] : ["2003-7641", "2003-7642"];
+}
+
+/**
+ * The ampere figure in a rating as the office writes it — "B16", "C 32A",
+ * "16 A", "63" — or null when there is no number in it.
+ */
+export function ratingAmps(rating: string | null | undefined): number | null {
+  const match = AMPS_RE.exec(String(rating ?? ""));
+  if (!match) return null;
+  const amps = Number(match[1].replace(",", "."));
+  return Number.isFinite(amps) ? amps : null;
+}
+
+/**
+ * A 3- or 4-pole outgoing above 16 A ends on the 16 mm² Block (N feed,
+ * L1–L3, PE) instead of the Etagenklemmen.
+ */
+export function isBlockDevice(device: Pick<PanelDevice, "poles" | "rating">): boolean {
+  const amps = ratingAmps(device.rating);
+  return devicePoles(device) >= 3 && amps !== null && amps > BLOCK_MIN_AMPS_EXCLUSIVE;
 }
 
 /** The children of a group that end on a terminal, in physical order. */
@@ -207,23 +246,20 @@ export function terminalChildren(group: PanelGroup): PanelDevice[] {
   return group.children.filter(hasTerminal);
 }
 
-export type TerminalVariant = "standard" | "single3p" | "no_rcd";
-
 /**
  * Which rule a group follows, or null when nothing in it has a terminal.
  *
- *  - `single3p`: an FI with exactly one 3- or 4-pole outgoing — the
- *    16 mm² feed, one terminal per pole, the 2016 end element;
- *  - `standard`: any other FI — N feed, one Etagenklemme per outgoing,
- *    the end clamp;
- *  - `no_rcd`: a Hauptschalter/SLS/fuse/supply group — only the per-device
- *    terminals; there is no FI whose N bus a feed terminal could open.
+ *  - `standard`: an FI — its Leiste opens with the N feed terminal, then
+ *    the Etagenklemmen of the small outgoings, then the end clamp; every
+ *    three-phase outgoing above 16 A gets a 16 mm² Block of its own
+ *    (see `isBlockDevice`);
+ *  - `no_rcd`: a Hauptschalter/SLS/fuse/supply group — the same terminals
+ *    without a feed; there is no FI whose N bus a feed terminal could open.
  */
 export function terminalVariant(group: PanelGroup, children: PanelDevice[]): TerminalVariant | null {
   if (children.length === 0) return null;
   const head = group.device;
   if (!head || head.kind !== "rcd") return "no_rcd";
-  if (children.length === 1 && devicePoles(children[0]) >= 3) return "single3p";
   return "standard";
 }
 
@@ -258,11 +294,11 @@ export function terminalFindings(groups: PanelGroup[]): PanelFinding[] {
         message: `Gruppe ${groupHeadLabel(group)}: Abgänge mit Reihenklemme ohne FI — Einspeiseklemme nicht abgeleitet`,
       });
     }
-    // The per-pole variant honours every pole; only the Etagenklemmen round.
-    if (variant === "single3p") continue;
     for (const device of children) {
       const poles = devicePoles(device);
-      if (poles === 1 || poles === 3) continue;
+      // The Block honours its poles (N sits on the feed terminal); only the
+      // Etagenklemmen round.
+      if (poles === 1 || poles === 3 || isBlockDevice(device)) continue;
       findings.push({
         level: "info",
         scope: device.id,

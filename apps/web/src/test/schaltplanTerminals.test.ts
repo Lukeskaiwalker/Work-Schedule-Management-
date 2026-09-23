@@ -1,32 +1,42 @@
 /**
- * Reihenklemmen — the WAGO terminal sequence derived per FI group.
+ * Reihenklemmen — the WAGO terminal strips derived per FI group, with X
+ * numbers.
  *
  * The rule table lives twice: here (live tab and print preview) and in
  * `apps/api/app/services/schaltplan_terminals.py` (print job and PDF).
- * Every fixture below is pinned identically in
- * `apps/api/tests/test_schaltplan_terminals.py`; when one side changes a
- * rule the other test breaks, which is the whole point of the pairing —
- * a preview that shows six terminals and a strip that prints five is a
- * board built wrong.
+ * `schaltplanTerminalFixtures.test.ts` walks the backend's own output; this
+ * file pins the rules one at a time, so a red test says which rule moved —
+ * two Etagenklemmen for three phases, the Block by rating, X numbering
+ * across groups, overrides, the strips a selection prints, the board font
+ * size, the legend labels.
  */
 import { describe, expect, it } from "vitest";
 import { emptyDocument, makeDevice } from "../utils/schaltplanDevices";
 import { fontSizeForSegments } from "../utils/schaltplanStrip";
 import {
+  BLOCK_MIN_AMPS_EXCLUSIVE,
   TERMINAL_PARTS,
+  isBlockDevice,
   isTerminalEligible,
-  outgoingPartForPoles,
+  outgoingPartsForPoles,
+  ratingAmps,
   terminalFindings,
+  terminalVariant,
 } from "../utils/schaltplanTerminalRules";
 import {
   TERMINAL_SEG_PAD_DOTS,
   deriveTerminals,
+  deviceTerminalLabels,
+  labelOverrides,
+  overrideKey,
+  setTerminalLabel,
   terminalBom,
   terminalCounts,
   terminalFontSize,
   terminalGroupTitle,
   terminalStrips,
   unverifiedTerminalParts,
+  type TerminalGroup,
   type TerminalStripSet,
 } from "../utils/schaltplanTerminals";
 import { buildTopology, validateDocument } from "../utils/schaltplanTopology";
@@ -34,10 +44,11 @@ import type { DeviceKind, PanelDevice, PanelDocument, PanelRow } from "../types/
 
 type RowSpec = { id: string; label: string; devices: PanelDevice[] };
 
-function board(rows: RowSpec[]): PanelDocument {
+function board(rows: RowSpec[], labels?: Record<string, string>): PanelDocument {
   return {
     ...emptyDocument(),
     rows: rows.map((row): PanelRow => ({ ...row, slots: 12 })),
+    ...(labels ? { terminal_labels: labels } : {}),
   };
 }
 
@@ -46,33 +57,35 @@ function tb(kind: DeviceKind, overrides: Partial<PanelDevice> = {}): PanelDevice
   return makeDevice(kind, { terminal_block: true, ...overrides });
 }
 
-function standardBoard(): PanelDocument {
-  return board([
-    {
-      id: "r1",
-      label: "Reihe 1",
-      devices: [
-        makeDevice("rcd", { id: "f1", designation: "F1" }),
-        tb("mcb", { id: "f11", designation: "F1.1", circuit: "1" }),
-        tb("mcb", { id: "f12", designation: "F1.2", circuit: "2" }),
-        tb("mcb", { id: "f13", designation: "F1.3", circuit: "3" }),
-        // A wallbox is 3-pole by catalogue.
-        tb("wallbox", { id: "w1", designation: "F1.4", circuit: "4" }),
-        // No terminal on this one: it gets nothing.
-        makeDevice("mcb", { id: "f15", designation: "F1.5", circuit: "5" }),
-      ],
-    },
-  ]);
+/** FI F1: three small outgoings (one of them three-phase), one Wallbox above 16 A, one breaker without a terminal. */
+function standardBoard(labels?: Record<string, string>): PanelDocument {
+  return board(
+    [
+      {
+        id: "r1",
+        label: "Reihe 1",
+        devices: [
+          makeDevice("rcd", { id: "f1", designation: "F1" }),
+          tb("mcb", { id: "f11", designation: "F1.1", circuit: "1", rating: "B16" }),
+          tb("mcb", { id: "f12", designation: "F1.2", circuit: "2", rating: "B16" }),
+          tb("mcb", { id: "f13", designation: "F1.3", circuit: "3", rating: "B16", poles: 3 }),
+          tb("wallbox", { id: "w1", designation: "F1.4", circuit: "4", label: "Wallbox Garage", rating: "B32" }),
+          makeDevice("mcb", { id: "f15", designation: "F1.5", circuit: "5" }),
+        ],
+      },
+    ],
+    labels,
+  );
 }
 
-function single3pBoard(): PanelDocument {
+function blockOnlyBoard(): PanelDocument {
   return board([
     {
       id: "r1",
       label: "Reihe 1",
       devices: [
         makeDevice("rcd", { id: "f2", designation: "F2" }),
-        tb("wallbox", { id: "w2", designation: "F2.1", circuit: "9" }),
+        tb("wallbox", { id: "w2", designation: "F2.1", circuit: "9", label: "Wechselrichter PV", rating: "C32" }),
       ],
     },
   ]);
@@ -85,45 +98,20 @@ function twoRcdBoard(): PanelDocument {
       label: "Reihe 1",
       devices: [
         makeDevice("rcd", { id: "f1", designation: "F1" }),
-        tb("mcb", { id: "a", designation: "F1.1", circuit: "1" }),
+        tb("mcb", { id: "a", designation: "F1.1", circuit: "1", rating: "B16" }),
         makeDevice("rcd", { id: "f2", designation: "F2" }),
-        tb("mcb", { id: "b", designation: "F2.1", circuit: "2" }),
+        tb("mcb", { id: "b", designation: "F2.1", circuit: "2", rating: "B16" }),
       ],
     },
   ]);
 }
 
-/** FI F1 with numbered outgoings, then a Hauptschalter group whose outgoings have no Stromkreis-Nr. yet. */
-function noRcdWithoutNumbersBoard(): PanelDocument {
-  return board([
-    {
-      id: "r1",
-      label: "Reihe 1",
-      devices: [
-        makeDevice("rcd", { id: "f1", designation: "F1" }),
-        tb("mcb", { id: "a", designation: "F1.1", circuit: "1" }),
-        tb("mcb", { id: "b", designation: "F1.2", circuit: "2" }),
-      ],
-    },
-    {
-      id: "r2",
-      label: "Reihe 2",
-      devices: [
-        makeDevice("hauptschalter", { id: "q1", designation: "Q1" }),
-        tb("mcb", { id: "c", designation: "F0.1", circuit: "" }),
-        tb("mcb", { id: "d", designation: "F0.2", circuit: "" }),
-      ],
-    },
-  ]);
-}
+const partIds = (groups: readonly TerminalGroup[], index = 0) => groups[index].terminals.map((entry) => entry.partId);
+const labelsOf = (groups: readonly TerminalGroup[], index = 0) => groups[index].terminals.map((entry) => entry.label);
+const stripIds = (set: TerminalStripSet) => set.strips.map((strip) => strip.stripId);
 
-const partIds = (groups: ReturnType<typeof deriveTerminals>, index = 0) =>
-  groups[index].terminals.map((entry) => entry.partId);
-
-const stripIds = (set: TerminalStripSet) => set.strips.map((strip) => strip.groupId);
-
-describe("terminal_block on the device", () => {
-  it("defaults to off — opt-in per device", () => {
+describe("the rules", () => {
+  it("terminal_block defaults to off — opt-in per device", () => {
     expect(makeDevice("mcb").terminal_block).toBe(false);
   });
 
@@ -136,16 +124,52 @@ describe("terminal_block on the device", () => {
     }
   });
 
-  it("maps 1 and 2 poles to the 1-pole Etagenklemme, 3 and 4 to the L/L one", () => {
-    expect(outgoingPartForPoles(1)).toBe("2003-7641");
-    expect(outgoingPartForPoles(2)).toBe("2003-7641");
-    expect(outgoingPartForPoles(3)).toBe("2003-7642");
-    expect(outgoingPartForPoles(4)).toBe("2003-7642");
+  it("gives one phase one Etagenklemme and three phases two — N/L/PE then L/L", () => {
+    expect(outgoingPartsForPoles(1)).toEqual(["2003-7641"]);
+    expect(outgoingPartsForPoles(2)).toEqual(["2003-7641"]);
+    expect(outgoingPartsForPoles(3)).toEqual(["2003-7641", "2003-7642"]);
+    expect(outgoingPartsForPoles(4)).toEqual(["2003-7641", "2003-7642"]);
+  });
+
+  it("reads the amps out of a rating as the office writes it", () => {
+    expect(ratingAmps("B16")).toBe(16);
+    expect(ratingAmps("C 32A")).toBe(32);
+    expect(ratingAmps("16 A")).toBe(16);
+    expect(ratingAmps("63")).toBe(63);
+    expect(ratingAmps("0,5 A")).toBe(0.5);
+    expect(ratingAmps("")).toBeNull();
+    expect(ratingAmps("gG")).toBeNull();
+    expect(ratingAmps(undefined)).toBeNull();
+  });
+
+  it("makes a Block of three phases above 16 A, and of nothing else", () => {
+    expect(BLOCK_MIN_AMPS_EXCLUSIVE).toBe(16);
+    expect(isBlockDevice({ poles: 3, rating: "B32" })).toBe(true);
+    expect(isBlockDevice({ poles: 4, rating: "C 20 A" })).toBe(true);
+    // Exactly 16 A stays on the Etagenklemmen: the rule is "more than".
+    expect(isBlockDevice({ poles: 3, rating: "B16" })).toBe(false);
+    expect(isBlockDevice({ poles: 1, rating: "B32" })).toBe(false);
+    expect(isBlockDevice({ poles: 2, rating: "B32" })).toBe(false);
+    // No number in the rating = not big, whatever the poles.
+    expect(isBlockDevice({ poles: 3, rating: "" })).toBe(false);
+  });
+
+  it("knows only two variants now: an FI, or no FI", () => {
+    const [group] = buildTopology(blockOnlyBoard());
+    expect(terminalVariant(group, group.children)).toBe("standard");
+    expect(terminalVariant(group, [])).toBeNull();
+  });
+
+  it("builds an override key from device id and slot", () => {
+    expect(overrideKey("f1", "feed")).toBe("f1:feed");
+    expect(overrideKey("w1", "L2")).toBe("w1:L2");
+    expect(overrideKey("w1", "name")).toBe("w1:name");
+    expect(overrideKey(null, "x")).toBe(":x");
   });
 });
 
 describe("the part table", () => {
-  it("carries the looked-up widths: 5.2 mm Etagenklemmen, 12 mm feed terminals, 7.5 mm end clamp", () => {
+  it("carries the looked-up widths: 5.2 mm Etagenklemmen, 12 mm 16 mm² terminals, 7.5 mm end clamp", () => {
     expect(TERMINAL_PARTS["2003-7641"].widthMm).toBe(5.2);
     expect(TERMINAL_PARTS["2003-7642"].widthMm).toBe(5.2);
     expect(TERMINAL_PARTS["2016-7714"].widthMm).toBe(12);
@@ -168,16 +192,18 @@ describe("the part table", () => {
   });
 });
 
-describe("deriveTerminals — standard FI group", () => {
-  it("feed terminal, one Etagenklemme per outgoing by poles, end clamp", () => {
+describe("deriveTerminals — the Leiste of an FI group", () => {
+  it("feed terminal, the Etagenklemmen of the small outgoings, end clamp — then a Block per big outgoing", () => {
     const groups = deriveTerminals(standardBoard());
     expect(groups).toHaveLength(1);
     const [group] = groups;
-    expect(group.groupId).toBe("f1");
-    expect(group.variant).toBe("standard");
-    expect(group.railLabel).toBe("Reihe 1");
+    expect(group).toMatchObject({ groupId: "f1", variant: "standard", railLabel: "Reihe 1" });
     expect(group.headDevice?.designation).toBe("F1");
-    expect(partIds(groups)).toEqual([
+    expect(group.strips.map((strip) => [strip.stripId, strip.kind, strip.stripNo])).toEqual([
+      ["f1:leiste", "leiste", 1],
+      ["w1:block", "block", 2],
+    ]);
+    expect(group.strips[0].terminals.map((entry) => entry.partId)).toEqual([
       "2016-7714",
       "2003-7641",
       "2003-7641",
@@ -185,16 +211,24 @@ describe("deriveTerminals — standard FI group", () => {
       "2003-7642",
       "2009-305",
     ]);
-    expect(group.terminals.map((entry) => entry.position)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(group.strips[0].terminals.map((entry) => entry.position)).toEqual([1, 2, 3, 4, 5, 6]);
+    // The group's flat list is every strip's terminals in order.
+    expect(partIds(groups)).toEqual([...group.strips[0].terminals, ...group.strips[1].terminals].map((t) => t.partId));
   });
 
-  it("labels the feed with the FI's BMK and the outgoings with BMK and Stromkreis-Nr.", () => {
+  it("marks the feed X1 and counts the Etagenklemmen 1.1, 1.2 … through the whole Leiste", () => {
     const [group] = deriveTerminals(standardBoard());
-    const [feed, first, , , wallbox, end] = group.terminals;
-    expect(feed).toMatchObject({ deviceId: "f1", labelBmk: "F1", labelCircuit: "F1", pole: null, widthMm: 12 });
-    expect(first).toMatchObject({ deviceId: "f11", labelBmk: "F1.1", labelCircuit: "1", widthMm: 5.2 });
-    expect(wallbox).toMatchObject({ deviceId: "w1", partId: "2003-7642", labelBmk: "F1.4", labelCircuit: "4" });
-    expect(end).toMatchObject({ deviceId: null, labelBmk: "", labelCircuit: "", marker: false });
+    const leiste = group.strips[0];
+    expect(leiste.title).toBe("X1 · FI F1 · Reihe 1");
+    expect(leiste.xLabel).toBe("X1");
+    expect(leiste.terminals.map((entry) => entry.label)).toEqual(["X1", "1.1", "1.2", "1.3", "1.4", ""]);
+    const [feed, first, , third, fourth, end] = leiste.terminals;
+    expect(feed).toMatchObject({ deviceId: "f1", slot: "feed", key: "f1:feed", defaultLabel: "X1", widthMm: 12 });
+    expect(first).toMatchObject({ deviceId: "f11", slot: "1", key: "f11:1", defaultLabel: "1.1", widthMm: 5.2 });
+    // The three-phase breaker owns two consecutive markers.
+    expect(third).toMatchObject({ deviceId: "f13", partId: "2003-7641", slot: "1", key: "f13:1", label: "1.3" });
+    expect(fourth).toMatchObject({ deviceId: "f13", partId: "2003-7642", slot: "2", key: "f13:2", label: "1.4" });
+    expect(end).toMatchObject({ deviceId: null, slot: null, key: "", defaultLabel: "", label: "", marker: false });
   });
 
   it("emits nothing for a group without terminal_block devices", () => {
@@ -207,52 +241,136 @@ describe("deriveTerminals — standard FI group", () => {
     ]);
     expect(deriveTerminals(document)).toEqual([]);
   });
+
+  it("numbers the X across groups: the second FI's Leiste is X2 with markers 2.1 …", () => {
+    const groups = deriveTerminals(twoRcdBoard());
+    expect(groups.map((group) => group.groupId)).toEqual(["f1", "f2"]);
+    expect(groups.map((group) => group.strips[0].title)).toEqual(["X1 · FI F1 · Reihe 1", "X2 · FI F2 · Reihe 1"]);
+    expect(labelsOf(groups, 0)).toEqual(["X1", "1.1", ""]);
+    expect(labelsOf(groups, 1)).toEqual(["X2", "2.1", ""]);
+    expect(partIds(groups, 0)).toEqual(["2016-7714", "2003-7641", "2009-305"]);
+    expect(partIds(groups, 1)).toEqual(["2016-7714", "2003-7641", "2009-305"]);
+  });
 });
 
-describe("deriveTerminals — single 3-pole outgoing under an FI", () => {
-  it("uses the 16 mm² feed, one terminal per pole and the 2016 end element", () => {
-    const groups = deriveTerminals(single3pBoard());
+describe("deriveTerminals — the 16 mm² Block", () => {
+  it("gives a three-phase outgoing above 16 A its own Block: N, L1, L2, L3, PE at 12 mm each", () => {
+    const groups = deriveTerminals(blockOnlyBoard());
     expect(groups).toHaveLength(1);
-    expect(groups[0].variant).toBe("single3p");
-    expect(partIds(groups)).toEqual(["2016-7604", "2016-7601", "2016-7601", "2016-7601", "2016-7607"]);
-    expect(groups[0].terminals.map((entry) => entry.pole)).toEqual([null, "L1", "L2", "L3", "PE"]);
-    expect(groups[0].terminals[1]).toMatchObject({ deviceId: "w2", labelBmk: "L1", labelCircuit: "L1", widthMm: 12 });
+    const [group] = groups;
+    expect(group.variant).toBe("standard");
+    // No small outgoing: no Leiste, the Block is X1.
+    expect(group.strips).toHaveLength(1);
+    const [block] = group.strips;
+    expect(block).toMatchObject({
+      stripId: "w2:block",
+      stripNo: 1,
+      kind: "block",
+      title: "X1 · Block F2.1 Wechselrichter PV",
+      deviceId: "w2",
+      name: "Wechselrichter PV",
+      xLabel: "X1",
+      nameKey: "w2:name",
+      xKey: "w2:x",
+    });
+    expect(block.terminals.map((entry) => entry.partId)).toEqual([
+      "2016-7604",
+      "2016-7601",
+      "2016-7601",
+      "2016-7601",
+      "2016-7607",
+    ]);
+    expect(block.terminals.map((entry) => entry.pole)).toEqual(["N", "L1", "L2", "L3", "PE"]);
+    expect(block.terminals.map((entry) => entry.label)).toEqual(["N", "L1", "L2", "L3", "PE"]);
+    expect(block.terminals.map((entry) => entry.key)).toEqual(["w2:N", "w2:L1", "w2:L2", "w2:L3", "w2:PE"]);
+    expect(block.terminals.every((entry) => entry.deviceId === "w2" && entry.widthMm === 12)).toBe(true);
   });
 
-  it("gives a 4-pole single outgoing four pole terminals, the fourth being N", () => {
+  it("names the Block after the device's description, else its designation", () => {
+    const named = deriveTerminals(blockOnlyBoard())[0].strips[0];
+    expect(named.name).toBe("Wechselrichter PV");
+    const unnamed = board([
+      {
+        id: "r1",
+        label: "Reihe 1",
+        devices: [makeDevice("rcd", { id: "f2", designation: "F2" }), tb("wallbox", { id: "w2", designation: "F2.1", rating: "C32" })],
+      },
+    ]);
+    expect(deriveTerminals(unnamed)[0].strips[0]).toMatchObject({ name: "F2.1", title: "X1 · Block F2.1" });
+  });
+
+  it("is decided per device by rating, not by the FI having one outgoing", () => {
+    // One three-phase outgoing at 16 A used to be the old "single3p" case;
+    // now it stays on the Etagenklemmen like any other small outgoing.
+    const sixteen = board([
+      {
+        id: "r1",
+        label: "Reihe 1",
+        devices: [makeDevice("rcd", { id: "f1", designation: "F1" }), tb("wallbox", { id: "w", designation: "F1.1", rating: "B16" })],
+      },
+    ]);
+    const [group] = deriveTerminals(sixteen);
+    expect(group.strips.map((strip) => strip.kind)).toEqual(["leiste"]);
+    expect(partIds([group])).toEqual(["2016-7714", "2003-7641", "2003-7642", "2009-305"]);
+    expect(labelsOf([group])).toEqual(["X1", "1.1", "1.2", ""]);
+  });
+
+  it("puts a 4-pole Block's N on the feed terminal and reports nothing", () => {
     const document = board([
       {
         id: "r1",
         label: "Reihe 1",
         devices: [
           makeDevice("rcd", { id: "f3", designation: "F3" }),
-          tb("sub_feed", { id: "u1", designation: "F3.1", circuit: "12", poles: 4 }),
+          tb("sub_feed", { id: "u1", designation: "F3.1", circuit: "12", poles: 4, rating: "B40" }),
         ],
       },
     ]);
     const groups = deriveTerminals(document);
-    expect(partIds(groups)).toEqual(["2016-7604", "2016-7601", "2016-7601", "2016-7601", "2016-7601", "2016-7607"]);
-    expect(groups[0].terminals.map((entry) => entry.pole)).toEqual([null, "L1", "L2", "L3", "N", "PE"]);
-    // The per-pole variant honours the poles, so there is nothing to report.
+    expect(partIds(groups)).toEqual(["2016-7604", "2016-7601", "2016-7601", "2016-7601", "2016-7607"]);
     expect(terminalFindings(buildTopology(document))).toEqual([]);
   });
 
-  it("falls back to the standard variant when the single outgoing is 1-pole", () => {
+  it("emits the Leiste first, then the Blocks, even when the big outgoing sits first on the rail", () => {
     const document = board([
       {
         id: "r1",
         label: "Reihe 1",
-        devices: [makeDevice("rcd", { id: "f1", designation: "F1" }), tb("mcb", { id: "a", designation: "F1.1", circuit: "1" })],
+        devices: [
+          makeDevice("rcd", { id: "f1", designation: "F1" }),
+          tb("wallbox", { id: "w", designation: "F1.1", circuit: "1", rating: "B32" }),
+          tb("mcb", { id: "a", designation: "F1.2", circuit: "2", rating: "B16" }),
+        ],
       },
     ]);
-    const groups = deriveTerminals(document);
-    expect(groups[0].variant).toBe("standard");
-    expect(partIds(groups)).toEqual(["2016-7714", "2003-7641", "2009-305"]);
+    const [group] = deriveTerminals(document);
+    expect(group.strips.map((strip) => [strip.stripId, strip.xLabel])).toEqual([
+      ["f1:leiste", "X1"],
+      ["w:block", "X2"],
+    ]);
+  });
+
+  it("goes under a group without an FI too — no feed terminal on the Leiste, the Block unchanged", () => {
+    const document = board([
+      {
+        id: "r1",
+        label: "Reihe 1",
+        devices: [
+          makeDevice("hauptschalter", { id: "q1", designation: "Q1" }),
+          tb("mcb", { id: "a", designation: "F0.1", circuit: "1", rating: "B16" }),
+          tb("wallbox", { id: "w", designation: "F0.2", circuit: "2", rating: "B32" }),
+        ],
+      },
+    ]);
+    const [group] = deriveTerminals(document);
+    expect(group.variant).toBe("no_rcd");
+    expect(group.strips[0].terminals.map((entry) => [entry.partId, entry.label])).toEqual([["2003-7641", "1.1"]]);
+    expect(group.strips[1].terminals.map((entry) => entry.label)).toEqual(["N", "L1", "L2", "L3", "PE"]);
   });
 });
 
 describe("deriveTerminals — group boundaries", () => {
-  it("follows the FI's group across rails: one end element, in physical order", () => {
+  it("follows the FI's group across rails: one end clamp, in physical order", () => {
     const document = board([
       {
         id: "r1",
@@ -273,14 +391,8 @@ describe("deriveTerminals — group boundaries", () => {
     expect(groups).toHaveLength(1);
     expect(groups[0].railLabel).toBe("Reihe 1");
     expect(groups[0].terminals.map((entry) => entry.deviceId)).toEqual(["f1", "a", "b", "c", "d", null]);
+    expect(labelsOf(groups)).toEqual(["X1", "1.1", "1.2", "1.3", "1.4", ""]);
     expect(partIds(groups).filter((id) => id === "2009-305")).toHaveLength(1);
-  });
-
-  it("closes every FI group on its own, even two FIs on one rail", () => {
-    const groups = deriveTerminals(twoRcdBoard());
-    expect(groups.map((group) => group.groupId)).toEqual(["f1", "f2"]);
-    expect(partIds(groups, 0)).toEqual(["2016-7714", "2003-7641", "2009-305"]);
-    expect(partIds(groups, 1)).toEqual(["2016-7714", "2003-7641", "2009-305"]);
   });
 
   it("prints only the per-MCB terminals under a Hauptschalter and reports the missing FI", () => {
@@ -297,9 +409,10 @@ describe("deriveTerminals — group boundaries", () => {
     ]);
     const groups = deriveTerminals(document);
     expect(groups[0].variant).toBe("no_rcd");
+    expect(groups[0].strips[0].title).toBe("X1 · HS Q1 · Reihe 1");
     expect(partIds(groups)).toEqual(["2003-7641", "2003-7641"]);
-    const findings = validateDocument(document);
-    expect(findings).toContainEqual({
+    expect(labelsOf(groups)).toEqual(["1.1", "1.2"]);
+    expect(validateDocument(document)).toContainEqual({
       level: "info",
       scope: "q1",
       message: "Gruppe Q1: Abgänge mit Reihenklemme ohne FI — Einspeiseklemme nicht abgeleitet",
@@ -312,6 +425,7 @@ describe("deriveTerminals — group boundaries", () => {
     ]);
     const groups = deriveTerminals(document);
     expect(groups[0]).toMatchObject({ groupId: "supply", headDevice: null, railLabel: "—", variant: "no_rcd" });
+    expect(groups[0].strips[0]).toMatchObject({ stripId: "supply:leiste", title: "X1 · Einspeisung" });
     expect(terminalGroupTitle(groups[0])).toBe("Einspeisung");
     expect(validateDocument(document)).toContainEqual({
       level: "info",
@@ -358,7 +472,7 @@ describe("deriveTerminals — pole rounding", () => {
     });
   });
 
-  it("treats a 4-pole outgoing in a standard group as 3-pole and says so", () => {
+  it("treats a small 4-pole outgoing as 3-pole — two Etagenklemmen — and says so", () => {
     const document = board([
       {
         id: "r1",
@@ -366,16 +480,68 @@ describe("deriveTerminals — pole rounding", () => {
         devices: [
           makeDevice("rcd", { id: "f1", designation: "F1" }),
           tb("mcb", { id: "a", designation: "F1.1", circuit: "1" }),
-          tb("sub_feed", { id: "u", designation: "F1.2", circuit: "2", poles: 4 }),
+          tb("sub_feed", { id: "u", designation: "F1.2", circuit: "2", poles: 4, rating: "B16" }),
         ],
       },
     ]);
-    expect(partIds(deriveTerminals(document))).toEqual(["2016-7714", "2003-7641", "2003-7642", "2009-305"]);
+    expect(partIds(deriveTerminals(document))).toEqual(["2016-7714", "2003-7641", "2003-7641", "2003-7642", "2009-305"]);
     expect(validateDocument(document)).toContainEqual({
       level: "info",
       scope: "u",
       message: "F1.2: 4-polig — Klemme wie 3-polig abgeleitet",
     });
+  });
+});
+
+describe("overrides from document.terminal_labels", () => {
+  const labels = { "f11:1": "1.9", "f1:feed": "XA", "w1:name": "Wallbox", "w1:x": "X9", "f12:1": "" };
+
+  it("replaces the marker text, keeps the default, and prints nothing for a blank one", () => {
+    const [group] = deriveTerminals(standardBoard(labels));
+    const leiste = group.strips[0];
+    expect(leiste.terminals.map((entry) => [entry.defaultLabel, entry.label])).toEqual([
+      ["X1", "XA"],
+      ["1.1", "1.9"],
+      ["1.2", ""],
+      ["1.3", "1.3"],
+      ["1.4", "1.4"],
+      ["", ""],
+    ]);
+    // The strip's own X number and title never follow an override — the
+    // feed marker did, the board order did not.
+    expect(leiste.xLabel).toBe("X1");
+    expect(leiste.title).toBe("X1 · FI F1 · Reihe 1");
+    const block = group.strips[1];
+    expect(block).toMatchObject({ name: "Wallbox", xLabel: "X9", title: "X2 · Block F1.4 Wallbox Garage" });
+  });
+
+  it("trims an override the way the printer trims a BMK", () => {
+    const [group] = deriveTerminals(standardBoard({ "f11:1": "  7 \u0000", "w1:N": "﻿N1\t" }));
+    expect(group.strips[0].terminals[1].label).toBe("7");
+    expect(group.strips[1].terminals[0].label).toBe("N1");
+  });
+
+  it("reads only a string map; a null value and a non-object are ignored", () => {
+    expect(labelOverrides({ terminal_labels: undefined })).toEqual({});
+    expect(labelOverrides({ terminal_labels: ["x"] as unknown as Record<string, string> })).toEqual({});
+    expect(labelOverrides({ terminal_labels: { a: "1", b: null } as unknown as Record<string, string> })).toEqual({
+      a: "1",
+    });
+  });
+
+  it("setTerminalLabel writes, blanks and removes one key without touching the input", () => {
+    const original = standardBoard();
+    const written = setTerminalLabel(original, "f11:1", "1.9");
+    expect(written.terminal_labels).toEqual({ "f11:1": "1.9" });
+    expect(original.terminal_labels).toBeUndefined();
+    expect(written.rows).toBe(original.rows);
+    const blanked = setTerminalLabel(written, "f12:1", "");
+    expect(blanked.terminal_labels).toEqual({ "f11:1": "1.9", "f12:1": "" });
+    expect(written.terminal_labels).toEqual({ "f11:1": "1.9" });
+    const removed = setTerminalLabel(blanked, "f11:1", null);
+    expect(removed.terminal_labels).toEqual({ "f12:1": "" });
+    // The last override gone, the key leaves the document too.
+    expect(setTerminalLabel(removed, "f12:1", null)).not.toHaveProperty("terminal_labels");
   });
 });
 
@@ -386,6 +552,9 @@ describe("terminalBom / terminalCounts", () => {
       ["2003-7641", 3],
       ["2003-7642", 1],
       ["2009-305", 1],
+      ["2016-7601", 3],
+      ["2016-7604", 1],
+      ["2016-7607", 1],
       ["2016-7714", 1],
     ]);
     expect(bom[0]).toMatchObject({ partNo: "WAGO 2003-7641", widthMm: 5.2, verified: true });
@@ -401,144 +570,131 @@ describe("terminalBom / terminalCounts", () => {
     ]);
   });
 
-  it("counts terminals, groups and devices for the tab badge", () => {
-    expect(terminalCounts(deriveTerminals(standardBoard()))).toEqual({ terminals: 6, groups: 1, devices: 4 });
-    expect(terminalCounts(deriveTerminals(twoRcdBoard()))).toEqual({ terminals: 6, groups: 2, devices: 2 });
-    expect(terminalCounts([])).toEqual({ terminals: 0, groups: 0, devices: 0 });
+  it("counts terminals, strips, groups and devices for the tab badge", () => {
+    expect(terminalCounts(deriveTerminals(standardBoard()))).toEqual({ terminals: 11, strips: 2, groups: 1, devices: 4 });
+    expect(terminalCounts(deriveTerminals(twoRcdBoard()))).toEqual({ terminals: 6, strips: 2, groups: 2, devices: 2 });
+    expect(terminalCounts(deriveTerminals(blockOnlyBoard()))).toEqual({ terminals: 5, strips: 1, groups: 1, devices: 1 });
+    expect(terminalCounts([])).toEqual({ terminals: 0, strips: 0, groups: 0, devices: 0 });
   });
 
   it("lists the parts in use whose width could not be verified", () => {
     expect(unverifiedTerminalParts(deriveTerminals(standardBoard()))).toEqual([]);
     // Every part in the table is verified since the PE terminal was confirmed
     // as 2016-7607; the function stays for the next part that is not.
-    expect(unverifiedTerminalParts(deriveTerminals(single3pBoard()))).toEqual([]);
+    expect(unverifiedTerminalParts(deriveTerminals(blockOnlyBoard()))).toEqual([]);
+  });
+});
+
+describe("deviceTerminalLabels — the legend's Klemmen column", () => {
+  it("lists X<n>.<k> per Etagenklemme and the Block's X once", () => {
+    expect(deviceTerminalLabels(deriveTerminals(standardBoard()))).toEqual({
+      f11: ["X1.1"],
+      f12: ["X1.2"],
+      f13: ["X1.3", "X1.4"],
+      w1: ["X2"],
+    });
+  });
+
+  it("follows the overrides and drops a blanked marker", () => {
+    const labels = { "f11:1": "1.9", "w1:x": "X9", "f12:1": "" };
+    expect(deviceTerminalLabels(deriveTerminals(standardBoard(labels)))).toEqual({
+      f11: ["X1.9"],
+      f13: ["X1.3", "X1.4"],
+      w1: ["X9"],
+    });
   });
 });
 
 describe("terminalStrips", () => {
-  it("one strip per group: Stromkreis-Nr. by default, at the parts' widths, no end element", () => {
-    const selection = terminalStrips(deriveTerminals(standardBoard()), "circuit");
+  it("one item per strip: the Leiste's marked segments at the parts' widths, the Block's five cells", () => {
+    const selection = terminalStrips(deriveTerminals(standardBoard()));
     expect(selection.skipped).toBe(0);
-    const strips = selection.strips;
-    expect(strips).toHaveLength(1);
-    const [strip] = strips;
-    expect(strip.groupId).toBe("f1");
-    expect(strip.label).toBe("FI F1 · Reihe 1");
-    expect(strip.segments.map((segment) => segment.text)).toEqual(["F1", "1", "2", "3", "4"]);
-    expect(strip.segments.map((segment) => segment.widthMm)).toEqual([12, 5.2, 5.2, 5.2, 5.2]);
-    expect(strip.lengthMm).toBeCloseTo(32.8, 6);
-    expect(strip.partCount).toBe(6);
-    expect(strip.skipped).toBe(0);
-  });
-
-  it("switches the outgoings to their BMK; the feed keeps the FI's BMK", () => {
-    const [strip] = terminalStrips(deriveTerminals(standardBoard()), "bmk").strips;
-    expect(strip.segments.map((segment) => segment.text)).toEqual(["F1", "F1.1", "F1.2", "F1.3", "F1.4"]);
-  });
-
-  it("prints pole names for the single-3-pole variant in either mode", () => {
-    for (const mode of ["circuit", "bmk"] as const) {
-      const [strip] = terminalStrips(deriveTerminals(single3pBoard()), mode).strips;
-      // Feed + three poles + the PE terminal, 12 mm each.
-      expect(strip.segments.map((segment) => segment.text)).toEqual(["F2", "L1", "L2", "L3", "PE"]);
-      expect(strip.lengthMm).toBe(60);
-    }
-  });
-
-  it("skips a terminal whose text is empty in the chosen mode and counts it", () => {
-    const document = board([
-      {
-        id: "r1",
-        label: "Reihe 1",
-        devices: [
-          makeDevice("rcd", { id: "f1", designation: "F1" }),
-          tb("mcb", { id: "a", designation: "F1.1", circuit: "" }),
-          tb("mcb", { id: "b", designation: "F1.2", circuit: "2" }),
-        ],
-      },
+    expect(selection.strips).toHaveLength(2);
+    const [leiste, block] = selection.strips;
+    expect(leiste).toMatchObject({ kind: "leiste", stripId: "f1:leiste", label: "X1 · FI F1 · Reihe 1", xLabel: "X1" });
+    expect(leiste.segments.map((segment) => segment.text)).toEqual(["X1", "1.1", "1.2", "1.3", "1.4"]);
+    expect(leiste.segments.map((segment) => segment.widthMm)).toEqual([12, 5.2, 5.2, 5.2, 5.2]);
+    expect(leiste).toMatchObject({ cells: [], lengthMm: 32.8, partCount: 6, skipped: 0 });
+    expect(block).toMatchObject({
+      kind: "block",
+      stripId: "w1:block",
+      label: "X2 · Block F1.4 Wallbox Garage",
+      name: "Wallbox Garage",
+      xLabel: "X2",
+      segments: [],
+      skipped: 0,
+      partCount: 5,
+      lengthMm: 60,
+    });
+    expect(block.cells).toEqual([
+      { text: "N", widthMm: 12 },
+      { text: "L1", widthMm: 12 },
+      { text: "L2", widthMm: 12 },
+      { text: "L3", widthMm: 12 },
+      { text: "PE", widthMm: 12 },
     ]);
-    const circuit = terminalStrips(deriveTerminals(document), "circuit");
-    expect(circuit.strips[0].segments.map((segment) => segment.text)).toEqual(["F1", "2"]);
-    expect(circuit.strips[0].skipped).toBe(1);
-    expect(circuit.skipped).toBe(1);
-    const bmk = terminalStrips(deriveTerminals(document), "bmk");
-    expect(bmk.strips[0].segments.map((segment) => segment.text)).toEqual(["F1", "F1.1", "F1.2"]);
-    expect(bmk.skipped).toBe(0);
   });
 
-  it("limits to the requested groups: absent = every group, an empty array = none", () => {
-    const groups = deriveTerminals(twoRcdBoard());
-    expect(stripIds(terminalStrips(groups, "circuit", ["f2"]))).toEqual(["f2"]);
-    expect(stripIds(terminalStrips(groups, "circuit"))).toEqual(["f1", "f2"]);
-    expect(stripIds(terminalStrips(groups, "circuit", undefined))).toEqual(["f1", "f2"]);
+  it("skips a blanked marker on the Leiste and counts it; a blanked Block cell stays a cell", () => {
+    const groups = deriveTerminals(standardBoard({ "f12:1": "", "w1:L2": "" }));
+    const selection = terminalStrips(groups);
+    expect(selection.strips[0].segments.map((segment) => segment.text)).toEqual(["X1", "1.1", "1.3", "1.4"]);
+    expect(selection.strips[0]).toMatchObject({ skipped: 1, lengthMm: 27.6 });
+    expect(selection.strips[1].cells.map((cell) => cell.text)).toEqual(["N", "L1", "", "L3", "PE"]);
+    expect(selection.strips[1]).toMatchObject({ skipped: 0, lengthMm: 60 });
+    expect(selection.skipped).toBe(1);
+  });
+
+  it("limits to the requested strips: absent = every strip, an empty array = none", () => {
+    const groups = deriveTerminals(standardBoard());
+    expect(stripIds(terminalStrips(groups, ["w1:block"]))).toEqual(["w1:block"]);
+    expect(stripIds(terminalStrips(groups))).toEqual(["f1:leiste", "w1:block"]);
+    expect(stripIds(terminalStrips(groups, undefined))).toEqual(["f1:leiste", "w1:block"]);
     // An explicit empty selection is nothing, not everything: unticking every
-    // group in the sheet must not print the board.
-    expect(terminalStrips(groups, "circuit", [])).toEqual({ strips: [], skipped: 0 });
+    // strip in the sheet must not print the board.
+    expect(terminalStrips(groups, [])).toEqual({ strips: [], skipped: 0 });
   });
 
-  it("drops a group with no text but keeps counting its terminals", () => {
-    const unnamed = board([
-      {
-        id: "r1",
-        label: "Reihe 1",
-        devices: [makeDevice("rcd", { id: "f1", designation: "" }), tb("mcb", { id: "a", designation: "", circuit: "" })],
-      },
-    ]);
-    // Feed terminal and Etagenklemme both carry a marker; neither has a text.
-    expect(terminalStrips(deriveTerminals(unnamed), "circuit")).toEqual({ strips: [], skipped: 2 });
-  });
-
-  it("counts the terminals of a whole group dropped for having no text", () => {
-    const groups = deriveTerminals(noRcdWithoutNumbersBoard());
-    expect(groups.map((group) => group.groupId)).toEqual(["f1", "q1"]);
-    const circuit = terminalStrips(groups, "circuit");
-    expect(stripIds(circuit)).toEqual(["f1"]);
-    // Q1's two Etagenklemmen print nothing in circuit mode — skipped, not forgotten.
-    expect(circuit.skipped).toBe(2);
-    expect(circuit.strips[0].skipped).toBe(0);
-    expect(terminalStrips(groups, "circuit", ["q1"])).toEqual({ strips: [], skipped: 2 });
-    const bmk = terminalStrips(groups, "bmk");
-    expect(stripIds(bmk)).toEqual(["f1", "q1"]);
-    expect(bmk.skipped).toBe(0);
+  it("drops a Leiste with no text but keeps counting its terminals", () => {
+    const groups = deriveTerminals(twoRcdBoard());
+    const blanked = deriveTerminals({
+      ...twoRcdBoard(),
+      terminal_labels: { "f2:feed": "", "b:1": "" },
+    });
+    expect(stripIds(terminalStrips(groups))).toEqual(["f1:leiste", "f2:leiste"]);
+    const selection = terminalStrips(blanked);
+    expect(stripIds(selection)).toEqual(["f1:leiste"]);
+    // F2's feed and Etagenklemme print nothing — skipped, not forgotten.
+    expect(selection.skipped).toBe(2);
+    expect(selection.strips[0].skipped).toBe(0);
+    expect(terminalStrips(blanked, ["f2:leiste"])).toEqual({ strips: [], skipped: 2 });
   });
 });
 
 describe("terminalFontSize", () => {
-  it("uses the 0.5 mm terminal pad: a Stromkreis-Nr. on 5.2 mm fits at 90 dots", () => {
+  it("uses the 0.5 mm terminal pad: '1.1' on 5.2 mm fits at 36 dots", () => {
     expect(TERMINAL_SEG_PAD_DOTS).toBe(6);
-    expect(fontSizeForSegments([{ text: "7", widthMm: 5.2 }], 11, TERMINAL_SEG_PAD_DOTS)).toEqual({
-      sizeDots: 90,
+    expect(fontSizeForSegments([{ text: "1.1", widthMm: 5.2 }], 11, TERMINAL_SEG_PAD_DOTS)).toEqual({
+      sizeDots: 36,
       overflowing: [],
     });
-    // The BMK pad would leave the same digit 69 dots — the two are not interchangeable.
-    expect(fontSizeForSegments([{ text: "7", widthMm: 5.2 }], 11, 12).sizeDots).toBe(69);
-    expect(terminalFontSize(deriveTerminals(standardBoard()), "circuit", 11)).toEqual({ sizeDots: 90, overflowing: [] });
+    // The BMK pad would leave the same text 27 dots — the two are not interchangeable.
+    expect(fontSizeForSegments([{ text: "1.1", widthMm: 5.2 }], 11, 12).sizeDots).toBe(27);
+    expect(terminalFontSize(deriveTerminals(standardBoard()), 11)).toEqual({ sizeDots: 36, overflowing: [] });
   });
 
-  it("is one size over all groups of the board, in the chosen mode", () => {
-    expect(terminalFontSize(deriveTerminals(standardBoard()), "bmk", 11)).toEqual({ sizeDots: 25, overflowing: [] });
-    // The 12 mm feed terminals alone would allow the strip's maximum.
-    expect(terminalFontSize(deriveTerminals(single3pBoard()), "bmk", 11)).toEqual({ sizeDots: 95, overflowing: [] });
+  it("is one size over every Leiste of the board; Blocks size themselves", () => {
+    expect(terminalFontSize(deriveTerminals(twoRcdBoard()), 11)).toEqual({ sizeDots: 36, overflowing: [] });
+    // A board of only a Block has no Leiste segment: the strip's maximum.
+    expect(terminalFontSize(deriveTerminals(blockOnlyBoard()), 11)).toEqual({ sizeDots: 95, overflowing: [] });
   });
 
-  it("reports a BMK that cannot fit 5.2 mm even at the 2 mm floor", () => {
-    const document = board([
-      {
-        id: "r1",
-        label: "Reihe 1",
-        devices: [
-          makeDevice("rcd", { id: "f1", designation: "F1" }),
-          tb("mcb", { id: "a", designation: "F1.12", circuit: "12" }),
-          tb("mcb", { id: "b", designation: "F1.3", circuit: "3" }),
-        ],
-      },
-    ]);
-    expect(terminalFontSize(deriveTerminals(document), "bmk", 11)).toEqual({ sizeDots: 24, overflowing: ["F1.12"] });
-    // Two digits still fit 5.2 mm at 45 dots (3.75 mm) — the default mode is the way out.
-    expect(terminalFontSize(deriveTerminals(document), "circuit", 11)).toEqual({ sizeDots: 45, overflowing: [] });
+  it("reports an override that cannot fit 5.2 mm even at the 2 mm floor", () => {
+    const groups = deriveTerminals(standardBoard({ "f11:1": "F1.12" }));
+    expect(terminalFontSize(groups, 11)).toEqual({ sizeDots: 24, overflowing: ["F1.12"] });
   });
 
   it("gives the maximum when nothing carries a text", () => {
-    expect(terminalFontSize([], "circuit", 11)).toEqual({ sizeDots: 95, overflowing: [] });
+    expect(terminalFontSize([], 11)).toEqual({ sizeDots: 95, overflowing: [] });
   });
 });

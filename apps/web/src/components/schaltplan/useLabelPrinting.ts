@@ -3,9 +3,15 @@
  *
  * Printing goes through a preview sheet: `dialog.ids` is what the sheet
  * opens with — every rail from the toolbar, one from a rail's own button,
- * every FI group from the Klemmen tab (`dialog.mode` says which). Printing
- * keeps its own busy flag: it must not be mistaken for a save in progress,
- * and a second tap while the strip is feeding would print the board twice.
+ * every terminal strip from the Klemmen tab (`dialog.mode` says which).
+ * Printing keeps its own busy flag: it must not be mistaken for a save in
+ * progress, and a second tap while the strip is feeding would print the
+ * board twice.
+ *
+ * The printer reads the SAVED document — the BMK texts, and for the
+ * Reihenklemmen the marker overrides typed into the sheet a moment ago —
+ * so `beforePrint` (the page's autosave flush) runs first, and a flush
+ * that fails aborts the print rather than feeding stale markers.
  */
 import { useCallback, useState } from "react";
 
@@ -27,9 +33,16 @@ type Deps = {
   token: string | null;
   setNotice: (message: string) => void;
   setError: (message: string) => void;
+  /** Settle the autosave before the printer reads the document; false = the save failed, do not print. */
+  beforePrint?: () => Promise<boolean>;
 };
 
-export function useLabelPrinting({ panel, token, setNotice, setError }: Deps) {
+function stripCountLabel(count: number, terminals: boolean): string {
+  if (terminals) return count === 1 ? "1 Klemmen-Etikett" : `${count} Klemmen-Etiketten`;
+  return `${count} Streifen`;
+}
+
+export function useLabelPrinting({ panel, token, setNotice, setError, beforePrint }: Deps) {
   const [dialog, setDialog] = useState<LabelDialogState>(CLOSED);
   const [printing, setPrinting] = useState(false);
 
@@ -50,11 +63,15 @@ export function useLabelPrinting({ panel, token, setNotice, setError }: Deps) {
       setPrinting(true);
       const terminals = options.target === "reihenklemmen";
       try {
+        if (beforePrint && !(await beforePrint())) {
+          setError("Nicht gedruckt: Die Änderungen konnten nicht gespeichert werden — der Drucker würde alte Texte lesen.");
+          return;
+        }
         const result = await printPanelLabels(
           token,
           panel.id,
           terminals
-            ? { groupIds: ids, materialId, target: "reihenklemmen", terminalText: options.terminalText }
+            ? { stripIds: ids, materialId, target: "reihenklemmen" }
             : { rowIds: ids, materialId, target: "bmk" },
         );
         const skipped =
@@ -66,10 +83,10 @@ export function useLabelPrinting({ panel, token, setNotice, setError }: Deps) {
         const single = !terminals && materialId === "wago-210-805";
         const stripCount = (result.strips ?? []).length;
         const summary = terminals
-          ? `${stripCount} Klemmen-Streifen gedruckt (${result.printed} Klemmen)`
+          ? `${stripCountLabel(stripCount, true)} gedruckt (${result.printed} Klemmen)`
           : single
             ? `${result.printed} Etiketten (210-805) gedruckt`
-            : `${stripCount} Streifen gedruckt (${result.printed} BMK)`;
+            : `${stripCountLabel(stripCount, false)} gedruckt (${result.printed} BMK)`;
         // The strip's board size is worth a glance: it tells the electrician
         // whether a long text dragged the whole board down. Guarded, because
         // an older server does not send it.
@@ -92,7 +109,7 @@ export function useLabelPrinting({ panel, token, setNotice, setError }: Deps) {
         setPrinting(false);
       }
     },
-    [panel, printing, token, setNotice, setError, close],
+    [panel, printing, token, setNotice, setError, close, beforePrint],
   );
 
   return { dialog, printing, open, close, reset, print };

@@ -116,23 +116,24 @@ export function panelPdfUrl(
 }
 
 export type PrintTarget = "bmk" | "reihenklemmen";
-export type { TerminalTextMode } from "./schaltplanTerminals";
-import type { TerminalTextMode } from "./schaltplanTerminals";
 
 export interface PanelLabelsPrintResult {
   /** Labelled segments (2009-110) or labels (210-805) actually printed. */
   printed: number;
   /**
    * Real devices without a BMK on the SELECTED rails — a selected rail with
-   * nothing to print still counts its unnamed devices. A blank cover never counts.
+   * nothing to print still counts its unnamed devices. A blank cover never
+   * counts. For Reihenklemmen: the Leiste markers of the selected strips
+   * left blank by an override.
    */
   skipped_without_bmk: number;
   printer: string;
   material: string;
   /**
-   * One entry per strip that went out on the 2009-110, blank-free length;
-   * empty for 210-805. A rail for BMK, an FI group (`row_id` = the FI's
-   * device id, `part_count` = its parts) for Reihenklemmen.
+   * One entry per piece that went out on the 2009-110, blank-free length;
+   * empty for 210-805. A rail for BMK; a terminal strip (`row_id` = the
+   * strip id, "f1:leiste" or "w1:block", `part_count` = its parts) for
+   * Reihenklemmen.
    */
   strips: { row_id: string; row_label: string; length_mm: number; part_count?: number | null }[];
   /**
@@ -149,27 +150,27 @@ export interface PrintPanelLabelsOptions {
   /** BMK target: the rails to print (empty = every rail). */
   rowIds?: string[];
   /**
-   * Reihenklemmen target: the FI groups to print. Absent = every group; an
-   * explicit empty array = none, which the server refuses with a 400 — the
-   * sheet never sends it because Drucken is disabled with nothing ticked.
+   * Reihenklemmen target: the strips to print, by strip id. Absent = every
+   * strip; an explicit empty array = none, which the server refuses with a
+   * 400 — the sheet never sends it because Drucken is disabled with nothing
+   * ticked. The marker texts are not sent: they live in the saved document
+   * (`terminal_labels`), so the page flushes its autosave before printing.
    */
-  groupIds?: string[];
+  stripIds?: string[];
   target?: PrintTarget;
-  /** Reihenklemmen only: what each marker says. Stromkreis-Nr. by default — it fits 5.2 mm. */
-  terminalText?: TerminalTextMode;
 }
 
 /**
  * Print the board's BMK labels for the chosen rails — or, with
- * `target: "reihenklemmen"`, the WAGO terminal markers of the chosen FI groups.
+ * `target: "reihenklemmen"`, the WAGO terminal markers of the chosen strips.
  *
  * `materialId` is one of `LABEL_MATERIALS` in `utils/schaltplanStrip.ts`:
- * the 2009-110 strip gives one cut-marked strip per rail (or per FI group),
- * the 210-805 one die-cut label per BMK (never for terminals). The preview
- * the dialog shows is computed client-side from the same segment and
- * font-size rules the server prints with (`utils/schaltplanStrip.ts` +
- * `utils/schaltplanTerminals.ts` ↔ `services/schaltplan_layout.py` +
- * `services/schaltplan_terminals.py`).
+ * the 2009-110 strip gives one cut-marked strip per rail (or per Leiste,
+ * and one 60 mm block label per Block), the 210-805 one die-cut label per
+ * BMK (never for terminals). The preview the dialog shows is computed
+ * client-side from the same segment and font-size rules the server prints
+ * with (`utils/schaltplanStrip.ts` + `utils/schaltplanTerminals.ts` ↔
+ * `services/schaltplan_layout.py` + `services/schaltplan_terminals.py`).
  */
 export async function printPanelLabels(
   token: string | null,
@@ -181,10 +182,9 @@ export async function printPanelLabels(
     target === "reihenklemmen"
       ? {
           target,
-          // null = every group on the server; [] would mean "none".
-          group_ids: options.groupIds ?? null,
+          // null = every strip on the server; [] would mean "none".
+          strip_ids: options.stripIds ?? null,
           material_id: options.materialId,
-          terminal_text: options.terminalText ?? "circuit",
         }
       : { target, row_ids: options.rowIds ?? [], material_id: options.materialId };
   return apiFetch<PanelLabelsPrintResult>(`/schaltplan/panels/${panelId}/labels`, token, {

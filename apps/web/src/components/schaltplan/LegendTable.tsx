@@ -8,7 +8,9 @@
  * Two renderings of the same rows. Below 768 px each circuit becomes a card,
  * because a nine-column table on a phone is either a horizontal scroll nobody
  * finds or a 6 px font. The card keeps the same reading order: number, what it
- * feeds, then how it is protected and wired.
+ * feeds, then how it is protected and wired — and last which Reihenklemmen
+ * ("X1.1, X1.2") it ends on, so the sheet in the door answers where a
+ * circuit's cable lands without opening the Klemmen tab.
  */
 import type { PanelLegendRow } from "../../types/schaltplan";
 
@@ -41,6 +43,7 @@ export function LegendTable({ rows }: Props) {
             <th scope="col">Vorsich.</th>
             <th scope="col">Leitung</th>
             <th scope="col">Ph.</th>
+            <th scope="col">Klemmen</th>
           </tr>
         </thead>
         <tbody>
@@ -56,6 +59,7 @@ export function LegendTable({ rows }: Props) {
               <td>{row.pre_fuse}</td>
               <td>{row.cable || "—"}</td>
               <td>{row.phase || "—"}</td>
+              <td className="sp-legend-terminals">{row.terminals || "—"}</td>
             </tr>
           ))}
         </tbody>
@@ -95,6 +99,10 @@ export function LegendTable({ rows }: Props) {
               <div className="sp-legend-card-wide">
                 <dt>Leitung</dt>
                 <dd>{row.cable || "—"}</dd>
+              </div>
+              <div className="sp-legend-card-wide">
+                <dt>Klemmen</dt>
+                <dd>{row.terminals || "—"}</dd>
               </div>
             </dl>
           </li>

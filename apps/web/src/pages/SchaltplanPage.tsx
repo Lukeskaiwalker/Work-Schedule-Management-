@@ -41,7 +41,7 @@ import {
   type RowTemplateId,
 } from "../utils/schaltplanDocumentOps";
 import { isTerminalEligible } from "../utils/schaltplanTerminalRules";
-import { deriveTerminals, terminalCounts } from "../utils/schaltplanTerminals";
+import { deriveTerminals, setTerminalLabel, terminalCounts } from "../utils/schaltplanTerminals";
 import { buildLegend, findDevice, neighbourDeviceId, validateDocument } from "../utils/schaltplanTopology";
 import {
   createPanel,
@@ -100,7 +100,6 @@ export function SchaltplanPage() {
   const [document, setDocument] = useState<PanelDocument | null>(null);
   const [tab, setTab] = useState<EditorTab>("plan");
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
-  const labels = useLabelPrinting({ panel, token, setNotice, setError });
   const typeLabel = useTypeLabelPrinting({ panel, token, setNotice, setError });
   const [paletteRowId, setPaletteRowId] = useState<string | null>(null);
   const [templateSheetOpen, setTemplateSheetOpen] = useState(false);
@@ -110,6 +109,8 @@ export function SchaltplanPage() {
 
   const saveTimer = useRef<number | null>(null);
   const pendingDocument = useRef<PanelDocument | null>(null);
+  // The save request in flight, so a print can wait for it (see settleSaves).
+  const saveInFlight = useRef<Promise<boolean> | null>(null);
 
   const readOnly = !canEdit;
 
@@ -148,6 +149,79 @@ export function SchaltplanPage() {
     };
   }, [reloadPanels]);
 
+  // ── Autosave ─────────────────────────────────────────────────────────────
+
+  /** Save the pending document now. Resolves true when nothing was pending or the save landed, false on failure. */
+  const flush = useCallback(async (): Promise<boolean> => {
+    const target = pendingDocument.current;
+    if (!panel || !target) return true;
+    pendingDocument.current = null;
+    setSaveState("saving");
+    const request = (async () => {
+      try {
+        const saved = await updatePanel(token, panel.id, { document: target });
+        setPanel(saved);
+        // The server is authoritative for the derived values (legend, findings,
+        // revision) but NOT for the document — the user may have typed on while
+        // the request was in flight, and overwriting `document` here would eat
+        // those keystrokes.
+        setSaveState(pendingDocument.current ? "pending" : "clean");
+        // Refresh only the counters the card shows. Spreading the whole detail
+        // response would push `document`, `legend` and `findings` into the
+        // summary list — payload the picker never reads, held per panel.
+        setPanels((current) =>
+          current.map((row) =>
+            row.id === saved.id
+              ? {
+                  ...row,
+                  revision: saved.revision,
+                  status: saved.status,
+                  device_count: saved.device_count,
+                  circuit_count: saved.circuit_count,
+                  rcd_count: saved.rcd_count,
+                  used_slots: saved.used_slots,
+                  total_slots: saved.total_slots,
+                  row_count: saved.row_count,
+                  updated_at: saved.updated_at,
+                  updated_by_name: saved.updated_by_name,
+                }
+              : row,
+          ),
+        );
+        return true;
+      } catch {
+        setSaveState("error");
+        setError("Änderungen konnten nicht gespeichert werden. Prüfe die Verbindung.");
+        return false;
+      }
+    })();
+    saveInFlight.current = request;
+    try {
+      return await request;
+    } finally {
+      if (saveInFlight.current === request) saveInFlight.current = null;
+    }
+  }, [panel, token, setError]);
+
+  /**
+   * Bring the server up to date before something reads the saved document
+   * — the label printer, whose strips are laid out from what is on the
+   * server, not from the editor's state. Waits for a save in flight, then
+   * flushes whatever was typed meanwhile. False = the latest edits are not
+   * on the server; the caller must not print them.
+   */
+  const settleSaves = useCallback(async (): Promise<boolean> => {
+    if (saveTimer.current) {
+      window.clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
+    const previous = saveInFlight.current ? await saveInFlight.current : true;
+    if (pendingDocument.current) return flush();
+    return previous;
+  }, [flush]);
+
+  const labels = useLabelPrinting({ panel, token, setNotice, setError, beforePrint: settleSaves });
+
   // The hook hands back a fresh object every render; only its callbacks are
   // stable. Depending on `labels` itself would recreate openPanel on every
   // render and defeat the memo for any effect that lists it.
@@ -169,48 +243,7 @@ export function SchaltplanPage() {
     [token, setError, resetLabels],
   );
 
-  // ── Autosave ─────────────────────────────────────────────────────────────
-
-  const flush = useCallback(async () => {
-    const target = pendingDocument.current;
-    if (!panel || !target) return;
-    pendingDocument.current = null;
-    setSaveState("saving");
-    try {
-      const saved = await updatePanel(token, panel.id, { document: target });
-      setPanel(saved);
-      // The server is authoritative for the derived values (legend, findings,
-      // revision) but NOT for the document — the user may have typed on while
-      // the request was in flight, and overwriting `document` here would eat
-      // those keystrokes.
-      setSaveState(pendingDocument.current ? "pending" : "clean");
-      // Refresh only the counters the card shows. Spreading the whole detail
-      // response would push `document`, `legend` and `findings` into the
-      // summary list — payload the picker never reads, held per panel.
-      setPanels((current) =>
-        current.map((row) =>
-          row.id === saved.id
-            ? {
-                ...row,
-                revision: saved.revision,
-                status: saved.status,
-                device_count: saved.device_count,
-                circuit_count: saved.circuit_count,
-                rcd_count: saved.rcd_count,
-                used_slots: saved.used_slots,
-                total_slots: saved.total_slots,
-                row_count: saved.row_count,
-                updated_at: saved.updated_at,
-                updated_by_name: saved.updated_by_name,
-              }
-            : row,
-        ),
-      );
-    } catch {
-      setSaveState("error");
-      setError("Änderungen konnten nicht gespeichert werden. Prüfe die Verbindung.");
-    }
-  }, [panel, token, setError]);
+  // ── Autosave (queue) ─────────────────────────────────────────────────────
 
   const scheduleSave = useCallback(
     (next: PanelDocument) => {
@@ -418,6 +451,18 @@ export function SchaltplanPage() {
           ),
         })),
       }));
+    },
+    [mutate],
+  );
+
+  /**
+   * One Reihenklemmen marker text overridden in the document. Lives on the
+   * document, not the device: the print dialog and the inspector both edit
+   * it, and the printer reads it from the saved document.
+   */
+  const editTerminalLabel = useCallback(
+    (key: string, value: string | null) => {
+      mutate((current) => setTerminalLabel(current, key, value));
     },
     [mutate],
   );
@@ -754,7 +799,7 @@ export function SchaltplanPage() {
               onSetAllTerminals={setAllTerminals}
               onPrint={() =>
                 labels.open(
-                  terminalGroups.map((group) => group.groupId),
+                  terminalGroups.flatMap((group) => group.strips.map((strip) => strip.stripId)),
                   "reihenklemmen",
                 )
               }
@@ -803,6 +848,7 @@ export function SchaltplanPage() {
           document={document}
           readOnly={readOnly}
           onChange={(patch) => selectedDevice && patchDevice(selectedDevice.id, patch)}
+          onEditTerminalLabel={editTerminalLabel}
           onDelete={() => selectedDevice && removeDevice(selectedDevice.id)}
           onDuplicate={() => selectedDevice && duplicateDevice(selectedDevice.id)}
           onMove={(direction) => selectedDevice && moveDevice(selectedDevice.id, direction)}
@@ -820,6 +866,8 @@ export function SchaltplanPage() {
           document={document}
           initialRowIds={labels.dialog.ids}
           busy={labels.printing}
+          readOnly={readOnly}
+          onEditTerminalLabel={editTerminalLabel}
           onPrint={(ids, materialId, options) => void labels.print(ids, materialId, options)}
           onClose={labels.close}
         />

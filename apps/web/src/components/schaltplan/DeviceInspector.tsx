@@ -29,24 +29,34 @@ import {
 } from "../../utils/schaltplanDevices";
 import { deviceWidthMm, formatMm, widthSuggestionsMm } from "../../utils/schaltplanStrip";
 import {
+  BLOCK_MIN_AMPS_EXCLUSIVE,
   TERMINAL_PARTS,
   devicePoles,
+  isBlockDevice,
   isTerminalEligible,
-  outgoingPartForPoles,
+  outgoingPartsForPoles,
 } from "../../utils/schaltplanTerminalRules";
+import { overrideKey } from "../../utils/schaltplanTerminals";
 import { allDevices, buildTopology, isGroupDevice, opensGroup } from "../../utils/schaltplanTopology";
 import type { PanelDevice, PanelDocument, PhaseLabel } from "../../types/schaltplan";
 
+/** The one-line rule table under the hint — the same three cases the derivation knows. */
+const TERMINAL_RULE_LINE = `1-polig → WAGO 2003-7641 · 3-polig → WAGO 2003-7641 + 2003-7642 · 3-polig über ${BLOCK_MIN_AMPS_EXCLUSIVE} A → 16-mm²-Block. Einspeise- und Endklemme der FI-Gruppe werden automatisch ergänzt.`;
+
 /**
- * The live hint under "Reihenklemme am Abgang": which Etagenklemme the
- * current pole count resolves to, then the rule in one line — the electrician
- * changes Pole and sees the part change without opening the Klemmen tab.
+ * The live hint under "Reihenklemme am Abgang": which terminals the current
+ * pole count and rating resolve to, then the rule in one line — the
+ * electrician changes Pole or Absicherung and sees the parts change without
+ * opening the Klemmen tab.
  */
 function terminalHint(device: PanelDevice): string {
   const poles = devicePoles(device);
-  const part = TERMINAL_PARTS[outgoingPartForPoles(poles)];
-  const current = `Bei ${poles} Pol${poles === 1 ? "" : "en"}: ${part.partNo} (${part.name}).`;
-  return `${current} 1-polig → WAGO 2003-7641 · 3-polig → WAGO 2003-7642. Einspeise- und Endklemme der FI-Gruppe werden automatisch ergänzt.`;
+  if (isBlockDevice(device)) {
+    return `Bei ${poles} Polen über ${BLOCK_MIN_AMPS_EXCLUSIVE} A: eigener 16-mm²-Block mit eigener X-Nummer — WAGO 2016-7604 (N), 3 × 2016-7601 (L1–L3), 2016-7607 (PE). ${TERMINAL_RULE_LINE}`;
+  }
+  const parts = outgoingPartsForPoles(poles).map((partId) => TERMINAL_PARTS[partId].partNo);
+  const current = `Bei ${poles} Pol${poles === 1 ? "" : "en"}: ${parts.join(" + ")} (${parts.length === 1 ? "eine Etagenklemme" : "zwei Etagenklemmen, zwei Marker"}).`;
+  return `${current} ${TERMINAL_RULE_LINE}`;
 }
 
 /** "17.5" / "17,5" / "" → 17.5 / 17.5 / null. Anything that is not a positive number clears the override. */
@@ -66,6 +76,12 @@ type Props = {
   device: PanelDevice | null;
   document: PanelDocument;
   onChange: (patch: Partial<PanelDevice>) => void;
+  /**
+   * Document-level edit for the Block's name row (`terminal_labels`): the
+   * inspector patches devices, but the label override belongs to the
+   * document, not the device. `value` null removes the override.
+   */
+  onEditTerminalLabel?: (key: string, value: string | null) => void;
   onDelete: () => void;
   /** Copy this device into the next slot, with the next free BMK and Stromkreis-Nr. */
   onDuplicate: () => void;
@@ -122,6 +138,7 @@ export function DeviceInspector({
   device,
   document,
   onChange,
+  onEditTerminalLabel,
   onDelete,
   onDuplicate,
   onMove,
@@ -340,6 +357,28 @@ export function DeviceInspector({
               <small className="sp-field-hint">{terminalHint(device)}</small>
             </div>
           )}
+
+          {isTerminalEligible(device) &&
+            device.terminal_block === true &&
+            isBlockDevice(device) &&
+            field(
+              "Name auf dem Klemmenblock",
+              <input
+                type="text"
+                // Named explicitly: the wrapping label also carries the hint, as the width field's does.
+                aria-label="Name auf dem Klemmenblock"
+                value={document.terminal_labels?.[overrideKey(device.id, "name")] ?? ""}
+                disabled={readOnly || !onEditTerminalLabel}
+                onChange={(event) => {
+                  // Empty = back to the description; the override only exists
+                  // while there is a text of its own.
+                  const value = event.target.value;
+                  onEditTerminalLabel?.(overrideKey(device.id, "name"), value === "" ? null : value);
+                }}
+                placeholder={device.label.trim() || device.designation.trim() || "Bezeichnung"}
+              />,
+              "Erste Zeile des 60-mm-Block-Etiketts (Name / X-Nummer / N L1 L2 L3 PE). Leer = Verbraucher / Bezeichnung.",
+            )}
 
           {device.kind === "rcbo" && (
             // Owner decision: an RCBO's N is its own and must not sit on the
