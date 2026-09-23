@@ -496,11 +496,12 @@ def test_block_label_prints_as_one_piece_with_three_rows(client: TestClient, adm
     # 3 + 60 + 3 mm plus the 2 mm offset.
     assert abs(_q_length(block) - 68) <= 1
     assert b"^W11" in block
-    # Name row, X row, five cells.
+    # Name row, X row, five cells — each printed three times, a dot apart,
+    # for the bold the printer's font cannot do.
     texts = [line.split(b",", 9)[-1] for line in block.split(b"\r\n") if line.startswith(b"AT,")]
-    assert texts == [b"Wallbox Garage", b"X2", b"N", b"L1", b"L2", b"L3", b"PE"]
-    # Start and end marks plus four short cell marks in the bottom row.
-    assert block.count(b"Lo,") == 2 + 4
+    assert texts == [t for t in (b"Wallbox Garage", b"X2", b"N", b"L1", b"L2", b"L3", b"PE") for _ in range(3)]
+    # Start and end marks, two rules between the rows, four cell marks in the bottom row.
+    assert block.count(b"Lo,") == 2 + 2 + 4
     assert len(_at_sizes(leiste)) == 5
 
 

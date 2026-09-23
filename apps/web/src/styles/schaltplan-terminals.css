@@ -315,6 +315,18 @@
 /* The Block's three rows are set the way the printer fits them — each row
    on its own size — so no board-wide weight applies; the divider between
    two cells only crosses the bottom third, exactly like the printed mark. */
+/* The block's own rules and text: a shade heavier than the strip's dividers,
+   and bold — the printer overprints the text for the same effect. */
+.sp-block-rule,
+.sp-block-cell-cut {
+  stroke-width: 1.6;
+}
+
+.sp-block-row,
+.sp-block-cell {
+  font-weight: 700;
+}
+
 .sp-block-cell-cut {
   stroke-dasharray: none;
 }

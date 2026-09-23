@@ -723,11 +723,28 @@ _BLOCK_ROW_SIZE_MAX = 34
 _BLOCK_ROW_SIZE_MIN = 18
 _BLOCK_ROWS = 3
 TERMINAL_BLOCK_PAD_DOTS = 6
+# The block's own rules — between the rows and between the cells — are a
+# shade heavier than the strip's dividers (owner, on the first print), and
+# its text is overprinted with a one-dot shift each way: the built-in TTF
+# has no bold, and the third impression is what reads as one on a strip
+# 11 mm high.
+_BLOCK_LINE = 2  # half-thickness in dots (4 dots total)
+_BOLD_SHIFTS: tuple[tuple[int, int], ...] = ((0, 0), (1, 0), (0, 1))
 
 
 def _vline(frame: _Frame, reading_x: int, reading_y0: int, reading_y1: int, *, half: int) -> str:
     """A vertical mark between two reading-frame heights at reading x."""
     return f"Lo,{frame.xm(reading_y1)},{frame.ym(reading_x) - half},{frame.xm(reading_y0)},{frame.ym(reading_x) + half}"
+
+
+def _hline(frame: _Frame, reading_x0: int, reading_x1: int, reading_y: int, *, half: int) -> str:
+    """A horizontal rule from reading x0 to x1 at reading y."""
+    return f"Lo,{frame.xm(reading_y + half)},{frame.ym(reading_x0)},{frame.xm(reading_y - half)},{frame.ym(reading_x1)}"
+
+
+def _at_bold(frame: _Frame, reading_x: int, reading_y: int, size: int, text: str) -> list[str]:
+    """The text three times, shifted a dot right and a dot down — a bold the printer cannot do itself."""
+    return [_at(frame, reading_x + dx, reading_y + dy, size, text) for dx, dy in _BOLD_SHIFTS]
 
 
 def _fit_strip_text(text: str, budget_px: float, size_max: int, size_min: int) -> int:
@@ -762,7 +779,10 @@ def _render_block_label(
             continue
         size = _fit_strip_text(text, budget, _BLOCK_ROW_SIZE_MAX, _BLOCK_ROW_SIZE_MIN)
         left = int(round(lead_px + (body_px - _strip_text_w(text, size)) / 2))
-        lines.append(_at(frame, left, _row_top(row, row_h, size), size, text))
+        lines.extend(_at_bold(frame, left, _row_top(row, row_h, size), size, text))
+    # Two rules between the three rows, the width of the block.
+    for row in (1, 2):
+        lines.append(_hline(frame, lead_px, lead_px + body_px, row * row_h, half=_BLOCK_LINE))
     cursor = float(lead_px)
     cell_row_y0 = 2 * row_h
     for index, (text, width_mm) in enumerate(cells):
@@ -771,10 +791,10 @@ def _render_block_label(
         if text:
             size = _fit_strip_text(text, cell_w - 2 * TERMINAL_BLOCK_PAD_DOTS, _BLOCK_ROW_SIZE_MAX, _BLOCK_ROW_SIZE_MIN)
             left = max(int(cursor) + _STRIP_TEXT_GUARD, int(round(cursor + (cell_w - _strip_text_w(text, size)) / 2)))
-            lines.append(_at(frame, left, _row_top(2, row_h, size), size, text))
+            lines.extend(_at_bold(frame, left, _row_top(2, row_h, size), size, text))
         cursor += cell_w
         if index < len(cells) - 1:
-            lines.append(_vline(frame, int(round(cursor)), cell_row_y0, h_px, half=_STRIP_LINE))
+            lines.append(_vline(frame, int(round(cursor)), cell_row_y0, h_px, half=_BLOCK_LINE))
     lines.append(_solid(frame, int(round(cursor)), half=_STRIP_END_LINE))
     return _sheet(profile, lines, length_mm=(w_px + frame.x_offset_px) / _DOTS_PER_MM)
 

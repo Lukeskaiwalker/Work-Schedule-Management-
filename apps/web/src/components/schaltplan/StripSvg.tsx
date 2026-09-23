@@ -162,6 +162,17 @@ export function BlockSvg({ label, name, xLabel, cells, lengthMm }: BlockProps) {
           </text>
         ),
       )}
+      {/* Two rules between the three rows, the width of the block — as printed. */}
+      {[1, 2].map((row) => (
+        <line
+          key={`rule-${row}`}
+          className="sp-strip-cut sp-block-rule"
+          x1={x(0)}
+          x2={x(lengthMm)}
+          y1={top + rowHeight * row}
+          y2={top + rowHeight * row}
+        />
+      ))}
       {cells.map((cell, index) => (
         <g key={cell.key}>
           {index > 0 && (
