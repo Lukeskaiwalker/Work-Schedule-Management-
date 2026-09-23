@@ -267,6 +267,36 @@ class PanelLabelsPrintRequest(BaseModel):
     terminal_text: TerminalTextMode = "circuit"
 
 
+class PanelTypeLabelInfoOut(BaseModel):
+    """What the Schrank-Etikett will print for this panel — the dialog's
+    prefill, resolved server-side so the screen and the printer agree."""
+
+    customer: str
+    project_number: str | None = None
+    project_name: str | None = None
+    build_month: str
+    url: str
+    contact_lines: list[str]
+    material: str
+    material_ok: bool
+
+
+class PanelTypeLabelPrintRequest(BaseModel):
+    # "MM.YYYY"; absent or blank = the month of printing. Loose cap here so a
+    # typo is answered by the service's German message, not a schema error.
+    build_month: str | None = Field(default=None, max_length=32)
+    copies: int = Field(default=1, ge=1, le=10)
+
+
+class PanelTypeLabelOut(BaseModel):
+    printer: str
+    material: str
+    sheets: int
+    customer: str
+    project_number: str | None = None
+    build_month: str
+
+
 class PanelStripOut(BaseModel):
     # A rail id for BMK strips, a terminal group id (the FI's device id or
     # "supply") for Reihenklemmen strips.

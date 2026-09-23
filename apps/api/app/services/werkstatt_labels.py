@@ -294,50 +294,106 @@ def _frame(profile: MaterialProfile, *, w_px: int | None = None) -> _Frame:
 
 @lru_cache(maxsize=1)
 def _logo_asset() -> tuple[str, bytes, int, int] | None:
-    """(printer_file_name, mono_bmp_bytes, reading_w, reading_h) or None.
+    """The machine label's logo: the company logo fitted into its box."""
+    return logo_asset_for_box(_LOGO_BOX_W, _LOGO_BOX_H)
 
-    The BMP is drawn in the MACHINE frame (ROTATE_270 maps reading → machine,
-    matching the text rotation validated on the physical prints) because the
-    `Y` placement command has no rotation parameter. Content-hashed name:
-    replacing logo.jpeg yields a new name, and the printer's one-time `~EB`
-    download picks it up automatically; re-sending an existing name is
-    rejected by the firmware, which is fine — same name means same bytes.
-    """
+
+def _logo_path() -> str:
+    return (get_settings().report_logo_path or "").strip()
+
+
+def logo_mono_image(threshold: int = _LOGO_THRESHOLD, *, path: str | None = None):
+    """The company logo as a cropped 1-bit-ready greyscale image (reading
+    frame, not yet rotated), or None when the file is missing. Shared by the
+    printer assets and the on-screen preview of the type label."""
     from PIL import Image
 
-    path = (get_settings().report_logo_path or "").strip()
+    if path is None:
+        path = _logo_path()
     try:
         img = Image.open(path).convert("L")
     except (OSError, ValueError):
         logger.warning("Label logo unavailable at %r — printing without it", path)
         return None
-
-    mono = img.point(lambda v: 0 if v < _LOGO_THRESHOLD else 255, mode="L")
+    mono = img.point(lambda v: 0 if v < threshold else 255, mode="L")
     bbox = mono.point(lambda v: 255 - v).getbbox()
     if bbox:
         mono = mono.crop(bbox)
-    scale = min(_LOGO_BOX_W / mono.width, _LOGO_BOX_H / mono.height)
+    return mono
+
+
+def logo_asset_for_box(box_w: int, box_h: int) -> tuple[str, bytes, int, int] | None:
+    """(printer_file_name, mono_bmp_bytes, reading_w, reading_h) or None —
+    the logo fitted into a reading-frame box of the given size. Cached per
+    logo path, so a "no logo" answer from before the path was configured
+    can never outlive the configuration."""
+    return _logo_asset_for_path(_logo_path(), box_w, box_h)
+
+
+@lru_cache(maxsize=8)
+def _logo_asset_for_path(path: str, box_w: int, box_h: int) -> tuple[str, bytes, int, int] | None:
+    """The cached body of ``logo_asset_for_box``.
+
+    The BMP is drawn in the MACHINE frame (ROTATE_270 maps reading → machine,
+    matching the text rotation validated on the physical prints) because the
+    `Y` placement command has no rotation parameter. Content-hashed name:
+    replacing logo.jpeg — or a different box — yields a new name, and the
+    printer's one-time `~EB` download picks it up automatically; re-sending
+    an existing name is rejected by the firmware, which is fine — same name
+    means same bytes.
+    """
+    from PIL import Image
+
+    mono = logo_mono_image(path=path)
+    if mono is None:
+        return None
+    scale = min(box_w / mono.width, box_h / mono.height)
     reading_w = max(1, round(mono.width * scale))
     reading_h = max(1, round(mono.height * scale))
-    mono = (
-        mono.resize((reading_w, reading_h), Image.LANCZOS)
-        .point(lambda v: 0 if v < 128 else 255, mode="L")
+    # LANCZOS as on the physically validated prints — the bitmap, and with it
+    # the content-hashed name, must stay what the printer already holds.
+    return mono_image_asset(mono.resize((reading_w, reading_h), Image.LANCZOS), prefix="SMPL")
+
+
+def mono_image_asset(image, *, prefix: str) -> tuple[str, bytes, int, int]:
+    """Turn a greyscale reading-frame image into a printer flash asset:
+    (name, 1-bit BMP in the machine frame, reading_w, reading_h). The name
+    is content-hashed under ``prefix`` (letters and digits only — it is a
+    file name on the printer)."""
+    from PIL import Image
+
+    reading_w, reading_h = image.size
+    machine = (
+        image.point(lambda v: 0 if v < 128 else 255, mode="L")
         .transpose(Image.Transpose.ROTATE_270)
         .convert("1")
     )
     buf = io.BytesIO()
-    mono.save(buf, format="BMP")
+    machine.save(buf, format="BMP")
     bmp = buf.getvalue()
-    name = f"SMPL{zlib.crc32(bmp) & 0xFFFFFFFF:08X}"
+    name = f"{prefix}{zlib.crc32(bmp) & 0xFFFFFFFF:08X}"
     return name, bmp, reading_w, reading_h
 
 
+def image_download_preamble(assets: list[tuple[str, bytes, int, int] | None]) -> bytes:
+    """The ``~EB`` downloads for every asset a job places, in one payload."""
+    payload = b""
+    for asset in assets:
+        if asset is None:
+            continue
+        name, bmp, _, _ = asset
+        payload += f"~EB,{name},{len(bmp)}\r\n".encode(_ENCODING) + bmp + b"\r\n"
+    return payload
+
+
+def place_image(frame: _Frame, asset: tuple[str, bytes, int, int], reading_x: int, reading_y: int) -> str:
+    """A ``Y`` placement of a downloaded asset at a reading-frame top-left."""
+    name, _, _, reading_h = asset
+    return f"Y{frame.xm(reading_y + reading_h)},{frame.ym(reading_x)},{name}"
+
+
 def _logo_download_preamble() -> bytes:
-    asset = _logo_asset()
-    if asset is None:
-        return b""
-    name, bmp, _, _ = asset
-    return f"~EB,{name},{len(bmp)}\r\n".encode(_ENCODING) + bmp + b"\r\n"
+    return image_download_preamble([_logo_asset()])
 
 
 def _logo_placement_lines(frame: _Frame) -> list[str]:

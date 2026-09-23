@@ -193,3 +193,75 @@ export async function printPanelLabels(
     body: JSON.stringify(body),
   });
 }
+
+// ── Schrank-Etikett (type label) ────────────────────────────────────────────
+
+/**
+ * What the Schrank-Etikett will say, as the server resolved it for one panel.
+ * The layout itself is server-side (`services/schaltplan_type_label.py`); the
+ * sheet only shows a schematic preview and lets the user change `build_month`.
+ */
+export interface PanelTypeLabelInfo {
+  customer: string;
+  /** Null when the panel has no project. */
+  project_number: string | null;
+  project_name: string | null;
+  /** `MM.YYYY`, the current month unless the user changes it. */
+  build_month: string;
+  /** What the QR code encodes. */
+  url: string;
+  contact_lines: string[];
+  /** Name of the stock currently loaded in the printer. */
+  material: string;
+  /** False when the loaded stock is not a 99 × 44 label — the server refuses to print then. */
+  material_ok: boolean;
+}
+
+export interface PanelTypeLabelPrintRequest {
+  build_month?: string;
+  /** 1..10, default 1. */
+  copies?: number;
+}
+
+export interface PanelTypeLabelPrintResult {
+  printer: string;
+  material: string;
+  sheets: number;
+  customer: string;
+  project_number: string | null;
+  build_month: string;
+}
+
+export async function getPanelTypeLabel(token: string | null, panelId: number): Promise<PanelTypeLabelInfo> {
+  return apiFetch<PanelTypeLabelInfo>(`/schaltplan/panels/${panelId}/type-label`, token);
+}
+
+/**
+ * Print the panel's Schrank-Etikett on the label printer. A 400 carries a
+ * German sentence in `detail` (bad Baujahr, wrong stock loaded) meant to be
+ * shown as is; 503 = no label printer configured, 502 = printer unreachable.
+ */
+export async function printPanelTypeLabel(
+  token: string | null,
+  panelId: number,
+  body: PanelTypeLabelPrintRequest,
+): Promise<PanelTypeLabelPrintResult> {
+  return apiFetch<PanelTypeLabelPrintResult>(`/schaltplan/panels/${panelId}/type-label`, token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+/**
+ * The logo and QR code exactly as they print, for the preview's `<img>`.
+ * No token in the URL — the `access_token` cookie authenticates the image
+ * request, as it does for `panelPdfUrl` and the file previews.
+ */
+export function typeLabelLogoUrl(): string {
+  return `${API_BASE}/schaltplan/type-label/logo.png`;
+}
+
+export function typeLabelQrUrl(): string {
+  return `${API_BASE}/schaltplan/type-label/qr.svg`;
+}

@@ -23,6 +23,7 @@ import { useAppContext } from "../context/AppContext";
 import { DeviceInspector } from "../components/schaltplan/DeviceInspector";
 import { DevicePalette } from "../components/schaltplan/DevicePalette";
 import { LabelPrintDialog } from "../components/schaltplan/LabelPrintDialog";
+import { PanelTypeLabelDialog } from "../components/schaltplan/PanelTypeLabelDialog";
 import { LegendTable } from "../components/schaltplan/LegendTable";
 import { NewPanelDialog } from "../components/schaltplan/NewPanelDialog";
 import { PanelDataTab } from "../components/schaltplan/PanelDataTab";
@@ -32,6 +33,7 @@ import { RailEditor } from "../components/schaltplan/RailEditor";
 import { RowTemplateSheet } from "../components/schaltplan/RowTemplateSheet";
 import { TerminalList } from "../components/schaltplan/TerminalList";
 import { useLabelPrinting } from "../components/schaltplan/useLabelPrinting";
+import { useTypeLabelPrinting } from "../components/schaltplan/useTypeLabelPrinting";
 import { PANEL_TYPE_LABELS, emptyDocument, makeDevice, newId, nextCircuitNumber } from "../utils/schaltplanDevices";
 import {
   duplicateDevice as duplicateDeviceInDocument,
@@ -99,6 +101,7 @@ export function SchaltplanPage() {
   const [tab, setTab] = useState<EditorTab>("plan");
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
   const labels = useLabelPrinting({ panel, token, setNotice, setError });
+  const typeLabel = useTypeLabelPrinting({ panel, token, setNotice, setError });
   const [paletteRowId, setPaletteRowId] = useState<string | null>(null);
   const [templateSheetOpen, setTemplateSheetOpen] = useState(false);
   const [newPanelOpen, setNewPanelOpen] = useState(false);
@@ -616,6 +619,15 @@ export function SchaltplanPage() {
               >
                 {labels.printing ? "Drucke…" : "BMK-Etiketten"}
               </button>
+              <button
+                type="button"
+                className="sp-btn"
+                disabled={typeLabel.printing}
+                onClick={typeLabel.open}
+                title="Typenschild des Verteilers auf dem Etikettendrucker drucken"
+              >
+                {typeLabel.printing ? "Drucke…" : "Schrank-Etikett"}
+              </button>
               {canEdit && (
                 <button
                   type="button"
@@ -810,6 +822,16 @@ export function SchaltplanPage() {
           busy={labels.printing}
           onPrint={(ids, materialId, options) => void labels.print(ids, materialId, options)}
           onClose={labels.close}
+        />
+      )}
+
+      {panel && (
+        <PanelTypeLabelDialog
+          open={typeLabel.dialogOpen}
+          panelId={panel.id}
+          busy={typeLabel.printing}
+          onPrint={(body) => void typeLabel.print(body)}
+          onClose={typeLabel.close}
         />
       )}
 

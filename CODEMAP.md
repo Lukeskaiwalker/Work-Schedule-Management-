@@ -372,6 +372,15 @@ virtual (nothing moved on disk). Migration `20260921_0089`.
 | `apps/web/src/components/tasks/TaskAttachmentStrip.tsx` | Read-only "Anhänge" in the Meine-Aufgaben row; `TaskMaterialList` opens by default |
 | `apps/web/src/components/customers/CustomerDetailTabs.tsx` (+ `CustomerOverviewPanel`, `CustomerProjectsCard`) | The customer page's five tabs; only the open tab's cards mount; tab remembered in sessionStorage |
 
+## Schrank-Etikett — the panel's type label (2026-09-23)
+
+| Module | Role |
+|---|---|
+| `apps/api/app/services/schaltplan_type_label.py` | The owner's WAGO Smart Script blueprint (`Schrank Label.wssl`, template 2100804 = 210-804, 99 × 44) as EZPL: logo top-left, QR (`https://smpl-energy.de`) top-right as a downloaded bitmap, "Kunde / Projekt / Baujahr" block, centred contact lines (fixed branding constants); voll-tier stock only |
+| `apps/api/app/routers/workflow_schaltplan.py` → `/panels/{id}/type-label` (GET info, POST print), `/type-label/logo.png`, `/type-label/qr.svg` | Prefill resolved server-side (customer row, project number, this month in Europe/Berlin), print with `build_month` + `copies`; preview images for the dialog |
+| `apps/api/app/services/werkstatt_labels.py` → `logo_asset_for_box`, `mono_image_asset`, `image_download_preamble`, `place_image` | The logo/bitmap pipeline generalised for any box size and any number of assets per job (the machine label's `_logo_asset` is unchanged bit-for-bit) |
+| `apps/web/src/components/schaltplan/PanelTypeLabelDialog.tsx` (+ `useTypeLabelPrinting.ts`) | "Schrank-Etikett" button in the panel toolbar: schematic preview, editable Baujahr, copies, stock warning |
+
 ## Datanorm import at catalog size (2026-09-22)
 
 | Module | Role |
