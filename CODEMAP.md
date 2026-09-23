@@ -380,6 +380,7 @@ virtual (nothing moved on disk). Migration `20260921_0089`.
 | `apps/api/app/routers/workflow_schaltplan.py` → `/panels/{id}/type-label` (GET info, POST print), `/type-label/logo.png`, `/type-label/qr.svg` | Prefill resolved server-side (customer row, project number, this month in Europe/Berlin), print with `build_month` + `copies`; preview images for the dialog |
 | `apps/api/app/services/werkstatt_labels.py` → `logo_asset_for_box`, `mono_image_asset`, `image_download_preamble`, `place_image` | The logo/bitmap pipeline generalised for any box size and any number of assets per job (the machine label's `_logo_asset` is unchanged bit-for-bit) |
 | `apps/web/src/components/schaltplan/PanelTypeLabelDialog.tsx` (+ `useTypeLabelPrinting.ts`) | "Schrank-Etikett" button in the panel toolbar: schematic preview, editable Baujahr, copies, stock warning |
+| `apps/api/app/services/werkstatt_article_labels.py` | The stock article's shelf label (what `POST /werkstatt/articles/{id}/print-label` prints since 2026-09-23): DataMatrix of the SMPL code left, laid out for the 16 × 16 symbol an SMPL code needs, code text small under it; part number (the name's "… - …" head) as headline, description on two lines, `SP-xxxx · EAN …` small; no logo, no footer. `print_article_labels` batches in one connection; `preview_article_label_png` draws the sheet with a placeholder matrix |
 
 ## Datanorm import at catalog size (2026-09-22)
 

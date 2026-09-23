@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 from app.core.db import get_db
 from app.core.deps import get_current_user, require_permission
 from app.core.time import utcnow
-from app.services import werkstatt_labels
+from app.services import werkstatt_article_labels, werkstatt_labels
 from app.services.werkstatt_internal_codes import ensure_internal_code
 from app.models.entities import (
     MaterialCatalogItem,
@@ -739,13 +739,16 @@ def print_article_label(
     had_code = bool(article.internal_code)
     code = ensure_internal_code(db, article)
     try:
-        printer = werkstatt_labels.print_machine_label(
+        # The shelf layout, not the machine one: part number and description
+        # large, the code's matrix beside them (services/werkstatt_article_labels).
+        printer = werkstatt_article_labels.print_article_label(
             db,
-            werkstatt_labels.LabelContent(
-                unit_number=code,
-                article_name=article.item_name,
+            werkstatt_article_labels.ArticleLabelContent(
+                code=code,
+                item_name=article.item_name,
                 manufacturer=article.manufacturer,
-                serial_number=article.article_number,
+                article_number=article.article_number,
+                ean=article.ean,
             ),
         )
     except werkstatt_labels.LabelFormatUnsupported as exc:
