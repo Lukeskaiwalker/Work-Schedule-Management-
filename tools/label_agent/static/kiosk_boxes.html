@@ -209,10 +209,18 @@ main{flex:1 1 auto; min-height:0; display:grid; grid-template-rows:minmax(0,1fr)
      it gives way instead (its row is the only one that stretches). */
   display:flex; flex-direction:column; gap:7px; min-width:0;
 }
+/* EINE Zeile, ueber die ganze Breite verteilt (2026-09-24, Wunsch des
+   Inhabers): vier Karten standen zentriert in zwei Reihen uebereinander,
+   und aus einem Meter Abstand zielt der Imager schlecht auf den richtigen
+   von vier dicht beieinander liegenden Codes. Auf der 4K-Wand ist die
+   Breite da - space-evenly setzt zwischen die Karten mehr Luft, als der
+   Scanner braucht, um NUR einen Code zu sehen. Kein Umbruch: eine Karte,
+   die in die zweite Reihe rutscht, ist genau das Bild, das hier weg soll. */
 .cmd-row{
-  display:flex; flex-wrap:wrap; justify-content:center; align-items:flex-start;
-  gap:clamp(9px, 1.2vw, 22px);
+  display:flex; flex-wrap:nowrap; justify-content:space-evenly; align-items:flex-start;
+  gap:clamp(24px, 4vw, 120px);
   min-width:0;
+  padding:0 clamp(8px, 2vw, 40px);
 }
 .cmd{
   flex:0 0 auto;
@@ -379,16 +387,12 @@ main{flex:1 1 auto; min-height:0; display:grid; grid-template-rows:minmax(0,1fr)
           <span class="cmd-code mono">SMPL-CMD-ENTNAHME</span>
         </div>
 
-      </div>
-
-      <!-- Zweite Reihe, nicht vierte Karte in der ersten. Breit genug waere
-           die Reihe seit den QR-Codes (vier Karten zu rund 170 px), aber
-           MITNEHMEN steht bewusst unten und nicht neben FERTIG: es ist der
-           einzige Code hier, der Bestand bucht, und ein Scan, der einen
-           Zentimeter daneben landet, soll nicht die Kiste ausbuchen. Der
-           Streifen waechst nach oben - das Kistenfeld gibt nach. -->
-      <div class="cmd-row">
-
+        <!-- MITNEHMEN steht in derselben Zeile wie die anderen drei, aber
+             am rechten Rand mit dem Abstand, den space-evenly auf der Wand
+             lässt (2026-09-24): der Inhaber wollte alle Codes in EINER Zeile
+             mit Luft dazwischen, damit der Imager den richtigen trifft. Es
+             bleibt der einzige Code hier, der Bestand bucht - deshalb ganz
+             aussen, und die Karte faerbt sich nur bei einer gepackten Kiste. -->
         <div class="cmd" id="cmdTake">
           <span class="cmd-cap">Kiste mitnehmen &ndash; Bestand ausbuchen</span>
           <span class="cmd-now" id="cmdTakeNow"></span>
