@@ -697,3 +697,8 @@
 - No authentication or authorization model changes.
 - Change scope is frontend-only audit-log filtering in the existing admin center; it does not expose new data, endpoints, or permissions.
 - Date-period filtering is applied client-side to already-authorized audit rows returned by the existing `audit:view`-protected endpoint.
+
+## Customer credentials and calendar subscription tokens (2026-09-24)
+
+- `customer_credentials.secret_encrypted` holds the installation logins (inverter, wallbox, router, portal) Fernet-encrypted with `FILE_ENCRYPTION_KEY` via `services/secret_box.py`; legacy keys open old rows read-only. The secret is never part of a list response. `POST /customers/{id}/credentials/{cid}/reveal` is the only read of it, and it writes the customer's change log and the admin audit log (action `customer_credential.reveal`, category `customer`) before the value leaves the server.
+- `calendar_feeds.token_hash` / `token_encrypted`: the personal iCalendar subscription token (`smpl_cal_…`). Calendar apps cannot send a login, so the token in the URL is the whole credential for a read-only feed of that user's own tasks and absences. It is hashed for the lookup and encrypted for re-display; rotating it (`POST /calendar/feed`) invalidates every copy of the old link. An unknown, rotated or deleted token and a deactivated user all answer a plain 404.

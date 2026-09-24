@@ -408,6 +408,16 @@ virtual (nothing moved on disk). Migration `20260921_0089`.
 | `apps/web/src/components/customers/CustomerCombobox.tsx` → `leadingItems`; `pages/SchaltplanPage.tsx` | The customer search box of the Schaltplan page lists the boards edited last ("Zuletzt bearbeitet", relative time) before anything is typed; picking one sets customer + project and opens it |
 | `apps/web/src/pages/project/ProjectMaterialsTab.tsx` | "Quelle" column: Bericht / Verteiler VT-0007 |
 
+## Zugangsdaten and Kalender-Abo (2026-09-24)
+
+| Module | Role |
+|---|---|
+| `apps/api/app/models/customer.py` → `CustomerCredential`; migration `20260927_0095` | The installation's logins (Wechselrichter, Wallbox, Speicher, Wärmepumpe, Router, Portal, Sonstiges) kept with the customer: label, username, URL, notes in clear; the secret Fernet-encrypted through `services/secret_box` (the wholesaler-password box); `last_revealed_at/by` on the row |
+| `apps/api/app/routers/workflow_customer_credentials.py`, `services/customer_credentials.py` | `GET/POST /customers/{id}/credentials`, `PATCH/DELETE …/{cid}`, `POST …/{cid}/reveal`. Access = who may open the customer's files (the notes/visits rule); delete = creator or `projects:manage`. The secret is never in a list; the reveal call returns it once and writes the customer's change log (`customer.credential_revealed`) AND the admin audit log (`customer_credential.reveal`, category `customer`). `secret` absent keeps, `""` clears, text replaces |
+| `apps/web/src/components/customers/CustomerCredentialsCard.tsx` (+ Row/Form), tab "Zugangsdaten" | Masked entries, copy buttons, "Anzeigen" shows the password for 30 s, inline add/edit, category chips |
+| `apps/api/app/models/calendar.py` → `CalendarFeed`; `services/calendar_feed.py`; `routers/calendar_feed.py` | One subscription per user: token `smpl_cal_…` stored hashed (lookup) AND encrypted (re-display on the profile page); `POST /calendar/feed` creates or ROTATES, `DELETE` removes, `GET /calendar/{token}/feed.ics` is what the phone fetches without a login (404 for unknown/rotated/deleted tokens and deactivated users; the fetch is remembered once a minute with the User-Agent). The feed is rebuilt per fetch: the user's assigned tasks 60 days back / 400 ahead (stable UID `smpl-task-<id>@<host>`, `SEQUENCE` from `updated_at`, timed with `TZID=Europe/Berlin` + a static VTIMEZONE, multi-day timed as `RRULE:FREQ=DAILY;COUNT=n`, all-day otherwise, done ones "✓ "), approved vacation ("Urlaub") and Berufsschule (weekly RRULE). Own RFC 5545 folding/escaping — no `icalendar` dependency |
+| `apps/web/src/components/profile/CalendarFeedSection.tsx`, `utils/calendarFeedApi.ts` | "Kalender-Abo" card on the profile page: webcal link, copy, last fetch (friendly agent name), rotate, remove, how-tos for iPhone/Google/Outlook |
+
 ## Follow-ups after the first day of use (2026-09-24, afternoon)
 
 | Module | Role |

@@ -1,6 +1,7 @@
 import { useAppContext } from "../context/AppContext";
 import { AvatarBadge } from "../components/shared/AvatarBadge";
 import { ApiTokensSection } from "../components/profile/ApiTokensSection";
+import { CalendarFeedSection } from "../components/profile/CalendarFeedSection";
 import { TwoFactorSection } from "../components/profile/TwoFactorSection";
 
 export function ProfilePage() {
@@ -355,6 +356,12 @@ export function ProfilePage() {
           so non-API users never see noise they can't act on.
         */}
         <ApiTokensSection />
+
+        {/*
+          Kalender-Abo: the user's subscription link for their phone's
+          calendar. Every user gets one — no admin gate.
+        */}
+        <CalendarFeedSection />
       </div>
     </section>
   );

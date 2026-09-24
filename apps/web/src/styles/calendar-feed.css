@@ -1,0 +1,312 @@
+/* ── Kalender-Abo card (profile page) ─────────────────────────────────────
+ *
+ * Component-local sheet, imported from CalendarFeedSection.tsx. The outer
+ * card is the shared `.profile-page-card` shell from styles.css so it sits
+ * alongside Profil, Benachrichtigungen, 2FA and API-Tokens; only what is
+ * specific to this card lives here, all under the `calendar-feed-` prefix.
+ *
+ * Colours follow the profile page: it writes its palette as literals rather
+ * than the root tokens, and matching those literals is what keeps the card
+ * looking like its neighbours.
+ */
+
+.profile-page-card--calendar-feed {
+  grid-column: 1 / -1; /* full width, like the API tokens card above it */
+  gap: 16px;
+}
+
+/* ── Shared text ─────────────────────────────────────────────────────────── */
+
+.calendar-feed-intro,
+.calendar-feed-muted,
+.calendar-feed-status,
+.calendar-feed-primary-hint {
+  margin: 0;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 19px;
+  color: #5c7895;
+}
+
+.calendar-feed-intro {
+  max-width: 62ch;
+}
+
+.calendar-feed-status {
+  font-variant-numeric: tabular-nums;
+}
+
+.calendar-feed-error {
+  margin: 0;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 18px;
+  color: #b03030;
+}
+
+.calendar-feed-error-block {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.calendar-feed-note {
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 12px;
+  line-height: 17px;
+  color: #8fa2ba;
+}
+
+/* ── Empty state ─────────────────────────────────────────────────────────── */
+
+.calendar-feed-empty {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* ── Active state ────────────────────────────────────────────────────────── */
+
+.calendar-feed-active {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.calendar-feed-primary {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+/* The one primary action: an anchor styled like `.profile-page-save-btn`,
+   because a webcal: link has to be a real link for the OS to hand it to the
+   calendar app. */
+.calendar-feed-open-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 38px;
+  padding: 0 20px;
+  border: 1px solid #14293d;
+  border-radius: 8px;
+  background-color: #14293d;
+  color: #ffffff;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.calendar-feed-open-btn:hover {
+  background-color: #0c1e2e;
+  border-color: #0c1e2e;
+  color: #ffffff;
+}
+
+.calendar-feed-open-btn:focus-visible {
+  outline: 2px solid #2f70b7;
+  outline-offset: 2px;
+}
+
+/* Link row: label above, field + copy button beside each other. */
+.calendar-feed-link-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.calendar-feed-link-label {
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 12px;
+  font-weight: 600;
+  color: #5c7895;
+}
+
+.calendar-feed-link-fields {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.calendar-feed-link-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 38px;
+  padding: 0 10px;
+  border: 1px solid #c9d9ea;
+  border-radius: 8px;
+  background: #f8fbff;
+  color: #14293d;
+  font-family: "JetBrains Mono", "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  text-overflow: ellipsis;
+}
+
+.calendar-feed-link-input:focus {
+  outline: none;
+  border-color: #2f70b7;
+  box-shadow: 0 0 0 3px rgba(47, 112, 183, 0.15);
+}
+
+.calendar-feed-copy-btn {
+  appearance: none;
+  height: 38px;
+  padding: 0 16px;
+  border: none;
+  border-radius: 8px;
+  background: #2f70b7;
+  color: #ffffff;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  min-height: 0;
+  white-space: nowrap;
+  transition: background-color 0.15s ease;
+}
+
+.calendar-feed-copy-btn:hover {
+  background: #245a93;
+}
+
+/* Secondary actions: outlined, quiet; the destructive one in the danger tint. */
+.calendar-feed-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.calendar-feed-secondary-btn {
+  appearance: none;
+  height: 34px;
+  padding: 0 14px;
+  border: 1px solid #c9d9ea;
+  border-radius: 8px;
+  background: transparent;
+  color: #14293d;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  min-height: 0;
+  transition: background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.calendar-feed-secondary-btn:hover:not(:disabled) {
+  background: #edf4ff;
+  border-color: #9fbbd9;
+}
+
+.calendar-feed-secondary-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.calendar-feed-secondary-btn--danger {
+  color: #b03030;
+  border-color: #d6b3b3;
+}
+
+.calendar-feed-secondary-btn--danger:hover:not(:disabled) {
+  background: #f7e8e8;
+  border-color: #c99a9a;
+}
+
+/* ── How-to (collapsed by default) ───────────────────────────────────────── */
+
+.calendar-feed-howto {
+  border-top: 1px solid #e3e8ee;
+  padding-top: 12px;
+}
+
+.calendar-feed-howto-summary {
+  cursor: pointer;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  color: #2f70b7;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+}
+
+.calendar-feed-howto-summary::-webkit-details-marker {
+  display: none;
+}
+
+.calendar-feed-howto-summary::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 0.15s ease;
+  flex-shrink: 0;
+}
+
+.calendar-feed-howto[open] .calendar-feed-howto-summary::before {
+  transform: rotate(45deg);
+}
+
+.calendar-feed-howto-body {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 12px;
+}
+
+.calendar-feed-howto-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  background: #f7f9fc;
+  border: 1px solid #e3e8ee;
+  border-radius: 10px;
+}
+
+.calendar-feed-howto-title {
+  margin: 0;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 13px;
+  font-weight: 700;
+  color: #14293d;
+}
+
+.calendar-feed-howto-text {
+  margin: 0;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 12px;
+  line-height: 17px;
+  color: #4f657c;
+  overflow-wrap: anywhere;
+}
+
+/* ── Narrow screens ──────────────────────────────────────────────────────── */
+
+@media (max-width: 720px) {
+  .calendar-feed-howto-body {
+    grid-template-columns: 1fr;
+  }
+
+  .calendar-feed-link-fields {
+    flex-direction: column;
+  }
+
+  .calendar-feed-copy-btn,
+  .calendar-feed-open-btn {
+    width: 100%;
+  }
+
+  .calendar-feed-secondary-btn {
+    flex: 1 1 auto;
+  }
+}
