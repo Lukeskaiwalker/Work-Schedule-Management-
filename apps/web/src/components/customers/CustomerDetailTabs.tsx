@@ -1,6 +1,6 @@
 /**
  * The customer page's sub-menu: Übersicht · Aufgaben · Berichte & Kisten ·
- * Dateien · Änderungen.
+ * Dateien · Zugangsdaten · Änderungen.
  *
  * The page grew one card at a time until "Dateien" sat below everything a
  * customer with a few projects produces, and reaching it meant scrolling
@@ -17,14 +17,19 @@
  */
 import type { KeyboardEvent, ReactNode } from "react";
 
-export type CustomerDetailTab = "overview" | "tasks" | "reports" | "files" | "activity";
+export type CustomerDetailTab = "overview" | "tasks" | "reports" | "files" | "credentials" | "activity";
 
-/** In strip order. "reports" pairs the reports with the boxes: both are what came back from the site. */
+/**
+ * In strip order. "reports" pairs the reports with the boxes: both are what
+ * came back from the site. "credentials" is the plant's logins — read on a
+ * service call, next to the files the call needs.
+ */
 export const CUSTOMER_DETAIL_TABS: readonly CustomerDetailTab[] = [
   "overview",
   "tasks",
   "reports",
   "files",
+  "credentials",
   "activity",
 ];
 
@@ -75,6 +80,8 @@ export function customerDetailTabLabel(tab: CustomerDetailTab, language: "de" | 
       return de ? "Berichte & Kisten" : "Reports & boxes";
     case "files":
       return de ? "Dateien" : "Files";
+    case "credentials":
+      return de ? "Zugangsdaten" : "Credentials";
     case "activity":
       return de ? "Änderungen" : "Changes";
   }

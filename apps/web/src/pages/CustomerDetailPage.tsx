@@ -13,6 +13,7 @@ import { CustomerTasksCard } from "../components/customers/CustomerTasksCard";
 import { CustomerReportsCard } from "../components/customers/CustomerReportsCard";
 import { CustomerBoxesCard } from "../components/customers/CustomerBoxesCard";
 import { CustomerActivityCard } from "../components/customers/CustomerActivityCard";
+import { CustomerCredentialsCard } from "../components/customers/CustomerCredentialsCard";
 import { CustomerFilesCard } from "../components/customers/CustomerFilesCard";
 import {
   getCustomer,
@@ -29,10 +30,10 @@ import "../styles/customer-detail.css";
  * create-project-for-customer).
  *
  * Under the header a tab strip — Übersicht · Aufgaben · Berichte & Kisten ·
- * Dateien · Änderungen — and only the chosen panel is mounted. Every card
- * fetches on mount, so the overview no longer pays for the tasks, reports,
- * boxes and change log, and Dateien is one click away instead of a scroll
- * past all of them. The tab is the page's own state: a "Zum Kunden" jump
+ * Dateien · Zugangsdaten · Änderungen — and only the chosen panel is
+ * mounted. Every card fetches on mount, so the overview no longer pays for
+ * the tasks, reports, boxes, credentials and change log, and Dateien is
+ * one click away instead of a scroll past all of them. The tab is the page's own state: a "Zum Kunden" jump
  * from a project and `openProjectById` back only set mainView.
  */
 export function CustomerDetailPage() {
@@ -223,6 +224,12 @@ export function CustomerDetailPage() {
             it. The file browser needs the full width for its rows; on a
             tablet beside the sidebar a column would clip it. */}
         {tab === "files" && <CustomerFilesCard key={customer.id} customerId={customer.id} />}
+        {/* The plant's logins — Wechselrichter, Wallbox, Router, Portale.
+            The list never carries a password; a reveal is one audited
+            call from the row. */}
+        {tab === "credentials" && (
+          <CustomerCredentialsCard key={customer.id} customerId={customer.id} language={lang} />
+        )}
         {/* The change log across all of this customer's projects — what
             every project overview shows for itself, merged. */}
         {tab === "activity" && (

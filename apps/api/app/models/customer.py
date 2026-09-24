@@ -124,3 +124,38 @@ class CustomerActivity(Base):
     message: Mapped[str] = mapped_column(String(255), nullable=False)
     details: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False, index=True)
+
+
+class CustomerCredential(Base):
+    """A login the customer's installation needs — inverter, wallbox, router,
+    monitoring portal — kept with the customer instead of on a sticky note.
+
+    The secret is Fernet-encrypted (``services/secret_box``) and never
+    leaves the server in a list: showing it is one explicit call that the
+    admin audit log and the customer's change log both record. Everything
+    else on the row is ordinary customer data. ON DELETE CASCADE: the
+    installation's logins go with the customer.
+    """
+
+    __tablename__ = "customer_credentials"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    customer_id: Mapped[int] = mapped_column(
+        ForeignKey("customers.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # "Wechselrichter SMA Sunny Boy" — what the login belongs to.
+    label: Mapped[str] = mapped_column(String(160), nullable=False)
+    # inverter | wallbox | storage | heatpump | router | portal | other
+    category: Mapped[str] = mapped_column(String(24), nullable=False, default="other")
+    username: Mapped[str | None] = mapped_column(String(255))
+    secret_encrypted: Mapped[str | None] = mapped_column(Text)
+    url: Mapped[str | None] = mapped_column(String(500))
+    notes: Mapped[str | None] = mapped_column(Text)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    last_revealed_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_revealed_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow, nullable=False
+    )

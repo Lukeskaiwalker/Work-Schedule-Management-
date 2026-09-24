@@ -188,3 +188,83 @@ class CustomerNoteOut(BaseModel):
 # So the overview keeps the name as a forward reference and is completed
 # here, once CustomerOut exists.
 ProjectOverviewOut.model_rebuild(_types_namespace={"CustomerOut": CustomerOut})
+
+
+# ── Zugangsdaten ──────────────────────────────────────────────────────────────
+# The installation's logins. The secret never appears in these shapes; a
+# reveal is its own call (routers/workflow_customer_credentials.py).
+
+CREDENTIAL_CATEGORIES: tuple[str, ...] = ("inverter", "wallbox", "storage", "heatpump", "router", "portal", "other")
+CredentialCategory = Literal["inverter", "wallbox", "storage", "heatpump", "router", "portal", "other"]
+
+
+def _clean_optional(value: str | None, limit: int) -> str | None:
+    if value is None:
+        return None
+    text = value.strip()
+    return text[:limit] if text else None
+
+
+class CustomerCredentialCreate(BaseModel):
+    label: str = Field(min_length=1, max_length=160)
+    category: CredentialCategory = "other"
+    username: str | None = Field(default=None, max_length=255)
+    secret: str | None = Field(default=None, max_length=512)
+    url: str | None = Field(default=None, max_length=500)
+    notes: str | None = Field(default=None, max_length=4000)
+
+    @field_validator("label")
+    @classmethod
+    def _label_stripped(cls, value: str) -> str:
+        text = value.strip()
+        if not text:
+            raise ValueError("Bezeichnung darf nicht leer sein")
+        return text
+
+    @field_validator("username", "url", "notes")
+    @classmethod
+    def _optional_stripped(cls, value: str | None) -> str | None:
+        return _clean_optional(value, 4000)
+
+
+class CustomerCredentialUpdate(BaseModel):
+    """Every field optional; ``secret`` absent keeps it, ``""`` clears it."""
+
+    label: str | None = Field(default=None, min_length=1, max_length=160)
+    category: CredentialCategory | None = None
+    username: str | None = Field(default=None, max_length=255)
+    secret: str | None = Field(default=None, max_length=512)
+    url: str | None = Field(default=None, max_length=500)
+    notes: str | None = Field(default=None, max_length=4000)
+
+    @field_validator("label")
+    @classmethod
+    def _label_stripped(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        text = value.strip()
+        if not text:
+            raise ValueError("Bezeichnung darf nicht leer sein")
+        return text
+
+
+class CustomerCredentialOut(BaseModel):
+    id: int
+    customer_id: int
+    label: str
+    category: str
+    username: str | None = None
+    url: str | None = None
+    notes: str | None = None
+    has_secret: bool = False
+    created_at: datetime
+    updated_at: datetime
+    created_by_name: str | None = None
+    updated_by_name: str | None = None
+    last_revealed_at: datetime | None = None
+    last_revealed_by_name: str | None = None
+
+
+class CustomerCredentialRevealOut(BaseModel):
+    secret: str
+    revealed_at: datetime

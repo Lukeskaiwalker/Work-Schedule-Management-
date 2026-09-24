@@ -12165,6 +12165,7 @@ li {
 .admin-audit-chip--reports  { background: #dbeafe; color: #1e40af; }
 .admin-audit-chip--finance  { background: #cffafe; color: #155e75; }
 .admin-audit-chip--chat     { background: #ffe4e6; color: #9f1239; }
+.admin-audit-chip--customer { background: #e0f2fe; color: #075985; }
 .admin-audit-chip--groups   { background: #fce7f3; color: #9d174d; }
 .admin-audit-chip--permissions { background: #fef9c3; color: #854d0e; }
 .admin-audit-chip--planning  { background: #e0f2fe; color: #075985; }

@@ -16,9 +16,22 @@
 //   POST   /customers/{id}/visits           → postCustomerVisit
 //   PATCH  /customers/{id}/visits/{visitId} → updateCustomerVisit (partial)
 //   DELETE /customers/{id}/visits/{visitId} → deleteCustomerVisit
+//   GET    /customers/{id}/credentials             → listCustomerCredentials (ordered by label, no secrets)
+//   POST   /customers/{id}/credentials             → createCustomerCredential
+//   PATCH  /customers/{id}/credentials/{cid}       → updateCustomerCredential (partial; secret "" clears)
+//   DELETE /customers/{id}/credentials/{cid}       → deleteCustomerCredential
+//   POST   /customers/{id}/credentials/{cid}/reveal → revealCustomerCredential (audited)
 
 import { apiFetch } from "../api/client";
-import type { Customer, CustomerListItem, CustomerNote, CustomerVisit, Project } from "../types";
+import type {
+  Customer,
+  CustomerCredential,
+  CustomerCredentialCategory,
+  CustomerListItem,
+  CustomerNote,
+  CustomerVisit,
+  Project,
+} from "../types";
 
 export type CustomerType = NonNullable<Customer["customer_type"]>;
 
@@ -71,6 +84,31 @@ export type CustomerVisitCreate = {
 
 /** PATCH /customers/{id}/visits/{visitId}: only the keys sent change; `project_id: null` unlinks. */
 export type CustomerVisitUpdate = Partial<CustomerVisitCreate>;
+
+/** What POST /customers/{id}/credentials takes. */
+export type CustomerCredentialCreate = {
+  /** Trimmed, 1..160 characters. */
+  label: string;
+  /** Omitted = "other". */
+  category?: CustomerCredentialCategory;
+  username?: string | null;
+  /** The password, ≤ 512 characters; omitted = none stored. */
+  secret?: string;
+  url?: string | null;
+  notes?: string | null;
+};
+
+/**
+ * PATCH /customers/{id}/credentials/{cid}: only the keys sent change.
+ * `secret` absent keeps the stored password, "" removes it, text replaces it.
+ */
+export type CustomerCredentialUpdate = Partial<CustomerCredentialCreate>;
+
+/** What a reveal answers: the password, and when the reveal was logged. */
+export type CustomerCredentialReveal = {
+  secret: string;
+  revealed_at: string;
+};
 
 /** Subset of `Project` used by `CustomerDetailPage`. The backend returns the
  *  full `ProjectOut`, so we widen this to the Project type — callers only
@@ -239,4 +277,59 @@ export async function deleteCustomerVisit(
   await apiFetch<void>(`/customers/${id}/visits/${visitId}`, token, { method: "DELETE" });
 }
 
-export type { Customer, CustomerListItem, CustomerNote, CustomerVisit };
+/** Every credential of the customer, ordered by label — never with a secret in it. */
+export async function listCustomerCredentials(
+  token: string | null,
+  id: number,
+): Promise<CustomerCredential[]> {
+  return apiFetch<CustomerCredential[]>(`/customers/${id}/credentials`, token);
+}
+
+export async function createCustomerCredential(
+  token: string | null,
+  id: number,
+  credential: CustomerCredentialCreate,
+): Promise<CustomerCredential> {
+  return apiFetch<CustomerCredential>(`/customers/${id}/credentials`, token, {
+    method: "POST",
+    body: JSON.stringify(credential),
+  });
+}
+
+/** Partial: only the keys in `changes` are touched on the server. */
+export async function updateCustomerCredential(
+  token: string | null,
+  id: number,
+  credentialId: number,
+  changes: CustomerCredentialUpdate,
+): Promise<CustomerCredential> {
+  return apiFetch<CustomerCredential>(`/customers/${id}/credentials/${credentialId}`, token, {
+    method: "PATCH",
+    body: JSON.stringify(changes),
+  });
+}
+
+/** The creator or a project manager; anyone else gets a 403 to show. */
+export async function deleteCustomerCredential(
+  token: string | null,
+  id: number,
+  credentialId: number,
+): Promise<void> {
+  await apiFetch<void>(`/customers/${id}/credentials/${credentialId}`, token, { method: "DELETE" });
+}
+
+/**
+ * Fetch the stored password — one explicit call, audited on the server.
+ * 404 when the entry has no secret.
+ */
+export async function revealCustomerCredential(
+  token: string | null,
+  id: number,
+  credentialId: number,
+): Promise<CustomerCredentialReveal> {
+  return apiFetch<CustomerCredentialReveal>(`/customers/${id}/credentials/${credentialId}/reveal`, token, {
+    method: "POST",
+  });
+}
+
+export type { Customer, CustomerCredential, CustomerCredentialCategory, CustomerListItem, CustomerNote, CustomerVisit };

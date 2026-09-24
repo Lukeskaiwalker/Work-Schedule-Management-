@@ -1,7 +1,7 @@
 /**
  * The customer page's tabs. What must hold: the page opens on Übersicht
- * with the five tabs and only the overview's cards mounted — the tasks,
- * reports, boxes, files and activity requests are not made; a click on
+ * with the six tabs and only the overview's cards mounted — the tasks,
+ * reports, boxes, files, credentials and activity requests are not made; a click on
  * Dateien mounts the files card (its requests fire) and unmounts the
  * overview; the chosen tab is remembered in sessionStorage for the session
  * and read back on mount, an unknown value falling back to Übersicht; a
@@ -36,10 +36,19 @@ const REPORTS_PATH = "/customers/7/construction-reports";
 const BOXES_PATH = "/customers/7/boxes";
 const FILES_PATH = "/customers/7/files";
 const FOLDERS_PATH = "/customers/7/folders";
+const CREDENTIALS_PATH = "/customers/7/credentials";
 const ACTIVITY_PATH = "/customers/7/activity?limit=30";
 const NOTES_PATH = "/customers/7/notes?limit=20";
 /** What the panels other than Übersicht request on mount. */
-const OFF_OVERVIEW_PATHS = [TASKS_PATH, REPORTS_PATH, BOXES_PATH, FILES_PATH, FOLDERS_PATH, ACTIVITY_PATH];
+const OFF_OVERVIEW_PATHS = [
+  TASKS_PATH,
+  REPORTS_PATH,
+  BOXES_PATH,
+  FILES_PATH,
+  FOLDERS_PATH,
+  CREDENTIALS_PATH,
+  ACTIVITY_PATH,
+];
 
 function customer(id: number, name: string): CustomerListItem {
   return {
@@ -86,6 +95,7 @@ function routesFor(id: number, detail: CustomerListItem): Routes {
       { id: 1, customer_id: id, author_user_id: null, author_name: null, body: detail.notes, created_at: "2026-09-01T08:00:00" },
     ],
     [`/customers/${id}/visits`]: () => [],
+    [`/customers/${id}/credentials`]: () => [],
   };
 }
 
@@ -142,7 +152,7 @@ beforeEach(() => {
 });
 
 describe("CustomerDetailPage tabs", () => {
-  it("opens on Übersicht with the five tabs and only the overview's cards mounted", async () => {
+  it("opens on Übersicht with the six tabs and only the overview's cards mounted", async () => {
     render(page());
     await screen.findByRole("heading", { level: 2, name: "Müller GmbH" });
 
@@ -151,6 +161,7 @@ describe("CustomerDetailPage tabs", () => {
       "Aufgaben",
       "Berichte & Kisten",
       "Dateien",
+      "Zugangsdaten",
       "Änderungen",
     ]);
     expect(selectedTab()).toBe("Übersicht");
@@ -280,6 +291,21 @@ describe("CustomerDetailPage tabs", () => {
     expect(within(panel).getByRole("heading", { level: 3, name: "Baustellenkisten" })).toBeInTheDocument();
     await waitFor(() => expect(callsTo(REPORTS_PATH)).toBe(1));
     expect(callsTo(BOXES_PATH)).toBe(1);
+  });
+
+  it("mounts the credential vault on Zugangsdaten, with its request, in its own panel", async () => {
+    render(page());
+    await findContactCard();
+
+    fireEvent.click(tab("Zugangsdaten"));
+    await screen.findByRole("heading", { level: 3, name: "Zugangsdaten" });
+    expect(selectedTab()).toBe("Zugangsdaten");
+    expect(screen.getByRole("tabpanel", { name: "Zugangsdaten" })).toHaveClass("customer-tab-panel--credentials");
+    await waitFor(() => expect(callsTo(CREDENTIALS_PATH)).toBe(1));
+    expect(await screen.findByText("Noch keine Zugangsdaten hinterlegt.")).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { level: 3, name: "Kontaktdaten" })).not.toBeInTheDocument();
+    expect(callsTo(FILES_PATH)).toBe(0);
+    expect(callsTo(ACTIVITY_PATH)).toBe(0);
   });
 
   it("wraps its strip rather than clipping it on narrow screens", async () => {

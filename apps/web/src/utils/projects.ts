@@ -109,6 +109,11 @@ export function activityEventLabel(eventType: string, language: Language) {
     "customer.visit_posted": { de: "Kundenbesuch erfasst", en: "Customer visit recorded" },
     "customer.visit_updated": { de: "Kundenbesuch geändert", en: "Customer visit changed" },
     "customer.visit_deleted": { de: "Kundenbesuch gelöscht", en: "Customer visit deleted" },
+    "customer.credential_created": { de: "Zugangsdaten angelegt", en: "Credentials created" },
+    "customer.credential_updated": { de: "Zugangsdaten geändert", en: "Credentials changed" },
+    "customer.credential_deleted": { de: "Zugangsdaten gelöscht", en: "Credentials deleted" },
+    // The reveal is the one read that is logged: the vault says who looked.
+    "customer.credential_revealed": { de: "Passwort angezeigt", en: "Password revealed" },
     "customer.archived": { de: "Kunde archiviert", en: "Customer archived" },
     "customer.unarchived": { de: "Kunde reaktiviert", en: "Customer reactivated" },
     "project.report_finalize_failed": {

@@ -292,6 +292,41 @@ export type CustomerVisit = {
   updated_at: string;
 };
 
+/** What a login of the customer's plant belongs to: the chip on a Zugangsdaten row. */
+export type CustomerCredentialCategory =
+  | "inverter"
+  | "wallbox"
+  | "storage"
+  | "heatpump"
+  | "router"
+  | "portal"
+  | "other";
+
+/**
+ * One entry of the customer's credential vault ("Zugangsdaten"): a login of
+ * the plant — Wechselrichter, Wallbox, Router, Portal. The secret never
+ * rides along in a list; `has_secret` says whether one is stored, and
+ * `revealCustomerCredential` fetches it on purpose — every reveal is
+ * written to the audit log and the customer's change log, and the row
+ * remembers the last one.
+ */
+export type CustomerCredential = {
+  id: number;
+  customer_id: number;
+  label: string;
+  category: CustomerCredentialCategory;
+  username: string | null;
+  url: string | null;
+  notes: string | null;
+  has_secret: boolean;
+  created_at: string;
+  updated_at: string;
+  created_by_name: string | null;
+  updated_by_name: string | null;
+  last_revealed_at: string | null;
+  last_revealed_by_name: string | null;
+};
+
 /** Whether and where the project's Projektbericht was finalized. */
 export type ProjectReportState = {
   finalized_at: string | null;

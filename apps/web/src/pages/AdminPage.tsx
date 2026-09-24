@@ -27,6 +27,7 @@ function formatAuditCategory(category: string, de: boolean): string {
     ? {
         auth: "Anmeldung",
         chat: "Chat",
+        customer: "Kunden",
         files: "Dateien",
         finance: "Finanzen",
         groups: "Gruppen",
@@ -45,6 +46,7 @@ function formatAuditCategory(category: string, de: boolean): string {
     : {
         auth: "Auth",
         chat: "Chat",
+        customer: "Customers",
         files: "Files",
         finance: "Finance",
         groups: "Groups",

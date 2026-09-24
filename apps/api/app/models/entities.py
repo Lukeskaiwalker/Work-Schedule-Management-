@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from app.models.user import User, UserActionToken
 from app.models.api_token import ApiToken
-from app.models.customer import Customer, CustomerActivity, CustomerNote, CustomerVisit
+from app.models.customer import Customer, CustomerActivity, CustomerCredential, CustomerNote, CustomerVisit
 from app.models.partner import Partner, TaskPartner
 from app.models.project import (
     Project,
@@ -68,6 +68,7 @@ from app.models.station import (
     StationPairing,
 )
 from app.models.training import TrainingWeekReport
+from app.models.calendar import CalendarFeed
 from app.models.schaltplan import PanelMaterialArticle, PanelPlan
 from app.models.wiki import WikiPage
 from app.models.files import Attachment, CustomerFolder, ProjectFolder
@@ -104,6 +105,8 @@ __all__ = [
     "Message",
     "MessageReaction",
     "Notification",
+    "CalendarFeed",
+    "CustomerCredential",
     "PanelMaterialArticle",
     "PanelPlan",
     "Partner",
