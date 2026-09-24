@@ -760,6 +760,64 @@ two are not checked.) It used to take the screen name and ignore it, which
 let the crate screen set the rack's direction or tap a name onto an Ausgabe
 nobody at the rack had asked for.
 
+### Verteiler-Kommissionierung am Regal
+
+Every Schrank-Etikett carries the panel number (`VT-0007`) as a DataMatrix,
+bottom-left. Scanning it at the rack opens a **panel session**: the rack
+screen swaps the article card for that panel's material list, and every
+article scanned from then on is booked as consumption *for that Verteiler*
+until the session is closed. It is the rack's answer to "which parts of this
+cabinet have already been taken off the shelf".
+
+The flow, scanner only:
+
+1. **Scan the `VT-` code.** The agent recognises the prefix itself (SMPL's
+   `/resolve` answers `not_found` for it, like a crate code) and fetches
+   `GET /api/station/werkstatt/panels/{code}`. Any spelling works — `VT-7`,
+   `vt0007` — and is normalised to `VT-0007`. An unknown number is refused
+   with *„Verteiler unbekannt"* and nothing stays open.
+2. **Scan parts.** Each one is `POST …/panels/{id}/scan` with the pending
+   quantity (`SMPL-CMD-MENGE-n` still applies), and the flash reads
+   *„3 / 8 · WAGO 2003-7641"* — scanned over planned for the line the part
+   landed on, which the list highlights. A part the panel does not plan for
+   is booked anyway and shown as *„nicht geplant"*; more than planned shows
+   *„zu viel"*. A scan that takes more than the shelf holds is booked too —
+   the person is holding the part — and flashes the server's
+   *„Bestand war 0 — Inventur prüfen."* as a warning. Something SMPL does not
+   stock at all is refused: *„Nicht gebucht"* plus the server's sentence, and
+   the list stays as it was.
+3. **`SMPL-CMD-ABBRUCH`** takes back the last booking of this session
+   (`POST …/panels/{id}/undo` with that booking's article and quantity);
+   **`SMPL-CMD-FERTIG`** closes the session. The screen offers both as
+   buttons — **Rückgängig** (`/screen/action` `undo_panel`) and **Fertig**
+   (`close_panel`) — and both are actions of the rack screen only.
+
+What the session changes on the rack:
+
+- **The direction and the name do not matter** and are shown dimmed. A part
+  going into a panel is neither an Ausgabe to a person nor a Rückgabe; it is
+  written as `consumption` (total and available both go down), taken back as
+  `consumption_undo`, both carrying the panel and its project. Neither kind
+  is accepted through `POST /station/werkstatt/movements` — the two panel
+  routes are the only station writers of them.
+- **A machine is refused**, as in a crate session, and the panel stays open.
+- **A panel session and a crate session never coexist.** Scanning a `VT-`
+  code closes an open crate (the crate screen says so); scanning a `KISTE-`
+  code closes an open panel. A rescan of the same number keeps the session
+  and resets its clock; a different number switches. An `ABBRUCH` only ever
+  takes back a part picked for the panel that is open — never a rack
+  movement from before the session, never a part picked for another panel.
+- **It closes itself** after the same 600 s of nothing as a crate —
+  *„Verteiler automatisch geschlossen"* — and the card shows a countdown for
+  the last 90 s, as the crate screen does.
+
+`/screen/state?screen=regal` carries the session as `panel` (null when none
+is open): the panel's id, number, designation, name, customer, project, the
+material lines with `scanned / planned` and a status per line (`open`,
+`done`, `over`, `unplanned`), the totals, `last_line_key` for the line the
+last scan landed on, `opened_at` / `expires_at`, and `error` when the list
+could not be re-read.
+
 ### How it starts
 
 `~/.config/autostart/smpl-kiosk.desktop` (owned by `pi`) runs
@@ -1009,6 +1067,7 @@ Four separate paths, deliberately independent:
 | What | Route | If it breaks |
 |---|---|---|
 | Article lookups | `GET /api/station/werkstatt/resolve?code=…` on each new code — both the wall screens and the older scan-and-print page | the two differ. The scan-and-print page falls back to the local SQLite cache and then to "unknown code", so counting never waits. The wall screens have **no** cache: an unresolved code is flashed as *„Code nicht zugeordnet"* and nothing is booked, because a rack booking needs an article id and guessing one would move the wrong stock. |
+| Verteiler-Kommissionierung | `GET /api/station/werkstatt/panels/{code}` when a `VT-` code is scanned, then `POST …/panels/{id}/scan` per part and `POST …/panels/{id}/undo` for an `ABBRUCH` — see [Verteiler-Kommissionierung am Regal](#verteiler-kommissionierung-am-regal) | an unknown number closes the session at once; a list that cannot be re-read stays on the card marked stale; a part that cannot be booked is flashed *„Nicht gebucht"* and nothing is written |
 | Counted stock | manual export: `GET /export/<session>.csv` or `.json` | the SQLite file is the product; copy it off with `scp` |
 | Test protocols | `POST /api/station/imports` (multipart) | stays staged locally and is retried |
 | Liveness | `POST /api/station/heartbeat` every 2 min — printer state plus the agent's own LAN `host`/`port`, `uptime_seconds`, `session_count` and a `hardware` summary | the admin page shows the station as stale; nothing else changes |
@@ -1091,14 +1150,18 @@ Three of its rules are worth knowing while you are standing at the Pi:
   is a lie somebody acts on. Who *has* the item is a separate field, and that
   one is the name that was tapped on the screen. Conflating the two is how a
   tool becomes unfindable, so the API keeps them apart.
-- **Three movement types, and no corrections.** A station may write
-  `checkout`, `return` and `intake` and nothing else — exactly the three
-  directions on the rack screen. Write-offs and repair bookkeeping are
-  refused, and so is a stock-take correction: a correction is the one movement
-  that is *allowed* to disagree with the counters, which means nothing stops
-  it going arbitrarily negative, and a wall screen with no keyboard cannot
-  type the reason such a decision needs. Corrections belong in SMPL's
-  inventory-session flow, where a named person signs for them.
+- **Three movement types, and no corrections.** Through the movements route
+  a station may write `checkout`, `return` and `intake` and nothing else —
+  exactly the three directions on the rack screen. Write-offs and repair
+  bookkeeping are refused, and so is a stock-take correction: a correction
+  is the one movement that is *allowed* to disagree with the counters, which
+  means nothing stops it going arbitrarily negative, and a wall screen with
+  no keyboard cannot type the reason such a decision needs. Corrections
+  belong in SMPL's inventory-session flow, where a named person signs for
+  them. The two other kinds a station writes — `consumption` and
+  `consumption_undo`, a part picked for a Verteiler and that pick taken back
+  — go only through the panel routes, which pin them to a panel and its
+  project; the movements route refuses them.
 
 Quantities are bounded twice on the way: the agent's own routes take at most
 9999 per scan, and SMPL refuses anything above 10 000.

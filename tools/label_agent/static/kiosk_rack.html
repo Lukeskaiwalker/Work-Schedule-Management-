@@ -258,6 +258,77 @@ main{flex:1 1 auto; min-height:0; overflow:hidden;
 }
 .namebox button.nb-go{background:var(--ok); border-color:var(--ok); color:var(--ok-ink)}
 .namebox button[disabled]{opacity:.5; cursor:default}
+
+/* ---------- Verteiler: die Materialliste statt der Artikelkarte ---------- *
+ * Ein VT-Scan macht aus dem Regal eine Kommissionierung: was fuer diesen
+ * Schrank geplant ist, was davon schon vom Regal ist, und wo der letzte
+ * Scan gelandet ist. Richtung und Namen gelten dabei nicht. Sie bleiben
+ * sichtbar - wer die Wand kennt, soll sie wiederfinden -, aber gedimmt und
+ * ohne Wirkung, damit niemand sie fuer die Buchung haelt. */
+.dirband.dim, .crewband.dim{opacity:.32; pointer-events:none; filter:saturate(.4)}
+.panel{
+  margin:10px var(--pad) 0; min-height:0;
+  display:grid; grid-template-rows:auto minmax(0,1fr) auto;
+  padding:12px 16px;
+}
+.p-head{
+  display:flex; align-items:baseline; gap:8px 16px; flex-wrap:wrap; min-width:0;
+  padding-bottom:8px; border-bottom:1px solid var(--line);
+}
+.p-title{
+  font-size:clamp(1.35rem, 2.1vw, 1.9rem); font-weight:850; letter-spacing:-.02em;
+  min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.p-title .mono{color:var(--ok)}
+.p-sub{font-size:var(--t-md); color:var(--dim); font-weight:650; min-width:0;
+       overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.p-head .spacer{flex:1 1 auto; min-width:0}
+/* Die Liste konnte nicht neu gelesen werden: sie bleibt stehen, aber sie
+   sagt, dass sie alt ist - dieselbe Regel wie beim Stand-Banner oben. */
+.p-err{
+  flex:1 1 100%; display:flex; align-items:center; gap:10px;
+  padding:6px 10px; border-radius:var(--r-sm);
+  background:var(--warn-bg); border:1px solid var(--warn-line);
+  color:var(--warn); font-size:var(--t-sm); font-weight:750; min-width:0;
+}
+.p-err .dot{background:var(--warn)}
+.p-err span:last-child{min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.p-lines{list-style:none; margin:0; padding:0; min-height:0}
+.p-lines li{
+  display:grid; grid-template-columns:28px minmax(0,1fr) auto auto; align-items:center;
+  gap:12px; padding:5px 8px; border-bottom:1px solid var(--line); font-size:1rem;
+  border-left:4px solid transparent;
+}
+.p-lines li:last-child{border-bottom:0}
+.p-lines li.empty{display:block; border-left:0}
+/* Die Zeile, auf der der letzte Scan gelandet ist - aus 3 m die einzige
+   Frage: "hat er das Richtige genommen?" */
+.p-lines li.hit{background:var(--ok-bg); border-left-color:var(--ok)}
+.p-lines li.done .p-lab{color:var(--dim)}
+.p-mark{font-weight:900; text-align:center; color:var(--ok); font-size:1.1rem}
+.p-lab{font-weight:750; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.p-det{display:block; font-size:.8rem; font-weight:650; color:var(--dim2);
+       overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.p-cnt{font-variant-numeric:tabular-nums; font-weight:850; font-size:1.15rem; white-space:nowrap}
+.p-cnt .of{color:var(--dim2); font-weight:700; font-size:.95rem}
+.p-lines li.done .p-cnt{color:var(--ok)}
+.p-lines li.over .p-cnt{color:var(--warn)}
+.p-chip{font-size:.72rem; padding:3px 8px}
+.p-chip:empty{display:none}
+.p-foot{
+  display:flex; align-items:center; gap:14px; flex-wrap:wrap;
+  padding-top:10px; border-top:1px solid var(--line);
+}
+.p-tot{display:flex; gap:clamp(12px, 1.6vw, 24px); flex:1 1 auto; min-width:0}
+.p-tot .stat .n{font-size:clamp(1.3rem, 2vw, 1.8rem)}
+/* Zwei Tasten, gross genug fuer einen Daumen mit Handschuh. */
+.p-btn{min-height:56px; padding:0 22px; font-size:var(--t-lg); font-weight:850;
+       border-radius:var(--r)}
+.p-btn.go{background:var(--ok); border-color:var(--ok); color:var(--ok-ink)}
+.p-btn.go:hover{background:var(--ok); filter:brightness(1.08)}
+/* Unter der Liste bleibt das Protokoll, aber kuerzer: 768 px sind 768 px,
+   und der Schrank gewinnt gegen die Historie. */
+body.panel-open .log{max-height:132px}
 </style>
 </head>
 <body>
@@ -304,14 +375,14 @@ main{flex:1 1 auto; min-height:0; overflow:hidden;
     </button>
   </div>
 
-  <div class="crewband">
+  <div class="crewband" id="crewband">
     <div class="crew scroll-x" id="crew"></div>
     <div class="crew-hint" id="crewHint">
       <span class="dot"></span><span class="txt" id="crewHintTxt"></span>
     </div>
   </div>
 
-  <section class="art card">
+  <section class="art card" id="art">
     <div class="art-main">
       <span class="kick" id="aKick">Regal</span>
       <h1 id="aName" class="idle">Bereit &ndash; Artikel scannen</h1>
@@ -337,6 +408,26 @@ main{flex:1 1 auto; min-height:0; overflow:hidden;
     <div class="art-hold" id="aHold" hidden>
       <span class="kick" id="mHoldKick">Aktuell</span>
       <span class="hold-name" id="mHolder">&ndash;</span>
+    </div>
+  </section>
+
+  <section class="panel card" id="panel" hidden>
+    <div class="p-head">
+      <span class="p-title">Verteiler <span class="mono" id="pNo"></span><span id="pName"></span></span>
+      <span class="p-sub" id="pSub"></span>
+      <span class="spacer"></span>
+      <span class="chip big is-warn" id="pCountdown" hidden><span class="dot"></span><b></b></span>
+      <span class="p-err" id="pErr" hidden><span class="dot"></span><span id="pErrTxt"></span></span>
+    </div>
+    <ul id="pLines" class="p-lines scroll"></ul>
+    <div class="p-foot">
+      <div class="p-tot">
+        <span class="stat ok"><span class="n num" id="pScanned">&ndash;</span><span class="l">gescannt</span></span>
+        <span class="stat dim"><span class="n num" id="pPlanned">&ndash;</span><span class="l">geplant</span></span>
+        <span class="stat warn"><span class="n num" id="pOpen">&ndash;</span><span class="l">offen</span></span>
+      </div>
+      <button class="btn p-btn ghost" type="button" id="pUndo">R&uuml;ckg&auml;ngig</button>
+      <button class="btn p-btn go" type="button" id="pDone">Fertig</button>
     </div>
   </section>
 
@@ -403,6 +494,8 @@ var CFG = {
   gapResetMs:    1500,   /* Tastaturpuffer verwerfen                   */
   maxCodeLen:    128,
   logMax:        6,      /* so viele Zeilen passen unter die Namensreihe */
+  countdownAt:   90,     /* ab hier zeigt die Verteilerkarte den Rest an  */
+  urgentAt:      15,
   flashMs:       {ok:3000, warn:4200, error:6000}
 };
 var CTRL_RE = /[\u0000-\u001F\u007F]/g;
@@ -569,7 +662,11 @@ var MOVE = {
   inventory_minus: {label:'Korrektur −',   tone:'out'},
   correction:      {label:'Korrektur',     tone:''},
   repair_out:      {label:'Reparatur',     tone:'out'},
-  repair_back:     {label:'Repar. zurück', tone:'in'}
+  repair_back:     {label:'Repar. zurück', tone:'in'},
+  /* Ein Teil fuer einen Verteiler: Bestand sinkt, ohne dass jemand es
+     "hat" - es ist verbaut. Der Rueckweg ist die Stornierung davon. */
+  consumption:     {label:'Verbrauch',      tone:'out'},
+  consumption_undo:{label:'Verbrauch zurück', tone:'in'}
 };
 function moveOf(raw){
   var m = MOVE[str(raw)];
@@ -601,6 +698,8 @@ var flashKey = '', flashDone = '', flashTimer = 0;
 var logRows = [];          /* lokal fortgeschrieben, siehe renderLog() */
 var npHash = '';
 var crewSig = '';          /* Namensreihe nur neu bauen, wenn sie sich aendert */
+var panelBusy = false;     /* eine der beiden Verteiler-Tasten laeuft gerade    */
+var panelSig = '';         /* Liste nur neu bauen, wenn sie sich aendert        */
 
 /* ---------- Optimistische Anzeige ----------------------------------- *
  * Auf einer Wand ist eine Taste, die 300 ms lang nichts tut, kaputt.
@@ -656,6 +755,12 @@ function needsName(){ return curDir() === 'aus' && curAss() === null; }
  * ================================================================== */
 function wedgeActive(){
   return !(snap && snap.scanner && snap.scanner.active);
+}
+/* Der Vertrag: "panel" ist null oder ein Objekt. Solange es eins ist, gilt
+   weder Richtung noch Name - jeder Scan ist ein Teil fuer diesen Schrank. */
+function panelOpen(){
+  var p = snap && snap.panel;
+  return !!(p && typeof p === 'object');
 }
 
 function renderHead(){
@@ -714,10 +819,14 @@ var dirBtns = document.querySelectorAll('#dirband .dirbtn');
 
 function renderDirection(){
   var dir = curDir();
+  var dimmed = panelOpen();
+  var band = $('dirband');
+  band.className = 'dirband' + (dimmed ? ' dim' : '');
+  band.setAttribute('aria-disabled', dimmed ? 'true' : 'false');
   for(var i = 0; i < dirBtns.length; i++){
     var b = dirBtns[i];
     b.className = 'dirbtn' + (b.getAttribute('data-dir') === dir ? ' on' : '');
-    b.disabled = dirBusy;
+    b.disabled = dirBusy || dimmed;
   }
 }
 
@@ -731,6 +840,10 @@ function renderCrew(){
   }
 
   var row = $('crew');
+  var dimmed = panelOpen();
+  var band = $('crewband');
+  band.className = 'crewband' + (dimmed ? ' dim' : '');
+  band.setAttribute('aria-disabled', dimmed ? 'true' : 'false');
   if(sig !== crewSig){
     crewSig = sig;
     clear(row);
@@ -754,7 +867,7 @@ function renderCrew(){
     var node = kids[k];
     if(!node || !node.getAttribute) continue;
     node.className = 'crewbtn' + (sel !== null && node.getAttribute('data-id') === sel ? ' on' : '');
-    node.disabled = assBusy;
+    node.disabled = assBusy || dimmed;
   }
   renderCrewHint(list.length > 0, sel);
 }
@@ -903,6 +1016,12 @@ function renderArticle(a, movement){
    waeren die Bestandszahlen des Artikels die Zahlen aller Exemplare -
    nicht die des Stuecks, das gerade in der Hand liegt. */
 function renderCard(){
+  var open = panelOpen();
+  show($('panel'), open);
+  show($('art'), !open);
+  document.body.className = open ? 'panel-open' : '';
+  if(open){ renderPanel(snap.panel); return; }
+
   var last = snap && snap.last;
   var machine = last && last.machine;
   var a = last && last.article;
@@ -911,6 +1030,90 @@ function renderCard(){
   if(machine && typeof machine === 'object'){ renderMachine(machine, m); return; }
   if(a){ renderArticle(a, m); return; }
   renderIdle();
+}
+
+/* ---------- Verteiler-Karte ---------- *
+ * Die Reihenfolge der Zeilen ist die des Servers und wird nicht umsortiert:
+ * eine Liste, die nach jedem Scan die Plaetze tauscht, kann man aus 3 m
+ * nicht mehr verfolgen. Erledigtes wird markiert, nicht verschoben. */
+function lineChip(status){
+  if(status === 'unplanned') return {txt:'nicht geplant', cls:'is-warn'};
+  if(status === 'over')      return {txt:'zu viel',       cls:'is-warn'};
+  return null;
+}
+
+function renderPanel(p){
+  setText($('pNo'), str(p.number) || '–');
+  var nm = [str(p.designation), str(p.name)].filter(Boolean).join(' ');
+  setText($('pName'), nm ? ' · ' + nm : '');
+  setText($('pSub'), [str(p.customer), str(p.project)].filter(Boolean).join(' · '));
+  var err = str(p.error);
+  show($('pErr'), !!err);
+  setText($('pErrTxt'), err);
+
+  var lines = (p.lines && typeof p.lines.length === 'number') ? p.lines : [];
+  var hit = str(p.last_line_key);
+  /* Nur neu bauen, wenn sich etwas geaendert hat - sonst springt die
+     Bildlaufposition bei jedem Poll auf den Anfang. */
+  var sig = hit + '|' + err + '|' + lines.length;
+  for(var i = 0; i < lines.length; i++){
+    var l = lines[i] || {};
+    sig += '|' + str(l.key) + ':' + str(l.scanned) + '/' + str(l.planned) + ':' + str(l.status);
+  }
+  if(sig !== panelSig){
+    panelSig = sig;
+    var ul = $('pLines');
+    clear(ul);
+    if(!lines.length){
+      ul.appendChild(el('li', 'empty', err
+        ? 'Liste nicht geladen.'
+        : 'Keine Positionen geplant – Scans werden trotzdem gebucht.'));
+    }
+    var hitNode = null;
+    for(var j = 0; j < lines.length; j++){
+      var ln = lines[j] || {};
+      var st = str(ln.status);
+      var isHit = !!hit && str(ln.key) === hit;
+      var li = el('li', ('ln ' + st + (isHit ? ' hit' : '')).replace(/\s+$/, ''));
+      li.appendChild(el('span', 'p-mark', st === 'done' ? '✓' : ''));
+      var lab = el('span', 'p-lab', str(ln.label) || '–');
+      var det = str(ln.detail);
+      if(det) lab.appendChild(el('span', 'p-det', det));
+      li.appendChild(lab);
+      var chip = lineChip(st);
+      li.appendChild(el('span', chip ? 'chip p-chip ' + chip.cls : 'p-chip', chip ? chip.txt : ''));
+      var cnt = el('span', 'p-cnt num');
+      cnt.appendChild(el('span', '', String(num(ln.scanned, 0))));
+      if(num(ln.planned, 0) > 0) cnt.appendChild(el('span', 'of', ' / ' + num(ln.planned, 0)));
+      li.appendChild(cnt);
+      ul.appendChild(li);
+      if(isHit) hitNode = li;
+    }
+    if(hitNode && hitNode.scrollIntoView){
+      try{ hitNode.scrollIntoView({block:'nearest'}); }catch(e){}
+    }
+  }
+  setText($('pScanned'), num(p.scanned_total, 0));
+  setText($('pPlanned'), num(p.planned_total, 0));
+  setText($('pOpen'), num(p.open_lines, 0));
+  $('pUndo').disabled = panelBusy;
+  $('pDone').disabled = panelBusy;
+  renderPanelCountdown();
+}
+
+/* Der Agent laeuft auf demselben Rechner wie dieser Browser, deshalb ist
+   Date.now() direkt mit expires_at vergleichbar - wie auf dem Kistenbild. */
+function nowSec(){ return Date.now() / 1000; }
+function renderPanelCountdown(){
+  var p = snap && snap.panel;
+  var cd = $('pCountdown');
+  if(!p || !p.expires_at){ show(cd, false); return; }
+  var left = Math.round(num(p.expires_at, 0) - nowSec());
+  if(left > CFG.countdownAt){ show(cd, false); return; }
+  if(left < 0) left = 0;
+  show(cd, true);
+  cd.className = 'chip big is-warn' + (left <= CFG.urgentAt ? ' armed' : '');
+  setText(cd.querySelector('b'), 'Sitzung endet in ' + left + ' s');
 }
 
 /* Der Vertrag liefert nur die LETZTE Buchung. Liefert der Agent zusaetzlich
@@ -931,11 +1134,15 @@ function absorbLast(){
   if(!key) return;
   for(var i = 0; i < logRows.length; i++){ if(logRows[i].key === key) return; }
   var m = last.movement;
+  /* Ein Teil fuer einen Schrank steht mit dem Schrank im Protokoll:
+     "Verteiler VT-0007 · WAGO 2003-7641 · 1" - sonst liest sich ein
+     Verbrauch wie eine Ausgabe an niemanden. */
+  var who = str(m.panel_number) ? 'Verteiler ' + str(m.panel_number) + ' · ' : '';
   /* Unveraenderlich: neue Liste, nie die alte umbauen. */
   logRows = [{
     key:  key,
     at:   tsToDate(m.created_at || m.at) || new Date(),
-    name: artName(last.article) || '–',
+    name: who + (artName(last.article) || '–'),
     type: str(m.movement_type || m.type),
     qty:  num(m.quantity, num(m.qty, 0)),
     unit: artUnit(last.article)
@@ -1084,6 +1291,28 @@ function cancelName(){
 $('namebox').addEventListener('submit', submitName);
 $('nbCancel').addEventListener('click', cancelName);
 
+/* ---------- Fertig / Rueckgaengig ---------- *
+ * Dieselben zwei Handler wie SMPL-CMD-FERTIG und SMPL-CMD-ABBRUCH im
+ * Agent; die Taste ist nur der Weg fuer den, der gerade keinen Scanner in
+ * der Hand hat. Waehrend eine laeuft, sind beide gesperrt. */
+function postPanel(body){
+  if(panelBusy || !panelOpen()) return;
+  panelBusy = true;
+  beep('tick');
+  $('pUndo').disabled = true;
+  $('pDone').disabled = true;
+  api('/screen/action', {method:'POST', timeout: CFG.actionTimeout, body: body})
+    .then(function(){ panelBusy = false; render(); });
+}
+$('pUndo').addEventListener('click', function(){
+  postPanel({screen: SCREEN, action:'undo_panel'});
+});
+$('pDone').addEventListener('click', function(){
+  postPanel({screen: SCREEN, action:'close_panel'});
+});
+/* Der Countdown laeuft zwischen zwei Polls weiter. */
+setInterval(function(){ if(panelOpen()) renderPanelCountdown(); }, 1000);
+
 function render(){
   if(!snap) return;
   settle();
@@ -1100,7 +1329,7 @@ function render(){
  * Aktionen (Funkmaus - selten benutzt, aber vorhanden)
  * ================================================================== */
 function setDirection(value){
-  if(dirBusy) return;
+  if(dirBusy || panelOpen()) return;
   var v = normDir(value);
   if(v === curDir()) return;
   dirBusy = true;
@@ -1116,7 +1345,7 @@ function setDirection(value){
 /* Antippen waehlt, nochmal antippen loescht - "value: null" ist im
    Vertrag genau dafuer vorgesehen. */
 function setAssignee(value){
-  if(assBusy) return;
+  if(assBusy || panelOpen()) return;
   assBusy = true;
   pendAss = {value: idOf(value), at: nowMs()};
   beep('tick');

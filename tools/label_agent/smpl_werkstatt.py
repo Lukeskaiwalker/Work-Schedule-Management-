@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import threading
 import time
 import urllib.error
@@ -41,6 +42,9 @@ __all__ = [
     "items_path",
     "remove_path",
     "handover_path",
+    "panel_path",
+    "panel_scan_path",
+    "panel_undo_path",
     "article_id_of",
     "machine_of",
     "kind_of",
@@ -61,7 +65,17 @@ PATHS = {
     # found nothing. `from_lookup` is the write that follows.
     "lookup": BASE + "/lookup",
     "from_lookup": BASE + "/articles/from-lookup",
+    # A Verteiler's material list, by its printed number, and the two writes
+    # under it (`/{id}/scan`, `/{id}/undo`). These are the only station
+    # routes that write `consumption` rows: the movements route above keeps
+    # refusing that kind.
+    "panels": BASE + "/panels",
 }
+
+#: What a panel number may look like on its way into a URL. The router has
+#: already normalised the scan; this is the last check before a code becomes
+#: a path segment, so it is strict rather than clever.
+_PANEL_CODE_RE = re.compile(r"^[A-Z0-9-]{1,32}$")
 
 #: The movement vocabulary SMPL accepts. Checked here so a typo in a screen
 #: costs a 400 from our own process rather than a round trip and a 422.
@@ -112,6 +126,18 @@ def remove_path(box_id: int) -> str:
 
 def handover_path(box_id: int) -> str:
     return "%s/boxes/%d/handover" % (BASE, int(box_id))
+
+
+def panel_path(code: str) -> str:
+    return "%s/panels/%s" % (BASE, urllib.parse.quote(str(code), safe=""))
+
+
+def panel_scan_path(panel_id: int) -> str:
+    return "%s/panels/%d/scan" % (BASE, int(panel_id))
+
+
+def panel_undo_path(panel_id: int) -> str:
+    return "%s/panels/%d/undo" % (BASE, int(panel_id))
 
 
 @dataclass(frozen=True)
@@ -594,12 +620,86 @@ class WerkstattClient:
         return self._write(PATHS["from_lookup"], payload,
                            timeout=self.lookup_timeout)
 
+    # -- panels -----------------------------------------------------------
+
+    def panel(self, code: Any) -> Result:
+        """The material list of one Verteiler, by its printed number.
+
+        A read that answers a :class:`Result` rather than None, unlike
+        :meth:`resolve`: "SMPL does not know this number" (a 404 carrying the
+        server's sentence) and "SMPL could not be reached" are different
+        things to say on the wall, and only the first may close the session
+        that was just opened for it.
+        """
+        number = _as_panel_code(code)
+        if number is None:
+            return Result(False, error="Ungültige Verteiler-Nummer.")
+        if not self.configured:
+            return Result(False, error=NOT_CONFIGURED)
+        result = self._request("GET", panel_path(number))
+        if result.ok and not isinstance(result.data, dict):
+            return Result(False, status=result.status,
+                          error="SMPL antwortete nicht mit einer Materialliste.")
+        return result
+
+    def panel_scan(self, panel_id: Any, *, code: Optional[str] = None,
+                   article_id: Optional[int] = None, quantity: int = 1,
+                   notes: Optional[str] = None) -> Result:
+        """Book one part as consumption for a Verteiler.
+
+        One of ``code`` / ``article_id``; with both, the id wins, because it
+        came back from ``/resolve`` a moment ago and is unambiguous where a
+        printed code can carry two articles. The body always carries all four
+        contract fields, nulls included — it is the shape the server declares,
+        not a shape inferred from what happened to be set.
+
+        The crate cache is deliberately NOT invalidated: a part picked for a
+        panel changes no crate, and the box screen has no reason to refetch.
+        """
+        panel = _as_id(panel_id)
+        if panel is None:
+            return Result(False, error="Ungültige Verteiler-Nummer.")
+        qty = _as_qty(quantity)
+        if qty is None:
+            return Result(False, error="Ungültige Menge.")
+        article: Optional[int] = None
+        if article_id is not None:
+            article = _as_id(article_id)
+            if article is None:
+                return Result(False, error="Ungültige Artikel-Nummer.")
+        text = code.strip() if isinstance(code, str) else ""
+        if article is None and not text:
+            return Result(False, error="Weder Code noch Artikel angegeben.")
+        payload: Dict[str, Any] = {
+            "code": text[:64] if article is None else None,
+            "article_id": article,
+            "quantity": qty,
+            "notes": str(notes)[:500] if notes else None,
+        }
+        return self._write(panel_scan_path(panel), payload, invalidate=False)
+
+    def panel_undo(self, panel_id: Any, article_id: Any, quantity: int = 1) -> Result:
+        """Take back consumption booked for a Verteiler: the inverse row.
+
+        The server refuses more than the net quantity scanned for that article
+        on that panel, in a sentence the screen shows verbatim.
+        """
+        panel = _as_id(panel_id)
+        article = _as_id(article_id)
+        qty = _as_qty(quantity)
+        if panel is None or article is None:
+            return Result(False, error="Ungültige Verteiler- oder Artikel-Nummer.")
+        if qty is None:
+            return Result(False, error="Ungültige Menge.")
+        return self._write(panel_undo_path(panel), {"article_id": article, "quantity": qty},
+                           invalidate=False)
+
     def _write(self, path: str, payload: Dict[str, Any],
-               *, timeout: Optional[float] = None) -> Result:
+               *, timeout: Optional[float] = None, invalidate: bool = True) -> Result:
         if not self.configured:
             return Result(False, error=NOT_CONFIGURED)
         result = self._request("POST", path, payload=payload, timeout=timeout)
-        if result.ok:
+        if result.ok and invalidate:
             self.invalidate_boxes()
         return result
 
@@ -709,6 +809,14 @@ def _as_id(value: Any) -> Optional[int]:
     except (TypeError, ValueError):
         return None
     return parsed if parsed > 0 else None
+
+
+def _as_panel_code(value: Any) -> Optional[str]:
+    """An upper-cased panel number that is safe as a path segment, or None."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip().upper()
+    return text if _PANEL_CODE_RE.match(text) else None
 
 
 def _as_qty(value: Any) -> Optional[int]:

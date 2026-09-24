@@ -1058,3 +1058,180 @@ class TestStockFromLookupUnconfigured(unittest.TestCase):
         result = client.stock_from_lookup("4045454121006", 1)
         self.assertFalse(result.ok)
         self.assertIsNotNone(result.error)
+
+
+# --------------------------------------------------------------------------
+# Panels — the material list of one Verteiler, and booking parts against it
+#
+# ``GET /panels/{code}`` is a read that answers a Result rather than None:
+# "SMPL does not know this number" and "SMPL could not be reached" are
+# different sentences on the wall, and only the first may close the session.
+# --------------------------------------------------------------------------
+
+PANEL_ARTICLE = {
+    "id": 218, "article_number": "SP-0187", "item_name": "WAGO 2003-7641 - TOPJOB S",
+    "manufacturer": "WAGO", "unit": "ST", "internal_code": "SMPL-81JHYT",
+    "stock_available": 12,
+}
+PANEL_LINE = {
+    "key": "part:2003-7641", "kind": "terminal", "label": "WAGO 2003-7641",
+    "detail": "TOPJOB S Durchgangsklemme 2,5 mm²", "planned": 8, "scanned": 3,
+    "status": "open", "article": PANEL_ARTICLE, "article_source": "auto",
+    "last_scanned_at": "2026-09-24T08:12:00",
+}
+PANEL_MATERIAL = {
+    "panel": {"id": 7, "panel_number": "VT-0007", "designation": "ZV1",
+              "name": "Zählerverteiler", "panel_type": "meter", "status": "draft",
+              "customer_id": 3, "customer_name": "Schulze", "project_id": 244,
+              "project_number": "381", "project_name": "Neubau Schulze",
+              "updated_at": "2026-09-24T08:00:00"},
+    "lines": [PANEL_LINE],
+    "planned_total": 40, "scanned_total": 12, "open_lines": 5,
+    "last_scanned_at": "2026-09-24T08:12:00",
+}
+
+
+def _panel_scan(payload, query, hits):
+    if not payload.get("article_id") and not payload.get("code"):
+        return 422, {"detail": "code or article_id"}
+    if payload.get("code") == "4011923456789":
+        return 400, {"detail": "Kein Lagerartikel zum Code „4011923456789“ gefunden."}
+    return 200, {"material": PANEL_MATERIAL, "line": PANEL_LINE, "movement_id": 991,
+                 "article": PANEL_ARTICLE, "stock_warning": None}
+
+
+def _panel_undo(payload, query, hits):
+    if payload.get("quantity", 0) > 3:
+        return 400, {"detail": "Nichts zum Zurücknehmen — nur 3 gebucht."}
+    return 200, {"material": PANEL_MATERIAL, "line": PANEL_LINE, "movement_id": 992,
+                 "article": PANEL_ARTICLE, "stock_warning": None}
+
+
+class TestPanels(ClientCase):
+    routes = {
+        ("GET", P["boxes"]): ok_boxes,
+        ("GET", "/api/station/werkstatt/panels/VT-0007"): lambda p, q, h: (200, PANEL_MATERIAL),
+        ("GET", "/api/station/werkstatt/panels/VT-0001"): lambda p, q, h: (200, []),
+        ("GET", "/api/station/werkstatt/panels/VT-0099"):
+            lambda p, q, h: (404, {"detail": "Kein Verteiler mit der Nummer „VT-0099“."}),
+        ("POST", "/api/station/werkstatt/panels/7/scan"): _panel_scan,
+        ("POST", "/api/station/werkstatt/panels/7/undo"): _panel_undo,
+    }
+
+    def test_the_list_is_fetched_by_number_with_the_station_token(self):
+        result = self.client.panel("VT-0007")
+        self.assertTrue(result.ok)
+        self.assertEqual(result.data["panel"]["id"], 7)
+        self.assertEqual(result.data["lines"][0]["key"], "part:2003-7641")
+        method, path, headers, _payload = self.stub.requests[-1]
+        self.assertEqual((method, path), ("GET", "/api/station/werkstatt/panels/VT-0007"))
+        self.assertEqual(headers.get("Authorization"), "Bearer station-token-abc")
+
+    def test_an_unknown_number_is_a_404_with_the_servers_sentence(self):
+        result = self.client.panel("VT-0099")
+        self.assertFalse(result.ok)
+        self.assertEqual(result.status, 404)
+        self.assertIn("VT-0099", result.error)
+
+    def test_the_number_is_sent_upper_cased_and_trimmed(self):
+        self.assertTrue(self.client.panel("  vt-0007 ").ok)
+        self.assertEqual(self.stub.requests[-1][1], "/api/station/werkstatt/panels/VT-0007")
+
+    def test_a_code_that_could_climb_the_url_never_reaches_the_network(self):
+        for bad in ("VT-0007/../boxes", "VT 7", "", "VT-0007?x=1", "x" * 40, None, 7):
+            self.assertFalse(self.client.panel(bad).ok, repr(bad))
+        self.assertEqual(self.stub.requests, [])
+
+    def test_a_list_that_is_not_an_object_is_a_failed_result(self):
+        result = self.client.panel("VT-0001")
+        self.assertFalse(result.ok)
+        self.assertIn("Materialliste", result.error)
+
+    def test_a_scan_by_article_id_sends_the_contract_body(self):
+        result = self.client.panel_scan(7, article_id=218, quantity=2)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.data["movement_id"], 991)
+        method, path, _headers, payload = self.stub.requests[-1]
+        self.assertEqual((method, path), ("POST", "/api/station/werkstatt/panels/7/scan"))
+        self.assertEqual(payload, {"code": None, "article_id": 218, "quantity": 2, "notes": None})
+
+    def test_a_scan_by_code_lets_the_server_resolve_it(self):
+        result = self.client.panel_scan(7, code="SMPL-81JHYT")
+        self.assertTrue(result.ok)
+        self.assertEqual(self.stub.requests[-1][3],
+                         {"code": "SMPL-81JHYT", "article_id": None, "quantity": 1,
+                          "notes": None})
+
+    def test_a_code_that_is_not_stocked_is_the_servers_400(self):
+        result = self.client.panel_scan(7, code="4011923456789")
+        self.assertFalse(result.ok)
+        self.assertEqual(result.status, 400)
+        self.assertIn("Kein Lagerartikel", result.error)
+
+    def test_a_scan_needs_one_of_code_or_article_id(self):
+        self.assertFalse(self.client.panel_scan(7).ok)
+        self.assertFalse(self.client.panel_scan(7, code="   ").ok)
+        self.assertEqual(self.stub.requests, [])
+
+    def test_a_note_rides_along_capped(self):
+        self.client.panel_scan(7, article_id=218, notes="x" * 600)
+        self.assertEqual(len(self.stub.requests[-1][3]["notes"]), 500)
+
+    def test_an_undo_sends_the_article_and_the_quantity(self):
+        result = self.client.panel_undo(7, 218, 1)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.data["movement_id"], 992)
+        method, path, _headers, payload = self.stub.requests[-1]
+        self.assertEqual((method, path), ("POST", "/api/station/werkstatt/panels/7/undo"))
+        self.assertEqual(payload, {"article_id": 218, "quantity": 1})
+
+    def test_an_undo_of_more_than_was_scanned_is_the_servers_sentence(self):
+        result = self.client.panel_undo(7, 218, 9)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.status, 400)
+        self.assertIn("Zurücknehmen", result.error)
+
+    def test_rubbish_ids_and_quantities_never_reach_the_network(self):
+        self.assertFalse(self.client.panel_scan("7/../x", article_id=218).ok)
+        self.assertFalse(self.client.panel_scan(7, article_id="218/x").ok)
+        self.assertFalse(self.client.panel_scan(7, article_id=218, quantity=0).ok)
+        self.assertFalse(self.client.panel_undo(7, 218, -1).ok)
+        self.assertFalse(self.client.panel_undo(None, 218, 1).ok)
+        self.assertFalse(self.client.panel_undo(7, True, 1).ok)
+        self.assertEqual(self.stub.requests, [])
+
+    def test_a_panel_write_does_not_invalidate_the_crate_cache(self):
+        """A part picked for a Verteiler changes no crate, so the box screen
+        must not refetch its list for it."""
+        self.client.boxes()
+        self.client.panel_scan(7, article_id=218)
+        self.client.panel_undo(7, 218, 1)
+        self.client.boxes()
+        self.assertEqual(self.stub.hits[("GET", P["boxes"])], 1)
+
+    def test_the_paths_are_the_agreed_contract(self):
+        self.assertEqual(P["panels"], "/api/station/werkstatt/panels")
+        self.assertEqual(smpl_werkstatt.panel_path("VT-0007"),
+                         "/api/station/werkstatt/panels/VT-0007")
+        self.assertEqual(smpl_werkstatt.panel_scan_path(7),
+                         "/api/station/werkstatt/panels/7/scan")
+        self.assertEqual(smpl_werkstatt.panel_undo_path(7),
+                         "/api/station/werkstatt/panels/7/undo")
+
+
+class TestPanelsDegrade(unittest.TestCase):
+    def test_an_unpaired_station_says_so_rather_than_calling(self):
+        client = smpl_werkstatt.WerkstattClient("", token_provider=lambda: None)
+        for result in (client.panel("VT-0007"), client.panel_scan(7, article_id=1),
+                       client.panel_undo(7, 1, 1)):
+            self.assertFalse(result.ok)
+            self.assertEqual(result.error, smpl_werkstatt.NOT_CONFIGURED)
+
+    def test_a_dead_smpl_is_a_failed_result_not_an_exception(self):
+        client = smpl_werkstatt.WerkstattClient("http://127.0.0.1:9", token_provider=lambda: "t",
+                                                timeout=0.2)
+        for result in (client.panel("VT-0007"), client.panel_scan(7, article_id=1),
+                       client.panel_undo(7, 1, 1)):
+            self.assertFalse(result.ok)
+            self.assertEqual(result.status, 0)
+            self.assertIn("nicht erreichbar", result.error)

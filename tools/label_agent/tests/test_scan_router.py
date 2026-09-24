@@ -1063,5 +1063,335 @@ class TestInputHygiene(unittest.TestCase):
         self.assertEqual(router.session.box_number, "K3")
 
 
+# --------------------------------------------------------------------------
+# Panel sessions: picking the parts for one Verteiler at the rack
+#
+# A ``VT-`` code is the panel number off the Schrank-Etikett. Scanning it
+# opens a session on the RACK screen — not the crate screen — under which
+# every article scan is booked as consumption for that panel. The session is
+# mutually exclusive with a crate session and shares its idle rule.
+# --------------------------------------------------------------------------
+
+
+class TestPanelCodes(unittest.TestCase):
+    def test_a_vt_code_is_a_panel_code_in_any_spelling(self):
+        for code in ("VT-0007", "vt-0007", " VT-7 ", "VT7", "vt0007", "VT-12345"):
+            self.assertTrue(scan_router.is_panel_code(code), code)
+
+    def test_other_codes_are_not(self):
+        for code in ("KISTE-K3", "SMPL-CMD-FERTIG", "SMPL-A1B2C3", "4011923456789",
+                     "V-7", "VTX", "", None):
+            self.assertFalse(scan_router.is_panel_code(code), repr(code))
+
+    def test_the_number_is_normalised_to_four_zero_padded_digits(self):
+        self.assertEqual(scan_router.normalise_panel_code("VT-7"), "VT-0007")
+        self.assertEqual(scan_router.normalise_panel_code("vt0007"), "VT-0007")
+        self.assertEqual(scan_router.normalise_panel_code("VT7"), "VT-0007")
+        self.assertEqual(scan_router.normalise_panel_code(" VT-0042 "), "VT-0042")
+        self.assertEqual(scan_router.normalise_panel_code("VT-12345"), "VT-12345")
+
+    def test_a_vt_code_with_no_number_keeps_its_text_for_the_server_to_refuse(self):
+        self.assertEqual(scan_router.normalise_panel_code("VT-ABC"), "VT-ABC")
+        self.assertIsNone(scan_router.normalise_panel_code("KISTE-K3"))
+
+    def test_a_panel_code_needs_no_resolution(self):
+        router, _ = build()
+        self.assertFalse(router.needs_resolution("VT-0007"))
+        self.assertFalse(router.needs_resolution("vt7"))
+
+    def test_the_prefix_is_published(self):
+        self.assertEqual(scan_router.PANEL_PREFIX, "VT-")
+
+
+class TestPanelSessions(unittest.TestCase):
+    def test_a_vt_code_opens_a_panel_session_on_the_rack(self):
+        router, _ = build()
+        decision = router.route("VT-7")
+        self.assertEqual(decision.screen, "regal")
+        self.assertEqual(decision.action, "open_panel")
+        self.assertTrue(decision.ok)
+        self.assertEqual(decision.code, "VT-0007")
+        self.assertEqual(decision.panel_code, "VT-0007")
+        self.assertFalse(decision.closed_box)
+        self.assertEqual(router.panel.code, "VT-0007")
+        self.assertEqual(router.panel.number, "VT-0007")
+        self.assertIsNone(router.panel.panel_id)
+        self.assertEqual(router.panel.opened_at, 1000.0)
+
+    def test_the_rack_stays_the_active_screen(self):
+        router, _ = build()
+        router.route("VT-0007")
+        self.assertEqual(router.active_screen, "regal")
+        self.assertIsNone(router.session)
+
+    def test_a_rescan_keeps_the_session_and_resets_its_clock(self):
+        router, clock = build()
+        router.route("VT-0007")
+        router.note_panel(7, "VT-0007")
+        clock.advance(300)
+        decision = router.route("vt7")
+        self.assertEqual(decision.action, "keep_panel")
+        self.assertEqual(decision.panel_code, "VT-0007")
+        self.assertEqual(router.panel.opened_at, 1000.0)
+        self.assertEqual(router.panel.last_at, 1300.0)
+        self.assertEqual(router.panel.panel_id, 7, "a rescan forgot what the server said")
+
+    def test_a_different_vt_code_switches(self):
+        router, clock = build()
+        router.route("VT-0007")
+        router.note_panel(7, "VT-0007")
+        clock.advance(5)
+        decision = router.route("VT-0008")
+        self.assertEqual(decision.action, "switch_panel")
+        self.assertEqual(decision.previous_code, "VT-0007")
+        self.assertEqual(decision.panel_code, "VT-0008")
+        self.assertEqual(router.panel.code, "VT-0008")
+        self.assertIsNone(router.panel.panel_id, "the old panel's id survived the switch")
+
+    def test_note_panel_records_what_the_server_answered(self):
+        router, _ = build()
+        router.route("VT-0007")
+        router.note_panel(7, "VT-0007")
+        self.assertEqual(router.panel.panel_id, 7)
+        self.assertEqual(router.panel.number, "VT-0007")
+
+    def test_note_panel_with_no_session_is_a_no_op(self):
+        router, _ = build()
+        router.note_panel(7, "VT-0007")
+        self.assertIsNone(router.panel)
+
+    def test_opening_a_panel_closes_an_open_crate(self):
+        router, clock = build()
+        router.route("KISTE-K3")
+        clock.advance(1)
+        decision = router.route("VT-0007")
+        self.assertEqual(decision.action, "open_panel")
+        self.assertTrue(decision.closed_box)
+        self.assertIsNone(router.session)
+        self.assertIsNotNone(router.panel)
+
+    def test_opening_a_crate_closes_an_open_panel(self):
+        router, clock = build()
+        router.route("VT-0007")
+        clock.advance(1)
+        decision = router.route("KISTE-K3")
+        self.assertEqual(decision.action, "open_session")
+        self.assertTrue(decision.closed_panel)
+        self.assertIsNone(router.panel)
+        self.assertEqual(router.session.code, "KISTE-K3")
+
+    def test_a_crate_opened_with_no_panel_reports_nothing_closed(self):
+        router, _ = build()
+        self.assertFalse(router.route("KISTE-K3").closed_panel)
+
+    def test_close_panel_from_outside(self):
+        router, _ = build()
+        router.route("VT-0007")
+        router.close_panel()
+        self.assertIsNone(router.panel)
+
+    def test_an_article_is_a_panel_item_while_a_panel_is_open(self):
+        router, clock = build()          # nobody tapped, direction "aus"
+        router.route("VT-0007")
+        clock.advance(1)
+        decision = router.route("SMPL-A1B2C3", kind="werkstatt_article")
+        self.assertEqual(decision.screen, "regal")
+        self.assertEqual(decision.action, "panel_item")
+        self.assertTrue(decision.ok)
+        self.assertEqual(decision.panel_code, "VT-0007")
+        self.assertEqual(decision.qty, 1)
+        self.assertIsNone(decision.movement_type)
+        self.assertIsNone(decision.assignee_user_id)
+
+    def test_the_pending_quantity_applies_and_then_resets(self):
+        router, clock = build()
+        router.route("VT-0007")
+        clock.advance(1)
+        router.route("SMPL-CMD-MENGE-5")
+        clock.advance(1)
+        decision = router.route("SMPL-A1B2C3", kind="werkstatt_article")
+        self.assertEqual(decision.qty, 5)
+        self.assertEqual(router.pending_qty, 1)
+
+    def test_the_direction_does_not_matter_but_may_still_be_changed(self):
+        router, clock = build()
+        router.route("VT-0007")
+        clock.advance(1)
+        decision = router.route("SMPL-CMD-EIN")
+        self.assertEqual(decision.action, "direction")
+        self.assertEqual(router.direction, "ein")
+        clock.advance(1)
+        self.assertEqual(router.route("SMPL-A1B2C3", kind="werkstatt_article").action,
+                         "panel_item")
+        self.assertIsNotNone(router.panel)
+
+    def test_a_machine_is_refused_in_a_panel_session(self):
+        router, clock = build()
+        router.route("VT-0007")
+        clock.advance(1)
+        decision = router.route("MA-0042", kind="machine")
+        self.assertFalse(decision.ok)
+        self.assertEqual(decision.action, "refused")
+        self.assertEqual(decision.screen, "regal")
+        self.assertEqual(decision.panel_code, "VT-0007")
+        self.assertIn("Verteiler", decision.error)
+        self.assertIsNotNone(router.panel)
+
+    def test_fertig_closes_the_panel(self):
+        router, clock = build()
+        router.route("VT-0007")
+        clock.advance(1)
+        decision = router.route("SMPL-CMD-FERTIG")
+        self.assertEqual(decision.screen, "regal")
+        self.assertEqual(decision.action, "close_panel")
+        self.assertEqual(decision.panel_code, "VT-0007")
+        self.assertEqual(decision.previous_code, "VT-0007")
+        self.assertIsNone(router.panel)
+
+    def test_fertig_with_no_panel_still_means_the_crate(self):
+        router, _ = build()
+        self.assertEqual(router.route("SMPL-CMD-FERTIG").action, "close_session")
+
+    def test_opening_a_panel_forgets_a_pending_article(self):
+        router, _ = with_name()
+        router.route("4011923456789", kind="werkstatt_article")
+        router.note_pending({"id": 5, "item_name": "Schraube"})
+        router.route("VT-0007")
+        self.assertIsNone(router.pending_article)
+
+    def test_the_snapshot_carries_the_panel(self):
+        router, _ = build(idle_timeout_s=600.0)
+        self.assertIsNone(router.snapshot()["panel"])
+        router.route("VT-0007")
+        router.note_panel(7, "VT-0007")
+        panel = router.snapshot()["panel"]
+        self.assertEqual(panel, {"code": "VT-0007", "panel_id": 7, "number": "VT-0007",
+                                 "opened_at": 1000.0, "expires_at": 1600.0})
+        self.assertIsNone(router.snapshot()["session"])
+
+    def test_a_decision_serialises_its_panel_fields(self):
+        router, _ = build()
+        payload = router.route("VT-0007").as_dict()
+        self.assertEqual(payload["panel_code"], "VT-0007")
+        self.assertFalse(payload["closed_box"])
+        self.assertFalse(payload["closed_panel"])
+        self.assertFalse(payload["panel_expired"])
+
+
+class TestPanelUndo(unittest.TestCase):
+    def _booked(self):
+        router, clock = build()
+        router.route("VT-0007")
+        router.note_panel(7, "VT-0007")
+        clock.advance(1)
+        router.route("SMPL-A1B2C3", kind="werkstatt_article")
+        router.note_commit(screen="regal", action="panel_item", article_id=218, qty=2,
+                           panel_code="VT-0007", panel_id=7)
+        clock.advance(1)
+        return router, clock
+
+    def test_abbruch_undoes_the_last_panel_booking(self):
+        router, _ = self._booked()
+        decision = router.route("SMPL-CMD-ABBRUCH")
+        self.assertEqual(decision.screen, "regal")
+        self.assertEqual(decision.action, "undo_panel_item")
+        self.assertEqual(decision.qty, 2)
+        self.assertEqual(decision.panel_code, "VT-0007")
+        self.assertEqual(decision.undo, {"panel_id": 7, "article_id": 218, "qty": 2})
+
+    def test_nothing_is_forgotten_until_the_undo_is_confirmed(self):
+        router, clock = self._booked()
+        router.route("SMPL-CMD-ABBRUCH")
+        clock.advance(1)
+        self.assertEqual(router.route("SMPL-CMD-ABBRUCH").action, "undo_panel_item")
+        router.confirm_undo("regal")
+        clock.advance(1)
+        self.assertEqual(router.route("SMPL-CMD-ABBRUCH").action, "nothing_to_undo")
+
+    def test_a_rack_movement_from_before_the_panel_is_not_undone_into_it(self):
+        router, clock = with_name()
+        router.route("4011923456789", kind="werkstatt_article")
+        router.note_commit(screen="regal", action="movement", article_id=5,
+                           movement_type="checkout", qty=1)
+        clock.advance(1)
+        router.route("VT-0007")
+        clock.advance(1)
+        decision = router.route("SMPL-CMD-ABBRUCH")
+        self.assertEqual(decision.action, "nothing_to_undo")
+        self.assertEqual(decision.screen, "regal")
+
+    def test_a_panel_booking_is_not_undone_after_the_panel_closed(self):
+        router, clock = self._booked()
+        router.route("SMPL-CMD-FERTIG")
+        clock.advance(1)
+        decision = router.route("SMPL-CMD-ABBRUCH")
+        self.assertEqual(decision.action, "nothing_to_undo")
+        self.assertIsNone(decision.undo)
+
+    def test_a_booking_belongs_to_the_panel_it_was_made_in(self):
+        router, clock = self._booked()
+        router.route("VT-0008")
+        clock.advance(1)
+        self.assertEqual(router.route("SMPL-CMD-ABBRUCH").action, "nothing_to_undo")
+        clock.advance(1)
+        router.route("VT-0007")
+        clock.advance(1)
+        self.assertEqual(router.route("SMPL-CMD-ABBRUCH").action, "undo_panel_item")
+
+    def test_abbruch_with_nothing_booked_says_so_on_the_rack(self):
+        router, clock = build()
+        router.route("VT-0007")
+        clock.advance(1)
+        decision = router.route("SMPL-CMD-ABBRUCH")
+        self.assertEqual(decision.action, "nothing_to_undo")
+        self.assertEqual(decision.screen, "regal")
+
+
+class TestPanelIdle(unittest.TestCase):
+    def test_the_panel_closes_itself_after_the_same_idle_timeout_as_a_crate(self):
+        router, clock = build(idle_timeout_s=600.0)
+        router.route("VT-0007")
+        clock.advance(599)
+        self.assertIsNone(router.tick())
+        self.assertIsNotNone(router.panel)
+        clock.advance(2)
+        self.assertEqual(router.tick(), scan_router.EXPIRED_PANEL)
+        self.assertIsNone(router.panel)
+
+    def test_a_crate_expiry_still_reads_as_true_and_names_the_crate(self):
+        router, clock = build(idle_timeout_s=600.0)
+        router.route("KISTE-K3")
+        clock.advance(601)
+        expired = router.tick()
+        self.assertTrue(expired)
+        self.assertEqual(expired, scan_router.EXPIRED_BOX)
+
+    def test_any_scan_pushes_the_deadline_out(self):
+        router, clock = build(idle_timeout_s=600.0)
+        router.route("VT-0007")
+        clock.advance(500)
+        router.route("SMPL-A1B2C3", kind="werkstatt_article")
+        clock.advance(500)
+        self.assertIsNone(router.tick())
+        self.assertIsNotNone(router.panel)
+
+    def test_a_scan_after_expiry_goes_to_the_rack_and_says_the_panel_expired(self):
+        router, clock = with_name(idle_timeout_s=600.0)
+        router.route("VT-0007")
+        clock.advance(601)
+        decision = router.route("4011923456789", kind="werkstatt_article")
+        self.assertEqual(decision.action, "movement")
+        self.assertTrue(decision.panel_expired)
+        self.assertFalse(decision.session_expired)
+
+    def test_a_crate_expiry_does_not_claim_a_panel_expired(self):
+        router, clock = with_name(idle_timeout_s=600.0)
+        router.route("KISTE-K3")
+        clock.advance(601)
+        decision = router.route("4011923456789", kind="werkstatt_article")
+        self.assertTrue(decision.session_expired)
+        self.assertFalse(decision.panel_expired)
+
+
 if __name__ == "__main__":
     unittest.main()

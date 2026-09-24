@@ -30,6 +30,7 @@ import hashlib
 import hmac
 import importlib
 import io
+import copy
 import json
 import os
 import re
@@ -101,6 +102,11 @@ ACTION_SCREEN = {
     # permission: the crate screen has no keyboard bolted to it.
     "name_article": SCREEN_RACK,
     "cancel_name": SCREEN_RACK,
+    # The panel card's two buttons — Fertig and Rückgängig. Rack only, because
+    # that is the screen the card is on; each does exactly what the scanned
+    # SMPL-CMD-FERTIG / SMPL-CMD-ABBRUCH does inside a panel session.
+    "close_panel": SCREEN_RACK,
+    "undo_panel": SCREEN_RACK,
 }
 
 #: Where a freshly created article's identity came from, in the one word the
@@ -1148,8 +1154,14 @@ class Agent:
         driven by hand: "the name clears itself after two minutes" is a rule
         nobody exercises in the workshop and everything downstream trusts.
         """
-        if self.router.tick():
+        expired = self.router.tick()
+        if expired == self._sr.EXPIRED_BOX:
             self.kiosk.flash(SCREEN_BOXES, "warn", "Kiste automatisch geschlossen",
+                             "Zu lange nichts gescannt.")
+        elif expired == self._sr.EXPIRED_PANEL:
+            # The list goes with the session: the card returns to the article.
+            self.kiosk.clear_panel()
+            self.kiosk.flash(SCREEN_RACK, "warn", "Verteiler automatisch geschlossen",
                              "Zu lange nichts gescannt.")
         if self.router.expire_assignee():
             # Whoever tapped their name has walked away; the next
@@ -1459,6 +1471,10 @@ class Agent:
             text, resolved = self._resolve_scan(text)
         decision = self.router.route(text, source=source,
                                      kind=self._sw.kind_of(resolved), at=arrived)
+        if decision.panel_expired:
+            # The session timed out under this very scan (the tick had not
+            # got there first); the card's list must not outlive it.
+            self.kiosk.clear_panel()
         try:
             self._apply(decision, resolved)
         except Exception as exc:  # noqa: BLE001 - a screen update is not worth a 500
@@ -1543,11 +1559,150 @@ class Agent:
                   "keep_session": "Kiste bleibt offen"}[decision.action]
         self.kiosk.flash(SCREEN_BOXES, "ok", "Kiste %s" % (decision.box_number or "?"), detail,
                          code=decision.code)
+        if decision.closed_panel:
+            # The crate took the panel's place; the rack is told, not left
+            # showing a list nothing can be booked against any more.
+            self.kiosk.clear_panel()
+            self.kiosk.flash(SCREEN_RACK, "ok", "Verteiler geschlossen",
+                             "Kiste %s geöffnet" % (decision.box_number or "?"),
+                             code=decision.code)
         self._refresh_boxes(force=True)
 
     def _applied_close(self, decision, _resolved) -> None:
         self.kiosk.flash(SCREEN_BOXES, "ok", "Kiste geschlossen",
                          decision.previous_code or "", code=decision.code)
+
+    # -- a Verteiler at the rack -------------------------------------------
+
+    def _applied_panel(self, decision, _resolved) -> None:
+        """Open, switch or re-read a panel: fetch its material list, show it.
+
+        The router already owns the session; what the list says decides
+        whether it stays. A number SMPL does not know is closed again at once
+        (there is nothing to pick for), and so is one whose list could not be
+        fetched on opening — without an id not one scan could be booked. A
+        RE-read that fails keeps the session and the old list, and says so on
+        the card: the parts are still being picked, only the numbers are old.
+        """
+        # A new subject: a name typed now must not land on the delivery from
+        # before the panel was scanned.
+        self.kiosk.clear_name_prompt()
+        code = decision.panel_code or decision.code
+        if decision.closed_box:
+            self.kiosk.flash(SCREEN_BOXES, "ok", "Kiste geschlossen",
+                             "Verteiler %s am Regal geöffnet" % code, code=decision.code)
+        keep = decision.action == "keep_panel"
+        if not keep:
+            # A slow fetch must show an empty list for the new number, never
+            # the old number's lines under the new heading.
+            self.kiosk.clear_panel()
+        result = self.werkstatt.panel(code)
+        if not result.ok:
+            self._panel_not_loaded(decision, result)
+            return
+        material = result.data
+        head = material.get("panel") if isinstance(material.get("panel"), dict) else {}
+        self.router.note_panel(head.get("id"), head.get("panel_number"))
+        self.kiosk.set_panel(material, last_line_key=(self.kiosk.panel_last_line_key()
+                                                      if keep else None))
+        detail = {"open_panel": "Kommissionierung offen",
+                  "switch_panel": "Verteiler gewechselt",
+                  "keep_panel": "Liste neu gelesen"}[decision.action]
+        self.kiosk.flash(SCREEN_RACK, "ok", "Verteiler %s" % (head.get("panel_number") or code),
+                         detail, code=decision.code)
+
+    def _panel_not_loaded(self, decision, result) -> None:
+        session = self.router.panel
+        loaded_before = session is not None and session.panel_id is not None
+        if result.status == 404 or not loaded_before:
+            self.router.close_panel()
+            self.kiosk.clear_panel()
+            title = "Verteiler unbekannt" if result.status == 404 else "Verteiler nicht geladen"
+            self.kiosk.flash(SCREEN_RACK, "error", title, result.error or "", code=decision.code)
+            return
+        self.kiosk.set_panel_error(result.error or "Liste konnte nicht gelesen werden.")
+        self.kiosk.flash(SCREEN_RACK, "warn", "Liste nicht aktualisiert", result.error or "",
+                         code=decision.code)
+
+    def _applied_panel_item(self, decision, resolved) -> None:
+        """One part for the open Verteiler: ``POST /panels/{id}/scan``.
+
+        The article was resolved before routing; its id is what is sent. A
+        code SMPL did not resolve is sent as a code and the server answers
+        400 in its own words — a Wareneingang for an unknown code is a rack
+        affair, not a panel's. A refusal changes nothing on the card.
+        """
+        self.kiosk.clear_name_prompt()
+        session = self.router.panel
+        if session is None or session.panel_id is None:
+            # The session exists but its list never arrived: nothing can be
+            # booked against an id nobody has.
+            self.kiosk.flash(SCREEN_RACK, "error", "Verteiler nicht geladen",
+                             "Bitte die Verteiler-Nummer erneut scannen.", code=decision.code)
+            return
+        article_id = self._sw.article_id_of(resolved)
+        result = self.werkstatt.panel_scan(
+            session.panel_id, code=None if article_id else decision.code,
+            article_id=article_id, quantity=decision.qty,
+        )
+        if not result.ok:
+            self.kiosk.flash(SCREEN_RACK, "error", "Nicht gebucht", result.error or "",
+                             code=decision.code)
+            return
+        data = result.data if isinstance(result.data, dict) else {}
+        line = data.get("line") if isinstance(data.get("line"), dict) else {}
+        booked_id = article_id if article_id is not None else self._sw.article_id_of(data)
+        self.router.note_commit(screen=SCREEN_RACK, action="panel_item", article_id=booked_id,
+                                qty=decision.qty, panel_code=session.code,
+                                panel_id=session.panel_id)
+        self._show_panel_booking(data, "consumption", decision.qty, decision.code)
+        title = _panel_line_title(line, decision.code)
+        warning = data.get("stock_warning")
+        if isinstance(warning, str) and warning.strip():
+            # Booked — the person is holding the part — but the shelf count
+            # says otherwise, and that is worth more than a green tick.
+            self.kiosk.flash(SCREEN_RACK, "warn", title, warning.strip(), code=decision.code)
+            return
+        self.kiosk.flash(SCREEN_RACK, "ok", title,
+                         "Verteiler %s · Verbrauch %d" % (session.number, decision.qty),
+                         code=decision.code)
+
+    def _show_panel_booking(self, data: dict, movement_type: str, qty: int, code: str) -> None:
+        """The list after a booking, plus the ``last`` both screens render."""
+        line = data.get("line") if isinstance(data.get("line"), dict) else {}
+        material = data.get("material") if isinstance(data.get("material"), dict) else None
+        if material is not None:
+            self.kiosk.set_panel(material, last_line_key=line.get("key"))
+        article = data.get("article") if isinstance(data.get("article"), dict) else None
+        session = self.router.panel
+        self.kiosk.set_last({
+            "article": article or {"code": code, "item_name": line.get("label")},
+            "machine": None,
+            "movement": {"movement_type": movement_type, "qty": qty,
+                         "movement_id": data.get("movement_id"), "at": self._clock(),
+                         "panel_number": session.number if session else None},
+        })
+
+    def _applied_undo_panel(self, decision, _resolved) -> None:
+        undo = decision.undo or {}
+        result = self.werkstatt.panel_undo(undo.get("panel_id"), undo.get("article_id"),
+                                           undo.get("qty", 1))
+        if not result.ok:
+            # The record is kept — see _flash_undo for why.
+            self.kiosk.flash(SCREEN_RACK, "error", "Abbruch fehlgeschlagen", result.error or "",
+                             code=decision.code)
+            return
+        self.router.confirm_undo(SCREEN_RACK)
+        data = result.data if isinstance(result.data, dict) else {}
+        line = data.get("line") if isinstance(data.get("line"), dict) else {}
+        self._show_panel_booking(data, "consumption_undo", undo.get("qty", 1), decision.code)
+        self.kiosk.flash(SCREEN_RACK, "ok", "Buchung zurückgenommen",
+                         _panel_line_title(line, decision.code), code=decision.code)
+
+    def _applied_close_panel(self, decision, _resolved) -> None:
+        self.kiosk.clear_panel()
+        self.kiosk.flash(SCREEN_RACK, "ok", "Verteiler geschlossen",
+                         decision.panel_code or "", code=decision.code)
 
     def _applied_qty(self, decision, _resolved) -> None:
         # The pending quantity shows on both screens, so both must be woken.
@@ -1608,6 +1763,12 @@ class Agent:
             # me". A worker walked off with a tool the ledger never saw.
             self.kiosk.flash(SCREEN_RACK, "warn", MSG_MACHINE_LOOKUP_ONLY,
                              MSG_MACHINE_NOT_BOOKED, code=decision.code)
+            return
+        if decision.panel_code:
+            # Refused inside a panel session: the operator stands at the rack,
+            # so the refusal lands there and the crate screen hears nothing.
+            self.kiosk.flash(SCREEN_RACK, "error", "Maschine gehört nicht in einen Verteiler",
+                             decision.error or "", code=decision.code)
             return
         # Refused during a crate session: the message belongs on the screen the
         # operator is standing at, the scan itself belongs on the rack.
@@ -2028,6 +2189,8 @@ class Agent:
             return {"ok": False, "error": "SMPL kennt keine Kiste mit der Nummer %d." % box_id}
         code = str(box.get("code") or "").strip() or "KISTE-%s" % (box.get("box_number") or "")
         self.router.open_session(code)
+        # Exclusive with a panel session, exactly as a scanned KISTE- code is.
+        self.kiosk.clear_panel()
         self.kiosk.flash(SCREEN_BOXES, "ok", "Kiste %s" % (box.get("box_number") or box_id),
                          "Kiste offen", code=code)
         return {"ok": True, "box_id": box_id, "code": code}
@@ -2101,6 +2264,35 @@ class Agent:
             self.kiosk.flash(SCREEN_BOXES, "error", "Nicht ausgebucht", result.error or "")
         return {"ok": result.ok, "removed": result.data if result.ok else None,
                 "error": result.error}
+
+    def close_panel_session(self) -> dict:
+        """The Fertig button: what a scanned ``SMPL-CMD-FERTIG`` does."""
+        self.require_kiosk()
+        session = self.router.panel
+        self.router.close_panel()
+        self.kiosk.clear_panel()
+        if session is None:
+            self.kiosk.bump(SCREEN_RACK)
+            return {"ok": True, "action": "close_panel", "panel_code": None}
+        self.kiosk.flash(SCREEN_RACK, "ok", "Verteiler geschlossen", session.number)
+        return {"ok": True, "action": "close_panel", "panel_code": session.code}
+
+    def undo_panel_item(self) -> dict:
+        """The Rückgängig button, routed exactly as a scanned ABBRUCH is.
+
+        One path for both doors, so the record it takes back, the sentence it
+        flashes and the "nothing to undo" case are the same. Guarded first: a
+        button on a card whose session has just expired must not fall through
+        to the rack's own ABBRUCH and reverse a movement nobody meant.
+        """
+        self.require_kiosk()
+        if self.router.panel is None:
+            self.kiosk.flash(SCREEN_RACK, "warn", "Kein Verteiler offen",
+                             "Nichts zurückgenommen.")
+            return {"ok": False, "action": "undo_panel", "error": "no panel session is open"}
+        answer = self.route_scan(self._sr.CMD_ABBRUCH, source="screen")
+        return {"ok": answer["ok"], "action": "undo_panel", "routed": answer["action"],
+                "error": answer["error"]}
 
     def rack_movement(self, article_id: int, movement_type: str, qty: int,
                       assignee_user_id=None) -> dict:
@@ -2184,6 +2376,10 @@ class Agent:
             )
         elif action == "cancel_name":
             self.kiosk.clear_name_prompt()
+        elif action == "close_panel":
+            return self.close_panel_session()
+        elif action == "undo_panel":
+            return self.undo_panel_item()
         else:
             raise ApiError(400, "unknown screen action '%s'" % action)
         return {"ok": True, "action": action}
@@ -2237,7 +2433,29 @@ _APPLY = {
     "undo_item": Agent._applied_undo_item,
     "undo_remove": Agent._applied_undo_remove,
     "undo_movement": Agent._applied_undo_movement,
+    "open_panel": Agent._applied_panel,
+    "switch_panel": Agent._applied_panel,
+    "keep_panel": Agent._applied_panel,
+    "close_panel": Agent._applied_close_panel,
+    "panel_item": Agent._applied_panel_item,
+    "undo_panel_item": Agent._applied_undo_panel,
 }
+
+
+def _panel_line_title(line: dict, fallback: str) -> str:
+    """``3 / 8 · WAGO 2003-7641``: where the part landed, in one line.
+
+    A line the panel never planned for has no denominator worth showing, so
+    it reads ``1 · <label>`` and the card's chip says "nicht geplant".
+    """
+    label = str(line.get("label") or fallback or "").strip()
+    scanned = line.get("scanned")
+    planned = line.get("planned")
+    if isinstance(planned, int) and not isinstance(planned, bool) and planned > 0:
+        return "%s / %s · %s" % (scanned, planned, label)
+    if scanned is not None:
+        return "%s · %s" % (scanned, label)
+    return label
 
 
 def _match_line(box: dict, article_id, code: str):
@@ -2296,6 +2514,11 @@ class Kiosk:
         # survive until it is answered or cancelled — the operator is walking
         # to the panel with a box in their hands.
         self._name_prompt = None
+        # The open Verteiler's material list, as {"material", "last_line_key",
+        # "error"}. The SESSION lives in the router; this is only what SMPL
+        # last said about it, and the snapshot shows it only while the router
+        # still has the session open.
+        self._panel = None
         self._closed = False
 
     # -- writes -----------------------------------------------------------
@@ -2355,6 +2578,39 @@ class Kiosk:
             for screen in SCREENS:
                 self._seq[screen] += 1
             self._cond.notify_all()
+
+    def set_panel(self, material, *, last_line_key=None) -> None:
+        """A freshly read material list. Always wakes the rack: the list is
+        the card while a panel is open, and a re-read is news even when
+        nothing in it moved."""
+        with self._cond:
+            self._panel = {
+                "material": copy.deepcopy(material) if isinstance(material, dict) else {},
+                "last_line_key": last_line_key,
+                "error": None,
+            }
+            self._seq[SCREEN_RACK] += 1
+            self._cond.notify_all()
+
+    def set_panel_error(self, message) -> None:
+        """The list could not be re-read; the old one stays, marked as such."""
+        with self._cond:
+            current = self._panel or {"material": {}, "last_line_key": None}
+            self._panel = dict(current, error=str(message).strip() or None)
+            self._seq[SCREEN_RACK] += 1
+            self._cond.notify_all()
+
+    def clear_panel(self) -> None:
+        with self._cond:
+            if self._panel is None:
+                return
+            self._panel = None
+            self._seq[SCREEN_RACK] += 1
+            self._cond.notify_all()
+
+    def panel_last_line_key(self):
+        with self._cond:
+            return (self._panel or {}).get("last_line_key")
 
     def set_crew(self, people) -> None:
         """The name buttons. Only wakes the rack screen when they changed."""
@@ -2439,6 +2695,7 @@ class Kiosk:
             payload["name_prompt"] = (
                 dict(self._name_prompt) if self._name_prompt else None
             )
+            payload["panel"] = self._panel_payload()
         return payload
 
     def _session_payload(self):
@@ -2457,6 +2714,38 @@ class Kiosk:
             "opened_at": session.opened_at,
             "expires_at": session.last_at + self._idle_timeout_s,
             "mode": self._router.mode,
+        }
+
+    def _panel_payload(self):
+        """Contract §7: null unless the router has a panel session open.
+
+        The session (number, clocks) comes from the router, the list from the
+        last read. A session whose list never arrived is still a session —
+        the card then shows the number, an empty list and ``error``.
+        """
+        session = self._router.panel if self._router else None
+        if session is None:
+            return None
+        stored = self._panel or {}
+        material = stored.get("material") or {}
+        head = material.get("panel") if isinstance(material.get("panel"), dict) else {}
+        project = " · ".join(str(part) for part in
+                             (head.get("project_number"), head.get("project_name")) if part)
+        return {
+            "id": head.get("id", session.panel_id),
+            "number": head.get("panel_number") or session.number,
+            "designation": head.get("designation"),
+            "name": head.get("name"),
+            "customer": head.get("customer_name"),
+            "project": project or None,
+            "opened_at": session.opened_at,
+            "expires_at": session.last_at + self._idle_timeout_s,
+            "planned_total": material.get("planned_total", 0),
+            "scanned_total": material.get("scanned_total", 0),
+            "open_lines": material.get("open_lines", 0),
+            "lines": list(material.get("lines") or []),
+            "last_line_key": stored.get("last_line_key"),
+            "error": stored.get("error"),
         }
 
     def find_box(self, *, box_id=None, code: str = "", box_number: str = ""):

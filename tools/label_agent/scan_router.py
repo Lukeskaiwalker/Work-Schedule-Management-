@@ -30,6 +30,11 @@ The rules, in the order they are applied:
 6. **"Mitnehmen" needs an open crate.** It is the one box-screen command that
    books stock, and the codes hang on a wall where anybody can scan one in
    passing, so it names the crate that is open and refuses when none is.
+7. **A ``VT-`` code opens a panel session on the rack.** The number off a
+   Schrank-Etikett means "the next parts are for this Verteiler": every
+   article scanned under it is booked as consumption for that panel, with no
+   name and no direction. A panel session and a crate session are mutually
+   exclusive — opening one closes the other — and they share the idle rule.
 
 The de-duplication window exists because two readers deliver the same scan:
 the evdev reader owns the device, but a browser wedge can still be focused
@@ -65,10 +70,17 @@ __all__ = [
     "CODE_PREFIX",
     "CODE_LENGTH",
     "BOX_PREFIX",
+    "PANEL_PREFIX",
+    "PanelSession",
+    "EXPIRED_BOX",
+    "EXPIRED_PANEL",
     "DIRECTIONS",
     "MSG_NEEDS_ASSIGNEE",
     "MOVEMENT_REQUIRING_ASSIGNEE",
     "is_internal_article_code",
+    "is_box_code",
+    "is_panel_code",
+    "normalise_panel_code",
     "movement_needs_assignee",
     "command_for",
 ]
@@ -88,6 +100,20 @@ CODE_LENGTH = 6
 _INTERNAL_RE = re.compile(r"^SMPL-[%s]{%d}$" % (CODE_ALPHABET, CODE_LENGTH))
 
 BOX_PREFIX = "KISTE-"
+
+# A Verteiler's number as printed on its Schrank-Etikett: ``VT-0007``. The
+# station recognises the prefix itself — SMPL's /resolve answers not_found for
+# it, exactly as for a crate code — and asks for the panel's material list
+# instead. A scanned or typed number is normalised the way the server does it
+# (``VT-7`` → ``VT-0007``, ``vt0007`` → ``VT-0007``) so a rescan of the same
+# panel in another spelling is a rescan and not a switch.
+PANEL_PREFIX = "VT-"
+PANEL_NUMBER_WIDTH = 4
+_PANEL_RE = re.compile(r"^VT-?(\d+)$")
+
+#: What :meth:`ScanRouter.tick` answers when it closed something.
+EXPIRED_BOX = "box"
+EXPIRED_PANEL = "panel"
 
 CMD_FERTIG = "SMPL-CMD-FERTIG"
 CMD_ABBRUCH = "SMPL-CMD-ABBRUCH"
@@ -171,6 +197,10 @@ MSG_MACHINE_IN_SESSION = (
     "Maschinen gehören nicht in eine Kiste. Der Scan wurde ans Regal "
     "geschickt — Kiste bleibt offen."
 )
+MSG_MACHINE_IN_PANEL = (
+    "Maschinen gehören nicht in einen Verteiler. Nichts gebucht — "
+    "Verteiler bleibt offen."
+)
 MSG_NO_INVERSE = (
     "Ein Wareneingang lässt sich nicht per Abbruch zurücknehmen. Bitte in "
     "SMPL korrigieren."
@@ -211,6 +241,29 @@ def is_box_code(code: str) -> bool:
     return (code or "").strip().upper().startswith(BOX_PREFIX)
 
 
+def is_panel_code(code: str) -> bool:
+    """True for a Verteiler number: ``VT-`` plus anything, or ``VT`` plus digits.
+
+    The loose second form exists because a scanner in the wrong keyboard
+    layout can lose the hyphen. What follows the prefix is not judged here:
+    ``VT-ABC`` is a panel code the server refuses with a sentence, which is a
+    better answer than sending it through /resolve and calling it an article.
+    """
+    upper = (code or "").strip().upper()
+    return upper.startswith(PANEL_PREFIX) or _PANEL_RE.match(upper) is not None
+
+
+def normalise_panel_code(code: str) -> Optional[str]:
+    """``VT-7`` → ``VT-0007``; None for something that is not a panel code."""
+    upper = (code or "").strip().upper()
+    if not is_panel_code(upper):
+        return None
+    match = _PANEL_RE.match(upper)
+    if match is None:
+        return upper
+    return PANEL_PREFIX + str(int(match.group(1))).zfill(PANEL_NUMBER_WIDTH)
+
+
 # --------------------------------------------------------------------------
 # State
 # --------------------------------------------------------------------------
@@ -235,6 +288,30 @@ class SessionState:
 
 
 @dataclass(frozen=True)
+class PanelSession:
+    """An open picking session for one Verteiler. Frozen; a change makes a new one.
+
+    ``panel_id`` and ``number`` are what the server answered when the list was
+    fetched; until then the id is None and the number is the scanned code.
+    """
+
+    code: str
+    panel_id: Optional[int]
+    number: str
+    opened_at: float
+    last_at: float
+
+    def as_dict(self, *, idle_timeout_s: float) -> Dict[str, Any]:
+        return {
+            "code": self.code,
+            "panel_id": self.panel_id,
+            "number": self.number,
+            "opened_at": self.opened_at,
+            "expires_at": self.last_at + idle_timeout_s,
+        }
+
+
+@dataclass(frozen=True)
 class LastAction:
     """What the last commit did, so ``ABBRUCH`` knows what to take back.
 
@@ -253,6 +330,10 @@ class LastAction:
     qty: int = 1
     box_code: Optional[str] = None
     assignee_user_id: Optional[int] = None
+    #: The panel a ``panel_item`` was booked for — same reasoning as
+    #: ``box_code``: a booking is only undone into the panel it was made in.
+    panel_code: Optional[str] = None
+    panel_id: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -260,6 +341,8 @@ class RouterState:
     """Everything the router remembers, as one immutable value."""
 
     session: Optional[SessionState] = None
+    # The open Verteiler, if any. Never set at the same time as ``session``.
+    panel: Optional[PanelSession] = None
     mode: str = "add"
     direction: str = "aus"
     pending_qty: int = 1
@@ -296,6 +379,15 @@ class Decision:
     #: Who the booking is for. Set for "aus" and "ein", never for a
     #: Wareneingang, and never guessed by the caller.
     assignee_user_id: Optional[int] = None
+    #: The Verteiler this decision is about (normalised, ``VT-0007``).
+    panel_code: Optional[str] = None
+    #: Opening a panel closed a crate session, or the other way round. Said
+    #: here so the caller can tell the other screen what just happened to it.
+    closed_box: bool = False
+    closed_panel: bool = False
+    #: Like ``session_expired``, for the panel: it timed out just before this
+    #: scan, and the scan was routed as if it had never been open.
+    panel_expired: bool = False
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -315,6 +407,10 @@ class Decision:
             "session_expired": self.session_expired,
             "undo": dict(self.undo) if self.undo else None,
             "assignee_user_id": self.assignee_user_id,
+            "panel_code": self.panel_code,
+            "closed_box": self.closed_box,
+            "closed_panel": self.closed_panel,
+            "panel_expired": self.panel_expired,
         }
 
 
@@ -365,6 +461,11 @@ class ScanRouter:
             return self._state.session
 
     @property
+    def panel(self) -> Optional[PanelSession]:
+        with self._lock:
+            return self._state.panel
+
+    @property
     def mode(self) -> str:
         with self._lock:
             return self._state.mode
@@ -413,13 +514,16 @@ class ScanRouter:
     def needs_resolution(self, code: str) -> bool:
         """True when the caller must ask SMPL what this code is.
 
-        Commands and crate codes are self-describing, and asking about them
-        would put a network round trip in front of "close the session".
+        Commands, crate codes and panel numbers are self-describing, and
+        asking about them would put a network round trip in front of "close
+        the session" — or, for a panel, in front of the one request that
+        actually answers (``GET /panels/{code}``).
         """
         text = (code or "").strip()
         if not text:
             return False
-        return command_for(text) is None and not is_box_code(text)
+        return (command_for(text) is None and not is_box_code(text)
+                and not is_panel_code(text))
 
     def snapshot(self) -> Dict[str, Any]:
         """A JSON-shaped view for /health and the screen state."""
@@ -428,6 +532,8 @@ class ScanRouter:
             return {
                 "session": (state.session.as_dict(idle_timeout_s=self.idle_timeout_s)
                             if state.session else None),
+                "panel": (state.panel.as_dict(idle_timeout_s=self.idle_timeout_s)
+                          if state.panel else None),
                 "seconds_remaining": self.seconds_remaining() or 0,
                 "mode": state.mode,
                 "direction": state.direction,
@@ -478,22 +584,30 @@ class ScanRouter:
                     item_id: Optional[int] = None, article_id: Optional[int] = None,
                     movement_type: str = "", qty: int = 1,
                     box_code: Optional[str] = None,
-                    assignee_user_id: Optional[int] = None) -> None:
+                    assignee_user_id: Optional[int] = None,
+                    panel_code: Optional[str] = None,
+                    panel_id: Optional[int] = None) -> None:
         """Record a commit SMPL accepted, so ``ABBRUCH`` can take it back.
 
         The crate is stamped from the open session unless the caller names
         one, so a line written into crate A can never be undone out of crate B.
+        A ``panel_item`` is stamped with its Verteiler the same way.
         """
         with self._lock:
             state = self._state
             actions = dict(state.last_actions)
             if box_code is None and state.session is not None:
                 box_code = state.session.code
+            if panel_code is None and state.panel is not None:
+                panel_code = state.panel.code
+                if panel_id is None:
+                    panel_id = state.panel.panel_id
             actions[screen] = LastAction(
                 screen=screen, action=action, box_id=box_id, item_id=item_id,
                 article_id=article_id, movement_type=movement_type,
                 qty=max(1, int(qty)), box_code=box_code,
                 assignee_user_id=assignee_user_id,
+                panel_code=panel_code, panel_id=panel_id,
             )
             self._state = replace(state, last_actions=actions,
                                   pending_article=None, pending_article_qty=1)
@@ -518,6 +632,23 @@ class ScanRouter:
         """Open or switch a session from outside — the screen's box picker."""
         with self._lock:
             self._decide_box(self._normalise(code), "wedge", self._clock())
+
+    def close_panel(self) -> None:
+        """Close the panel session from outside — the Fertig button, or a
+        server that does not know the number."""
+        with self._lock:
+            self._state = replace(self._state, panel=None)
+
+    def note_panel(self, panel_id: Optional[int], number: Optional[str] = None) -> None:
+        """Record what SMPL said the open panel is. No-op with none open."""
+        with self._lock:
+            panel = self._state.panel
+            if panel is None:
+                return
+            self._state = replace(self._state, panel=replace(
+                panel, panel_id=_as_user_id({"id": panel_id}),
+                number=(number or "").strip().upper() or panel.number,
+            ))
 
     def set_direction(self, direction: str) -> None:
         with self._lock:
@@ -552,8 +683,11 @@ class ScanRouter:
 
     # -- the clock --------------------------------------------------------
 
-    def tick(self) -> bool:
-        """Expire an idle session. True when this call closed one."""
+    def tick(self) -> Optional[str]:
+        """Expire an idle session. Names what it closed — :data:`EXPIRED_BOX`
+        or :data:`EXPIRED_PANEL` — and None when nothing was due. Truthy
+        exactly when something closed, so ``if router.tick():`` still reads.
+        """
         with self._lock:
             return self._expire(self._clock())
 
@@ -568,14 +702,23 @@ class ScanRouter:
             self._state = replace(state, assignee=None, assignee_at=0.0)
             return True
 
-    def _expire(self, now: float) -> bool:
-        session = self._state.session
-        if session is None:
-            return False
-        if now - session.last_at <= self.idle_timeout_s:
-            return False
-        self._state = replace(self._state, session=None, mode="add")
-        return True
+    def _expire(self, now: float) -> Optional[str]:
+        state = self._state
+        session = state.session
+        if session is not None and now - session.last_at > self.idle_timeout_s:
+            self._state = replace(state, session=None, mode="add")
+            return EXPIRED_BOX
+        panel = state.panel
+        if panel is not None and now - panel.last_at > self.idle_timeout_s:
+            self._state = replace(state, panel=None)
+            return EXPIRED_PANEL
+        return None
+
+    @staticmethod
+    def _expiry_fields(expired: Optional[str]) -> Dict[str, bool]:
+        """The two ``Decision`` flags one expiry answer turns into."""
+        return {"session_expired": expired == EXPIRED_BOX,
+                "panel_expired": expired == EXPIRED_PANEL}
 
     # -- routing ----------------------------------------------------------
 
@@ -617,7 +760,11 @@ class ScanRouter:
 
             if is_box_code(upper):
                 decision = self._decide_box(upper, source, now)
-                return replace(decision, session_expired=expired)
+                return replace(decision, **self._expiry_fields(expired))
+
+            if is_panel_code(upper):
+                decision = self._decide_panel(upper, source, now)
+                return replace(decision, **self._expiry_fields(expired))
 
             return self._decide_article(text, kind, source, now, expired)
 
@@ -627,6 +774,8 @@ class ScanRouter:
         session = state.session
         if session is not None:
             state = replace(state, session=replace(session, last_at=now))
+        if state.panel is not None:
+            state = replace(state, panel=replace(state.panel, last_at=now))
         if state.assignee is not None:
             state = replace(state, assignee_at=now)
         self._state = state
@@ -634,11 +783,18 @@ class ScanRouter:
     # -- the three kinds of scan ------------------------------------------
 
     def _decide_command(self, command: str, text: str, source: str, now: float,
-                        expired: bool) -> Decision:
+                        expired: Optional[str]) -> Decision:
         state = self._state
-        base = dict(code=text, source=source, session_expired=expired)
+        base = dict(code=text, source=source, **self._expiry_fields(expired))
 
         if command == CMD_FERTIG:
+            if state.panel is not None:
+                # The two sessions are exclusive, so "fertig" can only mean
+                # the one that is open — and this one is on the rack.
+                previous = state.panel.code
+                self._state = replace(state, panel=None)
+                return Decision(screen=RACK, action="close_panel",
+                                panel_code=previous, previous_code=previous, **base)
             previous = state.session.code if state.session else None
             self._state = replace(state, session=None, mode="add")
             return Decision(screen=BOXES, action="close_session",
@@ -677,7 +833,7 @@ class ScanRouter:
         self._state = replace(state, mode=mode)
         return Decision(screen=BOXES, action="mode", **base)
 
-    def _decide_undo(self, text: str, source: str, expired: bool) -> Decision:
+    def _decide_undo(self, text: str, source: str, expired: Optional[str]) -> Decision:
         """Describe the inverse. Nothing is forgotten here — see confirm_undo.
 
         One rule survives the trip through here: **a checkout names somebody.**
@@ -688,7 +844,7 @@ class ScanRouter:
         on the movement branch for why it falls back rather than refusing flat.
         """
         state = self._state
-        base = dict(code=text, source=source, session_expired=expired)
+        base = dict(code=text, source=source, **self._expiry_fields(expired))
         screen = self.active_screen
 
         # An article that never reached SMPL is the cheapest thing to take
@@ -698,7 +854,26 @@ class ScanRouter:
             return Decision(screen=screen, action="clear_pending", **base)
 
         last = state.last_actions.get(screen)
-        if last is None:
+
+        if state.panel is not None:
+            # Inside a panel session an ABBRUCH can only mean the last part
+            # picked for THIS Verteiler. A rack movement from before the
+            # session opened, or a part picked for another panel, is not
+            # undone into it — and the record is kept, so switching back
+            # makes it undoable again, exactly as for a crate.
+            if (last is None or last.action != "panel_item"
+                    or last.panel_code != state.panel.code):
+                return Decision(screen=RACK, action="nothing_to_undo",
+                                panel_code=state.panel.code, **base)
+            return Decision(screen=RACK, action="undo_panel_item", qty=last.qty,
+                            panel_code=state.panel.code,
+                            undo={"panel_id": last.panel_id,
+                                  "article_id": last.article_id, "qty": last.qty},
+                            **base)
+
+        if last is None or last.action == "panel_item":
+            # A part picked for a Verteiler is undone under that Verteiler
+            # (scan its number again), never as an anonymous rack movement.
             return Decision(screen=screen, action="nothing_to_undo", **base)
 
         if screen == BOXES:
@@ -774,20 +949,57 @@ class ScanRouter:
             self._state = replace(state, session=replace(previous, last_at=now))
             return Decision(screen=BOXES, action="keep_session", **base)
 
-        self._state = replace(state, session=session, mode="add")
+        # A crate and a Verteiler cannot both be open: the next article scan
+        # has to mean exactly one thing.
+        closed_panel = state.panel is not None
+        self._state = replace(state, session=session, mode="add", panel=None)
         if previous is None:
-            return Decision(screen=BOXES, action="open_session", **base)
+            return Decision(screen=BOXES, action="open_session",
+                            closed_panel=closed_panel, **base)
         # Switching crates is what packing three jobs at once looks like.
         return Decision(screen=BOXES, action="switch_session",
-                        previous_code=previous.code, **base)
+                        previous_code=previous.code, closed_panel=closed_panel, **base)
+
+    def _decide_panel(self, upper: str, source: str, now: float) -> Decision:
+        state = self._state
+        code = normalise_panel_code(upper) or upper
+        base = dict(code=code, source=source, panel_code=code)
+
+        previous = state.panel
+        if previous is not None and previous.code == code:
+            # A rescan of the open Verteiler: keep the session, reset the
+            # clock. The server's answer (id, number) is kept too.
+            self._state = replace(state, panel=replace(previous, last_at=now))
+            return Decision(screen=RACK, action="keep_panel", **base)
+
+        panel = PanelSession(code=code, panel_id=None, number=code,
+                             opened_at=now, last_at=now)
+        closed_box = state.session is not None
+        # A new subject: a part that failed to book at the rack a minute ago
+        # must not be what the next ABBRUCH takes back.
+        self._state = replace(state, panel=panel, session=None, mode="add",
+                              pending_article=None, pending_article_qty=1)
+        if previous is None:
+            return Decision(screen=RACK, action="open_panel",
+                            closed_box=closed_box, **base)
+        return Decision(screen=RACK, action="switch_panel",
+                        previous_code=previous.code, closed_box=closed_box, **base)
 
     def _decide_article(self, text: str, kind: Optional[str], source: str,
-                        now: float, expired: bool) -> Decision:
+                        now: float, expired: Optional[str]) -> Decision:
         state = self._state
-        base = dict(code=text, source=source, kind=kind, session_expired=expired)
+        base = dict(code=text, source=source, kind=kind, **self._expiry_fields(expired))
         session = state.session
+        panel = state.panel
 
         if kind == "machine":
+            if panel is not None:
+                # A tool is not a part of a Verteiler any more than of a
+                # crate. Refused on the rack, where the operator stands, and
+                # the panel stays open for the part they meant.
+                return Decision(screen=RACK, action="refused", ok=False,
+                                error=MSG_MACHINE_IN_PANEL, panel_code=panel.code,
+                                **base)
             if session is not None:
                 # Refused, but mirrored where it would have meant something —
                 # and the crate stays open, because the operator's next scan
@@ -795,6 +1007,16 @@ class ScanRouter:
                 return Decision(screen=RACK, action="refused", ok=False,
                                 error=MSG_MACHINE_IN_SESSION, **base)
             return Decision(screen=RACK, action="machine", **base)
+
+        if panel is not None:
+            # Consumption for the open Verteiler: no name — the panel is the
+            # subject, not a person — and no direction, because parts only
+            # ever go INTO a panel from the rack.
+            qty = state.pending_qty
+            self._state = replace(state, pending_qty=1, pending_article=None,
+                                  pending_article_qty=1)
+            return Decision(screen=RACK, action="panel_item", qty=qty,
+                            panel_code=panel.code, **base)
 
         # An Ausgabe with nobody's name on it cannot answer "who has the
         # drill", so it is refused before anything is consumed: the quantity

@@ -12,6 +12,7 @@ with something a human can act on when it is not.
 
 from __future__ import annotations
 
+import copy
 import json
 import pathlib
 import re
@@ -41,7 +42,9 @@ from test_barcode128 import decode_svg  # noqa: E402
 # Same arrangement for the QR route: the reader that turns a served SVG back
 # into modules and text lives with the encoder's own tests.
 from test_qrcode_svg import FINDER, decode as decode_qr, read_svg as read_qr_svg  # noqa: E402
-from test_smpl_werkstatt import StubSmpl  # noqa: E402
+from test_smpl_werkstatt import (  # noqa: E402
+    PANEL_ARTICLE, PANEL_MATERIAL, StubSmpl,
+)
 from test_station_http import QuietHandler, RunningAgent, StationHttpCase  # noqa: E402
 
 P = smpl_werkstatt.PATHS
@@ -2393,3 +2396,492 @@ class TestTheRackPageCanAskForAName(unittest.TestCase):
         """It has no keyboard bolted to it — that is the whole reason."""
         boxes = self.PAGE.with_name("kiosk_boxes.html").read_text(encoding="utf-8")
         self.assertNotIn("namebox", boxes)
+
+
+# --------------------------------------------------------------------------
+# Picking the parts for a Verteiler at the rack (panel sessions)
+#
+# A ``VT-`` code off a Schrank-Etikett opens a session on the RACK screen
+# under which every article scan is consumption for that panel. What these
+# pin: the snapshot shape the page renders, that the booking goes through
+# ``panel_scan`` with the resolved article, that a refusal leaves the list
+# alone, and that the two buttons do exactly what the two codes do.
+# --------------------------------------------------------------------------
+
+
+class _PanelSmpl:
+    """The panel calls, scripted and recorded.
+
+    Stubbed onto the real client method by method — not swapped in wholesale
+    — so the tick's crate and crew refreshes and the upstream chip keep
+    talking to the real (unconfigured, harmless) client.
+    """
+
+    def __init__(self, agent, *, known=("VT-0007",), stock_warning=None):
+        self.fetches = []
+        self.scans = []
+        self.undos = []
+        self.stock_warning = stock_warning
+        self.material = copy.deepcopy(PANEL_MATERIAL)
+        self.known = set(known)
+        client = agent.werkstatt
+        client.panel = self.panel
+        client.panel_scan = self.panel_scan
+        client.panel_undo = self.panel_undo
+        client.resolve = self.resolve
+
+    @staticmethod
+    def resolve(code):
+        if code == "SMPL-81JHYT":
+            return {"kind": "werkstatt_article", "article": dict(PANEL_ARTICLE)}
+        return {"kind": "not_found", "code": code}
+
+    def panel(self, code):
+        self.fetches.append(code)
+        if code not in self.known:
+            return smpl_werkstatt.Result(
+                False, status=404, error="Kein Verteiler mit der Nummer „%s“." % code)
+        data = copy.deepcopy(self.material)
+        data["panel"] = dict(data["panel"], panel_number=code, id=int(code[3:]))
+        return smpl_werkstatt.Result(True, data=data, status=200)
+
+    def _booked(self, panel_id, delta, movement_id):
+        material = copy.deepcopy(self.material)
+        material["panel"] = dict(material["panel"], id=panel_id)
+        line = dict(material["lines"][0])
+        line["scanned"] = line["scanned"] + delta
+        line["status"] = ("done" if line["scanned"] == line["planned"]
+                          else "over" if line["scanned"] > line["planned"] else "open")
+        material["lines"][0] = line
+        material["scanned_total"] = material["scanned_total"] + delta
+        self.material = material
+        return {"material": copy.deepcopy(material), "line": dict(line),
+                "movement_id": movement_id, "article": dict(PANEL_ARTICLE),
+                "stock_warning": self.stock_warning}
+
+    def panel_scan(self, panel_id, *, code=None, article_id=None, quantity=1, notes=None):
+        self.scans.append((panel_id, code, article_id, quantity))
+        if article_id is None:
+            return smpl_werkstatt.Result(
+                False, status=400, error="Kein Lagerartikel zum Code „%s“ gefunden." % code)
+        return smpl_werkstatt.Result(
+            True, status=200, data=self._booked(panel_id, quantity, 990 + len(self.scans)))
+
+    def panel_undo(self, panel_id, article_id, quantity):
+        self.undos.append((panel_id, article_id, quantity))
+        return smpl_werkstatt.Result(
+            True, status=200, data=self._booked(panel_id, -quantity, 1990 + len(self.undos)))
+
+
+PANEL_KEYS = ("id", "number", "designation", "name", "customer", "project", "opened_at",
+              "expires_at", "planned_total", "scanned_total", "open_lines", "lines",
+              "last_line_key", "error")
+
+
+class TestPanelPicking(KioskCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.smpl = _PanelSmpl(self.agent)
+
+    def scan(self, code):
+        status, body = post(self.base() + "/scan/route", {"code": code})
+        self.assertEqual(status, 200, body)
+        time.sleep(0.2)                      # past the de-dupe window
+        return body
+
+    def action(self, action, screen="regal"):
+        return post(self.base() + "/screen/action", {"screen": screen, "action": action})
+
+    def panel(self):
+        _s, state = self.state("regal")
+        return state["panel"]
+
+    def flash(self, screen="regal"):
+        return self.agent.kiosk.snapshot(screen)["flash"]
+
+    def test_the_rack_state_carries_no_panel_until_one_is_scanned(self):
+        self.assertIsNone(self.panel())
+        self.assertNotIn("panel", self.state("kisten")[1])
+
+    def test_scanning_a_vt_code_opens_the_panel_on_the_rack(self):
+        body = self.scan("vt-7")
+        self.assertEqual(body["routed_to"], "regal")
+        self.assertEqual(body["action"], "open_panel")
+        self.assertEqual(self.smpl.fetches, ["VT-0007"])
+        panel = self.panel()
+        self.assertEqual(sorted(panel), sorted(PANEL_KEYS))
+        self.assertEqual(panel["id"], 7)
+        self.assertEqual(panel["number"], "VT-0007")
+        self.assertEqual(panel["designation"], "ZV1")
+        self.assertEqual(panel["name"], "Zählerverteiler")
+        self.assertEqual(panel["customer"], "Schulze")
+        self.assertEqual(panel["project"], "381 · Neubau Schulze")
+        self.assertEqual(panel["planned_total"], 40)
+        self.assertEqual(panel["scanned_total"], 12)
+        self.assertEqual(panel["open_lines"], 5)
+        self.assertEqual(panel["lines"][0]["key"], "part:2003-7641")
+        self.assertIsNone(panel["last_line_key"])
+        self.assertIsNone(panel["error"])
+        self.assertAlmostEqual(panel["expires_at"] - panel["opened_at"], server.SESSION_IDLE_S)
+        self.assertEqual(self.agent.router.panel.panel_id, 7)
+        flash = self.flash()
+        self.assertEqual(flash["level"], "ok")
+        self.assertIn("VT-0007", flash["title"])
+
+    def test_the_session_is_in_the_health_snapshot_too(self):
+        self.scan("VT-0007")
+        status, body, _headers = get(self.base() + "/health")
+        payload = json.loads(body.decode("utf-8"))
+        self.assertEqual(payload["scan_router"]["panel"]["panel_id"], 7)
+
+    def test_an_unknown_number_drops_the_session(self):
+        body = self.scan("VT-0099")
+        self.assertEqual(body["action"], "open_panel")
+        self.assertIsNone(self.panel())
+        self.assertIsNone(self.agent.router.panel)
+        flash = self.flash()
+        self.assertEqual(flash["level"], "error")
+        self.assertEqual(flash["title"], "Verteiler unbekannt")
+        self.assertIn("VT-0099", flash["detail"])
+
+    def test_a_network_failure_on_opening_leaves_nothing_open(self):
+        self.agent.werkstatt.panel = lambda code: smpl_werkstatt.Result(
+            False, error="SMPL ist nicht erreichbar (timeout).")
+        self.scan("VT-0007")
+        self.assertIsNone(self.panel())
+        self.assertIsNone(self.agent.router.panel)
+        self.assertEqual(self.flash()["level"], "error")
+        self.assertEqual(self.flash()["title"], "Verteiler nicht geladen")
+
+    def test_opening_a_panel_closes_a_crate_and_tells_the_crate_screen(self):
+        self.scan("KISTE-K3")
+        body = self.scan("VT-0007")
+        self.assertEqual(body["action"], "open_panel")
+        _s, boxes = self.state("kisten")
+        self.assertIsNone(boxes["session"])
+        self.assertEqual(boxes["flash"]["title"], "Kiste geschlossen")
+        self.assertIn("Verteiler", boxes["flash"]["detail"])
+        self.assertIsNotNone(self.panel())
+
+    def test_opening_a_crate_closes_the_panel(self):
+        self.scan("VT-0007")
+        self.scan("KISTE-K3")
+        self.assertIsNone(self.panel())
+        _s, boxes = self.state("kisten")
+        self.assertEqual(boxes["session"]["code"], "KISTE-K3")
+
+    def test_an_article_scan_is_booked_against_the_panel(self):
+        self.scan("VT-0007")
+        body = self.scan("SMPL-81JHYT")
+        self.assertEqual(body["action"], "panel_item")
+        self.assertTrue(body["ok"])
+        self.assertEqual(self.smpl.scans, [(7, None, 218, 1)])
+        panel = self.panel()
+        self.assertEqual(panel["lines"][0]["scanned"], 4)
+        self.assertEqual(panel["scanned_total"], 13)
+        self.assertEqual(panel["last_line_key"], "part:2003-7641")
+        self.assertIsNone(panel["error"])
+        flash = self.flash()
+        self.assertEqual(flash["level"], "ok")
+        self.assertEqual(flash["title"], "4 / 8 · WAGO 2003-7641")
+        self.assertIn("VT-0007", flash["detail"])
+        self.assertEqual(flash["code"], "SMPL-81JHYT")
+
+    def test_the_booking_shows_as_consumption_in_last(self):
+        self.scan("VT-0007")
+        self.scan("SMPL-81JHYT")
+        _s, state = self.state("regal")
+        last = state["last"]
+        self.assertEqual(last["movement"]["movement_type"], "consumption")
+        self.assertEqual(last["movement"]["qty"], 1)
+        self.assertEqual(last["movement"]["movement_id"], 991)
+        self.assertEqual(last["movement"]["panel_number"], "VT-0007")
+        self.assertEqual(last["article"]["id"], 218)
+        self.assertIsNone(last["machine"])
+
+    def test_the_pending_quantity_reaches_the_server(self):
+        self.scan("VT-0007")
+        self.scan("SMPL-CMD-MENGE-5")
+        self.scan("SMPL-81JHYT")
+        self.assertEqual(self.smpl.scans, [(7, None, 218, 5)])
+
+    def test_no_name_and_no_direction_are_needed(self):
+        # Direction "aus" with nobody tapped: at the rack this very scan is
+        # refused. Inside a panel session it is the panel's part, not anybody's.
+        self.assertIsNone(self.agent.router.assignee)
+        self.assertEqual(self.agent.router.direction, "aus")
+        self.scan("VT-0007")
+        self.assertEqual(self.scan("SMPL-81JHYT")["action"], "panel_item")
+        self.assertEqual(len(self.smpl.scans), 1)
+
+    def test_a_code_smpl_does_not_stock_is_passed_on_and_refused_there(self):
+        self.scan("VT-0007")
+        before = self.panel()
+        body = self.scan("4011923456789")
+        self.assertEqual(body["action"], "panel_item")
+        self.assertEqual(self.smpl.scans, [(7, "4011923456789", None, 1)])
+        flash = self.flash()
+        self.assertEqual(flash["level"], "error")
+        self.assertEqual(flash["title"], "Nicht gebucht")
+        self.assertIn("Kein Lagerartikel", flash["detail"])
+        after = self.panel()
+        self.assertEqual(after["lines"], before["lines"])
+        self.assertIsNone(after["last_line_key"])
+        self.assertIsNotNone(self.agent.router.panel)
+
+    def test_a_refused_scan_leaves_nothing_to_undo(self):
+        self.scan("VT-0007")
+        self.scan("4011923456789")
+        self.action("undo_panel")
+        self.assertEqual(self.smpl.undos, [])
+
+    def test_a_stock_warning_is_flashed_as_a_warning_but_booked(self):
+        self.smpl.stock_warning = "Bestand war 0 — Inventur prüfen."
+        self.scan("VT-0007")
+        self.scan("SMPL-81JHYT")
+        flash = self.flash()
+        self.assertEqual(flash["level"], "warn")
+        self.assertEqual(flash["title"], "4 / 8 · WAGO 2003-7641")
+        self.assertIn("Inventur", flash["detail"])
+        self.assertEqual(self.panel()["lines"][0]["scanned"], 4)
+
+    def test_a_machine_is_refused_and_nothing_is_booked(self):
+        self.agent.werkstatt.resolve = lambda code: {"kind": "machine",
+                                                     "machine": dict(MACHINE_OUT)}
+        self.scan("VT-0007")
+        body = self.scan("M-0001")
+        self.assertFalse(body["ok"])
+        self.assertEqual(body["action"], "refused")
+        self.assertEqual(self.smpl.scans, [])
+        flash = self.flash()
+        self.assertEqual(flash["level"], "error")
+        self.assertIn("Verteiler", flash["title"])
+        self.assertIsNotNone(self.panel())
+        # The crate screen was not involved and is not told anything.
+        self.assertIsNone(self.flash("kisten"))
+
+    def test_the_undo_button_takes_back_the_last_booking(self):
+        self.scan("VT-0007")
+        self.scan("SMPL-81JHYT")
+        status, body = self.action("undo_panel")
+        self.assertEqual(status, 200, body)
+        self.assertTrue(body["ok"])
+        self.assertEqual(self.smpl.undos, [(7, 218, 1)])
+        self.assertEqual(self.flash()["title"], "Buchung zurückgenommen")
+        panel = self.panel()
+        self.assertEqual(panel["lines"][0]["scanned"], 3)
+        self.assertEqual(panel["last_line_key"], "part:2003-7641")
+        _s, state = self.state("regal")
+        self.assertEqual(state["last"]["movement"]["movement_type"], "consumption_undo")
+
+    def test_a_second_undo_has_nothing_to_take_back(self):
+        self.scan("VT-0007")
+        self.scan("SMPL-81JHYT")
+        self.action("undo_panel")
+        time.sleep(0.2)
+        status, _body = self.action("undo_panel")
+        self.assertEqual(status, 200)
+        self.assertEqual(self.smpl.undos, [(7, 218, 1)])
+        self.assertEqual(self.flash()["title"], "Nichts zum Rückgängigmachen")
+
+    def test_the_scanned_abbruch_does_the_same_as_the_button(self):
+        self.scan("VT-0007")
+        self.scan("SMPL-81JHYT")
+        body = self.scan("SMPL-CMD-ABBRUCH")
+        self.assertEqual(body["action"], "undo_panel_item")
+        self.assertEqual(self.smpl.undos, [(7, 218, 1)])
+
+    def test_an_undo_smpl_refused_can_be_tried_again(self):
+        self.scan("VT-0007")
+        self.scan("SMPL-81JHYT")
+        self.agent.werkstatt.panel_undo = lambda *args: smpl_werkstatt.Result(
+            False, status=400, error="Nichts zum Zurücknehmen.")
+        self.action("undo_panel")
+        self.assertEqual(self.flash()["title"], "Abbruch fehlgeschlagen")
+        self.assertIn("Zurücknehmen", self.flash()["detail"])
+        time.sleep(0.2)
+        self.agent.werkstatt.panel_undo = self.smpl.panel_undo
+        self.action("undo_panel")
+        self.assertEqual(self.smpl.undos, [(7, 218, 1)],
+                         "one refused undo cost the operator the undo")
+
+    def test_undo_with_no_panel_open_reverses_nothing_at_the_rack(self):
+        # A stale button on a page whose session just expired must not
+        # reverse a rack movement through the ABBRUCH path.
+        self.agent.router.note_commit(screen="regal", action="movement", article_id=5,
+                                      movement_type="checkout", qty=1)
+        movements = Recorder(smpl_werkstatt.Result(True, data={}))
+        self.agent.werkstatt.movement = movements
+        status, body = self.action("undo_panel")
+        self.assertEqual(status, 200)
+        self.assertFalse(body["ok"])
+        self.assertEqual(movements.calls, [])
+        self.assertEqual(self.smpl.undos, [])
+        self.assertEqual(self.flash()["title"], "Kein Verteiler offen")
+
+    def test_the_done_button_closes_the_panel(self):
+        self.scan("VT-0007")
+        status, body = self.action("close_panel")
+        self.assertEqual(status, 200, body)
+        self.assertTrue(body["ok"])
+        self.assertIsNone(self.panel())
+        self.assertIsNone(self.agent.router.panel)
+        self.assertEqual(self.flash()["title"], "Verteiler geschlossen")
+        self.assertIn("VT-0007", self.flash()["detail"])
+
+    def test_fertig_closes_it_too(self):
+        self.scan("VT-0007")
+        body = self.scan("SMPL-CMD-FERTIG")
+        self.assertEqual(body["action"], "close_panel")
+        self.assertEqual(body["routed_to"], "regal")
+        self.assertIsNone(self.panel())
+        self.assertEqual(self.flash()["title"], "Verteiler geschlossen")
+
+    def test_the_two_buttons_belong_to_the_rack_screen(self):
+        self.scan("VT-0007")
+        for action in ("close_panel", "undo_panel"):
+            status, _body = self.action(action, screen="kisten")
+            self.assertEqual(status, 400, action)
+            self.assertEqual(server.ACTION_SCREEN[action], server.SCREEN_RACK)
+        self.assertIsNotNone(self.panel())
+
+    def test_a_rescan_refreshes_the_list_and_keeps_the_session(self):
+        self.scan("VT-0007")
+        self.scan("SMPL-81JHYT")
+        self.smpl.material["scanned_total"] = 99     # somebody booked at a PC
+        body = self.scan("VT-0007")
+        self.assertEqual(body["action"], "keep_panel")
+        self.assertEqual(self.smpl.fetches, ["VT-0007", "VT-0007"])
+        panel = self.panel()
+        self.assertEqual(panel["scanned_total"], 99)
+        self.assertEqual(panel["last_line_key"], "part:2003-7641")
+        self.assertEqual(self.agent.router.panel.panel_id, 7)
+
+    def test_switching_panels_replaces_the_list(self):
+        self.smpl.known.add("VT-0008")
+        self.scan("VT-0007")
+        body = self.scan("VT-0008")
+        self.assertEqual(body["action"], "switch_panel")
+        self.assertEqual(self.smpl.fetches, ["VT-0007", "VT-0008"])
+        panel = self.panel()
+        self.assertEqual(panel["number"], "VT-0008")
+        self.assertEqual(panel["id"], 8)
+        self.assertEqual(self.agent.router.panel.panel_id, 8)
+        self.assertIn("gewechselt", self.flash()["detail"])
+
+    def test_a_list_that_cannot_be_reread_keeps_the_session_and_says_so(self):
+        self.scan("VT-0007")
+        self.agent.werkstatt.panel = lambda code: smpl_werkstatt.Result(
+            False, error="SMPL ist nicht erreichbar (timeout).")
+        body = self.scan("VT-0007")
+        self.assertEqual(body["action"], "keep_panel")
+        panel = self.panel()
+        self.assertIsNotNone(panel)
+        self.assertIn("nicht erreichbar", panel["error"])
+        self.assertEqual(panel["lines"][0]["key"], "part:2003-7641")
+        self.assertEqual(self.flash()["level"], "warn")
+        # And the next successful read clears the error.
+        self.agent.werkstatt.panel = self.smpl.panel
+        self.scan("VT-0007")
+        self.assertIsNone(self.panel()["error"])
+
+    def test_a_scan_with_the_list_never_loaded_is_refused_not_booked(self):
+        # The router has a session but no id: the fetch failed between.
+        self.agent.router.route("VT-0007")
+        body = self.scan("SMPL-81JHYT")
+        self.assertEqual(body["action"], "panel_item")
+        self.assertEqual(self.smpl.scans, [])
+        self.assertEqual(self.flash()["level"], "error")
+
+
+class TestThePanelExpiresThroughTheRealTick(unittest.TestCase):
+    """Same arrangement as the name: the tick is what closes it in the
+    workshop, so the tick is what is tested."""
+
+    def build_agent(self, now):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        agent = server.Agent(
+            server.Store(Path(tmp.name) / "inventory.db"),
+            server.Printer(enabled=False),
+            server.Upstream("", ""),
+            station=None,
+            clock=lambda: now[0],
+        )
+        self.addCleanup(agent.shutdown)
+        return agent
+
+    def test_one_tick_after_the_idle_timeout_closes_it_and_says_so(self):
+        now = [1000.0]
+        agent = self.build_agent(now)
+        _PanelSmpl(agent)
+        agent.route_scan("VT-0007")
+        self.assertIsNotNone(agent.kiosk.snapshot("regal")["panel"])
+
+        now[0] += server.SESSION_IDLE_S - 1
+        agent.tick_once()
+        self.assertIsNotNone(agent.router.panel, "closed a panel that is still fresh")
+
+        now[0] += 2
+        agent.tick_once()
+        self.assertIsNone(agent.router.panel)
+        snap = agent.kiosk.snapshot("regal")
+        self.assertIsNone(snap["panel"])
+        self.assertEqual(snap["flash"]["level"], "warn")
+        self.assertEqual(snap["flash"]["title"], "Verteiler automatisch geschlossen")
+
+    def test_a_crate_expiry_still_says_kiste(self):
+        now = [1000.0]
+        agent = self.build_agent(now)
+        agent.route_scan("KISTE-K3")
+        now[0] += server.SESSION_IDLE_S + 1
+        agent.tick_once()
+        self.assertIsNone(agent.router.session)
+        self.assertEqual(agent.kiosk.snapshot("kisten")["flash"]["title"],
+                         "Kiste automatisch geschlossen")
+        self.assertIsNone(agent.kiosk.snapshot("regal")["flash"])
+
+    def test_a_scan_under_a_picking_operator_keeps_the_panel(self):
+        now = [1000.0]
+        agent = self.build_agent(now)
+        _PanelSmpl(agent)
+        agent.route_scan("VT-0007")
+        now[0] += server.SESSION_IDLE_S - 10
+        agent.route_scan("SMPL-81JHYT")
+        now[0] += server.SESSION_IDLE_S - 10
+        agent.tick_once()
+        self.assertIsNotNone(agent.router.panel)
+
+
+class TestTheRackPageRendersPanels(unittest.TestCase):
+    PAGE = pathlib.Path(__file__).resolve().parents[1] / "static" / "kiosk_rack.html"
+
+    def setUp(self) -> None:
+        self.html = self.PAGE.read_text(encoding="utf-8")
+
+    def test_the_two_consumption_kinds_have_labels_and_tones(self):
+        self.assertRegex(self.html, r"consumption:\s*\{label:'Verbrauch',\s*tone:'out'\}")
+        self.assertRegex(self.html, r"consumption_undo:\s*\{label:'Verbrauch zurück',\s*tone:'in'\}")
+
+    def test_the_card_offers_fertig_and_rueckgaengig_through_screen_actions(self):
+        self.assertIn("action:'close_panel'", self.html)
+        self.assertIn("action:'undo_panel'", self.html)
+        self.assertRegex(self.html, r">\s*Fertig\s*<")
+        self.assertRegex(self.html, r">\s*R(ü|&uuml;)ckg(ä|&auml;)ngig\s*<")
+
+    def test_the_lines_carry_the_two_chips_and_the_last_hit(self):
+        self.assertIn("nicht geplant", self.html)
+        self.assertIn("zu viel", self.html)
+        self.assertIn("last_line_key", self.html)
+
+    def test_the_bands_are_dimmed_not_hidden_while_a_panel_is_open(self):
+        self.assertIn("aria-disabled", self.html)
+        self.assertNotIn("show($('dirband'), false)", self.html)
+
+    def test_the_log_names_the_panel_a_part_was_picked_for(self):
+        self.assertIn("panel_number", self.html)
+        self.assertIn("'Verteiler ' +", self.html)
+
+    def test_the_countdown_reads_like_the_crate_screens(self):
+        self.assertIn("Sitzung endet in", self.html)
+        self.assertIn("expires_at", self.html)
