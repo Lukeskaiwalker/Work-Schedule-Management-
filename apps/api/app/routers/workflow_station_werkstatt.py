@@ -80,7 +80,14 @@ from app.schemas.station import (
     StationCrewMemberOut,
     StationMovementOut,
     StationMovementRequest,
+    StationPanelScanOut,
+    StationPanelScanRequest,
+    StationPanelUndoRequest,
 )
+from app.schemas.schaltplan import PanelMaterialOut
+from app.models.schaltplan import PanelPlan
+from app.services import schaltplan_material as panel_material
+from app.services.schaltplan_panel_numbers import find_panel_by_code, normalize_panel_code
 from app.schemas.werkstatt import ScanResolveResult, WerkstattArticleLookupOut
 from app.schemas.werkstatt_boxes import (
     WerkstattBoxItemCreate,
@@ -1002,3 +1009,148 @@ def _preferred_catalog_row(db: Session, found) -> MaterialCatalogItem | None:
         }
     rows.sort(key=lambda row: (-counts.get(row.supplier_id or -1, 0), row.id))
     return rows[0]
+
+
+# ---------------------------------------------------------------------------
+# Verteiler-Kommissionierung — the board's Materialliste at the rack
+# ---------------------------------------------------------------------------
+#
+# The Schrank-Etikett carries the board's number as a DataMatrix. Scanning it
+# opens the board's list on the Regal screen; every shelf label scanned while
+# it is open is booked as built into that board. The list is derived on every
+# read (services/schaltplan_material.py), so these three endpoints hold no
+# state of their own: open = read, scan = one ledger row + read, undo = the
+# inverse row + read.
+
+
+def _panel_or_404(db: Session, plan_id: int) -> PanelPlan:
+    plan = db.get(PanelPlan, plan_id)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="Verteilerplan nicht gefunden.")
+    return plan
+
+
+def _panel_scan_out(db: Session, plan: PanelPlan, article: WerkstattArticle, movement_id: int, warning: str | None) -> StationPanelScanOut:
+    material = panel_material.panel_material(db, plan)
+    line = panel_material.line_for_article(material, article.id)
+    if line is None:
+        # Fully undone: the article no longer appears on the list. Report the
+        # extra-line shape with zero so the screen can still say what left.
+        line = panel_material.PanelMaterialLineOut(
+            key=f"article:{article.id}",
+            kind="extra",
+            label=article.item_name,
+            detail="nicht geplant",
+            planned=0,
+            scanned=0,
+            status="unplanned",
+            article=panel_material.article_out(article),
+        )
+    return StationPanelScanOut(
+        material=material,
+        line=line,
+        movement_id=movement_id,
+        article=_article_out(db, article),
+        stock_warning=warning,
+    )
+
+
+@router.get("/panels/{code}", response_model=PanelMaterialOut)
+def station_panel(
+    code: str,
+    station: Station = Depends(get_current_station),
+    db: Session = Depends(get_db),
+) -> PanelMaterialOut:
+    """The board behind a scanned number, with its Materialliste.
+
+    A path parameter rather than the resolve cascade: the agent recognises
+    the ``VT-`` prefix itself, the way it recognises ``KISTE-``, and a board
+    is a list to open, not an article to book.
+    """
+    _ = station
+    plan = find_panel_by_code(db, code)
+    if plan is None:
+        raise HTTPException(
+            status_code=404, detail=f"Kein Verteiler mit der Nummer „{normalize_panel_code(code)}“."
+        )
+    return panel_material.panel_material(db, plan)
+
+
+@router.post("/panels/{plan_id}/scan", response_model=StationPanelScanOut)
+def station_panel_scan(
+    plan_id: int,
+    payload: StationPanelScanRequest,
+    station: Station = Depends(get_current_station),
+    db: Session = Depends(get_db),
+) -> StationPanelScanOut:
+    """Book one shelf scan as built into the board.
+
+    Not refused when the shelf count is too low — the person is holding the
+    part, so the count is what is wrong; the answer carries a warning
+    instead. Unknown codes are refused the way a box scan refuses them.
+    """
+    plan = _panel_or_404(db, plan_id)
+    article_id = payload.article_id
+    if article_id is None:
+        code = (payload.code or "").strip()
+        if not code:
+            raise HTTPException(
+                status_code=400, detail="Entweder „code“ oder „article_id“ ist erforderlich."
+            )
+        article_id = _scanned_article_id(db, code)
+    article = db.get(WerkstattArticle, article_id)
+    if article is None:
+        raise HTTPException(status_code=404, detail="Artikel nicht gefunden")
+
+    user_id = resolve_station_user_id(db, station)
+    try:
+        movement, warning = panel_material.book_consumption(
+            db,
+            plan=plan,
+            article=article,
+            quantity=payload.quantity,
+            user_id=user_id,
+            notes=_station_notes(station, panel_material.booking_note(plan) + (f" — {payload.notes.strip()}" if payload.notes and payload.notes.strip() else "")),
+        )
+    except panel_material.MaterialError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    movement.station_id = station.id
+    db.add(movement)
+    movement_id = movement.id
+    db.commit()
+    db.refresh(article)
+    return _panel_scan_out(db, plan, article, movement_id, warning)
+
+
+@router.post("/panels/{plan_id}/undo", response_model=StationPanelScanOut)
+def station_panel_undo(
+    plan_id: int,
+    payload: StationPanelUndoRequest,
+    station: Station = Depends(get_current_station),
+    db: Session = Depends(get_db),
+) -> StationPanelScanOut:
+    """Take a scan back — ABBRUCH on the scanner or the button on the screen."""
+    plan = _panel_or_404(db, plan_id)
+    article = db.get(WerkstattArticle, payload.article_id)
+    if article is None:
+        raise HTTPException(status_code=404, detail="Artikel nicht gefunden")
+    user_id = resolve_station_user_id(db, station)
+    try:
+        movement = panel_material.undo_consumption(
+            db,
+            plan=plan,
+            article=article,
+            quantity=payload.quantity,
+            user_id=user_id,
+            notes=_station_notes(station, panel_material.booking_note(plan, "Storno")),
+        )
+    except panel_material.MaterialError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    movement.station_id = station.id
+    db.add(movement)
+    movement_id = movement.id
+    db.commit()
+    db.refresh(article)
+    return _panel_scan_out(db, plan, article, movement_id, None)

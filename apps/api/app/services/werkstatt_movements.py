@@ -26,6 +26,8 @@ Movement types and their effect on the four counters:
     repair_back : repair   -= qty, available += qty     (total unchanged)
     inventory_plus  : total += qty, available += qty    (stock-take: counted more)
     inventory_minus : total -= qty, available -= qty    (stock-take: counted less)
+    consumption     : total -= qty, available -= qty    (built into a Verteiler)
+    consumption_undo: total += qty, available += qty    (one such booking taken back)
 """
 
 from __future__ import annotations
@@ -74,6 +76,18 @@ _DELTAS: dict[str, dict[str, int]] = {
     # which keeps the invariant total == available + out + repair intact.
     "inventory_plus":  {"total": +1, "available": +1},
     "inventory_minus": {"total": -1, "available": -1},
+    # Stock that left the shelf for good because it was built into a
+    # Verteiler — scanned at the Regal station or booked from the board's
+    # Materialliste (services/schaltplan_material.py). Same counters as the
+    # stock-take pair and deliberately NOT `correction`: nothing was checked
+    # out first. Its own kind rather than `inventory_minus` so a stock-take
+    # report never mistakes a built-in part for a counting difference, and
+    # so the project's Material tab can find these rows by kind. Not bounded
+    # by `stock_available` on purpose: the person scanning is holding the
+    # part, so a refusal would only make the picking list wrong — the
+    # response carries a warning instead, and a stock-take fixes the count.
+    "consumption":      {"total": -1, "available": -1},
+    "consumption_undo": {"total": +1, "available": +1},
 }
 
 ALLOWED_MOVEMENT_TYPES: frozenset[str] = frozenset(_DELTAS.keys())
@@ -143,6 +157,7 @@ def apply_movement(
     expected_return_at: datetime | None = None,
     related_order_line_id: int | None = None,
     construction_box_id: int | None = None,
+    panel_id: int | None = None,
     notes: str | None = None,
 ) -> WerkstattMovement:
     """Append a movement to the ledger and recompute the article's snapshot
@@ -211,6 +226,7 @@ def apply_movement(
         assignee_user_id=assignee_user_id,
         expected_return_at=expected_return_at,
         related_order_line_id=related_order_line_id,
+        panel_id=panel_id,
         notes=notes,
         created_at=now,
     )

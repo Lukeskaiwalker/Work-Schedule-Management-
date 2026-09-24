@@ -14,7 +14,11 @@ What the label shows, and where it comes from:
 * left, under the logo — "Kunde: …", "Projekt: …", "Baujahr: MM.YYYY",
   the customer from the panel's customer row, the project number from its
   project, the build month defaulting to the month of printing;
-* bottom-right, centred — the e-mail and the phone number.
+* bottom-right, centred — the e-mail and the phone number;
+* bottom-left — a DataMatrix of the board's own number ("VT-0007") with the
+  number printed beside it: the Regal station scans it to open the board's
+  Materialliste (services/schaltplan_material.py). Not in the blueprint;
+  the owner asked for it in the space the blueprint leaves there.
 
 The website, e-mail and phone number are fixed branding like
 ``werkstatt_labels._FOOTER_TEXT`` — not the runtime company setting, so a
@@ -68,6 +72,14 @@ _TEXT_SIZE_MAX, _TEXT_SIZE_MIN = 42, 26
 _CONTACT_CENTER_X, _CONTACT_BUDGET = 922, 500
 _CONTACT_LINES_Y = (404, 446)
 _CONTACT_SIZE = 40
+# The board's number, bottom-left under the text block (x 24..668, y 331..504
+# is free there): a 12 × 12 DataMatrix ("VT-0007" is five codewords) at
+# 10 dots a module = 10 mm, the number beside it at the text block's size.
+_NUMBER_DM_X, _NUMBER_DM_Y, _NUMBER_DM_MODULE = 41, 360, 10
+_NUMBER_DM_SIZE = 12 * _NUMBER_DM_MODULE
+_NUMBER_TEXT_X = _NUMBER_DM_X + _NUMBER_DM_SIZE + 24
+_NUMBER_TEXT_SIZE = 42
+_NUMBER_TEXT_Y = _NUMBER_DM_Y + (_NUMBER_DM_SIZE - _NUMBER_TEXT_SIZE) // 2
 
 
 @dataclass(frozen=True)
@@ -75,6 +87,8 @@ class TypeLabelContent:
     customer: str
     project_number: str | None
     build_month: str  # "MM.YYYY"
+    # "VT-0007"; None prints no matrix (a label for something that is not a board).
+    panel_number: str | None = None
 
 
 def current_build_month(now: datetime | None = None) -> str:
@@ -191,6 +205,11 @@ def render_type_label(profile: MaterialProfile, content: TypeLabelContent, *, co
     for reading_y, text in zip(_CONTACT_LINES_Y, TYPE_LABEL_CONTACT_LINES):
         contact_size = wl._fit_text_size(text, _CONTACT_BUDGET, _CONTACT_SIZE, _TEXT_SIZE_MIN)
         lines.append(_centered_text(frame, _CONTACT_CENTER_X, reading_y, contact_size, text))
+
+    number = wl._clean(content.panel_number or "", 16)
+    if number:
+        lines.extend(wl._xrb(frame, _NUMBER_DM_X, _NUMBER_DM_Y, _NUMBER_DM_MODULE, number))
+        lines.append(wl._at(frame, _NUMBER_TEXT_X, _NUMBER_TEXT_Y, _NUMBER_TEXT_SIZE, number))
 
     return wl._sheet(profile, lines, copies=copies), [logo, qr]
 

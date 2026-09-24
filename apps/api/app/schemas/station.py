@@ -21,6 +21,7 @@ from typing import Any, Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
+from app.schemas.schaltplan import PanelMaterialLineOut, PanelMaterialOut
 from app.schemas.werkstatt import WerkstattArticleOut
 
 # The five states a polling device can be told about. ``expired`` and
@@ -448,6 +449,38 @@ class StationMovementOut(BaseModel):
 
     article: WerkstattArticleOut
     movement_id: int
+
+
+# ── Verteiler-Kommissionierung ────────────────────────────────────────────────
+# A scan of the board's number opens its Materialliste on the rack screen;
+# every article scan after that is booked against the board (a
+# ``consumption`` ledger row carrying the board's id) and the whole list comes
+# back so the screen renders the server's sums. See
+# services/schaltplan_material.py and workflow_station_werkstatt.
+
+
+class StationPanelScanRequest(BaseModel):
+    """Either ``code`` (what the scanner read) or ``article_id`` (already resolved)."""
+
+    code: str | None = Field(default=None, max_length=200)
+    article_id: int | None = None
+    quantity: int = Field(default=1, ge=1, le=STATION_MAX_QUANTITY)
+    notes: str | None = Field(default=None, max_length=500)
+
+
+class StationPanelUndoRequest(BaseModel):
+    article_id: int
+    quantity: int = Field(default=1, ge=1, le=STATION_MAX_QUANTITY)
+
+
+class StationPanelScanOut(BaseModel):
+    material: PanelMaterialOut
+    # The line the booking landed on, after the booking.
+    line: PanelMaterialLineOut
+    movement_id: int
+    article: WerkstattArticleOut
+    # Set when the scan took more than the shelf was said to hold.
+    stock_warning: str | None = None
 
 
 class StationCrewMemberOut(BaseModel):

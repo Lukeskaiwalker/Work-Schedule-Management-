@@ -50,6 +50,9 @@ WerkstattMovementType = Literal[
     # ValidationError and surfaced as a 500. The manual stock-adjust endpoint
     # (``routers/workflow_werkstatt_article_stock``) makes them common.
     "inventory_plus", "inventory_minus",
+    # Built into a Verteiler (scanned at the Regal station or booked from the
+    # board's Materialliste), and the inverse of one such booking.
+    "consumption", "consumption_undo",
 ]
 
 WerkstattOrderStatus = Literal[

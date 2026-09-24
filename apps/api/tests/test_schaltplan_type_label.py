@@ -164,6 +164,7 @@ def test_print_ships_the_blueprint_with_the_panel_data(client: TestClient, admin
         "Baujahr: 09.2026",
         "info@smpl-energy.de",
         "02302/ 2894980",
+        "VT-0001",
     ]
     assert all(",1E,0,0," in line for line in at_lines)
     # The three lines of the block share one size; the block sits left of the
@@ -171,8 +172,13 @@ def test_print_ships_the_blueprint_with_the_panel_data(client: TestClient, admin
     block = [line.split(",") for line in at_lines[:3]]
     assert len({parts[3] for parts in block}) == 1
     assert {parts[2] for parts in block} == {block[0][2]}
-    contact = [line.split(",") for line in at_lines[3:]]
+    contact = [line.split(",") for line in at_lines[3:5]]
     assert all(int(parts[2]) > int(block[0][2]) for parts in contact)
+    # The board's number: a DataMatrix bottom-left (reading x 41, y 360 → machine
+    # x = 528 - (360 + 120) = 48, y = 41 + 24 = 65) with the number beside it.
+    assert "XRB48,65,10,0,7\nVT-0001\n" in text
+    number = at_lines[5].split(",")
+    assert int(number[2]) > int(block[0][2]) and int(number[1]) < int(block[0][1])
 
 
 def test_build_month_defaults_to_this_month_and_bad_input_is_refused(client: TestClient, admin_token: str, monkeypatch: pytest.MonkeyPatch) -> None:

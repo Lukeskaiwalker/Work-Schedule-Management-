@@ -66,6 +66,13 @@ class PanelPlan(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
 
+    # "VT-0007" — the board's own number, minted when it is planned and never
+    # reused. Printed as a DataMatrix on the Schrank-Etikett so the Regal
+    # station can open the board's Materialliste with one scan; the ledger
+    # rows of what was built in carry the row id, this number is what a
+    # person reads. See services/schaltplan_panel_numbers.py.
+    panel_number: Mapped[str] = mapped_column(String(16), nullable=False, unique=True, index=True)
+
     customer_id: Mapped[int] = mapped_column(
         ForeignKey("customers.id", ondelete="CASCADE"), nullable=False, index=True
     )
@@ -104,6 +111,37 @@ class PanelPlan(Base):
 
     created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
+class PanelMaterialArticle(Base):
+    """Which stock article a planned line of a Materialliste means.
+
+    The planned lines of a board are derived from its document (a "B16
+    1-polig" here, eight WAGO 2003-7641 there — see
+    ``services/schaltplan_material.py``) and carry no article of their own. To
+    tick a line off by scanning a shelf label, the line has to know which
+    article that label belongs to. WAGO parts match by their part number in
+    the article's name; everything else is told once, here, and the answer
+    holds for every board: the key is the line's key (``device:mcb:1p:b16``),
+    not a panel id, because "our B16 is SP-0152" is knowledge about the
+    workshop, not about one Verteiler.
+
+    ON DELETE CASCADE on the article: a mapping to a deleted article would
+    otherwise keep pointing at nothing and hide the line's "assign" control.
+    """
+
+    __tablename__ = "schaltplan_material_articles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    part_key: Mapped[str] = mapped_column(String(120), nullable=False, unique=True, index=True)
+    article_id: Mapped[int] = mapped_column(
+        ForeignKey("werkstatt_articles.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow, onupdate=utcnow, nullable=False

@@ -68,7 +68,7 @@ from app.models.station import (
     StationPairing,
 )
 from app.models.training import TrainingWeekReport
-from app.models.schaltplan import PanelPlan
+from app.models.schaltplan import PanelMaterialArticle, PanelPlan
 from app.models.wiki import WikiPage
 from app.models.files import Attachment, CustomerFolder, ProjectFolder
 from app.models.time_models import ClockEntry, BreakEntry, VacationRequest, SchoolAbsence
@@ -104,6 +104,7 @@ __all__ = [
     "Message",
     "MessageReaction",
     "Notification",
+    "PanelMaterialArticle",
     "PanelPlan",
     "Partner",
     "Project",

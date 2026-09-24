@@ -2,6 +2,8 @@ from __future__ import annotations
 from datetime import date, datetime, time
 from typing import Any
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 class MaterialCatalogItemOut(BaseModel):
@@ -126,3 +128,9 @@ class ProjectTrackedMaterialOut(BaseModel):
     occurrence_count: int = 0
     report_count: int = 0
     last_report_date: date | None = None
+    # "bericht": summed from the Baustellenberichte; "verteiler": stock the
+    # Werkstatt built into one of the project's boards (the ledger's
+    # ``consumption`` rows, see services/schaltplan_material.py).
+    source: Literal["bericht", "verteiler"] = "bericht"
+    # The boards ("VT-0007") a verteiler row was scanned for.
+    panel_numbers: list[str] = Field(default_factory=list)

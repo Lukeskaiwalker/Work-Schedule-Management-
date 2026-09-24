@@ -319,6 +319,16 @@ class WerkstattMovement(Base):
         ForeignKey("stations.id", ondelete="SET NULL"), index=True
     )
 
+    # Set on a ``consumption`` / ``consumption_undo`` row: the Verteiler the
+    # stock was built into (scanned at the Regal station or booked from the
+    # board's Materialliste). The board's Materialliste sums these rows per
+    # article, and the project's Material tab lists them under the board's
+    # number. ON DELETE SET NULL: deleting a plan must not delete the fact
+    # that the parts left the shelf.
+    panel_id: Mapped[int | None] = mapped_column(
+        ForeignKey("panel_plans.id", ondelete="SET NULL"), index=True
+    )
+
     # One booking ATTEMPT's token, minted by the caller and reused verbatim on
     # its retries. The scan station needs it because the two ends disagree
     # about what a timeout means: the Pi gives up on a slow answer and says

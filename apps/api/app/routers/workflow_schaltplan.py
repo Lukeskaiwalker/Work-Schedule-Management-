@@ -76,6 +76,7 @@ from app.services.schaltplan_terminals import (
     terminal_strips,
 )
 from app.services import schaltplan_type_label as type_label
+from app.services.schaltplan_panel_numbers import assign_panel_number, provisional_panel_number
 from app.services import werkstatt_labels
 from app.services.werkstatt_label_materials import MaterialProfile, MaterialValidationError
 from app.services.schaltplan_pdf import build_panel_plan_pdf
@@ -138,6 +139,7 @@ def _summary(plan: PanelPlan, names: dict[str, dict]) -> PanelPlanSummary:
     stats = document_stats(plan.document or {})
     return PanelPlanSummary(
         id=plan.id,
+        panel_number=plan.panel_number,
         customer_id=plan.customer_id,
         customer_name=names["customers"].get(plan.customer_id),
         project_id=plan.project_id,
@@ -343,6 +345,7 @@ def create_panel(
 
     document = payload.document.model_dump() if payload.document else empty_document()
     plan = PanelPlan(
+        panel_number=provisional_panel_number(),
         customer_id=payload.customer_id,
         project_id=payload.project_id,
         name=payload.name.strip(),
@@ -357,8 +360,8 @@ def create_panel(
         created_by=current_user.id,
         updated_by=current_user.id,
     )
-    db.add(plan)
     try:
+        assign_panel_number(db, plan)
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -666,6 +669,7 @@ def duplicate_panel(
         counter += 1
 
     copy = PanelPlan(
+        panel_number=provisional_panel_number(),
         customer_id=source.customer_id,
         project_id=source.project_id,
         name=f"{source.name} (Kopie)"[:160],
@@ -680,7 +684,7 @@ def duplicate_panel(
         created_by=current_user.id,
         updated_by=current_user.id,
     )
-    db.add(copy)
+    assign_panel_number(db, copy)
     db.commit()
     db.refresh(copy)
     return _detail(db, copy)
@@ -751,6 +755,7 @@ def _type_label_content(db: Session, plan: PanelPlan, build_month: str) -> tuple
         customer=name or "—",
         project_number=(project.project_number or "").strip() or None if project is not None else None,
         build_month=build_month,
+        panel_number=plan.panel_number,
     )
     return content, project
 
@@ -767,6 +772,7 @@ def panel_type_label_info(
     content, project = _type_label_content(db, plan, type_label.current_build_month())
     profile = werkstatt_labels.active_material(db)
     return PanelTypeLabelInfoOut(
+        panel_number=plan.panel_number,
         customer=content.customer,
         project_number=content.project_number,
         project_name=(project.name if project is not None else None),

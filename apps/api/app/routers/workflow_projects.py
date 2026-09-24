@@ -11,6 +11,7 @@ from app.routers.workflow_project_report import (
 )
 from app.models.entities import Customer
 from app.schemas.customer import CustomerOut
+from app.services.schaltplan_material import project_panel_materials
 from app.services.project_membership import add_all_users_to_project
 from app.services.project_status import is_won_project_status, normalize_project_status
 from app.services.customers import (
@@ -511,6 +512,25 @@ def list_project_report_materials(
                 occurrence_count=int(bucket["occurrence_count"]),
                 report_count=len(report_ids) if isinstance(report_ids, set) else 0,
                 last_report_date=bucket.get("last_report_date"),
+            )
+        )
+    # What the Werkstatt built into the project's Verteiler — scanned at the
+    # Regal station or booked from a board's Materialliste. Its own rows,
+    # never merged into a report bucket: a report row is somebody's typed
+    # estimate, a verteiler row is a ledger fact, and the tab says which.
+    for consumed in project_panel_materials(db, project_id):
+        result.append(
+            ProjectTrackedMaterialOut(
+                item=consumed.article.item_name,
+                unit=consumed.article.unit,
+                article_no=consumed.article.article_number,
+                quantity_total=float(consumed.net),
+                quantity_notes=[],
+                occurrence_count=consumed.bookings,
+                report_count=0,
+                last_report_date=consumed.last_at.date() if consumed.last_at else None,
+                source="verteiler",
+                panel_numbers=consumed.panel_numbers,
             )
         )
     return result

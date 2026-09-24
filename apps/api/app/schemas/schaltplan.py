@@ -189,6 +189,8 @@ class PanelPlanSummary(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    # "VT-0007" — see services/schaltplan_panel_numbers.py.
+    panel_number: str
     customer_id: int
     customer_name: str | None = None
     project_id: int | None = None
@@ -281,6 +283,8 @@ class PanelTypeLabelInfoOut(BaseModel):
     """What the Schrank-Etikett will print for this panel — the dialog's
     prefill, resolved server-side so the screen and the printer agree."""
 
+    # The DataMatrix bottom-left holds this.
+    panel_number: str
     customer: str
     project_number: str | None = None
     project_name: str | None = None
@@ -336,3 +340,91 @@ class PanelLabelsPrintOut(BaseModel):
     # BMK texts wider than their segment even at the minimum size: they print
     # at the clamped size and run past their cut marks, so say so.
     overflowing: list[str] = Field(default_factory=list)
+
+
+# ── Materialliste / Kommissionierung ──────────────────────────────────────────
+# The wire shape the panel editor, the Werkstatt "Verteiler" tab and the Regal
+# station all read. Planned lines are derived from the document on every read
+# (services/schaltplan_material.py); scanned quantities are sums over the
+# Werkstatt ledger.
+
+PanelMaterialLineKind = Literal["device", "terminal", "extra"]
+PanelMaterialLineStatus = Literal["open", "done", "over", "unplanned"]
+PanelMaterialArticleSource = Literal["mapping", "auto"]
+
+
+class PanelMaterialArticleOut(BaseModel):
+    """The stock article a line is ticked off against — the slim projection a
+    list of forty lines can afford, not the full ``WerkstattArticleOut``."""
+
+    id: int
+    article_number: str
+    item_name: str
+    manufacturer: str | None = None
+    unit: str | None = None
+    internal_code: str | None = None
+    stock_available: int = 0
+
+
+class PanelMaterialLineOut(BaseModel):
+    # "device:mcb:1p:b16" | "part:2003-7641" | "article:218" — also the mapping key.
+    key: str
+    kind: PanelMaterialLineKind
+    label: str
+    detail: str = ""
+    planned: int = 0
+    scanned: int = 0
+    status: PanelMaterialLineStatus
+    article: PanelMaterialArticleOut | None = None
+    article_source: PanelMaterialArticleSource | None = None
+    last_scanned_at: datetime | None = None
+
+
+class PanelMaterialPanelOut(BaseModel):
+    id: int
+    panel_number: str
+    designation: str
+    name: str
+    panel_type: PanelType
+    status: PanelStatus
+    customer_id: int
+    customer_name: str | None = None
+    project_id: int | None = None
+    project_number: str | None = None
+    project_name: str | None = None
+    updated_at: datetime
+
+
+class PanelMaterialOut(BaseModel):
+    panel: PanelMaterialPanelOut
+    lines: list[PanelMaterialLineOut] = Field(default_factory=list)
+    planned_total: int = 0
+    scanned_total: int = 0
+    open_lines: int = 0
+    last_scanned_at: datetime | None = None
+
+
+class PanelMaterialSummaryOut(BaseModel):
+    """One row of the Werkstatt overview: a board and how far its picking is."""
+
+    panel: PanelMaterialPanelOut
+    planned_total: int = 0
+    scanned_total: int = 0
+    open_lines: int = 0
+    last_scanned_at: datetime | None = None
+
+
+class PanelMaterialBookRequest(BaseModel):
+    article_id: int
+    quantity: int = Field(default=1, ge=1, le=10_000)
+
+
+class PanelMaterialMappingRequest(BaseModel):
+    key: str = Field(min_length=3, max_length=120)
+    # None forgets the mapping.
+    article_id: int | None = None
+
+
+class PanelMaterialMappingOut(BaseModel):
+    key: str
+    article: PanelMaterialArticleOut | None = None
