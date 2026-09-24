@@ -47,7 +47,7 @@ from app.schemas.werkstatt_boxes import (
     WerkstattBoxUpdate,
     WerkstattItemSearchHit,
 )
-from app.services import werkstatt_labels
+from app.services import werkstatt_box_labels, werkstatt_labels
 from app.services.werkstatt_box_items import (
     add_item_to_box,
     ensure_box_unlocked,
@@ -636,13 +636,12 @@ def print_box_label(
     box = get_box_or_404(db, box_id)
     code = box_code(box)
     try:
-        printer = werkstatt_labels.print_machine_label(
+        # Its own layout since 2026-09-24: the machine label's matrix anchor
+        # and headline are sized for "M-0062", and a crate code is three
+        # times as long (services/werkstatt_box_labels.py).
+        printer = werkstatt_box_labels.print_box_label(
             db,
-            werkstatt_labels.LabelContent(
-                unit_number=code,
-                article_name=box.label,
-                serial_number=box.box_number,
-            ),
+            werkstatt_box_labels.BoxLabelContent(code=code, box_number=box.box_number, label=box.label),
         )
     except werkstatt_labels.LabelFormatUnsupported as exc:
         raise HTTPException(status_code=400, detail=str(exc))

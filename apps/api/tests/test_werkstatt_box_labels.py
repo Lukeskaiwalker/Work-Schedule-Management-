@@ -193,23 +193,24 @@ def test_a_label_format_that_cannot_hold_the_box_label_is_a_400(
     client: TestClient, admin_token: str, monkeypatch
 ) -> None:
     """Same mapping as the article label: the stock in the printer is a
-    configuration problem (400), not a server fault."""
-    from app.services import werkstatt_labels
+    configuration problem (400), not a server fault. Since 2026-09-24 the
+    crate sticker has its own renderer (services/werkstatt_box_labels), so
+    the refusal is exercised through the stock it reads, not a patched seam."""
+    from app.services import werkstatt_box_labels
+    from app.services.werkstatt_label_materials import DEFAULT_MATERIALS
 
     _configure_printer(monkeypatch)
-    _capture_sent(monkeypatch)
-
-    def refuse(db, *, gross, klein):
-        raise werkstatt_labels.LabelFormatUnsupported("Vollformat braucht ein großes Etikett")
-
-    monkeypatch.setattr(werkstatt_labels, "print_label_jobs", refuse)
+    sent = _capture_sent(monkeypatch)
+    strip = next(profile for profile in DEFAULT_MATERIALS if profile.continuous)
+    monkeypatch.setattr(werkstatt_box_labels, "active_material", lambda db: strip)
     box = _box(client, admin_token, "Kiste Klein")
 
     failed = client.post(
         f"/api/werkstatt/boxes/{box['id']}/print-label", headers=auth_headers(admin_token)
     )
     assert failed.status_code == 400, failed.text
-    assert "Vollformat" in failed.json()["detail"]
+    assert "großes Etikett" in failed.json()["detail"]
+    assert sent == []
 
 
 def test_printing_a_label_needs_a_login(client: TestClient, admin_token: str) -> None:

@@ -131,6 +131,27 @@ def test_planned_lines_come_from_the_document_in_catalog_then_part_order() -> No
     assert (etage.kind, etage.label) == ("terminal", "WAGO 2003-7641")
 
 
+def test_two_rcds_with_different_residual_currents_are_two_lines() -> None:
+    lines = material.planned_lines(
+        _document(
+            [
+                _device("f1", "rcd", te=4, poles=4, rating="40 A", residual_current="30 mA", rcd_type="A"),
+                _device("f2", "rcd", te=4, poles=4, rating="40 A", residual_current="300 mA", rcd_type="B"),
+                _device("f3", "rcd", te=4, poles=4, rating="40 A", residual_current="30 mA", rcd_type="A"),
+                _device("f4", "rcd", te=4, poles=4, rating="40 A"),
+            ]
+        )
+    )
+    assert [(line.key, line.label, line.planned) for line in lines] == [
+        # A board that never filled in the residual current keeps the old key.
+        ("device:rcd:4p:40a", "FI-Schutzschalter (RCD) 40 A", 1),
+        ("device:rcd:4p:40a:30ma:typa", "FI-Schutzschalter (RCD) 40 A 30 mA Typ A", 2),
+        ("device:rcd:4p:40a:300ma:typb", "FI-Schutzschalter (RCD) 40 A 300 mA Typ B", 1),
+    ]
+    assert material.device_line_key("rcbo", 2, "B16", "30 mA", "") == "device:rcbo:2p:b16:30ma"
+    assert material.device_line_key("rcd", 4, "40 A", "", "F") == "device:rcd:4p:40a:typf"
+
+
 def test_a_wago_part_finds_its_shelf_article_by_name_and_the_rest_waits_for_a_mapping(
     client: TestClient, admin_token: str
 ) -> None:

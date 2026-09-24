@@ -741,6 +741,14 @@ def _rcd_summary(group_device: dict[str, Any] | None) -> str:
     return parts[0]
 
 
+def _device_poles(device: dict[str, Any], catalog: dict[str, Any]) -> int:
+    try:
+        poles = int(device.get("poles") or 0)
+    except (TypeError, ValueError):
+        poles = 0
+    return poles if poles > 0 else int(catalog.get("poles", 1))
+
+
 def build_legend(document: dict[str, Any]) -> list[dict[str, str]]:
     """The Stromkreisliste: one row per circuit, in physical device order.
 
@@ -792,6 +800,9 @@ def build_legend(document: dict[str, Any]) -> list[dict[str, str]]:
                     "label": _text(device.get("label")),
                     "room": _text(device.get("room")),
                     "device": str(catalog.get("short", "")),
+                    # "1" / "3" — the PDF legend prints "LS · 3P" from it; the
+                    # web legend keeps its own column set.
+                    "poles": str(_device_poles(device, catalog)),
                     "rating": _text(device.get("rating")),
                     "rcd": own_rcd,
                     "cable": _text(device.get("cable")),

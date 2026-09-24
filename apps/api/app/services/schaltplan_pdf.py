@@ -95,7 +95,14 @@ _TITLE_BLOCK_H = 116.0
 # continuation busbar dropped from the first, the way a real drawing continues
 # rather than starting a new sheet. Without it a board with four FI groups
 # printed on three near-empty sheets.
-_BAND_DY = 190.0
+#
+# The drop is what band 0's deepest text needs: a circuit's stack (two label
+# lines, room, cable, phase) ends at _Y_TEXT - 8.5 - 3 × 8 = 241.5, and the
+# lower busbar's caption sits 11.5 pt above the bar, so the bar must be at or
+# below 222 (owner's print of 2026-09-24: with 190 the caption ran through
+# the cable text). 212 leaves band 1's own deepest line at 29.5, above the
+# frame at 24.
+_BAND_DY = 212.0
 _BAND0_X0 = _FRAME_L + 240      # right of the supply block
 _BAND0_X1 = _FRAME_R
 _BAND1_X0 = _FRAME_L + 20
@@ -107,6 +114,17 @@ def _short(kind: str) -> str:
     return str(DEVICE_CATALOG.get(kind, {}).get("short", "?"))
 
 
+def _poles(device: dict[str, Any]) -> int:
+    """The device's pole count, the catalog default when the document has none."""
+    try:
+        poles = int(device.get("poles") or 0)
+    except (TypeError, ValueError):
+        poles = 0
+    if poles > 0:
+        return poles
+    return int(DEVICE_CATALOG.get(str(device.get("kind", "")), {}).get("poles", 1))
+
+
 def _group_width(group: dict[str, Any]) -> float:
     children = group.get("children") or []
     return max(_GROUP_MIN_W, _COL_W * max(1, len(children)))
@@ -115,13 +133,15 @@ def _group_width(group: dict[str, Any]) -> float:
 # ── Symbols ─────────────────────────────────────────────────────────────────
 
 
-def _draw_symbol(c: pdfcanvas.Canvas, kind: str, cx: float, cy: float) -> None:
+def _draw_symbol(c: pdfcanvas.Canvas, kind: str, cx: float, cy: float, poles: int = 1) -> None:
     """A 22×18 pt glyph centred on ``(cx, cy)``.
 
     Deliberately schematic rather than DIN-exact: at this size a strict
     EN 60617 symbol turns into a blob, and the device kind is always spelled
     out beside it anyway. The shapes only need to be distinguishable at a
-    glance.
+    glance. A multi-pole breaker carries the EN 60617 pole mark — the short
+    stroke across the lead with the count beside it — because a 1-pole and a
+    3-pole LS read identically otherwise (owner's print of 2026-09-24).
     """
 
     symbol = str(DEVICE_CATALOG.get(kind, {}).get("symbol", "blank"))
@@ -134,6 +154,12 @@ def _draw_symbol(c: pdfcanvas.Canvas, kind: str, cx: float, cy: float) -> None:
         c.line(cx, cy + 9, cx, cy + 4)
         c.line(cx, cy - 9, cx, cy - 4)
         c.line(cx, cy - 4, cx + 7, cy + 4)
+        if poles >= 2:
+            c.setLineWidth(0.9)
+            c.line(cx - 3, cy + 5.5, cx + 3, cy + 8.5)
+            c.setFont(_FONT_BOLD, 5.5)
+            c.setFillColor(_BLUE_DEEP)
+            c.drawRightString(cx - 3.5, cy + 4.5, str(poles))
         if symbol == "fuse":
             c.rect(cx - 4, cy - 5, 8, 10, stroke=1, fill=0)
         if symbol == "sls":
@@ -364,7 +390,7 @@ def _draw_group(c: pdfcanvas.Canvas, group: dict[str, Any], x: float, dy: float 
         c.setFont(_FONT, 7)
         c.drawCentredString(cx, y_group_top - 26, "direkt von der Sammelschiene")
     else:
-        _draw_symbol(c, str(device.get("kind", "")), x + 18, (y_group_top + y_group_bot) / 2)
+        _draw_symbol(c, str(device.get("kind", "")), x + 18, (y_group_top + y_group_bot) / 2, _poles(device))
         c.setFillColor(_INK)
         c.setFont(_FONT_BOLD, 8.5)
         head = f"{_text(device.get('designation'))} {_short(str(device.get('kind','')))}".strip()
@@ -375,6 +401,7 @@ def _draw_group(c: pdfcanvas.Canvas, group: dict[str, Any], x: float, dy: float 
             part
             for part in (
                 _text(device.get("rating")),
+                f"{_poles(device)}P",
                 _text(device.get("residual_current")),
                 (f"Typ {_text(device.get('rcd_type'))}" if _text(device.get("rcd_type")) else ""),
             )
@@ -414,14 +441,17 @@ def _draw_circuit(c: pdfcanvas.Canvas, device: dict[str, Any], x: float, dy: flo
     c.setFillColor(colors.white)
     c.setLineWidth(0.9)
     c.rect(cx - box_w / 2, y_dev_bot, box_w, y_dev_top - y_dev_bot, stroke=1, fill=1)
-    _draw_symbol(c, str(device.get("kind", "")), cx - 14, (y_dev_top + y_dev_bot) / 2)
+    _draw_symbol(c, str(device.get("kind", "")), cx - 14, (y_dev_top + y_dev_bot) / 2, _poles(device))
 
     c.setFillColor(_INK)
     c.setFont(_FONT_BOLD, 7.5)
     c.drawString(cx - 2, (y_dev_top + y_dev_bot) / 2 + 3, _text(device.get("designation"))[:6] or "—")
     c.setFont(_FONT, 7)
     c.setFillColor(_MUTED)
-    c.drawString(cx - 2, (y_dev_top + y_dev_bot) / 2 - 7, _text(device.get("rating"))[:7])
+    # "B16 · 3P": the pole count is spelled out beside the rating as well as
+    # marked on the symbol — it is the one thing a 1-pole and a 3-pole LS
+    # differ in, and the box is too small for the symbol alone to carry it.
+    c.drawString(cx - 2, (y_dev_top + y_dev_bot) / 2 - 7, f"{_text(device.get('rating'))[:6]} · {_poles(device)}P".strip(" ·"))
 
     # Circuit-number chip — the one thing read first when tracing a fault.
     circuit = _text(device.get("circuit"))
@@ -490,7 +520,11 @@ def _paginate_groups(groups: Sequence[dict[str, Any]]) -> list[Sheet]:
             used0 += needed0
             continue
         needed1 = width + (_GROUP_GAP if band1 else 0.0)
-        if not band1 or used1 + needed1 <= band1_usable:
+        # Band 1 shares the sheet with the Schriftfeld, so it takes a group
+        # only when the whole group fits left of it — a six-circuit FI ran its
+        # last breaker under the title block (owner's print of 2026-09-24).
+        # Band 0 has no such neighbour and may run to the frame edge.
+        if used1 + needed1 <= band1_usable:
             band1.append(group)
             used1 += needed1
             continue
@@ -657,7 +691,12 @@ def _draw_legend_sheets(
         # Row height grows with the tallest wrapped cell so nothing is clipped.
         cell_lines: list[list[str]] = []
         for key, _title, w in _LEGEND_COLUMNS:
-            cell_lines.append(_wrap(_text(row.get(key)), _FONT, 7.5, w - 6, 3))
+            value = _text(row.get(key))
+            if key == "device" and _text(row.get("poles")):
+                # "LS · 3P": the pole count is the one thing two breakers of
+                # the same rating differ in, so the legend says it too.
+                value = f"{value} · {_text(row.get('poles'))}P".strip(" ·")
+            cell_lines.append(_wrap(value, _FONT, 7.5, w - 6, 3))
         row_h = max(13.0, 4 + 9.0 * max((len(lines) for lines in cell_lines), default=1))
 
         if y - row_h < 56:

@@ -83,9 +83,22 @@ class PlannedLine:
 # ── Planned side ──────────────────────────────────────────────────────────────
 
 
-def device_line_key(kind: str, poles: int, rating: str) -> str:
-    """``device:mcb:1p:b16`` — one key per device type, so "our B16" maps once."""
-    return f"device:{kind}:{int(poles)}p:{_normalize_rating(rating)}"
+def device_line_key(kind: str, poles: int, rating: str, residual_current: str = "", rcd_type: str = "") -> str:
+    """``device:mcb:1p:b16`` — one key per device TYPE, so "our B16" maps once.
+
+    An FI is not one type per rating: a 30 mA and a 300 mA breaker of the
+    same 40 A are two different articles, and so are Typ A and Typ B. The
+    residual current and the type join the key when they are set, and only
+    then, so a board without them keeps the key (and the mapping) it had.
+    """
+    key = f"device:{kind}:{int(poles)}p:{_normalize_rating(rating)}"
+    residual = _normalize_rating(residual_current)
+    rcd = _normalize_rating(rcd_type)
+    if residual:
+        key += f":{residual}"
+    if rcd:
+        key += f":typ{rcd}"
+    return key
 
 
 def _normalize_rating(rating: str) -> str:
@@ -101,21 +114,41 @@ def planned_lines(document: dict[str, Any]) -> list[PlannedLine]:
         if catalog is None:
             continue
         rating = str(device.get("rating") or "").strip()
+        residual = str(device.get("residual_current") or "").strip()
+        rcd_type = str(device.get("rcd_type") or "").strip()
         poles = _int(device.get("poles"), int(catalog["poles"]))
         te = _int(device.get("te"), int(catalog["te"]))
-        key = device_line_key(kind, poles, rating)
+        key = device_line_key(kind, poles, rating, residual, rcd_type)
         entry = devices.get(key)
         if entry is None:
-            entry = {"kind": kind, "rating": rating, "poles": poles, "te": te, "count": 0}
+            entry = {
+                "kind": kind, "rating": rating, "residual": residual, "rcd_type": rcd_type,
+                "poles": poles, "te": te, "count": 0,
+            }
             devices[key] = entry
         entry["count"] += 1
 
     lines: list[PlannedLine] = []
     for key, entry in sorted(
-        devices.items(), key=lambda item: (_DEVICE_ORDER.get(item[1]["kind"], 99), item[1]["rating"].lower())
+        devices.items(),
+        key=lambda item: (
+            _DEVICE_ORDER.get(item[1]["kind"], 99),
+            item[1]["rating"].lower(),
+            _residual_sort_key(item[1]["residual"]),
+            item[1]["rcd_type"].lower(),
+        ),
     ):
         catalog = DEVICE_CATALOG[entry["kind"]]
-        label = " ".join(part for part in (str(catalog["label"]), entry["rating"]) if part)
+        label = " ".join(
+            part
+            for part in (
+                str(catalog["label"]),
+                entry["rating"],
+                entry["residual"],
+                f"Typ {entry['rcd_type']}" if entry["rcd_type"] else "",
+            )
+            if part
+        )
         lines.append(
             PlannedLine(
                 key=key,
@@ -136,6 +169,12 @@ def planned_lines(document: dict[str, Any]) -> list[PlannedLine]:
             )
         )
     return lines
+
+
+def _residual_sort_key(residual: str) -> tuple[int, str]:
+    """30 mA before 300 mA — numerically, not as text."""
+    digits = "".join(ch for ch in residual if ch.isdigit())
+    return (int(digits) if digits else 0, residual.lower())
 
 
 def _int(value: Any, fallback: int) -> int:

@@ -408,6 +408,14 @@ virtual (nothing moved on disk). Migration `20260921_0089`.
 | `apps/web/src/components/customers/CustomerCombobox.tsx` → `leadingItems`; `pages/SchaltplanPage.tsx` | The customer search box of the Schaltplan page lists the boards edited last ("Zuletzt bearbeitet", relative time) before anything is typed; picking one sets customer + project and opens it |
 | `apps/web/src/pages/project/ProjectMaterialsTab.tsx` | "Quelle" column: Bericht / Verteiler VT-0007 |
 
+## Follow-ups after the first day of use (2026-09-24, afternoon)
+
+| Module | Role |
+|---|---|
+| `apps/api/app/services/schaltplan_material.py` → `device_line_key` | The residual current and the RCD type join the line key when they are set (`device:rcd:4p:40a:30ma:typa`), so a 30 mA and a 300 mA FI are two lines with two articles; a device without them keeps the old key and its mapping |
+| `apps/api/app/services/schaltplan_pdf.py` | Pole count on every breaker: the EN 60617 stroke-and-count mark on the symbol, "B16 · 3P" beside the rating, "LS · 3P" in the legend (`build_legend` rows carry `poles`); `_BAND_DY` 190 → 212 so the lower busbar's caption clears the deepest circuit text of the upper band; `_paginate_groups` sends a group too wide for band 1 (which shares the sheet with the Schriftfeld) to a new sheet instead of under the title block |
+| `apps/api/app/services/werkstatt_box_labels.py` | The crate sticker's own layout (it used to borrow the machine label, whose matrix anchor and headline are sized for "M-0062"): `datamatrix_symbol_modules` sizes the symbol from the code's ASCII codewords (KISTE-BK-2026-0001 = 14 → 18 × 18), code small under the matrix, crate number as headline fitted left of the logo box, name on one or two lines, "Baustellenkiste" at the foot; `preview_box_label_png` for a look before printing |
+
 ## Datanorm import at catalog size (2026-09-22)
 
 | Module | Role |
