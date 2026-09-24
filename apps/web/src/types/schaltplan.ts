@@ -149,6 +149,8 @@ export interface PanelFinding {
 
 export interface PanelPlanSummary {
   id: number;
+  /** "VT-0007" — the panel's own number, printed as a DataMatrix on the Schrank-Etikett and scanned at the Regal station. */
+  panel_number: string;
   customer_id: number;
   customer_name: string | null;
   project_id: number | null;
@@ -200,4 +202,77 @@ export interface PanelGroup {
   /** The Neozed/NH block feeding this group, when the group device names one. */
   preFuse: PanelDevice | null;
   children: PanelDevice[];
+}
+
+// ── Materialliste / Kommissionierung ─────────────────────────────────────────
+// Mirrors `PanelMaterialOut` in apps/api/app/schemas/schaltplan.py. Planned
+// lines are derived from the document on every read; scanned quantities come
+// from the Werkstatt ledger (`consumption` minus `consumption_undo` rows that
+// carry this panel's id).
+
+export type PanelMaterialLineKind = "device" | "terminal" | "extra";
+export type PanelMaterialLineStatus = "open" | "done" | "over" | "unplanned";
+export type PanelMaterialArticleSource = "mapping" | "auto";
+
+/** The stock article a line is checked off against — a slim projection, not the full WerkstattArticleOut. */
+export interface PanelMaterialArticle {
+  id: number;
+  article_number: string;
+  item_name: string;
+  manufacturer: string | null;
+  unit: string | null;
+  internal_code: string | null;
+  stock_available: number;
+}
+
+export interface PanelMaterialLine {
+  /** "device:mcb:1p:b16" | "part:2003-7641" | "article:218" — also the mapping key. */
+  key: string;
+  kind: PanelMaterialLineKind;
+  label: string;
+  detail: string;
+  planned: number;
+  scanned: number;
+  status: PanelMaterialLineStatus;
+  article: PanelMaterialArticle | null;
+  article_source: PanelMaterialArticleSource | null;
+  last_scanned_at: string | null;
+}
+
+export interface PanelMaterialPanel {
+  id: number;
+  panel_number: string;
+  designation: string;
+  name: string;
+  panel_type: PanelType;
+  status: PanelStatus;
+  customer_id: number;
+  customer_name: string | null;
+  project_id: number | null;
+  project_number: string | null;
+  project_name: string | null;
+  updated_at: string;
+}
+
+export interface PanelMaterial {
+  panel: PanelMaterialPanel;
+  lines: PanelMaterialLine[];
+  planned_total: number;
+  scanned_total: number;
+  open_lines: number;
+  last_scanned_at: string | null;
+}
+
+/** One row of the Werkstatt "Verteiler" overview (`GET /schaltplan/material/overview`). */
+export interface PanelMaterialSummary {
+  panel: PanelMaterialPanel;
+  planned_total: number;
+  scanned_total: number;
+  open_lines: number;
+  last_scanned_at: string | null;
+}
+
+export interface PanelMaterialMappingResult {
+  key: string;
+  article: PanelMaterialArticle | null;
 }

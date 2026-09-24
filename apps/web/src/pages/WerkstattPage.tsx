@@ -12,6 +12,7 @@ import { WerkstattNachbestellenPage } from "./werkstatt/WerkstattNachbestellenPa
 import { WerkstattAufBaustellePage } from "./werkstatt/WerkstattAufBaustellePage";
 import { WerkstattKistenPage } from "./werkstatt/WerkstattKistenPage";
 import { WerkstattMaschinenPage } from "./werkstatt/WerkstattMaschinenPage";
+import { WerkstattVerteilerPage } from "./werkstatt/WerkstattVerteilerPage";
 import { WerkstattMobileHomePage } from "./werkstatt/WerkstattMobileHomePage";
 import { WerkstattMobileArtikelPage } from "./werkstatt/WerkstattMobileArtikelPage";
 import { WerkstattMobileNachbestellenPage } from "./werkstatt/WerkstattMobileNachbestellenPage";
@@ -71,6 +72,9 @@ export function WerkstattPage() {
       {/* Also one responsive page: the register is read at a desk, but booking
           a machine out happens in the workshop with a phone in one hand. */}
       <WerkstattMaschinenPage />
+      {/* And one more: the Kommissionierung overview is read at a desk, the
+          detail is opened at the rack to tick a line off by hand. */}
+      <WerkstattVerteilerPage />
 
       {/* Mobile variants (each self-gates on isMobile + tab). */}
       <WerkstattMobileHomePage />

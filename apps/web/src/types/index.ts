@@ -421,6 +421,10 @@ export type ProjectTrackedMaterial = {
   occurrence_count: number;
   report_count: number;
   last_report_date?: string | null;
+  /** "bericht" = summed from Baustellenberichte; "verteiler" = stock consumed for a Verteiler of this project. */
+  source?: "bericht" | "verteiler";
+  /** The panels ("VT-0007") a `verteiler` row was scanned for; empty for report rows. */
+  panel_numbers?: string[];
 };
 
 /** One material line on a task — imported from the linked Baustellenkiste
@@ -1341,6 +1345,7 @@ export type WerkstattTab =
   | "kisten"             // Baustellenkisten — packed boxes assigned to customers
   | "maschinen"          // individually tracked machines (M-0001) with a custody log
   | "on_site"            // "Auf Baustelle" — all checked-out items grouped by project
+  | "verteiler"          // Verteiler-Kommissionierung — planned vs. scanned material per panel
   | "bedarfe"            // Projekt-Bedarfe (absorbed from legacy Materials view)
   | "katalog"            // Datanorm pool browse (absorbed from legacy Materials view)
   | "lieferanten"

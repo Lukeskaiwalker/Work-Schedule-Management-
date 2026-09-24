@@ -107,6 +107,10 @@ const MOVEMENT_LABELS: Record<string, { de: string; en: string }> = {
   repair_back: { de: "Aus Reparatur", en: "Back from repair" },
   inventory_plus: { de: "Inventur +", en: "Stock-take +" },
   inventory_minus: { de: "Inventur −", en: "Stock-take −" },
+  // Stock built into a Verteiler — scanned at the Regal station or booked from
+  // the panel's Materialliste — and the inverse of one such booking.
+  consumption: { de: "Verbrauch (Verteiler)", en: "Consumed (panel)" },
+  consumption_undo: { de: "Verbrauch storniert", en: "Consumption undone" },
 };
 
 export function movementTypeLabel(movementType: string, de: boolean): string {

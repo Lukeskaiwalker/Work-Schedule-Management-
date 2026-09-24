@@ -1,8 +1,10 @@
 import { useState, useMemo } from "react";
 import { useAppContext } from "../../context/AppContext";
+import type { ProjectTrackedMaterial } from "../../types";
 import { formatMaterialQuantity } from "../../utils/materials";
 import { formatShortIsoDate } from "../../utils/dates";
 import { SearchIcon } from "../../components/icons";
+import "../../styles/project-materials.css";
 
 function escapeCsvCell(value: string | number | null | undefined): string {
   const str = String(value ?? "");
@@ -12,7 +14,30 @@ function escapeCsvCell(value: string | number | null | undefined): string {
   return str;
 }
 
-type SortKey = "item" | "quantity" | "article_no" | "last_report_date" | "occurrence_count";
+/**
+ * Where a row's quantity came from: summed from Baustellenberichte, or stock
+ * consumed for one or more Verteiler of this project ("Verteiler VT-0007").
+ * A row without `source` predates the field and is a report row.
+ */
+export function materialSourceLabel(
+  entry: Pick<ProjectTrackedMaterial, "source" | "panel_numbers">,
+  de: boolean,
+): string {
+  if (entry.source === "verteiler") {
+    const word = de ? "Verteiler" : "Panel";
+    const numbers = (entry.panel_numbers ?? []).join(", ");
+    return numbers ? `${word} ${numbers}` : word;
+  }
+  return de ? "Bericht" : "Report";
+}
+
+type SortKey =
+  | "item"
+  | "quantity"
+  | "article_no"
+  | "last_report_date"
+  | "occurrence_count"
+  | "source";
 type SortDir = "asc" | "desc";
 
 export function ProjectMaterialsTab() {
@@ -38,7 +63,9 @@ export function ProjectMaterialsTab() {
           (m) =>
             m.item.toLowerCase().includes(q) ||
             (m.article_no ?? "").toLowerCase().includes(q) ||
-            (m.unit ?? "").toLowerCase().includes(q),
+            (m.unit ?? "").toLowerCase().includes(q) ||
+            // "VT-0007" finds everything that went into that panel.
+            materialSourceLabel(m, de).toLowerCase().includes(q),
         )
       : projectTrackedMaterials;
 
@@ -50,9 +77,11 @@ export function ProjectMaterialsTab() {
       else if (sortKey === "last_report_date")
         cmp = (a.last_report_date ?? "").localeCompare(b.last_report_date ?? "");
       else if (sortKey === "occurrence_count") cmp = a.occurrence_count - b.occurrence_count;
+      else if (sortKey === "source")
+        cmp = materialSourceLabel(a, de).localeCompare(materialSourceLabel(b, de));
       return sortDir === "asc" ? cmp : -cmp;
     });
-  }, [projectTrackedMaterials, query, sortKey, sortDir]);
+  }, [projectTrackedMaterials, query, sortKey, sortDir, de]);
 
   function toggleSort(key: SortKey) {
     if (sortKey === key) {
@@ -82,6 +111,7 @@ export function ProjectMaterialsTab() {
       de ? "Einträge" : "Entries",
       de ? "Berichte" : "Reports",
       de ? "Zuletzt im Bericht" : "Last report",
+      de ? "Quelle" : "Source",
     ];
     const rows = filteredMaterials.map((m) => [
       escapeCsvCell(m.item),
@@ -96,6 +126,7 @@ export function ProjectMaterialsTab() {
       escapeCsvCell(
         m.last_report_date ? formatShortIsoDate(m.last_report_date, language) : "",
       ),
+      escapeCsvCell(materialSourceLabel(m, de)),
     ]);
 
     const csv = [
@@ -244,13 +275,24 @@ export function ProjectMaterialsTab() {
             >
               {de ? "Zuletzt" : "Last report"} {sortIndicator("last_report_date")}
             </button>
+            <button
+              type="button"
+              className="project-mat-tab-th project-mat-tab-th--source"
+              onClick={() => toggleSort("source")}
+              role="columnheader"
+              aria-sort={
+                sortKey === "source" ? (sortDir === "asc" ? "ascending" : "descending") : "none"
+              }
+            >
+              {de ? "Quelle" : "Source"} {sortIndicator("source")}
+            </button>
           </div>
 
           {projectTrackedMaterials.length === 0 && (
             <div className="project-mat-tab-empty">
               {de
-                ? "Noch kein Material in Berichten erfasst."
-                : "No materials tracked in reports yet."}
+                ? "Noch kein Material in Berichten oder Verteilern erfasst."
+                : "No materials tracked in reports or panels yet."}
             </div>
           )}
 
@@ -268,6 +310,11 @@ export function ProjectMaterialsTab() {
               // grid column reads with a consistent "entries / reports" shape
               // even when they happen to be equal.
               const countLabel = `${entry.occurrence_count} / ${entry.report_count}`;
+              const sourceLabel = materialSourceLabel(entry, de);
+              const sourceClass =
+                entry.source === "verteiler"
+                  ? "project-mat-tab-td project-mat-tab-td--source project-mat-tab-td--source-verteiler"
+                  : "project-mat-tab-td project-mat-tab-td--source";
 
               return (
                 <div
@@ -294,6 +341,9 @@ export function ProjectMaterialsTab() {
                     {entry.last_report_date
                       ? formatShortIsoDate(entry.last_report_date, language)
                       : "–"}
+                  </div>
+                  <div className={sourceClass} role="cell" title={sourceLabel}>
+                    {sourceLabel}
                   </div>
                 </div>
               );

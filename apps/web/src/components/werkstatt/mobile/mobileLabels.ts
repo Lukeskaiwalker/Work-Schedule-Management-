@@ -79,6 +79,10 @@ const MOVEMENT_TITLES: Record<WerkstattMovementType, { de: string; en: string }>
   repair_back: { de: "Aus Reparatur zurück", en: "Back from repair" },
   inventory_plus: { de: "Inventur +", en: "Stock-take +" },
   inventory_minus: { de: "Inventur −", en: "Stock-take −" },
+  // Stock built into a Verteiler (Regal station scan or Materialliste booking)
+  // and the inverse of one such booking.
+  consumption: { de: "Verbrauch (Verteiler)", en: "Consumed (panel)" },
+  consumption_undo: { de: "Verbrauch storniert", en: "Consumption undone" },
 };
 
 /** What a ledger movement is called on screen. */

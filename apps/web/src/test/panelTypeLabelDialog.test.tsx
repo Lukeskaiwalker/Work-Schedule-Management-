@@ -23,6 +23,7 @@ import { apiFetch } from "../api/client";
 const apiMock = vi.mocked(apiFetch);
 
 const INFO: PanelTypeLabelInfo = {
+  panel_number: "VT-0007",
   customer: "Familie Schulze",
   project_number: "381",
   project_name: "Neubau Schulze",
@@ -96,6 +97,35 @@ describe("PanelTypeLabelDialog", () => {
     // The images are the server's own renderings, addressed like the PDFs.
     expect(screen.getByRole("img", { name: "SMPL-Logo" })).toHaveAttribute("src", "/api/schaltplan/type-label/logo.png");
     expect(screen.getByRole("img", { name: /QR-Code/ })).toHaveAttribute("src", "/api/schaltplan/type-label/qr.svg");
+  });
+
+  it("draws the panel number bottom-left with its placeholder DataMatrix", async () => {
+    apiMock.mockResolvedValueOnce(INFO);
+    renderDialog();
+    await screen.findByText("Kunde: Familie Schulze");
+
+    expect(screen.getByText("VT-0007")).toBeInTheDocument();
+    const matrix = screen.getByRole("img", { name: "DataMatrix VT-0007" });
+    expect(matrix.tagName.toLowerCase()).toBe("svg");
+    expect(matrix).toHaveAttribute("viewBox", "0 0 12 12");
+    // The L finder: the whole left column and the whole bottom row are dark.
+    const cells = Array.from(matrix.querySelectorAll("rect")).map((rect) => [
+      Number(rect.getAttribute("x")),
+      Number(rect.getAttribute("y")),
+    ]);
+    for (let index = 0; index < 12; index += 1) {
+      expect(cells).toContainEqual([0, index]);
+      expect(cells).toContainEqual([index, 11]);
+    }
+    // The clock track alternates: the top row's odd columns stay light.
+    expect(cells).toContainEqual([2, 0]);
+    expect(cells).not.toContainEqual([1, 0]);
+  });
+
+  it("draws the same matrix for the same number and a different one for another", async () => {
+    const { placeholderMatrix } = await import("../components/schaltplan/PanelTypeLabelPreview");
+    expect(placeholderMatrix("VT-0007")).toEqual(placeholderMatrix("VT-0007"));
+    expect(placeholderMatrix("VT-0007")).not.toEqual(placeholderMatrix("VT-0008"));
   });
 
   it("shows a dash for a panel without a project", async () => {

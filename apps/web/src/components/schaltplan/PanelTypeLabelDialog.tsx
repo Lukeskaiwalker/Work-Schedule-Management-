@@ -160,6 +160,7 @@ export function PanelTypeLabelDialog({ open, panelId, busy, onPrint, onClose }: 
                   projectNumber={info.project_number}
                   buildMonth={buildMonth}
                   contactLines={info.contact_lines}
+                  panelNumber={info.panel_number}
                 />
               </section>
 

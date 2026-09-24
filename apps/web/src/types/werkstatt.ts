@@ -37,7 +37,12 @@ export type WerkstattMovementType =
   // somebody read off a shelf. See `_DELTAS` in
   // apps/api/app/services/werkstatt_movements.py.
   | "inventory_plus"
-  | "inventory_minus";
+  | "inventory_minus"
+  // Stock built into a Verteiler (scanned at the Regal station or booked from
+  // the panel's Materialliste) and the inverse of one such booking. Like the
+  // stock-take pair they move `total` and `available` together.
+  | "consumption"
+  | "consumption_undo";
 
 export type WerkstattOrderStatus =
   | "draft"

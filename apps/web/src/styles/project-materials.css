@@ -1,0 +1,56 @@
+/* Project "Material" tab — the "Quelle" column.
+ *
+ * The tab's six-column grid lives in styles.css; a seventh column (Bericht /
+ * Verteiler VT-0007) needs the template redeclared at every breakpoint that
+ * file sets it. Own file, scoped under `.project-mat-tab` so it outranks the
+ * bare selectors there regardless of load order, because styles.css is a
+ * shared surface several people edit in the same week.
+ */
+
+.project-mat-tab .project-mat-tab-table-head,
+.project-mat-tab .project-mat-tab-row {
+  grid-template-columns:
+    minmax(0, 2.4fr)
+    minmax(0, 1fr)
+    minmax(0, 0.9fr)
+    minmax(0, 1.6fr)
+    minmax(0, 0.9fr)
+    minmax(0, 1fr)
+    minmax(0, 1.2fr);
+}
+
+.project-mat-tab-td--source {
+  color: #5c7895;
+}
+
+/* A panel row is stock that physically left the shelf — worth the ink weight
+ * a report line, which is a technician's estimate, does not get. */
+.project-mat-tab-td--source-verteiler {
+  color: #14293d;
+  font-weight: 600;
+}
+
+@media (max-width: 1100px) {
+  .project-mat-tab .project-mat-tab-table-head,
+  .project-mat-tab .project-mat-tab-row {
+    grid-template-columns:
+      minmax(0, 2fr)
+      minmax(0, 0.9fr)
+      minmax(0, 0.9fr)
+      minmax(0, 1fr)
+      minmax(0, 0.8fr)
+      minmax(0, 0.9fr)
+      minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 820px) {
+  .project-mat-tab .project-mat-tab-row {
+    grid-template-columns: 1fr;
+  }
+  .project-mat-tab-td--source::before {
+    content: "Quelle: ";
+    color: #5c7895;
+    font-weight: 400;
+  }
+}

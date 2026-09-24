@@ -8,7 +8,17 @@
  */
 
 import { apiFetch, API_BASE } from "../api/client";
-import type { DeviceKind, PanelDocument, PanelPlan, PanelPlanSummary, PanelStatus, PanelType } from "../types/schaltplan";
+import type {
+  DeviceKind,
+  PanelDocument,
+  PanelMaterial,
+  PanelMaterialMappingResult,
+  PanelMaterialSummary,
+  PanelPlan,
+  PanelPlanSummary,
+  PanelStatus,
+  PanelType,
+} from "../types/schaltplan";
 
 export interface ServerDeviceCatalogEntry {
   kind: DeviceKind;
@@ -202,6 +212,8 @@ export async function printPanelLabels(
  * sheet only shows a schematic preview and lets the user change `build_month`.
  */
 export interface PanelTypeLabelInfo {
+  /** "VT-0007" — printed as a DataMatrix bottom-left, scanned at the Regal station. */
+  panel_number: string;
   customer: string;
   /** Null when the panel has no project. */
   project_number: string | null;
@@ -264,4 +276,64 @@ export function typeLabelLogoUrl(): string {
 
 export function typeLabelQrUrl(): string {
   return `${API_BASE}/schaltplan/type-label/qr.svg`;
+}
+
+// ── Zuletzt bearbeitet ────────────────────────────────────────────────────────
+
+/** The panels the user may see, newest `updated_at` first — what the search box shows before anything is typed. */
+export async function listRecentPanels(token: string | null, limit = 8): Promise<PanelPlanSummary[]> {
+  return apiFetch<PanelPlanSummary[]>(`/schaltplan/panels/recent?limit=${limit}`, token);
+}
+
+// ── Materialliste / Kommissionierung ─────────────────────────────────────────
+// Backend contract: apps/api/app/routers/workflow_schaltplan_material.py.
+
+export async function getPanelMaterial(token: string | null, panelId: number): Promise<PanelMaterial> {
+  return apiFetch<PanelMaterial>(`/schaltplan/panels/${panelId}/material`, token);
+}
+
+/** Book `quantity` of a stock article as consumed for this panel (a `consumption` ledger row). */
+export async function bookPanelMaterial(
+  token: string | null,
+  panelId: number,
+  body: { article_id: number; quantity: number },
+): Promise<PanelMaterial> {
+  return apiFetch<PanelMaterial>(`/schaltplan/panels/${panelId}/material/book`, token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+/** Take a booking back (a `consumption_undo` row); 400 when more than the net scanned quantity. */
+export async function unbookPanelMaterial(
+  token: string | null,
+  panelId: number,
+  body: { article_id: number; quantity: number },
+): Promise<PanelMaterial> {
+  return apiFetch<PanelMaterial>(`/schaltplan/panels/${panelId}/material/unbook`, token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+/**
+ * Tell every panel which stock article a planned line means ("device:mcb:1p:b16"
+ * is SP-0152). Global, not per panel; `article_id: null` forgets the mapping.
+ */
+export async function setPanelMaterialMapping(
+  token: string | null,
+  body: { key: string; article_id: number | null },
+): Promise<PanelMaterialMappingResult> {
+  return apiFetch<PanelMaterialMappingResult>(`/schaltplan/material/mapping`, token, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+/** Every visible panel with its picking progress — the Werkstatt "Verteiler" tab. */
+export async function getPanelMaterialOverview(token: string | null): Promise<PanelMaterialSummary[]> {
+  return apiFetch<PanelMaterialSummary[]>(`/schaltplan/material/overview`, token);
 }

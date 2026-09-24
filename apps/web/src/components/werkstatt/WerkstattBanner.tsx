@@ -25,6 +25,7 @@ const TAB_DEFS: ReadonlyArray<TabDef> = [
   { key: "kisten", label_de: "Baustellenkisten", label_en: "Construction boxes" },
   { key: "maschinen", label_de: "Maschinen", label_en: "Machines" },
   { key: "on_site", label_de: "Auf Baustelle", label_en: "On site" },
+  { key: "verteiler", label_de: "Verteiler", label_en: "Panels" },
   { key: "nachbestellen", label_de: "Nachbestellen", label_en: "Reorder" },
   { key: "bedarfe", label_de: "Projekt-Bedarfe", label_en: "Project needs" },
   { key: "katalog", label_de: "Katalog", label_en: "Catalog" },

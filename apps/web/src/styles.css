@@ -13038,10 +13038,10 @@ li {
     padding: 14px 18px;
   }
   .project-mat-tab-td--article::before { content: "Art.: "; color: #5c7895; }
-  .project-mat-tab-td--qty::before     { content: "Qty: "; color: #5c7895; }
-  .project-mat-tab-td--notes::before   { content: "Notes: "; color: #5c7895; }
-  .project-mat-tab-td--count::before   { content: "Entries/Rep.: "; color: #5c7895; }
-  .project-mat-tab-td--last::before    { content: "Last: "; color: #5c7895; }
+  .project-mat-tab-td--qty::before     { content: "Menge: "; color: #5c7895; }
+  .project-mat-tab-td--notes::before   { content: "Notizen: "; color: #5c7895; }
+  .project-mat-tab-td--count::before   { content: "Eintr./Ber.: "; color: #5c7895; }
+  .project-mat-tab-td--last::before    { content: "Zuletzt: "; color: #5c7895; }
 }
 
 /* =========================================================================
@@ -35518,6 +35518,32 @@ button.time-calendar-cell {
   align-items: center;
   justify-content: center;
   text-align: center;
+}
+
+/* The panel number bottom-left: a placeholder 12 × 12 DataMatrix (the print
+   encodes the real one) with the number beside it at the text lines' size.
+   22 % of the label's height is the printer's 10 mm square. */
+.sp-type-label-number {
+  position: absolute;
+  left: 3%;
+  top: 68%;
+  height: 22%;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  gap: 1.5cqw;
+  font-size: 12px;
+  font-size: 3.1cqw;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.sp-type-label-matrix {
+  display: block;
+  height: 100%;
+  width: auto;
+  aspect-ratio: 1 / 1;
+  fill: #000;
 }
 
 .sp-type-label-note {

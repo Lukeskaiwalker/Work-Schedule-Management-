@@ -28,6 +28,7 @@ import { LegendTable } from "../components/schaltplan/LegendTable";
 import { NewPanelDialog } from "../components/schaltplan/NewPanelDialog";
 import { PanelDataTab } from "../components/schaltplan/PanelDataTab";
 import { PanelDiagram } from "../components/schaltplan/PanelDiagram";
+import { PanelMaterialList } from "../components/schaltplan/PanelMaterialList";
 import { PanelScopePicker } from "../components/schaltplan/PanelScopePicker";
 import { RailEditor } from "../components/schaltplan/RailEditor";
 import { RowTemplateSheet } from "../components/schaltplan/RowTemplateSheet";
@@ -49,6 +50,7 @@ import {
   duplicatePanel,
   getPanel,
   listPanels,
+  listRecentPanels,
   panelPdfUrl,
   updatePanel,
 } from "../utils/schaltplanApi";
@@ -64,18 +66,23 @@ import type {
 // Own sheet, not styles.css — see the header of that file.
 import "../styles/schaltplan-terminals.css";
 
-type EditorTab = "plan" | "aufbau" | "klemmen" | "legende" | "daten";
+type EditorTab = "plan" | "aufbau" | "klemmen" | "material" | "legende" | "daten";
 type SaveState = "clean" | "pending" | "saving" | "error";
 
 const AUTOSAVE_DELAY_MS = 900;
+/** How many "Zuletzt bearbeitet" panels the search box offers. */
+const RECENT_PANELS_LIMIT = 8;
 
 const TAB_LABELS: Record<EditorTab, string> = {
   plan: "Plan",
   aufbau: "Aufbau",
   klemmen: "Klemmen",
+  material: "Material",
   legende: "Legende",
   daten: "Daten",
 };
+
+const MATERIAL_HINT = "Geplant aus dem Verteilerplan · gescannt an der Regal-Station oder hier gebucht";
 
 export function SchaltplanPage() {
   const {
@@ -95,6 +102,9 @@ export function SchaltplanPage() {
   const [projectId, setProjectId] = useState<number | null>(null);
   const [panels, setPanels] = useState<PanelPlanSummary[]>([]);
   const [panelsLoading, setPanelsLoading] = useState(false);
+  // The panels touched most recently, across every customer — what the
+  // search box offers before anything is typed.
+  const [recentPanels, setRecentPanels] = useState<PanelPlanSummary[]>([]);
 
   const [panel, setPanel] = useState<PanelPlan | null>(null);
   const [document, setDocument] = useState<PanelDocument | null>(null);
@@ -149,6 +159,22 @@ export function SchaltplanPage() {
     };
   }, [reloadPanels]);
 
+  /**
+   * Refresh "Zuletzt bearbeitet". Quiet on failure: the list is a shortcut,
+   * and the last good one is better than an error over the search box.
+   */
+  const reloadRecent = useCallback(async () => {
+    try {
+      setRecentPanels(await listRecentPanels(token, RECENT_PANELS_LIMIT));
+    } catch {
+      // Keep whatever was shown before.
+    }
+  }, [token]);
+
+  useEffect(() => {
+    void reloadRecent();
+  }, [reloadRecent]);
+
   // ── Autosave ─────────────────────────────────────────────────────────────
 
   /** Save the pending document now. Resolves true when nothing was pending or the save landed, false on failure. */
@@ -188,6 +214,8 @@ export function SchaltplanPage() {
               : row,
           ),
         );
+        // A save moves this panel to the top of "Zuletzt bearbeitet".
+        void reloadRecent();
         return true;
       } catch {
         setSaveState("error");
@@ -201,7 +229,7 @@ export function SchaltplanPage() {
     } finally {
       if (saveInFlight.current === request) saveInFlight.current = null;
     }
-  }, [panel, token, setError]);
+  }, [panel, token, setError, reloadRecent]);
 
   /**
    * Bring the server up to date before something reads the saved document
@@ -241,6 +269,20 @@ export function SchaltplanPage() {
       }
     },
     [token, setError, resetLabels],
+  );
+
+  /**
+   * A "Zuletzt bearbeitet" pick: scope the picker to the panel's customer and
+   * project, then open it straight away. `getPanel` does not depend on the
+   * customer's list, so the editor is up before that list has even loaded.
+   */
+  const pickRecent = useCallback(
+    (recent: PanelPlanSummary) => {
+      setCustomerId(recent.customer_id);
+      setProjectId(recent.project_id);
+      void openPanel(recent.id);
+    },
+    [openPanel],
   );
 
   // ── Autosave (queue) ─────────────────────────────────────────────────────
@@ -476,6 +518,7 @@ export function SchaltplanPage() {
         const saved = await updatePanel(token, panel.id, patch);
         setPanel(saved);
         void reloadPanels();
+        void reloadRecent();
       } catch (error) {
         setError(
           error instanceof Error && error.message
@@ -484,7 +527,7 @@ export function SchaltplanPage() {
         );
       }
     },
-    [panel, token, reloadPanels, setError],
+    [panel, token, reloadPanels, reloadRecent, setError],
   );
 
   const handleCreate = useCallback(
@@ -514,6 +557,7 @@ export function SchaltplanPage() {
         setTab("aufbau");
         setSaveState("clean");
         void reloadPanels();
+        void reloadRecent();
       } catch (error) {
         setError(
           error instanceof Error && error.message
@@ -524,7 +568,7 @@ export function SchaltplanPage() {
         setCreating(false);
       }
     },
-    [customerId, projectId, token, reloadPanels, setError],
+    [customerId, projectId, token, reloadPanels, reloadRecent, setError],
   );
 
   const deleteCurrentPanel = useCallback(async () => {
@@ -535,10 +579,11 @@ export function SchaltplanPage() {
       setDocument(null);
       setNotice("Verteilerplan gelöscht.");
       void reloadPanels();
+      void reloadRecent();
     } catch {
       setError("Der Verteilerplan konnte nicht gelöscht werden.");
     }
-  }, [panel, token, reloadPanels, setNotice, setError]);
+  }, [panel, token, reloadPanels, reloadRecent, setNotice, setError]);
 
   // ── Derived ──────────────────────────────────────────────────────────────
 
@@ -616,6 +661,8 @@ export function SchaltplanPage() {
         onNewPanel={() => setNewPanelOpen(true)}
         canEdit={canEdit}
         loading={panelsLoading}
+        recentPanels={recentPanels}
+        onPickRecent={pickRecent}
       />
 
       {panel && document && (
@@ -695,6 +742,7 @@ export function SchaltplanPage() {
                       setDocument(copy.document);
                       setNotice(`Kopie „${copy.designation}“ angelegt.`);
                       void reloadPanels();
+                      void reloadRecent();
                     } catch {
                       setError("Die Kopie konnte nicht angelegt werden.");
                     }
@@ -806,6 +854,19 @@ export function SchaltplanPage() {
               pdfHref={panelPdfUrl(panel.id, { terminalsOnly: true })}
               printing={labels.printing}
             />
+          )}
+
+          {tab === "material" && (
+            <div className="sp-material">
+              <p className="sp-scope-hint">{MATERIAL_HINT}</p>
+              <PanelMaterialList
+                token={token}
+                panelId={panel.id}
+                canEdit={canEdit}
+                language={language}
+                hideHeader
+              />
+            </div>
           )}
 
           {tab === "legende" && (

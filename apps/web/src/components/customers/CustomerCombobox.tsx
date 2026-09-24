@@ -1,11 +1,32 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CustomerListItem } from "../../types";
 import { fuzzyFilterCustomers } from "../../utils/fuzzyMatch";
+// Only the leading-group rules; the combobox itself is styled in styles.css.
+import "../../styles/customer-combobox-leading.css";
 
 export type CustomerComboboxValue = {
   customerId: number | null;
   /** Free-text fallback for legacy drafts (pre-migration projects). */
   customerName: string;
+};
+
+export type CustomerComboboxLeadingItem = {
+  id: string;
+  primary: string;
+  secondary?: string;
+  /** A tiny right-aligned chip, e.g. "vor 2 Std.". */
+  hint?: string;
+};
+
+/**
+ * A group of rows shown ABOVE the customers while the query is empty — the
+ * Schaltplan page's "Zuletzt bearbeitet" panels. Picking one is the caller's
+ * business (`onPick` with the item's id); the combobox only closes.
+ */
+export type CustomerComboboxLeadingItems = {
+  title: string;
+  items: CustomerComboboxLeadingItem[];
+  onPick: (id: string) => void;
 };
 
 type Props = {
@@ -18,6 +39,8 @@ type Props = {
   disabled?: boolean;
   /** Shown below the input when no customer is picked. */
   placeholder?: string;
+  /** Rows shown before the customers while nothing is typed. Absent = the plain customer list. */
+  leadingItems?: CustomerComboboxLeadingItems;
 };
 
 /**
@@ -28,6 +51,9 @@ type Props = {
  *
  * Intentionally free of any global context — it's driven entirely by props
  * so it can render both inside ProjectModal and wherever else we need it.
+ *
+ * Keyboard rows are one list: leading items (empty query only), then the
+ * customer matches, then the create action; `activeIndex` spans all three.
  */
 export function CustomerCombobox({
   language,
@@ -37,6 +63,7 @@ export function CustomerCombobox({
   onRequestCreate,
   disabled,
   placeholder,
+  leadingItems,
 }: Props) {
   const de = language === "de";
   const selectedCustomer = useMemo<CustomerListItem | null>(
@@ -99,13 +126,24 @@ export function CustomerCombobox({
     [customers, lowerQuery],
   );
   const showCreateAction = trimmed.length > 0 && !exactMatch;
-  // Final dropdown rows = matches + optional create action. We track the
-  // active index against this combined list for keyboard nav.
-  const rowCount = matches.length + (showCreateAction ? 1 : 0);
+  // Leading rows exist only before anything is typed: once the user searches,
+  // they are searching customers.
+  const leading = trimmed.length === 0 && leadingItems ? leadingItems.items : [];
+  const leadingCount = leading.length;
+  // Final dropdown rows = leading + matches + optional create action. We
+  // track the active index against this combined list for keyboard nav.
+  const createIndex = leadingCount + matches.length;
+  const rowCount = createIndex + (showCreateAction ? 1 : 0);
 
   function selectCustomer(row: CustomerListItem) {
     onChange({ customerId: row.id, customerName: row.name });
     setQuery(row.name);
+    setOpen(false);
+    setActiveIndex(0);
+  }
+
+  function pickLeading(item: CustomerComboboxLeadingItem) {
+    leadingItems?.onPick(item.id);
     setOpen(false);
     setActiveIndex(0);
   }
@@ -135,8 +173,13 @@ export function CustomerCombobox({
     }
     if (event.key === "Enter") {
       event.preventDefault();
-      if (activeIndex < matches.length) {
-        const row = matches[activeIndex];
+      if (activeIndex < leadingCount) {
+        const item = leading[activeIndex];
+        if (item) pickLeading(item);
+        return;
+      }
+      if (activeIndex < createIndex) {
+        const row = matches[activeIndex - leadingCount];
         if (row) selectCustomer(row);
         return;
       }
@@ -201,13 +244,51 @@ export function CustomerCombobox({
 
       {open && !disabled && (rowCount > 0 || lowerQuery.length === 0) && (
         <ul className="customer-combobox-dropdown" role="listbox">
+          {leadingCount > 0 && leadingItems && (
+            <>
+              <li className="customer-combobox-group" role="presentation">
+                {leadingItems.title}
+              </li>
+              {leading.map((item, index) => {
+                const isActive = index === activeIndex;
+                return (
+                  <li
+                    key={`leading-${item.id}`}
+                    className={
+                      isActive
+                        ? "customer-combobox-option customer-combobox-lead customer-combobox-option--active"
+                        : "customer-combobox-option customer-combobox-lead"
+                    }
+                    role="option"
+                    aria-selected={isActive}
+                    onMouseEnter={() => setActiveIndex(index)}
+                    onMouseDown={(event) => {
+                      event.preventDefault();
+                      pickLeading(item);
+                    }}
+                  >
+                    <span className="customer-combobox-option-name">{item.primary}</span>
+                    {item.secondary && (
+                      <span className="customer-combobox-option-meta">{item.secondary}</span>
+                    )}
+                    {item.hint && <span className="customer-combobox-lead-hint">{item.hint}</span>}
+                  </li>
+                );
+              })}
+              <li className="customer-combobox-group" role="presentation">
+                {de ? "Kunden" : "Customers"}
+              </li>
+            </>
+          )}
+
           {matches.length === 0 && !showCreateAction && (
             <li className="customer-combobox-empty muted">
               {de ? "Keine Kunden gefunden." : "No customers found."}
             </li>
           )}
           {matches.map((row, index) => {
-            const isActive = index === activeIndex;
+            const rowIndex = leadingCount + index;
+            const isActive = rowIndex === activeIndex;
             return (
               <li
                 key={`customer-match-${row.id}`}
@@ -218,7 +299,7 @@ export function CustomerCombobox({
                 }
                 role="option"
                 aria-selected={isActive}
-                onMouseEnter={() => setActiveIndex(index)}
+                onMouseEnter={() => setActiveIndex(rowIndex)}
                 onMouseDown={(event) => {
                   event.preventDefault();
                   selectCustomer(row);
@@ -253,13 +334,13 @@ export function CustomerCombobox({
               )}
               <li
                 className={
-                  activeIndex === matches.length
+                  activeIndex === createIndex
                     ? "customer-combobox-create customer-combobox-create--active"
                     : "customer-combobox-create"
                 }
                 role="option"
-                aria-selected={activeIndex === matches.length}
-                onMouseEnter={() => setActiveIndex(matches.length)}
+                aria-selected={activeIndex === createIndex}
+                onMouseEnter={() => setActiveIndex(createIndex)}
                 onMouseDown={(event) => {
                   event.preventDefault();
                   onRequestCreate(trimmed);

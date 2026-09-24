@@ -43,6 +43,11 @@ const MOVEMENT_LABELS: Record<string, { de: string; en: string }> = {
   // row has to explain to whoever reads the log afterwards.
   inventory_plus: { de: "Inventur-Zugang", en: "Stock-take increase" },
   inventory_minus: { de: "Inventur-Abgang", en: "Stock-take decrease" },
+  // A machine is never consumed into a Verteiler, but the ledger is one table
+  // and a movement of either kind that lands on a machine row must still be
+  // named rather than shown as its raw key.
+  consumption: { de: "Verbrauch (Verteiler)", en: "Consumed (panel)" },
+  consumption_undo: { de: "Verbrauch storniert", en: "Consumption undone" },
 };
 
 /** Statuses a machine can come back in. `ausgemustert` is not a return. */

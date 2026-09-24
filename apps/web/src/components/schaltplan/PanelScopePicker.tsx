@@ -11,9 +11,15 @@
  * The board list is cards, not a `<select>`: on site the decisive information
  * is "how many circuits, is it a main or a sub, when was it last touched",
  * and a native picker shows none of that.
+ *
+ * Before anything is typed, the customer search offers the panels touched
+ * most recently ("Zuletzt bearbeitet"): the board somebody left an hour ago
+ * is the one they come back to, and it should be one tap away, not a
+ * customer, a project and a card.
  */
-import { CustomerCombobox } from "../customers/CustomerCombobox";
+import { CustomerCombobox, type CustomerComboboxLeadingItems } from "../customers/CustomerCombobox";
 import { PANEL_TYPE_LABELS } from "../../utils/schaltplanDevices";
+import { parseServerDateTime } from "../../utils/dates";
 import type { CustomerListItem, Project } from "../../types";
 import type { PanelPlanSummary } from "../../types/schaltplan";
 
@@ -32,12 +38,47 @@ type Props = {
   onNewPanel: () => void;
   canEdit: boolean;
   loading: boolean;
+  /** Newest first — shown at the top of the customer search while it is empty. */
+  recentPanels?: PanelPlanSummary[];
+  onPickRecent?: (panel: PanelPlanSummary) => void;
 };
+
+const RECENT_TITLE = "Zuletzt bearbeitet";
 
 function relativeDate(iso: string): string {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "";
   return date.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit", year: "2-digit" });
+}
+
+/**
+ * When a panel was last touched, as the search box's chip says it: minutes,
+ * then hours within the same day, "gestern", then the short date. Naive
+ * server timestamps are UTC (`parseServerDateTime`).
+ */
+export function recentPanelHint(iso: string, now: Date): string {
+  const at = parseServerDateTime(iso);
+  if (!at) return "";
+  const minutes = Math.max(0, Math.round((now.getTime() - at.getTime()) / 60_000));
+  if (minutes < 1) return "gerade eben";
+  if (minutes < 60) return `vor ${minutes} Min.`;
+  if (at.toDateString() === now.toDateString()) return `vor ${Math.floor(minutes / 60)} Std.`;
+  const yesterday = new Date(now.getTime() - 24 * 60 * 60_000);
+  if (at.toDateString() === yesterday.toDateString()) return "gestern";
+  return at.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit" });
+}
+
+/** The combobox rows for the recent panels: number and name, customer · project, and the age. */
+export function recentPanelItems(panels: PanelPlanSummary[], now: Date): CustomerComboboxLeadingItems["items"] {
+  return panels.map((panel) => {
+    const secondary = [panel.customer_name, panel.project_number].filter(Boolean).join(" · ");
+    return {
+      id: String(panel.id),
+      primary: `${panel.panel_number} · ${panel.designation} ${panel.name}`.trim(),
+      secondary: secondary || undefined,
+      hint: recentPanelHint(panel.updated_at, now) || undefined,
+    };
+  });
 }
 
 export function PanelScopePicker({
@@ -55,6 +96,8 @@ export function PanelScopePicker({
   onNewPanel,
   canEdit,
   loading,
+  recentPanels,
+  onPickRecent,
 }: Props) {
   // Legacy projects carry only the free-text customer_name; match those by
   // name so a customer's older jobs stay reachable until every project is
@@ -69,6 +112,18 @@ export function PanelScopePicker({
         (project.customer_name ?? "").trim().toLowerCase() === pickedName),
   );
 
+  const leadingItems: CustomerComboboxLeadingItems | undefined =
+    recentPanels && recentPanels.length > 0 && onPickRecent
+      ? {
+          title: RECENT_TITLE,
+          items: recentPanelItems(recentPanels, new Date()),
+          onPick: (id) => {
+            const hit = recentPanels.find((panel) => String(panel.id) === id);
+            if (hit) onPickRecent(hit);
+          },
+        }
+      : undefined;
+
   return (
     <div className="sp-scope">
       <div className="sp-scope-fields">
@@ -81,6 +136,7 @@ export function PanelScopePicker({
             onChange={(next) => onCustomerChange(next.customerId)}
             onRequestCreate={onRequestCreateCustomer}
             placeholder="Kunde suchen…"
+            leadingItems={leadingItems}
           />
         </div>
 

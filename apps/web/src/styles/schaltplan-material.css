@@ -1,0 +1,445 @@
+/* ── Materialliste (Schaltplan) ─────────────────────────────────────────────
+ *
+ * Own sheet, imported from components/schaltplan/PanelMaterialList.tsx — the
+ * same precedent as schaltplan-terminals.css: the list is shared by the
+ * Schaltplan tab and the Werkstatt page, and a separate file is the one shape
+ * of the change that cannot conflict with either page's styles.
+ *
+ * Everything is scoped under .sp-mat-* and uses the --sp-* tokens the
+ * Schaltplan block in styles.css defines. One row layout for every width: a
+ * five-column grid on a desk that folds to three short rows on a phone, so
+ * the same markup serves the tablet at the rail and the office screen.
+ */
+
+.sp-mat,
+.sp-material {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sp-mat-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.sp-mat-head h4 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.sp-mat-head small {
+  display: block;
+  margin-top: 2px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.sp-mat-empty {
+  margin: 0;
+  padding: 14px;
+  border: 1px dashed var(--sp-line);
+  border-radius: 10px;
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--muted);
+}
+
+/* The load failed: red, because an empty list here reads as "nothing to
+   pick", which sends somebody to the shelf with nothing in hand. */
+.sp-mat-error {
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid #e0b4b4;
+  border-radius: 8px;
+  background: #fff5f5;
+  font-size: 12.5px;
+  color: var(--danger);
+}
+
+/* A refused booking or mapping (the server's own sentence): amber like the
+   editor's Prüfen block — the list is still right, the one action was not. */
+.sp-mat-notice {
+  margin: 0;
+  padding: 8px 12px;
+  border: 1px solid var(--sp-warn-line);
+  background: var(--sp-warn-bg);
+  border-radius: 8px;
+  font-size: 12.5px;
+  color: #7c3d0a;
+}
+
+/* ── Rows ────────────────────────────────────────────────────────────────── */
+
+.sp-mat-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sp-mat-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) auto 96px minmax(0, 1.4fr) auto;
+  grid-template-areas: "main qty state article actions";
+  gap: 4px 12px;
+  align-items: center;
+  padding: 8px 12px;
+  border: 1px solid var(--sp-line);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.sp-mat-row--done {
+  border-color: #cfe8d6;
+  background: #f3faf5;
+}
+
+.sp-mat-row--over {
+  border-color: var(--sp-warn-line);
+  background: var(--sp-warn-bg);
+}
+
+/* Scanned, never planned: dashed, so it reads as "outside the plan". */
+.sp-mat-row--unplanned {
+  border-style: dashed;
+}
+
+.sp-mat-main {
+  grid-area: main;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sp-mat-main b {
+  font-size: 13.5px;
+  color: var(--sp-ink);
+  overflow-wrap: anywhere;
+}
+
+.sp-mat-main small {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.sp-mat-qty {
+  grid-area: qty;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  font-size: 14px;
+  font-weight: 800;
+  color: var(--sp-ink);
+}
+
+.sp-mat-qty small {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.sp-mat-state {
+  grid-area: state;
+  min-height: 20px;
+  display: flex;
+  align-items: center;
+}
+
+.sp-mat-tick {
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--sp-ok);
+}
+
+.sp-mat-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 6px;
+  border: 1px solid var(--sp-line);
+  background: #fff;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.sp-mat-chip--over {
+  color: var(--sp-warn);
+  border-color: var(--sp-warn-line);
+  background: var(--sp-warn-bg);
+}
+
+.sp-mat-chip--extra {
+  color: var(--muted);
+  border-style: dashed;
+}
+
+/* ── Article cell ────────────────────────────────────────────────────────── */
+
+.sp-mat-article {
+  grid-area: article;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.sp-mat-article--none {
+  font-style: italic;
+}
+
+.sp-mat-article-no {
+  font-weight: 700;
+  color: var(--sp-ink);
+  white-space: nowrap;
+}
+
+.sp-mat-article-name {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The article was matched by its part number, not chosen by hand. */
+.sp-mat-auto {
+  display: inline-flex;
+  align-items: center;
+  height: 16px;
+  padding: 0 5px;
+  border-radius: 4px;
+  background: var(--sp-tint);
+  color: var(--sp-accent-deep);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.sp-mat-article-actions {
+  display: inline-flex;
+  gap: 10px;
+}
+
+.sp-mat-link {
+  appearance: none;
+  border: 0;
+  padding: 0;
+  min-height: 28px;
+  background: transparent;
+  color: var(--sp-accent-deep);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-style: normal;
+  font-weight: 700;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.sp-mat-link:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── Booking buttons ─────────────────────────────────────────────────────── */
+
+.sp-mat-actions {
+  grid-area: actions;
+  display: flex;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
+/* Square siblings of .sp-btn: the same 44 px touch target, no label room. */
+.sp-mat-qty-btn {
+  appearance: none;
+  width: 44px;
+  min-height: 44px;
+  padding: 0;
+  border-radius: 10px;
+  border: 1px solid var(--sp-line);
+  background: #fff;
+  color: var(--sp-ink);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.sp-mat-qty-btn--plus {
+  border-color: var(--sp-accent);
+  color: var(--sp-accent-deep);
+}
+
+.sp-mat-qty-btn:hover:not(:disabled) {
+  border-color: var(--sp-accent);
+  color: var(--sp-accent);
+}
+
+.sp-mat-qty-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* ── Inline article search ───────────────────────────────────────────────── */
+
+.sp-mat-search {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--sp-line);
+}
+
+.sp-mat-search-bar {
+  display: flex;
+  gap: 8px;
+}
+
+.sp-mat-search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--sp-line);
+  border-radius: 10px;
+  background: #fff;
+  font-family: inherit;
+  font-size: 14px;
+  color: var(--sp-ink);
+}
+
+.sp-mat-search-input:focus-visible {
+  outline: none;
+  border-color: var(--sp-accent);
+  box-shadow: 0 0 0 3px rgba(47, 112, 183, 0.15);
+}
+
+.sp-mat-search-cancel {
+  flex: 0 0 auto;
+}
+
+.sp-mat-search-hint {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.sp-mat-search-hint--error {
+  color: var(--danger);
+}
+
+.sp-mat-search-results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sp-mat-search-result {
+  appearance: none;
+  width: 100%;
+  min-height: 44px;
+  padding: 6px 12px;
+  border: 1px solid var(--sp-line);
+  border-radius: 9px;
+  background: #fff;
+  font-family: inherit;
+  font-size: 13px;
+  color: var(--sp-ink);
+  text-align: left;
+  cursor: pointer;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.sp-mat-search-result:hover:not(:disabled) {
+  border-color: var(--sp-accent);
+  background: var(--sp-tint);
+}
+
+.sp-mat-search-result:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.sp-mat-search-result-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sp-mat-search-result-stock {
+  font-size: 11.5px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+/* ── Footer ──────────────────────────────────────────────────────────────── */
+
+.sp-mat-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 14px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--sp-line);
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.sp-mat-foot-total b {
+  font-size: 14px;
+  color: var(--sp-ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.sp-mat-foot-open {
+  font-weight: 700;
+  color: var(--sp-warn);
+}
+
+/* ── Phone ───────────────────────────────────────────────────────────────── */
+
+@media (max-width: 767px) {
+  .sp-mat-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "main qty"
+      "article article"
+      "state actions";
+    gap: 6px 10px;
+  }
+
+  .sp-mat-search-bar {
+    flex-wrap: wrap;
+  }
+
+  .sp-mat-search-result {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .sp-mat-search-result-stock {
+    grid-column: 1 / -1;
+  }
+}
