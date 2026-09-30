@@ -26,6 +26,7 @@ import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
@@ -2885,3 +2886,47 @@ class TestTheRackPageRendersPanels(unittest.TestCase):
     def test_the_countdown_reads_like_the_crate_screens(self):
         self.assertIn("Sitzung endet in", self.html)
         self.assertIn("expires_at", self.html)
+
+
+# --------------------------------------------------------------------------
+# /metrics — what the box itself is doing
+#
+# The station is a passively cooled Pi 4 driving a 4K kiosk, measured at
+# 80-81 °C with the throttle word already latched, while SMPL showed nothing.
+# The route exists so the Pi can answer that question now; the heartbeat
+# forwards the same sample so the server can render it later.
+# --------------------------------------------------------------------------
+
+
+class TestHostMetricsRoute(KioskCase):
+    def test_the_route_answers_json(self):
+        status, body, _headers = get(self.base() + "/metrics")
+        self.assertEqual(status, 200)
+        payload = json.loads(body.decode("utf-8"))
+        self.assertIsInstance(payload, dict)
+
+    def test_health_carries_the_same_sample_under_host(self):
+        """One method behind both, so the screens and the heartbeat cannot
+
+        disagree about how hot the box is.
+        """
+        status, body, _headers = get(self.base() + "/health")
+        self.assertEqual(status, 200)
+        self.assertIn("host", json.loads(body.decode("utf-8")))
+
+    def test_a_broken_sampler_degrades_the_key_not_the_route(self):
+        """/health is what the screens poll. A thermometer that throws must
+
+        not be able to take it down — the chip on the wall going dark because
+        a temperature could not be read is strictly worse than no temperature.
+        """
+        import host_metrics
+
+        with mock.patch.object(host_metrics, "sample", side_effect=RuntimeError("sensor")):
+            status, body, _headers = get(self.base() + "/health")
+            self.assertEqual(status, 200)
+            self.assertIn("error", json.loads(body.decode("utf-8"))["host"])
+
+            status, body, _headers = get(self.base() + "/metrics")
+            self.assertEqual(status, 200)
+            self.assertIn("error", json.loads(body.decode("utf-8")))

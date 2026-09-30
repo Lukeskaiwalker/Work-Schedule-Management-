@@ -292,6 +292,22 @@ _MODULE_ERRORS: dict[str, str] = {}
 _MODULE_LOCK = threading.Lock()
 
 
+def _host_metrics_for_heartbeat() -> dict:
+    """The host sample for the outgoing heartbeat, or {} rather than a failure.
+
+    The heartbeat's job is to say the station is alive. A thermometer that
+    cannot be read must not be able to stop that sentence being sent, so every
+    failure here degrades to an empty dict and the rest of the beat goes out.
+    """
+    mod = module("host_metrics")
+    if mod is None:
+        return {}
+    try:
+        return mod.sample()
+    except Exception:  # noqa: BLE001 - liveness outranks telemetry
+        return {}
+
+
 def module(name: str):
     """Import a sibling module lazily, retrying while it is still missing.
 
@@ -1225,6 +1241,7 @@ class Agent:
                 "brother_raster": module("brother_raster") is not None,
                 "label_render": module("label_render") is not None,
             },
+            "host": self.host_metrics(),
         }
         if self.station is not None:
             payload.update(self.station.health())
@@ -1232,6 +1249,21 @@ class Agent:
             payload["identity"] = {"paired": False, "disabled": True}
         payload.update(self._kiosk_health())
         return payload
+
+    def host_metrics(self) -> dict:
+        """Temperature, clock, load and throttling for the box itself.
+
+        A separate method rather than an inline call so ``/metrics`` and
+        ``/health`` cannot drift, and so the module staying unimportable is
+        one degraded key instead of a 500 on the route the screens poll.
+        """
+        mod = module("host_metrics")
+        if mod is None:
+            return {"error": module_error("host_metrics")}
+        try:
+            return mod.sample()
+        except Exception as exc:  # noqa: BLE001 - a thermometer must not take the agent down
+            return {"error": "%s: %s" % (type(exc).__name__, exc)}
 
     def _kiosk_health(self) -> dict:
         """What the screens, the scanner and the AirPlay widget are doing.
@@ -2857,6 +2889,7 @@ class Handler(BaseHTTPRequestHandler):
             "/": self._get_index,
             "/index.html": self._get_index,
             "/health": lambda q: self._json(200, self.agent.health()),
+            "/metrics": lambda q: self._json(200, self.agent.host_metrics()),
             "/setup": self._get_setup,
             "/setup.html": self._get_setup,
             "/preview.png": self._get_preview,
@@ -3467,10 +3500,18 @@ def main(argv: list[str] | None = None) -> int:
             "printer_connected": bool(status.get("printer_connected")),
             "media_width_mm": status.get("media_width_mm"),
             "error": status.get("error"),
+            # `status` is free-form on the wire and the server merges it into
+            # stations.hardware_status as-is, so a new key here reaches SMPL
+            # with no API change — which is the whole reason the host metrics
+            # ride along in it. The assembled blob is capped at 4 KiB server
+            # side; `host_metrics.sample()` is a flat dict of scalars and one
+            # small sub-dict each for load, memory and throttling, which
+            # measures well under 600 bytes.
             "status": {
                 "simulated": bool(status.get("simulated")),
                 "queue_depth": printer.queue_depth(),
                 "db": str(db_path),
+                "system": _host_metrics_for_heartbeat(),
             },
             # Where SMPL can call back. The port is ours to know; the host is
             # the address of the NIC that reaches SMPL — the request IP SMPL
