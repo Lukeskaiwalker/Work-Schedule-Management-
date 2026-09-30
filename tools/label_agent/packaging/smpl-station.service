@@ -24,7 +24,14 @@ Group=smpl-station
 # 'lp' is what the Brother udev rule grants. Without this the agent boots,
 # counts and exports, and simply cannot print - which is the intended
 # degradation, but it is not the intended *configuration*.
-SupplementaryGroups=lp
+#
+# 'video' owns /dev/vcio, which is the only way to read the SoC's throttle
+# word (`vcgencmd get_throttled`). Temperature and clock come from /sys and
+# need no group at all; what needs this is the latched "has been throttled
+# since boot" flag - the one that explains a slow afternoon nobody was
+# watching. Without the group /health still reports the temperature and says
+# in `host.throttle_error` exactly why the flags are missing.
+SupplementaryGroups=lp video
 
 WorkingDirectory=/opt/smpl-station/tools/label_agent
 
