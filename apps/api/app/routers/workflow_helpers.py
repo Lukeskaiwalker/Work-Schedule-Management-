@@ -161,6 +161,7 @@ from app.services.material_catalog import (
     sync_pending_material_catalog_images,
 )
 from app.core.security import verify_password
+from app.services.image_safety import open_untrusted_image
 
 try:
     from PIL import Image as PILImage
@@ -491,7 +492,9 @@ def _convert_heic_to_jpeg(raw: bytes) -> bytes | None:
     if not raw or PILImage is None or ImageOps is None:
         return None
     try:
-        with PILImage.open(BytesIO(raw)) as source:
+        # HEIF only: this runs because the upload *claimed* to be HEIC, and the
+        # claim is exactly what an unrestricted open would ignore.
+        with open_untrusted_image(raw, ("HEIF",)) as source:
             image = ImageOps.exif_transpose(source)
             if image.mode in {"RGBA", "LA"} or (image.mode == "P" and "transparency" in image.info):
                 alpha = image.convert("RGBA")

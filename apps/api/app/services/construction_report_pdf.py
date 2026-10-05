@@ -50,6 +50,8 @@ from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
 from reportlab.platypus import Flowable, Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
+from app.services.image_safety import open_untrusted_image, safe_image_bytes
+
 
 class _Checkbox(Flowable):
     """A small drawn checkbox flowable. Renders as either:
@@ -496,7 +498,12 @@ def compact_photo_for_pdf(photo_bytes: bytes) -> bytes:
     if not photo_bytes or PILImage is None or ImageOps is None:
         return photo_bytes
     try:
-        with PILImage.open(BytesIO(photo_bytes)) as source:
+        # Restricted: this is an upload, and an unrestricted open hands it to
+        # whichever decoder its first bytes pick (see services/image_safety).
+        # On refusal the original comes back below; _photos_section_flowables
+        # re-checks every photo before ReportLab sees one, so that fallback
+        # can no longer carry a PSD into the PDF.
+        with open_untrusted_image(photo_bytes) as source:
             image = ImageOps.exif_transpose(source)
             if image.mode in {"RGBA", "LA"} or (image.mode == "P" and "transparency" in image.info):
                 alpha = image.convert("RGBA")
@@ -1511,6 +1518,19 @@ def _scaled_image_from_path(path: str | None, max_width: float, max_height: floa
 
 
 def _scaled_image_from_bytes(data: bytes, max_width: float, max_height: float) -> Image | None:
+    """A ReportLab image from bytes that came from outside -- base64 signatures,
+    photos, anything. ReportLab's ImageReader calls PIL.Image.open with no
+    format list, so the bytes are made safe for that first, or refused."""
+    safe = safe_image_bytes(data)
+    if safe is None:
+        return None
+    return _scaled_image_from_safe_bytes(safe, max_width=max_width, max_height=max_height)
+
+
+def _scaled_image_from_safe_bytes(data: bytes, max_width: float, max_height: float) -> Image | None:
+    """As above, for bytes ``safe_image_bytes`` has already passed. Split out so
+    the photo loop, which checks every photo once up front, does not decode
+    each one a second time."""
     if not data:
         return None
     bio = BytesIO(data)
@@ -1580,8 +1600,11 @@ def _spool_photo_to_tempfile(photo_bytes: bytes, pool: list[str]) -> str | None:
     write error so the caller can fall back to the in-memory path
     (which still works, just costs more memory).
 
-    Suffix is ``.jpg`` so ReportLab's ImageReader can pick the right
-    decoder by extension without sniffing the content.
+    The ``.jpg`` suffix is cosmetic and gives NO protection: ReportLab's
+    ImageReader calls ``PIL.Image.open``, which sniffs the content and ignores
+    the name (a PSD written here as ``.jpg`` still opens as PSD — measured).
+    What makes a spooled photo safe is that the photo loop has already passed
+    it through ``safe_image_bytes``.
     """
     if not photo_bytes:
         return None
@@ -1666,6 +1689,12 @@ def _photos_section_flowables(
 
     pair: list[Any] = []
     for filename, photo_bytes in photos:
+        # Every photo is made safe for ReportLab here, once, before either path
+        # below. This is the single funnel all report photos pass through, so
+        # it is where the check lives -- not in the callers, one of which
+        # (compact_photo_for_pdf) deliberately falls back to the original bytes
+        # when its own decode fails. See services/image_safety.
+        photo_bytes = safe_image_bytes(photo_bytes) or b""
         # v2.5.31 — when a tempfile pool is supplied, spool the photo
         # to disk and hand ReportLab the file path instead of an
         # in-memory BytesIO. Peak heap drops dramatically on
@@ -1673,7 +1702,7 @@ def _photos_section_flowables(
         # rather than holding the full decoded buffer alive until
         # doc.build() finishes.
         preview: Any = None
-        if tempfile_pool is not None:
+        if tempfile_pool is not None and photo_bytes:
             spooled_path = _spool_photo_to_tempfile(photo_bytes, tempfile_pool)
             if spooled_path is not None:
                 preview = _scaled_image_from_path(
@@ -1682,7 +1711,7 @@ def _photos_section_flowables(
         if preview is None:
             # Either no pool was passed, or spooling failed → fall back
             # to the in-memory path (still correct, just heavier).
-            preview = _scaled_image_from_bytes(
+            preview = _scaled_image_from_safe_bytes(
                 photo_bytes, max_width=cell_width, max_height=max_height
             )
         if preview is None:

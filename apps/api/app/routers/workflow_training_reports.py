@@ -420,13 +420,18 @@ def _validated_signature(raw: str) -> str:
     import base64
     import io
 
-    from PIL import Image, UnidentifiedImageError
+    from PIL import UnidentifiedImageError
+
+    from app.services.image_safety import SIGNATURE_IMAGE_FORMATS, open_untrusted_image
 
     cleaned = raw.strip()
     payload = cleaned.split(",", 1)[1] if cleaned.startswith("data:") else cleaned
     try:
         data = base64.b64decode(payload, validate=False)
-        with Image.open(io.BytesIO(data)) as image:
+        # Restricted: even header parsing runs the chosen plugin's _open(),
+        # and a signature comes off a canvas -- PNG, JPEG or WEBP, nothing
+        # that needs the PSD or TIFF parser to look at it.
+        with open_untrusted_image(data, SIGNATURE_IMAGE_FORMATS) as image:
             width, height = image.size
             if width * height > _MAX_SIGNATURE_PIXELS:
                 raise HTTPException(

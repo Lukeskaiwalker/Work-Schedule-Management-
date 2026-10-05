@@ -87,12 +87,15 @@ def transcode_to_jpeg(data: bytes) -> bytes | None:
         return None
 
     try:
-        import pillow_heif
-        from PIL import Image, ImageOps
+        from PIL import ImageOps
 
-        pillow_heif.register_heif_opener()
+        from app.services.image_safety import open_untrusted_image
 
-        with Image.open(io.BytesIO(data)) as image:
+        # Restricted to the formats an upload may be (and registers HEIF
+        # itself). On refusal this returns None like any other failure, and
+        # the caller serves the original as a download -- which is a byte
+        # copy, not a decode.
+        with open_untrusted_image(data) as image:
             width, height = image.size
             if width * height > MAX_PIXELS:
                 logger.warning("Refusing to transcode %dx%d image preview", width, height)
