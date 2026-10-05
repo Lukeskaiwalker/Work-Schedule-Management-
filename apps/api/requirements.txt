@@ -1,4 +1,9 @@
-fastapi==0.116.1
+fastapi==0.142.2
+# Starlette is FastAPI's request layer and FastAPI no longer caps it, so it is
+# pinned here rather than left to whatever resolves. 0.47.x (what fastapi
+# 0.116.1 capped us to) carries an unauthenticated Range-header DoS in
+# FileResponse and unvalidated Host/path URL reconstruction, among others.
+starlette==1.7.0
 uvicorn[standard]==0.35.0
 sqlalchemy==2.0.43
 psycopg2-binary==2.9.10
@@ -6,10 +11,10 @@ alembic==1.16.5
 python-jose[cryptography]==3.5.0
 passlib[bcrypt]==1.7.4
 pydantic-settings==2.10.1
-python-multipart==0.0.20
+python-multipart==0.0.32
 httpx==0.28.1
-cryptography==45.0.7
-python-dotenv==1.1.1
+cryptography==50.0.2
+python-dotenv==1.2.4
 pytest==8.4.2
 pytest-cov==6.2.1
 # Pinned to exact versions (were floating >=) so prod builds are reproducible
@@ -26,8 +31,8 @@ pyotp==2.9.0
 qrcode==7.4.2
 reportlab==4.2.5
 openpyxl==3.1.5
-Pillow==11.3.0
-pillow-heif==1.2.1
+Pillow==12.3.0
+pillow-heif==1.8.0
 
 # v2.4.0: OpenAI Structured Outputs for line-item extraction.
 # 1.55+ has native Structured Outputs support via the chat.completions
@@ -44,3 +49,9 @@ openai==1.55.3
 # Dockerfile in the same commit). Pillow is already pulled as the
 # imaging backend.
 pdf2image==1.17.0
+
+# pip-audit (2026-10-05) also flags ecdsa 0.19.2 (CVE-2024-23342, Minerva
+# timing attack on P-256 signing). There is no fixed release; upstream treats
+# side channels as out of scope. It arrives through python-jose and is only
+# exercised when *signing* with an ECDSA key -- our JWTs are HS256 and decode
+# pins algorithms=[ALGORITHM], so the vulnerable path is not used.
