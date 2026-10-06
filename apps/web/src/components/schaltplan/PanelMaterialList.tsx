@@ -15,10 +15,12 @@
  */
 import { useCallback, useEffect, useState } from "react";
 
+import { PanelLabourBlock } from "./PanelLabourBlock";
 import { PanelMaterialRow } from "./PanelMaterialRow";
 import { materialTexts, type MaterialTexts } from "./panelMaterialTexts";
 import {
   bookPanelMaterial,
+  endPanelWorkSession,
   getPanelMaterial,
   setPanelMaterialMapping,
   unbookPanelMaterial,
@@ -37,6 +39,10 @@ export type PanelMaterialListProps = {
   onChanged?: () => void;
   /** Optional: render without the panel header (the Schaltplan tab already shows the panel). */
   hideHeader?: boolean;
+  /** Who is looking: they may end their OWN running session in the Arbeitszeit block. */
+  currentUserId?: number | null;
+  /** werkstatt:manage — may end anybody's running session. */
+  canManageWerkstatt?: boolean;
 };
 
 type LoadState =
@@ -83,6 +89,8 @@ export function PanelMaterialList({
   language,
   onChanged,
   hideHeader = false,
+  currentUserId = null,
+  canManageWerkstatt = false,
 }: PanelMaterialListProps): JSX.Element {
   const de = language === "de";
   const t = materialTexts(language);
@@ -166,6 +174,24 @@ export function PanelMaterialList({
     [token, busyKey, refresh, onChanged, t.mappingFailed],
   );
 
+  const endSession = useCallback(
+    async (sessionId: number, endedAt: string | null) => {
+      if (busyKey !== null) return;
+      setBusyKey(`labour:${sessionId}`);
+      setNotice(null);
+      try {
+        const material = await endPanelWorkSession(token, panelId, sessionId, endedAt);
+        setLoad({ status: "ready", material });
+        onChanged?.();
+      } catch (err) {
+        setNotice(errorMessage(err, t.labourEndFailed));
+      } finally {
+        setBusyKey(null);
+      }
+    },
+    [token, panelId, busyKey, onChanged, t.labourEndFailed],
+  );
+
   if (load.status === "loading") {
     return (
       <div className="sp-mat">
@@ -233,6 +259,16 @@ export function PanelMaterialList({
       )}
 
       <MaterialFooter material={material} t={t} de={de} />
+
+      <PanelLabourBlock
+        material={material}
+        t={t}
+        language={language}
+        currentUserId={currentUserId}
+        canManageWerkstatt={canManageWerkstatt}
+        busy={busyKey !== null}
+        onEnd={(sessionId, endedAt) => void endSession(sessionId, endedAt)}
+      />
     </div>
   );
 }

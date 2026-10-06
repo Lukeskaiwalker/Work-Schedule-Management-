@@ -8,6 +8,7 @@ import { AdminIdsConnectCard } from "../components/admin/AdminIdsConnectCard";
 import { MailIcon, KeyIcon, ArchiveUserIcon, ShieldIcon, ResetIcon } from "../components/icons";
 import { schoolWeekdayLabel } from "../utils/dates";
 import type { User, EmployeeGroup } from "../types";
+import { UserStationBadge } from "../components/admin/UserStationBadge";
 
 type AdminTab = "users" | "groups" | "roles" | "tools" | "audit" | "settings" | "system" | "backups";
 type AuditPeriodFilter = "all" | "today" | "7d" | "30d" | "90d" | "custom";
@@ -102,6 +103,7 @@ type GroupDraft = {
 export function AdminPage() {
   const {
     mainView,
+    token,
     user,
     language,
     canManageUsers,
@@ -633,6 +635,14 @@ export function AdminPage() {
                             )}
 
                             <div className="admin-users-detail-grid">
+                              {canManageUsers && (
+                                <div className="admin-users-field admin-users-field--span-2">
+                                  <span className="admin-users-field-label">
+                                    {de ? "Stations-Ausweis" : "Station badge"}
+                                  </span>
+                                  <UserStationBadge token={token} userId={u.id} language={language} />
+                                </div>
+                              )}
                               <label className="admin-users-field">
                                 <span className="admin-users-field-label">
                                   {de ? "Rolle" : "Role"}

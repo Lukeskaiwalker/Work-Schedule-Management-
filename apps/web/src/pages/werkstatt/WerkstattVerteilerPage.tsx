@@ -218,6 +218,8 @@ export function WerkstattVerteilerPage() {
               language={language}
               onChanged={reload}
               hideHeader
+              currentUserId={user?.id ?? null}
+              canManageWerkstatt={(user?.effective_permissions ?? []).includes("werkstatt:manage")}
             />
           </div>
         </article>

@@ -34,6 +34,16 @@ export type MaterialTexts = {
   scannedOfPlanned: string;
   lastScanned: string;
   openLines: (count: number) => string;
+  labourTitle: string;
+  labourEmpty: string;
+  labourTotal: string;
+  labourRunning: string;
+  labourStale: string;
+  labourEnd: string;
+  labourEndAt: string;
+  labourEndConfirm: string;
+  labourEndFailed: string;
+  labourSessions: (count: number) => string;
 };
 
 const DE: MaterialTexts = {
@@ -66,6 +76,16 @@ const DE: MaterialTexts = {
   scannedOfPlanned: "gescannt",
   lastScanned: "zuletzt gescannt",
   openLines: (count) => (count === 1 ? "1 offen" : `${count} offen`),
+  labourTitle: "Arbeitszeit",
+  labourEmpty: "Noch keine Arbeitszeit. Am Regal den Verteiler scannen, dann den eigenen Ausweis.",
+  labourTotal: "gesamt",
+  labourRunning: "läuft seit",
+  labourStale: "Ausstempeln vergessen?",
+  labourEnd: "Beenden",
+  labourEndAt: "Ende",
+  labourEndConfirm: "Speichern",
+  labourEndFailed: "Arbeitszeit konnte nicht beendet werden.",
+  labourSessions: (count) => (count === 1 ? "1 Einsatz" : `${count} Einsätze`),
 };
 
 const EN: MaterialTexts = {
@@ -98,6 +118,16 @@ const EN: MaterialTexts = {
   scannedOfPlanned: "scanned",
   lastScanned: "last scanned",
   openLines: (count) => (count === 1 ? "1 open" : `${count} open`),
+  labourTitle: "Labour",
+  labourEmpty: "No time booked yet. At the rack, scan the board, then your own badge.",
+  labourTotal: "total",
+  labourRunning: "running since",
+  labourStale: "Forgot to clock out?",
+  labourEnd: "End",
+  labourEndAt: "End",
+  labourEndConfirm: "Save",
+  labourEndFailed: "Could not end the session.",
+  labourSessions: (count) => (count === 1 ? "1 session" : `${count} sessions`),
 };
 
 export function materialTexts(language: "de" | "en"): MaterialTexts {

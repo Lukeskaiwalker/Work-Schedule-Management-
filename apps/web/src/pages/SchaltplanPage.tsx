@@ -865,6 +865,8 @@ export function SchaltplanPage() {
                 canEdit={canEdit}
                 language={language}
                 hideHeader
+                currentUserId={user?.id ?? null}
+                canManageWerkstatt={(user?.effective_permissions ?? []).includes("werkstatt:manage")}
               />
             </div>
           )}

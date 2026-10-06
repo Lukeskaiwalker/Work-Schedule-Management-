@@ -2,6 +2,7 @@ import { useAppContext } from "../context/AppContext";
 import { AvatarBadge } from "../components/shared/AvatarBadge";
 import { ApiTokensSection } from "../components/profile/ApiTokensSection";
 import { CalendarFeedSection } from "../components/profile/CalendarFeedSection";
+import { StationBadgeSection } from "../components/profile/StationBadgeSection";
 import { TwoFactorSection } from "../components/profile/TwoFactorSection";
 
 export function ProfilePage() {
@@ -362,6 +363,13 @@ export function ProfilePage() {
           calendar. Every user gets one — no admin gate.
         */}
         <CalendarFeedSection />
+
+        {/*
+          Stations-Ausweis: the DataMatrix this person scans at the Regal
+          station — instead of tapping their name, and to clock in and out
+          of a Verteiler. Everybody has one; minted on first view.
+        */}
+        <StationBadgeSection />
       </div>
     </section>
   );

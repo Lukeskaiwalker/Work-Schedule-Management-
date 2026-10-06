@@ -204,7 +204,10 @@ describe("PanelMaterialList", () => {
   it("hides the header on request", async () => {
     renderList({ hideHeader: true });
     await screen.findByText("Leitungsschutzschalter (LS) B16");
-    expect(screen.queryByRole("heading")).toBeNull();
+    // The panel's own title goes (the Schaltplan tab already shows the panel);
+    // the Arbeitszeit section under the list is content, and stays.
+    expect(screen.queryByRole("heading", { level: 4 })).toBeNull();
+    expect(screen.getByRole("heading", { level: 5, name: "Arbeitszeit" })).toBeInTheDocument();
   });
 
   it("offers the mapping control for an unmapped line only to someone who may edit", async () => {

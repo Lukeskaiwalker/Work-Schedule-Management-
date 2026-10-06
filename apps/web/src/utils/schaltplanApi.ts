@@ -292,6 +292,25 @@ export async function getPanelMaterial(token: string | null, panelId: number): P
   return apiFetch<PanelMaterial>(`/schaltplan/panels/${panelId}/material`, token);
 }
 
+/**
+ * End a running work session by hand — the fix for a forgotten clock-out.
+ * Your own session needs nothing more; somebody else's needs
+ * `werkstatt:manage` (the server decides). `endedAt` should be the real end:
+ * "now" the morning after is hours nobody worked. Answers with the refreshed list.
+ */
+export async function endPanelWorkSession(
+  token: string | null,
+  panelId: number,
+  sessionId: number,
+  endedAt: string | null,
+): Promise<PanelMaterial> {
+  return apiFetch<PanelMaterial>(`/schaltplan/panels/${panelId}/work-sessions/${sessionId}/end`, token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ended_at: endedAt }),
+  });
+}
+
 /** Book `quantity` of a stock article as consumed for this panel (a `consumption` ledger row). */
 export async function bookPanelMaterial(
   token: string | null,

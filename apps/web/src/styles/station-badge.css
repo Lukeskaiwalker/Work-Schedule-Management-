@@ -1,0 +1,138 @@
+/* The station badge on the profile page, and its printed card.
+ *
+ * Same palette as the Kalender-Abo card beside it (calendar-feed.css). The
+ * DataMatrix itself is always black on white whatever the theme — an imager
+ * does not read light modules on dark — so it sits on its own white plate. */
+
+.station-badge {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.station-badge-face {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 16px 20px;
+}
+
+.station-badge-matrix {
+  flex: none;
+  padding: 8px;
+  background: #ffffff;
+  border: 1px solid #d5e0ec;
+  border-radius: 8px;
+}
+
+.station-badge-who {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+}
+
+.station-badge-name {
+  font-size: 17px;
+  line-height: 22px;
+  color: #14293d;
+}
+
+.station-badge-kind {
+  font-size: 13px;
+  color: #5c7895;
+}
+
+.station-badge-code {
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  color: #4f657c;
+  overflow-wrap: anywhere;
+}
+
+.station-badge-use {
+  font-size: 12.5px;
+  color: #8fa2ba;
+}
+
+.station-badge-error {
+  margin: 0;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 13px;
+  color: #b03030;
+}
+
+/* ── Print ──────────────────────────────────────────────────────────────
+ * Each card owns one root directly under <body>. While printing, every
+ * OTHER child of <body> is display:none and only the root marked
+ * .is-printing shows: one page, one badge, no blank pages of hidden profile
+ * after it. The card is credit-card sized so it fits a standard sleeve. */
+.station-badge-print-root {
+  display: none;
+}
+
+@media print {
+  body.printing-station-badge > *:not(.station-badge-print-root.is-printing) {
+    display: none !important;
+  }
+
+  body.printing-station-badge > .station-badge-print-root.is-printing {
+    display: block !important;
+  }
+
+  /* Paper under the card. With "Hintergrundgrafiken" on, the app's tinted
+     body gradient otherwise prints across the whole A4 sheet (measured). */
+  html:has(> body.printing-station-badge),
+  body.printing-station-badge {
+    background: #ffffff !important;
+  }
+
+  .station-badge-sheet {
+    box-sizing: border-box;
+    width: 85.6mm;
+    height: 54mm;
+    margin: 12mm;
+    padding: 5mm;
+    display: flex;
+    align-items: center;
+    gap: 5mm;
+    border: 0.3mm solid #000000;
+    border-radius: 3mm;
+    font-family: "Source Sans 3", system-ui, sans-serif;
+    color: #000000;
+    background: #ffffff;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* Vector, so a 30 mm square stays crisp; 22 modules over it is ~1.4 mm
+     each, comfortably inside what the station's imager reads. */
+  .station-badge-sheet-matrix {
+    flex: none;
+    width: 30mm;
+    height: 30mm;
+  }
+
+  .station-badge-sheet-who {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5mm;
+    min-width: 0;
+  }
+
+  .station-badge-sheet-who strong {
+    font-size: 13pt;
+    line-height: 1.15;
+  }
+
+  .station-badge-sheet-who span {
+    font-size: 8pt;
+  }
+
+  .station-badge-sheet-who code {
+    font-size: 7pt;
+    letter-spacing: 0.04em;
+    overflow-wrap: anywhere;
+  }
+}

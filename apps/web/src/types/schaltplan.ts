@@ -254,6 +254,21 @@ export interface PanelMaterialPanel {
   updated_at: string;
 }
 
+/**
+ * One person's position in a board's Arbeitszeit block, clocked with their
+ * station badge. `minutes` counts CLOSED sessions only; a running one is
+ * `running_since` — it has no length yet, and counting it would put a number
+ * on the board that grows by itself when somebody forgets to scan out.
+ */
+export interface PanelLabourLine {
+  user_id: number;
+  name: string;
+  minutes: number;
+  sessions: number;
+  running_since: string | null;
+  running_session_id: number | null;
+}
+
 export interface PanelMaterial {
   panel: PanelMaterialPanel;
   lines: PanelMaterialLine[];
@@ -261,6 +276,10 @@ export interface PanelMaterial {
   scanned_total: number;
   open_lines: number;
   last_scanned_at: string | null;
+  /** The hours beside the parts — never among `lines`, whose totals count pieces. */
+  labour?: PanelLabourLine[];
+  labour_minutes?: number;
+  labour_running?: number;
 }
 
 /** One row of the Werkstatt "Verteiler" overview (`GET /schaltplan/material/overview`). */
