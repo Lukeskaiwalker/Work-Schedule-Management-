@@ -1737,7 +1737,7 @@ class Agent:
         with nobody tapped is not booked anonymously and not queued — it is
         refused, the quantity survives, and the screen says what to do.
         """
-        self.kiosk.flash(SCREEN_RACK, "error", decision.error or "Bitte zuerst Namen antippen",
+        self.kiosk.flash(SCREEN_RACK, "error", decision.error or self._sr.MSG_NEEDS_ASSIGNEE,
                          "Ausgabe nur mit Namen — nichts gebucht.", code=decision.code)
 
     def _applied_machine(self, decision, resolved) -> None:
@@ -2384,6 +2384,74 @@ class Agent:
             raise ApiError(400, "unknown screen action '%s'" % action)
         return {"ok": True, "action": action}
 
+    def _applied_badge(self, decision, _resolved) -> None:
+        """A person scanned their own badge at the rack.
+
+        SMPL decides what it meant (``POST /station/werkstatt/badge``); this
+        only says it on the wall. ``identify`` stands in for tapping a name, so
+        the next Ausgabe or Rückgabe books onto that person -- the same
+        two-minute claim a tap makes. The other answers move time on a
+        Verteiler and need nothing from the router.
+
+        Unlike a tap, the person is not looked up in the cached crew: a tap is
+        an id from the screen and has to be one the screen offered, while a
+        badge was resolved by SMPL itself, which answers with the id AND the
+        name, so the chip on the wall can never be nameless.
+
+        The code is never put in a flash: a badge is a bearer identifier, and
+        the flash ends up on the screen and in /screen/state.
+        """
+        if decision.panel_code and decision.panel_id is None:
+            # The board was scanned but its list has not come back from SMPL
+            # yet, so its id is unknown. Sending the badge without a board
+            # would quietly mean identify or clock OUT -- the opposite of
+            # what somebody who just scanned a board intends.
+            self.kiosk.flash(SCREEN_RACK, "error", "Verteiler noch nicht geladen",
+                             "Bitte den Verteiler noch einmal scannen, dann den Ausweis.")
+            return
+        result = self.werkstatt.badge_scan(decision.code, decision.panel_id,
+                                           identify_only=decision.identify_only)
+        if not result.ok:
+            if result.status == 404:
+                title = "Ausweis unbekannt"
+                detail = result.error or "Diesen Ausweis kennt SMPL nicht."
+            elif not self.werkstatt.configured:
+                title, detail = "Ausweis", "Diese Station ist nicht mit SMPL verbunden."
+            else:
+                title, detail = "Ausweis nicht gelesen", result.error or ""
+            self.kiosk.flash(SCREEN_RACK, "error", title, detail)
+            return
+
+        data = result.data if isinstance(result.data, dict) else {}
+        person = data.get("person") if isinstance(data.get("person"), dict) else {}
+        name = str(person.get("name") or "").strip() or "?"
+        action = data.get("action")
+        board = (data.get("panel") or {}).get("panel_number") or decision.panel_code or ""
+        session = data.get("session") if isinstance(data.get("session"), dict) else {}
+        closed = data.get("closed") if isinstance(data.get("closed"), dict) else {}
+
+        if action == "identify":
+            if person.get("id") is not None and name != "?":
+                self.router.set_assignee({"id": person.get("id"), "name": name})
+            # Named while clocked onto a board (the badge answered a refused
+            # Ausgabe): say the board keeps running, so nobody wonders whether
+            # giving their name just clocked them out.
+            running = session.get("running") and (data.get("panel") or {}).get("panel_number")
+            detail = "angemeldet · %s läuft weiter" % running if running else "angemeldet"
+        elif action == "clock_in":
+            detail = "eingestempelt · %s" % board
+        elif action == "clock_out":
+            detail = "ausgestempelt · %s · %s" % (board, _hours(session.get("minutes")))
+        elif action == "switch":
+            detail = "%s beendet (%s) · eingestempelt %s" % (
+                closed.get("panel_number") or "?", _hours(closed.get("minutes")), board)
+        elif action == "already_in":
+            detail = "bereits eingestempelt · %s" % board
+        else:
+            detail = ""
+        self.kiosk.flash(SCREEN_RACK, "ok", name, detail)
+        self.kiosk.bump(SCREEN_RACK)
+
     def _set_assignee(self, value) -> None:
         """Tap a name, or clear it with a null.
 
@@ -2439,7 +2507,17 @@ _APPLY = {
     "close_panel": Agent._applied_close_panel,
     "panel_item": Agent._applied_panel_item,
     "undo_panel_item": Agent._applied_undo_panel,
+    "badge": Agent._applied_badge,
 }
+
+
+def _hours(minutes) -> str:
+    """``1:35 h`` -- the time on a board, as the wall says it."""
+    try:
+        total = max(0, int(minutes or 0))
+    except (TypeError, ValueError):
+        total = 0
+    return "%d:%02d h" % (total // 60, total % 60)
 
 
 def _panel_line_title(line: dict, fallback: str) -> str:

@@ -70,6 +70,8 @@ __all__ = [
     "CODE_PREFIX",
     "CODE_LENGTH",
     "BOX_PREFIX",
+    "BADGE_PREFIX",
+    "CMD_WARENEINGANG",
     "PANEL_PREFIX",
     "PanelSession",
     "EXPIRED_BOX",
@@ -79,6 +81,7 @@ __all__ = [
     "MOVEMENT_REQUIRING_ASSIGNEE",
     "is_internal_article_code",
     "is_box_code",
+    "is_badge_code",
     "is_panel_code",
     "normalise_panel_code",
     "movement_needs_assignee",
@@ -101,6 +104,14 @@ _INTERNAL_RE = re.compile(r"^SMPL-[%s]{%d}$" % (CODE_ALPHABET, CODE_LENGTH))
 
 BOX_PREFIX = "KISTE-"
 
+# A person's own badge: ``SMPL-P-`` and ten characters, minted by SMPL
+# (apps/api/app/services/station_badges.py). Recognised by its prefix, like a
+# crate or a panel, and for the same reason: the hyphen after ``P`` means no
+# article code (``SMPL-`` + six, no hyphen) and no command (``SMPL-CMD-...``)
+# can ever look like one, so it is classified before anything goes over the
+# network -- and never sent to /resolve, which answers for things, not people.
+BADGE_PREFIX = "SMPL-P-"
+
 # A Verteiler's number as printed on its Schrank-Etikett: ``VT-0007``. The
 # station recognises the prefix itself — SMPL's /resolve answers not_found for
 # it, exactly as for a crate code — and asks for the panel's material list
@@ -122,6 +133,10 @@ CMD_MENGE_10 = "SMPL-CMD-MENGE-10"
 CMD_MENGE_50 = "SMPL-CMD-MENGE-50"
 CMD_EIN = "SMPL-CMD-EIN"
 CMD_AUS = "SMPL-CMD-AUS"
+# The third direction, which had no code: Ausgabe and Rückgabe could be
+# scanned off the wall, Wareneingang only clicked. The rack screen now shows
+# all three, so the mouse is not needed to change direction at all.
+CMD_WARENEINGANG = "SMPL-CMD-WARENEINGANG"
 CMD_ENTNAHME = "SMPL-CMD-ENTNAHME"
 # "Mitnehmen": the packed crate on the screen is being carried out now. The one
 # command that books stock from the box screen, which is why it needs an open
@@ -136,6 +151,7 @@ COMMAND_CODES: Tuple[str, ...] = (
     CMD_MENGE_50,
     CMD_EIN,
     CMD_AUS,
+    CMD_WARENEINGANG,
     CMD_ENTNAHME,
     CMD_MITNEHMEN,
 )
@@ -151,6 +167,13 @@ DEFAULT_DEDUPE_WINDOW_S = 0.150
 # that claim goes stale fast. Two minutes is long enough to fetch three items
 # off the shelf and short enough that the next person does not book onto it.
 DEFAULT_ASSIGNEE_TIMEOUT_S = 120.0
+
+#: How long after the rack refused an Ausgabe for want of a name a badge scan
+#: counts as the answer -- the name, and nothing else. Without that window a
+#: person clocked onto a Verteiler who answers "who is this for?" with their
+#: badge would be clocked OUT, because a badge with no board open means
+#: "I am done" to SMPL. A minute covers fishing the badge out of a pocket.
+NAME_WAIT_S = 60.0
 
 # Which movement a rack scan means, given the direction the operator set.
 # Three directions, not two: taking something out, bringing a borrowed thing
@@ -207,7 +230,7 @@ MSG_NO_INVERSE = (
 )
 #: Shown, in these words, when somebody scans a checkout with no name tapped.
 #: It is a refusal, not a warning: nothing is written.
-MSG_NEEDS_ASSIGNEE = "Bitte zuerst Namen antippen"
+MSG_NEEDS_ASSIGNEE = "Bitte Namen antippen oder Ausweis scannen"
 
 
 def is_internal_article_code(code: str) -> bool:
@@ -235,6 +258,11 @@ def command_for(code: str) -> Optional[str]:
     """The canonical command name for a scan, or None if it is not a command."""
     normalised = (code or "").strip().upper()
     return normalised if normalised in COMMAND_CODES else None
+
+
+def is_badge_code(code: str) -> bool:
+    """A person's badge, by prefix. What follows is SMPL's to judge."""
+    return (code or "").strip().upper().startswith(BADGE_PREFIX)
 
 
 def is_box_code(code: str) -> bool:
@@ -355,6 +383,9 @@ class RouterState:
     # when the tap (or the last scan under it) happened.
     assignee: Optional[Dict[str, Any]] = None
     assignee_at: float = 0.0
+    # When the rack last refused an Ausgabe (or the undo of a Rückgabe) for
+    # want of a name; 0.0 when no such question is open. See NAME_WAIT_S.
+    name_wanted_at: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -381,6 +412,10 @@ class Decision:
     assignee_user_id: Optional[int] = None
     #: The Verteiler this decision is about (normalised, ``VT-0007``).
     panel_code: Optional[str] = None
+    #: For a badge scan: the board open at the rack, as SMPL numbered it, or
+    #: None. Carried on the decision rather than read back from the router at
+    #: apply time, because three threads reach the router in between.
+    panel_id: Optional[int] = None
     #: Opening a panel closed a crate session, or the other way round. Said
     #: here so the caller can tell the other screen what just happened to it.
     closed_box: bool = False
@@ -388,6 +423,9 @@ class Decision:
     #: Like ``session_expired``, for the panel: it timed out just before this
     #: scan, and the scan was routed as if it had never been open.
     panel_expired: bool = False
+    #: For a badge scan: it answers a refused Ausgabe, so SMPL is asked for the
+    #: name only and must not clock anybody in or out (see NAME_WAIT_S).
+    identify_only: bool = False
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -408,9 +446,11 @@ class Decision:
             "undo": dict(self.undo) if self.undo else None,
             "assignee_user_id": self.assignee_user_id,
             "panel_code": self.panel_code,
+            "panel_id": self.panel_id,
             "closed_box": self.closed_box,
             "closed_panel": self.closed_panel,
             "panel_expired": self.panel_expired,
+            "identify_only": self.identify_only,
         }
 
 
@@ -523,7 +563,7 @@ class ScanRouter:
         if not text:
             return False
         return (command_for(text) is None and not is_box_code(text)
-                and not is_panel_code(text))
+                and not is_panel_code(text) and not is_badge_code(text))
 
     def snapshot(self) -> Dict[str, Any]:
         """A JSON-shaped view for /health and the screen state."""
@@ -653,7 +693,7 @@ class ScanRouter:
     def set_direction(self, direction: str) -> None:
         with self._lock:
             if direction in _DIRECTION_MOVEMENT:
-                self._state = replace(self._state, direction=direction)
+                self._state = replace(self._state, direction=direction, name_wanted_at=0.0)
 
     def set_assignee(self, person: Optional[Dict[str, Any]], at: Optional[float] = None) -> None:
         """Tap a name, or clear it. ``person`` is ``{"id", "name"}`` or None."""
@@ -666,6 +706,7 @@ class ScanRouter:
                 self._state,
                 assignee={"id": _as_user_id(person), "name": person.get("name")},
                 assignee_at=now,
+                name_wanted_at=0.0,
             )
 
     def set_mode(self, mode: str) -> None:
@@ -758,6 +799,10 @@ class ScanRouter:
             if command is not None:
                 return self._decide_command(command, text, source, now, expired)
 
+            if is_badge_code(upper):
+                decision = self._decide_badge(text, source, now)
+                return replace(decision, **self._expiry_fields(expired))
+
             if is_box_code(upper):
                 decision = self._decide_box(upper, source, now)
                 return replace(decision, **self._expiry_fields(expired))
@@ -801,7 +846,7 @@ class ScanRouter:
                             previous_code=previous, **base)
 
         if command == CMD_ABBRUCH:
-            return self._decide_undo(text, source, expired)
+            return self._decide_undo(text, source, now, expired)
 
         if command in _MENGE:
             qty = _MENGE[command]
@@ -822,8 +867,8 @@ class ScanRouter:
             return Decision(screen=BOXES, action="handover",
                             box_code=session.code, box_number=session.box_number, **base)
 
-        if command in (CMD_EIN, CMD_AUS):
-            direction = "ein" if command == CMD_EIN else "aus"
+        if command in (CMD_EIN, CMD_AUS, CMD_WARENEINGANG):
+            direction = {CMD_EIN: "ein", CMD_AUS: "aus", CMD_WARENEINGANG: "wareneingang"}[command]
             self._state = replace(state, direction=direction)
             return Decision(screen=RACK, action="direction",
                             movement_type=_DIRECTION_MOVEMENT[direction], **base)
@@ -833,7 +878,8 @@ class ScanRouter:
         self._state = replace(state, mode=mode)
         return Decision(screen=BOXES, action="mode", **base)
 
-    def _decide_undo(self, text: str, source: str, expired: Optional[str]) -> Decision:
+    def _decide_undo(self, text: str, source: str, now: float,
+                     expired: Optional[str]) -> Decision:
         """Describe the inverse. Nothing is forgotten here — see confirm_undo.
 
         One rule survives the trip through here: **a checkout names somebody.**
@@ -921,6 +967,7 @@ class ScanRouter:
         if movement_needs_assignee(inverse, assignee):
             assignee = _as_user_id(state.assignee)
             if assignee is None:
+                self._state = replace(self._state, name_wanted_at=now)
                 return Decision(screen=RACK, action="needs_assignee", ok=False,
                                 error=MSG_NEEDS_ASSIGNEE, qty=last.qty, **base)
 
@@ -959,6 +1006,40 @@ class ScanRouter:
         # Switching crates is what packing three jobs at once looks like.
         return Decision(screen=BOXES, action="switch_session",
                         previous_code=previous.code, closed_panel=closed_panel, **base)
+
+    def _decide_badge(self, text: str, source: str, now: float) -> Decision:
+        """A person scanned their own badge. Always the rack's business.
+
+        The router does not decide what it MEANS -- identify, clock onto the
+        open board, clock off, switch boards. SMPL does
+        (``POST /station/werkstatt/badge``), so two stations scanning the same
+        badge agree. All the router contributes is which board, if any, is open
+        here right now -- and whether the screen has just asked for a name,
+        in which case the badge is that name and nothing more (NAME_WAIT_S).
+        """
+        state = self._state
+        panel = state.panel
+        if panel is None and self._waiting_for_name(state, now):
+            return Decision(screen=RACK, action="badge", code=text.strip().upper(),
+                            source=source, identify_only=True)
+        return Decision(
+            screen=RACK,
+            action="badge",
+            code=text.strip().upper(),
+            source=source,
+            panel_code=panel.code if panel is not None else None,
+            panel_id=panel.panel_id if panel is not None else None,
+        )
+
+    @staticmethod
+    def _waiting_for_name(state: RouterState, now: float) -> bool:
+        """An Ausgabe was refused for want of a name moments ago, and nothing
+        has answered or overtaken that question since."""
+        return (state.session is None
+                and state.direction == _DIRECTION_REQUIRING_ASSIGNEE
+                and state.assignee is None
+                and state.name_wanted_at > 0.0
+                and now - state.name_wanted_at <= NAME_WAIT_S)
 
     def _decide_panel(self, upper: str, source: str, now: float) -> Decision:
         state = self._state
@@ -1023,6 +1104,7 @@ class ScanRouter:
         # survives, and the operator taps a name and scans again.
         if (session is None and state.direction == _DIRECTION_REQUIRING_ASSIGNEE
                 and state.assignee is None):
+            self._state = replace(state, name_wanted_at=now)
             return Decision(screen=RACK, action="needs_assignee", ok=False,
                             error=MSG_NEEDS_ASSIGNEE, qty=state.pending_qty, **base)
 

@@ -70,6 +70,9 @@ PATHS = {
     # routes that write `consumption` rows: the movements route above keeps
     # refusing that kind.
     "panels": BASE + "/panels",
+    # A person's own badge. SMPL decides what the scan means (identify, clock
+    # onto the open board, off it, switch) so two stations always agree.
+    "badge": BASE + "/badge",
 }
 
 #: What a panel number may look like on its way into a URL. The router has
@@ -693,6 +696,34 @@ class WerkstattClient:
             return Result(False, error="Ungültige Menge.")
         return self._write(panel_undo_path(panel), {"article_id": article, "quantity": qty},
                            invalidate=False)
+
+    def badge_scan(self, code: str, panel_id: Any = None, *,
+                   identify_only: bool = False) -> Result:
+        """Hand SMPL a scanned badge and the board open here, if any.
+
+        The code goes in the BODY, never the URL: a badge is a bearer
+        identifier, and a query string ends up in access logs. Length is
+        checked here so a garbled read costs nothing on the network. No crate
+        changes, so the crate cache is left alone.
+
+        ``identify_only`` -- the badge answers a refused Ausgabe and is the name
+        only -- is sent only when set, and never together with a board: the
+        two mean opposite things, and SMPL refuses the pair.
+        """
+        text = str(code or "").strip().upper()
+        if not text or len(text) > 64:
+            return Result(False, error="Ungültiger Ausweis.")
+        if identify_only and panel_id is not None:
+            return Result(False, error="Ausweis: Name oder Verteiler, nicht beides.")
+        payload: Dict[str, Any] = {"code": text}
+        if identify_only:
+            payload["identify_only"] = True
+        if panel_id is not None:
+            panel = _as_id(panel_id)
+            if panel is None:
+                return Result(False, error="Ungültiger Verteiler.")
+            payload["panel_id"] = panel
+        return self._write(PATHS["badge"], payload, invalidate=False)
 
     def _write(self, path: str, payload: Dict[str, Any],
                *, timeout: Optional[float] = None, invalidate: bool = True) -> Result:

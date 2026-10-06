@@ -753,7 +753,7 @@ class TestAssignee(unittest.TestCase):
         self.assertFalse(decision.ok)
         self.assertEqual(decision.action, "needs_assignee")
         self.assertEqual(decision.screen, "regal")
-        self.assertEqual(decision.error, "Bitte zuerst Namen antippen")
+        self.assertEqual(decision.error, "Bitte Namen antippen oder Ausweis scannen")
 
     def test_the_refusal_consumes_nothing(self):
         router, clock = build()
@@ -1395,3 +1395,180 @@ class TestPanelIdle(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --------------------------------------------------------------------------
+# Personal badges
+#
+# A badge (``SMPL-P-`` + ten characters) is a person, not a thing. The router
+# must recognise it by its prefix alone -- before any network call -- and
+# hand it to the rack with whichever board is open there, because SMPL needs
+# that board to clock the person onto it.
+# --------------------------------------------------------------------------
+
+BADGE = "SMPL-P-7KQ2M9XH4R"
+
+
+class TestABadgeAnswersARefusedAusgabe(unittest.TestCase):
+    """Right after the rack refused an Ausgabe for want of a name, the next
+    badge IS that name: identify only, so somebody clocked onto a board is not
+    clocked out by answering the question the screen just asked. With nothing
+    pending a badge keeps its meaning, which SMPL decides (identify, or clock
+    out a person who is on a board)."""
+
+    ARTICLE = "4011923456789"
+
+    def refused(self):
+        router, clock = build()
+        self.assertEqual(router.route(self.ARTICLE, kind="werkstatt_article").action,
+                         "needs_assignee")
+        clock.advance(5)
+        return router, clock
+
+    def test_the_next_badge_only_names_the_person(self):
+        router, _ = self.refused()
+        decision = router.route(BADGE)
+        self.assertEqual(decision.action, "badge")
+        self.assertTrue(decision.identify_only)
+        self.assertIsNone(decision.panel_id)
+        self.assertTrue(decision.as_dict()["identify_only"])
+
+    def test_with_nothing_pending_a_badge_is_not_identify_only(self):
+        router, _ = build()
+        self.assertFalse(router.route(BADGE).identify_only)
+
+    def test_the_question_does_not_hang_in_the_air_for_ever(self):
+        router, clock = self.refused()
+        clock.advance(scan_router.NAME_WAIT_S + 1)
+        self.assertFalse(router.route(BADGE).identify_only)
+
+    def test_a_tapped_name_answers_it(self):
+        router, clock = self.refused()
+        router.set_assignee(MAX)
+        router.set_assignee(None)
+        clock.advance(1)
+        self.assertFalse(router.route(BADGE).identify_only)
+
+    def test_changing_direction_drops_it(self):
+        router, _ = self.refused()
+        router.set_direction("ein")
+        router.set_direction("aus")
+        self.assertFalse(router.route(BADGE).identify_only)
+
+    def test_a_refused_undo_waits_for_a_name_too(self):
+        router, clock = build()
+        router.note_commit(screen="regal", action="movement", article_id=5,
+                           movement_type="return", qty=1)
+        clock.advance(1)
+        self.assertEqual(router.route("SMPL-CMD-ABBRUCH").action, "needs_assignee")
+        clock.advance(2)
+        self.assertTrue(router.route(BADGE).identify_only)
+
+    def test_an_open_board_still_means_the_board(self):
+        router, _ = self.refused()
+        router.route("VT-0007")
+        router.note_panel(7, "VT-0007")
+        decision = router.route(BADGE)
+        self.assertFalse(decision.identify_only)
+        self.assertEqual(decision.panel_id, 7)
+
+
+class TestABadgeIsAPersonNotAThing(unittest.TestCase):
+    def test_it_is_recognised_by_its_prefix(self):
+        self.assertTrue(scan_router.is_badge_code(BADGE))
+        self.assertTrue(scan_router.is_badge_code(BADGE.lower()))
+
+    def test_it_can_never_be_an_article_or_a_command(self):
+        """The hyphen after P is what guarantees it, as for every command."""
+        self.assertFalse(scan_router.is_internal_article_code(BADGE))
+        self.assertIsNone(scan_router.command_for(BADGE))
+        self.assertFalse(scan_router.is_box_code(BADGE))
+        self.assertFalse(scan_router.is_panel_code(BADGE))
+
+    def test_an_article_code_is_not_a_badge(self):
+        self.assertFalse(scan_router.is_badge_code("SMPL-7KQ2M9"))
+        self.assertFalse(scan_router.is_badge_code("SMPL-CMD-AUS"))
+
+    def test_a_badge_never_goes_to_resolve(self):
+        """/resolve answers for things. A person's code has no business there,
+        and asking would put a round trip in front of the one request that
+        does answer (the badge endpoint)."""
+        router, _clock = build()
+        self.assertFalse(router.needs_resolution(BADGE))
+
+
+class TestRoutingABadge(unittest.TestCase):
+    def test_with_no_board_open_it_carries_no_board(self):
+        router, _clock = build()
+        decision = router.route(BADGE)
+        self.assertEqual(decision.action, "badge")
+        self.assertEqual(decision.screen, scan_router.RACK)
+        self.assertIsNone(decision.panel_id)
+        self.assertIsNone(decision.panel_code)
+
+    def test_with_a_board_open_it_carries_that_board(self):
+        router, _clock = build()
+        router.route("VT-0007")
+        router.note_panel(7, "VT-0007")
+        decision = router.route(BADGE)
+        self.assertEqual(decision.action, "badge")
+        self.assertEqual((decision.panel_code, decision.panel_id), ("VT-0007", 7))
+
+    def test_a_board_whose_list_has_not_loaded_carries_its_code_but_no_id(self):
+        """The agent refuses that case rather than sending the badge without a
+        board, which would mean identify or clock OUT -- the opposite of what
+        somebody who just scanned a board intends."""
+        router, _clock = build()
+        router.route("VT-0007")
+        decision = router.route(BADGE)
+        self.assertEqual(decision.panel_code, "VT-0007")
+        self.assertIsNone(decision.panel_id)
+
+    def test_the_code_is_normalised(self):
+        router, _clock = build()
+        self.assertEqual(router.route("  " + BADGE.lower() + " ").code, BADGE)
+
+    def test_a_badge_does_not_close_the_open_board(self):
+        """Clocking onto a board while picking its parts is the whole flow."""
+        router, _clock = build()
+        router.route("VT-0007")
+        router.note_panel(7, "VT-0007")
+        router.route(BADGE)
+        self.assertIsNotNone(router.snapshot()["panel"])
+
+    def test_the_same_badge_inside_the_echo_window_is_dropped(self):
+        """Two readers, one trigger pull: the echo must not reach SMPL as a
+        second scan, which would read as clock-in-then-out."""
+        router, clock = build()
+        router.route(BADGE)
+        clock.advance(0.05)
+        self.assertTrue(router.route(BADGE).duplicate)
+
+    def test_the_decision_names_its_board_in_its_dict(self):
+        router, _clock = build()
+        router.route("VT-0007")
+        router.note_panel(7, "VT-0007")
+        self.assertEqual(router.route(BADGE).as_dict()["panel_id"], 7)
+
+
+class TestWareneingangHasACode(unittest.TestCase):
+    """All three directions can be scanned off the wall, not only two."""
+
+    def test_it_is_a_command(self):
+        self.assertEqual(scan_router.command_for("smpl-cmd-wareneingang"),
+                         scan_router.CMD_WARENEINGANG)
+        self.assertIn(scan_router.CMD_WARENEINGANG, scan_router.COMMAND_CODES)
+
+    def test_it_sets_the_direction(self):
+        router, _clock = build()
+        decision = router.route(scan_router.CMD_WARENEINGANG)
+        self.assertEqual(decision.action, "direction")
+        self.assertEqual(decision.movement_type, "intake")
+        self.assertEqual(router.direction, "wareneingang")
+
+    def test_ausgabe_and_rueckgabe_still_work(self):
+        router, _clock = build()
+        router.route(scan_router.CMD_AUS)
+        self.assertEqual(router.direction, "aus")
+        router.route(scan_router.CMD_EIN)
+        self.assertEqual(router.direction, "ein")

@@ -1697,7 +1697,34 @@ class TestDirectionsAndAssignee(KioskCase):
         self.assertEqual(self.movements.calls, [], "stock moved without a name on it")
         _s, state = self.state("regal")
         self.assertEqual(state["flash"]["level"], "error")
-        self.assertEqual(state["flash"]["title"], "Bitte zuerst Namen antippen")
+        self.assertEqual(state["flash"]["title"], "Bitte Namen antippen oder Ausweis scannen")
+
+    def test_a_badge_right_after_a_refused_ausgabe_is_the_name(self):
+        """Article first, then the badge: the badge answers the refusal. It goes
+        to SMPL as identify-only -- so somebody clocked onto a board is NOT
+        clocked out by giving their name -- and the next scan books to them."""
+        asked = []
+
+        def badge_scan(code, panel_id=None, identify_only=False):
+            asked.append((code, panel_id, identify_only))
+            return smpl_werkstatt.Result(True, status=200, data={
+                "action": "identify", "person": {"id": 4, "name": "Max Mustermann"},
+                "panel": {"id": 7, "panel_number": "VT-0007"},
+                "session": {"minutes": 50, "running": True}, "closed": None})
+
+        self.agent.werkstatt.badge_scan = badge_scan
+        post(self.base() + "/scan/route", {"code": "4011923456789"})   # refused: no name
+        time.sleep(0.2)
+        post(self.base() + "/scan/route", {"code": BADGE_CODE})
+        self.assertEqual(asked, [(BADGE_CODE, None, True)])
+        _s, state = self.state("regal")
+        self.assertEqual(state["assignee"], {"id": 4, "name": "Max Mustermann"})
+        self.assertEqual(state["flash"]["detail"], "angemeldet · VT-0007 läuft weiter")
+
+        time.sleep(0.2)
+        post(self.base() + "/scan/route", {"code": "4011923456789"})   # the same article again
+        self.assertEqual(len(self.movements.calls), 1)
+        self.assertEqual(self.movements.calls[0][1]["assignee_user_id"], 4)
 
     def test_an_ausgabe_with_a_name_carries_it_to_smpl(self):
         self.tap(4)
@@ -2885,3 +2912,190 @@ class TestTheRackPageRendersPanels(unittest.TestCase):
     def test_the_countdown_reads_like_the_crate_screens(self):
         self.assertIn("Sitzung endet in", self.html)
         self.assertIn("expires_at", self.html)
+
+
+# --------------------------------------------------------------------------
+# A badge scanned at the rack
+# --------------------------------------------------------------------------
+
+BADGE_CODE = "SMPL-P-7KQ2M9XH4R"
+
+
+class _BadgeStub:
+    """WerkstattClient stand-in for badge scans: configured, records calls."""
+
+    def __init__(self, result):
+        self.configured = True
+        self.calls = []
+        self.identify_only = []
+        self._result = result
+
+    def badge_scan(self, code, panel_id=None, identify_only=False):
+        self.calls.append((code, panel_id))
+        self.identify_only.append(identify_only)
+        return self._result
+
+    def status(self):
+        return {"last_ok": True, "last_error": None}
+
+
+class TestABadgeAtTheRack(KioskCase):
+    def _decision(self, panel_code=None, panel_id=None, identify_only=False):
+        from scan_router import Decision
+
+        return Decision(code=BADGE_CODE, screen="regal", action="badge",
+                        panel_code=panel_code, panel_id=panel_id,
+                        identify_only=identify_only)
+
+    def _arrange(self, data=None, *, ok=True, status=200, error=None):
+        import smpl_werkstatt
+
+        stub = _BadgeStub(smpl_werkstatt.Result(ok, data=data, error=error, status=status))
+        self.agent.werkstatt = stub
+        return stub
+
+    def flash(self):
+        return self.agent.kiosk.snapshot("regal")["flash"]
+
+    def test_identify_stands_in_for_tapping_the_name(self):
+        self._arrange({"action": "identify", "person": {"id": 4, "name": "Max Mustermann"},
+                       "panel": None, "session": None, "closed": None})
+        self.agent._applied_badge(self._decision(), None)
+        self.assertEqual(self.agent.router.assignee, {"id": 4, "name": "Max Mustermann"})
+        self.assertEqual(self.flash()["title"], "Max Mustermann")
+
+    def test_identify_only_is_what_smpl_is_asked(self):
+        stub = self._arrange({"action": "identify", "person": {"id": 4, "name": "Max"},
+                              "panel": None, "session": None, "closed": None})
+        self.agent._applied_badge(self._decision(identify_only=True), None)
+        self.assertEqual(stub.identify_only, [True])
+        self.assertEqual(self.agent.router.assignee, {"id": 4, "name": "Max"})
+
+    def test_named_while_on_a_board_says_the_board_keeps_running(self):
+        self._arrange({"action": "identify", "person": {"id": 4, "name": "Max"},
+                       "panel": {"id": 7, "panel_number": "VT-0007"},
+                       "session": {"minutes": 50, "running": True}, "closed": None})
+        self.agent._applied_badge(self._decision(identify_only=True), None)
+        self.assertEqual(self.flash()["detail"], "angemeldet · VT-0007 läuft weiter")
+
+    def test_clock_in_names_the_board(self):
+        stub = self._arrange({"action": "clock_in", "person": {"id": 4, "name": "Max"},
+                              "panel": {"id": 7, "panel_number": "VT-0007"},
+                              "session": {"minutes": 0}, "closed": None})
+        self.agent._applied_badge(self._decision("VT-0007", 7), None)
+        self.assertEqual(stub.calls, [(BADGE_CODE, 7)])
+        self.assertIn("eingestempelt", self.flash()["detail"])
+        self.assertIn("VT-0007", self.flash()["detail"])
+
+    def test_clock_out_says_how_long(self):
+        self._arrange({"action": "clock_out", "person": {"id": 4, "name": "Max"},
+                       "panel": {"id": 7, "panel_number": "VT-0007"},
+                       "session": {"minutes": 95}, "closed": None})
+        self.agent._applied_badge(self._decision(), None)
+        self.assertIn("ausgestempelt", self.flash()["detail"])
+        self.assertIn("1:35 h", self.flash()["detail"])
+
+    def test_a_switch_says_both_boards(self):
+        self._arrange({"action": "switch", "person": {"id": 4, "name": "Max"},
+                       "panel": {"id": 8, "panel_number": "VT-0008"},
+                       "session": {"minutes": 0},
+                       "closed": {"panel_number": "VT-0007", "minutes": 40}})
+        self.agent._applied_badge(self._decision("VT-0008", 8), None)
+        detail = self.flash()["detail"]
+        self.assertIn("VT-0007", detail)
+        self.assertIn("0:40 h", detail)
+        self.assertIn("VT-0008", detail)
+
+    def test_an_unknown_badge_says_so(self):
+        self._arrange(ok=False, status=404, error="Diesen Ausweis kennt SMPL nicht.")
+        self.agent._applied_badge(self._decision(), None)
+        self.assertEqual(self.flash()["level"], "error")
+        self.assertEqual(self.flash()["title"], "Ausweis unbekannt")
+
+    def test_a_board_still_loading_is_refused_before_smpl_hears_of_it(self):
+        """Sending the badge without the board would identify or clock OUT."""
+        stub = self._arrange({"action": "identify", "person": {"id": 4, "name": "Max"}})
+        self.agent._applied_badge(self._decision("VT-0007", None), None)
+        self.assertEqual(stub.calls, [])
+        self.assertEqual(self.flash()["level"], "error")
+
+    def test_the_badge_code_never_reaches_the_screen(self):
+        """A flash is shown on the wall and served by /screen/state."""
+        for data in (
+            {"action": "identify", "person": {"id": 4, "name": "Max"}},
+            {"action": "clock_out", "person": {"id": 4, "name": "Max"},
+             "panel": {"panel_number": "VT-0007"}, "session": {"minutes": 5}},
+        ):
+            self._arrange(data)
+            self.agent._applied_badge(self._decision(), None)
+            self.assertNotIn(BADGE_CODE, json.dumps(self.flash()))
+        self._arrange(ok=False, status=404, error="nope")
+        self.agent._applied_badge(self._decision(), None)
+        self.assertNotIn(BADGE_CODE, json.dumps(self.flash()))
+
+    def test_the_hours_format(self):
+        self.assertEqual(server._hours(0), "0:00 h")
+        self.assertEqual(server._hours(95), "1:35 h")
+        self.assertEqual(server._hours(None), "0:00 h")
+        self.assertEqual(server._hours("junk"), "0:00 h")
+
+
+class TestABadgeClocksOntoTheOpenBoard(KioskCase):
+    """The whole chain over HTTP: board, then badge, then badge again.
+
+    Scanner -> /scan/route -> router -> agent -> client, with SMPL stubbed at
+    the client so the request that WOULD go out can be read: the badge must
+    reach SMPL with the open board's id, and only the board SMPL numbered.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.panels = _PanelSmpl(self.agent)
+        self.badge_calls = []
+        self.answers = []
+        self.agent.werkstatt.badge_scan = self._badge_scan
+
+    def _badge_scan(self, code, panel_id=None, identify_only=False):
+        self.badge_calls.append((code, panel_id))
+        return self.answers.pop(0)
+
+    def scan(self, code):
+        status, body = post(self.base() + "/scan/route", {"code": code})
+        self.assertEqual(status, 200, body)
+        time.sleep(0.2)                      # past the de-dupe window
+        return body
+
+    def flash(self):
+        return self.agent.kiosk.snapshot("regal")["flash"]
+
+    def test_board_then_badge_then_badge(self):
+        person = {"id": 4, "name": "Max Mustermann"}
+        board = {"id": 7, "panel_number": "VT-0007"}
+        self.answers = [
+            smpl_werkstatt.Result(True, status=200, data={
+                "action": "clock_in", "person": person, "panel": board,
+                "session": {"minutes": 0}, "closed": None}),
+            smpl_werkstatt.Result(True, status=200, data={
+                "action": "clock_out", "person": person, "panel": board,
+                "session": {"minutes": 125}, "closed": None}),
+        ]
+        self.scan("VT-0007")
+        self.assertEqual(self.scan(BADGE_CODE)["action"], "badge")
+        self.assertEqual(self.badge_calls[-1], (BADGE_CODE, 7))
+        self.assertIn("eingestempelt · VT-0007", self.flash()["detail"])
+        # The board stays open: picking its parts while clocked onto it is the flow.
+        self.assertIsNotNone(self.state("regal")[1]["panel"])
+
+        self.scan(BADGE_CODE)
+        self.assertIn("ausgestempelt · VT-0007 · 2:05 h", self.flash()["detail"])
+
+    def test_a_badge_never_goes_through_resolve(self):
+        """/resolve answers for things; it must not see a person's code."""
+        resolved = []
+        real = self.agent.werkstatt.resolve
+        self.agent.werkstatt.resolve = lambda code: resolved.append(code) or real(code)
+        self.answers = [smpl_werkstatt.Result(True, status=200, data={
+            "action": "identify", "person": {"id": 4, "name": "Max"}})]
+        self.scan(BADGE_CODE)
+        self.assertEqual(resolved, [])
+        self.assertEqual(self.badge_calls, [(BADGE_CODE, None)])

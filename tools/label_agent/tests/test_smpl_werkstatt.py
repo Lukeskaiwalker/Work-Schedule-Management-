@@ -1235,3 +1235,56 @@ class TestPanelsDegrade(unittest.TestCase):
             self.assertFalse(result.ok)
             self.assertEqual(result.status, 0)
             self.assertIn("nicht erreichbar", result.error)
+
+
+# --------------------------------------------------------------------------
+# Badge scans
+# --------------------------------------------------------------------------
+
+
+class TestBadgeScan(ClientCase):
+    routes = {
+        ("GET", P["boxes"]): ok_boxes,
+        ("POST", "/api/station/werkstatt/badge"):
+            lambda p, q, h: (200, {"action": "identify",
+                                   "person": {"id": 4, "name": "Max Mustermann"},
+                                   "panel": None, "session": None, "closed": None}),
+    }
+
+    def test_the_code_travels_in_the_body_never_the_url(self):
+        """A badge is a bearer identifier; query strings end up in access logs."""
+        self.client.badge_scan("SMPL-P-7KQ2M9XH4R")
+        method, path, _headers, payload = self.stub.requests[-1]
+        self.assertEqual((method, path), ("POST", "/api/station/werkstatt/badge"))
+        self.assertNotIn("SMPL-P", path)
+        self.assertEqual(payload, {"code": "SMPL-P-7KQ2M9XH4R"})
+
+    def test_the_open_board_rides_along(self):
+        self.client.badge_scan("SMPL-P-7KQ2M9XH4R", 7)
+        self.assertEqual(self.stub.requests[-1][3]["panel_id"], 7)
+
+    def test_identify_only_rides_along_when_asked_and_only_then(self):
+        self.client.badge_scan("SMPL-P-7KQ2M9XH4R", identify_only=True)
+        self.assertEqual(self.stub.requests[-1][3],
+                         {"code": "SMPL-P-7KQ2M9XH4R", "identify_only": True})
+
+    def test_identify_only_with_a_board_never_leaves_the_station(self):
+        """The two mean opposite things; SMPL refuses the pair, so do we."""
+        before = len(self.stub.requests)
+        self.assertFalse(self.client.badge_scan("SMPL-P-7KQ2M9XH4R", 7, identify_only=True).ok)
+        self.assertEqual(len(self.stub.requests), before)
+
+    def test_garbage_never_reaches_the_network(self):
+        before = len(self.stub.requests)
+        for bad in ("", "   ", "X" * 65):
+            self.assertFalse(self.client.badge_scan(bad).ok)
+        self.assertFalse(self.client.badge_scan("SMPL-P-7KQ2M9XH4R", "seven").ok)
+        self.assertEqual(len(self.stub.requests), before)
+
+    def test_a_badge_scan_leaves_the_crate_cache_alone(self):
+        """It changes no crate, so it must not cost the next crate read a trip."""
+        self.client.boxes()
+        warm = len(self.stub.requests)
+        self.client.badge_scan("SMPL-P-7KQ2M9XH4R")
+        self.client.boxes()
+        self.assertEqual(len(self.stub.requests), warm + 1)  # just the badge POST

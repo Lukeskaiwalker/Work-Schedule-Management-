@@ -329,6 +329,38 @@ main{flex:1 1 auto; min-height:0; overflow:hidden;
 /* Unter der Liste bleibt das Protokoll, aber kuerzer: 768 px sind 768 px,
    und der Schrank gewinnt gegen die Historie. */
 body.panel-open .log{max-height:132px}
+
+/* ---------- Codes statt Maus ---------- *
+ * Jede Richtung traegt ihren eigenen Code, damit man sie vom Regal aus
+ * umschalten kann - auch Wareneingang, das bis dahin nur zu klicken war.
+ * Der Code steht IM Fluss vor Pfeil und Wort, nicht absolut am Rand: so
+ * bleibt die Gruppe zentriert und "Wareneingang" muss nie gekuerzt werden.
+ * Weisser Grund, Naturgroesse, kein Herunterskalieren - dieselben Regeln
+ * wie auf der Kistenwand, aus denselben Gruenden. */
+.dirbtn{min-height:76px}
+/* Gedimmt wird die Schrift, nicht der Knopf: opacity am Knopf erbt der
+   Code mit, und ein grau-auf-grauer Code ist genau der, der nicht mehr
+   liest - ausgerechnet bei den Richtungen, die man scannt, um zu WECHSELN.
+   Ein Kindelement kann die Deckkraft seines Elternteils nicht aufheben,
+   also wandert sie auf Pfeil, Wort und Untertitel. */
+.dirbtn, .dirbtn:hover{opacity:1}
+.dirbtn > :not(.dirqr){opacity:.6; transition:opacity .12s ease}
+.dirbtn:hover > :not(.dirqr){opacity:.85}
+.dirbtn.on > :not(.dirqr){opacity:1}
+.dirbtn.on > .sub{opacity:.62}
+.dirqr{display:block; flex:none; max-width:none; background:#fff; border-radius:4px}
+/* Rechts neben den letzten Buchungen: die Codes, die eine Buchung
+ * veraendern statt eine Richtung zu waehlen. Der Abstand ist so gross, dass
+ * der Imager aus der Hand nur EINEN Code im Bild hat. "Verteiler fertig"
+ * erscheint nur bei offenem Verteiler: ohne ihn schliesst derselbe Code die
+ * Kiste auf der anderen Wand. */
+.log{display:grid; grid-template-columns:minmax(0,1fr) auto; gap:clamp(16px, 2.4vw, 32px)}
+.log-main{min-width:0; min-height:0; display:flex; flex-direction:column}
+.ops{display:flex; align-items:flex-start; gap:clamp(28px, 3vw, 44px); padding-top:2px}
+.op{margin:0; display:flex; flex-direction:column; align-items:center; gap:4px}
+.op-img{display:block; flex:none; max-width:none; background:#fff; border-radius:4px}
+.op figcaption{font-size:.72rem; font-weight:800; color:var(--dim); white-space:nowrap}
+.op-img.is-off, .dirqr.is-off{visibility:hidden}
 </style>
 </head>
 <body>
@@ -359,16 +391,19 @@ body.panel-open .log{max-height:132px}
 <main>
   <div class="dirband" id="dirband">
     <button class="dirbtn" type="button" data-dir="aus">
+      <img class="dirqr" alt="" src="/qr.svg?text=SMPL-CMD-AUS&amp;m=2">
       <span class="arw" aria-hidden="true">&rarr;</span>
       <span class="lab">Ausgabe</span>
       <span class="sub">raus</span>
     </button>
     <button class="dirbtn" type="button" data-dir="ein">
+      <img class="dirqr" alt="" src="/qr.svg?text=SMPL-CMD-EIN&amp;m=2">
       <span class="arw" aria-hidden="true">&larr;</span>
       <span class="lab">R&uuml;ckgabe</span>
       <span class="sub">zur&uuml;ck</span>
     </button>
     <button class="dirbtn" type="button" data-dir="wareneingang">
+      <img class="dirqr" alt="" src="/qr.svg?text=SMPL-CMD-WARENEINGANG&amp;m=2">
       <span class="arw" aria-hidden="true">&darr;</span>
       <span class="lab">Wareneingang</span>
       <span class="sub">Lieferung</span>
@@ -432,11 +467,20 @@ body.panel-open .log{max-height:132px}
   </section>
 
   <div class="log card">
-    <div class="log-head">
-      <span class="kick">Letzte Buchungen</span>
-      <span class="kick" id="logN"></span>
+    <div class="log-main">
+      <div class="log-head">
+        <span class="kick">Letzte Buchungen</span>
+        <span class="kick" id="logN"></span>
+      </div>
+      <ul id="log" class="scroll"></ul>
     </div>
-    <ul id="log" class="scroll"></ul>
+    <div class="ops" id="ops">
+      <figure class="op"><img class="op-img" alt="" src="/qr.svg?text=SMPL-CMD-ABBRUCH&amp;m=2"><figcaption>R&uuml;ckg&auml;ngig</figcaption></figure>
+      <figure class="op"><img class="op-img" alt="" src="/qr.svg?text=SMPL-CMD-MENGE-5&amp;m=2"><figcaption>Menge 5</figcaption></figure>
+      <figure class="op"><img class="op-img" alt="" src="/qr.svg?text=SMPL-CMD-MENGE-10&amp;m=2"><figcaption>Menge 10</figcaption></figure>
+      <figure class="op"><img class="op-img" alt="" src="/qr.svg?text=SMPL-CMD-MENGE-50&amp;m=2"><figcaption>Menge 50</figcaption></figure>
+      <figure class="op" id="opFertig" hidden><img class="op-img" alt="" src="/qr.svg?text=SMPL-CMD-FERTIG&amp;m=2"><figcaption>Verteiler fertig</figcaption></figure>
+    </div>
   </div>
 </main>
 
@@ -889,7 +933,7 @@ function renderCrewHint(hasCrew, sel){
   }
   if(needsName()){
     hint.className = 'crew-hint need';
-    setText(txt, 'Ausgabe braucht einen Namen');
+    setText(txt, 'Ausgabe braucht einen Namen – antippen oder Ausweis scannen');
     show(hint, true);
     return;
   }
@@ -917,7 +961,7 @@ function idlePrompt(){
   var d = curDir();
   if(d === 'wareneingang') return 'Wareneingang – Artikel scannen';
   if(d === 'ein') return 'Rückgabe – Artikel scannen';
-  if(curAss() === null) return 'Ausgabe: bitte zuerst Namen antippen';
+  if(curAss() === null) return 'Ausgabe: Namen antippen oder Ausweis scannen';
   return 'Ausgabe für ' + (curAssName() || 'ausgewählte Person') + ' – Artikel scannen';
 }
 
@@ -1017,6 +1061,7 @@ function renderArticle(a, movement){
    nicht die des Stuecks, das gerade in der Hand liegt. */
 function renderCard(){
   var open = panelOpen();
+  show($('opFertig'), open);
   show($('panel'), open);
   show($('art'), !open);
   document.body.className = open ? 'panel-open' : '';
@@ -1524,6 +1569,11 @@ function poll(){
 }
 
 renderStale();
+/* Ein Code, den der Agent nicht zeichnen kann, verschwindet, statt als
+   kaputtes Bild an der Wand zu haengen. */
+Array.prototype.forEach.call(document.querySelectorAll('.dirqr, .op-img'), function(img){
+  img.addEventListener('error', function(){ img.classList.add('is-off'); });
+});
 renderDirection();
 renderCrew();
 renderIdle();
