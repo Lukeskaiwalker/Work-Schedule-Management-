@@ -38,7 +38,7 @@ class Partner(Base):
     trade: Mapped[str | None] = mapped_column(String(128), index=True)
     tax_id: Mapped[str | None] = mapped_column(String(64))
     notes: Mapped[str | None] = mapped_column(Text)
-    archived_at: Mapped[datetime | None] = mapped_column(DateTime)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
     created_by: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL")
     )

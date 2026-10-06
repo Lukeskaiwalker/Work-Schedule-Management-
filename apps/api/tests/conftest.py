@@ -1,6 +1,7 @@
 from __future__ import annotations
 import os
 import tempfile
+import warnings
 from collections.abc import Generator
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
 from sqlalchemy import MetaData, text
+from sqlalchemy.exc import SAWarning
 
 # Force test-safe settings even when running inside Docker where DATABASE_URL is preset.
 os.environ["DATABASE_URL"] = "sqlite:///./test.db"
@@ -44,7 +46,17 @@ def _reset_database_rows() -> None:
     with engine.begin() as connection:
         if engine.dialect.name == "sqlite":
             connection.execute(text("PRAGMA foreign_keys=OFF"))
-        metadata.reflect(bind=connection)
+        # This reflection only lists the tables to empty. SQLite cannot reflect
+        # the expression indexes (the trigram search indexes the models declare
+        # for PostgreSQL) and says so once per index per test -- 6000 warnings a
+        # run, burying the ones worth reading. Only that message is silenced.
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="Skipped unsupported reflection of expression-based index",
+                category=SAWarning,
+            )
+            metadata.reflect(bind=connection)
         for table in reversed(metadata.sorted_tables):
             if table.name == "alembic_version":
                 continue

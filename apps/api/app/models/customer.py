@@ -54,7 +54,7 @@ class Customer(Base):
     # A second number: the office line and the phone that is actually
     # answered on site are rarely the same.
     mobile: Mapped[str | None] = mapped_column(String(128))
-    archived_at: Mapped[datetime | None] = mapped_column(DateTime)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
     created_by: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL")
     )

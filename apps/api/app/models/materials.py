@@ -1,7 +1,7 @@
 from __future__ import annotations
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
@@ -34,6 +34,18 @@ class MaterialCatalogItem(Base):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow, nullable=False)
+
+
+# Substring search over ~300k Datanorm rows (ILIKE '%...%') needs a trigram GIN
+# index. PostgreSQL only: the opclass and USING clause are dialect options, so
+# SQLite's create_all builds a plain expression index on lower(search_text).
+# The extension itself (pg_trgm) is created by the migration that added this.
+Index(
+    "ix_material_catalog_items_search_text_trgm",
+    func.lower(MaterialCatalogItem.search_text).label("search_text_lower"),
+    postgresql_using="gin",
+    postgresql_ops={"search_text_lower": "gin_trgm_ops"},
+)
 
 
 class MaterialCatalogImportState(Base):

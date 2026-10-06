@@ -34,7 +34,9 @@ class Attachment(Base):
     folder_path: Mapped[str] = mapped_column(String(500), default="", nullable=False)
     file_name: Mapped[str] = mapped_column(String(255), nullable=False)
     content_type: Mapped[str] = mapped_column(String(128), nullable=False)
-    stored_path: Mapped[str] = mapped_column(String(500), nullable=False, unique=True)
+    # unique + index = one UNIQUE INDEX ix_attachments_stored_path, which is
+    # what the migrations built (a bare unique=True would be a constraint).
+    stored_path: Mapped[str] = mapped_column(String(500), nullable=False, unique=True, index=True)
     is_encrypted: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 

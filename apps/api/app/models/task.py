@@ -125,8 +125,9 @@ class Task(Base):
     # Opaque 32-hex random token embedded in the email link. UNIQUE index
     # at the DB level so the public endpoint resolves a token to a single
     # task in one row lookup. Null whenever no email has been sent (or
-    # after a due_date change clears it for a fresh round).
-    customer_confirmation_token: Mapped[str | None] = mapped_column(String(64))
+    # after a due_date change clears it for a fresh round). The migration
+    # always built that index; declaring it here makes the tests enforce it too.
+    customer_confirmation_token: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
     customer_confirmation_email_sent_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
