@@ -8,7 +8,14 @@ uvicorn[standard]==0.35.0
 sqlalchemy==2.0.43
 psycopg2-binary==2.9.10
 alembic==1.16.5
-python-jose[cryptography]==3.5.0
+# JWTs: PyJWT, not python-jose. python-jose <= 3.5.0 has CVE-2026-85394
+# (GHSA-3qf3-8w2g-rqmx, critical, no fixed release): it takes a DER public key
+# as an HMAC secret, so RS/ES verification without pinned algorithms accepts
+# forged HS256 tokens. We sign HS256 with a symmetric key and pin the
+# algorithm, so we were not exposed -- but an unmaintained library with an
+# open critical is not kept. Dropping it also drops ecdsa (CVE-2024-23342,
+# unfixable), rsa and pyasn1, which only it pulled in.
+PyJWT==2.15.1
 passlib[bcrypt]==1.7.4
 pydantic-settings==2.10.1
 python-multipart==0.0.32
@@ -50,8 +57,3 @@ openai==1.55.3
 # imaging backend.
 pdf2image==1.17.0
 
-# pip-audit (2026-10-05) also flags ecdsa 0.19.2 (CVE-2024-23342, Minerva
-# timing attack on P-256 signing). There is no fixed release; upstream treats
-# side channels as out of scope. It arrives through python-jose and is only
-# exercised when *signing* with an ECDSA key -- our JWTs are HS256 and decode
-# pins algorithms=[ALGORITHM], so the vulnerable path is not used.

@@ -2,7 +2,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from jose import JWTError, jwt
+import jwt
 from passlib.context import CryptContext
 
 from app.core.config import get_settings
@@ -48,7 +48,15 @@ def create_mfa_challenge_token(subject: str, expires_minutes: int = 5) -> str:
 
 
 def decode_token(token: str) -> dict[str, Any] | None:
+    """The claims of a valid session or MFA token, or None -- never an exception.
+
+    ``algorithms`` is pinned to HS256 and the key is our symmetric secret, so a
+    token claiming any other algorithm (``none``, HS512, RS256...) is refused
+    before its signature is even considered. PyJWT also checks ``exp``,
+    ``nbf`` and ``iat``. Pinned by tests/test_jwt_tokens.py, including a token
+    python-jose issued, so the library switch logged nobody out.
+    """
     try:
         return jwt.decode(token, settings.secret_key, algorithms=[ALGORITHM])
-    except JWTError:
+    except jwt.PyJWTError:
         return None
