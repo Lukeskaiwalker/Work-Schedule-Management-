@@ -19,8 +19,10 @@ from sqlalchemy.orm import Session
 
 from app.core.db import get_db
 from app.core.deps import assert_project_access, get_current_user, require_permission
+from app.core.permissions import has_permission_for_user
+from app.core.time import to_naive_utc
 from app.models.entities import User, WerkstattArticle
-from app.models.schaltplan import PanelPlan
+from app.models.schaltplan import PanelPlan, PanelWorkSession
 from app.routers.workflow_schaltplan import _assert_readable, _get_plan_or_404, _load_names, _summary
 from app.schemas.schaltplan import (
     PanelMaterialBookRequest,
@@ -29,7 +31,9 @@ from app.schemas.schaltplan import (
     PanelMaterialOut,
     PanelMaterialSummaryOut,
     PanelPlanSummary,
+    PanelWorkSessionEndRequest,
 )
+from app.services import panel_work
 from app.services import schaltplan_material as material
 
 router = APIRouter(prefix="/schaltplan", tags=["schaltplan"])
@@ -168,3 +172,41 @@ def set_material_mapping(
     material.set_mapping(db, key=key, article=article, user_id=current_user.id)
     db.commit()
     return PanelMaterialMappingOut(key=key, article=material.article_out(article) if article is not None else None)
+
+
+@router.post("/panels/{plan_id}/work-sessions/{session_id}/end", response_model=PanelMaterialOut)
+def end_work_session(
+    plan_id: int,
+    session_id: int,
+    payload: PanelWorkSessionEndRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> PanelMaterialOut:
+    """Close a running session by hand -- the fix for a forgotten clock-out.
+
+    Your own session: anybody who can see the board, because forgetting to scan
+    out is the commonest thing that will happen and the person who forgot is the
+    one who knows when they stopped. Somebody else's: ``werkstatt:manage``,
+    because that edits a colleague's hours. The end time may be given and should
+    be: "ended now" the morning after is fifteen hours nobody worked.
+    """
+    plan = _get_plan_or_404(db, plan_id)
+    _assert_readable(db, current_user, plan)
+    session = db.get(PanelWorkSession, session_id)
+    if session is None or session.panel_id != plan.id:
+        raise HTTPException(status_code=404, detail="Arbeitszeit nicht gefunden")
+    if session.user_id != current_user.id and not has_permission_for_user(
+        current_user.id, current_user.role, "werkstatt:manage"
+    ):
+        raise HTTPException(status_code=403, detail="Permission denied")
+    if session.ended_at is not None:
+        raise HTTPException(status_code=409, detail="Diese Arbeitszeit ist bereits beendet.")
+    try:
+        panel_work.end_session(
+            db, session, actor=current_user, ended_at=to_naive_utc(payload.ended_at)
+        )
+    except panel_work.WorkSessionError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    db.commit()
+    return material.panel_material(db, plan)

@@ -19,9 +19,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
-from app.schemas.schaltplan import PanelMaterialLineOut, PanelMaterialOut
+from app.schemas.schaltplan import PanelMaterialLineOut, PanelMaterialOut, PanelWorkSessionOut
 from app.schemas.werkstatt import WerkstattArticleOut
 
 # The five states a polling device can be told about. ``expired`` and
@@ -594,3 +594,57 @@ class StationArticleFromLookupOut(StationArticleFromCatalogOut):
     origin: Literal["existing", "catalog", "external", "manual"]
     source: str | None = None
     internal_code: str | None = None
+
+
+class StationBadgeOut(BaseModel):
+    """A person's badge, for its owner (or whoever prints badges). Never cached."""
+
+    user_id: int
+    user_name: str
+    code: str
+    created_at: datetime
+    last_used_at: datetime | None = None
+    use_count: int = 0
+
+
+class StationBadgeScanRequest(BaseModel):
+    """A badge scanned at the rack, and the board open there, if any."""
+
+    # Bounded: a badge is 17 characters. Anything far longer is not one, and
+    # is refused before it is hashed.
+    code: str = Field(min_length=1, max_length=64)
+    panel_id: int | None = None
+    # The rack just refused an Ausgabe for want of a name, and this badge is
+    # that name: identify, and move nobody's time (services/panel_work).
+    identify_only: bool = False
+
+    @model_validator(mode="after")
+    def _name_or_board(self) -> "StationBadgeScanRequest":
+        # Opposite meanings -- "this is who the Ausgabe is for" and "clock me
+        # onto this board" -- so a request carrying both is a bug, not a choice.
+        if self.identify_only and self.panel_id is not None:
+            raise ValueError("identify_only and panel_id exclude each other")
+        return self
+
+
+class StationBadgePanelOut(BaseModel):
+    id: int
+    panel_number: str | None = None
+
+
+class StationBadgeScanOut(BaseModel):
+    """What one badge scan meant -- decided by the server, so two stations agree.
+
+    ``identify``    no board: the person, for the next Ausgabe/Rückgabe.
+    ``clock_in``    onto the board that was open.
+    ``clock_out``   off the board they were on (``panel`` is that board).
+    ``switch``      onto a new board; ``closed`` is the one left.
+    ``already_in``  the same badge again within seconds -- nothing changed.
+    """
+
+    action: Literal["identify", "clock_in", "clock_out", "switch", "already_in"]
+    person: StationCrewMemberOut
+    panel: StationBadgePanelOut | None = None
+    session: PanelWorkSessionOut | None = None
+    closed: PanelWorkSessionOut | None = None
+

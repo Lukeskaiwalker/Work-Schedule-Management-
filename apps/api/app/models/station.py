@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String
+from sqlalchemy import DateTime, ForeignKey, Integer, JSON, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.db import Base
@@ -177,3 +177,34 @@ class StationPairing(Base):
     station_id: Mapped[int | None] = mapped_column(
         ForeignKey("stations.id", ondelete="SET NULL"), index=True
     )
+
+
+class StationBadge(Base):
+    """A person's own code for the scan station -- the DataMatrix on their badge.
+
+    Scanning it at the rack says "this is me": it stands in for tapping a name,
+    and it clocks the person in and out of a Verteiler. That makes it a bearer
+    identifier for one narrow thing, so it is stored the way the Kalender-Abo
+    token is (models/calendar.py): hashed, so a scan can be looked up without
+    the code being searchable in plain text, and encrypted, so the person can
+    see it again to reprint a badge. Rotating replaces both; the old badge stops
+    working on its next scan.
+
+    It is deliberately NOT a login. It opens no API route on its own -- it is
+    only ever evaluated by a station endpoint, behind that station's token --
+    so a copied badge lets somebody book stock or time as its owner at the
+    wall, which a tapped name already allowed, and nothing else.
+    """
+
+    __tablename__ = "station_badges"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True, index=True
+    )
+    code_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    code_encrypted: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime)
+    use_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+

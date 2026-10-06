@@ -41,11 +41,13 @@ from datetime import datetime
 from sqlalchemy import (
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     JSON,
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -146,3 +148,51 @@ class PanelMaterialArticle(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow, onupdate=utcnow, nullable=False
     )
+
+
+class PanelWorkSession(Base):
+    """Time one person spent building one Verteiler, clocked at the station.
+
+    Job costing, not attendance. ``clock_entries`` is when somebody was at work
+    at all; this is which board the hours went into, so a panel's Materialliste
+    can carry its labour next to its parts. The two are deliberately separate:
+    writing these into the attendance clock would count every hour twice.
+
+    One open session per person (``ended_at IS NULL``), enforced by a partial
+    unique index rather than by hoping two stations never race: scanning onto
+    a second board closes the first, and the database is what makes "a person
+    is on at most one board at a time" true.
+    """
+
+    __tablename__ = "panel_work_sessions"
+    __table_args__ = (
+        Index(
+            "ux_panel_work_sessions_one_open_per_user",
+            "user_id",
+            unique=True,
+            postgresql_where=text("ended_at IS NULL"),
+            sqlite_where=text("ended_at IS NULL"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    panel_id: Mapped[int] = mapped_column(
+        ForeignKey("panel_plans.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # CASCADE like clock_entries: users are only ever deactivated here
+    # (DELETE /admin/users/{id} sets is_active = False), so this does not fire
+    # when somebody leaves, and their hours stay on the boards they built.
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    started_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime, index=True)
+    station_id: Mapped[int | None] = mapped_column(
+        ForeignKey("stations.id", ondelete="SET NULL"), index=True
+    )
+    # "station" | "web": who closed it, so an end typed in by an admin after a
+    # forgotten clock-out stays tellable from one scanned at the wall.
+    ended_via: Mapped[str | None] = mapped_column(String(16))
+    ended_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+

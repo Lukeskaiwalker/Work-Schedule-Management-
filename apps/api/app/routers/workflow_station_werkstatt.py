@@ -44,6 +44,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import case, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
@@ -76,6 +77,9 @@ from app.schemas.station import (
     StationArticleFromCatalogRequest,
     StationArticleFromLookupOut,
     StationArticleFromLookupRequest,
+    StationBadgePanelOut,
+    StationBadgeScanOut,
+    StationBadgeScanRequest,
     StationBoxHandoverRequest,
     StationCrewMemberOut,
     StationMovementOut,
@@ -85,7 +89,8 @@ from app.schemas.station import (
     StationPanelUndoRequest,
 )
 from app.schemas.schaltplan import PanelMaterialOut
-from app.models.schaltplan import PanelPlan
+from app.models.schaltplan import PanelPlan, PanelWorkSession
+from app.services import panel_work, station_badges
 from app.services import schaltplan_material as panel_material
 from app.services.schaltplan_panel_numbers import find_panel_by_code, normalize_panel_code
 from app.schemas.werkstatt import ScanResolveResult, WerkstattArticleLookupOut
@@ -1154,3 +1159,69 @@ def station_panel_undo(
     db.commit()
     db.refresh(article)
     return _panel_scan_out(db, plan, article, movement_id, None)
+
+
+# ---------------------------------------------------------------------------
+# Personal badges: "this is me", and clocking onto a Verteiler
+# ---------------------------------------------------------------------------
+
+
+@router.post("/badge", response_model=StationBadgeScanOut)
+def station_badge_scan(
+    payload: StationBadgeScanRequest,
+    station: Station = Depends(get_current_station),
+    db: Session = Depends(get_db),
+) -> StationBadgeScanOut:
+    """One scanned badge, and the board open at the rack if there is one.
+
+    The station does not decide what the scan means; this does
+    (services/panel_work.badge_scan), so two stations scanning the same badge
+    agree, and the "one board at a time" rule is the database's. With no board
+    the answer is ``identify`` and nothing is written: the Pi uses it in place
+    of a tapped name for the next Ausgabe or Rückgabe. ``identify_only`` says
+    the rack has just asked for a name, so the badge never clocks anybody out.
+
+    Unknown, rotated and deactivated badges are one sentence, 404, and the
+    sentence does not say which: a station is a box on a wall, and "this code
+    belongs to somebody who left" is not something it needs to learn.
+    """
+    resolved = station_badges.resolve_badge(db, payload.code)
+    if resolved is None:
+        raise HTTPException(status_code=404, detail="Diesen Ausweis kennt SMPL nicht.")
+    badge, person = resolved
+
+    panel: PanelPlan | None = None
+    if payload.panel_id is not None:
+        panel = db.get(PanelPlan, payload.panel_id)
+        if panel is None:
+            raise HTTPException(status_code=404, detail="Verteiler nicht gefunden")
+
+    station_badges.note_use(db, badge)
+    try:
+        outcome = panel_work.badge_scan(
+            db, person=person, panel=panel, station=station, identify_only=payload.identify_only
+        )
+        db.commit()
+    except IntegrityError as exc:
+        # Two stations scanned the same badge in the same instant, and the
+        # partial unique index let exactly one of them open a session.
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Gerade an einer anderen Station gescannt — bitte noch einmal scannen.",
+        ) from exc
+
+    def _out(row: PanelWorkSession | None):
+        return panel_work.session_out(db, row) if row is not None else None
+
+    return StationBadgeScanOut(
+        action=outcome.action,  # type: ignore[arg-type]
+        person=StationCrewMemberOut(id=person.id, name=person.display_name),
+        panel=(
+            StationBadgePanelOut(id=outcome.panel.id, panel_number=outcome.panel.panel_number)
+            if outcome.panel is not None
+            else None
+        ),
+        session=_out(outcome.session),
+        closed=_out(outcome.closed),
+    )

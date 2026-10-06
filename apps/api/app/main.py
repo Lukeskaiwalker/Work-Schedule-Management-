@@ -23,7 +23,7 @@ from app.routers import workflow_station_pairing
 from app.routers import workflow_station_werkstatt
 from app.routers import workflow_werkstatt_inventory
 from app.routers import workflow_werkstatt_on_site
-from app.routers import admin, api_tokens, auth, calendar_feed, events, time_tracking, workflow, workflow_notifications, workflow_schaltplan, workflow_schaltplan_material, workflow_task_packing_list, workflow_training_reports
+from app.routers import admin, api_tokens, auth, calendar_feed, events, station_badge, time_tracking, workflow, workflow_notifications, workflow_schaltplan, workflow_schaltplan_material, workflow_task_packing_list, workflow_training_reports
 from app.services.material_catalog import sync_pending_material_catalog_images
 from app.services.runtime_settings import (
     is_initial_admin_bootstrap_completed,
@@ -404,6 +404,7 @@ app.include_router(workflow_station_werkstatt.router, prefix="/api")
 app.include_router(workflow_schaltplan_material.router, prefix="/api")
 app.include_router(workflow_schaltplan.router, prefix="/api")
 app.include_router(calendar_feed.router, prefix="/api")
+app.include_router(station_badge.router, prefix="/api")
 app.include_router(workflow_task_packing_list.router, prefix="/api")
 
 

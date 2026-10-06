@@ -44,6 +44,7 @@ from app.schemas.schaltplan import (
     PanelMaterialPanelOut,
     PanelMaterialSummaryOut,
 )
+from app.services import panel_work
 from app.services.schaltplan_layout import DEVICE_CATALOG, iter_devices
 from app.services.schaltplan_terminal_rules import TERMINAL_PARTS
 from app.services.schaltplan_terminals import derive_terminals, terminal_bom
@@ -434,7 +435,16 @@ def _totals(lines: list[PanelMaterialLineOut]) -> dict[str, Any]:
 
 def panel_material(db: Session, plan: PanelPlan) -> PanelMaterialOut:
     lines = material_lines(db, plan)
-    return PanelMaterialOut(panel=panel_refs(db, [plan])[plan.id], lines=lines, **_totals(lines))
+    # The hours ride beside the parts, never among them: _totals counts pieces.
+    labour_lines, labour_minutes, labour_running = panel_work.labour(db, plan.id)
+    return PanelMaterialOut(
+        panel=panel_refs(db, [plan])[plan.id],
+        lines=lines,
+        **_totals(lines),
+        labour=labour_lines,
+        labour_minutes=labour_minutes,
+        labour_running=labour_running,
+    )
 
 
 def material_overview(db: Session, plans: list[PanelPlan]) -> list[PanelMaterialSummaryOut]:

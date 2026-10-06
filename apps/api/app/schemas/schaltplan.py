@@ -395,6 +395,51 @@ class PanelMaterialPanelOut(BaseModel):
     updated_at: datetime
 
 
+class PanelWorkSessionOut(BaseModel):
+    """One stretch of one person's time on one board."""
+
+    id: int
+    panel_id: int
+    panel_number: str | None = None
+    user_id: int
+    user_name: str
+    started_at: datetime
+    ended_at: datetime | None = None
+    # Whole minutes; for a running session, so far. Integer on purpose: the
+    # board shows hours, and sub-minute precision from a badge scan is noise.
+    minutes: int = 0
+    running: bool = False
+    # "station" | "web"
+    ended_via: str | None = None
+
+
+class PanelLabourLineOut(BaseModel):
+    """One person's position in a board's Arbeitszeit block.
+
+    ``minutes`` counts CLOSED sessions only. A running session has no length
+    yet; it is reported as ``running_since`` so the screen can say "läuft seit
+    14:02" -- counting it would put a number on the board that grows by itself
+    overnight whenever somebody forgets to scan out.
+    """
+
+    user_id: int
+    name: str
+    minutes: int = 0
+    sessions: int = 0
+    running_since: datetime | None = None
+    running_session_id: int | None = None
+
+
+class PanelWorkSessionEndRequest(BaseModel):
+    """Ending a session by hand, after a forgotten clock-out.
+
+    ``ended_at`` defaults to now, but the point of the field is the real time:
+    "ended at 08:00 the next morning" is fifteen hours nobody worked.
+    """
+
+    ended_at: datetime | None = None
+
+
 class PanelMaterialOut(BaseModel):
     panel: PanelMaterialPanelOut
     lines: list[PanelMaterialLineOut] = Field(default_factory=list)
@@ -402,6 +447,12 @@ class PanelMaterialOut(BaseModel):
     scanned_total: int = 0
     open_lines: int = 0
     last_scanned_at: datetime | None = None
+    # The Arbeitszeit block under the parts. Kept OUT of ``lines`` on purpose:
+    # the totals above count pieces, and an hours row among them would quietly
+    # turn "scanned_total: 47" into pieces plus hours.
+    labour: list[PanelLabourLineOut] = Field(default_factory=list)
+    labour_minutes: int = 0
+    labour_running: int = 0
 
 
 class PanelMaterialSummaryOut(BaseModel):

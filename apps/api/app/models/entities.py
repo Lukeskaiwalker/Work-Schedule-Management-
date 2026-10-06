@@ -65,11 +65,12 @@ from app.models.station import (
     PAIRING_DENIED,
     PAIRING_PENDING,
     Station,
+    StationBadge,
     StationPairing,
 )
 from app.models.training import TrainingWeekReport
 from app.models.calendar import CalendarFeed
-from app.models.schaltplan import PanelMaterialArticle, PanelPlan
+from app.models.schaltplan import PanelMaterialArticle, PanelPlan, PanelWorkSession
 from app.models.wiki import WikiPage
 from app.models.files import Attachment, CustomerFolder, ProjectFolder
 from app.models.time_models import ClockEntry, BreakEntry, VacationRequest, SchoolAbsence
@@ -109,6 +110,7 @@ __all__ = [
     "CustomerCredential",
     "PanelMaterialArticle",
     "PanelPlan",
+    "PanelWorkSession",
     "Partner",
     "Project",
     "ProjectActivity",
@@ -128,6 +130,7 @@ __all__ = [
     "SchoolAbsence",
     "Site",
     "Station",
+    "StationBadge",
     "StationPairing",
     "Task",
     "TaskAssignment",
