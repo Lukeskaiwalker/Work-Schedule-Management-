@@ -17,7 +17,7 @@
  */
 
 import { catalogEntry } from "./schaltplanDevices";
-import { terminalFindings } from "./schaltplanTerminalRules";
+import { isTerminalEligible, terminalFindings } from "./schaltplanTerminalRules";
 import { deriveTerminals, deviceTerminalLabels } from "./schaltplanTerminals";
 import {
   allDevices,
@@ -41,6 +41,20 @@ export {
   opensGroup,
 } from "./schaltplanTopologyCore";
 
+/**
+ * Whether "Reihenklemme am Abgang" applies to this device — the inspector's
+ * checkbox and the Klemmen tab's bulk switch ask the same question. A fuse
+ * qualifies only as an outgoing of its own: one that heads circuits, or is
+ * the Vorsicherung of an FI/SLS/Hauptschalter, feeds others, and a flag on
+ * it would turn into a 2016 block the day it stopped (review, 2026-10-09).
+ */
+export function terminalOffered(device: PanelDevice, document: PanelDocument): boolean {
+  if (!isTerminalEligible(device)) return false;
+  if (device.kind !== "fuse") return true;
+  const isPreFuse = allDevices(document).some((other) => isGroupDevice(other) && other.parent_id === device.id);
+  return !opensGroup(device, document) && !isPreFuse;
+}
+
 // ── Legend ───────────────────────────────────────────────────────────────────
 
 function preFuseSummary(fuse: PanelDevice | null): string {
@@ -49,10 +63,34 @@ function preFuseSummary(fuse: PanelDevice | null): string {
   return parts.join(" ") || "Si";
 }
 
-/** The fuse a group's circuits sit behind: the head itself when it is one, else the FI's Vorsicherung. */
-function groupFuse(group: PanelGroup): PanelDevice | null {
+/**
+ * The fuse or SLS a group's circuits sit behind: the head itself when it is a
+ * fuse, else its Vorsicherung, else up the feeding chain to the first group
+ * with a Vorsicherung or the first SLS (owner, 2026-10-09: FI ← HS ← SLS
+ * reads "Q0 SLS E35"). Twin of `_upstream_protection`.
+ */
+function upstreamProtection(group: PanelGroup, groupsByHead: ReadonlyMap<string, PanelGroup>): PanelDevice | null {
   if (group.device?.kind === "fuse") return group.device;
-  return group.preFuse;
+  if (group.preFuse) return group.preFuse;
+  const seen = new Set<string>();
+  let feeder = group.fedBy;
+  while (feeder) {
+    if (seen.has(feeder.id)) return null;
+    seen.add(feeder.id);
+    if (feeder.kind === "sls") return feeder;
+    const feederGroup = groupsByHead.get(feeder.id);
+    if (!feederGroup) return null;
+    if (feederGroup.preFuse) return feederGroup.preFuse;
+    feeder = feederGroup.fedBy;
+  }
+  return null;
+}
+
+/** "F0 35 A" for a fuse, "Q0 SLS E35" for an SLS, "—" for none. */
+function upstreamSummary(device: PanelDevice | null): string {
+  if (!device) return "—";
+  if (device.kind === "sls") return [device.designation.trim(), "SLS", device.rating.trim()].filter(Boolean).join(" ");
+  return preFuseSummary(device);
 }
 
 function rcdSummary(device: PanelDevice | null): string {
@@ -75,9 +113,13 @@ export function buildLegend(document: PanelDocument): PanelLegendRow[] {
   // "X1.1, X1.2" — the Reihenklemmen a circuit ends on, from the same
   // derivation the Klemmen tab and the print sheet use.
   const terminalLabels = deviceTerminalLabels(deriveTerminals(document));
-  for (const group of buildTopology(document)) {
+  const groups = buildTopology(document);
+  const groupsByHead = new Map(
+    groups.filter((group) => group.device !== null).map((group) => [group.device!.id, group] as const),
+  );
+  for (const group of groups) {
     const inherited = rcdSummary(group.device);
-    const preFuse = preFuseSummary(groupFuse(group));
+    const preFuse = upstreamSummary(upstreamProtection(group, groupsByHead));
     const groupLabel = group.device
       ? `${group.device.designation} ${catalogEntry(group.device.kind).short}`.trim()
       : "Direkt von Einspeisung";
@@ -156,11 +198,23 @@ export function validateDocument(document: PanelDocument): PanelFinding[] {
   for (const group of groups) {
     // Only a catalogue group reads its parent_id as a Vorsicherung; a
     // fuse-headed group's parent_id is not a reference at all.
-    if (group.device && isGroupDevice(group.device) && group.device.parent_id && group.preFuse === null) {
+    if (group.device && group.feedCycle) {
+      findings.push({
+        level: "warn",
+        scope: group.device.id,
+        message: `${group.device.designation.trim() || catalogEntry(group.device.kind).short}: Einspeisung im Kreis — die Zuordnung wird ignoriert.`,
+      });
+    } else if (
+      group.device &&
+      isGroupDevice(group.device) &&
+      group.device.parent_id &&
+      group.preFuse === null &&
+      group.fedBy === null
+    ) {
       findings.push({
         level: "info",
         scope: group.device.id,
-        message: `${group.device.designation.trim() || "FI"}: Vorsicherung nicht gefunden (die angegebene Sicherung fehlt oder ist keine Sicherung).`,
+        message: `${group.device.designation.trim() || "FI"}: Einspeisung nicht gefunden (das angegebene Gerät fehlt oder kann nicht einspeisen — Sicherung, SLS, Hauptschalter oder Verteilerblock).`,
       });
     }
     // A flagged fuse with nothing behind it is a flag set on the wrong
@@ -188,8 +242,38 @@ export function validateDocument(document: PanelDocument): PanelFinding[] {
   // Reihenklemmen: a group without an FI that still wants terminals, and
   // pole counts the Etagenklemmen round. Info, not warn — see the rules.
   findings.push(...terminalFindings(groups));
+  findings.push(...stripNameClashes(document));
 
   return findings;
+}
+
+/** Rail devices that may carry a Klemmleiste's name: a "terminal" IS the strip's rail space, a blank prints nothing. */
+const STRIP_NAMED_KINDS = new Set<PanelDevice["kind"]>(["terminal", "blank"]);
+
+/**
+ * A device whose BMK a derived Klemmleiste also carries ("X1") — mirrors
+ * `_strip_name_clashes`. X is the Verteilerblock's natural letter and the
+ * letter the strips count in, so one label would end up on two parts.
+ */
+function stripNameClashes(document: PanelDocument): PanelFinding[] {
+  const stripNames = new Set(
+    deriveTerminals(document)
+      .flatMap((group) => group.strips.map((strip) => strip.xLabel.trim().toUpperCase()))
+      .filter(Boolean),
+  );
+  const clashes: PanelFinding[] = [];
+  for (const device of allDevices(document)) {
+    const designation = device.designation.trim();
+    if (!designation || STRIP_NAMED_KINDS.has(device.kind)) continue;
+    if (stripNames.has(designation.toUpperCase())) {
+      clashes.push({
+        level: "warn",
+        scope: device.id,
+        message: `${designation}: so heißt auch eine Klemmleiste — Gerät umbenennen (zwei Teile mit einem BMK).`,
+      });
+    }
+  }
+  return clashes;
 }
 
 export function documentStats(document: PanelDocument) {

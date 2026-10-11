@@ -18,8 +18,11 @@ from urllib.parse import quote
 
 import httpx
 from fastapi import Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.exceptions import RequestValidationError as _FastAPIRequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from pydantic import BaseModel as _PydanticBaseModel
+from pydantic import ValidationError as _PydanticValidationError
 from sqlalchemy import case, delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -27,11 +30,13 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.core.deps import assert_project_access, get_current_user, require_permission
-from app.core.permissions import ALL_ROLES, has_global_project_access, has_permission_for_user
+from app.core.limits import INT32_MAX
+from app.core.permissions import ALL_ROLES, ROLE_EXTERNAL, has_global_project_access, has_permission_for_user, is_external_role
 from app.core.time import utcnow
 from app.models.project import PROJECT_STATUS_AUFTRAG_ANGENOMMEN
 from app.services.task_materials import (
     import_box_into_task,
+    parse_report_quantity,
     record_reported_usage,
     remove_box_from_task,
 )
@@ -150,7 +155,6 @@ from app.services.report_jobs import (
 from app.services.runtime_settings import get_openweather_api_key
 from app.services.material_need_rows import (
     match_catalog_item,
-    parse_quantity_text,
     report_material_need_rows,
 )
 from app.services.material_catalog import (
@@ -1005,7 +1009,9 @@ def _list_active_assignable_users(db: Session) -> list[AssignableUserOut]:
     users = list(
         db.scalars(
             select(User)
-            .where(User.is_active.is_(True))
+            # Partner-portal logins are people of a subcontractor: they are
+            # reached through their partner, never assigned one by one.
+            .where(User.is_active.is_(True), User.role != ROLE_EXTERNAL)
             .order_by(User.full_name.asc(), User.id.asc())
         ).all()
     )
@@ -1099,7 +1105,11 @@ def _validate_thread_participants(
         selected_active_user_ids = {
             int(user_id)
             for user_id in db.scalars(
-                select(User.id).where(User.id.in_(participant_user_ids), User.is_active.is_(True))
+                select(User.id).where(
+                    User.id.in_(participant_user_ids),
+                    User.is_active.is_(True),
+                    User.role != ROLE_EXTERNAL,
+                )
             ).all()
         }
         allowed_user_ids = set(selected_active_user_ids)
@@ -1274,6 +1284,11 @@ def _webdav_authenticate(credentials: HTTPBasicCredentials | None, db: Session) 
             break
 
     if not user or not user.is_active or not verify_password(credentials.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid WebDAV credentials", headers=auth_header)
+    # A partner-portal login has the same password store as everyone else,
+    # and WebDAV is the whole file tree. Same answer as a wrong password, so a
+    # partner learns nothing from trying.
+    if is_external_role(user.role):
         raise HTTPException(status_code=401, detail="Invalid WebDAV credentials", headers=auth_header)
     return user
 
@@ -1744,9 +1759,12 @@ def _normalize_report_material_text(raw_value: object) -> str:
 
 
 def _parse_report_material_quantity(raw_value: object) -> Decimal | None:
-    # One implementation, in the service the order hand-off also uses: a
-    # quantity that reads as 2.5 here and 25 there is how a basket goes wrong.
-    return parse_quantity_text(raw_value)
+    # The reading the task-usage write-back gives the same report row (the
+    # order hand-off's grammar, plus the half-typed "6," a phone sends): a
+    # quantity that reads as 2.5 here and 25 there is how stock goes wrong.
+    # Bounded like the write-back: a row of nines is a note, not a number
+    # that turns the project's whole total into infinity (then null).
+    return parse_report_quantity(raw_value)
 
 
 def _normalize_material_need_status(raw_value: str | None, *, default: str = "order", strict: bool = False) -> str:
@@ -1759,6 +1777,22 @@ def _normalize_material_need_status(raw_value: str | None, *, default: str = "or
     if strict:
         raise HTTPException(status_code=400, detail="Invalid material status")
     return default
+
+
+def _fit_material_need_column(value: str | None, column: str) -> str | None:
+    """``value`` cut to the width of the ProjectMaterialNeed column it goes into.
+
+    Report rows are free text with no length limit (``qty`` "25 m" or a
+    pasted paragraph, an article tail of any length), and PostgreSQL refuses
+    a VARCHAR overflow at commit — a 500 that loses the fitter's whole
+    report. The need is a work item for the office, not the record: the
+    report it links to keeps every character. None stays None, and so does
+    an empty value.
+    """
+    if not value:
+        return None
+    width = ProjectMaterialNeed.__table__.c[column].type.length
+    return value[:width].rstrip() or None
 
 
 def _create_material_needs_from_report_payload(
@@ -1792,11 +1826,16 @@ def _create_material_needs_from_report_payload(
             ProjectMaterialNeed(
                 project_id=project_id,
                 construction_report_id=report_id,
-                item=row.item[:500],
+                item=_fit_material_need_column(row.item, "item"),
                 material_catalog_item_id=catalog_item.id if catalog_item else None,
-                article_no=(row.article_no or (catalog_item.article_no if catalog_item else None) or None),
-                unit=(row.unit or (catalog_item.unit if catalog_item else None) or None),
-                quantity=row.quantity,
+                article_no=_fit_material_need_column(
+                    row.article_no or (catalog_item.article_no if catalog_item else None),
+                    "article_no",
+                ),
+                unit=_fit_material_need_column(
+                    row.unit or (catalog_item.unit if catalog_item else None), "unit"
+                ),
+                quantity=_fit_material_need_column(row.quantity, "quantity"),
                 notes=row.notes,
                 status="order",
                 created_by=actor_user_id,
@@ -2623,7 +2662,18 @@ def _normalize_assignee_ids(candidate_ids: list[int | None]) -> list[int]:
 def _validate_assignee_ids(db: Session, assignee_ids: list[int]) -> None:
     if not assignee_ids:
         return
-    existing_ids = set(db.scalars(select(User.id).where(User.id.in_(assignee_ids), User.is_active.is_(True))).all())
+    # A partner-portal login is never an assignee: the partner (company) is,
+    # through partner_ids. Refusing it here keeps the task-assignment read
+    # fallback in assert_project_access from ever applying to one.
+    existing_ids = set(
+        db.scalars(
+            select(User.id).where(
+                User.id.in_(assignee_ids),
+                User.is_active.is_(True),
+                User.role != ROLE_EXTERNAL,
+            )
+        ).all()
+    )
     missing = [user_id for user_id in assignee_ids if user_id not in existing_ids]
     if missing:
         raise HTTPException(status_code=400, detail=f"Unknown assignee id(s): {', '.join(str(x) for x in missing)}")
@@ -2722,6 +2772,18 @@ def _task_assignee_map(db: Session, tasks: list[Task]) -> dict[int, list[int]]:
         if not out[task.id] and task.assignee_id is not None:
             out[task.id] = [task.assignee_id]
     return out
+
+
+def _user_may_complete_task(db: Session, user: User, task: Task) -> bool:
+    """The gate of ``PATCH /tasks/{id}`` for marking a task done.
+
+    ``tasks:manage``, or being one of its assignees. Completing a task is what
+    settles its crate, so whatever writes the numbers that settlement books
+    (a report's reported usage) is held to the same gate.
+    """
+    if has_permission_for_user(user.id, user.role, "tasks:manage"):
+        return True
+    return user.id in _task_assignee_map(db, [task]).get(task.id, [])
 
 
 def _normalize_partner_ids(candidate_ids: list[int | None]) -> list[int]:
@@ -3594,7 +3656,9 @@ def _planning_visibility_user_ids(db: Session, current_user: User) -> set[int]:
         or has_permission_for_user(current_user.id, current_user.role, "time:view_all")
         or has_permission_for_user(current_user.id, current_user.role, "time:manage")
     ):
-        return set(db.scalars(select(User.id).where(User.is_active.is_(True))).all())
+        return set(
+            db.scalars(select(User.id).where(User.is_active.is_(True), User.role != ROLE_EXTERNAL)).all()
+        )
     return {current_user.id}
 
 
@@ -3880,7 +3944,9 @@ def _create_follow_up_task_for_open_subtasks(
     if source_task_id <= 0:
         raise HTTPException(status_code=400, detail="source_task_id must be positive")
 
-    source_task = db.get(Task, source_task_id)
+    # An id wider than the int4 column names no task — and must never reach
+    # the query (OverflowError on SQLite, DataError on PostgreSQL: a 500).
+    source_task = db.get(Task, source_task_id) if source_task_id <= INT32_MAX else None
     if not source_task or source_task.project_id != report.project_id:
         raise HTTPException(status_code=400, detail="source_task_id is not valid for this project")
 
@@ -4044,6 +4110,21 @@ def _construction_report_response(db: Session, report: ConstructionReport) -> di
     }
 
 
+def _validated_report_body(model: type[_PydanticBaseModel], data: object):
+    """Validate a report body the way FastAPI validates a declared one.
+
+    The report routes read the raw request (JSON or multipart), so a body
+    that fails the schema — ``qty`` sent as a number, a missing ``item`` —
+    raised a bare pydantic ``ValidationError``: an unhandled 500 for what is
+    the client's mistake. Re-raised as FastAPI's own validation error it is
+    the usual 422 with the usual error list.
+    """
+    try:
+        return model.model_validate(data)
+    except _PydanticValidationError as exc:
+        raise _FastAPIRequestValidationError(exc.errors(include_url=False)) from exc
+
+
 async def _create_construction_report_impl(
     request: Request,
     current_user: User,
@@ -4085,7 +4166,7 @@ async def _create_construction_report_impl(
         except json.JSONDecodeError as exc:
             raise HTTPException(status_code=400, detail="payload must be valid JSON") from exc
 
-        report_payload = ConstructionReportPayload(**payload_data).model_dump()
+        report_payload = _validated_report_body(ConstructionReportPayload, payload_data).model_dump()
         send_telegram = str(form.get("send_telegram") or "").lower() in {"1", "true", "yes", "on"}
         report_images = []
         for form_key, form_value in form.multi_items():
@@ -4098,7 +4179,11 @@ async def _create_construction_report_impl(
             if content_type.startswith("image/") or file_name:
                 report_images.append(form_value)
     else:
-        payload = ConstructionReportCreate(**(await request.json()))
+        try:
+            body = await request.json()
+        except ValueError as exc:  # JSONDecodeError, or bytes that are not text
+            raise HTTPException(status_code=400, detail="Request body must be valid JSON") from exc
+        payload = _validated_report_body(ConstructionReportCreate, body)
         requested_project_id = payload.project_id
         requested_customer_id = payload.customer_id
         report_date = payload.report_date
@@ -4172,10 +4257,16 @@ async def _create_construction_report_impl(
     # Rows prefilled from the source task carry the task line's id; what the
     # report says was fitted becomes the line's quantity_used, which the task's
     # completion then books against the shelf. Hand-typed rows carry no id.
+    # The ids are the client's word, so the report's own anchor decides which
+    # crate it may write: its project's, or (no project) a customer-only task
+    # its author could complete — the rule of the PATCH that settles it.
     record_reported_usage(
         db,
+        project_id=target_project_id,
+        customer_id=customer.id if customer is not None else None,
         source_task_id=report_payload.get("source_task_id"),
         rows=list(report_payload.get("materials_consumed") or report_payload.get("materials") or []),
+        may_report_on_customer_task=lambda task: _user_may_complete_task(db, current_user, task),
     )
 
     for image_index, image_file in enumerate(report_images, start=1):

@@ -195,7 +195,16 @@ Cascade:
 5. `werkstatt_article_units.serial_number == code`   → kind=`machine`
 6. `material_catalog_items.ean == code`              → kind=`catalog_match`
 7. `material_catalog_items.article_no == code`       → kind=`catalog_match`
-8. Otherwise                                         → kind=`not_found`
+8. `supplier_article_no` in another case, then without the separators
+   (space `-` `.` `/`) — only when exactly ONE article answers
+                                                     → kind=`werkstatt_article`, matched_by `supplier_no`
+9. Otherwise                                         → kind=`not_found`
+
+Step 8 (2026-10-10) is why a supplier number is found however it was typed or
+scanned: the rack's reader upper-cases every letter and a Datanorm number may
+be stored as `s-4711` or `S 4711`. It runs LAST among the hits so an exact
+nameplate serial or catalog code always wins over a loose spelling, and it is
+refused when two articles share the loose key.
 
 Steps 1 and 5 were added with the Maschinen register (2026-08). They bracket
 the article steps rather than sitting together:
@@ -286,6 +295,16 @@ the same token replays the first answer (`created:false`, `origin:"existing"`)
 instead of booking the pallet twice. Omitted, the endpoint behaves as before.
 
 ### 3.2 Quick checkout / return (owned by Mobile BE)
+
+**Consumables are not lent (owner, 2026-10-10).** An article that is not a
+machine type (`is_serialized` false — everything the Maschinen tab does not
+list) leaves the stock for good when it is handed out: `checkout` books it as
+`consumption` with the person and the optional project, through
+`services/werkstatt_consumption.py` — the same rule the Regal station uses
+(`POST /api/station/werkstatt/consumptions`). A short shelf is not refused:
+the shortfall is booked first as `inventory_plus` and the answer says so
+(`stock_warning`). The answer carries `booked_as: "consumption" | "checkout"`.
+Machine types keep the loan (`checkout` / `return`, bounded by the shelf).
 
 ```
 POST /api/werkstatt/mobile/checkout
@@ -380,6 +399,16 @@ without going through `cancel_order`, so the router pairs `capture_merge_links` 
 `order` with its links cleared.
 
 ### 3.4 Reorder + Orders (owned by Tablet BE)
+
+**Bounds (2026-10-10, `apps/api/app/core/limits.py`).** `quantity_ordered` and the
+reorder `quantity` are 1…1,000,000 and `unit_price_cents` 0…100,000,000
+(1,000,000.00 € per unit) — a value outside is a 422. The order total
+(`total_amount_cents`, an int4 column) is checked wherever it is computed
+(`services/werkstatt_order_totals.py`): a total above 2,147,483,647 cents is
+refused with 400 "Bestellsumme zu groß – bitte Menge oder Preis prüfen." and
+nothing is stored — on the order and line routes, reorder submit, Bedarfe →
+Bestellung and the IDS cart import. The ledger itself refuses one booking above
+1,000,000 pieces or a counter past int4 (`apply_movement`, a 400 on every route).
 
 ```
 GET  /api/werkstatt/reorder/suggestions             (articles below stock_min, grouped by preferred supplier)

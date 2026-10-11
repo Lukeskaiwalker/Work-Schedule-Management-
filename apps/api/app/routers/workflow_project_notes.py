@@ -1,9 +1,13 @@
 """The project's internal note feed.
 
-``GET/POST /projects/{id}/notes`` and ``DELETE /projects/{id}/notes/{note_id}``.
-Replaces the single overwritten "Interne Notiz": every posting keeps its
-author and time, and the activity log records it so the customer's
-cross-project log shows it too.
+``GET/POST /projects/{id}/notes``. Replaces the single overwritten "Interne
+Notiz": every posting keeps its author and time, and the activity log
+records it so the customer's cross-project log shows it too.
+
+A note is permanent. There is no route to delete (or edit) one — not for
+its author, not for a project manager: the feed is the project's record
+(the crew's site notes, a partner's report from the portal), and a
+correction is a new note. Notes go only with their project.
 """
 
 from __future__ import annotations
@@ -140,36 +144,3 @@ def post_project_note(
     db.refresh(note)
     _broadcast_project_updated(db, project)
     return _note_out(note, author_name=current_user.display_name)
-
-
-@router.delete("/projects/{project_id}/notes/{note_id}", status_code=204)
-def delete_project_note(
-    project_id: int,
-    note_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    assert_project_access(db, current_user, project_id)
-    project = _project_or_404(db, project_id)
-    note = db.get(ProjectNote, note_id)
-    # A note of another project is "not found" here rather than "forbidden":
-    # the URL names a project, and this note is not on it.
-    if note is None or note.project_id != project_id:
-        raise HTTPException(status_code=404, detail="Note not found")
-    # Your own posting, or a project manager's clean-up. The carried-over
-    # first note has no author, so only a manager can remove it.
-    is_author = note.author_user_id is not None and note.author_user_id == current_user.id
-    if not is_author and not has_permission_for_user(current_user.id, current_user.role, "projects:manage"):
-        raise HTTPException(status_code=403, detail="Only the author or a project manager can delete a note")
-    preview = _note_preview(note.body)
-    db.delete(note)
-    _record_project_activity(
-        db,
-        project_id=project_id,
-        actor_user_id=current_user.id,
-        event_type="project.note_deleted",
-        message=preview,
-        details={"note_id": note_id, "preview": preview},
-    )
-    db.commit()
-    _broadcast_project_updated(db, project)

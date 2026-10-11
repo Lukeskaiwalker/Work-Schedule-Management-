@@ -12,10 +12,16 @@
  * taxonomies as selects over the real lists so the same shelf keeps one name.
  *
  * Presentational and controlled: the host dialog owns the values, runs the
- * request and decides what "save" means. The one thing this component decides
- * is that the STARTBESTAND field exists on a create and never on an edit —
- * stock is the ledger's answer, and an edit form that offers to overwrite it
- * is offering something the API rightly refuses.
+ * request and decides what "save" means. Two things this component decides by
+ * `mode`:
+ *
+ *   - STARTBESTAND exists on a create and never on an edit — stock is the
+ *     ledger's answer. The edit dialog books movements in its own Bestand
+ *     section instead.
+ *   - LIEFERANT + Lieferanten-Art.-Nr. exist on a create only, where they
+ *     become the article's first supplier link. On an edit the numbers live on
+ *     the links themselves, each editable in the dialog's supplier list; the
+ *     fields here were shown on edits too, and Save ignored them.
  */
 import type { WerkstattCategory, WerkstattLocation, WerkstattSupplier } from "../../types/werkstatt";
 import { UNIT_OPTIONS, withField, type ArtikelFormValues } from "./artikelForm";
@@ -28,11 +34,9 @@ export interface ArtikelFormFieldsProps {
   categories: ReadonlyArray<WerkstattCategory>;
   locations: ReadonlyArray<WerkstattLocation>;
   suppliers: ReadonlyArray<WerkstattSupplier>;
-  /** "create" shows Startbestand; "edit" shows the live counters read-only. */
+  /** "create" shows Startbestand and the first supplier; "edit" shows neither
+   *  (the edit dialog has its own Bestand and Lieferanten sections). */
   mode: "create" | "edit";
-  /** Edit only: what the ledger currently says, and the way to change it. */
-  stock?: { total: number; available: number; unit: string | null } | null;
-  onOpenStockDialog?: () => void;
   onCreateCategory?: () => void;
   onCreateLocation?: () => void;
   disabled?: boolean;
@@ -48,8 +52,6 @@ export function ArtikelFormFields({
   locations,
   suppliers,
   mode,
-  stock,
-  onOpenStockDialog,
   onCreateCategory,
   onCreateLocation,
   disabled = false,
@@ -219,7 +221,7 @@ export function ArtikelFormFields({
       </div>
 
       <div className="stock-form-row">
-        {mode === "create" ? (
+        {mode === "create" && (
           <label className="werkstatt-field stock-form-field--third">
             <span className="werkstatt-field-label">
               {de ? "Startbestand" : "Starting stock"}
@@ -233,29 +235,6 @@ export function ArtikelFormFields({
               onChange={(event) => set("stock_total", event.target.value)}
             />
           </label>
-        ) : (
-          /* Read-only on purpose: the counters are derived from the movement
-             ledger, so a field here would be a number the server discards.
-             The link goes where a real booking can be made. */
-          <div className="werkstatt-field stock-form-field--third">
-            <span className="werkstatt-field-label">{de ? "Bestand" : "Stock"}</span>
-            <div className="stock-form-readonly">
-              <b>
-                {stock?.available ?? 0} / {stock?.total ?? 0}{" "}
-                {unitLabel(stock?.unit ?? values.unit, de)}
-              </b>
-              {onOpenStockDialog && (
-                <button
-                  type="button"
-                  className="werkstatt-card-action"
-                  disabled={disabled}
-                  onClick={onOpenStockDialog}
-                >
-                  {de ? "Bestand anpassen" : "Adjust stock"}
-                </button>
-              )}
-            </div>
-          </div>
         )}
         <label className="werkstatt-field stock-form-field--third">
           <span className="werkstatt-field-label">{de ? "Mindestbestand" : "Minimum stock"}</span>
@@ -285,47 +264,49 @@ export function ArtikelFormFields({
         </label>
       </div>
 
-      <div className="stock-form-row">
-        <label className="werkstatt-field werkstatt-field--grow">
-          <span className="werkstatt-field-label">
-            {de ? "Lieferant (optional)" : "Supplier (optional)"}
-          </span>
-          <select
-            className="werkstatt-field-select"
-            value={values.supplier_id == null ? "" : String(values.supplier_id)}
-            disabled={disabled}
-            onChange={(event) =>
-              set("supplier_id", event.target.value ? Number(event.target.value) : null)
-            }
-          >
-            <option value="">{de ? "— keiner —" : "— none —"}</option>
-            {suppliers.map((supplier) => (
-              <option key={supplier.id} value={supplier.id}>
-                {supplier.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="werkstatt-field werkstatt-field--grow">
-          <span className="werkstatt-field-label">
-            {de ? "Lieferanten-Art.-Nr." : "Supplier article no."}
-          </span>
-          <input
-            type="text"
-            className="werkstatt-field-input"
-            value={values.supplier_article_no}
-            disabled={disabled || values.supplier_id == null}
-            placeholder={
-              values.supplier_id == null
-                ? de
-                  ? "erst Lieferant wählen"
-                  : "pick a supplier first"
-                : ""
-            }
-            onChange={(event) => set("supplier_article_no", event.target.value)}
-          />
-        </label>
-      </div>
+      {mode === "create" && (
+        <div className="stock-form-row">
+          <label className="werkstatt-field werkstatt-field--grow">
+            <span className="werkstatt-field-label">
+              {de ? "Lieferant (optional)" : "Supplier (optional)"}
+            </span>
+            <select
+              className="werkstatt-field-select"
+              value={values.supplier_id == null ? "" : String(values.supplier_id)}
+              disabled={disabled}
+              onChange={(event) =>
+                set("supplier_id", event.target.value ? Number(event.target.value) : null)
+              }
+            >
+              <option value="">{de ? "— keiner —" : "— none —"}</option>
+              {suppliers.map((supplier) => (
+                <option key={supplier.id} value={supplier.id}>
+                  {supplier.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="werkstatt-field werkstatt-field--grow">
+            <span className="werkstatt-field-label">
+              {de ? "Lieferanten-Art.-Nr." : "Supplier article no."}
+            </span>
+            <input
+              type="text"
+              className="werkstatt-field-input"
+              value={values.supplier_article_no}
+              disabled={disabled || values.supplier_id == null}
+              placeholder={
+                values.supplier_id == null
+                  ? de
+                    ? "erst Lieferant wählen"
+                    : "pick a supplier first"
+                  : ""
+              }
+              onChange={(event) => set("supplier_article_no", event.target.value)}
+            />
+          </label>
+        </div>
+      )}
 
       {values.image_url && (
         <div className="stock-form-image">

@@ -89,3 +89,44 @@ describe("DeviceInspector — Name auf dem Klemmenblock", () => {
     expect(screen.getByLabelText("Name auf dem Klemmenblock")).toBeDisabled();
   });
 });
+
+// Owner, 2026-10-09: a Neozed module that goes straight on to the WAGO 2016
+// combo block — offered on the fuse itself, but only while it is an outgoing.
+describe("DeviceInspector — Neozed straight on the 2016 block", () => {
+  const BLOCK_TOGGLE = "Abgang direkt auf WAGO-2016-Block (ohne LS)";
+
+  function renderDoc(device: ReturnType<typeof makeDevice>, others: ReturnType<typeof makeDevice>[]) {
+    render(
+      <DeviceInspector
+        device={device}
+        document={{ ...emptyDocument(), rows: [{ id: "r1", label: "Reihe 1", slots: 12, devices: [device, ...others] }] }}
+        readOnly={false}
+        onChange={noop}
+        onEditTerminalLabel={noop}
+        onDelete={noop}
+        onDuplicate={noop}
+        onMove={noop}
+        onClose={noop}
+      />,
+    );
+  }
+
+  it("offers the block on a Neozed that is an outgoing, and names it once flagged", () => {
+    renderDoc(makeDevice("fuse", { id: "n1", designation: "F0", poles: 3, rating: "35 A", label: "PV-Wechselrichter", terminal_block: true }), []);
+    expect(screen.getByLabelText(BLOCK_TOGGLE)).toBeChecked();
+    expect(screen.getByText(/Neozed direkt auf den 16-mm²-Block/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Name auf dem Klemmenblock")).toHaveAttribute("placeholder", "PV-Wechselrichter");
+  });
+
+  it("hides it while the Neozed is the Vorsicherung of an FI", () => {
+    const fuse = makeDevice("fuse", { id: "n1", designation: "F0", poles: 3, rating: "35 A" });
+    renderDoc(fuse, [makeDevice("rcd", { id: "f1", designation: "F1", parent_id: "n1" })]);
+    expect(screen.queryByLabelText(BLOCK_TOGGLE)).toBeNull();
+  });
+
+  it("hides it while the Neozed feeds the row after it", () => {
+    const fuse = makeDevice("fuse", { id: "n1", designation: "F0", poles: 3, rating: "35 A", feeds_following: true });
+    renderDoc(fuse, [makeDevice("mcb", { id: "a", designation: "F0.1" })]);
+    expect(screen.queryByLabelText(BLOCK_TOGGLE)).toBeNull();
+  });
+});

@@ -7,10 +7,11 @@
  * one-off per line kind ("device:mcb:1p:b16" means SP-0152 for every panel
  * from now on), so it should cost one tap and one word, not a dialog.
  */
-import { useEffect, useState } from "react";
+import { useState } from "react";
 
-import { listArticles, type WerkstattArticleLite } from "../../utils/werkstattArticlesApi";
-import type { PanelMaterialLine, PanelMaterialLineStatus } from "../../types/schaltplan";
+import { ArticleSearchResults, useArticleSearch } from "./PanelArticleSearch";
+import { PanelMaterialManualEditor } from "./PanelMaterialManualEditor";
+import type { PanelMaterialLine, PanelMaterialLineStatus, PanelMaterialManualUpdate } from "../../types/schaltplan";
 import type { MaterialTexts } from "./panelMaterialTexts";
 
 type RowProps = {
@@ -25,17 +26,10 @@ type RowProps = {
   onCloseMapping: () => void;
   onAssign: (articleId: number | null) => void;
   onBook: (direction: 1 | -1) => void;
+  /** A hand-added line only: change its quantity or note; resolves true once saved. */
+  onUpdateManual: (body: PanelMaterialManualUpdate) => Promise<boolean>;
+  onRemoveManual: () => void;
 };
-
-const SEARCH_MIN_CHARS = 2;
-const SEARCH_DELAY_MS = 250;
-const SEARCH_LIMIT = 8;
-
-type SearchState =
-  | { status: "idle" }
-  | { status: "searching" }
-  | { status: "error" }
-  | { status: "ready"; rows: WerkstattArticleLite[] };
 
 function StatusMark({ status, t }: { status: PanelMaterialLineStatus; t: MaterialTexts }) {
   if (status === "done") {
@@ -60,30 +54,7 @@ type SearchProps = {
 
 function ArticleSearch({ token, t, busy, onPick, onCancel }: SearchProps) {
   const [query, setQuery] = useState("");
-  const [search, setSearch] = useState<SearchState>({ status: "idle" });
-  const trimmed = query.trim();
-
-  useEffect(() => {
-    if (trimmed.length < SEARCH_MIN_CHARS) {
-      setSearch({ status: "idle" });
-      return undefined;
-    }
-    let cancelled = false;
-    setSearch({ status: "searching" });
-    const timer = window.setTimeout(() => {
-      listArticles(token, { q: trimmed, kind: "consumable", limit: SEARCH_LIMIT })
-        .then((rows) => {
-          if (!cancelled) setSearch({ status: "ready", rows });
-        })
-        .catch(() => {
-          if (!cancelled) setSearch({ status: "error" });
-        });
-    }, SEARCH_DELAY_MS);
-    return () => {
-      cancelled = true;
-      window.clearTimeout(timer);
-    };
-  }, [token, trimmed]);
+  const search = useArticleSearch(token, query);
 
   return (
     <div className="sp-mat-search">
@@ -101,38 +72,7 @@ function ArticleSearch({ token, t, busy, onPick, onCancel }: SearchProps) {
           {t.cancel}
         </button>
       </div>
-      {search.status === "idle" && <small className="sp-mat-search-hint">{t.searchHint}</small>}
-      {search.status === "searching" && (
-        <small className="sp-mat-search-hint" role="status">
-          {t.searching}
-        </small>
-      )}
-      {search.status === "error" && (
-        <small className="sp-mat-search-hint sp-mat-search-hint--error" role="alert">
-          {t.searchFailed}
-        </small>
-      )}
-      {search.status === "ready" && search.rows.length === 0 && (
-        <small className="sp-mat-search-hint">{t.searchEmpty}</small>
-      )}
-      {search.status === "ready" && search.rows.length > 0 && (
-        <ul className="sp-mat-search-results" aria-label={t.searchLabel}>
-          {search.rows.map((article) => (
-            <li key={article.id}>
-              <button
-                type="button"
-                className="sp-mat-search-result"
-                disabled={busy}
-                onClick={() => onPick(article.id)}
-              >
-                <span className="sp-mat-article-no">{article.article_number}</span>
-                <span className="sp-mat-search-result-name">{article.item_name}</span>
-                <span className="sp-mat-search-result-stock">{`${t.stock} ${article.stock_available}`}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
+      <ArticleSearchResults search={search} t={t} busy={busy} showIdleHint onPick={(article) => onPick(article.id)} />
     </div>
   );
 }
@@ -145,13 +85,14 @@ function ArticleCell({
   onOpenMapping,
   onAssign,
 }: Pick<RowProps, "line" | "canEdit" | "t" | "busy" | "onOpenMapping" | "onAssign">) {
-  // An extra line IS an article; its key is not a planned line anybody maps.
-  const mappable = canEdit && line.kind !== "extra";
+  // An extra line IS an article, and a hand-added one names its own: neither
+  // key is a planned line the global mapping could mean.
+  const mappable = canEdit && line.kind !== "extra" && line.kind !== "manual";
 
   if (!line.article) {
     return (
       <div className="sp-mat-article sp-mat-article--none">
-        <span>{t.noArticle}</span>
+        <span>{line.kind === "manual" ? t.freeText : t.noArticle}</span>
         {mappable && (
           <button type="button" className="sp-mat-link" disabled={busy} onClick={onOpenMapping}>
             {t.assign}
@@ -188,6 +129,52 @@ function ArticleCell({
   );
 }
 
+function LineText({
+  line,
+  t,
+  editable,
+  busy,
+  onEdit,
+  onRemove,
+}: {
+  line: PanelMaterialLine;
+  t: MaterialTexts;
+  editable: boolean;
+  busy: boolean;
+  onEdit: () => void;
+  onRemove: () => void;
+}) {
+  if (line.kind !== "manual") {
+    return (
+      <div className="sp-mat-main">
+        <b>{line.label}</b>
+        {line.detail && <small>{line.detail}</small>}
+      </div>
+    );
+  }
+  // A hand-added line: the mark and its own note — never the server's
+  // "manuell" fallback detail, which would say the same thing twice.
+  return (
+    <div className="sp-mat-main">
+      <b>{line.label}</b>
+      <small className="sp-mat-manual-meta">
+        <span className="sp-mat-chip sp-mat-chip--manual">{t.manual}</span>
+        {line.note && <span>{line.note}</span>}
+      </small>
+      {editable && (
+        <span className="sp-mat-manual-actions">
+          <button type="button" className="sp-mat-link" disabled={busy} title={t.editManualTitle} onClick={onEdit}>
+            {t.editManual}
+          </button>
+          <button type="button" className="sp-mat-link" disabled={busy} title={t.removeManualTitle} onClick={onRemove}>
+            {t.removeManual}
+          </button>
+        </span>
+      )}
+    </div>
+  );
+}
+
 export function PanelMaterialRow({
   line,
   token,
@@ -199,18 +186,29 @@ export function PanelMaterialRow({
   onCloseMapping,
   onAssign,
   onBook,
+  onUpdateManual,
+  onRemoveManual,
 }: RowProps) {
   const canBook = canEdit && line.article !== null;
+  const editable = canEdit && line.kind === "manual" && line.manual_id != null;
+  // A free text has no article to scan: its quantity, no "0 /" that never
+  // moves (the server leaves it out of the picking totals too).
+  const freeText = line.kind === "manual" && line.article === null;
+  const [editing, setEditing] = useState(false);
 
   return (
     <li className={`sp-mat-row sp-mat-row--${line.status}`} data-key={line.key}>
-      <div className="sp-mat-main">
-        <b>{line.label}</b>
-        {line.detail && <small>{line.detail}</small>}
-      </div>
+      <LineText
+        line={line}
+        t={t}
+        editable={editable && !editing}
+        busy={busy}
+        onEdit={() => setEditing(true)}
+        onRemove={onRemoveManual}
+      />
 
       <div className="sp-mat-qty">
-        <span className="sp-mat-qty-scanned">{line.scanned}</span>
+        <span className="sp-mat-qty-scanned">{freeText ? "—" : line.scanned}</span>
         <small>{` / ${line.planned}`}</small>
       </div>
 
@@ -254,6 +252,18 @@ export function PanelMaterialRow({
 
       {mappingOpen && (
         <ArticleSearch token={token} t={t} busy={busy} onPick={onAssign} onCancel={onCloseMapping} />
+      )}
+
+      {editable && editing && (
+        <PanelMaterialManualEditor
+          line={line}
+          t={t}
+          busy={busy}
+          onSave={async (body) => {
+            if (await onUpdateManual(body)) setEditing(false);
+          }}
+          onCancel={() => setEditing(false)}
+        />
       )}
     </li>
   );

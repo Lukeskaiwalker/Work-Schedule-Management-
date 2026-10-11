@@ -56,6 +56,10 @@ from app.services.ids_handoff_page import (
 )
 from app.services.werkstatt_order_composition import append_cart_lines
 from app.services.werkstatt_order_send import prepare_order_for_send
+from app.services.werkstatt_order_totals import (
+    ORDER_TOTAL_TOO_LARGE_DETAIL,
+    OrderTotalTooLarge,
+)
 from app.services.werkstatt_orders import generate_order_number
 
 router = APIRouter(prefix="/werkstatt/ids", tags=["werkstatt-procurement"])
@@ -258,6 +262,65 @@ async def receive_cart(token: str, request: Request, db: Session = Depends(get_d
             error=True,
         )
 
+    try:
+        # A savepoint around everything that touches the order: a cart whose
+        # total does not fit the int4 column takes back the order and its
+        # lines, but not the spent token or the import row with the raw cart.
+        with db.begin_nested():
+            order = _commit_cart_to_order(db, session, connection, cart, import_row)
+    except OrderTotalTooLarge:
+        import_row.status = "failed"
+        import_row.error_message = ORDER_TOTAL_TOO_LARGE_DETAIL
+        db.add(import_row)
+        db.commit()
+        return _result(
+            "Warenkorb nicht übernommen",
+            f"{ORDER_TOTAL_TOO_LARGE_DETAIL} Die Rohdaten wurden gespeichert und "
+            "können im Import-Protokoll eingesehen werden.",
+            error=True,
+            code=400,
+        )
+    db.commit()
+
+    count = len(cart.lines)
+    # WarenkorbInfo/RueckgabeKZ is the wholesaler saying whether the buyer
+    # actually committed. It is the only field that separates "looked at the
+    # basket" from "placed the order", so it is worth telling them which one the
+    # shop reported rather than leaving them to guess from the order list.
+    placed = " Der Shop meldet: Bestellung wurde ausgelöst." if cart.order_placed else ""
+    # The shop returns the cart as a browser form POST with target=_top, so this
+    # page replaces the tab the user started in — it is not a popup. Telling
+    # them to close it is telling them to close the app, and it contradicts the
+    # "Zurück zu SMPL" button directly underneath.
+    #
+    # The button carries the order in a query parameter. The SPA has no router —
+    # navigation is a `mainView` state string — so a path like
+    # /werkstatt/orders/12 would simply load the app at its default view, which
+    # is what left the buyer on the dashboard hunting for the order they had
+    # just created. `?werkstatt_order=` is read once at boot, opens the order,
+    # and is then stripped from the URL, matching how the app already handles
+    # its invite and password-reset links.
+    return _result(
+        "Warenkorb übernommen",
+        f"{count} Position{'en' if count != 1 else ''} wurden als Bestellung "
+        f"{order.order_number} gespeichert.{placed}",
+        return_url=f"/?werkstatt_order={order.id}",
+    )
+
+
+def _commit_cart_to_order(
+    db: Session,
+    session: WerkstattIdsSession,
+    connection: WerkstattIdsConnection,
+    cart: ParsedCart,
+    import_row: WerkstattOrderImport,
+) -> WerkstattOrder:
+    """Put a parsed cart on its order and mark the import committed.
+
+    May raise ``OrderTotalTooLarge`` from the recompute; the caller runs this
+    inside a savepoint so nothing of it survives that.
+    """
+
     order = _order_for_session(db, session, connection, cart)
     import_row.order_id = order.id
     import_row.external_reference = cart.external_reference
@@ -293,32 +356,7 @@ async def receive_cart(token: str, request: Request, db: Session = Depends(get_d
         append_cart_lines(db, order, cart, import_id=import_row.id)
     session.order_id = order.id
     db.add(session)
-    db.commit()
-
-    count = len(cart.lines)
-    # WarenkorbInfo/RueckgabeKZ is the wholesaler saying whether the buyer
-    # actually committed. It is the only field that separates "looked at the
-    # basket" from "placed the order", so it is worth telling them which one the
-    # shop reported rather than leaving them to guess from the order list.
-    placed = " Der Shop meldet: Bestellung wurde ausgelöst." if cart.order_placed else ""
-    # The shop returns the cart as a browser form POST with target=_top, so this
-    # page replaces the tab the user started in — it is not a popup. Telling
-    # them to close it is telling them to close the app, and it contradicts the
-    # "Zurück zu SMPL" button directly underneath.
-    #
-    # The button carries the order in a query parameter. The SPA has no router —
-    # navigation is a `mainView` state string — so a path like
-    # /werkstatt/orders/12 would simply load the app at its default view, which
-    # is what left the buyer on the dashboard hunting for the order they had
-    # just created. `?werkstatt_order=` is read once at boot, opens the order,
-    # and is then stripped from the URL, matching how the app already handles
-    # its invite and password-reset links.
-    return _result(
-        "Warenkorb übernommen",
-        f"{count} Position{'en' if count != 1 else ''} wurden als Bestellung "
-        f"{order.order_number} gespeichert.{placed}",
-        return_url=f"/?werkstatt_order={order.id}",
-    )
+    return order
 
 
 def _order_for_session(

@@ -280,12 +280,16 @@ describe("Werkstatt Mobile — Artikel-Detail", () => {
     expect(screen.queryByText("LAGER")).toBeNull();
   });
 
-  it("checks out through POST /werkstatt/mobile/checkout", async () => {
+  it("books a consumable through POST /werkstatt/mobile/checkout with no return date", async () => {
+    // `is_serialized: false` — not in the Maschinen tab, so a consumable by the
+    // owner's rule: used up at the site, never expected back.
     const calls = stubApi();
     renderArtikel();
 
     fireEvent.click(await screen.findByRole("button", { name: "Entnehmen" }));
-    fireEvent.click(screen.getByRole("button", { name: /Entnahme bestätigen/ }));
+    expect(screen.getByRole("dialog", { name: "Material entnehmen" })).toBeInTheDocument();
+    expect(screen.queryByText("Erwartete Rückgabe")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Entnehmen \(Verbrauch\)/ }));
 
     await waitFor(() => {
       expect(calls.some((call) => call.url.includes("/werkstatt/mobile/checkout"))).toBe(true);
@@ -295,6 +299,64 @@ describe("Werkstatt Mobile — Artikel-Detail", () => {
     const body = JSON.parse(String(write?.init?.body));
     expect(body.article_id).toBe(42);
     expect(body.quantity).toBe(1);
+    expect(body.expected_return_at).toBeNull();
+  });
+
+  it("says what was used up, for which project, and passes the stock warning on", async () => {
+    const WARNING =
+      "Laut Bestand waren nur 0 da – 1 nachgebucht, bitte den Bestand bei Gelegenheit zählen.";
+    const calls = stubApi({
+      checkout: () =>
+        json({
+          ...ARTICLE,
+          stock_total: 11,
+          stock_available: 8,
+          booked_as: "consumption",
+          stock_warning: WARNING,
+        }),
+    });
+    const setNotice = vi.fn();
+    renderArtikel({
+      setNotice,
+      projects: [
+        { id: 7, project_number: "P-2026-014", name: "Neubau Nord", status: "In Durchführung" },
+        { id: 8, project_number: "P-2025-002", name: "Altbau", status: "archiviert" },
+      ],
+    });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Entnehmen" }));
+    const project = screen.getByRole("combobox", { name: /Für Projekt/ });
+    // An archived project would only collect the server's refusal.
+    expect(screen.queryByRole("option", { name: /P-2025-002/ })).toBeNull();
+    fireEvent.change(project, { target: { value: "7" } });
+    fireEvent.click(screen.getByRole("button", { name: /Entnehmen \(Verbrauch\)/ }));
+
+    await waitFor(() => expect(setNotice).toHaveBeenCalled());
+    expect(setNotice).toHaveBeenCalledWith(
+      `1× Bohrhammer GBH 2-28 verbraucht für P-2026-014 Neubau Nord — 8 von 11 noch verfügbar. ${WARNING}`,
+    );
+    const body = JSON.parse(
+      String(calls.find((call) => call.url.includes("/werkstatt/mobile/checkout"))?.init?.body),
+    );
+    expect(body.project_id).toBe(7);
+  });
+
+  it("keeps the loan dialog for a machine type", async () => {
+    const calls = stubApi({ article: () => json({ ...ARTICLE, is_serialized: true }) });
+    const setNotice = vi.fn();
+    renderArtikel({ setNotice });
+
+    fireEvent.click(await screen.findByRole("button", { name: "Entnehmen" }));
+    expect(screen.getByText("Erwartete Rückgabe")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Entnahme bestätigen/ }));
+
+    await waitFor(() => expect(setNotice).toHaveBeenCalled());
+    const body = JSON.parse(
+      String(calls.find((call) => call.url.includes("/werkstatt/mobile/checkout"))?.init?.body),
+    );
+    expect(typeof body.expected_return_at).toBe("string");
+    // The stub answers without `booked_as`, as the API did before: a loan.
+    expect(setNotice).toHaveBeenCalledWith("1× Bohrhammer GBH 2-28 entnommen — 8 von 12 noch verfügbar");
   });
 
   it("hides „Bestand anpassen“ from a user the endpoint would 403", async () => {
@@ -320,14 +382,25 @@ describe("Werkstatt Mobile — Artikel-Detail", () => {
     expect(screen.getByRole("menuitem", { name: "Bestand anpassen" })).toBeEnabled();
   });
 
-  it("will not offer a checkout the server has nothing left for", async () => {
+  it("will not lend a machine type the server has nothing left of", async () => {
     stubApi({
-      article: () => json({ ...ARTICLE, stock_available: 0, stock_out: 12 }),
+      article: () =>
+        json({ ...ARTICLE, is_serialized: true, stock_available: 0, stock_out: 12 }),
     });
     renderArtikel();
 
     const primary = await screen.findByRole("button", { name: "Nichts verfügbar" });
     expect(primary).toBeDisabled();
+  });
+
+  it("still lets a consumable be taken when the count says the shelf is empty", async () => {
+    // Somebody is holding the part, so the count was wrong — the server books
+    // the shortfall up and says so instead of refusing.
+    stubApi({ article: () => json({ ...ARTICLE, stock_available: 0, stock_out: 12 }) });
+    renderArtikel();
+
+    const primary = await screen.findByRole("button", { name: "Entnehmen" });
+    expect(primary).toBeEnabled();
   });
 
   it("caps the return at what the CALLER holds, not the team's stock_out", async () => {

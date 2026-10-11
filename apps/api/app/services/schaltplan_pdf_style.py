@@ -32,41 +32,53 @@ FONT_BOLD = "Helvetica-Bold"
 
 
 def wrap(text: str, font: str, size: float, max_width: float, max_lines: int) -> list[str]:
-    """Greedy word wrap. Overlong single words are hard-cut, never dropped.
+    """Greedy word wrap into at most ``max_lines`` lines, none wider than ``max_width``.
 
-    An un-wrappable token (a cable spec like ``NYM-J5x2,5mm²``) would
-    otherwise silently vanish from the drawing — worse than a mid-word break
-    on a document someone wires a building from.
+    A word wider than the column on its own is hard-cut and marked "…" —
+    wherever it stands, not only first (review 2026-10-09: "UG
+    Hauswirtschaftsraum" printed its second word into "Gerät"). It is never
+    dropped: an un-wrappable token like a cable spec ``NYM-J5x2,5mm²``
+    silently vanishing is worse, on a document someone wires a building
+    from, than a mid-word break. Text left over when the lines run out ends
+    the last line in "…", inside the column.
     """
 
-    if not text:
+    if not text or max_lines <= 0:
         return []
-    words = text.split()
+
+    def fits(value: str) -> bool:
+        return stringWidth(value, font, size) <= max_width
+
+    def with_ellipsis(value: str) -> str:
+        # "…" is wider than most letters: give way character by character
+        # until the mark fits too (it ran 1–2 pt into "Raum" before).
+        cut = value.rstrip()
+        while cut and not fits(cut + "…"):
+            cut = cut[:-1].rstrip()
+        return cut + "…"
+
     lines: list[str] = []
     current = ""
-    for word in words:
-        candidate = f"{current} {word}".strip()
-        if stringWidth(candidate, font, size) <= max_width or not current:
-            if stringWidth(candidate, font, size) > max_width and not current:
-                # single word too long — hard cut
-                cut = word
-                while cut and stringWidth(cut + "…", font, size) > max_width:
-                    cut = cut[:-1]
-                lines.append(cut + "…" if cut != word else word)
-                current = ""
-                continue
+    for word in text.split():
+        candidate = f"{current} {word}" if current else word
+        if fits(candidate):
             current = candidate
-        else:
+            continue
+        if current:
             lines.append(current)
+            current = ""
+            if len(lines) == max_lines:
+                lines[-1] = with_ellipsis(lines[-1])
+                return lines
+        if fits(word):
             current = word
+            continue
+        lines.append(with_ellipsis(word))
         if len(lines) == max_lines:
-            break
-    if current and len(lines) < max_lines:
+            return lines
+    if current:
         lines.append(current)
-    if len(lines) == max_lines and current and lines[-1] != current:
-        # Signal the truncation rather than pretending the text ended.
-        lines[-1] = lines[-1][: max(0, len(lines[-1]) - 1)] + "…"
-    return lines[:max_lines]
+    return lines
 
 
 def text_of(value: Any) -> str:

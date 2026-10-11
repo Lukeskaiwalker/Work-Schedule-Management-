@@ -3,8 +3,8 @@ import { WerkstattMovementRow } from "../WerkstattMovementRow";
 import { WerkstattBlockState, type WerkstattBlockPhase } from "./WerkstattBlockState";
 import {
   formatRelativeTime,
+  movementLabel,
   movementPipKind,
-  movementTypeLabel,
 } from "../../../utils/werkstattOverviewFormat";
 import type { WerkstattMovement } from "../../../types/werkstatt";
 
@@ -37,13 +37,15 @@ const FILTERS: ReadonlyArray<MovementFilter> = [
     key: "out",
     label_de: "Entnahmen",
     label_en: "Out",
-    types: ["checkout", "repair_out"],
+    // A consumable handed out is a `consumption` since 2026-10-10 — the bulk
+    // of what leaves the shelf, so it belongs under "Entnahmen".
+    types: ["checkout", "consumption", "repair_out"],
   },
   {
     key: "in",
     label_de: "Rückgaben",
     label_en: "Returns",
-    types: ["return", "repair_back"],
+    types: ["return", "consumption_undo", "repair_back"],
   },
   {
     key: "intake",
@@ -140,7 +142,7 @@ export function DashboardMovementsCard({
               kind={movementPipKind(movement.movement_type)}
               title={`${movement.quantity}× ${movement.article_name}`}
               subtitle={[
-                movementTypeLabel(movement.movement_type, de),
+                movementLabel(movement, de),
                 movement.user_display_name,
                 movement.project_number,
               ]

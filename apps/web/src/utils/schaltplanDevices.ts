@@ -31,6 +31,10 @@ export interface DeviceCatalogEntry {
 export const DEVICE_CATALOG: Record<DeviceKind, DeviceCatalogEntry> = {
   hauptschalter: { kind: "hauptschalter", label: "Hauptschalter", short: "HS", te: 3, poles: 3, group: true, circuit: false, symbol: "switch", ratingHint: "63 A", section: "schutz" },
   sls: { kind: "sls", label: "SLS-Schalter (selektiv)", short: "SLS", te: 3, poles: 3, group: true, circuit: false, symbol: "sls", ratingHint: "E35", section: "schutz" },
+  // Owner, 2026-10-09: "after a Hauptschalter sometimes comes a Hensel KKL54
+  // to distribute to the next components" — opens a group like a
+  // Hauptschalter and feeds the FIs that name it.
+  distribution_block: { kind: "distribution_block", label: "Verteilerblock (Hensel KKL 54)", short: "VB", te: 4, poles: 4, group: true, circuit: false, symbol: "distribution", ratingHint: "", section: "schutz" },
   rcd: { kind: "rcd", label: "FI-Schutzschalter (RCD)", short: "FI", te: 4, poles: 4, group: true, circuit: false, symbol: "rcd", ratingHint: "40 A", section: "schutz" },
   rcbo: { kind: "rcbo", label: "FI/LS kombiniert", short: "FI/LS", te: 2, poles: 2, group: false, circuit: true, symbol: "rcbo", ratingHint: "B16", section: "abgang" },
   mcb: { kind: "mcb", label: "Leitungsschutzschalter", short: "LS", te: 1, poles: 1, group: false, circuit: true, symbol: "mcb", ratingHint: "B16", section: "abgang" },

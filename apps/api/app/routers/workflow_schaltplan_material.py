@@ -13,8 +13,10 @@ the wall and a "+1" in the browser write the identical ledger row.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
@@ -22,10 +24,13 @@ from app.core.deps import assert_project_access, get_current_user, require_permi
 from app.core.permissions import has_permission_for_user
 from app.core.time import to_naive_utc
 from app.models.entities import User, WerkstattArticle
-from app.models.schaltplan import PanelPlan, PanelWorkSession
+from app.models.schaltplan import PanelMaterialManualLine, PanelPlan, PanelWorkSession
+from app.routers.workflow_helpers import _content_disposition
 from app.routers.workflow_schaltplan import _assert_readable, _get_plan_or_404, _load_names, _summary
 from app.schemas.schaltplan import (
     PanelMaterialBookRequest,
+    PanelMaterialManualCreate,
+    PanelMaterialManualUpdate,
     PanelMaterialMappingOut,
     PanelMaterialMappingRequest,
     PanelMaterialOut,
@@ -35,10 +40,15 @@ from app.schemas.schaltplan import (
 )
 from app.services import panel_work
 from app.services import schaltplan_material as material
+from app.services.runtime_settings import get_company_settings
+from app.services.schaltplan_material_pdf import build_material_pdf
 
 router = APIRouter(prefix="/schaltplan", tags=["schaltplan"])
 
 RECENT_LIMIT_MAX = 25
+#: Lines added by hand per board. A real list stays far below (a board's whole
+#: Materialliste is rarely 50 lines); the cap stops a runaway client.
+MAX_MANUAL_LINES = 200
 
 
 def _visible_plans(db: Session, current_user: User, plans: list[PanelPlan]) -> list[PanelPlan]:
@@ -149,6 +159,109 @@ def unbook_material(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     db.commit()
     return material.panel_material(db, plan)
+
+
+# ── Lines added by hand, and the list as a PDF (owner, 2026-10-09) ──────────
+
+
+def _manual_line_or_404(db: Session, plan: PanelPlan, line_id: int) -> PanelMaterialManualLine:
+    row = db.get(PanelMaterialManualLine, line_id)
+    if row is None or row.panel_id != plan.id:
+        raise HTTPException(status_code=404, detail="Position nicht gefunden")
+    return row
+
+
+@router.post("/panels/{plan_id}/material/manual", response_model=PanelMaterialOut)
+def add_manual_material(
+    plan_id: int,
+    payload: PanelMaterialManualCreate,
+    current_user: User = Depends(require_permission("reports:create")),
+    db: Session = Depends(get_db),
+) -> PanelMaterialOut:
+    """Add material the schematic cannot derive: a shelf article or a free
+    text, with a quantity. Same bar as booking."""
+    plan = _get_plan_or_404(db, plan_id)
+    _assert_readable(db, current_user, plan)
+    existing = db.scalar(
+        select(func.count(PanelMaterialManualLine.id)).where(PanelMaterialManualLine.panel_id == plan.id)
+    )
+    if int(existing or 0) >= MAX_MANUAL_LINES:
+        raise HTTPException(status_code=400, detail=f"Höchstens {MAX_MANUAL_LINES} Positionen von Hand je Verteiler.")
+    article = _article_or_404(db, payload.article_id) if payload.article_id is not None else None
+    if article is not None and bool(article.is_archived):
+        raise HTTPException(status_code=400, detail="Artikel ist archiviert.")
+    label = (article.item_name if article is not None else payload.label) or ""
+    db.add(
+        PanelMaterialManualLine(
+            panel_id=plan.id,
+            article_id=article.id if article is not None else None,
+            label=label[:255],
+            quantity=payload.quantity,
+            note=payload.note,
+            created_by=current_user.id,
+        )
+    )
+    db.commit()
+    return material.panel_material(db, plan)
+
+
+@router.patch("/panels/{plan_id}/material/manual/{line_id}", response_model=PanelMaterialOut)
+def update_manual_material(
+    plan_id: int,
+    line_id: int,
+    payload: PanelMaterialManualUpdate,
+    current_user: User = Depends(require_permission("reports:create")),
+    db: Session = Depends(get_db),
+) -> PanelMaterialOut:
+    plan = _get_plan_or_404(db, plan_id)
+    _assert_readable(db, current_user, plan)
+    row = _manual_line_or_404(db, plan, line_id)
+    if payload.quantity is not None:
+        row.quantity = payload.quantity
+    if payload.label is not None and payload.label.strip():
+        row.label = payload.label.strip()[:255]
+    if payload.note is not None:
+        row.note = payload.note.strip() or None
+    db.add(row)
+    db.commit()
+    return material.panel_material(db, plan)
+
+
+@router.delete("/panels/{plan_id}/material/manual/{line_id}", response_model=PanelMaterialOut)
+def delete_manual_material(
+    plan_id: int,
+    line_id: int,
+    current_user: User = Depends(require_permission("reports:create")),
+    db: Session = Depends(get_db),
+) -> PanelMaterialOut:
+    """Remove a hand-added line. Bookings against its article stay booked —
+    they then show as "nicht geplant", which is what really went in."""
+    plan = _get_plan_or_404(db, plan_id)
+    _assert_readable(db, current_user, plan)
+    db.delete(_manual_line_or_404(db, plan, line_id))
+    db.commit()
+    return material.panel_material(db, plan)
+
+
+@router.get("/panels/{plan_id}/material/pdf")
+def panel_material_pdf(
+    plan_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Response:
+    """The Materialliste as an A4 PDF: every line, planned and booked."""
+    plan = _get_plan_or_404(db, plan_id)
+    _assert_readable(db, current_user, plan)
+    pdf = build_material_pdf(
+        material=material.panel_material(db, plan),
+        company_name=get_company_settings(db).get("company_name"),
+    )
+    file_name = f"Materialliste_{plan.panel_number}_{datetime.now():%Y-%m-%d}.pdf".replace(" ", "_")
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": _content_disposition(file_name, inline=True)},
+    )
 
 
 @router.put("/material/mapping", response_model=PanelMaterialMappingOut)

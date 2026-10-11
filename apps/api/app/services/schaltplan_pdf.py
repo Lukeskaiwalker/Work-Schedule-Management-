@@ -211,6 +211,14 @@ def _draw_symbol(c: pdfcanvas.Canvas, kind: str, cx: float, cy: float, poles: in
         c.line(cx + 5, cy, cx + 1, cy + 4)
         c.line(cx + 5, cy, cx + 1, cy - 4)
         c.rect(cx + 5, cy - 7, 4, 14, stroke=1, fill=0)
+    elif symbol == "distribution":
+        # Verteilerblock: one feed in, a bar, three taps out.
+        c.line(cx, cy + 9, cx, cy + 3)
+        c.setLineWidth(2.0)
+        c.line(cx - 8, cy + 3, cx + 8, cy + 3)
+        c.setLineWidth(1.1)
+        for dx in (-6.0, 0.0, 6.0):
+            c.line(cx + dx, cy + 3, cx + dx, cy - 7)
     elif symbol == "terminal":
         c.circle(cx - 4, cy, 2.6, stroke=1, fill=0)
         c.circle(cx + 4, cy, 2.6, stroke=1, fill=0)
@@ -355,10 +363,20 @@ def _draw_group(c: pdfcanvas.Canvas, group: dict[str, Any], x: float, dy: float 
     c.line(cx, y_bus, cx, y_group_top)
     # The Vorsicherung sits where it physically is: between the busbar and
     # the FI, on the drop line. Small, with a cleared background so the wire
-    # does not strike through the text.
+    # does not strike through the text. A group fed by an SLS, Hauptschalter
+    # or Verteilerblock (owner, 2026-10-09) names it the same way — "über Q1
+    # HS" — so the chain reads busbar → Q1 → this group.
     pre_fuse = group.get("pre_fuse")
-    if pre_fuse and (y_bus - y_group_top) >= 18:
-        text = " ".join(p for p in (_text(pre_fuse.get("designation")), _text(pre_fuse.get("rating"))) if p) or "Si"
+    fed_by = group.get("fed_by")
+    plate = ""
+    if pre_fuse:
+        plate = " ".join(p for p in (_text(pre_fuse.get("designation")), _text(pre_fuse.get("rating"))) if p) or "Si"
+    elif fed_by:
+        plate = "über " + " ".join(
+            p for p in (_text(fed_by.get("designation")), _short(str(fed_by.get("kind", "")))) if p
+        )
+    if plate and (y_bus - y_group_top) >= 18:
+        text = plate
         c.setFont(_FONT_BOLD, 6.5)
         tw = c.stringWidth(text, _FONT_BOLD, 6.5) + 6
         ym = (y_bus + y_group_top) / 2
@@ -390,11 +408,25 @@ def _draw_group(c: pdfcanvas.Canvas, group: dict[str, Any], x: float, dy: float 
         c.setFont(_FONT, 7)
         c.drawCentredString(cx, y_group_top - 26, "direkt von der Sammelschiene")
     else:
+        # What this device feeds, named in its own box: the other end of the
+        # "über Q1 HS" plates. Three lines then, set a little higher.
+        feeds = group.get("feeds") or []
+        feeds_text = (
+            "speist "
+            + ", ".join(_text(d.get("designation")) or _short(str(d.get("kind", ""))) for d in feeds)
+            if feeds
+            else ""
+        )
+        head_y, detail_y = (y_group_top - 12, y_group_top - 22) if feeds_text else (y_group_top - 15, y_group_top - 26)
         _draw_symbol(c, str(device.get("kind", "")), x + 18, (y_group_top + y_group_bot) / 2, _poles(device))
         c.setFillColor(_INK)
         c.setFont(_FONT_BOLD, 8.5)
         head = f"{_text(device.get('designation'))} {_short(str(device.get('kind','')))}".strip()
-        c.drawString(x + 34, y_group_top - 15, _wrap(head, _FONT_BOLD, 8.5, width - 40, 1)[0])
+        c.drawString(x + 34, head_y, _wrap(head, _FONT_BOLD, 8.5, width - 40, 1)[0])
+        if feeds_text:
+            c.setFont(_FONT, 6.5)
+            c.setFillColor(_BLUE_DEEP)
+            c.drawString(x + 34, y_group_top - 32, _wrap(feeds_text, _FONT, 6.5, width - 40, 1)[0])
         c.setFont(_FONT, 7.5)
         c.setFillColor(_MUTED)
         detail = " · ".join(
@@ -407,7 +439,7 @@ def _draw_group(c: pdfcanvas.Canvas, group: dict[str, Any], x: float, dy: float 
             )
             if part
         )
-        c.drawString(x + 34, y_group_top - 26, _wrap(detail or "—", _FONT, 7.5, width - 40, 1)[0])
+        c.drawString(x + 34, detail_y, _wrap(detail or "—", _FONT, 7.5, width - 40, 1)[0])
 
     if not children:
         return width
@@ -609,11 +641,15 @@ def _draw_diagram_sheet(
 _LEGEND_COLUMNS: list[tuple[str, str, float]] = [
     ("circuit", "Nr.", 26),
     ("designation", "BMK", 34),
-    ("label", "Verbraucher / Bezeichnung", 84),
-    ("room", "Raum", 60),
-    ("device", "Gerät", 52),
-    ("rating", "Absicherung", 52),
-    ("rcd", "FI / RCD", 60),
+    # 98 so the header itself fits: at 84 "Verbraucher / Bezeichnung" ran
+    # into "Raum" (owner's print of 2026-10-09). The 14 came from the four
+    # columns whose content is shortest (room, device, rating, FI), so the
+    # total — the sheet glued into the door — is unchanged.
+    ("label", "Verbraucher / Bezeichnung", 98),
+    ("room", "Raum", 56),
+    ("device", "Gerät", 49),
+    ("rating", "Absicherung", 49),
+    ("rcd", "FI / RCD", 56),
     # Same total width as before: the Klemmen column took 20 from the
     # description and 30 from the cable column, so the sheet that gets glued
     # in the door keeps its layout.
@@ -623,6 +659,19 @@ _LEGEND_COLUMNS: list[tuple[str, str, float]] = [
     ("terminals", "Klemmen", 50),
 ]
 
+_LEGEND_HEADER_SIZE = 7.0
+_LEGEND_HEADER_MIN_SIZE = 6.5
+
+
+def _legend_header_size(title: str, width: float) -> float:
+    """The header's font size: 7 pt, or as much smaller as the title needs to
+    stay inside its column (never below 6.5 pt). A title wider than that is
+    a column set to fix, which the layout test catches."""
+    size = _LEGEND_HEADER_SIZE
+    while size > _LEGEND_HEADER_MIN_SIZE and stringWidth(title, _FONT_BOLD, size) > width - 6:
+        size = round(size - 0.25, 2)
+    return size
+
 
 def _legend_header(c: pdfcanvas.Canvas, y: float, x0: float) -> None:
     c.setFillColor(_BLUE_TINT)
@@ -631,9 +680,9 @@ def _legend_header(c: pdfcanvas.Canvas, y: float, x0: float) -> None:
     total = sum(col[2] for col in _LEGEND_COLUMNS)
     c.rect(x0, y - 4, total, 16, stroke=1, fill=1)
     c.setFillColor(_BLUE_DEEP)
-    c.setFont(_FONT_BOLD, 7)
     x = x0
     for _key, title, w in _LEGEND_COLUMNS:
+        c.setFont(_FONT_BOLD, _legend_header_size(title, w))
         c.drawString(x + 3, y + 2, title)
         x += w
 

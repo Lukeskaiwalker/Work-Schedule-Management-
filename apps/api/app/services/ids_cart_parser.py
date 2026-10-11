@@ -40,11 +40,22 @@ from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from xml.etree import ElementTree
 
+from app.core.limits import MAX_STOCK_QUANTITY, MAX_UNIT_PRICE_CENTS
+
 # A cart is a shopping list, not a catalogue. Ten thousand lines would already
 # be absurd; five megabytes is far past generous and keeps a hostile payload
 # from being parsed at all.
 MAX_PAYLOAD_BYTES = 5 * 1024 * 1024
 MAX_LINES = 2000
+
+# A line's extended amount may legitimately be as large as its two bounds
+# multiplied: the most pieces one line holds at the highest unit price. Past
+# that it cannot be divided back into a unit price that fits either.
+MAX_LINE_TOTAL_CENTS = MAX_STOCK_QUANTITY * MAX_UNIT_PRICE_CENTS
+
+# How much of a refused raw value a warning repeats. The warning is written
+# onto the order line, and the cart can carry a number of any length.
+_ECHO_LIMIT = 32
 
 # Charsets tried in order when the payload does not declare its own. IDS
 # predates universal UTF-8 and most German shops still emit ISO-8859-1;
@@ -353,7 +364,7 @@ def parse_number(value: str) -> tuple[Decimal | None, str | None]:
         integer_part = re.sub(r"[,.]", "", text[:last_sep])
         if len(decimals) == 3 and text.count(",") + text.count(".") == 1:
             warning = (
-                f"'{value.strip()}' ist mehrdeutig — als {integer_part}.{decimals} "
+                f"'{_echo(value)}' ist mehrdeutig — als {_echo(f'{integer_part}.{decimals}')} "
                 "gelesen, könnte aber auch die Tausendertrennung sein"
             )
         normalised = f"{integer_part}.{decimals}"
@@ -361,7 +372,14 @@ def parse_number(value: str) -> tuple[Decimal | None, str | None]:
     try:
         return Decimal(normalised), warning
     except InvalidOperation:
-        return None, f"'{value.strip()}' ist keine gültige Zahl"
+        return None, f"'{_echo(value)}' ist keine gültige Zahl"
+
+
+def _echo(value: str) -> str:
+    """A raw cart value as a warning repeats it — clipped, never the whole of it."""
+
+    text = (value or "").strip()
+    return text if len(text) <= _ECHO_LIMIT else text[:_ECHO_LIMIT] + "…"
 
 
 def _quantity_from(value: str) -> tuple[int, Decimal | None, list[str]]:
@@ -373,28 +391,87 @@ def _quantity_from(value: str) -> tuple[int, Decimal | None, list[str]]:
     The exact decimal is returned alongside the rounded integer because a
     caller deriving a unit price from a line total must divide by what the
     shop actually charged for, not by our rounded-up reinterpretation of it.
+
+    A quantity past ``MAX_STOCK_QUANTITY`` is treated like an unreadable one:
+    1, with a warning. It is checked before the rounding, because the cart can
+    carry a number of any length and both ``math.ceil`` and printing the
+    result get expensive (past 4300 digits, printing an int raises).
     """
 
     number, warning = parse_number(value)
     warnings = [warning] if warning else []
     if number is None or number <= 0:
-        warnings.append(f"Menge '{value.strip()}' nicht lesbar — 1 angenommen")
+        warnings.append(f"Menge '{_echo(value)}' nicht lesbar — 1 angenommen")
+        return 1, None, warnings
+    if number > MAX_STOCK_QUANTITY:
+        warnings.append(f"Menge '{_echo(value)}' ist zu groß — 1 angenommen, bitte prüfen")
         return 1, None, warnings
     ceiled = int(math.ceil(number))
     if Decimal(ceiled) != number:
         warnings.append(
-            f"Menge {value.strip()} auf {ceiled} aufgerundet — "
+            f"Menge {_echo(value)} auf {ceiled} aufgerundet — "
             "Bestellungen führen nur ganze Einheiten"
         )
     return max(ceiled, 1), number, warnings
 
 
-def _price_cents_from(value: str) -> tuple[int | None, list[str]]:
+def _price_cents_from(
+    value: str, *, limit_cents: int, label: str
+) -> tuple[int | None, list[str]]:
+    """An amount in whole cents, or ``None`` with a warning past ``limit_cents``.
+
+    The bound is checked in euros, BEFORE any arithmetic. A comparison is
+    exact and never traps; arithmetic does. A cart can carry a megabyte of
+    digits, and ``number * 100`` on a value past the decimal context's exponent
+    range (Emax 999999) raises ``decimal.Overflow``, while past 28 significant
+    digits ``Decimal.quantize`` raises ``InvalidOperation``. Either would escape
+    the parser as a 500 from the unauthenticated hook. Below an integer bound
+    neither the multiplication's nor the quantize's rounding can carry the
+    value over it.
+    """
+
     number, warning = parse_number(value)
     warnings = [warning] if warning else []
     if number is None or number < 0:
         return None, warnings
+    if number > Decimal(limit_cents) / 100:
+        warnings.append(
+            f"{label} '{_echo(value)}' ist unplausibel hoch — nicht übernommen, bitte prüfen"
+        )
+        return None, warnings
     return int((number * 100).quantize(Decimal("1"))), warnings
+
+
+_DERIVED_PRICE_TOO_HIGH = (
+    "Aus dem Positionswert errechneter Einzelpreis ist unplausibel hoch — "
+    "nicht übernommen, bitte prüfen"
+)
+
+
+def _unit_price_within_bound(cents: Decimal) -> tuple[int | None, list[str]]:
+    """A derived unit price, or ``None`` with a warning past ``MAX_UNIT_PRICE_CENTS``."""
+
+    if cents > MAX_UNIT_PRICE_CENTS:
+        return None, [_DERIVED_PRICE_TOO_HIGH]
+    return int(cents.quantize(Decimal("1"))), []
+
+
+def _derived_unit_price(total_cents: int, divisor: Decimal) -> tuple[int | None, list[str]]:
+    """A line total divided by the quantity the shop priced, bounded.
+
+    Refused BEFORE dividing: a total over a tiny fractional quantity divides
+    UP without limit, and a quantity of 1e-1000006 takes the quotient past the
+    exponent range into ``decimal.Overflow``. The product on the right cannot
+    overflow, because the divisor is at most ``MAX_STOCK_QUANTITY``; a divisor
+    so small that it underflows the product to 0 is refused by the same test
+    (underflow is not trapped). When the product had to be rounded the
+    comparison is approximate, so the quotient is still checked after.
+    """
+
+    total = Decimal(total_cents)
+    if total > divisor * MAX_UNIT_PRICE_CENTS:
+        return None, [_DERIVED_PRICE_TOO_HIGH]
+    return _unit_price_within_bound(total / divisor)
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -490,9 +567,11 @@ def _find_item_elements(root: ElementTree.Element) -> list[ElementTree.Element]:
 def parse_cart(text: str) -> ParsedCart:
     """Cart XML → prospective order lines.
 
-    Raises ``CartParseError`` only when the payload is not usable XML at all.
-    Everything softer — an unreadable quantity, a missing description, a
-    fractional amount — is reported as a warning on the affected line.
+    Raises ``CartParseError`` only when the payload is not usable XML at all
+    (or, as a backstop, when a line's numbers cannot be computed with — see
+    the loop). Everything softer — an unreadable quantity, a missing
+    description, a fractional amount, a number far past its bound — is
+    reported as a warning on the affected line.
     """
 
     stripped = (text or "").strip()
@@ -538,88 +617,19 @@ def parse_cart(text: str) -> ParsedCart:
 
     lines: list[ParsedCartLine] = []
     for index, element in enumerate(elements, start=1):
-        fields = _collect_fields(element)
-        warnings: list[str] = []
-
-        quantity_raw = _first_alias(fields, FIELD_ALIASES["quantity"])
-        if quantity_raw is None:
-            quantity = 1
-            exact_quantity: Decimal | None = Decimal(1)
-            quantity_warnings = ["Keine Menge im Warenkorb — 1 angenommen"]
-        else:
-            quantity, exact_quantity, quantity_warnings = _quantity_from(quantity_raw)
-        warnings.extend(quantity_warnings)
-
-        unit_price_cents: int | None = None
-        price_raw = _first_alias(fields, FIELD_ALIASES["unit_price"])
-        if price_raw is not None:
-            unit_price_cents, price_warnings = _price_cents_from(price_raw)
-            warnings.extend(price_warnings)
-        else:
-            total_raw = _first_alias(fields, LINE_TOTAL_ALIASES)
-            if total_raw is not None:
-                total_cents, price_warnings = _price_cents_from(total_raw)
-                warnings.extend(price_warnings)
-                # Divide by the quantity the shop PRICED, not by our rounded-up
-                # one. A 31,25 € total for 2,5 packs is 12,50 € a pack; dividing
-                # by the stored 3 would invent a 10,42 € unit price and then
-                # quietly under-state the order by a third.
-                divisor = exact_quantity if exact_quantity and exact_quantity > 0 else None
-                if total_cents is not None and divisor is not None:
-                    # KNOWN LIMITATION: a unit price is stored in whole cents,
-                    # and metre-goods legitimately price below that resolution —
-                    # 45,69 € for 10 m is 4,569 €/m, and 8,88 € for 10 m is
-                    # 0,888 €/m. Rounding to 457 and 89 cents and multiplying
-                    # back gives 45,70 and 8,90, so our order total drifts from
-                    # the wholesaler's by a couple of cents per affected line,
-                    # and by more as quantities grow (half a cent times the
-                    # quantity, worst case).
-                    #
-                    # Storing the extended amount the shop actually sent would
-                    # remove the drift, but `unit_price_cents` is the only price
-                    # the order model carries, so that is a schema change rather
-                    # than a parser one. Left as-is deliberately: a two-cent
-                    # difference on a draft purchase order is visible and
-                    # harmless, where the 10x error this replaced was neither.
-                    unit_price_cents = int(
-                        (Decimal(total_cents) / divisor).quantize(Decimal("1"))
-                    )
-                elif total_cents is not None:
-                    # The quantity was unreadable or zero, so there is nothing to
-                    # divide by. Take the extended amount as the unit price —
-                    # for the overwhelmingly common Qty 1 line that is exactly
-                    # right, and it is in any case better than the alternative,
-                    # which was to leave the line priced at nothing. A buyer can
-                    # correct a suspicious price; a silent zero looks deliberate.
-                    unit_price_cents = total_cents
-                    warnings.append(
-                        "Menge unlesbar — Positionswert als Einzelpreis übernommen, bitte prüfen"
-                    )
-
-        description = _first_alias(fields, FIELD_ALIASES["description"])
-        supplier_article_no = _first_alias(fields, FIELD_ALIASES["supplier_article_no"])
-        if not description and not supplier_article_no:
-            warnings.append(
-                "Position ohne Artikelnummer und ohne Bezeichnung — bitte prüfen"
-            )
-
-        lines.append(
-            ParsedCartLine(
-                position=index,
-                supplier_article_no=_clip(supplier_article_no, 160),
-                description=_clip(description, 500),
-                manufacturer=_clip(_first_alias(fields, FIELD_ALIASES["manufacturer"]), 255),
-                ean=_clip(_first_alias(fields, FIELD_ALIASES["ean"]), 64),
-                quantity=quantity,
-                quantity_raw=quantity_raw,
-                unit=_clip(_first_alias(fields, FIELD_ALIASES["unit"]), 64),
-                unit_price_cents=unit_price_cents,
-                currency=(_first_alias(fields, FIELD_ALIASES["currency"]) or cart_currency)
-                .upper()[:8],
-                notes=_clip(_first_alias(fields, FIELD_ALIASES["notes"]), 2000),
-                warnings=tuple(warnings),
-            )
-        )
+        try:
+            lines.append(_parse_line(index, element, cart_currency))
+        except ArithmeticError as exc:
+            # Unreachable by design: every number above is compared against
+            # its bound before anything computes with it. This is the backstop
+            # for the next decimal trap nobody thought of. Escaping, it would
+            # be a 500 on the unauthenticated hook that rolls back the import
+            # row holding the raw cart; as a CartParseError both IDS routes
+            # keep the cart on file as a failed import and tell the operator.
+            raise CartParseError(
+                f"Position {index} des Warenkorbs enthält eine Zahl, die nicht "
+                "verarbeitet werden kann."
+            ) from exc
 
     if not lines:
         cart_warnings.append(
@@ -635,6 +645,103 @@ def parse_cart(text: str) -> ParsedCart:
         return_marker=_clip(return_marker, 64),
         order_placed=order_placed,
     )
+
+
+def _parse_line(
+    index: int, element: ElementTree.Element, cart_currency: str
+) -> ParsedCartLine:
+    """One item element → one prospective order line, doubts as warnings."""
+
+    fields = _collect_fields(element)
+    warnings: list[str] = []
+
+    quantity_raw = _first_alias(fields, FIELD_ALIASES["quantity"])
+    if quantity_raw is None:
+        quantity = 1
+        exact_quantity: Decimal | None = Decimal(1)
+        quantity_warnings = ["Keine Menge im Warenkorb — 1 angenommen"]
+    else:
+        quantity, exact_quantity, quantity_warnings = _quantity_from(quantity_raw)
+    warnings.extend(quantity_warnings)
+
+    unit_price_cents, price_warnings = _unit_price_from_fields(fields, exact_quantity)
+    warnings.extend(price_warnings)
+
+    description = _first_alias(fields, FIELD_ALIASES["description"])
+    supplier_article_no = _first_alias(fields, FIELD_ALIASES["supplier_article_no"])
+    if not description and not supplier_article_no:
+        warnings.append("Position ohne Artikelnummer und ohne Bezeichnung — bitte prüfen")
+
+    return ParsedCartLine(
+        position=index,
+        supplier_article_no=_clip(supplier_article_no, 160),
+        description=_clip(description, 500),
+        manufacturer=_clip(_first_alias(fields, FIELD_ALIASES["manufacturer"]), 255),
+        ean=_clip(_first_alias(fields, FIELD_ALIASES["ean"]), 64),
+        quantity=quantity,
+        quantity_raw=quantity_raw,
+        unit=_clip(_first_alias(fields, FIELD_ALIASES["unit"]), 64),
+        unit_price_cents=unit_price_cents,
+        currency=(_first_alias(fields, FIELD_ALIASES["currency"]) or cart_currency).upper()[:8],
+        notes=_clip(_first_alias(fields, FIELD_ALIASES["notes"]), 2000),
+        warnings=tuple(warnings),
+    )
+
+
+def _unit_price_from_fields(
+    fields: dict[str, str], exact_quantity: Decimal | None
+) -> tuple[int | None, list[str]]:
+    """The line's unit price: the shop's own, else derived from the line total."""
+
+    price_raw = _first_alias(fields, FIELD_ALIASES["unit_price"])
+    if price_raw is not None:
+        return _price_cents_from(price_raw, limit_cents=MAX_UNIT_PRICE_CENTS, label="Einzelpreis")
+
+    total_raw = _first_alias(fields, LINE_TOTAL_ALIASES)
+    if total_raw is None:
+        return None, []
+    total_cents, warnings = _price_cents_from(
+        total_raw, limit_cents=MAX_LINE_TOTAL_CENTS, label="Positionswert"
+    )
+    if total_cents is None:
+        return None, warnings
+
+    # Divide by the quantity the shop PRICED, not by our rounded-up one. A
+    # 31,25 € total for 2,5 packs is 12,50 € a pack; dividing by the stored 3
+    # would invent a 10,42 € unit price and then quietly under-state the order
+    # by a third.
+    divisor = exact_quantity if exact_quantity and exact_quantity > 0 else None
+    if divisor is not None:
+        # KNOWN LIMITATION: a unit price is stored in whole cents, and
+        # metre-goods legitimately price below that resolution — 45,69 € for
+        # 10 m is 4,569 €/m, and 8,88 € for 10 m is 0,888 €/m. Rounding to 457
+        # and 89 cents and multiplying back gives 45,70 and 8,90, so our order
+        # total drifts from the wholesaler's by a couple of cents per affected
+        # line, and by more as quantities grow (half a cent times the
+        # quantity, worst case).
+        #
+        # Storing the extended amount the shop actually sent would remove the
+        # drift, but `unit_price_cents` is the only price the order model
+        # carries, so that is a schema change rather than a parser one. Left
+        # as-is deliberately: a two-cent difference on a draft purchase order
+        # is visible and harmless, where the 10x error this replaced was
+        # neither.
+        #
+        # Bounded like a unit price the shop sent directly: a total over a
+        # tiny fractional quantity divides UP, without limit.
+        unit_price_cents, derived_warnings = _derived_unit_price(total_cents, divisor)
+        return unit_price_cents, [*warnings, *derived_warnings]
+
+    # The quantity was unreadable or zero, so there is nothing to divide by.
+    # Take the extended amount as the unit price — for the overwhelmingly
+    # common Qty 1 line that is exactly right, and it is in any case better
+    # than the alternative, which was to leave the line priced at nothing. A
+    # buyer can correct a suspicious price; a silent zero looks deliberate.
+    unit_price_cents, derived_warnings = _unit_price_within_bound(Decimal(total_cents))
+    warnings = [*warnings, *derived_warnings]
+    if unit_price_cents is not None:
+        warnings.append("Menge unlesbar — Positionswert als Einzelpreis übernommen, bitte prüfen")
+    return unit_price_cents, warnings
 
 
 def _clip(value: str | None, limit: int) -> str | None:

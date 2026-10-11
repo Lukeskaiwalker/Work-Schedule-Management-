@@ -9,6 +9,10 @@ One rule governs every mutation here: **the order must still be a draft**.
 Templates are permanently draft, so the same check covers them without a
 special case; and a sent order is a statement about what the wholesaler was
 asked for, which must not change after the asking.
+
+A second one governs every route that recomputes the total: it runs inside
+``refuse_oversized_order_total``, so a total past the int4 column is a German
+400 with the transaction rolled back, never a 500 from the flush.
 """
 
 from __future__ import annotations
@@ -53,6 +57,7 @@ from app.services.werkstatt_order_composition import (
     save_as_template,
 )
 from app.services.werkstatt_order_lines import build_order_line
+from app.services.werkstatt_order_totals import refuse_oversized_order_total
 from app.services.werkstatt_orders import generate_order_number
 
 router = APIRouter(prefix="/werkstatt", tags=["werkstatt-procurement"])
@@ -100,7 +105,8 @@ def add_order_line(
     except HTTPException:
         db.rollback()
         raise
-    recompute_total(db, order)
+    with refuse_oversized_order_total(db):
+        recompute_total(db, order)
     db.commit()
     db.refresh(order)
     return load_order_full(db, order)
@@ -164,7 +170,8 @@ def update_order_line(
     line.updated_at = utcnow()
     db.add(line)
     db.flush()
-    recompute_total(db, order)
+    with refuse_oversized_order_total(db):
+        recompute_total(db, order)
     db.commit()
     db.refresh(order)
     return load_order_full(db, order)
@@ -187,7 +194,10 @@ def delete_order_line(
     sync_needs_for_order(db, order, "line_deleted", line_id=line.id)
     db.delete(line)
     db.flush()
-    recompute_total(db, order)
+    # A delete only lowers the total; guarded anyway so no route that
+    # recomputes it can ever surface the overflow as a 500.
+    with refuse_oversized_order_total(db):
+        recompute_total(db, order)
     db.commit()
     db.refresh(order)
     return load_order_full(db, order)
@@ -219,13 +229,14 @@ def merge_into_order(
     merge_links = capture_merge_links(db, source)
 
     try:
-        merge_orders(
-            db,
-            source=source,
-            target=target,
-            actor_id=current_user.id,
-            combine_duplicates=payload.combine_duplicates,
-        )
+        with refuse_oversized_order_total(db):
+            merge_orders(
+                db,
+                source=source,
+                target=target,
+                actor_id=current_user.id,
+                combine_duplicates=payload.combine_duplicates,
+            )
     except HTTPException:
         db.rollback()
         raise
@@ -315,7 +326,8 @@ def apply_template_to_order(
     if target is None or template is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Nicht gefunden")
     try:
-        apply_template(db, template=template, target=target)
+        with refuse_oversized_order_total(db):
+            apply_template(db, template=template, target=target)
     except HTTPException:
         db.rollback()
         raise
@@ -357,7 +369,13 @@ def create_order_from_template(
     )
     db.add(order)
     db.flush()
-    apply_template(db, template=template, target=order, now=now)
+    try:
+        with refuse_oversized_order_total(db):
+            apply_template(db, template=template, target=order, now=now)
+    except HTTPException:
+        # The fresh draft above must not survive a refused template.
+        db.rollback()
+        raise
     db.commit()
     db.refresh(order)
     return load_order_full(db, order)

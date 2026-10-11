@@ -117,6 +117,16 @@ DEVICE_CATALOG: dict[str, dict[str, Any]] = {
         "te": 3, "poles": 3, "group": True, "circuit": False, "symbol": "sls",
         "rating_hint": "E35",
     },
+    "distribution_block": {
+        # Owner, 2026-10-09: "after a Hauptschalter sometimes comes a Hensel
+        # KKL54 to distribute to the next components". It opens a group like
+        # a Hauptschalter (LS after it hang off it) and feeds FIs named after
+        # it; it protects nothing, so the legend's FI column reads "—".
+        "label": "Verteilerblock (Hensel KKL 54)",
+        "short": "VB",
+        "te": 4, "poles": 4, "group": True, "circuit": False, "symbol": "distribution",
+        "rating_hint": "",
+    },
     "rcd": {
         "label": "FI-Schutzschalter (RCD)",
         "short": "FI",
@@ -499,6 +509,16 @@ def is_circuit_device(device: dict[str, Any]) -> bool:
     return bool(_catalog(str(device.get("kind", ""))).get("circuit"))
 
 
+# Devices that may feed a group device named after them (owner, 2026-10-09):
+# SLS → FI, SLS → Hauptschalter → FI, Hauptschalter → Verteilerblock → FIs.
+# A fuse named by a group device stays what it always was, its Vorsicherung.
+FEEDER_KINDS: frozenset[str] = frozenset({"sls", "hauptschalter", "distribution_block"})
+
+
+def is_feeder(device: dict[str, Any] | None) -> bool:
+    return device is not None and str(device.get("kind") or "") in FEEDER_KINDS
+
+
 def is_fuse(device: dict[str, Any]) -> bool:
     return str(device.get("kind", "")) == "fuse"
 
@@ -637,6 +657,9 @@ def build_topology(document: dict[str, Any]) -> dict[str, Any]:
             "row_label": str(row.get("label") or ""),
             "children": [],
             "pre_fuse": None,
+            "fed_by": None,
+            "feeds": [],
+            "feed_cycle": False,
         })
         device_id = str(device.get("id") or "")
         if device_id:
@@ -662,8 +685,11 @@ def build_topology(document: dict[str, Any]) -> dict[str, Any]:
             if not opens_group(candidate, document, feeder_ids):
                 consumed_fuses.add(parent)
 
+    _link_feeders(groups, index_by_group_id, by_id)
+
     supply_group: dict[str, Any] = {
-        "device": None, "row_label": "", "children": [], "pre_fuse": None
+        "device": None, "row_label": "", "children": [], "pre_fuse": None,
+        "fed_by": None, "feeds": [], "feed_cycle": False,
     }
     current: dict[str, Any] = supply_group
     orphans: list[dict[str, Any]] = []
@@ -709,8 +735,99 @@ def build_topology(document: dict[str, Any]) -> dict[str, Any]:
     return {"groups": groups, "orphans": orphans}
 
 
+def _closes_circle(head: dict[str, Any], feeder: dict[str, Any], by_id: dict[str, dict[str, Any]]) -> bool:
+    """Would ``head`` ← ``feeder`` close a circle? Walks the feeder's own feed
+    links upward; reaching ``head`` again means yes. A walk that loops without
+    reaching it stops — that circle is reported on its own members."""
+    head_id = str(head.get("id") or "")
+    seen: set[str] = set()
+    node: dict[str, Any] | None = feeder
+    while node is not None:
+        node_id = str(node.get("id") or "")
+        if node_id == head_id:
+            return True
+        if node_id in seen:
+            return False
+        seen.add(node_id)
+        parent = by_id.get(str(node.get("parent_id") or ""))
+        node = parent if is_feeder(parent) else None
+    return False
+
+
+def _link_feeders(
+    groups: list[dict[str, Any]],
+    index_by_group_id: dict[str, int],
+    by_id: dict[str, dict[str, Any]],
+) -> None:
+    """Fill ``fed_by`` / ``feeds`` (owner, 2026-10-09).
+
+    A catalogue group device (FI, Hauptschalter, SLS, Verteilerblock) naming
+    an SLS, Hauptschalter or Verteilerblock is fed by it: SLS → FI, SLS →
+    Hauptschalter → FI, Hauptschalter → Verteilerblock → FIs. The circuits
+    are untouched — they still hang off their own group — only the link
+    between groups is recorded, both ways, for the drawing and the legend.
+    A fuse named here is the Vorsicherung (``pre_fuse``), set before this
+    runs. A link that would close a circle is dropped and flagged
+    (``feed_cycle``) for ``validate_document``; anything else that cannot
+    feed simply links nothing.
+    """
+    for group in groups:
+        head = group["device"]
+        if not is_group_device(head):
+            continue
+        feeder = by_id.get(str(head.get("parent_id") or ""))
+        if feeder is None or feeder is head or not is_feeder(feeder):
+            continue
+        if _closes_circle(head, feeder, by_id):
+            group["feed_cycle"] = True
+            continue
+        feeder_index = index_by_group_id.get(str(feeder.get("id") or ""))
+        if feeder_index is None:
+            continue
+        group["fed_by"] = feeder
+        groups[feeder_index]["feeds"].append(head)
+
+
 def _text(value: Any) -> str:
     return str(value).strip() if value is not None else ""
+
+
+def _upstream_protection(group: dict[str, Any], groups_by_head: dict[str, dict[str, Any]]) -> dict[str, Any] | None:
+    """The fuse or SLS a group's circuits sit behind: the head itself when it
+    is a fuse, else its Vorsicherung, else up the feeding chain to the first
+    group with a Vorsicherung or the first SLS (owner, 2026-10-09: FI ← HS ←
+    SLS reads "Q0 SLS E35"). None when nothing upstream protects."""
+    head = group.get("device")
+    if head is not None and is_fuse(head):
+        return head
+    if group.get("pre_fuse") is not None:
+        return group["pre_fuse"]
+    seen: set[str] = set()
+    feeder = group.get("fed_by")
+    while feeder is not None:
+        feeder_id = str(feeder.get("id") or "")
+        if feeder_id in seen:
+            return None
+        seen.add(feeder_id)
+        if str(feeder.get("kind") or "") == "sls":
+            return feeder
+        feeder_group = groups_by_head.get(feeder_id)
+        if feeder_group is None:
+            return None
+        if feeder_group.get("pre_fuse") is not None:
+            return feeder_group["pre_fuse"]
+        feeder = feeder_group.get("fed_by")
+    return None
+
+
+def _upstream_summary(device: dict[str, Any] | None) -> str:
+    """"F0 35 A" for a fuse, "Q0 SLS E35" for an SLS, "—" for none."""
+    if device is None:
+        return "—"
+    if str(device.get("kind") or "") == "sls":
+        parts = [p for p in (_text(device.get("designation")), "SLS", _text(device.get("rating"))) if p]
+        return " ".join(parts)
+    return _pre_fuse_summary(device)
 
 
 def _pre_fuse_summary(fuse: dict[str, Any] | None) -> str:
@@ -763,15 +880,18 @@ def build_legend(document: dict[str, Any]) -> list[dict[str, str]]:
     topology = build_topology(document)
     terminal_labels = device_terminal_labels(derive_terminals(document))
     rows: list[dict[str, str]] = []
+    groups_by_head = {
+        str(group["device"].get("id") or ""): group for group in topology["groups"] if group["device"] is not None
+    }
 
     for group in topology["groups"]:
         group_device = group["device"]
         # A Neozed offers no residual-current protection: "—" unless the
         # circuit is an RCBO, which then carries its own (below).
         rcd = _rcd_summary(group_device)
-        # Under a fuse-headed group the Vorsicherung IS the group head.
-        fuse_head = group_device is not None and is_fuse(group_device)
-        pre_fuse_label = _pre_fuse_summary(group_device if fuse_head else group.get("pre_fuse"))
+        # Under a fuse-headed group the Vorsicherung IS the group head; behind
+        # a feeding chain it is the first fuse or SLS up the chain.
+        pre_fuse_label = _upstream_summary(_upstream_protection(group, groups_by_head))
         group_label = (
             f"{_text(group_device.get('designation'))} {_text(group_device.get('label'))}".strip()
             if group_device
@@ -920,19 +1040,32 @@ def validate_document(document: dict[str, Any]) -> list[dict[str, str]]:
     topology = build_topology(document)
     for group in topology["groups"]:
         device = group["device"]
-        if (
+        if device is not None and group.get("feed_cycle"):
+            findings.append(
+                {
+                    "level": "warn",
+                    "scope": str(device.get("id") or ""),
+                    "message": (
+                        f"{_text(device.get('designation')) or _catalog(str(device.get('kind', ''))).get('short', '?')}: "
+                        "Einspeisung im Kreis — die Zuordnung wird ignoriert."
+                    ),
+                }
+            )
+        elif (
             device is not None
             and is_group_device(device)
             and str(device.get("parent_id") or "")
             and group.get("pre_fuse") is None
+            and group.get("fed_by") is None
         ):
             findings.append(
                 {
                     "level": "info",
                     "scope": str(device.get("id") or ""),
                     "message": (
-                        f"{_text(device.get('designation')) or 'FI'}: Vorsicherung nicht gefunden "
-                        "(die angegebene Sicherung fehlt oder ist keine Sicherung)."
+                        f"{_text(device.get('designation')) or 'FI'}: Einspeisung nicht gefunden "
+                        "(das angegebene Gerät fehlt oder kann nicht einspeisen — Sicherung, SLS, "
+                        "Hauptschalter oder Verteilerblock)."
                     ),
                 }
             )
@@ -972,5 +1105,43 @@ def validate_document(document: dict[str, Any]) -> list[dict[str, str]]:
     from app.services.schaltplan_terminal_rules import terminal_findings
 
     findings.extend(terminal_findings(topology["groups"]))
+    findings.extend(_strip_name_clashes(document))
 
     return findings
+
+
+# Rail devices that may carry a Klemmleiste's name: a "terminal" device IS
+# the strip's rail space, a blank has nothing printed on it.
+_STRIP_NAMED_KINDS = {"terminal", "blank"}
+
+
+def _strip_name_clashes(document: dict[str, Any]) -> list[dict[str, str]]:
+    """A device whose BMK a derived Klemmleiste also carries ("X1").
+
+    X is the Verteilerblock's natural letter (Hensel KKL 54, owner
+    2026-10-09) and the letter the strips count in, so one label would end up
+    on two different parts. Same case-blind compare a printed label gets.
+    """
+    # Local import, as in build_legend: the derivation needs this module.
+    from app.services.schaltplan_terminals import derive_terminals
+
+    strip_names = {
+        str(strip.get("x_label") or "").strip().upper()
+        for group in derive_terminals(document)
+        for strip in group["strips"]
+    }
+    strip_names.discard("")
+    clashes: list[dict[str, str]] = []
+    for _row, device in iter_devices(document):
+        designation = _text(device.get("designation"))
+        if not designation or str(device.get("kind") or "") in _STRIP_NAMED_KINDS:
+            continue
+        if designation.upper() in strip_names:
+            clashes.append(
+                {
+                    "level": "warn",
+                    "scope": str(device.get("id") or ""),
+                    "message": f"{designation}: so heißt auch eine Klemmleiste — Gerät umbenennen (zwei Teile mit einem BMK).",
+                }
+            )
+    return clashes

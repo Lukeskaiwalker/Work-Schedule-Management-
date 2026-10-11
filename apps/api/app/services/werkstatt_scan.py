@@ -8,6 +8,7 @@ number, or Datanorm catalog identifier), resolve it via the cascade defined in
 
     1. werkstatt_article_units.unit_number == code     → machine (machine_number)
     2. werkstatt_articles.article_number == code       → werkstatt_article (sp)
+   2b. werkstatt_articles.internal_code == code        → werkstatt_article (internal_code)
     3. werkstatt_articles.ean == code                  → werkstatt_article (ean)
     4. werkstatt_article_suppliers.supplier_article_no == code
                                                        → werkstatt_article (supplier_no)
@@ -16,7 +17,10 @@ number, or Datanorm catalog identifier), resolve it via the cascade defined in
                                                          (may return multiple)
     7. material_catalog_items.article_no == code       → catalog_match (catalog_article_no)
                                                          (may return multiple)
-    8. Otherwise                                       → not_found
+    8. supplier_article_no in another case, then without the separators
+       `` -./`` — only when exactly ONE article answers
+                                                       → werkstatt_article (supplier_no)
+    9. Otherwise                                       → not_found
 
 The two machine steps sit at opposite ends on purpose.
 
@@ -30,13 +34,19 @@ did not issue and cannot pattern-match. Putting it after the article steps
 means every article scan resolves exactly as it did before machines existed —
 a serial can only claim a code nothing else wanted.
 
+Step 8 is the only comparison that is not exact, and it is last for the same
+reason step 5 is late: a loose spelling may only claim a code that no exact
+step wanted. Inside step 4 it would let ``12345678`` on a box of cable ties
+beat the nameplate serial ``1234-5678`` of a drill — and at the rack a machine
+is lookup-only while an article hit books stock out.
+
 Ordering is load-bearing — the FE relies on it, and it's documented in the
 contract. Do not rearrange without bumping the contract.
 """
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, func, select
 from sqlalchemy.orm import Session
 
 from app.models.entities import (
@@ -58,6 +68,7 @@ from app.schemas.werkstatt import (
     WerkstattArticleOut,
     WerkstattStockStatus,
 )
+from app.services.werkstatt_article_search import identifier_column_key, identifier_search_key
 from app.services.werkstatt_machine_view import machine_out_with_components
 from app.services.werkstatt_unit_numbers import UNIT_PATTERN, normalize_scanned_code
 
@@ -131,11 +142,11 @@ def resolve_scan(db: Session, code: str) -> ScanResolveResult:
             matched_by="sp",
         )
 
-    # 3. werkstatt_articles.internal_code == code — the barcode we printed
-    #    ourselves for stock that arrived without a manufacturer one. Ahead of
-    #    `ean` because it is unambiguously ours: a code in this column was
-    #    issued by this app, so a hit here cannot be a coincidental collision
-    #    with somebody's GTIN.
+    # 2b. werkstatt_articles.internal_code == code — the barcode we printed
+    #     ourselves for stock that arrived without a manufacturer one. Ahead of
+    #     `ean` because it is unambiguously ours: a code in this column was
+    #     issued by this app, so a hit here cannot be a coincidental collision
+    #     with somebody's GTIN.
     article = db.scalars(
         select(WerkstattArticle).where(WerkstattArticle.internal_code == normalised)
     ).first()
@@ -145,7 +156,7 @@ def resolve_scan(db: Session, code: str) -> ScanResolveResult:
             matched_by="internal_code",
         )
 
-    # 4. werkstatt_articles.ean == code
+    # 3. werkstatt_articles.ean == code
     article = db.scalars(
         select(WerkstattArticle).where(WerkstattArticle.ean == normalised)
     ).first()
@@ -155,23 +166,11 @@ def resolve_scan(db: Session, code: str) -> ScanResolveResult:
             matched_by="ean",
         )
 
-    # 4. werkstatt_article_suppliers.supplier_article_no == code
-    #    If multiple links from different articles share the same supplier
-    #    article number (shouldn't happen due to uniqueness per supplier_id,
-    #    but we pick the deterministic winner by article_number ASC).
-    supplier_link = db.scalars(
-        select(WerkstattArticleSupplier)
-        .join(WerkstattArticle, WerkstattArticle.id == WerkstattArticleSupplier.article_id)
-        .where(WerkstattArticleSupplier.supplier_article_no == normalised)
-        .order_by(WerkstattArticle.article_number.asc(), WerkstattArticleSupplier.id.asc())
-    ).first()
-    if supplier_link is not None:
-        article = db.get(WerkstattArticle, supplier_link.article_id)
-        if article is not None:
-            return ScanResolveWerkstatt(
-                article=_article_out(db, _follow_merge(db, article)),
-                matched_by="supplier_no",
-            )
+    # 4. werkstatt_article_suppliers.supplier_article_no == code, exactly.
+    #    The case- and punctuation-tolerant spellings wait for step 8.
+    supplier_hit = _supplier_article_hit(db, _exact_supplier_article_id(db, normalised))
+    if supplier_hit is not None:
+        return supplier_hit
 
     # 5. The manufacturer's nameplate serial. Only reached once every article
     #    lookup has passed, so recording a serial can never change how an
@@ -219,8 +218,89 @@ def resolve_scan(db: Session, code: str) -> ScanResolveResult:
             matched_by="catalog_article_no",
         )
 
-    # 8. Not found — echo the raw code unchanged.
+    # 8. The supplier number again, in another case or without separators.
+    #    Only now, once every exact comparison above has missed: a looser
+    #    spelling must never outrank a serial or a catalog row that carries
+    #    the code exactly.
+    supplier_hit = _supplier_article_hit(db, _loose_supplier_article_id(db, normalised))
+    if supplier_hit is not None:
+        return supplier_hit
+
+    # 9. Not found — echo the raw code unchanged.
     return ScanResolveNotFound(code=raw)
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Steps 4 and 8 — the supplier's own number
+# ──────────────────────────────────────────────────────────────────────────
+
+
+def _supplier_article_hit(db: Session, article_id: int | None) -> ScanResolveWerkstatt | None:
+    """The scan answer for an article found by its supplier number."""
+    if article_id is None:
+        return None
+    article = db.get(WerkstattArticle, article_id)
+    if article is None:
+        return None
+    return ScanResolveWerkstatt(
+        article=_article_out(db, _follow_merge(db, article)),
+        matched_by="supplier_no",
+    )
+
+
+def _exact_supplier_article_id(db: Session, code: str) -> int | None:
+    """Step 4: the article whose supplier link carries exactly *code*.
+
+    The exact answer stands even when a looser spelling would name other
+    articles too: two wholesalers may use ``ab-1`` and ``AB-1`` for
+    different products, and the label that says ``ab-1`` means the first.
+    If links from different articles share the exact number (only possible
+    across suppliers) the winner is deterministic, by article_number ASC.
+    """
+    return db.scalars(
+        select(WerkstattArticleSupplier.article_id)
+        .join(WerkstattArticle, WerkstattArticle.id == WerkstattArticleSupplier.article_id)
+        .where(WerkstattArticleSupplier.supplier_article_no == code)
+        .order_by(WerkstattArticle.article_number.asc(), WerkstattArticleSupplier.id.asc())
+    ).first()
+
+
+def _loose_supplier_article_id(db: Session, code: str) -> int | None:
+    """Step 8: the one article whose supplier number is *code* spelled loosely.
+
+    Two fallbacks, because what reaches us is rarely what the Datanorm
+    stores: the rack's reader uppercases every letter, and a label prints
+    ``1234-567`` where the file says ``1234567``. Each only answers when
+    exactly ONE article matches — a looser comparison that names two
+    articles is a coin toss, and a scan that books stock must not guess.
+    """
+    folded = _linked_articles(
+        db, func.lower(WerkstattArticleSupplier.supplier_article_no) == code.lower()
+    )
+    if folded:
+        # Several articles: stop. The key below is looser still, so it could
+        # only match the same ones and more.
+        return folded[0] if len(folded) == 1 else None
+
+    key = identifier_search_key(code)
+    if not key:
+        return None
+    keyed = _linked_articles(
+        db, identifier_column_key(WerkstattArticleSupplier.supplier_article_no) == key
+    )
+    return keyed[0] if len(keyed) == 1 else None
+
+
+def _linked_articles(db: Session, condition: ColumnElement[bool]) -> list[int]:
+    """Up to two distinct articles with a supplier link satisfying *condition*.
+
+    Two is enough to tell "exactly one" from "ambiguous".
+    """
+    return list(
+        db.scalars(
+            select(WerkstattArticleSupplier.article_id).where(condition).distinct().limit(2)
+        ).all()
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────

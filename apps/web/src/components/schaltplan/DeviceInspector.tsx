@@ -33,11 +33,11 @@ import {
   TERMINAL_PARTS,
   devicePoles,
   isBlockDevice,
-  isTerminalEligible,
   outgoingPartsForPoles,
 } from "../../utils/schaltplanTerminalRules";
 import { overrideKey } from "../../utils/schaltplanTerminals";
-import { allDevices, buildTopology, isGroupDevice, opensGroup } from "../../utils/schaltplanTopology";
+import { allDevices, buildTopology, isGroupDevice, opensGroup, terminalOffered } from "../../utils/schaltplanTopology";
+import { isFeeder } from "../../utils/schaltplanTopologyCore";
 import type { PanelDevice, PanelDocument, PhaseLabel } from "../../types/schaltplan";
 
 /** The one-line rule table under the hint — the same three cases the derivation knows. */
@@ -51,6 +51,9 @@ const TERMINAL_RULE_LINE = `1-polig → WAGO 2003-7641 · 3-polig → WAGO 2003-
  */
 function terminalHint(device: PanelDevice): string {
   const poles = devicePoles(device);
+  if (device.kind === "fuse") {
+    return "Neozed direkt auf den 16-mm²-Block, ohne LS dazwischen — WAGO 2016-7604 (N), 3 × 2016-7601 (L1–L3), 2016-7607 (PE), mit eigener X-Nummer wie der PV- oder Callbox-Abgang.";
+  }
   if (isBlockDevice(device)) {
     return `Bei ${poles} Polen über ${BLOCK_MIN_AMPS_EXCLUSIVE} A: eigener 16-mm²-Block mit eigener X-Nummer — WAGO 2016-7604 (N), 3 × 2016-7601 (L1–L3), 2016-7607 (PE). ${TERMINAL_RULE_LINE}`;
   }
@@ -65,6 +68,23 @@ function parseWidthMm(raw: string): number | null {
   if (trimmed === "") return null;
   const value = Number(trimmed.replace(",", "."));
   return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+/** Every group device `deviceId` feeds, directly or further down the chain. */
+function feedDownstream(document: PanelDocument, deviceId: string): Set<string> {
+  const feedsOf = new Map<string, string[]>();
+  for (const group of buildTopology(document)) {
+    if (group.device) feedsOf.set(group.device.id, group.feeds.map((fed) => fed.id));
+  }
+  const found = new Set<string>();
+  const queue = [...(feedsOf.get(deviceId) ?? [])];
+  while (queue.length > 0) {
+    const next = queue.shift()!;
+    if (found.has(next)) continue;
+    found.add(next);
+    queue.push(...(feedsOf.get(next) ?? []));
+  }
+  return found;
 }
 
 /** "Si F0 35 A — Vorsicherung": how a fuse reads in the "Eingespeist von" list. */
@@ -180,6 +200,9 @@ export function DeviceInspector({
   // no load any more) nor as a Vorsicherung (a fuse-headed group has no
   // plate) — so the select is hidden and the head says what the fuse does.
   const fuseFeedsCircuits = device.kind === "fuse" && opensGroup(device, document);
+  // Only a fuse that is an outgoing of its own can end on the 2016 block
+  // (owner, 2026-10-09); the Klemmen tab's bulk switch asks the same rule.
+  const terminalIsOffered = terminalOffered(device, document);
   // Only the catalogue groups (FI/SLS/Hauptschalter) — fuses are listed
   // separately below, so a fuse that already heads a group is not shown twice.
   const groups = buildTopology(document).filter(
@@ -189,6 +212,13 @@ export function DeviceInspector({
   // FI/SLS/Hauptschalter, and as the direct feed of an RCBO or LS row. The
   // same parent_id field carries the choice.
   const fuses = allDevices(document).filter((d) => d.kind === "fuse" && d.id !== device.id);
+  // The SLS / Hauptschalter / Verteilerblock that may feed this group device
+  // (owner, 2026-10-09) — never itself and never one it already feeds,
+  // directly or further down, so the picker cannot build a circle.
+  const downstream = feedDownstream(document, device.id);
+  const feeders = entry.group
+    ? allDevices(document).filter((d) => isFeeder(d) && d.id !== device.id && !downstream.has(d.id))
+    : [];
   const ratingSuggestions = RATING_SUGGESTIONS[device.kind] ?? [];
 
   const field = (label: string, node: React.ReactNode, hint?: string) => (
@@ -343,7 +373,7 @@ export function DeviceInspector({
             </div>
           )}
 
-          {isTerminalEligible(device) && (
+          {terminalIsOffered && (
             <div className="sp-field">
               <label className="sp-check">
                 <input
@@ -352,13 +382,15 @@ export function DeviceInspector({
                   disabled={readOnly}
                   onChange={(event) => onChange({ terminal_block: event.target.checked })}
                 />
-                <span className="sp-check-text">Reihenklemme am Abgang (WAGO)</span>
+                <span className="sp-check-text">
+                  {device.kind === "fuse" ? "Abgang direkt auf WAGO-2016-Block (ohne LS)" : "Reihenklemme am Abgang (WAGO)"}
+                </span>
               </label>
               <small className="sp-field-hint">{terminalHint(device)}</small>
             </div>
           )}
 
-          {isTerminalEligible(device) &&
+          {terminalIsOffered &&
             device.terminal_block === true &&
             isBlockDevice(device) &&
             field(
@@ -518,8 +550,9 @@ export function DeviceInspector({
 
           {entry.group &&
             field(
-              "Vorsicherung",
+              "Eingespeist von",
               <select
+                aria-label="Eingespeist von"
                 value={device.parent_id ?? ""}
                 disabled={readOnly}
                 onChange={(event) => onChange({ parent_id: event.target.value || null })}
@@ -527,11 +560,16 @@ export function DeviceInspector({
                 <option value="">Keine (direkt von der Sammelschiene)</option>
                 {fuses.map((fuse) => (
                   <option key={fuse.id} value={fuse.id}>
-                    {`${fuse.designation || "?"} Si${fuse.rating ? ` · ${fuse.rating}` : ""}`}
+                    {fuseOptionLabel(fuse)}
+                  </option>
+                ))}
+                {feeders.map((feeder) => (
+                  <option key={feeder.id} value={feeder.id}>
+                    {[feeder.designation || "?", catalogEntry(feeder.kind).short, feeder.rating].filter(Boolean).join(" ")}
                   </option>
                 ))}
               </select>,
-              "Neozed- oder NH-Sicherung, die diesem FI vorgeschaltet ist. Sie erscheint in der Legende bei allen Stromkreisen dieser Gruppe.",
+              "Was vor diesem Gerät sitzt: eine Neozed-/NH-Sicherung (steht in der Legende als Vorsicherung) oder ein SLS, Hauptschalter bzw. Verteilerblock — so wird die Reihe SLS → Hauptschalter → FI vollständig.",
             )}
           {entry.circuit &&
             !fuseFeedsCircuits &&

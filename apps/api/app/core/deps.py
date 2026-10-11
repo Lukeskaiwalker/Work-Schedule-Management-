@@ -8,7 +8,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
-from app.core.permissions import ROLE_ADMIN, has_global_project_access, has_permission_for_user  # noqa: F401 – also used by re-exports
+from app.core.permissions import ROLE_ADMIN, has_global_project_access, has_permission_for_user, is_external_role  # noqa: F401 – also used by re-exports
 from app.core.security import MFA_CHALLENGE_PURPOSE, decode_token
 from app.core.time import utcnow
 from app.models.entities import ApiToken, ProjectMember, Task, TaskAssignment, User
@@ -18,6 +18,40 @@ from app.models.entities import ApiToken, ProjectMember, Task, TaskAssignment, U
 # having to attempt-then-fall-back. Anything starting with this string
 # is treated as a PAT.
 API_TOKEN_PREFIX = "smpl_pat_"
+
+# ── The partner-portal fence ─────────────────────────────────────────────────
+# A partner login (role "external") may use the routes of routers/portal.py
+# and nothing else that authenticates through get_current_user. The check is
+# on the ENDPOINT FUNCTION of the route that matched (FastAPI puts that route
+# in scope["route"]): not on the URL, which a spelling could bend, and not on
+# the route's path, whose shape changed when FastAPI 0.140 stopped copying
+# included routes. It is a deny list of one — every route anyone adds later
+# is closed to partners until its endpoint is registered here by the portal
+# router itself. tests/test_partner_portal_security walks the live route
+# table to prove it.
+PORTAL_ONLY_DETAIL = "Partner accounts can only use the partner portal"
+_PORTAL_ENDPOINTS: set[Callable[..., object]] = set()
+
+
+def register_portal_routes(routes) -> None:
+    """Open these routes to partner logins. Called once, by routers/portal.py."""
+    for route in routes:
+        endpoint = getattr(route, "endpoint", None)
+        if callable(endpoint):
+            _PORTAL_ENDPOINTS.add(endpoint)
+
+
+def _is_portal_route(request: Request) -> bool:
+    endpoint = getattr(request.scope.get("route"), "endpoint", None)
+    return endpoint is not None and endpoint in _PORTAL_ENDPOINTS
+
+
+def _enforce_portal_fence(request: Request, user: User) -> None:
+    if not is_external_role(user.role):
+        return
+    if _is_portal_route(request):
+        return
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=PORTAL_ONLY_DETAIL)
 
 
 def _extract_bearer(authorization: str | None) -> str | None:
@@ -103,6 +137,7 @@ def get_current_user(
     # differentiate.
     if bearer_token and bearer_token.startswith(API_TOKEN_PREFIX):
         user = _resolve_api_token_user(db, bearer_token)
+        _enforce_portal_fence(request, user)
         request.state.auth_type = "api_token"
         return user
 
@@ -132,6 +167,7 @@ def get_current_user(
     user = db.get(User, int(payload["sub"]))
     if not user or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Inactive user")
+    _enforce_portal_fence(request, user)
     request.state.auth_type = "session"
     return user
 
@@ -295,12 +331,18 @@ def db_session() -> Generator[Session, None, None]:
     yield from get_db()
 
 
-def get_current_user_from_token(token: str, db: Session) -> User:
+def get_current_user_from_token(token: str, db: Session, *, allow_external: bool = False) -> User:
     """
     Validate a raw JWT string and return the active User.
 
     Used by the SSE endpoint where the token arrives via query parameter
     (EventSource does not support custom authorization headers).
+
+    A partner-portal login is refused unless the caller opts in with
+    ``allow_external`` — the same deny-by-default as get_current_user's
+    fence, for the code paths that resolve a token by hand. Logout opts in
+    (it only audits); the event stream does not (it would push internal
+    task and project events to a subcontractor).
     """
     payload = decode_token(token)
     if not payload or payload.get("purpose") == MFA_CHALLENGE_PURPOSE:
@@ -315,4 +357,6 @@ def get_current_user_from_token(token: str, db: Session) -> User:
     user = db.get(User, user_id)
     if user is None or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
+    if is_external_role(user.role) and not allow_external:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=PORTAL_ONLY_DETAIL)
     return user

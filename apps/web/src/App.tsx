@@ -606,6 +606,8 @@ export function App() {
     navigation_title: "SMPL",
     company_name: "SMPL",
     company_address: "",
+    company_phone: "",
+    company_email: "",
   });
   const [companySettingsSaving, setCompanySettingsSaving] = useState(false);
 
@@ -710,6 +712,10 @@ export function App() {
   const [taskModalPendingFiles, setTaskModalPendingFiles] = useState<File[]>([]);
   const [taskModalAttachmentsUploading, setTaskModalAttachmentsUploading] = useState(false);
   const [taskEditModalOpen, setTaskEditModalOpen] = useState(false);
+  // Bumped whenever a task is created, saved or deleted — here or, through
+  // the event stream, anywhere else. Cards that hold their own task list
+  // (the customer page's) re-read when it moves.
+  const [taskRevision, setTaskRevision] = useState(0);
   const [taskEditForm, setTaskEditForm] = useState<TaskEditFormState>(() => buildTaskEditFormState());
   const [taskEditOverlapWarning, setTaskEditOverlapWarning] = useState<TaskOverlapConflictDetail | null>(null);
   const [taskEditMaterialRows, setTaskEditMaterialRows] = useState<ReportMaterialRow[]>(() => [
@@ -1308,6 +1314,9 @@ export function App() {
   }, [threadParticipantRoles, threadModalForm.participant_roles, threadModalForm.participant_role_query, language]);
   const taskModalProjectSuggestions = useMemo(() => {
     const query = taskModalForm.project_query.trim().toLowerCase();
+    // Anchored to a customer (opened from the customer's page): their own
+    // projects are offered in the modal; every other project only on search.
+    if (!query && taskModalForm.customer_id != null) return [];
     const selectedId = Number(taskModalForm.project_id);
     // Use activeProjects (archived excluded) so users can't create new tasks
     // on a closed project. `selectedTaskModalProject` still reads from the
@@ -1330,7 +1339,7 @@ export function App() {
         return searchable.includes(query);
       });
     return rows.slice(0, 8);
-  }, [activeProjects, taskModalForm.project_id, taskModalForm.project_query]);
+  }, [activeProjects, taskModalForm.project_id, taskModalForm.project_query, taskModalForm.customer_id]);
   const selectedTaskModalProject = useMemo(
     () => projects.find((project) => String(project.id) === taskModalForm.project_id) ?? null,
     [projects, taskModalForm.project_id],
@@ -3105,6 +3114,7 @@ export function App() {
     }
 
     if (eventType === "task.created" || eventType === "task.updated" || eventType === "task.deleted") {
+      setTaskRevision((revision) => revision + 1);
       // Re-fetch planning week if the planning view is currently open.
       if (mainView === "planning") {
         void loadPlanningWeek(null, planningWeekStart, planningTaskTypeView === "all" ? null : planningTaskTypeView);
@@ -3274,6 +3284,8 @@ export function App() {
             navigation_title: companyRow.navigation_title || "SMPL",
             company_name: companyRow.company_name || "SMPL",
             company_address: companyRow.company_address || "",
+            company_phone: companyRow.company_phone || "",
+            company_email: companyRow.company_email || "",
           });
           setSmtpSettings(smtpRow);
           setSmtpSettingsForm({
@@ -3297,6 +3309,8 @@ export function App() {
             navigation_title: "SMPL",
             company_name: "SMPL",
             company_address: "",
+            company_phone: "",
+            company_email: "",
           });
           setSmtpSettings(null);
           setSmtpSettingsForm({
@@ -3994,6 +4008,8 @@ export function App() {
               navigation_title: payload.navigation_title || "SMPL",
               company_name: payload.company_name || "SMPL",
               company_address: payload.company_address || "",
+              company_phone: payload.company_phone || "",
+              company_email: payload.company_email || "",
             },
       );
     } catch {
@@ -4013,6 +4029,8 @@ export function App() {
           navigation_title: companySettingsForm.navigation_title.trim(),
           company_name: companySettingsForm.company_name.trim(),
           company_address: companySettingsForm.company_address.trim(),
+          company_phone: companySettingsForm.company_phone.trim(),
+          company_email: companySettingsForm.company_email.trim(),
         }),
       });
       setCompanySettings(payload);
@@ -4021,6 +4039,8 @@ export function App() {
         navigation_title: payload.navigation_title || "SMPL",
         company_name: payload.company_name || "SMPL",
         company_address: payload.company_address || "",
+        company_phone: payload.company_phone || "",
+        company_email: payload.company_email || "",
       });
       setNotice(
         language === "de"
@@ -4890,6 +4910,16 @@ export function App() {
           language === "de" ? "Ungültiges Token vom Server empfangen" : "Received invalid token from server",
         );
       }
+      // The office User type does not know the partner role on purpose: only
+      // this hand-over ever meets it.
+      if (String((data as User).role) === "external") {
+        // A partner (subcontractor) login belongs in the partner portal. The
+        // office app would start loading projects, tasks and chat that the
+        // server refuses it, so hand over before anything mounts.
+        localStorage.setItem("smpl_token", cleanToken);
+        window.location.replace("/partner");
+        return;
+      }
       setToken(cleanToken);
       localStorage.setItem("smpl_token", cleanToken);
       // A fresh session supersedes any "your session ended" notice.
@@ -4941,11 +4971,16 @@ export function App() {
           language === "de" ? "Ungültiges Token vom Server empfangen" : "Received invalid token from server",
         );
       }
+      const me = (await response.json()) as User;
+      if (String(me.role) === "external") {
+        localStorage.setItem("smpl_token", cleanToken);
+        window.location.replace("/partner");
+        return;
+      }
       setToken(cleanToken);
       localStorage.setItem("smpl_token", cleanToken);
       // A fresh session supersedes any "your session ended" notice.
       setSessionExpired(false);
-      const me = (await response.json()) as User;
       setUser(me);
       setMfaLoginPending(false);
       setMfaCode("");
@@ -5391,7 +5426,12 @@ export function App() {
     return Boolean(assignableUsersById.get(userId)?.avatar_updated_at || adminUsersById.get(userId)?.avatar_updated_at);
   }
 
-  function openTaskModal(defaults?: { projectId?: number | null; dueDate?: string; taskType?: TaskType }) {
+  function openTaskModal(defaults?: {
+    projectId?: number | null;
+    dueDate?: string;
+    taskType?: TaskType;
+    customerId?: number | null;
+  }) {
     const fallbackProjectId = defaults?.projectId ?? null;
     const fallbackDueDate = defaults?.dueDate ?? "";
     const fallbackProject = projects.find((project) => project.id === fallbackProjectId) ?? null;
@@ -5400,6 +5440,7 @@ export function App() {
       dueDate: fallbackDueDate,
       projectQuery: fallbackProject ? projectSearchLabel(fallbackProject) : "",
       taskType: defaults?.taskType,
+      customerId: defaults?.customerId ?? null,
     });
     setTaskModalForm(nextForm);
     setTaskModalOverlapWarning(null);
@@ -6363,6 +6404,7 @@ export function App() {
       // a failed creation and delete a project it had just made.
       const attachmentsUploaded = await uploadTaskModalPendingFiles(createdTask.id);
       closeTaskModal();
+      setTaskRevision((revision) => revision + 1);
       await loadBaseData();
       if (targetWeekStart) {
         setPlanningWeekStart(targetWeekStart);
@@ -6486,6 +6528,7 @@ export function App() {
         body: JSON.stringify(patchPayload),
       });
       closeTaskEditModal();
+      setTaskRevision((revision) => revision + 1);
       if (mainView === "project" && activeProjectId) {
         await loadTasks(activeProjectTaskView, activeProjectId);
         await loadProjectOverview(activeProjectId);
@@ -6719,6 +6762,7 @@ export function App() {
     try {
       await apiFetch(`/tasks/${taskEditForm.id}`, token, { method: "DELETE" });
       closeTaskEditModal();
+      setTaskRevision((revision) => revision + 1);
       if (mainView === "project" && activeProjectId) {
         await loadTasks(activeProjectTaskView, activeProjectId);
         await loadProjectOverview(activeProjectId);
@@ -10374,6 +10418,7 @@ export function App() {
     removeProjectTaskAssignee,
     addFirstMatchingProjectTaskAssignee,
     openTaskModal,
+    taskRevision,
     closeTaskModal,
     onTaskModalBackdropPointerDown,
     onTaskModalBackdropPointerUp,

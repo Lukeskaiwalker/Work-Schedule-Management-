@@ -41,6 +41,18 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
     preferences: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict, server_default="{}")
     workspace_lock: Mapped[str | None] = mapped_column(String(32), nullable=True, default=None)
+    # The subcontractor a partner-portal login (role "external") belongs to.
+    # NULL for every internal account. SET NULL rather than CASCADE: partners
+    # are only ever archived, but if a row did go, the login must survive as
+    # an orphan the portal refuses, not vanish from the audit trail.
+    # use_alter: partners.created_by already points back at users, so this
+    # key closes a cycle; creating it after both tables keeps the metadata
+    # sortable. Named as PostgreSQL names the migration's unnamed key.
+    partner_id: Mapped[int | None] = mapped_column(
+        ForeignKey("partners.id", ondelete="SET NULL", use_alter=True, name="users_partner_id_fkey"),
+        index=True,
+        nullable=True,
+    )
     # v2.5.23 — opt-in gate for programmatic API access (PATs). Off by
     # default; an admin flips this on per user from the admin centre.
     # Disabling it does NOT delete the user's tokens — it just causes

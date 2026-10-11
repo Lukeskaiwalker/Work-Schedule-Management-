@@ -14,7 +14,7 @@
  * in production claimed to hold four.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { AppContext } from "../context/AppContext";
 import { makeAppContextStub } from "./appContextStub";
 import { WerkstattInventarPage } from "../pages/werkstatt/WerkstattInventarPage";
@@ -39,6 +39,9 @@ const ARTICLE = {
   // both places: the row used to print "Stk" beside a dialog printing "St.".
   unit: null,
 };
+
+/** The Bestand search box, by its English placeholder. */
+const STOCK_SEARCH = "Name, SP no., EAN, supplier no. …";
 
 type Call = { method: string; url: string; body: unknown };
 
@@ -412,7 +415,7 @@ describe("Bestand — the page around the dialogs", () => {
     fireEvent.click(screen.getByRole("button", { name: /New item/ }));
     await screen.findByRole("dialog", { name: "New stock item" });
 
-    const search = screen.getByPlaceholderText(/Search by name/) as HTMLInputElement;
+    const search = screen.getByPlaceholderText(STOCK_SEARCH) as HTMLInputElement;
     for (const key of "4012345678901") {
       fireEvent.keyDown(document.body, { key });
     }
@@ -465,7 +468,7 @@ describe("Bestand — the page around the dialogs", () => {
     );
     renderPage(() => undefined);
     await screen.findByText("Bohrer SDS-Plus 8mm");
-    const search = screen.getByPlaceholderText(/Search by name/) as HTMLInputElement;
+    const search = screen.getByPlaceholderText(STOCK_SEARCH) as HTMLInputElement;
 
     for (const key of "4001234567890") fireEvent.keyDown(document.body, { key });
     fireEvent.keyDown(document.body, { key: "Enter" });
@@ -541,7 +544,9 @@ describe("Bestand — the page around the dialogs", () => {
     await screen.findByText("Bohrer SDS-Plus 8mm");
 
     fireEvent.click(screen.getByRole("button", { name: /New item/ }));
-    const codeInput = await screen.findByPlaceholderText(/EAN/i);
+    // Scoped to the dialog: the page's own search box names EAN too.
+    const createDialog = await screen.findByRole("dialog", { name: "New stock item" });
+    const codeInput = await within(createDialog).findByPlaceholderText(/EAN/i);
     fireEvent.change(codeInput, { target: { value: "4012345678901" } });
     fireEvent.click(screen.getByRole("button", { name: /^Find|Suchen|Look up/ }));
 
@@ -626,45 +631,100 @@ describe("Neuer Artikel — the dialog asks for consumables only", () => {
 describe("Entnehmen — real numbers, real save", () => {
   beforeEach(() => vi.unstubAllGlobals());
 
-  it("checks out against the row's own availability", async () => {
+  /* Everything on this page is a consumable (the list is kind=consumable), so
+   * "Entnehmen" is "Material entnehmen": used up, no return date, booked by
+   * the server as `consumption` — and the notice follows what it booked. */
+  it("takes material against the row's own figures and says it was used up", async () => {
     const calls = stubApi({
       status: 200,
-      payload: { id: 7, stock_total: 12, stock_available: 7, stock_status: "available" },
+      payload: {
+        id: 7,
+        stock_total: 10,
+        stock_available: 7,
+        stock_status: "available",
+        booked_as: "consumption",
+        stock_warning: null,
+      },
     });
     const setNotice = vi.fn();
     renderPage(setNotice);
     await screen.findByText("Bohrer SDS-Plus 8mm");
 
     fireEvent.click(screen.getByText("Bohrer SDS-Plus 8mm"));
-    const dialog = await screen.findByRole("dialog", { name: "Check out item" });
+    const dialog = await screen.findByRole("dialog", { name: "Take material" });
     expect(dialog).toHaveTextContent("9 / 12 available");
 
     fireEvent.change(screen.getByRole("textbox", { name: "Quantity" }), {
       target: { value: "2" },
     });
-    fireEvent.click(screen.getByRole("button", { name: /Confirm checkout/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Take \(consumption\)/ }));
 
     await waitFor(() => expect(writeCalls(calls)).toHaveLength(1));
     const [write] = writeCalls(calls);
     expect(write.url).toBe("/api/werkstatt/mobile/checkout");
-    expect(write.body).toMatchObject({ article_id: 7, quantity: 2, project_id: null });
+    expect(write.body).toMatchObject({
+      article_id: 7,
+      quantity: 2,
+      project_id: null,
+      // Nothing comes back, so nothing is expected back.
+      expected_return_at: null,
+    });
 
     await waitFor(() => expect(screen.getByText("7 pcs")).toBeInTheDocument());
+    expect(setNotice).toHaveBeenCalledWith(
+      "2× Bohrer SDS-Plus 8mm used (no project) — 7 of 10 still available",
+    );
+  });
+
+  it("names the project and passes the server's stock warning on", async () => {
+    const calls = stubApi({
+      status: 200,
+      payload: {
+        id: 7,
+        stock_total: 0,
+        stock_available: 0,
+        stock_status: "empty",
+        booked_as: "consumption",
+        stock_warning: "Bestand war zu niedrig — 3 Stk per Inventur nachgebucht.",
+      },
+    });
+    const setNotice = vi.fn();
+    renderPage(setNotice, {
+      projects: [{ id: 12, project_number: "381", name: "Neubau Schulze", status: "active" }],
+    });
+    await screen.findByText("Bohrer SDS-Plus 8mm");
+
+    fireEvent.click(screen.getByText("Bohrer SDS-Plus 8mm"));
+    const dialog = await screen.findByRole("dialog", { name: "Take material" });
+    fireEvent.change(within(dialog).getByRole("combobox", { name: /For project/ }), {
+      target: { value: "12" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: /Take \(consumption\)/ }));
+
+    await waitFor(() => expect(writeCalls(calls)).toHaveLength(1));
+    expect(writeCalls(calls)[0].body).toMatchObject({ article_id: 7, project_id: 12 });
+    await waitFor(() =>
+      expect(setNotice).toHaveBeenCalledWith(
+        expect.stringMatching(
+          /used for 381 Neubau Schulze — 0 of 0 still available.*Bestand war zu niedrig/,
+        ),
+      ),
+    );
   });
 
   it("shows the refusal instead of a success notice", async () => {
-    stubApi({ status: 400, payload: { detail: "Not enough stock available" } });
+    stubApi({ status: 400, payload: { detail: "Projekt nicht verfügbar." } });
     const setNotice = vi.fn();
     renderPage(setNotice);
     await screen.findByText("Bohrer SDS-Plus 8mm");
 
     fireEvent.click(screen.getByText("Bohrer SDS-Plus 8mm"));
-    await screen.findByRole("dialog", { name: "Check out item" });
-    fireEvent.click(screen.getByRole("button", { name: /Confirm checkout/ }));
+    await screen.findByRole("dialog", { name: "Take material" });
+    fireEvent.click(screen.getByRole("button", { name: /Take \(consumption\)/ }));
 
     await screen.findByRole("alert");
-    expect(screen.getByRole("alert")).toHaveTextContent("Not enough stock available");
+    expect(screen.getByRole("alert")).toHaveTextContent("Projekt nicht verfügbar.");
     expect(setNotice).not.toHaveBeenCalled();
-    expect(screen.getByRole("dialog", { name: "Check out item" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Take material" })).toBeInTheDocument();
   });
 });

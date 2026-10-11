@@ -35,6 +35,7 @@ from app.schemas.werkstatt import (
 )
 from app.services.material_needs import sync_needs_for_order
 from app.services.werkstatt_order_lines import build_order_line, create_draft_order
+from app.services.werkstatt_order_totals import refuse_oversized_order_total
 from app.services.werkstatt_orders import (
     recompute_expected_delivery,
     transition_order,
@@ -190,13 +191,16 @@ def create_order(
         db.rollback()
         raise
 
-    order.total_amount_cents = compute_total_cents(
-        list(
-            db.scalars(
-                select(WerkstattOrderLine).where(WerkstattOrderLine.order_id == order.id)
-            ).all()
+    # Each line is bounded by the schema; their sum is not. A total past the
+    # int4 column is a 400 and the draft is rolled back with its lines.
+    with refuse_oversized_order_total(db):
+        order.total_amount_cents = compute_total_cents(
+            list(
+                db.scalars(
+                    select(WerkstattOrderLine).where(WerkstattOrderLine.order_id == order.id)
+                ).all()
+            )
         )
-    )
     db.commit()
     db.refresh(order)
     return load_order_full(db, order)

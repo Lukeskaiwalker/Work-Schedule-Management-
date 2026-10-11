@@ -17,6 +17,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.limits import MAX_STOCK_QUANTITY
 from app.core.time import utcnow
 from app.models.entities import (
     WerkstattArticle,
@@ -25,6 +26,7 @@ from app.models.entities import (
     WerkstattOrderLine,
 )
 from app.services.ids_cart_parser import ParsedCart
+from app.services.werkstatt_order_totals import checked_order_total_cents
 from app.services.werkstatt_orders import (
     TEMPLATE_NUMBER_PREFIX,
     generate_order_number,
@@ -90,21 +92,19 @@ def resolve_article(
 
 
 def recompute_total(db: Session, order: WerkstattOrder) -> None:
-    """Refresh the denormalised order total from its lines."""
+    """Refresh the denormalised order total from its lines.
+
+    Raises ``OrderTotalTooLarge`` (services/werkstatt_order_totals.py) when the
+    lines no longer fit the int4 total, before anything is assigned; the
+    caller rolls back and answers 400.
+    """
 
     lines = list(
         db.scalars(
             select(WerkstattOrderLine).where(WerkstattOrderLine.order_id == order.id)
         ).all()
     )
-    total = 0
-    any_priced = False
-    for line in lines:
-        if line.unit_price_cents is None:
-            continue
-        total += line.unit_price_cents * line.quantity_ordered
-        any_priced = True
-    order.total_amount_cents = total if any_priced else None
+    order.total_amount_cents = checked_order_total_cents(lines)
     order.updated_at = utcnow()
     db.add(order)
 
@@ -132,6 +132,10 @@ def append_cart_lines(
     cable are two facts, and collapsing them at import would hide a
     double-order the buyer needs to see. Merging is the explicit operation for
     that (`merge_orders`).
+
+    Each parsed line is already bounded by the parser; the SUM is not, so the
+    recompute may raise ``OrderTotalTooLarge`` — the caller rolls back the
+    lines and keeps the import row as failed.
     """
 
     moment = now or utcnow()
@@ -208,6 +212,18 @@ def _prices_combinable(left: int | None, right: int | None) -> bool:
     return left is None or right is None or left == right
 
 
+def _quantities_combinable(left: int, right: int) -> bool:
+    """Whether two quantities may become one line.
+
+    Not past ``MAX_STOCK_QUANTITY``, the most one line may hold: a combined
+    line above it is one no request could have created, and delivering it
+    would book an intake the ledger refuses — an order stuck at "sent". Two
+    lines at the bound are merely an odd order.
+    """
+
+    return left + right <= MAX_STOCK_QUANTITY
+
+
 def merge_orders(
     db: Session,
     *,
@@ -230,6 +246,10 @@ def merge_orders(
     The source row survives with `merged_into_order_id` set and a `cancelled`
     status. Keeping it is what lets "I merged the wrong one" be answerable —
     the lines moved, but the record of the trip that produced them did not.
+
+    Two orders that each fit can sum past the int4 total: that raises
+    ``OrderTotalTooLarge`` from the final recompute, and the route rolls the
+    whole merge back.
     """
 
     if source.id == target.id:
@@ -278,7 +298,9 @@ def merge_orders(
         match: WerkstattOrderLine | None = None
         if combine_duplicates:
             for candidate in existing.get(_identity_key(line), []):
-                if _prices_combinable(candidate.unit_price_cents, line.unit_price_cents):
+                if _prices_combinable(
+                    candidate.unit_price_cents, line.unit_price_cents
+                ) and _quantities_combinable(candidate.quantity_ordered, line.quantity_ordered):
                     match = candidate
                     break
 
@@ -424,7 +446,9 @@ def apply_template(
     Appending rather than replacing is what makes templates composable: a
     standard kit plus a second standard kit plus whatever the job needs.
     Prices are refreshed from the current article-supplier link, so a template
-    written last year orders at this year's price.
+    written last year orders at this year's price — which is also where a
+    template's total first exists, so the recompute may raise
+    ``OrderTotalTooLarge``.
     """
 
     if not template.is_template:

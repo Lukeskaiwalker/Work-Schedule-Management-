@@ -37,6 +37,10 @@ class VacationRequest(Base):
     status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False, index=True)
     deducted_available_days: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     deducted_carryover_days: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # Working days of an APPROVED request that fall in a year after the
+    # holder's balance year and have not been deducted yet. The yearly
+    # rollover charges them to the year they fall in (services/vacation_years.py).
+    pending_future_days: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     reviewed_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), index=True)
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)

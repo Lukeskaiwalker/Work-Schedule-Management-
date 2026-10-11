@@ -33,6 +33,7 @@ from app.schemas.partner import (
     PartnerUpdate,
 )
 from app.schemas.task import TaskOut
+from app.services.partner_portal import portal_user_counts
 
 router = APIRouter(prefix="", tags=["partners"])
 
@@ -43,6 +44,7 @@ def _partner_list_item(
     task_count: int,
     open_task_count: int,
     last_task_activity_at,
+    portal_user_count: int = 0,
 ) -> PartnerListItemOut:
     return PartnerListItemOut.model_validate(
         {
@@ -62,6 +64,7 @@ def _partner_list_item(
             "task_count": task_count,
             "open_task_count": open_task_count,
             "last_task_activity_at": last_task_activity_at,
+            "portal_user_count": portal_user_count,
         }
     )
 
@@ -129,12 +132,14 @@ def list_partners(
     )
     partners = list(db.scalars(stmt).all())
     stats = _aggregate_task_stats(db, [p.id for p in partners])
+    logins = portal_user_counts(db, [p.id for p in partners])
     return [
         _partner_list_item(
             p,
             task_count=stats.get(p.id, (0, 0, None))[0],
             open_task_count=stats.get(p.id, (0, 0, None))[1],
             last_task_activity_at=stats.get(p.id, (0, 0, None))[2],
+            portal_user_count=logins.get(p.id, 0),
         )
         for p in partners
     ]

@@ -17,10 +17,17 @@ what the API exposes, split this file later.
 from __future__ import annotations
 
 from datetime import datetime
-from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from app.schemas.project_line_item import (
+    LINE_TOTAL_TOO_LARGE,
+    LineItemAmountEur,
+    LineItemConfidence,
+    LineItemQuantity,
+    line_total_exceeds_column,
+)
 
 
 # ── OpenAI Structured-Outputs schema ────────────────────────────────────
@@ -29,6 +36,12 @@ from pydantic import BaseModel, ConfigDict, Field
 # at the API boundary. Field descriptions become inline guidance for the
 # extraction model — keep them concrete and example-driven.
 
+# The numbers below carry no upper bound on purpose: this class IS the schema
+# sent to OpenAI (its docstring included), and a bound here would make one
+# absurd number fail the whole parse and with it the job. The worker drops an
+# unstorable number per row instead (``line_item_extraction``'s
+# ``_storable_review_item``), and ``ExtractionConfirmItem`` enforces the
+# column bounds when the operator imports the rows.
 class ExtractedLineItem(BaseModel):
     """One row as the model produces it. Fields mirror ``ProjectLineItem``
     but stay separate because the LLM emits Python-friendly types and the
@@ -165,12 +178,18 @@ class ExtractionConfirmItem(BaseModel):
     description: str = Field(min_length=1)
     sku: str | None = Field(default=None, max_length=255)
     manufacturer: str | None = Field(default=None, max_length=128)
-    quantity_required: Decimal = Field(ge=0)
+    quantity_required: LineItemQuantity
     unit: str | None = Field(default=None, max_length=32)
-    unit_price_eur: Decimal | None = Field(default=None, ge=0)
-    total_price_eur: Decimal | None = Field(default=None, ge=0)
-    extraction_confidence: Decimal | None = Field(default=None, ge=0, le=1)
+    unit_price_eur: LineItemAmountEur | None = None
+    total_price_eur: LineItemAmountEur | None = None
+    extraction_confidence: LineItemConfidence | None = None
     notes: str | None = None
+
+    @model_validator(mode="after")
+    def _line_total_fits(self) -> "ExtractionConfirmItem":
+        if line_total_exceeds_column(self.quantity_required, self.unit_price_eur):
+            raise ValueError(LINE_TOTAL_TOO_LARGE)
+        return self
 
 
 class ExtractionConfirmRequest(BaseModel):

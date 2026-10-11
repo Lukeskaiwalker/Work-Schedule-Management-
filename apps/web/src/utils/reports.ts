@@ -225,6 +225,8 @@ export function buildTaskModalFormState(defaults?: {
   dueDate?: string;
   projectQuery?: string;
   taskType?: TaskType;
+  /** Opened from a customer's page: the task is anchored to that customer. */
+  customerId?: number | null;
 }): TaskModalState {
   return {
     title: "",
@@ -238,7 +240,8 @@ export function buildTaskModalFormState(defaults?: {
     class_template_id: "",
     project_id: defaults?.projectId ? String(defaults.projectId) : "",
     project_query: defaults?.projectQuery ?? "",
-    customer_id: null,
+    // One anchor only: a project wins over a customer, as everywhere else.
+    customer_id: defaults?.projectId ? null : (defaults?.customerId ?? null),
     due_date: defaults?.dueDate ?? "",
     end_date: "",
     start_time: "",

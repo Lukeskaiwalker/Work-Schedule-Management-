@@ -253,6 +253,165 @@ describe("Artikel bearbeiten", () => {
     });
   });
 
+  describe("what “Katalog verknüpfen” fills in", () => {
+    /* The server's link fills an EMPTY EAN, Hersteller and Einheit from the
+     * catalogue row (never overwrites one). The dialog took only the picture
+     * over, so the form kept "" for those three while the row now held them —
+     * and Save PATCHed {ean: null, manufacturer: null, unit: null}, wiping the
+     * EAN the link had just set (the article could no longer be scanned).
+     * Abbrechen asked "Änderungen verwerfen?" over changes nobody made. */
+    const BLANK = { ...ARTICLE, ean: null, manufacturer: null, unit: null } as unknown as WerkstattArticle;
+    const FILLED = {
+      ...BLANK,
+      ean: "4006209123456",
+      manufacturer: "Gira",
+      unit: "Pak",
+      source_catalog_item_id: 900,
+      suppliers: [
+        { id: 3, supplier_id: 5, supplier_name: "Unielektro", supplier_article_no: "26190", is_preferred: true },
+      ],
+    };
+
+    function stubLinkApi() {
+      const calls: Call[] = [];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = String(input);
+          const method = (init?.method ?? "GET").toUpperCase();
+          calls.push({ method, url, body: init?.body ? JSON.parse(String(init.body)) : null });
+          const json = (payload: unknown) =>
+            new Response(JSON.stringify(payload), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          if (url.includes("/link-catalog")) return json(FILLED);
+          if (url.includes("/catalog/search")) {
+            return json([
+              {
+                ean: "4006209123456",
+                hero: {
+                  id: 900,
+                  item_name: "Schuko (Datanorm)",
+                  article_no: "26190",
+                  supplier_name: "Unielektro",
+                  supplier_id: 5,
+                  ean: "4006209123456",
+                },
+                suppliers: [],
+              },
+            ]);
+          }
+          if (url.includes("/werkstatt/articles/7")) return json(method === "PATCH" ? FILLED : BLANK);
+          return json([]);
+        }),
+      );
+      return calls;
+    }
+
+    async function linkCatalogRow() {
+      fireEvent.change(screen.getByPlaceholderText(/Search the supplier catalogue/), {
+        target: { value: "Schuko" },
+      });
+      fireEvent.click(await screen.findByRole("button", { name: "Link" }));
+      await waitFor(() => expect(screen.queryByRole("button", { name: "Link" })).toBeNull());
+    }
+
+    it("shows the filled fields and Save does not clear them again", async () => {
+      const calls = stubLinkApi();
+      const { onSaved } = openEditor();
+      const name = (await screen.findByRole("textbox", { name: /Item name/ })) as HTMLInputElement;
+      fireEvent.change(name, { target: { value: "Schuko-Steckdose reinweiß" } });
+
+      await linkCatalogRow();
+
+      expect((screen.getByRole("textbox", { name: /EAN/ }) as HTMLInputElement).value).toBe(
+        "4006209123456",
+      );
+      expect((screen.getByRole("textbox", { name: /Manufacturer/ }) as HTMLInputElement).value).toBe(
+        "Gira",
+      );
+      expect((screen.getByRole("combobox", { name: /Unit/ }) as HTMLSelectElement).value).toBe("Pak");
+
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(onSaved).toHaveBeenCalled());
+      // Only the name the person changed — nothing about EAN, maker or unit.
+      expect(calls.find((call) => call.method === "PATCH")?.body).toEqual({
+        item_name: "Schuko-Steckdose reinweiß",
+      });
+    });
+
+    it("lets Abbrechen close without asking to discard anything", async () => {
+      const calls = stubLinkApi();
+      const onClose = vi.fn();
+      openEditor({ onClose });
+      await screen.findByRole("textbox", { name: /Item name/ });
+
+      await linkCatalogRow();
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+      expect(screen.queryByRole("alertdialog", { name: "Discard changes?" })).toBeNull();
+      expect(onClose).toHaveBeenCalledTimes(1);
+      expect(calls.some((call) => call.method === "PATCH")).toBe(false);
+    });
+
+    it("keeps what the person typed into a blank field over the catalogue's value", async () => {
+      // Typed before linking, not saved yet: the person's word, not the row's.
+      const calls = stubLinkApi();
+      const { onSaved } = openEditor();
+      const maker = (await screen.findByRole("textbox", { name: /Manufacturer/ })) as HTMLInputElement;
+      fireEvent.change(maker, { target: { value: "Hager" } });
+
+      await linkCatalogRow();
+      expect(maker.value).toBe("Hager");
+
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(onSaved).toHaveBeenCalled());
+      expect(calls.find((call) => call.method === "PATCH")?.body).toEqual({ manufacturer: "Hager" });
+    });
+
+    it("keeps a deliberate clear of a field the article already had", async () => {
+      // The server never overwrites a set EAN, so linking changes nothing
+      // there — and the person's unsaved "remove this EAN" still stands.
+      const calls: Call[] = [];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = String(input);
+          const method = (init?.method ?? "GET").toUpperCase();
+          calls.push({ method, url, body: init?.body ? JSON.parse(String(init.body)) : null });
+          const json = (payload: unknown) =>
+            new Response(JSON.stringify(payload), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          if (url.includes("/link-catalog")) return json({ ...ARTICLE, source_catalog_item_id: 900 });
+          if (url.includes("/catalog/search")) {
+            return json([
+              {
+                ean: "4012345678901",
+                hero: { id: 900, item_name: "Schuko", article_no: "26190", supplier_name: "Unielektro", supplier_id: 5 },
+                suppliers: [],
+              },
+            ]);
+          }
+          if (url.includes("/werkstatt/articles/7")) return json(ARTICLE);
+          return json([]);
+        }),
+      );
+      const { onSaved } = openEditor();
+      const ean = (await screen.findByRole("textbox", { name: /EAN/ })) as HTMLInputElement;
+      fireEvent.change(ean, { target: { value: "" } });
+
+      await linkCatalogRow();
+      expect(ean.value).toBe("");
+
+      fireEvent.click(screen.getByRole("button", { name: "Save" }));
+      await waitFor(() => expect(onSaved).toHaveBeenCalled());
+      expect(calls.find((call) => call.method === "PATCH")?.body).toEqual({ ean: null });
+    });
+  });
+
   it("confirms an archive in words before doing it", async () => {
     const calls = stubApi();
     const { onArchived } = openEditor({ startArchiveConfirm: true });

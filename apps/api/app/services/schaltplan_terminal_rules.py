@@ -160,11 +160,16 @@ FEED_PART_IDS: frozenset[str] = frozenset({"2016-7714", "2016-7604"})
 OUTGOING_PART_IDS: frozenset[str] = frozenset({"2003-7641", "2003-7642", "2016-7601"})
 END_PART_IDS: frozenset[str] = frozenset({"2009-305"})
 
-# Kinds that may end on a Reihenklemme: MCB-protected outgoing circuits. An
-# RCBO is deliberately absent — its N is its own and must not sit on the FI
-# group's N bus (owner decision). Fuses, contactors, relays and SPDs never
-# get one.
-TERMINAL_ELIGIBLE_KINDS: frozenset[str] = frozenset({"mcb", "wallbox", "sub_feed", "pv"})
+# Kinds that may end on a Reihenklemme: MCB-protected outgoing circuits, and
+# a Neozed module that goes straight on to the 16 mm² block (owner,
+# 2026-10-09: the PV / callbox outputs, "without an extra MCB or other device
+# between it and the Neozed block") — always the block, see
+# ``is_block_device``. Only a fuse that IS an outgoing: as the Vorsicherung of
+# an FI or the head of a row of LS it is no group child, so it never reaches
+# the derivation. An RCBO is deliberately absent — its N is its own and must
+# not sit on the FI group's N bus (owner decision). Contactors, relays and
+# SPDs never get one.
+TERMINAL_ELIGIBLE_KINDS: frozenset[str] = frozenset({"mcb", "wallbox", "sub_feed", "pv", "fuse"})
 
 VARIANT_STANDARD = "standard"
 VARIANT_NO_RCD = "no_rcd"
@@ -221,7 +226,10 @@ def rating_amps(rating: Any) -> float | None:
 
 def is_block_device(device: dict[str, Any]) -> bool:
     """A 3- or 4-pole outgoing above 16 A ends on the 16 mm² block (N feed,
-    L1–L3, PE) instead of the Etagenklemmen."""
+    L1–L3, PE) instead of the Etagenklemmen. A Neozed always does: the
+    owner's combo block is what it goes straight on to, whatever its rating."""
+    if str(device.get("kind") or "") == "fuse":
+        return True
     amps = rating_amps(device.get("rating"))
     return device_poles(device) >= 3 and amps is not None and amps > BLOCK_MIN_AMPS_EXCLUSIVE
 
@@ -280,7 +288,9 @@ def terminal_findings(groups: list[dict[str, Any]]) -> list[dict[str, str]]:
         if variant is None:
             continue
         head = group.get("device")
-        if variant == VARIANT_NO_RCD:
+        # Only a Leiste lacks the feed terminal; a block brings its own N
+        # (2016-7604), so a group of blocks alone has nothing to report.
+        if variant == VARIANT_NO_RCD and any(not is_block_device(device) for device in children):
             findings.append(
                 {
                     "level": "info",

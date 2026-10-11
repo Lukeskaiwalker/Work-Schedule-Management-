@@ -36,6 +36,8 @@ class TimeCurrentOut(BaseModel):
     vacation_days_available: float = 0
     vacation_days_carryover: float = 0
     vacation_days_total_remaining: float = 0
+    # Approved days of next year, not deducted until the rollover reaches it.
+    vacation_days_planned_next_year: int = 0
 
 
 class TimeEntryOut(BaseModel):
@@ -79,6 +81,9 @@ class VacationBalanceOut(BaseModel):
     vacation_days_available: float
     vacation_days_carryover: float
     vacation_days_total_remaining: float
+    # Approved days that fall in next year: planned, not yet deducted (the
+    # rollover charges them to next year's balance).
+    vacation_days_planned_next_year: int = 0
 
 
 class VacationRequestCreate(BaseModel):
@@ -165,6 +170,9 @@ class VacationDayRemoveOut(BaseModel):
     refunded_days: int
     refunded_available_days: int
     refunded_carryover_days: int
+    # 1 when the day lay in a later year: it was only planned, so it leaves
+    # that year's plan instead of being refunded to the current balance.
+    released_planned_days: int = 0
     # False for a weekend or public holiday, which never cost entitlement.
     was_deductible: bool
     request_deleted: bool

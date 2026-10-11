@@ -1,0 +1,32 @@
+/* "Material entnehmen" — the consumable shape of EntnehmenModal.
+ *
+ * A consumable stays at the site it was taken for, so the project is the
+ * dialog's first question and gets a panel of its own instead of sharing a row
+ * with the amount. Own file (imported by the dialog) because styles.css is a
+ * shared surface several people edit in the same week.
+ */
+
+.werkstatt-dispense-project {
+  display: flex;
+  flex-direction: column;
+  padding: 12px 14px;
+  border: 1px solid #d9e4f2;
+  border-radius: 10px;
+  background: #f5f8fc;
+}
+
+.werkstatt-dispense-project .werkstatt-field-label {
+  font-size: 13px;
+  color: #14293d;
+}
+
+.werkstatt-dispense-project .werkstatt-field-select {
+  height: 44px;
+  font-size: 15px;
+}
+
+/* Not an error — the booking goes through — but the shelf count was wrong and
+ * somebody should count it, so it reads warmer than the grey hints. */
+.werkstatt-modal-hint.werkstatt-dispense-shortfall {
+  color: #8a5a00;
+}

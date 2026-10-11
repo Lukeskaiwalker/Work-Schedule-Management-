@@ -15782,6 +15782,19 @@ span > .tasks-page-row-badge--termin {
   flex-shrink: 0;
 }
 
+/* A folder whose files partners read in their portal. */
+.file-folder-hint--shared {
+  color: #1f7a4d;
+  font-weight: 600;
+}
+
+.upload-folder-shared-note {
+  display: block;
+  margin-top: -0.25rem;
+  color: #1f7a4d;
+  font-weight: 600;
+}
+
 .file-explorer-head {
   display: grid;
   gap: 0.6rem;
@@ -28278,17 +28291,20 @@ button.time-calendar-cell {
   align-items: center;
 }
 
+/* Portalled to <body> by KebabMenu, which sets top/bottom/right inline from
+   the trigger's rectangle. It used to be absolute inside the trigger's cell,
+   and the Bestand table's cells clip (`overflow: hidden`) — the menu opened
+   invisibly. Above the dialog backdrop (1000) so a menu inside a dialog shows. */
 .werkstatt-kebab-menu {
-  position: absolute;
-  top: calc(100% + 4px);
-  right: 0;
+  position: fixed;
   min-width: 220px;
+  max-width: calc(100vw - 16px);
   background: #ffffff;
   border: 1px solid rgba(33, 51, 82, 0.12);
   border-radius: 10px;
   box-shadow: 0 8px 24px rgba(15, 26, 45, 0.14), 0 2px 4px rgba(15, 26, 45, 0.06);
   padding: 4px;
-  z-index: 40;
+  z-index: 1100;
   display: flex;
   flex-direction: column;
   gap: 0;
@@ -28858,6 +28874,60 @@ button.time-calendar-cell {
   font-size: 15px;
   font-weight: 700;
   color: #14293d;
+}
+
+/* Customer page → Aufgaben: checkbox at its own size, the rest of the row
+   opens the task. The global `input { width: 100% }` used to stretch the
+   checkbox across half the row and push the title to the far edge. */
+.customer-tasks-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.customer-task-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.customer-task-row:last-child {
+  border-bottom: 0;
+}
+
+.customer-task-row .customer-task-check {
+  width: auto;
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.customer-task-open {
+  appearance: none;
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 8px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.customer-task-open:hover {
+  background: #f4f8fc;
+}
+
+.customer-task-title {
+  color: #14293d;
+  font-weight: 600;
+  overflow-wrap: anywhere;
 }
 
 .customer-contact-card-list {
@@ -35807,3 +35877,5 @@ button.time-calendar-cell {
 /* Vorsicherung on the diagram: a small plate on the drop line above the FI. */
 .sp-prefuse-plate { fill: #fff; stroke: var(--ink); stroke-width: 1; }
 .sp-prefuse-text { font-size: 10px; font-weight: 600; fill: var(--ink); }
+/* What a feeder feeds, inside its own group box (owner, 2026-10-09). */
+.sp-group-feeds { font-size: 11px; font-weight: 600; fill: var(--accent, #2f70b7); }

@@ -43,7 +43,7 @@ remove.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import case, func, select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -107,6 +107,7 @@ from app.services.werkstatt_boxes import (
     ensure_standard_boxes,
     transition_box,
 )
+from app.services.werkstatt_loans import loan_refusal, open_loan_for_article
 from app.services.werkstatt_movements import (
     MovementError,
     apply_movement,
@@ -414,82 +415,6 @@ def station_crew(
     ]
 
 
-# Movement types that give something back, i.e. that reduce what a borrower is
-# still holding. Spelled exactly as ``services.werkstatt_movements
-# .list_my_checkouts`` spells them, because the two have to agree on what
-# "open" means or this router closes a loan that list still shows.
-_LOAN_CLOSING_TYPES: tuple[str, ...] = ("return", "repair_out", "correction")
-
-
-def _open_loan_for_article(db: Session, article_id: int) -> tuple[int, int | None] | None:
-    """Who is still holding this article, and on which project — or ``None``.
-
-    Returns the ``(assignee_user_id, project_id)`` of the most recent checkout
-    that nothing has balanced yet, using the *same* definition of "open" as
-    ``list_my_checkouts``: a row belongs to whoever it names, or — when it
-    names nobody — to whoever booked it (hence the ``coalesce``); a checkout
-    adds to that borrower's balance and a return / repair_out / correction
-    subtracts from it; and the balance is kept per ``(borrower, project)``
-    because that is the tuple the "My checkouts" list groups by. A borrower
-    whose balance is still positive is still holding something.
-
-    **Why this lives in the station router and not in the shared service.**
-    ``apply_movement`` is the one write path the phone, the tablet's delivery
-    flow and the box handover all go through, and every one of those callers
-    has a logged-in person in the request: a missing assignee there means "the
-    caller means themselves", and guessing a different borrower would silently
-    rewrite bookings somebody made deliberately. A station is the one caller
-    that structurally cannot name anybody — a wall screen has no session, so
-    its ``user_id`` is the *borrowed* name of the administrator who approved
-    the pairing, and a missing assignee means "nobody tapped a name", not "the
-    admin took it". Only here are those two facts both true, so only here is
-    the guess sound. Reading the ledger is also the only fix available: a
-    Rückgabe at the rack is a bare button press, so without it the borrower's
-    loan has no later event that would ever clear it.
-    """
-    # Whoever the row is charged to — the tapped name, else the booker.
-    borrower = func.coalesce(
-        WerkstattMovement.assignee_user_id, WerkstattMovement.user_id
-    )
-    signed_qty = case(
-        (WerkstattMovement.movement_type == "checkout", WerkstattMovement.quantity),
-        (WerkstattMovement.movement_type.in_(_LOAN_CLOSING_TYPES), -WerkstattMovement.quantity),
-        else_=0,
-    )
-    # Ordering is by the group's newest checkout — "the loan that was opened
-    # last" is the best available answer to "which of these did this crate
-    # just come back from", and the ledger does not link a return to a
-    # checkout. The row id breaks a tie so two checkouts in the same clock
-    # tick still resolve the same way on every run.
-    last_checkout_at = func.max(
-        case(
-            (WerkstattMovement.movement_type == "checkout", WerkstattMovement.created_at),
-            else_=None,
-        )
-    )
-    last_checkout_id = func.max(
-        case(
-            (WerkstattMovement.movement_type == "checkout", WerkstattMovement.id),
-            else_=None,
-        )
-    )
-
-    row = db.execute(
-        select(borrower.label("borrower_id"), WerkstattMovement.project_id.label("project_id"))
-        .where(WerkstattMovement.article_id == article_id)
-        .group_by(borrower, WerkstattMovement.project_id)
-        .having(func.coalesce(func.sum(signed_qty), 0) > 0)
-        .order_by(last_checkout_at.desc(), last_checkout_id.desc())
-        .limit(1)
-    ).first()
-    if row is None or row.borrower_id is None:
-        return None
-    # The name has to still exist to go on a row: ``assignee_user_id`` is a FK.
-    if db.get(User, int(row.borrower_id)) is None:
-        return None
-    return int(row.borrower_id), (int(row.project_id) if row.project_id is not None else None)
-
-
 @router.post("/movements", response_model=StationMovementOut)
 def station_movement(
     payload: StationMovementRequest,
@@ -517,7 +442,8 @@ def station_movement(
 
     One thing this endpoint does decide for itself: a ``return`` that names
     nobody is charged to the open loan it must have closed — see
-    ``_open_loan_for_article``.
+    ``services.werkstatt_loans.open_loan_for_article``. And a refusal is said
+    in German (``loan_refusal``): the ledger's own sentence is English.
     """
     if payload.movement_type not in STATION_MOVEMENT_TYPES:
         raise HTTPException(
@@ -556,9 +482,9 @@ def station_movement(
     assignee_user_id = payload.assignee_user_id
     project_id: int | None = None
     if payload.movement_type == "return" and assignee_user_id is None:
-        loan = _open_loan_for_article(db, article.id)
+        loan = open_loan_for_article(db, article.id)
         if loan is not None:
-            assignee_user_id, project_id = loan
+            assignee_user_id, project_id = loan.borrower_id, loan.project_id
 
     try:
         movement = apply_movement(
@@ -572,8 +498,10 @@ def station_movement(
             notes=_station_notes(station, payload.notes),
         )
     except MovementError as exc:
+        # Read before the rollback expires the snapshot the guard compared.
+        detail = loan_refusal(payload.movement_type, payload.quantity, article)
         db.rollback()
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+        raise HTTPException(status_code=400, detail=detail) from exc
 
     # Stamped here rather than inside ``apply_movement``: that service is the
     # shared ledger implementation every user-facing path also runs, and it
@@ -1035,9 +963,17 @@ def _panel_or_404(db: Session, plan_id: int) -> PanelPlan:
     return plan
 
 
-def _panel_scan_out(db: Session, plan: PanelPlan, article: WerkstattArticle, movement_id: int, warning: str | None) -> StationPanelScanOut:
+def _panel_scan_out(
+    db: Session,
+    plan: PanelPlan,
+    article: WerkstattArticle,
+    movement_id: int,
+    warning: str | None,
+    *,
+    undone: bool = False,
+) -> StationPanelScanOut:
     material = panel_material.panel_material(db, plan)
-    line = panel_material.line_for_article(material, article.id)
+    line = panel_material.line_for_article(material, article.id, undone=undone)
     if line is None:
         # Fully undone: the article no longer appears on the list. Report the
         # extra-line shape with zero so the screen can still say what left.
@@ -1158,7 +1094,7 @@ def station_panel_undo(
     movement_id = movement.id
     db.commit()
     db.refresh(article)
-    return _panel_scan_out(db, plan, article, movement_id, None)
+    return _panel_scan_out(db, plan, article, movement_id, None, undone=True)
 
 
 # ---------------------------------------------------------------------------

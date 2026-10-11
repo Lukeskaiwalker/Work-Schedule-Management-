@@ -150,6 +150,38 @@ class PanelMaterialArticle(Base):
     )
 
 
+class PanelMaterialManualLine(Base):
+    """Material added to one board's Materialliste by hand (owner, 2026-10-09).
+
+    The planned lines come out of the document; what a schematic cannot say —
+    a cable duct, a DIN rail, a bag of ferrules, a second Hutschiene — is
+    added here, per board. A line is a shelf article (a booking then ticks it
+    off like any planned line) or a free text. ``label`` always holds a
+    readable name: the free text, or the article's name when the line was
+    added, so a line whose article is later deleted (SET NULL) still says
+    what it was. Rows go with their board (CASCADE, and deleted explicitly by
+    ``delete_panel`` so SQLite agrees).
+    """
+
+    __tablename__ = "panel_material_manual_lines"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    panel_id: Mapped[int] = mapped_column(
+        ForeignKey("panel_plans.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    article_id: Mapped[int | None] = mapped_column(
+        ForeignKey("werkstatt_articles.id", ondelete="SET NULL"), index=True
+    )
+    label: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    note: Mapped[str | None] = mapped_column(String(500))
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+
 class PanelWorkSession(Base):
     """Time one person spent building one Verteiler, clocked at the station.
 

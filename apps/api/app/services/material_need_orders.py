@@ -24,6 +24,7 @@ from datetime import datetime
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.core.limits import MAX_STOCK_QUANTITY
 from app.core.time import utcnow
 from app.models.entities import (
     MaterialCatalogItem,
@@ -37,6 +38,7 @@ from app.schemas.werkstatt_procurement import OrderLineCreatePayload
 from app.services.material_need_rows import order_quantity_for_need
 from app.services.werkstatt_order_composition import recompute_total
 from app.services.werkstatt_order_lines import build_order_line, create_draft_order
+from app.services.werkstatt_order_totals import OrderTotalTooLarge, order_total_refusal
 
 # Statuses a need can still be ordered from. `available` and `completed` are
 # already answered; `ordered`/`on_the_way` are caught earlier by the link.
@@ -124,6 +126,22 @@ def _classify(
     return catalog_item, None
 
 
+def _bounded_order_quantity(raw_value: object) -> tuple[int, str | None]:
+    """`order_quantity_for_need`, kept inside what one order line may hold.
+
+    The need's quantity is free text, so "99999999999999" parses — and used to
+    reach the order line (and its flush) unchanged. Past ``MAX_STOCK_QUANTITY``
+    it is treated like any other quantity that cannot be ordered: 1, with a
+    warning on the line and in the modal.
+    """
+
+    quantity, warning = order_quantity_for_need(raw_value)
+    if quantity <= MAX_STOCK_QUANTITY:
+        return quantity, warning
+    raw = str(raw_value or "").strip()
+    return 1, f"Menge '{raw[:32]}' ist zu groß – 1 angenommen, bitte prüfen"
+
+
 def _order_title(
     explicit: str | None, projects: list[Project], *, project_ids: set[int]
 ) -> str | None:
@@ -172,7 +190,8 @@ def create_orders_from_needs(
     """Group the needs by supplier, draft one order each, link them back.
 
     ``needs`` must already be visibility-checked by the caller: this function
-    does not know who is asking.
+    does not know who is asking. Raises ``HTTPException`` (409/404, or 400 for
+    an order total past the int4 column); the caller rolls back on it.
     """
 
     stamp = now or utcnow()
@@ -219,7 +238,7 @@ def create_orders_from_needs(
 
         per_project: dict[int, int] = {}
         for need, catalog_item in entries:
-            quantity, warning = order_quantity_for_need(need.quantity)
+            quantity, warning = _bounded_order_quantity(need.quantity)
             project = projects_by_id.get(need.project_id)
             line = build_order_line(
                 db,
@@ -252,7 +271,13 @@ def create_orders_from_needs(
             )
             per_project[need.project_id] = per_project.get(need.project_id, 0) + 1
 
-        recompute_total(db, order)
+        try:
+            recompute_total(db, order)
+        except OrderTotalTooLarge as exc:
+            # As an HTTPException, because that is what the caller already
+            # rolls back on: a refused total must not leave the draft, its
+            # lines or the needs' "ordered" links behind.
+            raise order_total_refusal() from exc
         order.updated_at = stamp
         db.add(order)
         outcome.orders.append(order)

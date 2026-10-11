@@ -43,3 +43,30 @@ describe("PanelDiagram — Vorsicherung", () => {
     expect(screen.queryByText("F0 35 A")?.closest(".sp-prefuse")).not.toBeNull();
   });
 });
+
+// Owner, 2026-10-09: SLS → Hauptschalter → FI "to complete the row".
+describe("PanelDiagram — feeding chains", () => {
+  it("names the feeder on a fed group's drop line and what a feeder feeds in its box", () => {
+    const document = {
+      ...emptyDocument(),
+      rows: [
+        {
+          id: "r1",
+          label: "Reihe 1",
+          slots: 20,
+          devices: [
+            makeDevice("sls", { id: "q0", designation: "Q0", rating: "E35" }),
+            makeDevice("hauptschalter", { id: "q1", designation: "Q1", rating: "63 A", parent_id: "q0" }),
+            makeDevice("rcd", { id: "f1", designation: "F1", parent_id: "q1" }),
+            makeDevice("mcb", { id: "c1", designation: "F1.1", circuit: "1", label: "Licht" }),
+          ],
+        },
+      ],
+    };
+    render(<PanelDiagram document={document} selectedDeviceId={null} onSelect={() => undefined} fedFrom={null} designation="UV" />);
+    expect(screen.getByText("über Q0 SLS").closest(".sp-prefuse")).not.toBeNull();
+    expect(screen.getByText("über Q1 HS").closest(".sp-prefuse")).not.toBeNull();
+    expect(screen.getByText("speist Q1")).toBeInTheDocument();
+    expect(screen.getByText("speist F1")).toBeInTheDocument();
+  });
+});

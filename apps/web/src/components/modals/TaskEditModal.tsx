@@ -17,6 +17,7 @@ import { formatServerDateTime } from "../../utils/dates";
 import { PartnerMultiSelect } from "../partners/PartnerMultiSelect";
 import { ConstructionBoxPicker } from "../tasks/ConstructionBoxPicker";
 import { TaskAttachments } from "../tasks/TaskAttachments";
+import { TaskPartnerHoursSection } from "../tasks/TaskPartnerHoursSection";
 import { TaskMaterialList } from "../tasks/TaskMaterialList";
 import "../../styles/tasks.css";
 
@@ -959,6 +960,9 @@ export function TaskEditModal() {
               }}
             />
           </section>
+
+          {/* What the partners on this task reported in their portal. */}
+          {taskEditForm.id != null && <TaskPartnerHoursSection taskId={taskEditForm.id} />}
 
           {/* Termin & Kundenbestätigung — the two date axes, in one block.
               They are still two independent columns (see

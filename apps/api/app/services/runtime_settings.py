@@ -293,6 +293,9 @@ def get_company_settings(db: Session) -> dict[str, Any]:
         "navigation_title": "SMPL",
         "company_name": "SMPL",
         "company_address": "",
+        # Shown to partners in the portal as "Fragen? Büro anrufen".
+        "company_phone": "",
+        "company_email": "",
     }
     raw = get_runtime_setting(db, COMPANY_SETTINGS_KEY)
     if not raw:
@@ -315,6 +318,10 @@ def get_company_settings(db: Session) -> dict[str, Any]:
         merged["company_name"] = company_name or defaults["company_name"]
     if "company_address" in stored:
         merged["company_address"] = str(stored.get("company_address") or "").strip()
+    if "company_phone" in stored:
+        merged["company_phone"] = str(stored.get("company_phone") or "").strip()
+    if "company_email" in stored:
+        merged["company_email"] = str(stored.get("company_email") or "").strip()
     return merged
 
 
@@ -325,6 +332,8 @@ def set_company_settings(
     navigation_title: str,
     company_name: str,
     company_address: str,
+    company_phone: str = "",
+    company_email: str = "",
 ) -> None:
     set_runtime_setting(
         db,
@@ -335,6 +344,8 @@ def set_company_settings(
                 "navigation_title": (navigation_title or "").strip() or "SMPL",
                 "company_name": (company_name or "").strip() or "SMPL",
                 "company_address": (company_address or "").strip(),
+                "company_phone": (company_phone or "").strip(),
+                "company_email": (company_email or "").strip(),
             }
         ),
     )

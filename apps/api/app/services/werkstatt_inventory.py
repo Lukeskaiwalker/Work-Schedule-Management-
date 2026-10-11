@@ -10,6 +10,11 @@ ever seen, and even then the operator is asked for a name once and never again.
 
 Counting writes to ``werkstatt_inventory_counts`` only. Real stock does not
 move until ``finalize_session``.
+
+Two refusals stop the flow on purpose, both as ``InventoryError`` (the router
+answers 400 with its sentence): a count may not pass ``MAX_STOCK_QUANTITY``,
+the ledger's own bound on one booking, and a finalize whose variance the
+ledger refuses books nothing and leaves the session open.
 """
 
 from __future__ import annotations
@@ -19,6 +24,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.limits import MAX_STOCK_QUANTITY
 from app.core.time import utcnow
 from app.models.entities import (
     MaterialCatalogItem,
@@ -29,11 +35,21 @@ from app.models.entities import (
 )
 from app.services.werkstatt_article_numbers import next_article_number
 from app.services.werkstatt_movements import (
+    MovementError,
     apply_movement,
     load_article_for_update,
     recompute_article_stock,
 )
 from app.services.werkstatt_scan import resolve_scan
+
+
+class InventoryError(Exception):
+    """A stock-take step the operator has to correct; the router answers 400.
+
+    Raised before anything is written (``_bump``) or after the session's
+    writes were rolled back (``finalize_session``), so the message is the
+    whole story: nothing of the refused request was kept.
+    """
 
 
 @dataclass(frozen=True)
@@ -59,7 +75,14 @@ def _open_session(db: Session, session_id: int) -> WerkstattInventorySession | N
 
 
 def _bump(db: Session, session_id: int, article: WerkstattArticle, by: int = 1) -> int:
-    """Increment (or create) this article's count row. Returns the new total."""
+    """Increment (or create) this article's count row. Returns the new total.
+
+    The total is bounded, not only each scan: a scan's quantity is, but
+    nothing else stopped eleven scans of 100 000 from adding up to a count
+    finalize then could not book (the ledger refuses one booking past
+    ``MAX_STOCK_QUANTITY``) — or, after ~21 000 of them, from overflowing
+    the ``Integer`` column itself. Checked before the row is touched.
+    """
 
     row = db.scalar(
         select(WerkstattInventoryCount).where(
@@ -67,6 +90,12 @@ def _bump(db: Session, session_id: int, article: WerkstattArticle, by: int = 1) 
             WerkstattInventoryCount.article_id == article.id,
         )
     )
+    counted = (int(row.counted_qty) if row is not None else 0) + by
+    if counted > MAX_STOCK_QUANTITY:
+        raise InventoryError(
+            f"Zählmenge {counted} ist zu groß – höchstens {MAX_STOCK_QUANTITY} "
+            "je Artikel und Inventur."
+        )
     now = utcnow()
     if row is None:
         row = WerkstattInventoryCount(
@@ -331,6 +360,12 @@ def finalize_session(db: Session, *, session: WerkstattInventorySession, user: U
     An article whose count agrees with the ledger still books nothing, but its
     repaired snapshot is committed all the same: a drifted row left behind is
     just the next finalize's wrong basis.
+
+    A variance the ledger refuses — past ``MAX_STOCK_QUANTITY`` in one
+    booking, typically a shelf holding more than the count plus that bound,
+    or a count row stored before ``_bump`` was bounded — rolls the whole
+    session back and raises ``InventoryError`` naming the article. It used to
+    escape as a bare ``MovementError``: an unhandled 500.
     """
 
     rows = list(
@@ -359,14 +394,22 @@ def finalize_session(db: Session, *, session: WerkstattInventorySession, user: U
         if delta == 0:
             unchanged += 1
             continue
-        apply_movement(
-            db,
-            article=article,
-            movement_type="inventory_plus" if delta > 0 else "inventory_minus",
-            quantity=abs(delta),
-            user_id=user.id,
-            notes=f"Inventur: {session.name}",
-        )
+        try:
+            apply_movement(
+                db,
+                article=article,
+                movement_type="inventory_plus" if delta > 0 else "inventory_minus",
+                quantity=abs(delta),
+                user_id=user.id,
+                notes=f"Inventur: {session.name}",
+            )
+        except MovementError as exc:
+            # Read before the rollback expires the instance.
+            label = f"{article.article_number} ({article.item_name})"
+            db.rollback()
+            raise InventoryError(
+                f"Inventur kann nicht abgeschlossen werden – {label}: {exc}"
+            ) from exc
         adjusted += 1
         if delta > 0:
             total_plus += delta

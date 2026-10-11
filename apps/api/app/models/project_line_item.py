@@ -86,7 +86,7 @@ class ProjectLineItem(Base):
     manufacturer: Mapped[str | None] = mapped_column(String(128))
 
     # ── quantities ──────────────────────────────────────────────────
-    # All Numeric(12, 2) — supports values up to 999,999,999.99 with
+    # All Numeric(12, 2) — supports values up to 9,999,999,999.99 (core.limits.NUMERIC_12_2_MAX) with
     # 2 decimal places. Plenty for cable-meters or panel counts.
     quantity_required: Mapped[Decimal] = mapped_column(
         Numeric(12, 2), nullable=False

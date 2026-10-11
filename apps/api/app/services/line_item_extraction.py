@@ -24,11 +24,14 @@ from __future__ import annotations
 import base64
 import io
 import logging
+import math
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.limits import MAX_STOCK_QUANTITY, NUMERIC_12_2_MAX
 from app.core.time import utcnow
 from app.models.entities import LineItemExtractionJob
 from app.models.line_item_extraction_job import (
@@ -43,7 +46,8 @@ from app.models.line_item_extraction_job import (
     SOURCE_KIND_IMAGE,
     SOURCE_KIND_PDF,
 )
-from app.schemas.line_item_extraction import ExtractedLineItemList
+from app.schemas.line_item_extraction import ExtractedLineItem, ExtractedLineItemList
+from app.schemas.project_line_item import line_total_exceeds_column
 from app.services.files import read_encrypted_file
 from app.services.openai_client import (
     OpenAIClientNotConfigured,
@@ -297,6 +301,60 @@ def _call_openai_structured(
     return parsed, input_tokens, output_tokens
 
 
+# Upper bound per number the model returns -- the same bounds the confirm
+# payload enforces (``ExtractionConfirmItem``).
+_LLM_NUMBER_BOUNDS: dict[str, Decimal] = {
+    "quantity_required": Decimal(MAX_STOCK_QUANTITY),
+    "unit_price_eur": NUMERIC_12_2_MAX,
+    "total_price_eur": NUMERIC_12_2_MAX,
+}
+# Confidence a row gets when one of its numbers was dropped: below the
+# importer's 0.7 highlight threshold, so the operator is pointed at it.
+_DROPPED_NUMBER_CONFIDENCE = 0.5
+
+
+def _is_storable(value: float, upper: Decimal) -> bool:
+    return math.isfinite(value) and 0 <= value <= upper
+
+
+def _storable_review_item(item: ExtractedLineItem) -> dict[str, Any]:
+    """The review row for one extracted item, with every number the
+    line-item columns cannot hold (NaN, infinity, negative, too large, or a
+    unit price whose line total overflows) set to null and the row flagged.
+
+    The model's numbers are external input: stored as they are, a NaN or
+    infinity is refused by PostgreSQL's JSON column (failing the job) and an
+    oversized one only fails later at confirm. Dropping the one number keeps
+    the rest of the row for the operator, who fills the gap in the importer.
+    """
+    data = item.model_dump(mode="json")
+    out_of_range = tuple(
+        field
+        for field, upper in _LLM_NUMBER_BOUNDS.items()
+        if data[field] is not None and not _is_storable(data[field], upper)
+    )
+    in_range = {**data, **{field: None for field in out_of_range}}
+    quantity, unit_price = in_range["quantity_required"], in_range["unit_price_eur"]
+    total_overflows = (
+        quantity is not None
+        and unit_price is not None
+        and line_total_exceeds_column(Decimal(str(quantity)), Decimal(str(unit_price)))
+    )
+    dropped = (*out_of_range, *(("unit_price_eur",) if total_overflows else ()))
+    if not dropped:
+        return in_range
+    logger.warning(
+        "Line-item extraction dropped unstorable %s (position %r)",
+        ", ".join(dropped),
+        item.position,
+    )
+    return {
+        **in_range,
+        **{field: None for field in dropped},
+        "confidence": min(in_range["confidence"], _DROPPED_NUMBER_CONFIDENCE),
+    }
+
+
 def process_line_item_extraction_job(
     db: Session, job_id: int
 ) -> LineItemExtractionJob | None:
@@ -335,8 +393,9 @@ def process_line_item_extraction_job(
 
         # Persist the items on the job row for review. We dump them
         # through Pydantic so the JSON shape is stable across SDK
-        # versions (the parsed object is a Pydantic instance).
-        items_json = [item.model_dump(mode="json") for item in parsed.items]
+        # versions (the parsed object is a Pydantic instance), dropping
+        # any number the line-item columns could not hold.
+        items_json = [_storable_review_item(item) for item in parsed.items]
         now = utcnow()
         job.extracted_items_json = items_json
         job.extracted_items_count = len(items_json)

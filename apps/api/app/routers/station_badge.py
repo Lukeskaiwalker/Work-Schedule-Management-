@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.core.db import get_db
 from app.core.deps import get_current_user, require_permission
+from app.core.permissions import is_external_role
 from app.models.entities import StationBadge, User
 from app.schemas.station import StationBadgeOut
 from app.services import station_badges
@@ -93,6 +94,10 @@ def rotate_user_station_badge(
     db: Session = Depends(get_db),
 ) -> StationBadgeOut:
     user = _user_or_404(db, user_id)
+    if is_external_role(user.role):
+        # A badge identifies its holder at the workshop scan station (clock-in,
+        # material issue). A subcontractor's portal login gets none.
+        raise HTTPException(status_code=409, detail="Partner logins are managed on the partner")
     badge = station_badges.rotate_badge(db, user)
     db.commit()
     db.refresh(badge)

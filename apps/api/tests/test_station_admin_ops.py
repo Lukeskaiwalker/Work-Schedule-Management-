@@ -712,6 +712,43 @@ def test_a_session_past_the_row_cap_is_refused_out_loud_not_trimmed(
         assert db.scalars(select(WerkstattInventorySession)).all() == [], "nothing may be half-imported"
 
 
+@pytest.mark.parametrize(
+    "field, bad",
+    [
+        ("counted_qty", "100000000000000000000"),
+        ("counted_qty", "1000001"),
+        ("counted_qty", "-5"),
+        # What the agent's json.dumps writes for float("inf") / float("nan").
+        ("counted_qty", "Infinity"),
+        ("counted_qty", "NaN"),
+        ("scan_count", "100000000000000000000"),
+    ],
+)
+def test_an_impossible_count_is_refused_out_loud_not_imported(
+    client: TestClient, admin_token: str, pi: FakeAgent, field: str, bad: str
+) -> None:
+    """The Pi's rows skip the request schema, so the same bounds hold here:
+    a count wider than the column used to reach ``db.flush()`` (an
+    OverflowError, a 500) and ``inf`` broke ``int()`` before that. All rows
+    or none, like the row cap: the sentence names the code to fix."""
+    _, station = _addressed_station(client, admin_token)
+    headers = auth_headers(admin_token)
+    sid = station["id"]
+    other = "scan_count" if field == "counted_qty" else "counted_qty"
+    body = (
+        '{"session": "kaputt", "status": "open", "counts": ['
+        '{"code": "4011923000001", "item_name": "Schraube", "counted_qty": 3, "scan_count": 3}, '
+        f'{{"code": "4011923000002", "item_name": "Mutter", "{other}": 2, "{field}": {bad}}}'
+        "]}"
+    ).encode()
+    pi.routes[("GET", "/session/kaputt")] = lambda _r: httpx.Response(200, content=body)
+    resp = client.post(f"/api/station/stations/{sid}/sessions/kaputt/import", headers=headers, json={})
+    assert resp.status_code == 400, resp.text
+    assert "4011923000002" in resp.json()["detail"]
+    with SessionLocal() as db:
+        assert db.scalars(select(WerkstattInventorySession)).all() == [], "nothing may be half-imported"
+
+
 def test_a_session_the_api_stops_reading_is_the_same_refusal_not_an_outage(
     client: TestClient, admin_token: str, pi: FakeAgent
 ) -> None:
@@ -835,3 +872,11 @@ def test_admin_ops_require_system_manage(client: TestClient, admin_token: str) -
     assert client.post(f"/api/station/stations/{sid}/restart", headers=employee, json={"confirm": True}).status_code == 403
     assert client.get(f"/api/station/stations/{sid}/sessions", headers=employee).status_code == 403
     assert client.post(f"/api/station/stations/{sid}/sessions/regal/import", headers=employee, json={}).status_code == 403
+
+
+def test_a_broken_summary_number_from_the_agent_reads_as_zero() -> None:
+    """The session list's totals are display only; ``Infinity``/``NaN`` from
+    the agent must not turn the whole list into a 500."""
+    from app.services.station_sessions import _int
+
+    assert (_int(float("inf")), _int(float("nan")), _int(7.0), _int("x"), _int(True)) == (0, 0, 7, 0, 0)

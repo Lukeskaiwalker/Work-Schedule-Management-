@@ -143,6 +143,13 @@ export function activityEventLabel(eventType: string, language: Language) {
     "material.bulk_deleted": { de: "Materialbedarfe gelöscht", en: "Material needs deleted" },
     "material.ordered": { de: "Materialbedarf bestellt", en: "Material need ordered" },
     "finance.updated": { de: "Finanzen aktualisiert", en: "Finances updated" },
+    // Partner portal: who has the project, and the hours their crews report.
+    "project.partner_assigned": { de: "Partner zugewiesen", en: "Partner assigned" },
+    "project.partner_removed": { de: "Partner entfernt", en: "Partner removed" },
+    "partner.hours_reported": { de: "Partnerstunden gemeldet", en: "Partner hours reported" },
+    "partner.hours_deleted": { de: "Partnerstunden entfernt", en: "Partner hours removed" },
+    // Completing a task books the materials it took from the shelves.
+    "task.materials_settled": { de: "Material verbucht", en: "Materials booked" },
   };
   return map[eventType] ? (language === "de" ? map[eventType].de : map[eventType].en) : eventType;
 }

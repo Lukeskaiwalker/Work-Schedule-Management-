@@ -381,7 +381,7 @@ def logout(
             or (request.headers.get("authorization") or "").removeprefix("Bearer ").strip()
         )
         if token:
-            current_user = get_current_user_from_token(token, db)
+            current_user = get_current_user_from_token(token, db, allow_external=True)
     except Exception:  # pragma: no cover — best-effort audit only
         current_user = None
 

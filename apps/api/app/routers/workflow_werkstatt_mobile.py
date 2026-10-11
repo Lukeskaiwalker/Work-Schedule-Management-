@@ -5,7 +5,8 @@ Owned by: Mobile BE agent.
 This router covers the "field technician" persona:
   - Scan resolution (cascade: Werkstatt article → supplier article_no →
     catalog item → not_found) — see ``services/werkstatt_scan.py``
-  - Quick checkout (entnehmen)
+  - Quick checkout (entnehmen) — a consumable is used up, a machine type is
+    lent (``services/werkstatt_dispense.py``)
   - Quick return (zurückgeben)
   - Compact movement list (for mobile home screen)
   - "My checkouts" list
@@ -39,13 +40,15 @@ from app.core.deps import get_current_user
 from app.core.permissions import has_permission_for_user
 from app.models.entities import User, WerkstattArticle, WerkstattMovement
 from app.schemas.werkstatt import (
-    CheckoutPayload,
     MyCheckoutOut,
     ReturnPayload,
     ScanResolveResult,
     WerkstattArticleOut,
     WerkstattMovementOut,
 )
+from app.schemas.werkstatt_dispense import WerkstattDispenseOut, WerkstattDispensePayload
+from app.services.werkstatt_consumption import ConsumptionError
+from app.services.werkstatt_dispense import dispense_article
 from app.services.werkstatt_movements import (
     MovementError,
     apply_movement,
@@ -146,16 +149,23 @@ def scan_resolve(
 # ──────────────────────────────────────────────────────────────────────────
 
 
-@router.post("/mobile/checkout", response_model=WerkstattArticleOut)
+@router.post("/mobile/checkout", response_model=WerkstattDispenseOut)
 def mobile_checkout(
-    payload: CheckoutPayload,
+    payload: WerkstattDispensePayload,
     on_behalf_of: int | None = Query(default=None, ge=1),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> WerkstattArticleOut:
-    """Record a checkout movement and return the updated article snapshot.
+) -> WerkstattDispenseOut:
+    """Hand an article out and return the updated article snapshot, plus
+    ``booked_as`` and ``stock_warning``.
 
-    ``assignee_user_id`` (optional body field) is who *receives* the tool;
+    A consumable (``is_serialized`` False) is used up — a ``consumption`` for
+    the person and, when given, the project; ``expected_return_at`` is
+    ignored. A machine type is lent as a ``checkout``, as before. See
+    ``services/werkstatt_dispense.py``. ``quantity`` is bounded on the wire
+    (``WerkstattDispensePayload``) because a short shelf no longer is.
+
+    ``assignee_user_id`` (optional body field) is who *receives* it;
     ``user_id`` on the ledger is always who *performed* the transaction
     (the caller, or the ``on_behalf_of`` user when an admin acts for them).
     """
@@ -180,10 +190,9 @@ def mobile_checkout(
             )
 
     try:
-        apply_movement(
+        booked = dispense_article(
             db,
             article=article,
-            movement_type="checkout",
             quantity=payload.quantity,
             user_id=acting_user_id,
             assignee_user_id=assignee,
@@ -191,14 +200,19 @@ def mobile_checkout(
             expected_return_at=payload.expected_return_at,
             notes=payload.notes,
         )
-    except MovementError as exc:
+    except (ConsumptionError, MovementError) as exc:
+        db.rollback()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
         ) from exc
 
     db.commit()
     db.refresh(article)
-    return _article_out(db, article)
+    return WerkstattDispenseOut(
+        **_article_out(db, article).model_dump(),
+        booked_as=booked.booked_as,
+        stock_warning=booked.stock_warning,
+    )
 
 
 @router.post("/mobile/return", response_model=WerkstattArticleOut)

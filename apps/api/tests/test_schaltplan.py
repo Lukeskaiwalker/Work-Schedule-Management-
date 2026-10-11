@@ -1017,7 +1017,9 @@ def test_a_missing_pre_fuse_degrades_and_is_reported():
     assert fi["pre_fuse"] is None
     assert [c["id"] for c in fi["children"]] == ["c1"]
     messages = [f["message"] for f in validate_document(document)]
-    assert any("Vorsicherung" in m and "F1" in m for m in messages), messages
+    # Since 2026-10-09 the parent may be a fuse, an SLS, a Hauptschalter or a
+    # Verteilerblock — the finding names the feed, not only the fuse.
+    assert any("Einspeisung nicht gefunden" in m and "F1" in m for m in messages), messages
 
 
 def test_pdf_renders_a_pre_fuse(client: TestClient, admin_token: str):
@@ -1216,7 +1218,7 @@ def test_validate_reports_a_flagged_fuse_feeding_nothing_and_a_missing_pre_fuse(
         "level": "info", "scope": "f0", "message": "F0: Vorsicherung speist keine Abgänge"
     } in findings, findings
     assert any(
-        f["scope"] == "f1" and "Vorsicherung nicht gefunden" in f["message"] for f in findings
+        f["scope"] == "f1" and "Einspeisung nicht gefunden" in f["message"] for f in findings
     ), findings
     # The flagged fuse's own (ignored) parent must not read as a missing pre-fuse.
     pointed = _document(

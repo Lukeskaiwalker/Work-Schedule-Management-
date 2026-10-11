@@ -66,6 +66,12 @@ All in `routers/workflow_helpers.py`:
 `_resolve_attachment_for_access` applies these for `/files/{id}/preview`,
 `/download`, `/preview-pages*`; `delete_file` applies the delete variants.
 
+- **Partner portal** — partner logins never use these routes (the fence in
+  `app/core/deps.py`). They read exactly one thing of a project's files: the
+  `Partnerportal` folder and its subfolders, through
+  `GET /portal/documents/{id}` (see `docs/PARTNER_PORTAL.md`). The folder
+  listing marks such folders with `portal_shared: true`.
+
 ## Endpoints
 
 Shared (any scope): `GET /files/{id}/preview`, `GET /files/{id}/download`,

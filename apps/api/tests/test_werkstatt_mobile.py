@@ -157,10 +157,15 @@ def _seed_article(
     stock_available: int | None = None,
     stock_out: int = 0,
     supplier_article_no: str | None = None,
+    is_serialized: bool = False,
 ) -> WerkstattArticle:
     """Seed one supplier + article + optional supplier link and an
     ``intake`` ledger row so ``recompute_article_stock`` reproduces the
-    same snapshot counters after the first API-initiated movement."""
+    same snapshot counters after the first API-initiated movement.
+
+    ``is_serialized`` makes it a machine type — the only kind the checkout
+    still lends; a consumable is used up instead
+    (``test_werkstatt_desk_dispense.py``)."""
 
     supplier = WerkstattSupplier(name=f"Acme Supply for {article_number}")
     db.add(supplier)
@@ -177,6 +182,7 @@ def _seed_article(
         stock_repair=0,
         stock_min=1,
         currency="EUR",
+        is_serialized=is_serialized,
     )
     db.add(article)
     db.flush()
@@ -383,6 +389,10 @@ def test_scan_requires_authentication(client: TestClient):
 
 # ──────────────────────────────────────────────────────────────────────────
 # §3.2 Quick checkout / return
+#
+# A checkout is a loan only for a machine type (``is_serialized``) since
+# 2026-10-10; the loan tests below seed one. A consumable checkout is used
+# up — see ``test_werkstatt_desk_dispense.py``.
 # ──────────────────────────────────────────────────────────────────────────
 
 
@@ -390,7 +400,7 @@ def test_checkout_happy_path(client: TestClient):
     admin_token = _admin_login(client)
     with _SeedSession() as db:
         scaffold = _seed_scaffold_user(db)
-        article = _seed_article(db, scaffold_user=scaffold, stock_total=5)
+        article = _seed_article(db, scaffold_user=scaffold, stock_total=5, is_serialized=True)
         article_id = article.id
 
     resp = client.post(
@@ -409,7 +419,7 @@ def test_checkout_exceeding_available_is_400(client: TestClient):
     admin_token = _admin_login(client)
     with _SeedSession() as db:
         scaffold = _seed_scaffold_user(db)
-        article = _seed_article(db, scaffold_user=scaffold, stock_total=1)
+        article = _seed_article(db, scaffold_user=scaffold, stock_total=1, is_serialized=True)
         article_id = article.id
 
     resp = client.post(
@@ -425,7 +435,7 @@ def test_return_ok_condition_restores_stock(client: TestClient):
     admin_token = _admin_login(client)
     with _SeedSession() as db:
         scaffold = _seed_scaffold_user(db)
-        article = _seed_article(db, scaffold_user=scaffold, stock_total=3)
+        article = _seed_article(db, scaffold_user=scaffold, stock_total=3, is_serialized=True)
         article_id = article.id
 
     r1 = client.post(
@@ -450,7 +460,7 @@ def test_return_repair_condition_moves_to_repair(client: TestClient):
     admin_token = _admin_login(client)
     with _SeedSession() as db:
         scaffold = _seed_scaffold_user(db)
-        article = _seed_article(db, scaffold_user=scaffold, stock_total=3)
+        article = _seed_article(db, scaffold_user=scaffold, stock_total=3, is_serialized=True)
         article_id = article.id
 
     client.post(
@@ -475,7 +485,7 @@ def test_return_lost_condition_shrinks_total(client: TestClient):
     admin_token = _admin_login(client)
     with _SeedSession() as db:
         scaffold = _seed_scaffold_user(db)
-        article = _seed_article(db, scaffold_user=scaffold, stock_total=3)
+        article = _seed_article(db, scaffold_user=scaffold, stock_total=3, is_serialized=True)
         article_id = article.id
 
     client.post(
@@ -492,6 +502,83 @@ def test_return_lost_condition_shrinks_total(client: TestClient):
     article = resp.json()
     assert article["stock_total"] == 2
     assert article["stock_out"] == 1
+
+
+def test_a_lost_return_larger_than_what_is_out_is_refused(client: TestClient):
+    """A lost tool must have been out. Writing off more than ``stock_out``
+    would shrink stock that is still on the shelf and drive ``out`` below
+    zero, so the ledger refuses it like an oversized ``return``."""
+    admin_token = _admin_login(client)
+    with _SeedSession() as db:
+        scaffold = _seed_scaffold_user(db)
+        article = _seed_article(db, scaffold_user=scaffold, stock_total=3, is_serialized=True)
+        article_id = article.id
+
+    taken = client.post(
+        "/api/werkstatt/mobile/checkout",
+        headers=_auth(admin_token),
+        json={"article_id": article_id, "quantity": 1},
+    )
+    assert taken.status_code == 200, taken.text
+    resp = client.post(
+        "/api/werkstatt/mobile/return",
+        headers=_auth(admin_token),
+        json={"article_id": article_id, "quantity": 2, "condition": "lost"},
+    )
+    assert resp.status_code == 400, resp.text
+    assert "stock_out" in resp.json()["detail"]
+
+    with _SeedSession() as db:
+        types = [
+            row.movement_type
+            for row in db.query(WerkstattMovement).filter(WerkstattMovement.article_id == article_id)
+        ]
+        stored = db.get(WerkstattArticle, article_id)
+        assert "correction" not in types
+        assert (stored.stock_total, stored.stock_available, stored.stock_out) == (3, 2, 1)
+
+
+@pytest.mark.parametrize("quantity", [10_001, 10**20])
+def test_a_return_quantity_past_the_bound_is_refused_before_booking(client: TestClient, quantity: int):
+    """An unbounded quantity used to reach ``db.flush()`` and come back as an
+    OverflowError/DataError — an unhandled 500. Bounded on the wire like the
+    station and desk payloads: a 422 before any session work."""
+    admin_token = _admin_login(client)
+    with _SeedSession() as db:
+        scaffold = _seed_scaffold_user(db)
+        article = _seed_article(db, scaffold_user=scaffold, stock_total=3, is_serialized=True)
+        article_id = article.id
+
+    for condition in ("ok", "repair", "lost"):
+        resp = client.post(
+            "/api/werkstatt/mobile/return",
+            headers=_auth(admin_token),
+            json={"article_id": article_id, "quantity": quantity, "condition": condition},
+        )
+        assert resp.status_code == 422, (condition, resp.text)
+
+    with _SeedSession() as db:
+        types = [
+            row.movement_type
+            for row in db.query(WerkstattMovement).filter(WerkstattMovement.article_id == article_id)
+        ]
+        assert types == ["intake"]
+
+
+def test_the_ledger_refuses_a_correction_past_stock_out(client: TestClient):
+    """The guard sits in ``apply_movement``, the one write path, so every
+    caller of ``correction`` gets it — not only the phone."""
+    from app.services.werkstatt_movements import MovementError, apply_movement
+
+    with _SeedSession() as db:
+        scaffold = _seed_scaffold_user(db)
+        article = _seed_article(db, scaffold_user=scaffold, stock_total=3, is_serialized=True)
+        apply_movement(db, article=article, movement_type="checkout", quantity=2, user_id=scaffold.id)
+        with pytest.raises(MovementError, match="stock_out"):
+            apply_movement(db, article=article, movement_type="correction", quantity=3, user_id=scaffold.id)
+        # Exactly what is out may still be written off.
+        apply_movement(db, article=article, movement_type="correction", quantity=2, user_id=scaffold.id)
+        assert (article.stock_total, article.stock_available, article.stock_out) == (1, 1, 0)
 
 
 def test_checkout_on_unknown_article_is_404(client: TestClient):
@@ -513,7 +600,7 @@ def test_movements_list_defaults_to_caller_only(client: TestClient):
     admin_token = _admin_login(client)
     with _SeedSession() as db:
         scaffold = _seed_scaffold_user(db)
-        article = _seed_article(db, scaffold_user=scaffold, stock_total=5)
+        article = _seed_article(db, scaffold_user=scaffold, stock_total=5, is_serialized=True)
         article_id = article.id
 
     # Admin performs one checkout.
@@ -565,8 +652,8 @@ def test_my_checkouts_only_shows_outstanding(client: TestClient):
     admin_token = _admin_login(client)
     with _SeedSession() as db:
         scaffold = _seed_scaffold_user(db)
-        article_a = _seed_article(db, scaffold_user=scaffold, article_number="SP-A", stock_total=5)
-        article_b = _seed_article(db, scaffold_user=scaffold, article_number="SP-B", stock_total=5)
+        article_a = _seed_article(db, scaffold_user=scaffold, article_number="SP-A", stock_total=5, is_serialized=True)
+        article_b = _seed_article(db, scaffold_user=scaffold, article_number="SP-B", stock_total=5, is_serialized=True)
         article_a_id = article_a.id
         article_b_id = article_b.id
 

@@ -12,7 +12,8 @@
  * Everything returns new objects; the document passed in is never touched.
  */
 import { catalogEntry, makeDevice, newId, nextCircuitNumber, rowUsedSlots } from "./schaltplanDevices";
-import { allDevices, isCircuitDevice } from "./schaltplanTopology";
+import { isTerminalEligible } from "./schaltplanTerminalRules";
+import { allDevices, isCircuitDevice, terminalOffered } from "./schaltplanTopology";
 import type { DeviceKind, PanelDevice, PanelDocument, PanelRow, PhaseLabel } from "../types/schaltplan";
 
 /** Width of a rail that was not sized by hand — the classic 12-TE Reihe. */
@@ -200,4 +201,24 @@ export function rowFromTemplate(
     devices,
   };
   return { ...row, slots: Math.max(row.slots, rowUsedSlots(row)) };
+}
+
+/**
+ * "Reihenklemme am Abgang" on or off for the whole board at once. On flags
+ * exactly the devices the inspector offers it to (`terminalOffered`); off
+ * clears every eligible device, a stale flag hidden on a fuse that has since
+ * become a Vorsicherung included. Only devices whose flag changes get a new
+ * object, so an untouched breaker keeps its identity for React.
+ */
+export function setTerminalsEverywhere(document: PanelDocument, flag: boolean): PanelDocument {
+  const applies = (device: PanelDevice) => (flag ? terminalOffered(device, document) : isTerminalEligible(device));
+  return {
+    ...document,
+    rows: document.rows.map((row) => ({
+      ...row,
+      devices: row.devices.map((device) =>
+        applies(device) && (device.terminal_block === true) !== flag ? { ...device, terminal_block: flag } : device,
+      ),
+    })),
+  };
 }

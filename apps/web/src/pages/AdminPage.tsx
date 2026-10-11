@@ -9,6 +9,8 @@ import { MailIcon, KeyIcon, ArchiveUserIcon, ShieldIcon, ResetIcon } from "../co
 import { schoolWeekdayLabel } from "../utils/dates";
 import type { User, EmployeeGroup } from "../types";
 import { UserStationBadge } from "../components/admin/UserStationBadge";
+import { AdminTabBar, adminTabId, adminTabPanelId } from "../components/admin/AdminTabBar";
+import "../styles/admin-mobile.css";
 
 type AdminTab = "users" | "groups" | "roles" | "tools" | "audit" | "settings" | "system" | "backups";
 type AuditPeriodFilter = "all" | "today" | "7d" | "30d" | "90d" | "custom";
@@ -92,6 +94,17 @@ function roleLabel(role: string, de: boolean): string {
     employee: { de: "Mitarbeiter", en: "Employee" },
   };
   return labels[role]?.[de ? "de" : "en"] ?? role;
+}
+
+/** A tab's panel, wired to its tab in the strip (WAI-ARIA tabs). */
+function tabPanelProps(id: AdminTab) {
+  return { role: "tabpanel", id: adminTabPanelId(id), "aria-labelledby": adminTabId(id) } as const;
+}
+
+/** "1 Tag" / "12.5 Tage" — the unit the phone card prints after the number. */
+function vacationDaysUnit(days: number, de: boolean): string {
+  if (de) return days === 1 ? "Tag" : "Tage";
+  return days === 1 ? "day" : "days";
 }
 
 type GroupDraft = {
@@ -479,32 +492,22 @@ export function AdminPage() {
 
   return (
     <>
-      <section className="admin-page">
+      {/* `admin-center` scopes admin-mobile.css to this page: the Pi-Station
+          page borrows the `admin-page` card and form classes too. */}
+      <section className="admin-page admin-center">
         <h1 className="admin-page-title">{de ? "Verwaltungszentrum" : "Admin Center"}</h1>
 
         {/* ── Tab bar ────────────────────────────────────────────────────── */}
-        <nav
-          className="admin-page-tabs"
-          role="tablist"
-          aria-label={de ? "Verwaltungsbereiche" : "Admin sections"}
-        >
-          {TABS.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              role="tab"
-              aria-selected={tab === t.id}
-              className={tab === t.id ? "admin-page-tab active" : "admin-page-tab"}
-              onClick={() => setTab(t.id)}
-            >
-              {t.label}
-            </button>
-          ))}
-        </nav>
+        <AdminTabBar
+          tabs={TABS}
+          active={tab}
+          onChange={setTab}
+          label={de ? "Verwaltungsbereiche" : "Admin sections"}
+        />
 
         {/* ── Users ──────────────────────────────────────────────────────── */}
         {tab === "users" && (
-          <div className="admin-page-layout admin-page-layout--users">
+          <div className="admin-page-layout admin-page-layout--users" {...tabPanelProps("users")}>
             <div className="admin-page-card admin-page-card--users-table">
               <div className="admin-users-table">
                 <div className="admin-users-table-head">
@@ -543,6 +546,7 @@ export function AdminPage() {
                     const totalRemaining = vacDraft
                       ? Number(vacDraft.available ?? 0) + Number(vacDraft.carryover ?? 0)
                       : Number(u.vacation_days_total_remaining ?? 0);
+                    const totalRemainingLabel = totalRemaining.toFixed(1).replace(/\.0$/, "");
                     const hasCustomPerms =
                       (userPermissionOverrides[u.id]?.extra?.length ?? 0) > 0 ||
                       (userPermissionOverrides[u.id]?.denied?.length ?? 0) > 0;
@@ -572,13 +576,34 @@ export function AdminPage() {
                               {roleLabel(u.role, de)}
                             </span>
                           </div>
+                          {/*
+                            A desktop row reads these numbers under the column heads. A
+                            phone stacks the row into a card with no heads, where a bare
+                            "8" and "12.5" meant nothing — so each carries its label, and
+                            the vacation figure its unit, shown only below 768 px
+                            (admin-mobile.css). The hours already said "h".
+                          */}
                           <div className="admin-users-col admin-users-col--hours">
-                            {Number(u.required_daily_hours ?? 8).toFixed(1).replace(/\.0$/, "")}
-                            <span className="admin-users-unit">h</span>
+                            <span className="admin-users-cell-label">
+                              {de ? "Arbeitszeit/Tag" : "Hours/day"}
+                            </span>
+                            <span className="admin-users-cell-value">
+                              {Number(u.required_daily_hours ?? 8).toFixed(1).replace(/\.0$/, "")}
+                              <span className="admin-users-unit">h</span>
+                            </span>
                           </div>
                           <div className="admin-users-col admin-users-col--vacation">
-                            {totalRemaining.toFixed(1).replace(/\.0$/, "")}
+                            <span className="admin-users-cell-label">
+                              {de ? "Resturlaub" : "Vacation left"}
+                            </span>
+                            <span className="admin-users-cell-value">
+                              {totalRemainingLabel}
+                              <span className="admin-users-unit admin-users-unit--days">
+                                {vacationDaysUnit(Number(totalRemainingLabel), de)}
+                              </span>
+                            </span>
                           </div>
+                          {/* The icons get words on a phone: there is no hover there to show the title. */}
                           <div className="admin-users-col admin-users-col--actions">
                             <span
                               className="admin-users-action-icon"
@@ -598,6 +623,9 @@ export function AdminPage() {
                               }}
                             >
                               <MailIcon />
+                              <span className="admin-users-action-text">
+                                {de ? "Einladung senden" : "Send invite"}
+                              </span>
                             </span>
                             <span
                               className="admin-users-action-icon admin-users-action-icon--key"
@@ -617,6 +645,9 @@ export function AdminPage() {
                               }}
                             >
                               <KeyIcon />
+                              <span className="admin-users-action-text">
+                                {de ? "Passwort zurücksetzen" : "Reset password"}
+                              </span>
                             </span>
                           </div>
                         </button>
@@ -1170,7 +1201,7 @@ export function AdminPage() {
 
         {/* ── Groups ─────────────────────────────────────────────────────── */}
         {tab === "groups" && (
-          <div className="admin-page-layout admin-page-layout--groups">
+          <div className="admin-page-layout admin-page-layout--groups" {...tabPanelProps("groups")}>
             <div className="admin-groups-main">
               {employeeGroupsLoading && (
                 <div className="admin-page-card admin-page-card--muted">
@@ -1359,7 +1390,7 @@ export function AdminPage() {
 
         {/* ── Roles ──────────────────────────────────────────────────────── */}
         {tab === "roles" && (
-          <div className="admin-page-card admin-roles-card">
+          <div className="admin-page-card admin-roles-card" {...tabPanelProps("roles")}>
             {rolePermissionsLoading && !rolePermissionsMeta && (
               <p className="admin-page-muted">{de ? "Lade…" : "Loading…"}</p>
             )}
@@ -1380,7 +1411,10 @@ export function AdminPage() {
               };
 
               return (
-                <div className="admin-roles-table-wrap">
+                // The description tooltip is position:fixed at the cell it came from;
+                // once the matrix scrolls (a phone swipes it sideways) it would
+                // float over the wrong row, so it goes.
+                <div className="admin-roles-table-wrap" onScroll={() => setPermTooltip(null)}>
                   <table className="admin-roles-table">
                     <thead>
                       <tr>
@@ -1464,7 +1498,7 @@ export function AdminPage() {
 
         {/* ── Tools ──────────────────────────────────────────────────────── */}
         {tab === "tools" && (
-          <div className="admin-page-layout admin-page-layout--tools">
+          <div className="admin-page-layout admin-page-layout--tools" {...tabPanelProps("tools")}>
             {canManageProjectImport && (
               <>
                 <div className="admin-page-card admin-tools-card">
@@ -1584,7 +1618,7 @@ export function AdminPage() {
                   </label>
                   <div className="admin-tools-form-row">
                     <label className="admin-invite-field">
-                      <span className="admin-invite-field-label">Start</span>
+                      <span className="admin-invite-field-label">{de ? "Beginn" : "Start"}</span>
                       <input
                         type="date"
                         className="admin-invite-input"
@@ -1596,7 +1630,7 @@ export function AdminPage() {
                       />
                     </label>
                     <label className="admin-invite-field">
-                      <span className="admin-invite-field-label">End</span>
+                      <span className="admin-invite-field-label">{de ? "Ende" : "End"}</span>
                       <input
                         type="date"
                         className="admin-invite-input"
@@ -1667,7 +1701,7 @@ export function AdminPage() {
 
         {/* ── Audit ──────────────────────────────────────────────────────── */}
         {tab === "audit" && (
-          <div className="admin-audit-wrap">
+          <div className="admin-audit-wrap" {...tabPanelProps("audit")}>
             <div className="admin-audit-toolbar">
               <div className="admin-audit-search-wrap">
                 <input
@@ -1816,20 +1850,38 @@ export function AdminPage() {
                   ? (adminUsersById.get(log.actor_user_id)?.display_name ?? `#${log.actor_user_id}`)
                   : (de ? "System" : "System");
                 return (
+                  // Every value carries its label: on a phone the column heads are
+                  // hidden and the row stacks into a card (admin-mobile.css); on
+                  // wider screens the labels are hidden and the row is unchanged.
                   <div key={log.id} className="admin-audit-row">
-                    <div className="admin-audit-col admin-audit-col--time">{fmtTs(log.created_at)}</div>
+                    <div className="admin-audit-col admin-audit-col--time">
+                      <span className="admin-audit-label">{de ? "Zeitpunkt" : "Timestamp"}</span>
+                      <span className="admin-audit-value">{fmtTs(log.created_at)}</span>
+                    </div>
                     <div className="admin-audit-col admin-audit-col--cat">
-                      <span className={`admin-audit-chip admin-audit-chip--${log.category}`}>
-                        {formatAuditCategory(log.category, de)}
+                      <span className="admin-audit-label">{de ? "Kategorie" : "Category"}</span>
+                      <span className="admin-audit-value">
+                        <span className={`admin-audit-chip admin-audit-chip--${log.category}`}>
+                          {formatAuditCategory(log.category, de)}
+                        </span>
                       </span>
                     </div>
-                    <div className="admin-audit-col admin-audit-col--user">{actor}</div>
+                    <div className="admin-audit-col admin-audit-col--user">
+                      <span className="admin-audit-label">{de ? "Benutzer" : "User"}</span>
+                      <span className="admin-audit-value">{actor}</span>
+                    </div>
                     <div className="admin-audit-col admin-audit-col--event">
-                      <code className="admin-audit-code">{log.action}</code>
+                      <span className="admin-audit-field admin-audit-field--action">
+                        <span className="admin-audit-label">{de ? "Aktion" : "Action"}</span>
+                        <code className="admin-audit-code">{log.action}</code>
+                      </span>
                       {log.target_type && (
-                        <span className="admin-audit-target">
-                          {log.target_type}
-                          {log.target_id != null ? ` · ${log.target_id}` : ""}
+                        <span className="admin-audit-field admin-audit-field--target">
+                          <span className="admin-audit-label">{de ? "Ziel" : "Target"}</span>
+                          <span className="admin-audit-target">
+                            {log.target_type}
+                            {log.target_id != null ? ` · ${log.target_id}` : ""}
+                          </span>
                         </span>
                       )}
                     </div>
@@ -1842,7 +1894,7 @@ export function AdminPage() {
 
         {/* ── Settings ───────────────────────────────────────────────────── */}
         {tab === "settings" && (
-          <div className="admin-page-layout admin-page-layout--settings">
+          <div className="admin-page-layout admin-page-layout--settings" {...tabPanelProps("settings")}>
             <div className="admin-page-card admin-settings-block">
               <h2 className="admin-page-card-title">
                 {de ? "Firma" : "Company"}
@@ -1904,6 +1956,42 @@ export function AdminPage() {
                     placeholder={de ? "Straße, PLZ Ort" : "Street, ZIP City"}
                   />
                 </label>
+                <div className="admin-tools-form-row">
+                  <label className="admin-invite-field">
+                    <span className="admin-invite-field-label">
+                      {de ? "Telefon fürs Partnerportal" : "Phone for the partner portal"}
+                    </span>
+                    <input
+                      type="tel"
+                      className="admin-invite-input"
+                      value={companySettingsForm.company_phone}
+                      onChange={(e) =>
+                        setCompanySettingsForm({
+                          ...companySettingsForm,
+                          company_phone: e.target.value,
+                        })
+                      }
+                      placeholder="02302 91 44 0"
+                    />
+                  </label>
+                  <label className="admin-invite-field">
+                    <span className="admin-invite-field-label">
+                      {de ? "E-Mail fürs Partnerportal" : "Email for the partner portal"}
+                    </span>
+                    <input
+                      type="email"
+                      className="admin-invite-input"
+                      value={companySettingsForm.company_email}
+                      onChange={(e) =>
+                        setCompanySettingsForm({
+                          ...companySettingsForm,
+                          company_email: e.target.value,
+                        })
+                      }
+                      placeholder="buero@…"
+                    />
+                  </label>
+                </div>
                 <label className="admin-invite-field">
                   <span className="admin-invite-field-label">
                     {de ? "Logo-URL oder Datei" : "Logo URL or file"}
@@ -2290,7 +2378,7 @@ export function AdminPage() {
 
         {/* ── System ─────────────────────────────────────────────────────── */}
         {tab === "system" && (
-          <div className="admin-page-layout admin-page-layout--system">
+          <div className="admin-page-layout admin-page-layout--system" {...tabPanelProps("system")}>
             {canManageSystem && (
               <div className="admin-page-card admin-system-block">
                 <h2 className="admin-page-card-title">
@@ -2352,7 +2440,7 @@ export function AdminPage() {
 
         {/* ── Backups (full encrypted-archive flow) ──────────────────────── */}
         {tab === "backups" && (
-          <div className="admin-page-layout admin-page-layout--system">
+          <div className="admin-page-layout admin-page-layout--system" {...tabPanelProps("backups")}>
             <AdminBackupsPanel />
           </div>
         )}

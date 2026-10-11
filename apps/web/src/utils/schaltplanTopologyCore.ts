@@ -50,6 +50,37 @@ export function findRowOf(document: PanelDocument, deviceId: string): string | n
   return null;
 }
 
+// ── Feeders (owner, 2026-10-09) ──────────────────────────────────────────────
+
+/**
+ * Devices that may feed a group device named after them: SLS → FI, SLS →
+ * Hauptschalter → FI, Hauptschalter → Verteilerblock → FIs. A fuse named by a
+ * group device stays what it always was, its Vorsicherung. Twin of
+ * `FEEDER_KINDS` on the backend.
+ */
+export const FEEDER_KINDS: ReadonlySet<string> = new Set(["sls", "hauptschalter", "distribution_block"]);
+
+export function isFeeder(device: PanelDevice | null | undefined): boolean {
+  return !!device && FEEDER_KINDS.has(device.kind);
+}
+
+/**
+ * Would `head` ← `feeder` close a circle? Walks the feeder's own feed links
+ * upward; reaching `head` again means yes. Twin of `_closes_circle`.
+ */
+export function closesCircle(head: PanelDevice, feeder: PanelDevice, byId: ReadonlyMap<string, PanelDevice>): boolean {
+  const seen = new Set<string>();
+  let node: PanelDevice | undefined = feeder;
+  while (node) {
+    if (node.id === head.id) return true;
+    if (seen.has(node.id)) return false;
+    seen.add(node.id);
+    const parent: PanelDevice | undefined = node.parent_id ? byId.get(node.parent_id) : undefined;
+    node = isFeeder(parent) ? parent : undefined;
+  }
+  return false;
+}
+
 // ── Fuses that feed circuits directly ────────────────────────────────────────
 
 /** A fuse the user flagged: it captures the rail after it like an FI (C2a). */
@@ -131,7 +162,7 @@ export function buildTopology(document: PanelDocument): PanelGroup[] {
   const indexByGroupId = new Map<string, number>();
   for (const device of devices) {
     if (!isGroupDevice(device) && !fuseOpensGroup(device, feeders)) continue;
-    groups.push({ device, preFuse: null, children: [] });
+    groups.push({ device, preFuse: null, fedBy: null, feeds: [], feedCycle: false, children: [] });
     indexByGroupId.set(device.id, groups.length - 1);
   }
 
@@ -157,7 +188,25 @@ export function buildTopology(document: PanelDocument): PanelGroup[] {
     }
   }
 
-  const supplyGroup: PanelGroup = { device: null, preFuse: null, children: [] };
+  // The feed links between groups (twin of `_link_feeders`). The circuits are
+  // untouched — they hang off their own group — only the link is recorded,
+  // both ways, for the drawing and the legend.
+  for (const group of groups) {
+    const head = group.device;
+    if (!head || !isGroupDevice(head)) continue;
+    const feeder = head.parent_id ? byId.get(head.parent_id) : undefined;
+    if (!feeder || feeder === head || !isFeeder(feeder)) continue;
+    if (closesCircle(head, feeder, byId)) {
+      group.feedCycle = true;
+      continue;
+    }
+    const feederIndex = indexByGroupId.get(feeder.id);
+    if (feederIndex === undefined) continue;
+    group.fedBy = feeder;
+    groups[feederIndex].feeds.push(head);
+  }
+
+  const supplyGroup: PanelGroup = { device: null, preFuse: null, fedBy: null, feeds: [], feedCycle: false, children: [] };
   let current: PanelGroup = supplyGroup;
 
   for (const device of devices) {

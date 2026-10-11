@@ -36,6 +36,7 @@ from app.schemas.werkstatt import (
 from app.schemas.werkstatt_procurement import OrderLineCreatePayload
 from app.services.werkstatt_order_lines import build_order_line, create_draft_order
 from app.services.werkstatt_order_send import prepare_order_for_send, require_resolved
+from app.services.werkstatt_order_totals import refuse_oversized_order_total
 from app.services.werkstatt_orders import transition_order
 from app.services.werkstatt_reorder import compute_reorder_suggestions
 
@@ -95,50 +96,52 @@ def submit_reorder(
 
     now = utcnow()
     try:
-        order = create_draft_order(
-            db,
-            supplier=supplier,
-            project_id=None,
-            title=None,
-            source="reorder",
-            created_by=current_user.id,
-            now=now,
-            notes=payload.notes,
-        )
-        for line_payload in payload.lines:
-            build_order_line(
+        with refuse_oversized_order_total(db):
+            order = create_draft_order(
                 db,
-                order,
-                OrderLineCreatePayload(
-                    article_id=line_payload.article_id,
-                    quantity_ordered=line_payload.quantity,
-                    unit_price_cents=line_payload.unit_price_cents,
-                ),
-                article=articles_by_id[line_payload.article_id],
+                supplier=supplier,
+                project_id=None,
+                title=None,
+                source="reorder",
+                created_by=current_user.id,
                 now=now,
+                notes=payload.notes,
+            )
+            for line_payload in payload.lines:
+                build_order_line(
+                    db,
+                    order,
+                    OrderLineCreatePayload(
+                        article_id=line_payload.article_id,
+                        quantity_ordered=line_payload.quantity,
+                        unit_price_cents=line_payload.unit_price_cents,
+                    ),
+                    article=articles_by_id[line_payload.article_id],
+                    now=now,
+                )
+            # Before anything is sent: a total past the int4 column is a 400,
+            # and the draft goes with the rollback — nothing reaches "sent".
+            order.total_amount_cents = compute_total_cents(
+                list(
+                    db.scalars(
+                        select(WerkstattOrderLine).where(
+                            WerkstattOrderLine.order_id == order.id
+                        )
+                    ).all()
+                )
             )
 
-        # The same gate as the shop hand-over. On a 409 the draft above is
-        # rolled back with everything else — the buyer fixes the supplier
-        # number on the article and submits again, or overrides.
-        preparation = prepare_order_for_send(db, order, backfill=True)
-        require_resolved(preparation, allow_unresolved=payload.allow_unresolved)
+            # The same gate as the shop hand-over. On a 409 the draft above is
+            # rolled back with everything else — the buyer fixes the supplier
+            # number on the article and submits again, or overrides.
+            preparation = prepare_order_for_send(db, order, backfill=True)
+            require_resolved(preparation, allow_unresolved=payload.allow_unresolved)
 
-        # Immediate transition draft → sent.
-        transition_order(db, order, "sent", actor_id=current_user.id)
+            # Immediate transition draft → sent.
+            transition_order(db, order, "sent", actor_id=current_user.id)
     except HTTPException:
         db.rollback()
         raise
-
-    order.total_amount_cents = compute_total_cents(
-        list(
-            db.scalars(
-                select(WerkstattOrderLine).where(
-                    WerkstattOrderLine.order_id == order.id
-                )
-            ).all()
-        )
-    )
 
     db.commit()
     db.refresh(order)

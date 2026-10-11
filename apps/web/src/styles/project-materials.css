@@ -23,9 +23,11 @@
   color: #5c7895;
 }
 
-/* A panel row is stock that physically left the shelf — worth the ink weight
- * a report line, which is a technician's estimate, does not get. */
-.project-mat-tab-td--source-verteiler {
+/* A panel row — and a Lager row, consumables taken off the shelf for the
+ * project — is stock that physically left the shelf: worth the ink weight a
+ * report line, which is a technician's estimate, does not get. */
+.project-mat-tab-td--source-verteiler,
+.project-mat-tab-td--source-lager {
   color: #14293d;
   font-weight: 600;
 }

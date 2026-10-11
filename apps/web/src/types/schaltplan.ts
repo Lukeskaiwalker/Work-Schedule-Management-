@@ -15,6 +15,7 @@ export type PhaseLabel = "L1" | "L2" | "L3" | "L1-L3" | "L1/N" | "N" | "-";
 export type DeviceKind =
   | "hauptschalter"
   | "sls"
+  | "distribution_block"
   | "rcd"
   | "rcbo"
   | "mcb"
@@ -36,6 +37,7 @@ export type DeviceKind =
 export type DeviceSymbol =
   | "switch"
   | "sls"
+  | "distribution"
   | "rcd"
   | "rcbo"
   | "mcb"
@@ -201,6 +203,15 @@ export interface PanelGroup {
   device: PanelDevice | null;
   /** The Neozed/NH block feeding this group, when the group device names one. */
   preFuse: PanelDevice | null;
+  /**
+   * The SLS / Hauptschalter / Verteilerblock this group's device names as its
+   * feed (owner, 2026-10-09: SLS → FI, SLS → HS → FI, HS → KKL 54 → FIs).
+   */
+  fedBy: PanelDevice | null;
+  /** The group devices this one feeds — the other end of `fedBy`. */
+  feeds: PanelDevice[];
+  /** Its named feed would close a circle, so the link is ignored (and reported). */
+  feedCycle: boolean;
   children: PanelDevice[];
 }
 
@@ -210,9 +221,11 @@ export interface PanelGroup {
 // from the Werkstatt ledger (`consumption` minus `consumption_undo` rows that
 // carry this panel's id).
 
-export type PanelMaterialLineKind = "device" | "terminal" | "extra";
+// "manual": added by hand on this board (owner, 2026-10-09) — a shelf article
+// or a free text, between the derived lines and the extras.
+export type PanelMaterialLineKind = "device" | "terminal" | "manual" | "extra";
 export type PanelMaterialLineStatus = "open" | "done" | "over" | "unplanned";
-export type PanelMaterialArticleSource = "mapping" | "auto";
+export type PanelMaterialArticleSource = "mapping" | "auto" | "manual";
 
 /** The stock article a line is checked off against — a slim projection, not the full WerkstattArticleOut. */
 export interface PanelMaterialArticle {
@@ -237,6 +250,25 @@ export interface PanelMaterialLine {
   article: PanelMaterialArticle | null;
   article_source: PanelMaterialArticleSource | null;
   last_scanned_at: string | null;
+  /** A line added by hand ("manual:<id>"): the id to change or remove it. */
+  manual_id?: number | null;
+  /** Its note on its own — `detail` falls back to "manuell" when there is none. */
+  note?: string | null;
+}
+
+/**
+ * Body of `POST …/material/manual`: a shelf article or a free text. The
+ * server refuses neither-nor (422), an archived article (400), a quantity
+ * outside 1…9999 (422).
+ */
+export type PanelMaterialManualInput =
+  | { article_id: number; quantity: number; note?: string }
+  | { label: string; quantity: number; note?: string };
+
+/** Body of `PATCH …/material/manual/{id}`; an empty note clears it. */
+export interface PanelMaterialManualUpdate {
+  quantity?: number;
+  note?: string;
 }
 
 export interface PanelMaterialPanel {

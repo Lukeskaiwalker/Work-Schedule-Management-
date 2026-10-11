@@ -30,7 +30,7 @@ from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
-from sqlalchemy import select
+from sqlalchemy import delete as sa_delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -39,7 +39,7 @@ from app.core.deps import assert_project_access, get_current_user, require_permi
 from app.core.permissions import has_permission_for_user
 from app.models.customer import Customer
 from app.models.entities import Project, User
-from app.models.schaltplan import PanelPlan
+from app.models.schaltplan import PanelMaterialManualLine, PanelPlan
 from app.routers.workflow_helpers import _content_disposition
 from app.schemas.schaltplan import (
     PanelTypeLabelInfoOut,
@@ -634,6 +634,8 @@ def delete_panel(
         db, current_user, "panel_plan.delete", "panel_plan", str(plan.id),
         {"designation": plan.designation, "customer_id": plan.customer_id},
     )
+    # The FK cascades on PostgreSQL; said explicitly so SQLite agrees.
+    db.execute(sa_delete(PanelMaterialManualLine).where(PanelMaterialManualLine.panel_id == plan.id))
     db.delete(plan)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -685,6 +687,22 @@ def duplicate_panel(
         updated_by=current_user.id,
     )
     assign_panel_number(db, copy)
+    # The hand-added material belongs to the build, so the copy gets it too.
+    for line in db.scalars(
+        select(PanelMaterialManualLine)
+        .where(PanelMaterialManualLine.panel_id == source.id)
+        .order_by(PanelMaterialManualLine.id.asc())
+    ).all():
+        db.add(
+            PanelMaterialManualLine(
+                panel_id=copy.id,
+                article_id=line.article_id,
+                label=line.label,
+                quantity=line.quantity,
+                note=line.note,
+                created_by=current_user.id,
+            )
+        )
     db.commit()
     db.refresh(copy)
     return _detail(db, copy)

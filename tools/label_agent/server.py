@@ -107,6 +107,11 @@ ACTION_SCREEN = {
     # SMPL-CMD-FERTIG / SMPL-CMD-ABBRUCH does inside a panel session.
     "close_panel": SCREEN_RACK,
     "undo_panel": SCREEN_RACK,
+    # The Ausgabe picker's project tiles: one of the projects offered for the
+    # person picked (null goes back to the tiles), or "Ohne Projekt". The
+    # person tiles post "assignee", like the name row always has.
+    "project": SCREEN_RACK,
+    "no_project": SCREEN_RACK,
 }
 
 #: Where a freshly created article's identity came from, in the one word the
@@ -1060,6 +1065,7 @@ class Agent:
         self._sw = None
         self.router = None
         self.werkstatt = None
+        self.dispense = None
         self.now_playing = None
         self.scanner = None
         self.kiosk = None
@@ -1070,7 +1076,8 @@ class Agent:
 
     def _build_kiosk(self, session_idle_s: float, clock) -> None:
         modules = {name: module(name) for name in
-                   ("scan_router", "smpl_werkstatt", "now_playing", "input_reader")}
+                   ("scan_router", "smpl_werkstatt", "now_playing", "input_reader",
+                    "rack_dispense")}
         missing = [name for name, mod in modules.items() if mod is None]
         if missing:
             self.kiosk_error = "; ".join(module_error(name) for name in missing)
@@ -1110,6 +1117,9 @@ class Agent:
                 upstream_status=self._werkstatt_chip,
                 clock=clock,
             )
+            # The consumable Ausgabe: picking a person and a project, and the
+            # consumption bookings. Its own module; see rack_dispense.
+            self.dispense = modules["rack_dispense"].RackDispense(self)
         except Exception as exc:  # noqa: BLE001 - a broken kiosk is not a broken agent
             self.kiosk_error = f"{type(exc).__name__}: {exc}"
             self.kiosk = None
@@ -1281,7 +1291,11 @@ class Agent:
         return {
             "scan_router": dict(self.router.snapshot(),
                                 available=True,
-                                commands=list(self._sr.COMMAND_CODES)),
+                                commands=list(self._sr.COMMAND_CODES),
+                                # The codes that carry a number (a person, a
+                                # project): prefixes, never scannable as such,
+                                # so never in the command list.
+                                parametric_prefixes=list(self._sr.PARAMETRIC_PREFIXES)),
             "scanner": dict(self.scanner.status(), enabled=self.scanner_enabled),
             "now_playing": dict(self.now_playing.status(), enabled=self.now_playing_enabled),
             "werkstatt": self.werkstatt.status(),
@@ -1471,6 +1485,9 @@ class Agent:
         if self.kiosk is None:
             return
         self.kiosk.set_crew(self.werkstatt.crew(force=force))
+        # Each person's project tiles ride along: the same cadence, the same
+        # rule -- a tile is tapped against what was fetched, never fetched.
+        self.dispense.refresh_projects(force=force)
         self._crew_at = time.monotonic()
 
     # -- a scan -----------------------------------------------------------
@@ -1501,8 +1518,10 @@ class Agent:
         # An echo is dropped before it costs a round trip, not after.
         if not self.router.is_duplicate(text, arrived) and self.router.needs_resolution(text):
             text, resolved = self._resolve_scan(text)
+        # A stocked article reaches the router as a consumable or a tool
+        # (read off is_serialized), never as the payload: the router is pure.
         decision = self.router.route(text, source=source,
-                                     kind=self._sw.kind_of(resolved), at=arrived)
+                                     kind=self._sw.scan_kind(resolved), at=arrived)
         if decision.panel_expired:
             # The session timed out under this very scan (the tick had not
             # got there first); the card's list must not outlive it.
@@ -2412,6 +2431,10 @@ class Agent:
             return self.close_panel_session()
         elif action == "undo_panel":
             return self.undo_panel_item()
+        elif action in ("project", "no_project"):
+            error = self.dispense.screen_action(action, value)
+            if error:
+                raise ApiError(400, error)
         else:
             raise ApiError(400, "unknown screen action '%s'" % action)
         return {"ok": True, "action": action}
@@ -2509,6 +2532,10 @@ class Agent:
         self.router.set_assignee({"id": user_id, "name": person.get("name")})
         self.kiosk.bump(SCREEN_RACK)
 
+    def _applied_dispense(self, decision, resolved) -> None:
+        """Picking a person or project, and the consumption bookings: see rack_dispense."""
+        self.dispense.apply(decision, resolved)
+
 
 # What each routing decision costs, in one table rather than one long chain.
 _APPLY = {
@@ -2540,6 +2567,15 @@ _APPLY = {
     "panel_item": Agent._applied_panel_item,
     "undo_panel_item": Agent._applied_undo_panel,
     "badge": Agent._applied_badge,
+    # The consumable Ausgabe (rack_dispense.ACTIONS).
+    "select_person": Agent._applied_dispense,
+    "unknown_person": Agent._applied_dispense,
+    "select_project": Agent._applied_dispense,
+    "selection_refused": Agent._applied_dispense,
+    "close_selection": Agent._applied_dispense,
+    "consumption": Agent._applied_dispense,
+    "consumption_return": Agent._applied_dispense,
+    "undo_consumption": Agent._applied_dispense,
 }
 
 
@@ -2723,8 +2759,14 @@ class Kiosk:
             return (self._panel or {}).get("last_line_key")
 
     def set_crew(self, people) -> None:
-        """The name buttons. Only wakes the rack screen when they changed."""
+        """The name buttons. Only wakes the rack screen when they changed.
+
+        The router gets the same list: a scanned person code may only name
+        somebody whose tile the screen drew.
+        """
         rows = [dict(person) for person in (people or []) if isinstance(person, dict)]
+        if self._router is not None:
+            self._router.set_crew(rows)
         with self._cond:
             if rows == self._crew:
                 return
@@ -2802,6 +2844,11 @@ class Kiosk:
             payload["direction"] = self._router.direction if self._router else "aus"
             payload["crew"] = [dict(person) for person in self._crew]
             payload["assignee"] = self._router.assignee if self._router else None
+            # The Ausgabe picker: the picked person's project tiles, and the
+            # project picked (``project_chosen`` with a null ``project`` is
+            # "ohne Projekt").
+            payload.update(self._router.selection() if self._router else
+                           {"projects": [], "project": None, "project_chosen": False})
             payload["name_prompt"] = (
                 dict(self._name_prompt) if self._name_prompt else None
             )

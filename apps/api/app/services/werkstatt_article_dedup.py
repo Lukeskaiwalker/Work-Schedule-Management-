@@ -45,6 +45,7 @@ from app.models.entities import (
     WerkstattMovement,
     WerkstattOrderLine,
 )
+from app.models.schaltplan import PanelMaterialArticle, PanelMaterialManualLine
 from app.services.search_matching import identifier_key, normalize_query
 from app.services.werkstatt_movements import recompute_article_stock
 
@@ -106,6 +107,9 @@ class MergeResult:
     units_moved: int = 0
     inventory_counts_moved: int = 0
     task_materials_moved: int = 0
+    # Materialliste rows naming the duplicate: the global line → article
+    # mappings and the lines added to a board by hand.
+    panel_material_moved: int = 0
     internal_code_moved: bool = False
     # Supplier numbers that could not travel as their own link row because the
     # survivor was already linked to that supplier, and were kept anyway.
@@ -183,7 +187,9 @@ def link_catalog_duplicates(db: Session, article: WerkstattArticle) -> list[Werk
         link = WerkstattArticleSupplier(
             article_id=article.id,
             supplier_id=row.supplier_id,
-            supplier_article_no=(row.article_no or None),
+            # Trimmed like every other link write: the scan cascade compares
+            # the stripped scan against the stored number exactly.
+            supplier_article_no=((row.article_no or "").strip() or None),
             source_catalog_item_id=row.id,
             # First link on an article with none becomes the preferred one so
             # reorder flows always have a supplier to target.
@@ -504,6 +510,13 @@ def merge_articles(
     box_items_moved = _repoint(db, WerkstattConstructionBoxItem, duplicate.id, survivor.id)
     units_moved = _repoint(db, WerkstattArticleUnit, duplicate.id, survivor.id)
     task_materials_moved = _repoint(db, TaskMaterial, duplicate.id, survivor.id)
+    # The Materialliste follows its ledger: left on the archived duplicate, a
+    # mapped or hand-added line would see the survivor's scans as "nicht
+    # geplant" and refuse "+1" on an archived article. ``part_key`` is unique
+    # per line kind, not per article, so the mappings move without a clash.
+    panel_material_moved = _repoint(db, PanelMaterialArticle, duplicate.id, survivor.id) + _repoint(
+        db, PanelMaterialManualLine, duplicate.id, survivor.id
+    )
     counts_moved = _merge_inventory_counts(db, duplicate.id, survivor.id)
 
     # Retire rather than delete: the movement ledger is an audit trail and the
@@ -548,6 +561,7 @@ def merge_articles(
         units_moved=units_moved,
         inventory_counts_moved=counts_moved,
         task_materials_moved=task_materials_moved,
+        panel_material_moved=panel_material_moved,
         internal_code_moved=internal_code_moved,
         supplier_numbers_kept=tuple(numbers_kept),
         fields_filled=tuple(filled),

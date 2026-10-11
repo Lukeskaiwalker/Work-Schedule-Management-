@@ -1045,3 +1045,56 @@ def test_print_label_does_not_require_the_manage_permission(
     )
     assert resp.status_code == 200, resp.text
     assert len(sent) == 1
+
+
+def test_an_inspection_never_moves_stock(client: TestClient, admin_token: str) -> None:
+    """A DGUV3 check is an audit event, not a write-off.
+
+    It used to land as a quantity-1 ``correction`` against the machine's
+    article, so every inspection took one machine off the type's
+    ``stock_total`` and ``stock_out`` at the next recompute. Since the ledger
+    refuses a ``correction`` past ``stock_out`` (2026-10-10), that also made a
+    real "verloren" report on the phone fail after an inspection. Same shape
+    as the article BG-Prüfung, which has always written quantity 0.
+    """
+    article = _article(client, admin_token, "Bohrhammer Hilti TE 30")
+    machine = _machine(client, admin_token, article["id"], inspection_required=True, inspection_interval_days=365)
+    stocked = client.post(
+        f"/api/werkstatt/articles/{article['id']}/movements",
+        headers=auth_headers(admin_token),
+        json={"kind": "intake", "quantity": 2, "reason": "Lieferung"},
+    )
+    assert stocked.status_code == 200, stocked.text
+
+    inspected = client.post(
+        f"/api/werkstatt/machines/{machine['id']}/inspection",
+        headers=auth_headers(admin_token),
+        json={"passed": True},
+    )
+    assert inspected.status_code == 200, inspected.text
+    from app.core.db import SessionLocal
+    from app.models.entities import WerkstattMovement
+
+    with SessionLocal() as db:
+        audit = (
+            db.query(WerkstattMovement)
+            .filter(WerkstattMovement.unit_id == machine["id"], WerkstattMovement.movement_type == "correction")
+            .one()
+        )
+        assert audit.quantity == 0
+
+    taken = client.post(
+        "/api/werkstatt/mobile/checkout",
+        headers=auth_headers(admin_token),
+        json={"article_id": article["id"], "quantity": 1},
+    )
+    assert taken.status_code == 200, taken.text
+    assert (taken.json()["stock_total"], taken.json()["stock_out"]) == (2, 1)
+
+    lost = client.post(
+        "/api/werkstatt/mobile/return",
+        headers=auth_headers(admin_token),
+        json={"article_id": article["id"], "quantity": 1, "condition": "lost"},
+    )
+    assert lost.status_code == 200, lost.text
+    assert (lost.json()["stock_total"], lost.json()["stock_available"], lost.json()["stock_out"]) == (1, 1, 0)

@@ -7,9 +7,14 @@
  * The overview brings the latest page; "Ältere anzeigen" fetches the rest
  * from GET /projects/{id}/notes by before_id and appends it below.
  *
- * After a post or a delete the overview is reloaded and the appended older
- * pages are dropped: the latest page has shifted by one, so anything kept
- * would either gap or duplicate at the seam. Paging back is one click.
+ * Notes are permanent: there is no delete (and no edit) — not for the
+ * author, not for a project manager. The feed is the project's record (the
+ * crew's site notes, a partner's report from the portal); a correction is a
+ * new note.
+ *
+ * After a post the overview is reloaded and the appended older pages are
+ * dropped: the latest page has shifted by one, so anything kept would either
+ * gap or duplicate at the seam. Paging back is one click.
  */
 import { useEffect, useState, type KeyboardEvent } from "react";
 
@@ -31,22 +36,12 @@ function messageOf(err: unknown, fallback: string): string {
 }
 
 export function ProjectNotesCard() {
-  const {
-    token,
-    language,
-    user,
-    activeProjectId,
-    projectOverviewDetails,
-    loadProjectOverview,
-    canCreateProject,
-    setError,
-    setNotice,
-  } = useAppContext();
+  const { token, language, activeProjectId, projectOverviewDetails, loadProjectOverview, setError, setNotice } =
+    useAppContext();
   const de = language === "de";
 
   const [draft, setDraft] = useState("");
   const [posting, setPosting] = useState(false);
-  const [removingId, setRemovingId] = useState<number | null>(null);
   const [olderNotes, setOlderNotes] = useState<ProjectNote[]>([]);
   const [olderExhausted, setOlderExhausted] = useState(false);
   const [loadingOlder, setLoadingOlder] = useState(false);
@@ -67,11 +62,6 @@ export function ProjectNotesCard() {
   const canLoadOlder = notes.length > 0 && !olderExhausted && lastPageFull;
   const canPost = draft.trim().length > 0 && !posting;
 
-  function canRemove(note: ProjectNote): boolean {
-    const own = note.author_user_id != null && note.author_user_id === user?.id;
-    return own || canCreateProject;
-  }
-
   async function post() {
     const body = draft.trim();
     if (!activeProjectId || !body || posting) return;
@@ -91,23 +81,6 @@ export function ProjectNotesCard() {
       setError(messageOf(err, de ? "Notiz konnte nicht gepostet werden" : "Failed to post note"));
     } finally {
       setPosting(false);
-    }
-  }
-
-  async function remove(note: ProjectNote) {
-    if (!activeProjectId || removingId !== null) return;
-    if (!window.confirm(de ? "Diese Notiz löschen?" : "Delete this note?")) return;
-    setRemovingId(note.id);
-    try {
-      await apiFetch<void>(`/projects/${activeProjectId}/notes/${note.id}`, token, { method: "DELETE" });
-      setOlderNotes([]);
-      setOlderExhausted(false);
-      await loadProjectOverview(activeProjectId);
-      setNotice(de ? "Notiz gelöscht" : "Note deleted");
-    } catch (err) {
-      setError(messageOf(err, de ? "Notiz konnte nicht gelöscht werden" : "Failed to delete note"));
-    } finally {
-      setRemovingId(null);
     }
   }
 
@@ -176,18 +149,6 @@ export function ProjectNotesCard() {
               <div className="project-notes-meta">
                 <b className="project-notes-author">{note.author_name || "—"}</b>
                 <small className="project-notes-time">{formatServerDateTime(note.created_at, language)}</small>
-                {canRemove(note) && (
-                  <button
-                    type="button"
-                    className="icon-btn project-notes-remove"
-                    onClick={() => void remove(note)}
-                    disabled={removingId === note.id}
-                    aria-label={de ? "Notiz löschen" : "Delete note"}
-                    title={de ? "Notiz löschen" : "Delete note"}
-                  >
-                    ×
-                  </button>
-                )}
               </div>
               <div className="project-notes-body">{note.body}</div>
             </li>

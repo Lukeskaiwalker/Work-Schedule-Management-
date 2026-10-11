@@ -1,26 +1,36 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { AmountStepper } from "./AmountStepper";
+import {
+  CONSUMPTION_MAX_QUANTITY,
+  isConsumableArticle,
+  type DispenseProjectOption,
+} from "./dispense";
 import {
   returnOptionLabel,
   type ReturnOption,
 } from "../../utils/werkstattReturnDates";
+import "../../styles/werkstatt-dispense.css";
 
 /**
- * EntnehmenModal — "Artikel entnehmen" dialog. Ported from Paper 9XE-0.
- * Shows the item hero, quantity stepper, project picker, expected-return
- * chip row, and an optional notes field. Emits a CheckoutPayload-shaped
- * object via `onConfirm`.
+ * EntnehmenModal — taking an article off the shelf. Ported from Paper 9XE-0.
+ *
+ * Two shapes, because the ledger books two different things (owner,
+ * 2026-10-10: "any item that is not inside the machine tab is a consumable"):
+ *
+ *   consumable (`is_serialized` false or absent) — "Material entnehmen". It is
+ *     used up at a site and never comes back, so there is no return date, the
+ *     project is the first question, and the amount is NOT capped at the
+ *     shelf: the person is holding the part, so a short count was wrong, and
+ *     the server books the shortfall up and says so (`stock_warning`).
+ *   machine type (`is_serialized` true) — "Artikel entnehmen", a loan: capped
+ *     at available stock, with an expected return date. Unchanged.
  *
  * The quantity is a real input rather than a read-only span between two
  * buttons — a workshop tablet should not need forty taps to take forty metres
  * of cable off the shelf.
  *
- * A checkout moves stock out of AVAILABLE, so every number here is about
- * available stock and the amount is capped at it. Taking more than is on the
- * shelf is not a request the server should have to refuse.
- *
  * Presentational: the host page owns the request, and passes `submitting` /
- * `error` back in. The dialog stays mounted on failure, so a rejected checkout
+ * `error` back in. The dialog stays mounted on failure, so a rejected booking
  * keeps the project, the date and the note the user already picked.
  */
 export type { ReturnOption };
@@ -35,16 +45,96 @@ export interface EntnehmenModalProps {
     location_name: string | null;
     stock_available: number;
     stock_total: number;
+    /** True for a machine type (lent); false or absent for a consumable. */
+    is_serialized?: boolean | null;
   };
-  projects: ReadonlyArray<{ id: string; number: string; title: string }>;
+  projects: ReadonlyArray<DispenseProjectOption>;
   submitting?: boolean;
   error?: string | null;
   onConfirm: (payload: {
     quantity: number;
     project_id: string | null;
+    /** Always null for a consumable: nothing is expected back. */
     expected_return: ReturnOption | null;
     notes: string;
   }) => void;
+}
+
+function dialogTexts(consumable: boolean, de: boolean) {
+  if (consumable) {
+    return {
+      eyebrow: de ? "VERBRAUCH AUS DEM LAGER" : "USED FROM STOCK",
+      title: de ? "Material entnehmen" : "Take material",
+      confirm: de ? "Entnehmen (Verbrauch)" : "Take (consumption)",
+      noProject: de ? "Ohne Projekt" : "No project",
+      notes: de ? "Wofür, z. B. Raum oder Verteiler…" : "What for, e.g. room or panel…",
+      fasterTitle: de ? "Schneller: am Regal scannen" : "Faster: scan it at the rack",
+      fasterText: de
+        ? "Name antippen, Projekt wählen, Artikel scannen — wird genauso als Verbrauch gebucht."
+        : "Tap your name, pick the project, scan the item — booked as used the same way.",
+    };
+  }
+  return {
+    eyebrow: de ? "ENTNAHME AUS DER WERKSTATT" : "WORKSHOP CHECKOUT",
+    title: de ? "Artikel entnehmen" : "Check out item",
+    confirm: de ? "Entnahme bestätigen" : "Confirm checkout",
+    noProject: de ? "Kein Projekt" : "No project",
+    notes: de ? "Hinweise für die Übernahme oder den Zustand…" : "Notes about handover or condition…",
+    fasterTitle: de ? "Schneller: per QR scannen" : "Faster: scan a QR code",
+    fasterText: de
+      ? "Artikel-QR mit dem Handy scannen, Projekt wird automatisch zugeordnet."
+      : "Scan the article QR from the phone — the project is auto-assigned.",
+  };
+}
+
+function ProjectPicker({
+  value,
+  onChange,
+  projects,
+  noProjectLabel,
+  disabled,
+  de,
+  prominent,
+}: {
+  value: string | null;
+  onChange: (next: string | null) => void;
+  projects: ReadonlyArray<DispenseProjectOption>;
+  noProjectLabel: string;
+  disabled: boolean;
+  de: boolean;
+  prominent: boolean;
+}) {
+  const hintId = useId();
+  const field = (
+    <label className="werkstatt-field werkstatt-field--grow">
+      <span className="werkstatt-field-label">{de ? "Für Projekt" : "For project"}</span>
+      <select
+        className="werkstatt-field-select"
+        value={value ?? ""}
+        disabled={disabled}
+        aria-describedby={prominent ? hintId : undefined}
+        onChange={(event) => onChange(event.target.value || null)}
+      >
+        <option value="">{noProjectLabel}</option>
+        {projects.map((p) => (
+          <option key={p.id} value={p.id}>
+            {p.number} — {p.title}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+  if (!prominent) return field;
+  return (
+    <div className="werkstatt-dispense-project">
+      {field}
+      <small id={hintId} className="werkstatt-field-hint">
+        {de
+          ? "Wird als Verbrauch auf das Projekt gebucht — das Material kommt nicht zurück ins Lager."
+          : "Booked as used on the project — the material does not come back to stock."}
+      </small>
+    </div>
+  );
 }
 
 export function EntnehmenModal({
@@ -57,12 +147,18 @@ export function EntnehmenModal({
   error = null,
   onConfirm,
 }: EntnehmenModalProps) {
+  const consumable = isConsumableArticle(article);
   const available = Math.max(0, article.stock_available);
-  // Opening on 1 is only honest when there is something to take.
-  const [quantity, setQuantity] = useState<number | null>(available > 0 ? 1 : 0);
-  // No project by default. Booking a checkout against whichever project
-  // happened to sort first is worse than booking it against none, now that
-  // the choice actually reaches the ledger.
+  // A loan is capped at the shelf. A consumption is not: the server books a
+  // short shelf up instead of refusing it, so its only cap is a sane maximum.
+  const max = consumable ? CONSUMPTION_MAX_QUANTITY : available;
+  // Opening on 1 is only honest when there is something to take — or when
+  // taking it is allowed regardless, as for a consumable.
+  const minimum = consumable || available > 0 ? 1 : 0;
+  const [quantity, setQuantity] = useState<number | null>(minimum);
+  // No project by default. Booking against whichever project happened to sort
+  // first is worse than booking against none, now that the choice actually
+  // reaches the ledger.
   const [projectId, setProjectId] = useState<string | null>(null);
   const [returnOption, setReturnOption] = useState<ReturnOption | null>("friday");
   const [notes, setNotes] = useState("");
@@ -70,6 +166,7 @@ export function EntnehmenModal({
   if (!open) return null;
 
   const de = language === "de";
+  const texts = dialogTexts(consumable, de);
   // One instant for every chip, so the row cannot straddle midnight.
   const now = new Date();
   // A dialog that vanishes mid-request would leave the user unsure whether
@@ -78,7 +175,20 @@ export function EntnehmenModal({
     if (submitting) return;
     onClose();
   };
-  const blocked = quantity === null || quantity < 1 || quantity > available || submitting;
+  const blocked = quantity === null || quantity < 1 || quantity > max || submitting;
+  const shortfall = consumable && quantity !== null ? quantity - available : 0;
+
+  const projectPicker = (
+    <ProjectPicker
+      value={projectId}
+      onChange={setProjectId}
+      projects={projects}
+      noProjectLabel={texts.noProject}
+      disabled={submitting}
+      de={de}
+      prominent={consumable}
+    />
+  );
 
   return (
     <div className="werkstatt-modal-backdrop" role="presentation" onClick={dismiss}>
@@ -86,17 +196,13 @@ export function EntnehmenModal({
         className="werkstatt-modal"
         role="dialog"
         aria-modal="true"
-        aria-label={de ? "Artikel entnehmen" : "Check out item"}
+        aria-label={texts.title}
         onClick={(event) => event.stopPropagation()}
       >
         <header className="werkstatt-modal-head">
           <div>
-            <span className="werkstatt-sub-breadcrumb">
-              {de ? "ENTNAHME AUS DER WERKSTATT" : "WORKSHOP CHECKOUT"}
-            </span>
-            <h2 className="werkstatt-modal-title">
-              {de ? "Artikel entnehmen" : "Check out item"}
-            </h2>
+            <span className="werkstatt-sub-breadcrumb">{texts.eyebrow}</span>
+            <h2 className="werkstatt-modal-title">{texts.title}</h2>
           </div>
           <button
             type="button"
@@ -135,6 +241,9 @@ export function EntnehmenModal({
             </span>
           </div>
 
+          {/* Where it goes is the first question for material that stays there. */}
+          {consumable && projectPicker}
+
           <div className="werkstatt-field-row">
             {/* A <div>, not a <label>: a label wrapping three controls (−, the
                 number, +) names all of them. The input carries its own. */}
@@ -143,73 +252,63 @@ export function EntnehmenModal({
               <AmountStepper
                 value={quantity}
                 onChange={setQuantity}
-                fallback={available > 0 ? 1 : 0}
-                min={available > 0 ? 1 : 0}
-                max={available}
+                fallback={minimum}
+                min={minimum}
+                max={max}
                 disabled={submitting}
                 label={de ? "Menge" : "Quantity"}
                 decrementLabel={de ? "Weniger" : "Less"}
                 incrementLabel={de ? "Mehr" : "More"}
               />
             </div>
-            <label className="werkstatt-field werkstatt-field--grow">
-              <span className="werkstatt-field-label">
-                {de ? "Für Projekt" : "For project"}
-              </span>
-              <select
-                className="werkstatt-field-select"
-                value={projectId ?? ""}
-                disabled={submitting}
-                onChange={(event) => setProjectId(event.target.value || null)}
-              >
-                <option value="">{de ? "Kein Projekt" : "No project"}</option>
-                {projects.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.number} — {p.title}
-                  </option>
-                ))}
-              </select>
-            </label>
+            {!consumable && projectPicker}
           </div>
 
-          {available === 0 && (
+          {consumable && shortfall > 0 && (
+            <p className="werkstatt-modal-hint werkstatt-dispense-shortfall">
+              {de
+                ? `Laut Bestand nur ${available} da — die Differenz von ${shortfall} wird beim Buchen nachgebucht.`
+                : `Stock shows only ${available} — the difference of ${shortfall} is booked in when you confirm.`}
+            </p>
+          )}
+          {!consumable && available === 0 && (
             <p className="werkstatt-modal-hint">
               {de
                 ? "Nichts verfügbar — der komplette Bestand ist unterwegs oder in Reparatur."
                 : "Nothing available — the whole stock is out or in repair."}
             </p>
           )}
-          {quantity !== null && quantity > available && (
+          {!consumable && quantity !== null && quantity > available && (
             <p className="werkstatt-modal-hint">
-              {de
-                ? `Nur ${available} verfügbar.`
-                : `Only ${available} available.`}
+              {de ? `Nur ${available} verfügbar.` : `Only ${available} available.`}
             </p>
           )}
 
-          <div className="werkstatt-field">
-            <span className="werkstatt-field-label">
-              {de ? "Erwartete Rückgabe" : "Expected return"}
-            </span>
-            <div className="werkstatt-pill-row" role="radiogroup">
-              {(["tonight", "tomorrow", "friday", "custom"] as const).map((option) => {
-                const active = returnOption === option;
-                return (
-                  <button
-                    key={option}
-                    type="button"
-                    role="radio"
-                    aria-checked={active}
-                    disabled={submitting}
-                    className={`werkstatt-pill${active ? " werkstatt-pill--active" : ""}`}
-                    onClick={() => setReturnOption(option)}
-                  >
-                    {returnOptionLabel(option, de, now)}
-                  </button>
-                );
-              })}
+          {!consumable && (
+            <div className="werkstatt-field">
+              <span className="werkstatt-field-label">
+                {de ? "Erwartete Rückgabe" : "Expected return"}
+              </span>
+              <div className="werkstatt-pill-row" role="radiogroup">
+                {(["tonight", "tomorrow", "friday", "custom"] as const).map((option) => {
+                  const active = returnOption === option;
+                  return (
+                    <button
+                      key={option}
+                      type="button"
+                      role="radio"
+                      aria-checked={active}
+                      disabled={submitting}
+                      className={`werkstatt-pill${active ? " werkstatt-pill--active" : ""}`}
+                      onClick={() => setReturnOption(option)}
+                    >
+                      {returnOptionLabel(option, de, now)}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-          </div>
+          )}
 
           <label className="werkstatt-field">
             <span className="werkstatt-field-label">
@@ -220,11 +319,7 @@ export function EntnehmenModal({
               value={notes}
               disabled={submitting}
               onChange={(event) => setNotes(event.target.value)}
-              placeholder={
-                de
-                  ? "Hinweise für die Übernahme oder den Zustand…"
-                  : "Notes about handover or condition…"
-              }
+              placeholder={texts.notes}
               rows={2}
             />
           </label>
@@ -238,12 +333,8 @@ export function EntnehmenModal({
           <div className="werkstatt-hint-card">
             <span className="werkstatt-hint-icon" aria-hidden="true">⌘</span>
             <span className="werkstatt-hint-main">
-              <b>{de ? "Schneller: per QR scannen" : "Faster: scan a QR code"}</b>
-              <small>
-                {de
-                  ? "Artikel-QR mit dem Handy scannen, Projekt wird automatisch zugeordnet."
-                  : "Scan the article QR from the phone — the project is auto-assigned."}
-              </small>
+              <b>{texts.fasterTitle}</b>
+              <small>{texts.fasterText}</small>
             </span>
           </div>
         </div>
@@ -270,16 +361,12 @@ export function EntnehmenModal({
                 onConfirm({
                   quantity,
                   project_id: projectId,
-                  expected_return: returnOption,
+                  expected_return: consumable ? null : returnOption,
                   notes,
                 });
               }}
             >
-              {submitting
-                ? de
-                  ? "Wird gebucht…"
-                  : "Booking…"
-                : `→ ${de ? "Entnahme bestätigen" : "Confirm checkout"}`}
+              {submitting ? (de ? "Wird gebucht…" : "Booking…") : `→ ${texts.confirm}`}
             </button>
           </div>
         </footer>

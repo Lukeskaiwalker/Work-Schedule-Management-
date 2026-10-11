@@ -25,6 +25,12 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# Upper bounds for request numbers (``core/limits.py``). Every count, price and
+# sort key below lands in an ``Integer`` column — or is booked into the ledger,
+# whose snapshot counters are ``Integer`` too — and an unbounded one reached
+# ``db.flush()`` as OverflowError/DataError: an unhandled 500.
+from app.core.limits import INT32_MAX, MAX_STOCK_QUANTITY, MAX_UNIT_PRICE_CENTS
+
 # The order-line contract lives with procurement; the draft-order payload
 # below subclasses it so both entry points build lines the same way.
 from app.schemas.werkstatt_procurement import OrderLineCreatePayload
@@ -134,7 +140,8 @@ class WerkstattLocationOut(_OrmBase):
 class WerkstattCategoryCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     parent_id: int | None = None
-    display_order: int = 0
+    # A sort key: never summed or multiplied, so the column itself is the bound.
+    display_order: int = Field(default=0, ge=-INT32_MAX, le=INT32_MAX)
     icon_key: str | None = Field(default=None, max_length=64)
     notes: str | None = None
 
@@ -142,7 +149,7 @@ class WerkstattCategoryCreate(BaseModel):
 class WerkstattCategoryUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     parent_id: int | None = None
-    display_order: int | None = None
+    display_order: int | None = Field(default=None, ge=-INT32_MAX, le=INT32_MAX)
     icon_key: str | None = Field(default=None, max_length=64)
     notes: str | None = None
     is_archived: bool | None = None
@@ -154,7 +161,7 @@ class WerkstattLocationCreate(BaseModel):
     parent_id: int | None = None
     address: str | None = Field(default=None, max_length=500)
     status: WerkstattLocationStatus | None = None
-    display_order: int = 0
+    display_order: int = Field(default=0, ge=-INT32_MAX, le=INT32_MAX)
     notes: str | None = None
 
 
@@ -164,7 +171,7 @@ class WerkstattLocationUpdate(BaseModel):
     parent_id: int | None = None
     address: str | None = Field(default=None, max_length=500)
     status: WerkstattLocationStatus | None = None
-    display_order: int | None = None
+    display_order: int | None = Field(default=None, ge=-INT32_MAX, le=INT32_MAX)
     notes: str | None = None
     is_archived: bool | None = None
 
@@ -341,6 +348,11 @@ class WerkstattArticleLiteOut(_OrmBase):
     # sees before adding a line whether it will resolve. Null without a
     # supplier filter — the question has no answer then.
     supplier_article_no: str | None = None
+    # The supplier number that made this row a search hit, when `q` was found
+    # in a supplier link rather than in the article's own fields — any
+    # supplier, not only the one asked about. Lets the list say WHY a row
+    # whose name looks unrelated is there. Null without `q`.
+    matched_supplier_article_no: str | None = None
     # Whether this row is a machine TYPE (individual units with their own
     # labels) rather than a consumable. The stock list filters on it — the
     # Bestand page is consumables, machines have their own tab — and the row
@@ -359,10 +371,12 @@ class WerkstattArticleLiteOut(_OrmBase):
 class WerkstattArticleSupplierCreate(BaseModel):
     supplier_id: int
     supplier_article_no: str | None = Field(default=None, max_length=160)
-    typical_price_cents: int | None = Field(default=None, ge=0)
+    # The price and the minimum quantity seed an order line, whose quantity ×
+    # price becomes the order total — bounded like the line itself.
+    typical_price_cents: int | None = Field(default=None, ge=0, le=MAX_UNIT_PRICE_CENTS)
     currency: str = Field(default="EUR", min_length=1, max_length=8)
     typical_lead_time_days: int | None = Field(default=None, ge=0, le=365)
-    minimum_order_quantity: int = Field(default=1, ge=1)
+    minimum_order_quantity: int = Field(default=1, ge=1, le=MAX_STOCK_QUANTITY)
     is_preferred: bool = False
     source_catalog_item_id: int | None = None
     notes: str | None = None
@@ -370,10 +384,10 @@ class WerkstattArticleSupplierCreate(BaseModel):
 
 class WerkstattArticleSupplierUpdate(BaseModel):
     supplier_article_no: str | None = Field(default=None, max_length=160)
-    typical_price_cents: int | None = Field(default=None, ge=0)
+    typical_price_cents: int | None = Field(default=None, ge=0, le=MAX_UNIT_PRICE_CENTS)
     currency: str | None = Field(default=None, min_length=1, max_length=8)
     typical_lead_time_days: int | None = Field(default=None, ge=0, le=365)
-    minimum_order_quantity: int | None = Field(default=None, ge=1)
+    minimum_order_quantity: int | None = Field(default=None, ge=1, le=MAX_STOCK_QUANTITY)
     is_preferred: bool | None = None
     source_catalog_item_id: int | None = None
     notes: str | None = None
@@ -389,12 +403,14 @@ class WerkstattArticleCreate(BaseModel):
     image_url: str | None = Field(default=None, max_length=1000)
     image_source: WerkstattImageSource | None = None
     source_catalog_item_id: int | None = None
-    stock_total: int = Field(default=0, ge=0)
-    stock_min: int = Field(default=0, ge=0)
+    # Booked as the opening ``intake`` (``book_opening_stock``) — the one
+    # movement with no balance guard to fast-fail against.
+    stock_total: int = Field(default=0, ge=0, le=MAX_STOCK_QUANTITY)
+    stock_min: int = Field(default=0, ge=0, le=MAX_STOCK_QUANTITY)
     is_serialized: bool = False
     bg_inspection_required: bool = False
     bg_inspection_interval_days: int | None = Field(default=None, ge=1, le=3650)
-    purchase_price_cents: int | None = Field(default=None, ge=0)
+    purchase_price_cents: int | None = Field(default=None, ge=0, le=MAX_UNIT_PRICE_CENTS)
     currency: str = Field(default="EUR", min_length=1, max_length=8)
     notes: str | None = None
     # Which external source suggested these fields ("unielektro_shop", …).
@@ -414,11 +430,11 @@ class WerkstattArticleUpdate(BaseModel):
     unit: str | None = Field(default=None, max_length=64)
     image_url: str | None = Field(default=None, max_length=1000)
     image_source: WerkstattImageSource | None = None
-    stock_min: int | None = Field(default=None, ge=0)
+    stock_min: int | None = Field(default=None, ge=0, le=MAX_STOCK_QUANTITY)
     is_serialized: bool | None = None
     bg_inspection_required: bool | None = None
     bg_inspection_interval_days: int | None = Field(default=None, ge=1, le=3650)
-    purchase_price_cents: int | None = Field(default=None, ge=0)
+    purchase_price_cents: int | None = Field(default=None, ge=0, le=MAX_UNIT_PRICE_CENTS)
     currency: str | None = Field(default=None, min_length=1, max_length=8)
     notes: str | None = None
     is_archived: bool | None = None
@@ -432,8 +448,8 @@ class WerkstattArticleFromCatalogCreate(BaseModel):
     catalog_item_id: int
     category_id: int | None = None
     location_id: int | None = None
-    stock_total: int = Field(default=0, ge=0)
-    stock_min: int = Field(default=0, ge=0)
+    stock_total: int = Field(default=0, ge=0, le=MAX_STOCK_QUANTITY)
+    stock_min: int = Field(default=0, ge=0, le=MAX_STOCK_QUANTITY)
     notes: str | None = None
     supplier_links: list[WerkstattArticleSupplierCreate] = Field(default_factory=list)
 
@@ -470,12 +486,16 @@ class WerkstattMovementOut(_OrmBase):
 class CheckoutPayload(BaseModel):
     """Request body for `POST /api/werkstatt/mobile/checkout`.
 
-    Issued by the field-tech Mobile persona. `quantity` must be positive;
-    the service layer rejects checkouts that exceed ``stock_available``.
+    Issued by the field-tech Mobile persona. `quantity` must be positive. A
+    machine type is lent and refused past ``stock_available``; a consumable
+    is booked as consumption instead (``services/werkstatt_consumption.py``,
+    the route uses ``schemas/werkstatt_dispense.WerkstattDispensePayload``).
     """
 
     article_id: int = Field(..., gt=0)
-    quantity: int = Field(..., gt=0)
+    # The wire uses the subclass ``WerkstattDispensePayload`` (10 000); the
+    # base is bounded too so nobody reuses an unbounded one.
+    quantity: int = Field(..., gt=0, le=MAX_STOCK_QUANTITY)
     project_id: int | None = None
     assignee_user_id: int | None = None
     expected_return_at: datetime | None = None
@@ -499,7 +519,7 @@ class ReturnPayload(BaseModel):
     loan a project-tagged checkout opened, so that loan stays open forever
     while the −qty silently eats an unrelated project-less loan of the same
     article. The station router solves the same problem by reading the open
-    loan out of the ledger (``workflow_station_werkstatt._open_loan_for_article``)
+    loan out of the ledger (``services.werkstatt_loans.open_loan_for_article``)
     because a wall screen has no session to ask; a phone does have one — the row
     the user tapped already names the project — so it says which loan it means.
 
@@ -508,7 +528,9 @@ class ReturnPayload(BaseModel):
     """
 
     article_id: int = Field(..., gt=0)
-    quantity: int = Field(..., gt=0)
+    # Bounded like the station and desk payloads: an unbounded value reached
+    # db.flush() and came back as OverflowError/DataError — an unhandled 500.
+    quantity: int = Field(..., gt=0, le=10_000)
     condition: Literal["ok", "repair", "lost"]
     project_id: int | None = Field(default=None, gt=0)
     notes: str | None = None
@@ -710,8 +732,11 @@ class ReorderSubmitLinePayload(BaseModel):
     user may edit quantity / unit price before confirming."""
 
     article_id: int
-    quantity: int = Field(ge=1)
-    unit_price_cents: int | None = Field(default=None, ge=0)
+    # The same bounds as ``OrderLineCreatePayload``, which the route builds
+    # from this line: checked here so a huge value is a 422 on the wire, not
+    # a ValidationError raised inside the handler (a 500).
+    quantity: int = Field(ge=1, le=MAX_STOCK_QUANTITY)
+    unit_price_cents: int | None = Field(default=None, ge=0, le=MAX_UNIT_PRICE_CENTS)
 
 
 class ReorderSubmitPayload(BaseModel):
@@ -1017,6 +1042,8 @@ class WerkstattArticleMergeOut(BaseModel):
     units_moved: int = 0
     inventory_counts_moved: int = 0
     task_materials_moved: int = 0
+    # Materialliste mappings and hand-added board lines that named the duplicate.
+    panel_material_moved: int = 0
     internal_code_moved: bool = False
     # Numbers that belonged to a supplier the survivor was ALREADY linked to.
     # The link row is unique per (article, supplier), so the duplicate's row
@@ -1187,7 +1214,7 @@ class InventoryScanResult(BaseModel):
 class InventoryCountSet(BaseModel):
     """Hand-typed correction — replaces the counted quantity outright."""
 
-    counted_qty: int = Field(ge=0, le=1000000)
+    counted_qty: int = Field(ge=0, le=MAX_STOCK_QUANTITY)
 
 
 class InventoryNameNewArticle(BaseModel):
@@ -1212,8 +1239,8 @@ class InventoryImportRow(BaseModel):
 
     code: str = Field(min_length=1, max_length=200)
     item_name: str = Field(default="", max_length=500)
-    counted_qty: int = Field(ge=0, le=1000000)
-    scan_count: int = Field(default=0, ge=0, le=1000000)
+    counted_qty: int = Field(ge=0, le=MAX_STOCK_QUANTITY)
+    scan_count: int = Field(default=0, ge=0, le=MAX_STOCK_QUANTITY)
 
 
 class InventoryImportRequest(BaseModel):

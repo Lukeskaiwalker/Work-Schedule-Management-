@@ -9,7 +9,10 @@ import {
   dueStatus,
   formatDueLabel,
   formatRelativeTime,
+  movementLabel,
   movementPipKind,
+  movementTypeLabel,
+  panelNumberInNote,
   formatCents,
   formatQuantity,
   pluralize,
@@ -120,6 +123,50 @@ describe("movementPipKind", () => {
     expect(movementPipKind("correction")).toBe("adjust");
     expect(movementPipKind("inventory_plus")).toBe("adjust");
     expect(movementPipKind("inventory_minus")).toBe("adjust");
+  });
+
+  it("draws a consumption as stock going out and its undo as stock coming back", () => {
+    // Every consumable dispensed at the rack, the desk or the phone is now a
+    // consumption row; drawn as a correction it would hide the day's outflow.
+    expect(movementPipKind("consumption")).toBe("out");
+    expect(movementPipKind("consumption_undo")).toBe("in");
+  });
+});
+
+describe("consumption labels", () => {
+  it("calls a consumption Verbrauch — it is no longer only a Verteiler's", () => {
+    expect(movementTypeLabel("consumption", true)).toBe("Verbrauch");
+    expect(movementTypeLabel("consumption_undo", true)).toBe("Verbrauch zurück");
+    expect(movementTypeLabel("consumption", false)).toBe("Consumed");
+    expect(movementTypeLabel("consumption_undo", false)).toBe("Consumption returned");
+  });
+
+  it("reads the board from the ledger note the panel booking writes", () => {
+    expect(panelNumberInNote("Regal-Station Werkstatt — Verteiler VT-0007")).toBe("VT-0007");
+    expect(panelNumberInNote("Storno — Verteiler VT-0012")).toBe("VT-0012");
+    expect(panelNumberInNote("Regal-Station Werkstatt — Verbrauch für 381")).toBeNull();
+    expect(panelNumberInNote(null)).toBeNull();
+  });
+
+  it("names the Verteiler a consumption went into", () => {
+    expect(
+      movementLabel(
+        { movement_type: "consumption", notes: "Regal-Station Werkstatt — Verteiler VT-0007" },
+        true,
+      ),
+    ).toBe("Verbrauch · Verteiler VT-0007");
+    expect(
+      movementLabel({ movement_type: "consumption_undo", notes: "Storno — Verteiler VT-0007" }, false),
+    ).toBe("Consumption returned · Panel VT-0007");
+  });
+
+  it("stays the bare type when there is no board to name", () => {
+    expect(movementLabel({ movement_type: "consumption", notes: null }, true)).toBe("Verbrauch");
+    // Only consumption rows name a board: a loan's free-text note is not a
+    // statement about where the stock went.
+    expect(movementLabel({ movement_type: "checkout", notes: "für Verteiler VT-0007" }, true)).toBe(
+      "Entnommen",
+    );
   });
 });
 

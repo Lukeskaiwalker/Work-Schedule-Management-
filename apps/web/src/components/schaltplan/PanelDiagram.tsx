@@ -204,16 +204,30 @@ function GroupBlock({
   const firstCx = x + COL_W / 2;
   const lastCx = x + COL_W * (group.children.length - 0.5);
 
+  // On the drop line: the Vorsicherung where it physically sits, or — for a
+  // group fed by an SLS, Hauptschalter or Verteilerblock (owner, 2026-10-09)
+  // — "über Q1 HS", so the chain reads busbar → Q1 → this group.
+  const plate = group.preFuse
+    ? [group.preFuse.designation, group.preFuse.rating].filter(Boolean).join(" ") || "Si"
+    : group.fedBy
+      ? `über ${[group.fedBy.designation, catalogEntry(group.fedBy.kind).short].filter(Boolean).join(" ")}`
+      : "";
+  const plateW = Math.max(68, Math.round(plate.length * 6.4 + 14));
+  // The other end of those plates, named in the feeder's own box.
+  const feeds = group.feeds.length
+    ? `speist ${group.feeds.map((fed) => fed.designation || catalogEntry(fed.kind).short).join(", ")}`
+    : "";
+  const [titleDy, detailDy] = feeds ? [19, 33] : [24, 42];
+
   return (
     <g>
       <line x1={cx} y1={Y_BUS} x2={cx} y2={Y_GROUP_TOP} className="sp-wire sp-wire--thick" />
-      {group.preFuse && (
-        /* Where it physically sits: between the busbar and the FI, on the
-           drop line. A cleared plate so the wire does not strike the text. */
+      {plate && (
+        /* A cleared plate so the wire does not strike the text. */
         <g className="sp-prefuse" transform={`translate(${cx}, ${(Y_BUS + Y_GROUP_TOP) / 2})`}>
-          <rect x={-34} y={-9} width={68} height={18} rx={4} className="sp-prefuse-plate" />
+          <rect x={-plateW / 2} y={-9} width={plateW} height={18} rx={4} className="sp-prefuse-plate" />
           <text x={0} y={4} textAnchor="middle" className="sp-prefuse-text">
-            {[group.preFuse.designation, group.preFuse.rating].filter(Boolean).join(" ") || "Si"}
+            {plate}
           </text>
         </g>
       )}
@@ -253,12 +267,17 @@ function GroupBlock({
             <g transform={`translate(${x + 12}, ${Y_GROUP_TOP + 14})`} className="sp-group-glyph">
               <DeviceSymbol kind={device.kind} size={26} />
             </g>
-            <text x={x + 48} y={Y_GROUP_TOP + 24} className="sp-group-title">
+            <text x={x + 48} y={Y_GROUP_TOP + titleDy} className="sp-group-title">
               {`${device.designation || ""} ${entry?.short ?? ""}`.trim()}
             </text>
-            <text x={x + 48} y={Y_GROUP_TOP + 42} className="sp-group-detail">
+            <text x={x + 48} y={Y_GROUP_TOP + detailDy} className="sp-group-detail">
               {detail || "—"}
             </text>
+            {feeds && (
+              <text x={x + 48} y={Y_GROUP_TOP + 47} className="sp-group-feeds">
+                {feeds}
+              </text>
+            )}
           </>
         ) : (
           <>

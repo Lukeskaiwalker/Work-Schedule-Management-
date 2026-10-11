@@ -32,6 +32,7 @@ from sqlalchemy.orm import Session
 
 from app.core.db import get_db
 from app.core.deps import get_current_user, require_permission
+from app.core.limits import MAX_STOCK_QUANTITY
 from app.models.entities import (
     User,
     WerkstattArticle,
@@ -55,8 +56,9 @@ router = APIRouter(prefix="", tags=["werkstatt-desktop"])
 
 # Upper bound on anything that reaches ``db.flush()``. The point is not
 # plausibility — it is that an integer wider than the INTEGER column must never
-# be handed to SQLite/Postgres. Matches ``InventoryImportRow.counted_qty``.
-MAX_ADJUST_QUANTITY = 1_000_000
+# be handed to SQLite/Postgres. The shared per-booking bound, so the dialog's
+# German 400 and the ledger's own refusal (``apply_movement``) agree.
+MAX_ADJUST_QUANTITY = MAX_STOCK_QUANTITY
 
 MAX_REASON_LENGTH = 500
 

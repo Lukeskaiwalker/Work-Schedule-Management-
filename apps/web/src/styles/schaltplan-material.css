@@ -395,6 +395,150 @@
   white-space: nowrap;
 }
 
+/* ── Added by hand (owner, 2026-10-09) ───────────────────────────────────────
+ * The toolbar over the list (add + PDF), the add form under it, and the
+ * inline editor a hand-added row opens. Same inputs and 44 px targets as the
+ * article search, so the tablet at the rail handles both alike. */
+
+.sp-mat-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* PDF sits right; alone (someone who may only read) it still does. */
+.sp-mat-pdf {
+  margin-left: auto;
+  text-decoration: none;
+}
+
+.sp-mat-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sp-mat-add {
+  padding: 12px;
+  border: 1px dashed var(--sp-accent);
+  border-radius: 10px;
+  background: var(--sp-tint);
+}
+
+/* Opens under its row, across the whole grid, like the article search. */
+.sp-mat-manual-edit {
+  grid-column: 1 / -1;
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--sp-line);
+}
+
+.sp-mat-form-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 8px 10px;
+}
+
+.sp-mat-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--muted);
+}
+
+.sp-mat-field--qty {
+  flex: 0 0 96px;
+}
+
+.sp-mat-field--note {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+.sp-mat-input {
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid var(--sp-line);
+  border-radius: 10px;
+  background: #fff;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 400;
+  color: var(--sp-ink);
+}
+
+.sp-mat-input:focus-visible {
+  outline: none;
+  border-color: var(--sp-accent);
+  box-shadow: 0 0 0 3px rgba(47, 112, 183, 0.15);
+}
+
+.sp-mat-input[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+.sp-mat-form-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* The picked shelf article, in place of the search it came from. */
+.sp-mat-picked {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  min-height: 44px;
+  padding: 4px 12px;
+  border: 1px solid var(--sp-accent);
+  border-radius: 10px;
+  background: #fff;
+  font-size: 13px;
+  color: var(--sp-ink);
+}
+
+.sp-mat-picked-label {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.sp-mat-picked-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.sp-mat-added {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--sp-ok);
+}
+
+.sp-mat-chip--manual {
+  color: var(--sp-accent-deep);
+  border-color: var(--sp-accent);
+  background: var(--sp-tint);
+}
+
+.sp-mat-manual-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+}
+
+.sp-mat-manual-actions {
+  display: inline-flex;
+  gap: 12px;
+}
+
 /* ── Footer ──────────────────────────────────────────────────────────────── */
 
 .sp-mat-foot {
@@ -441,6 +585,14 @@
 
   .sp-mat-search-result-stock {
     grid-column: 1 / -1;
+  }
+
+  .sp-mat-form-actions {
+    flex: 1 1 100%;
+  }
+
+  .sp-mat-form-actions .sp-btn {
+    flex: 1 1 0;
   }
 }
 

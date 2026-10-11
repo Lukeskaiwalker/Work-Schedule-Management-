@@ -1,4 +1,5 @@
 import { useAppContext } from "../../context/AppContext";
+import { ProjectPartnerHoursCard } from "../../components/project/ProjectPartnerHoursCard";
 import { formatHours } from "../../utils/misc";
 
 export function ProjectHoursTab() {
@@ -194,6 +195,8 @@ export function ProjectHoursTab() {
           )}
         </section>
       </aside>
+
+      <ProjectPartnerHoursCard projectId={activeProject.id} />
     </div>
   );
 }

@@ -3,7 +3,6 @@ import { useAppContext } from "../../context/AppContext";
 import { ApiError } from "../../api/client";
 import { useBarcodeScanner } from "../../hooks/useBarcodeScanner";
 import { useKeptRow } from "../../hooks/useKeptRow";
-import { unitLabel } from "../../components/werkstatt/unitLabel";
 import { NeuerArtikelModal } from "../../components/werkstatt/NeuerArtikelModal";
 import { ArtikelBearbeitenModal } from "../../components/werkstatt/ArtikelBearbeitenModal";
 import { DuplikateModal } from "../../components/werkstatt/DuplikateModal";
@@ -14,18 +13,24 @@ import {
   type StockFilterDef,
   type StockFilterKey,
 } from "../../components/werkstatt/StockFilterBar";
-import { StockTableRow } from "../../components/werkstatt/StockTableRow";
+import {
+  StockTableHead,
+  StockTableRow,
+  type StockTableRowData,
+} from "../../components/werkstatt/StockTableRow";
 import { type StockRow, type StockTone } from "../../components/werkstatt/stockRowTypes";
+import { useStockArticleList } from "../../components/werkstatt/useStockArticleList";
+import { toStockRow } from "../../components/werkstatt/stockRows";
+import { dispenseNotice, dispenseProjectOptions } from "../../components/werkstatt/dispense";
 import {
   adjustArticleStock,
   checkoutArticle,
   getArticle,
-  listArticles,
   printArticleLabel,
   type StockAdjustmentInput,
-  type WerkstattArticleLite,
   type WerkstattArticleStockSnapshot,
 } from "../../utils/werkstattArticlesApi";
+import type { WerkstattArticle } from "../../types/werkstatt";
 import {
   staleStockMessage,
   stockAdjustmentNotice,
@@ -42,6 +47,7 @@ import {
 import { lookupArticleCode } from "../../utils/werkstattArticleLookupApi";
 import { expectedReturnIso } from "../../utils/werkstattReturnDates";
 import "../../styles/stock.css";
+import "../../styles/stock-edit.css";
 import "../../styles/werkstatt-load-states.css";
 
 /**
@@ -59,7 +65,11 @@ import "../../styles/werkstatt-load-states.css";
  * outside any input puts the code in the search box and resolves it against
  * SMPL's own rows only (no webshop — this fires on every scan): a hit leaves
  * the filtered list showing it, a miss opens the create dialog with the code
- * already in hand, which is the whole point of scanning at a desk.
+ * already in hand, which is the whole point of scanning at a desk — for
+ * somebody who may create articles; anyone else is told nothing was found.
+ *
+ * Text search is the SERVER's (see useStockArticleList); the page narrows the
+ * answer only by the exact selections (status chip, category, location).
  */
 /**
  * What the "Bestand anpassen" dialog needs to know about an article.
@@ -111,14 +121,12 @@ export function WerkstattInventarPage() {
    * going to be booked. Mirrors the server's gate exactly, `?? []` so an
    * unloaded user is treated as holding nothing rather than everything. */
   const canManageStock = (user?.effective_permissions ?? []).includes("werkstatt:manage");
+  const de = language === "de";
 
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState<string>("all");
   const [location, setLocation] = useState<string>("all");
   const [activeFilter, setActiveFilter] = useState<StockFilterKey>("all");
-  const [articles, setArticles] = useState<WerkstattArticleLite[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
 
   /* Modal state — each modal gets its own slot; Entnehmen + BestandAnpassen
    * hold the row the user is acting on (null when closed). */
@@ -183,6 +191,17 @@ export function WerkstattInventarPage() {
             setSearch(found.article.article_number);
             return;
           }
+          // POST /werkstatt/articles needs `werkstatt:manage`, the lookup
+          // does not. Without the gate a scan miss walked somebody through the
+          // whole create form to a 403.
+          if (!canManageStock) {
+            setNotice(
+              de
+                ? `Kein Artikel mit dem Code „${code}“ im Bestand — neue Artikel legt das Büro an.`
+                : `No stocked item has the code “${code}” — new items are created by the office.`,
+            );
+            return;
+          }
           setNeuerArtikelCode(code);
           setNeuerArtikelOpen(true);
         })
@@ -195,43 +214,15 @@ export function WerkstattInventarPage() {
 
   const active = mainView === "werkstatt" && werkstattTab === "inventar";
 
-  const reload = useCallback(async () => {
-    if (!active) return;
-    setLoading(true);
-    try {
-      // Server-side search: the article table grows with every stock-take, so
-      // fetching everything and filtering here would fail quietly as it grows.
-      // Consumables only. The Bestand page is "what we use up"; machine
-      // TYPES live in the Maschinen tab, where units carry their own labels
-      // and inspection dates. Filtered server-side so the counts under the
-      // filter chips describe the list somebody is actually looking at.
-      const rows = await listArticles(token, {
-        q: search.trim() || undefined,
-        kind: "consumable",
-        // Archived rows are out of the way by default and reachable on
-        // demand: "Archivieren" promises the article can be brought back, and
-        // without this there was no list it could be brought back FROM — the
-        // EAN-clash message telling somebody to go and reactivate SP-0042
-        // named a row no screen could open.
-        includeArchived: showArchived,
-        limit: ARTICLE_PAGE_LIMIT,
-      });
-      setArticles(rows);
-      setLoadError(null);
-    } catch (err) {
-      // An empty table must never be mistaken for "no stock" — that is exactly
-      // the failure this page shipped with.
-      setArticles([]);
-      setLoadError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setLoading(false);
-    }
-  }, [active, token, search, showArchived]);
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => void reload(), search ? 250 : 0);
-    return () => window.clearTimeout(timer);
-  }, [reload, search]);
+  // Server-side search: the article table grows with every stock-take, so
+  // fetching everything and filtering here would fail quietly as it grows.
+  const { articles, setArticles, loading, loadError, reload } = useStockArticleList({
+    active,
+    token,
+    search,
+    showArchived,
+    limit: ARTICLE_PAGE_LIMIT,
+  });
 
   /* The duplicate scan is an O(n²) name comparison server-side, so it runs
    * when the tab is opened and never while somebody types. The badge is the
@@ -255,55 +246,10 @@ export function WerkstattInventarPage() {
     void loadDuplicateCount();
   }, [loadDuplicateCount]);
 
-  /** API row → the presentational shape this page already renders.
-   *
-   * StockRow is label-shaped, not number-shaped: it wants the strings
-   * the table prints. Formatting here keeps the table dumb and means German
-   * wording lives in one place instead of being rebuilt per cell.
-   */
-  const allRows = useMemo<StockRow[]>(
-    () =>
-      articles.map((a) => {
-        const out = Math.max(0, a.stock_total - a.stock_available);
-        // One abbreviation for this article, used by the row and by every
-        // dialog the row opens. The row used to print a hard-coded "Stk" while
-        // the dialog printed "St." — same article, two units, two numbers.
-        const unit = unitLabel(a.unit, language === "de");
-        const tone: StockTone =
-          a.stock_status === "unavailable" ? "empty" : (a.stock_status as StockTone);
-        return {
-          id: String(a.id),
-          article_no: a.article_number,
-          item_name: a.item_name,
-          sub_meta: [a.manufacturer, a.ean].filter(Boolean).join(" · "),
-          category: a.category_name ?? "—",
-          location: a.location_name ?? "—",
-          stock_label: `${a.stock_available} ${unit}`,
-          stock_available: a.stock_available,
-          stock_total: a.stock_total,
-          unit: a.unit ?? null,
-          stock_tone: tone,
-          out_initials: null,
-          out_label:
-            out > 0
-              ? language === "de"
-                ? `${out} unterwegs`
-                : `${out} out`
-              : null,
-          in_transit_label: a.next_expected_delivery_at
-            ? new Date(a.next_expected_delivery_at).toLocaleDateString(
-                language === "de" ? "de-DE" : "en-US",
-              )
-            : null,
-          article_id: a.id,
-          // Either identifier makes the article findable with a scanner; with
-          // neither, it can only be found by typing its name.
-          scannable: Boolean(a.ean || a.internal_code),
-          // Only ever true while "Archivierte anzeigen" is on.
-          is_archived: Boolean(a.is_archived),
-        };
-      }),
-    [articles, language],
+  /** API rows → the label-shaped rows the table prints (see stockRows.ts). */
+  const allRows = useMemo<StockTableRowData[]>(
+    () => articles.map((a) => toStockRow(a, de)),
+    [articles, de],
   );
 
   const counts = useMemo(() => {
@@ -327,21 +273,21 @@ export function WerkstattInventarPage() {
     ];
   }, [allRows.length, counts, loadError]);
 
-  const rows = useMemo<ReadonlyArray<StockRow>>(() => {
-    const needle = search.trim().toLowerCase();
-    return allRows.filter((row) => {
-      if (activeFilter !== "all" && row.stock_tone !== activeFilter) return false;
-      if (category !== "all" && row.category !== category) return false;
-      if (location !== "all" && row.location !== location) return false;
-      if (!needle) return true;
-      return (
-        row.item_name.toLowerCase().includes(needle) ||
-        row.article_no.toLowerCase().includes(needle) ||
-        row.category.toLowerCase().includes(needle) ||
-        row.location.toLowerCase().includes(needle)
-      );
-    });
-  }, [allRows, search, category, location, activeFilter]);
+  /* No text filter here. The server already searched — by name, number,
+   * EAN, our code, manufacturer, category, location and supplier numbers — and
+   * filtering its answer again by a narrower set of columns is what dropped
+   * every EAN and supplier-number hit, and the article just created after a
+   * scan miss. Only the exact selections narrow the list in the browser. */
+  const rows = useMemo<ReadonlyArray<StockTableRowData>>(
+    () =>
+      allRows.filter((row) => {
+        if (activeFilter !== "all" && row.stock_tone !== activeFilter) return false;
+        if (category !== "all" && row.category !== category) return false;
+        if (location !== "all" && row.location !== location) return false;
+        return true;
+      }),
+    [allRows, category, location, activeFilter],
+  );
 
   /* Looked up by id on every render so a booking's new counters flow straight
    * into the open dialog — and kept alive across a refetch that no longer
@@ -405,7 +351,6 @@ export function WerkstattInventarPage() {
   // Everything below is a hook, so it must sit ABOVE the early return.
   // React counts hooks per render: one extra on the renders where this
   // tab is active crashes the page the moment you navigate to it.
-  const de = language === "de";
 
   /**
    * Print a shelf label for one article.
@@ -448,22 +393,51 @@ export function WerkstattInventarPage() {
    * number the server holds, even if a colleague booked against the same
    * article a second earlier. Immutable: a new array of new rows.
    */
-  const applyStockSnapshot = useCallback((snapshot: WerkstattArticleStockSnapshot) => {
-    setArticles((prev) =>
-      prev.map((a) =>
-        a.id === snapshot.id
-          ? {
-              ...a,
-              stock_total: snapshot.stock_total,
-              stock_available: snapshot.stock_available,
-              stock_status: snapshot.stock_status,
-            }
-          : a,
-      ),
-    );
-  }, []);
+  const applyStockSnapshot = useCallback(
+    (snapshot: WerkstattArticleStockSnapshot) => {
+      setArticles((prev) =>
+        prev.map((a) =>
+          a.id === snapshot.id
+            ? {
+                ...a,
+                stock_total: snapshot.stock_total,
+                stock_available: snapshot.stock_available,
+                stock_status: snapshot.stock_status,
+              }
+            : a,
+        ),
+      );
+    },
+    [setArticles],
+  );
 
-  /** Check stock out of the workshop. Closes the dialog only on success. */
+  /**
+   * After a create: make the new row visible and open it.
+   *
+   * After "scan → nicht gefunden → Neuer Artikel" the scanned EAN was still in
+   * the search box and a category chosen earlier still narrowed the list, so
+   * the article just created was not on screen — "can not even change the
+   * stock when we added one". The search now names the new SP number, the
+   * exact filters are cleared, and its edit dialog (with the Bestand section)
+   * opens: the place to book its stock or fix what was typed.
+   */
+  const showCreatedArticle = useCallback(
+    (article: WerkstattArticle) => {
+      setActiveFilter("all");
+      setCategory("all");
+      setLocation("all");
+      if (search === article.article_number) void reload();
+      else setSearch(article.article_number);
+      setEditArchiveFirst(false);
+      setEditId(article.id);
+    },
+    [search, reload],
+  );
+
+  /* Archived projects are refused by the server; running jobs first. */
+  const dispenseProjects = useMemo(() => dispenseProjectOptions(projects), [projects]);
+
+  /** Take stock out of the workshop. Closes the dialog only on success. */
   const handleCheckout = useCallback(
     async (
       row: StockRow,
@@ -488,10 +462,18 @@ export function WerkstattInventarPage() {
         });
         applyStockSnapshot(snapshot);
         setEntnehmenId(null);
+        // The notice follows what the server BOOKED (`booked_as`): a
+        // consumable is used up "für <Projekt>", a machine type is lent.
         setNotice(
-          de
-            ? `${payload.quantity}× ${row.item_name} entnommen — ${snapshot.stock_available} von ${snapshot.stock_total} noch verfügbar`
-            : `Checked out ${payload.quantity}× ${row.item_name} — ${snapshot.stock_available} of ${snapshot.stock_total} still available`,
+          dispenseNotice(
+            {
+              result: snapshot,
+              quantity: payload.quantity,
+              itemName: row.item_name,
+              project: dispenseProjects.find((p) => p.id === payload.project_id) ?? null,
+            },
+            de,
+          ),
         );
       } catch (err) {
         // Stays in the dialog: "more than available" and "article archived"
@@ -502,7 +484,7 @@ export function WerkstattInventarPage() {
         setSaving(false);
       }
     },
-    [saving, token, applyStockSnapshot, setNotice, de],
+    [saving, token, applyStockSnapshot, setNotice, de, dispenseProjects],
   );
 
   /** Book a manual stock adjustment. Closes the dialog only on success. */
@@ -724,7 +706,7 @@ export function WerkstattInventarPage() {
         onFilter={setActiveFilter}
       />
 
-      <div className="werkstatt-table-card">
+      <div className="werkstatt-table-card werkstatt-table-card--stock">
         {/* A full page is indistinguishable from a complete one here: the
             endpoint refuses a limit above its own cap, so the page cannot
             fetch a probe row the way the Katalog page does. It says what it
@@ -736,25 +718,7 @@ export function WerkstattInventarPage() {
               : `${ARTICLE_PAGE_LIMIT} articles are shown — there may be more. The filter counts cover only these ${ARTICLE_PAGE_LIMIT}. Narrow the search or category.`}
           </p>
         )}
-        <div className="werkstatt-table-head" role="row">
-          <span className="werkstatt-col werkstatt-col-checkbox" />
-          <span className="werkstatt-col werkstatt-col-item">
-            {de ? "ARTIKEL" : "ITEM"}
-          </span>
-          <span className="werkstatt-col werkstatt-col-category">
-            {de ? "KATEGORIE" : "CATEGORY"}
-          </span>
-          <span className="werkstatt-col werkstatt-col-location">
-            {de ? "LAGERORT" : "LOCATION"}
-          </span>
-          <span className="werkstatt-col werkstatt-col-stock">
-            {de ? "BESTAND" : "STOCK"}
-          </span>
-          <span className="werkstatt-col werkstatt-col-out">
-            {de ? "UNTERWEGS" : "OUT"}
-          </span>
-          <span className="werkstatt-col werkstatt-col-actions" />
-        </div>
+        <StockTableHead de={de} />
 
         {labelNotice && (
           <p className="werkstatt-label-notice" role="status">
@@ -849,7 +813,7 @@ export function WerkstattInventarPage() {
             );
           }
           setNeuerArtikelCode(null);
-          void reload();
+          showCreatedArticle(article);
           void loadDuplicateCount();
         }}
         onAdjustStock={(articleId) => {
@@ -894,6 +858,7 @@ export function WerkstattInventarPage() {
           setBestandError(null);
           setBestandId(articleId);
         }}
+        onStockChanged={applyStockSnapshot}
         onOpenMachines={() => {
           setEditId(null);
           setWerkstattTab("maschinen");
@@ -930,12 +895,13 @@ export function WerkstattInventarPage() {
             location_name: entnehmenRow.location,
             stock_available: entnehmenRow.stock_available,
             stock_total: entnehmenRow.stock_total,
+            // The list is fetched with kind=consumable, so this is false —
+            // read off the row anyway, so the dialog follows the data.
+            is_serialized: Boolean(
+              articles.find((a) => a.id === entnehmenRow.article_id)?.is_serialized,
+            ),
           }}
-          projects={projects.map((p) => ({
-            id: String(p.id),
-            number: p.project_number,
-            title: p.name,
-          }))}
+          projects={dispenseProjects}
           submitting={saving}
           error={entnehmenError}
           onConfirm={(payload) => void handleCheckout(entnehmenRow, payload)}

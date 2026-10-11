@@ -283,7 +283,9 @@ describe("Bestand anpassen — what reaches the caller", () => {
   });
 });
 
-describe("Entnehmen — the quantity is capped at what is on the shelf", () => {
+// A machine type is LENT, so its amount is capped at the shelf. A consumable
+// is used up and is not capped — see werkstattDispense.test.tsx.
+describe("Entnehmen (machine type) — the quantity is capped at what is on the shelf", () => {
   function renderCheckout(overrides: Record<string, unknown> = {}) {
     const onConfirm = vi.fn();
     const view = render(
@@ -296,6 +298,7 @@ describe("Entnehmen — the quantity is capped at what is on the shelf", () => {
           location_name: "Regal B2",
           stock_available: 3,
           stock_total: 12,
+          is_serialized: true,
         }}
         projects={[]}
         onClose={() => undefined}
@@ -340,6 +343,7 @@ describe("Entnehmen — the quantity is capped at what is on the shelf", () => {
         location_name: null,
         stock_available: 0,
         stock_total: 4,
+        is_serialized: true,
       },
     });
     expect(screen.getByRole("button", { name: /Confirm checkout/ })).toBeDisabled();

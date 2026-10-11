@@ -196,6 +196,69 @@ export type PartnerListItem = Partner & {
   task_count: number;
   open_task_count: number;
   last_task_activity_at: string | null;
+  /** Active partner-portal logins (0 = the partner cannot see the portal).
+   *  Optional because older API builds do not send it. */
+  portal_user_count?: number;
+};
+
+/** A partner-portal login, as the office manages it on the partner. */
+export type PartnerPortalUser = {
+  id: number;
+  partner_id: number;
+  full_name: string;
+  email: string;
+  is_active: boolean;
+  status: "invited" | "active" | "disabled";
+  invite_sent_at: string | null;
+  invite_accepted_at: string | null;
+  last_login_at: string | null;
+  created_at: string;
+};
+
+/** A freshly minted invite / password link and whether the mail went out. */
+export type PartnerPortalLink = {
+  user: PartnerPortalUser;
+  kind: "invite" | "password_reset";
+  invite_link: string;
+  expires_at: string;
+  sent: boolean;
+  email_error_type: string | null;
+  email_error_detail: string | null;
+};
+
+/** A project handed to a partner as a whole, with the office's note for them. */
+/**
+ * A partner who sees the project in the portal. `assigned` = handed over as a
+ * whole (has the note, can be taken back); false = sees it only through
+ * tasks on it, listed so the office knows everyone reading the project's
+ * "Partnerportal" folder.
+ */
+export type ProjectPartnerLink = {
+  project_id: number;
+  partner_id: number;
+  partner: { id: number; name: string; trade: string | null; archived_at: string | null };
+  assigned: boolean;
+  note: string | null;
+  portal_user_count: number;
+  task_count: number;
+  hours_total: number;
+  created_at: string | null;
+  updated_at: string | null;
+};
+
+/** Hours a partner's crew reported in the portal (one day: workers × hours). */
+export type PartnerHoursEntry = {
+  id: number;
+  partner: { id: number; name: string; trade: string | null; archived_at: string | null };
+  project_id: number | null;
+  task: { id: number; title: string } | null;
+  work_date: string;
+  workers: number;
+  hours: number;
+  total_hours: number;
+  note: string | null;
+  reported_by: string | null;
+  created_at: string;
 };
 
 export type ProjectClassTaskTemplate = {
@@ -456,8 +519,10 @@ export type ProjectTrackedMaterial = {
   occurrence_count: number;
   report_count: number;
   last_report_date?: string | null;
-  /** "bericht" = summed from Baustellenberichte; "verteiler" = stock consumed for a Verteiler of this project. */
-  source?: "bericht" | "verteiler";
+  /** "bericht" = summed from Baustellenberichte; "verteiler" = stock consumed for a Verteiler of this
+   *  project; "lager" = consumables taken off the shelf for the project (rack, desk or phone), net of
+   *  what was taken back, with no Verteiler. */
+  source?: "bericht" | "verteiler" | "lager";
   /** The panels ("VT-0007") a `verteiler` row was scanned for; empty for report rows. */
   panel_numbers?: string[];
 };
@@ -700,6 +765,8 @@ export type TimeCurrent = {
   vacation_days_available: number;
   vacation_days_carryover: number;
   vacation_days_total_remaining: number;
+  /** Approved vacation days of next year, deducted only at the year change. */
+  vacation_days_planned_next_year?: number;
 };
 
 export type TimeEntry = {
@@ -759,6 +826,8 @@ export type PlanningAbsence = {
 export type ProjectFolder = {
   path: string;
   is_protected: boolean;
+  /** Its files are shown to the project's partners in the partner portal. */
+  portal_shared?: boolean;
 };
 
 // One stored file, whichever scope it hangs off. The name predates customer
@@ -880,6 +949,10 @@ export type CompanySettings = {
   navigation_title: string;
   company_name: string;
   company_address: string;
+  /** Office contact shown to partners in the partner portal. Optional:
+   *  older API builds do not send them. */
+  company_phone?: string;
+  company_email?: string;
 };
 
 export type UpdateStatus = {

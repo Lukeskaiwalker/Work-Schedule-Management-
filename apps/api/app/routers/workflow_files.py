@@ -6,6 +6,7 @@ from pathlib import Path
 from fastapi import APIRouter
 
 from app.routers.workflow_helpers import *  # noqa: F401,F403
+from app.services.partner_portal import is_partner_folder
 
 router = APIRouter(prefix="", tags=["files"])
 
@@ -24,11 +25,15 @@ def list_project_folders(
     for path_value, protected in DEFAULT_PROJECT_FOLDERS:
         if not _folder_visible_to_user(current_user, path_value, protected):
             continue
-        out_by_path[path_value] = ProjectFolderOut(path=path_value, is_protected=protected)
+        out_by_path[path_value] = ProjectFolderOut(
+            path=path_value, is_protected=protected, portal_shared=is_partner_folder(path_value)
+        )
     for row in rows:
         if not _folder_visible_to_user(current_user, row.path, row.is_protected):
             continue
-        out_by_path[row.path] = ProjectFolderOut(path=row.path, is_protected=row.is_protected)
+        out_by_path[row.path] = ProjectFolderOut(
+            path=row.path, is_protected=row.is_protected, portal_shared=is_partner_folder(row.path)
+        )
     return sorted(out_by_path.values(), key=lambda item: item.path.lower())
 
 @router.post("/projects/{project_id}/folders", response_model=ProjectFolderOut)
@@ -50,7 +55,7 @@ def create_project_folder(
         created_by=current_user.id,
     )
     db.commit()
-    return ProjectFolderOut(path=normalized, is_protected=protected)
+    return ProjectFolderOut(path=normalized, is_protected=protected, portal_shared=is_partner_folder(normalized))
 
 @router.post("/projects/{project_id}/files")
 async def upload_project_files(

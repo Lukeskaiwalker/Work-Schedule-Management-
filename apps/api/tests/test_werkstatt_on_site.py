@@ -583,9 +583,10 @@ def test_replay_reads_only_the_ledger_since_the_last_zero_balance(client: TestCl
 def test_full_history_is_replayed_when_a_write_off_exceeded_the_balance(
     client: TestClient,
 ) -> None:
-    """``correction`` is the one settling type the write path does not bound
-    against ``stock_out``, so a ledger can contain one larger than the balance
-    it settles. After that the running balance is negative and a later zero
+    """``correction`` was the one settling type the write path did not bound
+    against ``stock_out`` (until 2026-10-10), so a ledger can contain one
+    larger than the balance it settles. After that the running balance is
+    negative and a later zero
     crossing no longer means "nothing was out" — the shortcut has to stand
     down, or the page loses five of the six drums that are genuinely gone.
     """

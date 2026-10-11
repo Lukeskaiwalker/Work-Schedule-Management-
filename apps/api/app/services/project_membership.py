@@ -38,6 +38,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.permissions import ROLE_EXTERNAL, is_external_role
 from app.models.entities import Project, ProjectMember, User
 
 
@@ -60,7 +61,14 @@ def _active_user_ids(db: Session) -> list[int]:
     through the admin screens, which can add the memberships back.
     """
 
-    return list(db.scalars(select(User.id).where(User.is_active.is_(True))).all())
+    return list(
+        db.scalars(
+            # Partner-portal logins are never on a project by default: what a
+            # subcontractor sees is decided by the partner's task and project
+            # links, and a membership row would be a second, silent door.
+            select(User.id).where(User.is_active.is_(True), User.role != ROLE_EXTERNAL)
+        ).all()
+    )
 
 
 def add_all_users_to_project(db: Session, *, project_id: int) -> int:
@@ -92,6 +100,9 @@ def add_user_to_all_projects(db: Session, *, user_id: int) -> int:
     out what was installed there is the same gap this default exists to close.
     """
 
+    user = db.get(User, user_id)
+    if user is None or is_external_role(user.role):
+        return 0
     project_ids = list(db.scalars(select(Project.id)).all())
     if not project_ids:
         return 0

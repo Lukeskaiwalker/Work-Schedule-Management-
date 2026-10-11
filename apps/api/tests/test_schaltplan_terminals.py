@@ -134,11 +134,11 @@ def _part_ids(groups: list[dict], strip: int = 0, group: int = 0) -> list[str]:
 # ── Rules ─────────────────────────────────────────────────────────────────────
 
 
-def test_only_mcb_protected_outgoing_kinds_are_eligible():
-    assert [kind for kind in ("mcb", "wallbox", "sub_feed", "pv") if is_terminal_eligible(_device("x", kind))] == [
-        "mcb", "wallbox", "sub_feed", "pv",
+def test_mcb_protected_outgoings_and_a_neozed_are_eligible():
+    assert [kind for kind in ("mcb", "wallbox", "sub_feed", "pv", "fuse") if is_terminal_eligible(_device("x", kind))] == [
+        "mcb", "wallbox", "sub_feed", "pv", "fuse",
     ]
-    assert not any(is_terminal_eligible(_device("x", kind)) for kind in ("rcbo", "rcd", "fuse", "contactor", "spd", "blank"))
+    assert not any(is_terminal_eligible(_device("x", kind)) for kind in ("rcbo", "rcd", "contactor", "spd", "blank"))
 
 
 def test_one_phase_gets_one_etagenklemme_three_phases_get_two():
@@ -299,10 +299,62 @@ def test_terminal_before_any_head_lands_in_the_supply_group():
     assert _labels(groups, 0, 1) == ["X2", "2.1", ""]
 
 
-def test_rcbo_and_fuse_are_ignored_even_with_the_flag():
-    document = _rows(("r1", "Reihe 1", [_device("f1", "rcd", designation="F1", poles=4), _tb("x", "rcbo", designation="F1.1"), _tb("s", "fuse", designation="F1.2"), _tb("a", "mcb", designation="F1.3")]))
+def test_rcbo_is_ignored_even_with_the_flag():
+    document = _rows(("r1", "Reihe 1", [_device("f1", "rcd", designation="F1", poles=4), _tb("x", "rcbo", designation="F1.1"), _tb("a", "mcb", designation="F1.3")]))
     [group] = derive_terminals(document)
     assert [t["device_id"] for t in group["terminals"]] == ["f1", "a", None]
+
+
+# Owner, 2026-10-09: "a Neozed module and from there go straight on to a Wago
+# 2016 block" — the combo block of the PV and callbox outputs, with no LS
+# between. A flagged Neozed that is an outgoing ends on that block, always.
+
+
+def _neozed_board() -> dict:
+    return _rows(
+        (
+            "r1",
+            "Reihe 1",
+            [_tb("n1", "fuse", designation="F0", poles=3, rating="35 A", label="PV-Wechselrichter", circuit="20")],
+        )
+    )
+
+
+def test_a_neozed_ends_straight_on_the_2016_block_without_a_breaker():
+    document = _neozed_board()
+    [group] = derive_terminals(document)
+    assert group["group_id"] == "supply"
+    [strip] = group["strips"]
+    assert strip["kind"] == "block"
+    assert _part_ids([group]) == ["2016-7604", "2016-7601", "2016-7601", "2016-7601", "2016-7607"]
+    assert (strip["name"], strip["x_label"]) == ("PV-Wechselrichter", "X1")
+    # A block brings its own N terminal: no "Einspeiseklemme nicht abgeleitet".
+    assert not [f for f in validate_document(document) if "ohne FI" in f["message"]]
+    [row] = build_legend(document)
+    assert (row["device"], row["terminals"]) == ("Si", "X1")
+    assert is_block_device(document["rows"][0]["devices"][0])
+
+
+def test_a_one_pole_16a_neozed_still_gets_the_combo_block():
+    document = _rows(("r1", "Reihe 1", [_device("f1", "rcd", designation="F1", poles=4), _tb("n1", "fuse", designation="F1.1", poles=1, rating="16 A")]))
+    [group] = derive_terminals(document)
+    assert [strip["kind"] for strip in group["strips"]] == ["block"]
+
+
+def test_a_neozed_that_feeds_others_never_gets_a_block():
+    # As the Vorsicherung of an FI the fuse is not an outgoing at all …
+    pre_fuse = _rows(("r1", "Reihe 1", [
+        _tb("n1", "fuse", designation="F0", poles=3, rating="35 A"),
+        _device("f1", "rcd", designation="F1", poles=4, parent_id="n1"),
+        _tb("a", "mcb", designation="F1.1"),
+    ]))
+    assert [t["device_id"] for g in derive_terminals(pre_fuse) for t in g["terminals"]] == ["f1", "a", None]
+    # … and heading a row of LS it is their protection, not a load.
+    feeder = _rows(("r1", "Reihe 1", [
+        _tb("n1", "fuse", designation="F0", poles=3, rating="35 A", feeds_following=True),
+        _tb("a", "mcb", designation="F0.1"),
+    ]))
+    assert [t["device_id"] for g in derive_terminals(feeder) for t in g["terminals"]] == ["a"]
 
 
 def test_pole_rounding_is_reported_for_etagenklemmen_but_not_for_a_block():

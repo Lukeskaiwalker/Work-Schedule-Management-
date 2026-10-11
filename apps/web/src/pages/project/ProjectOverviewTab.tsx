@@ -5,6 +5,7 @@ import { formatTaskDateRange, formatTaskTimeRange, taskDayCount } from "../../ut
 import { weatherDescriptionLabel } from "../../utils/weather";
 import { CopyIcon } from "../../components/icons";
 import { ProjectNotesCard } from "../../components/project/ProjectNotesCard";
+import { ProjectPartnersCard } from "../../components/project/ProjectPartnersCard";
 import { ProjectReportCard } from "../../components/project/ProjectReportCard";
 import { customerTypeLabel } from "../../components/customers/CustomerTypeBadge";
 import type { Customer, Language, Project, ProjectOverviewDetails } from "../../types";
@@ -278,6 +279,8 @@ export function ProjectOverviewTab() {
               </small>
             ))}
           </div>
+
+          <ProjectPartnersCard projectId={activeProject.id} />
 
           <div className="card project-overview-meta">
             <h3 className="project-overview-title">{language === "de" ? "Projektdaten" : "Project data"}</h3>

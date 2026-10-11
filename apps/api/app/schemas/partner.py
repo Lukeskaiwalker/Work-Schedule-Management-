@@ -58,3 +58,5 @@ class PartnerListItemOut(PartnerOut):
     task_count: int = 0
     open_task_count: int = 0
     last_task_activity_at: datetime | None = None
+    # Active partner-portal logins of this partner (0 = no portal access).
+    portal_user_count: int = 0

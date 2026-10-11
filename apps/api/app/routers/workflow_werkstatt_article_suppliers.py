@@ -15,6 +15,12 @@ order for the same article asked again.
 
 Enforces at most one `is_preferred=True` link per article — setting a second
 atomically clears the previous one.
+
+The supplier's number is stored trimmed on every write (the scan cascade
+compares the trimmed scan against it), and a number another article already
+carries for the same supplier is refused with a German 400 naming that
+article — ``(supplier_id, supplier_article_no)`` is unique, and the database's
+own refusal used to arrive as a 500.
 """
 
 from __future__ import annotations
@@ -41,6 +47,11 @@ from app.schemas.werkstatt import (
     WerkstattArticleSupplierOut,
     WerkstattArticleSupplierUpdate,
 )
+from app.services.werkstatt_supplier_links import (
+    clean_supplier_number,
+    supplier_number_clash_detail,
+    supplier_number_holder,
+)
 
 router = APIRouter(prefix="", tags=["werkstatt-desktop"])
 
@@ -60,6 +71,8 @@ def add_supplier_link(
     supplier = db.get(WerkstattSupplier, payload.supplier_id)
     if supplier is None:
         raise HTTPException(status_code=400, detail="Lieferant nicht gefunden")
+    number = clean_supplier_number(payload.supplier_article_no)
+    _refuse_number_of_another_article(db, supplier=supplier, number=number, article_id=article_id)
     existing = db.scalar(
         select(WerkstattArticleSupplier).where(
             WerkstattArticleSupplier.article_id == article_id,
@@ -71,7 +84,7 @@ def add_supplier_link(
     link = WerkstattArticleSupplier(
         article_id=article_id,
         supplier_id=payload.supplier_id,
-        supplier_article_no=(payload.supplier_article_no or None),
+        supplier_article_no=number,
         typical_price_cents=payload.typical_price_cents,
         currency=payload.currency,
         typical_lead_time_days=payload.typical_lead_time_days,
@@ -105,7 +118,7 @@ def _update_existing_link(
     for field in sent:
         value = getattr(payload, field)
         if field == "supplier_article_no":
-            value = (value or "").strip() or None
+            value = clean_supplier_number(value)
             if value is None:
                 continue
         elif field == "notes":
@@ -117,6 +130,17 @@ def _update_existing_link(
     if link.is_preferred:
         clear_preferred_link(db, article_id=link.article_id, keep_link_id=link.id)
     return link
+
+
+def _refuse_number_of_another_article(
+    db: Session, *, supplier: WerkstattSupplier, number: str | None, article_id: int
+) -> None:
+    holder = supplier_number_holder(db, supplier_id=supplier.id, number=number, article_id=article_id)
+    if holder is not None and number is not None:
+        raise HTTPException(
+            status_code=400,
+            detail=supplier_number_clash_detail(holder, supplier_name=supplier.name, number=number),
+        )
 
 
 @router.post(
@@ -154,6 +178,14 @@ def update_article_supplier_link_endpoint(
     if link is None or link.article_id != article_id:
         raise HTTPException(status_code=404, detail="Lieferanten-Verknüpfung nicht gefunden")
     data = payload.model_dump(exclude_unset=True)
+    if "supplier_article_no" in data:
+        # Unlike the POST upsert, an explicit blank here is an edit: it clears.
+        data["supplier_article_no"] = clean_supplier_number(data["supplier_article_no"])
+        supplier = db.get(WerkstattSupplier, link.supplier_id)
+        if supplier is not None:
+            _refuse_number_of_another_article(
+                db, supplier=supplier, number=data["supplier_article_no"], article_id=article_id
+            )
     for field, value in data.items():
         setattr(link, field, value)
     link.updated_at = utcnow()

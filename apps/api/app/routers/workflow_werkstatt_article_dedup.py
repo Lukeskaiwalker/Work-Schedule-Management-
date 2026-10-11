@@ -301,6 +301,7 @@ def merge_duplicate_articles(
         units_moved=result.units_moved,
         inventory_counts_moved=result.inventory_counts_moved,
         task_materials_moved=result.task_materials_moved,
+        panel_material_moved=result.panel_material_moved,
         internal_code_moved=result.internal_code_moved,
         supplier_numbers_kept=list(result.supplier_numbers_kept),
         fields_filled=list(result.fields_filled),

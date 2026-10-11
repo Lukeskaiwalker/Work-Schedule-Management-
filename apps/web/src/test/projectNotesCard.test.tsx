@@ -2,8 +2,8 @@
  * The "Interne Notizen" card of the project overview. What must hold: the
  * feed shows newest first with author and time; posting sends the trimmed
  * body to POST /projects/{id}/notes and reloads the overview; Ctrl+Enter
- * posts; an empty feed says so; the remove control shows only on own notes
- * or for a manager, and a confirmed click is a DELETE; "Ältere anzeigen"
+ * posts; an empty feed says so; notes are permanent, so no note offers a
+ * delete control — not one's own, not to a manager; "Ältere anzeigen"
  * appears only after a full page and fetches with before_id.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -155,37 +155,14 @@ describe("ProjectNotesCard", () => {
     expect(loadProjectOverview).not.toHaveBeenCalled();
   });
 
-  it("offers removal only on own notes, or on every note for a manager", () => {
+  it("never offers to delete a note — not one's own, not to a manager", () => {
     const theirs = note(13, "Fremde Notiz", ANNA, "2026-09-18T11:00:00");
     const mine = note(14, "Eigene Notiz", MINE, "2026-09-18T12:00:00");
 
-    renderCard([mine, theirs, OLDER]);
-    const [mineRow, theirsRow, orphanRow] = rows();
-    expect(within(mineRow).getByRole("button", { name: "Notiz löschen" })).toBeInTheDocument();
-    expect(within(theirsRow).queryByRole("button", { name: "Notiz löschen" })).not.toBeInTheDocument();
-    expect(within(orphanRow).queryByRole("button", { name: "Notiz löschen" })).not.toBeInTheDocument();
-  });
-
-  it("lets a manager remove any note, the orphaned first one included", () => {
-    const theirs = note(13, "Fremde Notiz", ANNA, "2026-09-18T11:00:00");
-    renderCard([theirs, OLDER], { canCreateProject: true });
-    expect(screen.getAllByRole("button", { name: "Notiz löschen" })).toHaveLength(2);
-  });
-
-  it("deletes after confirmation and reloads; a cancelled confirm sends nothing", async () => {
-    const mine = note(14, "Eigene Notiz", MINE, "2026-09-18T12:00:00");
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
-    const { loadProjectOverview, setNotice } = renderCard([mine]);
-
-    fireEvent.click(screen.getByRole("button", { name: "Notiz löschen" }));
-    expect(confirmSpy).toHaveBeenCalledWith("Diese Notiz löschen?");
+    renderCard([mine, theirs, OLDER], { canCreateProject: true });
+    expect(rows()).toHaveLength(3);
+    expect(screen.queryByRole("button", { name: /löschen/i })).not.toBeInTheDocument();
     expect(apiFetchMock).not.toHaveBeenCalled();
-
-    confirmSpy.mockReturnValue(true);
-    fireEvent.click(screen.getByRole("button", { name: "Notiz löschen" }));
-    await waitFor(() => expect(loadProjectOverview).toHaveBeenCalledWith(PROJECT_ID));
-    expect(apiFetchMock).toHaveBeenCalledWith(`${NOTES_PATH}/14`, TOKEN, { method: "DELETE" });
-    expect(setNotice).toHaveBeenCalledWith("Notiz gelöscht");
   });
 
   it("shows 'Ältere anzeigen' only after a full page and fetches with before_id", async () => {

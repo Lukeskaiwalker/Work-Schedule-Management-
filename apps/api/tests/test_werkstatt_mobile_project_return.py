@@ -13,6 +13,10 @@ movement with no project at all, so:
 ``test_werkstatt_mobile.py`` covers only the return of a checkout with no
 project, which is the one case that always worked. These tests cover the case
 that did not.
+
+A loan is a machine type's (``is_serialized``) since 2026-10-10 — a consumable
+checkout is used up, not lent (``test_werkstatt_desk_dispense.py``) — so the
+drill seeded here is one.
 """
 
 from __future__ import annotations
@@ -119,6 +123,7 @@ def _seed_article(
         stock_repair=0,
         stock_min=1,
         currency="EUR",
+        is_serialized=True,
     )
     db.add(article)
     db.flush()

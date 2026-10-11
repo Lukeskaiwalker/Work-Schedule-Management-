@@ -6,14 +6,21 @@ Schriftfeld) starts a new sheet instead of running under the title block;
 the second band's busbar sits below the deepest text a circuit in band 0 can
 stack; and the pole count is visible — on the symbol, beside the rating and
 in the legend's device column — because a 1-pole and a 3-pole LS read
-identically otherwise.
+identically otherwise. On the Stromkreisliste no text may run into the next
+column: every header fits its column (owner's print of 2026-10-09: "Verbraucher
+/ Bezeichnung" ran into "Raum") and every wrapped cell line fits, the
+truncated last one included — at the same total width as before, so the
+sheet glued into the door keeps its size.
 """
 
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
+from reportlab.pdfbase.pdfmetrics import stringWidth
 
 from app.services import schaltplan_pdf as pdf
+from app.services.schaltplan_pdf_style import FONT, FONT_BOLD, wrap
 from app.services.schaltplan_layout import build_legend
 from tests.test_schaltplan import _auth, _create_panel, _customer, _device, _document
 
@@ -77,3 +84,41 @@ def test_a_six_circuit_second_group_gets_its_own_diagram_sheet(client: TestClien
         assert resp.status_code == 200, resp.text
         pages[designation] = resp.content.count(b"/Type /Page") - resp.content.count(b"/Type /Pages")
     assert pages["five"] >= 2 and pages["six"] == pages["five"] + 1
+
+
+def test_every_legend_header_fits_its_column_at_the_same_total_width() -> None:
+    assert sum(width for _key, _title, width in pdf._LEGEND_COLUMNS) == 534
+    for key, title, width in pdf._LEGEND_COLUMNS:
+        size = pdf._legend_header_size(title, width)
+        assert stringWidth(title, FONT_BOLD, size) <= width - 6, (key, title, size)
+        assert size >= 6.5, (key, title, size)  # still readable in a dark cellar
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Waschmaschine Hauswirtschaftsraum Untergeschoss links neben der Tür",
+        "Küchenarbeitsplattensteckdosenleiste",
+        "Außenbeleuchtung Terrasse, Garten und Einfahrt mit Bewegungsmelder und Dämmerungsschalter",
+        "NYM-J5x2,5mm²-Zuleitung-Unterverteilung-Dachgeschoss",
+        # A short word first, then one wider than the column: the second
+        # word must be cut too, not let into "Gerät" (review, 2026-10-09).
+        "UG Hauswirtschaftsraum",
+        "F1 Küchenarbeitsplattensteckdosenleiste und Kühlschrank",
+    ],
+)
+def test_no_wrapped_legend_line_is_wider_than_its_column(text: str) -> None:
+    for _key, _title, width in pdf._LEGEND_COLUMNS:
+        for line in wrap(text, FONT, 7.5, width - 6, 3):
+            assert stringWidth(line, FONT, 7.5) <= width - 6, (width, line)
+
+
+
+def test_a_wide_word_after_a_short_one_is_cut_and_marked_not_dropped() -> None:
+    lines = wrap("UG Hauswirtschaftsraum", FONT, 7.5, 50, 3)
+    assert lines[0] == "UG"
+    assert lines[1].startswith("Hauswirt") and lines[1].endswith("…")
+    assert all(stringWidth(line, FONT, 7.5) <= 50 for line in lines)
+    # Text left over when the lines run out ends in "…", and a line that
+    # still has room keeps its last word whole.
+    assert wrap("Steckdosen Küche Arbeitsplatte links", FONT, 7.5, 92, 1) == ["Steckdosen Küche…"]

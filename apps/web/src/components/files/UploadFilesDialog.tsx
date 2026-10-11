@@ -11,6 +11,7 @@
  * from the form's FormData and needs the hidden input to carry the files.
  */
 import { useEffect, useRef, useState, type DragEvent, type FormEvent } from "react";
+import { isPartnerPortalFolder } from "./folderGroups";
 
 import type { Language, ProjectFolder } from "../../types";
 
@@ -35,6 +36,13 @@ export type UploadFilesDialogProps = {
   onClose: () => void;
   canUseProtectedFolders: boolean;
   language: Language;
+  /**
+   * Project uploads only: say so when the target is the project's
+   * "Partnerportal" folder, whose files the project's partners can read.
+   * A customer's folder of that name is not shared, so the customer card
+   * leaves this off.
+   */
+  warnPartnerPortalFolder?: boolean;
 };
 
 function dedupe(files: readonly File[]): File[] {
@@ -64,6 +72,7 @@ export function UploadFilesDialog({
   onClose,
   canUseProtectedFolders,
   language,
+  warnPartnerPortalFolder = false,
 }: UploadFilesDialogProps) {
   const de = language === "de";
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
@@ -159,11 +168,20 @@ export function UploadFilesDialog({
                 .filter((folder) => canUseProtectedFolders || !folder.is_protected)
                 .map((folder) => (
                   <option key={folder.path} value={folder.path}>
-                    {folder.path}
+                    {warnPartnerPortalFolder && folder.portal_shared
+                      ? `${folder.path} — ${de ? "im Partnerportal sichtbar" : "shown in the partner portal"}`
+                      : folder.path}
                   </option>
                 ))}
             </select>
           </label>
+          {warnPartnerPortalFolder && isPartnerPortalFolder(newFolderPath.trim() || selectedFolder) && (
+            <small className="upload-folder-shared-note" role="note">
+              {de
+                ? "Dateien in diesem Ordner sehen die Partner dieses Projekts in ihrem Portal."
+                : "The partners of this project see the files in this folder in their portal."}
+            </small>
+          )}
           <div className="row wrap">
             <input
               value={newFolderPath}

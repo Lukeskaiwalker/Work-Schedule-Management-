@@ -153,7 +153,9 @@ describe("schaltplan topology — Vorsicherung", () => {
     const fi = buildTopology(document).find((g) => g.device?.id === "f1");
     expect(fi?.preFuse).toBeNull();
     const messages = validateDocument(document).map((f) => f.message);
-    expect(messages.some((m) => m.includes("Vorsicherung") && m.includes("F1"))).toBe(true);
+    // Since 2026-10-09 the parent may be a fuse, an SLS, a Hauptschalter or a
+    // Verteilerblock — the finding names the feed, not only the fuse.
+    expect(messages.some((m) => m.includes("Einspeisung nicht gefunden") && m.includes("F1"))).toBe(true);
   });
 });
 
@@ -350,7 +352,7 @@ describe("schaltplan topology — a fuse-headed group has no plate", () => {
     expect(fuseGroup?.children.map((d) => d.id)).toEqual(["c1"]);
     expect(groups.find((g) => g.device?.id === "f1")?.children).toEqual([]);
     const messages = validateDocument(document).map((f) => f.message);
-    expect(messages.some((m) => m.includes("Vorsicherung nicht gefunden"))).toBe(false);
+    expect(messages.some((m) => m.includes("nicht gefunden"))).toBe(false);
     expect(messages.some((m) => m.includes("speist keine Abgänge"))).toBe(false);
   });
 });

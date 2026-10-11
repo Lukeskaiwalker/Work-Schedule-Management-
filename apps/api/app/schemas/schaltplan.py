@@ -17,7 +17,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.services.schaltplan_layout import DEVICE_KINDS, PANEL_STATUSES, PANEL_TYPES, SUPPLY_SYSTEMS
 
@@ -348,9 +348,9 @@ class PanelLabelsPrintOut(BaseModel):
 # (services/schaltplan_material.py); scanned quantities are sums over the
 # Werkstatt ledger.
 
-PanelMaterialLineKind = Literal["device", "terminal", "extra"]
+PanelMaterialLineKind = Literal["device", "terminal", "manual", "extra"]
 PanelMaterialLineStatus = Literal["open", "done", "over", "unplanned"]
-PanelMaterialArticleSource = Literal["mapping", "auto"]
+PanelMaterialArticleSource = Literal["mapping", "auto", "manual"]
 
 
 class PanelMaterialArticleOut(BaseModel):
@@ -378,6 +378,37 @@ class PanelMaterialLineOut(BaseModel):
     article: PanelMaterialArticleOut | None = None
     article_source: PanelMaterialArticleSource | None = None
     last_scanned_at: datetime | None = None
+    # Set on a line added by hand ("manual:<id>") — the id to change or remove
+    # it, and its note on its own (``detail`` falls back to "manuell").
+    manual_id: int | None = None
+    note: str | None = None
+
+
+class PanelMaterialManualCreate(BaseModel):
+    """A line added by hand: a shelf article or a free text (owner, 2026-10-09)."""
+
+    article_id: int | None = Field(default=None, ge=1)
+    label: str | None = Field(default=None, max_length=255)
+    quantity: int = Field(default=1, ge=1, le=9999)
+    note: str | None = Field(default=None, max_length=500)
+
+    @field_validator("label", "note")
+    @classmethod
+    def _blank_is_none(cls, value: str | None) -> str | None:
+        text = (value or "").strip()
+        return text or None
+
+    @model_validator(mode="after")
+    def _article_or_text(self) -> "PanelMaterialManualCreate":
+        if self.article_id is None and self.label is None:
+            raise ValueError("article_id or label is required")
+        return self
+
+
+class PanelMaterialManualUpdate(BaseModel):
+    quantity: int | None = Field(default=None, ge=1, le=9999)
+    label: str | None = Field(default=None, max_length=255)
+    note: str | None = Field(default=None, max_length=500)
 
 
 class PanelMaterialPanelOut(BaseModel):

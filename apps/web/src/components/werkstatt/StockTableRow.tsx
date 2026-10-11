@@ -14,8 +14,17 @@
 import type { StockRow } from "./stockRowTypes";
 import { KebabMenu } from "./KebabMenu";
 
+/**
+ * A table row plus what only a SEARCH can say about it: the supplier article
+ * number the server matched. Without it a row found by "26190" shows no
+ * "26190" anywhere and reads like a wrong hit.
+ */
+export type StockTableRowData = StockRow & {
+  matched_supplier_article_no?: string | null;
+};
+
 export interface StockTableRowProps {
-  row: StockRow;
+  row: StockTableRowData;
   de: boolean;
   /** The article whose label is being printed right now, if any. */
   printingId: number | null;
@@ -41,7 +50,7 @@ export function StockTableRow({
 }: StockTableRowProps) {
   return (
     <li
-      className={`werkstatt-row werkstatt-row--clickable${
+      className={`werkstatt-row werkstatt-row--stock werkstatt-row--clickable${
         row.is_archived ? " werkstatt-row--archived" : ""
       }`}
       role="row"
@@ -76,7 +85,12 @@ export function StockTableRow({
             )}
           </b>
           <small className="werkstatt-row-meta">
-            {row.article_no} · {row.sub_meta}
+            {[row.article_no, row.sub_meta].filter(Boolean).join(" · ")}
+            {row.matched_supplier_article_no && (
+              <span className="stock-row-match">
+                {de ? "Lief.-Nr." : "Supplier no."} {row.matched_supplier_article_no}
+              </span>
+            )}
           </small>
         </span>
       </span>
@@ -99,6 +113,30 @@ export function StockTableRow({
         <span className="werkstatt-row-out-label">{row.out_label}</span>
       </span>
       <span className="werkstatt-col werkstatt-col-actions">
+        {/* The two things people come to this list to do, in plain sight. They
+            used to live only in the "…" menu, which the table clipped to an
+            invisible sliver — "the edit button does not work or show right".
+            Same gate as the menu: both end in a `werkstatt:manage` endpoint. */}
+        {canManage && (
+          <>
+            <button
+              type="button"
+              className="stock-row-btn"
+              title={de ? "Bestand anpassen" : "Adjust stock"}
+              onClick={() => onAdjustStock(row.article_id)}
+            >
+              {de ? "Bestand" : "Stock"}
+            </button>
+            <button
+              type="button"
+              className="stock-row-btn"
+              title={de ? "Artikel bearbeiten" : "Edit article"}
+              onClick={() => onEdit(row.article_id)}
+            >
+              {de ? "Bearbeiten" : "Edit"}
+            </button>
+          </>
+        )}
         {/* Unscannable stock is the actionable case, so that button is the
             prominent one; for everything else this is a reprint. */}
         <button
@@ -170,5 +208,21 @@ export function StockTableRow({
         )}
       </span>
     </li>
+  );
+}
+
+/** The header over StockTableRow — same grid, same column classes, so the
+ *  responsive rules that hide a column hide its heading with it. */
+export function StockTableHead({ de }: { de: boolean }) {
+  return (
+    <div className="werkstatt-table-head werkstatt-table-head--stock" role="row">
+      <span className="werkstatt-col werkstatt-col-checkbox" />
+      <span className="werkstatt-col werkstatt-col-item">{de ? "ARTIKEL" : "ITEM"}</span>
+      <span className="werkstatt-col werkstatt-col-category">{de ? "KATEGORIE" : "CATEGORY"}</span>
+      <span className="werkstatt-col werkstatt-col-location">{de ? "LAGERORT" : "LOCATION"}</span>
+      <span className="werkstatt-col werkstatt-col-stock">{de ? "BESTAND" : "STOCK"}</span>
+      <span className="werkstatt-col werkstatt-col-out">{de ? "UNTERWEGS" : "OUT"}</span>
+      <span className="werkstatt-col werkstatt-col-actions" />
+    </div>
   );
 }

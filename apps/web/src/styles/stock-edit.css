@@ -1,0 +1,271 @@
+/* ── Bestand: visible row actions, the edit dialog's Bestand + Lieferanten ──
+ *
+ * Page-local sheet beside styles/stock.css, for the same reason that one
+ * exists: styles.css is shared by every area and a separate file cannot
+ * conflict. Imported by WerkstattInventarPage and ArtikelBearbeitenModal.
+ *
+ * Why the stock table has its own grid now: the row grew two visible buttons
+ * ("Bestand", "Bearbeiten"). They used to live only in a "…" menu that the
+ * table clipped to an invisible sliver (`overflow: hidden` on the cell and the
+ * card) — the owner's "the edit button does not work or show right". The
+ * actions column is sized for the buttons, the other columns give up their
+ * generous minimums (cells ellipsise; the stock track keeps the pill's
+ * 110px), and the card scrolls sideways instead of cutting anything off when
+ * the screen is narrower than the grid.
+ *
+ * Colours come from the tokens in styles.css; the literals are tints that
+ * have no token of their own.
+ */
+
+/* ── The table ────────────────────────────────────────────────────────── */
+
+.werkstatt-table-card.werkstatt-table-card--stock {
+  /* Scroll, never clip: a clipped actions column is the bug this replaces.
+     Any overflow value other than visible still clips to the rounded
+     corners, so the card keeps its shape. */
+  overflow-x: auto;
+}
+
+.werkstatt-table-head.werkstatt-table-head--stock,
+.werkstatt-row.werkstatt-row--stock {
+  grid-template-columns:
+    32px minmax(180px, 2.2fr) minmax(100px, 1fr) minmax(110px, 1.1fr)
+    112px minmax(100px, 1fr) 240px;
+}
+
+/* The row itself opens "Entnehmen"; say so with the pointer. */
+.werkstatt-row.werkstatt-row--stock.werkstatt-row--clickable {
+  cursor: pointer;
+}
+
+.werkstatt-row.werkstatt-row--stock.werkstatt-row--clickable:hover {
+  background: #f8fbff;
+}
+
+.stock-row-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.stock-row-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.stock-row-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* "Lief.-Nr. 26190" — why a row found by a supplier number is a hit at all:
+   nothing else printed on the row contains that number. */
+.stock-row-match {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: #eaf4ff;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* Tablet: category and "unterwegs" step aside so the buttons fit, and five
+   cells share the row. styles.css means to hide them in this range too, but
+   its rule loses to the later `.werkstatt-col { display: flex }` of equal
+   specificity — hence the child selectors here. Buttons reach a touch-sized
+   40px. */
+@media (min-width: 768px) and (max-width: 1279px) {
+  .werkstatt-table-head.werkstatt-table-head--stock,
+  .werkstatt-row.werkstatt-row--stock {
+    grid-template-columns: 24px minmax(150px, 2fr) minmax(90px, 1fr) 112px 232px;
+  }
+
+  .werkstatt-table-head--stock > .werkstatt-col-category,
+  .werkstatt-table-head--stock > .werkstatt-col-out,
+  .werkstatt-row--stock > .werkstatt-col-category,
+  .werkstatt-row--stock > .werkstatt-col-out {
+    display: none;
+  }
+
+  .stock-row-btn {
+    height: 40px;
+  }
+}
+
+/* Phone: a seven-column grid is a sideways scrollbar with extra steps, so the
+   row becomes a two-line card — article and stock, then the buttons. */
+@media (max-width: 767px) {
+  .werkstatt-table-head.werkstatt-table-head--stock {
+    display: none;
+  }
+
+  .werkstatt-row.werkstatt-row--stock {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      "item    stock"
+      "actions actions";
+    gap: 8px 12px;
+  }
+
+  .werkstatt-row--stock > .werkstatt-col-checkbox,
+  .werkstatt-row--stock > .werkstatt-col-category,
+  .werkstatt-row--stock > .werkstatt-col-location,
+  .werkstatt-row--stock > .werkstatt-col-out {
+    display: none;
+  }
+
+  .werkstatt-row--stock > .werkstatt-col-item {
+    grid-area: item;
+  }
+
+  .werkstatt-row--stock > .werkstatt-col-stock {
+    grid-area: stock;
+  }
+
+  .werkstatt-row--stock > .werkstatt-col-actions {
+    grid-area: actions;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .stock-row-btn {
+    height: 40px;
+  }
+}
+
+/* ── Edit dialog: Bestand ─────────────────────────────────────────────── */
+
+.stock-edit-stock {
+  margin: 14px 0 0;
+  padding: 10px 14px 12px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.stock-edit-stock > legend {
+  padding: 0 4px;
+}
+
+.stock-edit-counts {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+
+.stock-edit-counts > b {
+  font-size: 16px;
+}
+
+.stock-edit-counts > .muted {
+  font-size: 12px;
+}
+
+.stock-edit-chip {
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.stock-edit-more {
+  margin-left: auto;
+}
+
+.stock-edit-note {
+  margin: 6px 0 0;
+  font-size: 12px;
+}
+
+.stock-edit-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.stock-edit-action {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.stock-edit-action > .werkstatt-action-btn {
+  align-self: flex-start;
+}
+
+.stock-edit-hint {
+  min-height: 1.3em;
+  font-size: 12px;
+}
+
+.stock-edit-reason {
+  margin-top: 10px;
+}
+
+.stock-edit-reason-rule {
+  display: block;
+  margin-top: 4px;
+}
+
+.stock-edit-status {
+  margin: 10px 0 0;
+  color: #256b45;
+  font-size: 12.5px;
+}
+
+/* ── Edit dialog: Lieferanten ─────────────────────────────────────────── */
+
+.stock-suppliers-list .stock-supplier-row {
+  align-items: center;
+}
+
+.stock-supplier-name {
+  min-width: 110px;
+}
+
+.stock-supplier-no {
+  flex: 1 1 160px;
+  min-width: 0;
+  max-width: 280px;
+}
+
+.stock-suppliers-empty {
+  margin: 4px 0 0;
+  font-size: 12px;
+}
+
+@media (max-width: 767px) {
+  .stock-edit-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .stock-supplier-no {
+    max-width: none;
+  }
+}
+
+/* "Begründung erforderlich" under a count that is ready but for its reason:
+   the button is refusing, and this says why where the eye already is. */
+.stock-edit-required {
+  margin-top: -2px;
+  font-size: 12px;
+  color: var(--danger);
+}

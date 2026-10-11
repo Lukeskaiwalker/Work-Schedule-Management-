@@ -35,6 +35,13 @@ The rules, in the order they are applied:
    article scanned under it is booked as consumption for that panel, with no
    name and no direction. A panel session and a crate session are mutually
    exclusive — opening one closes the other — and they share the idle rule.
+8. **A person and a project are picked by their on-screen codes.** With no
+   session open, an Ausgabe of a *consumable* (anything the Maschinen tab
+   does not list) is consumption for the person and, when one was picked,
+   the project; a tool is still lent out. The codes, and why they are what
+   they are, live in ``dispense_codes``. A person code only names somebody in
+   the crew the screen offered, a project code only one of that person's
+   offered projects -- the router is handed both lists, it never fetches.
 
 The de-duplication window exists because two readers deliver the same scan:
 the evdev reader owns the device, but a browser wedge can still be focused
@@ -57,7 +64,18 @@ from __future__ import annotations
 import contextlib
 import re
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+import dispense_codes as _dc
+import kept_requests as _kept
+from dispense_codes import (
+    CMD_OHNE_PROJEKT,
+    KIND_CONSUMABLE,
+    KIND_TOOL,
+    PARAMETRIC_PREFIXES,
+    PERSON_PREFIX,
+    PROJECT_PREFIX,
+)
 
 __all__ = [
     "ScanRouter",
@@ -78,7 +96,17 @@ __all__ = [
     "EXPIRED_PANEL",
     "DIRECTIONS",
     "MSG_NEEDS_ASSIGNEE",
+    "MSG_UNKNOWN_PERSON",
+    "MSG_PROJECT_NEEDS_PERSON",
+    "MSG_PROJECT_NOT_OFFERED",
     "MOVEMENT_REQUIRING_ASSIGNEE",
+    "MOVEMENTS_REQUIRING_ASSIGNEE",
+    "CMD_OHNE_PROJEKT",
+    "KIND_CONSUMABLE",
+    "KIND_TOOL",
+    "PARAMETRIC_PREFIXES",
+    "PERSON_PREFIX",
+    "PROJECT_PREFIX",
     "is_internal_article_code",
     "is_box_code",
     "is_badge_code",
@@ -154,6 +182,10 @@ COMMAND_CODES: Tuple[str, ...] = (
     CMD_WARENEINGANG,
     CMD_ENTNAHME,
     CMD_MITNEHMEN,
+    # The one static code of the Ausgabe picker: "no project, please". The
+    # person and project codes carry a number and are matched by prefix
+    # (PARAMETRIC_PREFIXES), so they are deliberately not in this tuple.
+    CMD_OHNE_PROJEKT,
 )
 
 _MENGE = {CMD_MENGE_5: 5, CMD_MENGE_10: 10, CMD_MENGE_50: 50}
@@ -174,6 +206,11 @@ DEFAULT_ASSIGNEE_TIMEOUT_S = 120.0
 #: badge would be clocked OUT, because a badge with no board open means
 #: "I am done" to SMPL. A minute covers fishing the badge out of a pocket.
 NAME_WAIT_S = 60.0
+
+#: See kept_requests: how long, and how many, tokens of unanswered bookings
+#: are held for a re-scan of the same thing.
+KEEP_REQUEST_ID_S = _kept.KEEP_REQUEST_ID_S
+MAX_KEPT_REQUEST_IDS = _kept.MAX_KEPT_REQUEST_IDS
 
 # Which movement a rack scan means, given the direction the operator set.
 # Three directions, not two: taking something out, bringing a borrowed thing
@@ -198,6 +235,14 @@ _DIRECTION_REQUIRING_ASSIGNEE = "aus"
 #: produce a checkout nobody scanned — and a rule with two copies is a rule
 #: with two behaviours.
 MOVEMENT_REQUIRING_ASSIGNEE = _DIRECTION_MOVEMENT[_DIRECTION_REQUIRING_ASSIGNEE]
+
+#: Every movement that may never be anonymous: the loan above, and a
+#: consumable used up -- SMPL books it onto the person who took it, and so does
+#: the consumption an ABBRUCH re-creates when it takes back a Rückgabe.
+_CONSUMPTION = "consumption"
+_CONSUMPTION_UNDO = "consumption_undo"
+MOVEMENTS_REQUIRING_ASSIGNEE: Tuple[str, ...] = (MOVEMENT_REQUIRING_ASSIGNEE, _CONSUMPTION)
+_INVERSE_CONSUMPTION = {_CONSUMPTION: _CONSUMPTION_UNDO, _CONSUMPTION_UNDO: _CONSUMPTION}
 
 # Undoing a movement means posting its opposite; SMPL has no "delete a
 # movement" and should not grow one, because a ledger you can delete from is
@@ -231,6 +276,12 @@ MSG_NO_INVERSE = (
 #: Shown, in these words, when somebody scans a checkout with no name tapped.
 #: It is a refusal, not a warning: nothing is written.
 MSG_NEEDS_ASSIGNEE = "Bitte Namen antippen oder Ausweis scannen"
+#: A person code for somebody the screen never offered (or a garbled one).
+MSG_UNKNOWN_PERSON = "Diese Person steht nicht in der Namensliste."
+#: A project code with nobody picked: a project is chosen FOR somebody.
+MSG_PROJECT_NEEDS_PERSON = "Erst den Namen wählen, dann das Projekt."
+#: A project that is not one of the tiles offered for the person picked.
+MSG_PROJECT_NOT_OFFERED = "Dieses Projekt steht für diese Person nicht zur Auswahl."
 
 
 def is_internal_article_code(code: str) -> bool:
@@ -247,10 +298,10 @@ def movement_needs_assignee(movement_type: str, assignee_user_id: Any) -> bool:
     """True when this booking would be an Ausgabe with nobody's name on it.
 
     The one rule, in one place, for every door onto the ledger: the rack scan,
-    ``POST /rack/movement``, and the checkout an ABBRUCH re-creates when it
-    takes back a Rückgabe.
+    ``POST /rack/movement``, and the checkout (or consumption) an ABBRUCH
+    re-creates when it takes back a Rückgabe.
     """
-    return (movement_type == MOVEMENT_REQUIRING_ASSIGNEE
+    return (movement_type in MOVEMENTS_REQUIRING_ASSIGNEE
             and _as_user_id({"id": assignee_user_id}) is None)
 
 
@@ -362,6 +413,18 @@ class LastAction:
     #: ``box_code``: a booking is only undone into the panel it was made in.
     panel_code: Optional[str] = None
     panel_id: Optional[int] = None
+    #: The project bucket a rack ``consumption`` went into (None = without
+    #: one) -- the one its ABBRUCH takes it back out of, whatever project is
+    #: picked by the time somebody scans it.
+    project_id: Optional[int] = None
+    #: The idempotency token the undo of this booking is posted with, minted
+    #: by the caller once per booking: a second ABBRUCH after an answer was
+    #: lost replays the first undo instead of taking the parts back twice.
+    undo_request_id: Optional[str] = None
+    #: The ledger row SMPL answered the booking with (on a replay too). The
+    #: ABBRUCH of a rack ``consumption`` names it, so SMPL can also reverse
+    #: the top-up it booked for a short shelf with exactly that consumption.
+    movement_id: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -386,6 +449,20 @@ class RouterState:
     # When the rack last refused an Ausgabe (or the undo of a Rückgabe) for
     # want of a name; 0.0 when no such question is open. See NAME_WAIT_S.
     name_wanted_at: float = 0.0
+    # The project picked for the Ausgabe, as ``{"id", "project_number",
+    # "name"}``. ``project_chosen`` with ``project`` None is the explicit
+    # "ohne Projekt"; both unset means nobody has chosen yet. Goes with the
+    # name: a different person, an expired name or FERTIG clears it.
+    project: Optional[Dict[str, Any]] = None
+    project_chosen: bool = False
+    # What the screen offered, as the agent last fetched it: the crew (the
+    # only people a scanned person code may name) and each person's projects
+    # (the only projects a project code may pick). Handed in, never fetched.
+    crew: Tuple[Dict[str, Any], ...] = ()
+    crew_projects: Dict[int, Tuple[Dict[str, Any], ...]] = field(default_factory=dict)
+    # Tokens of bookings that got no answer, oldest first. Not staged state:
+    # routing the re-scan clears the staged article, never these.
+    kept_request_ids: Tuple[_kept.KeptRequestId, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -426,6 +503,12 @@ class Decision:
     #: For a badge scan: it answers a refused Ausgabe, so SMPL is asked for the
     #: name only and must not clock anybody in or out (see NAME_WAIT_S).
     identify_only: bool = False
+    #: The project a consumption is booked to, or taken back from (None =
+    #: without one). For ``select_project``, what was picked.
+    project_id: Optional[int] = None
+    #: A Rückgabe of a consumable with no project picked: SMPL takes it back
+    #: from the bucket it was most recently consumed into.
+    pick_project: bool = False
 
     def as_dict(self) -> Dict[str, Any]:
         return {
@@ -451,6 +534,8 @@ class Decision:
             "closed_panel": self.closed_panel,
             "panel_expired": self.panel_expired,
             "identify_only": self.identify_only,
+            "project_id": self.project_id,
+            "pick_project": self.pick_project,
         }
 
 
@@ -538,6 +623,44 @@ class ScanRouter:
             return _as_user_id(self._state.assignee)
 
     @property
+    def project(self) -> Optional[Dict[str, Any]]:
+        """The project picked for the Ausgabe, or None (see project_chosen)."""
+        with self._lock:
+            project = self._state.project
+            return dict(project) if project else None
+
+    @property
+    def project_chosen(self) -> bool:
+        """True once a project -- or "ohne Projekt" -- has been picked."""
+        with self._lock:
+            return self._state.project_chosen
+
+    @property
+    def crew(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            return [dict(person) for person in self._state.crew]
+
+    def offered_projects(self, user_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        """The project tiles for this person (default: the one picked), or []."""
+        with self._lock:
+            ident = user_id if user_id is not None else _as_user_id(self._state.assignee)
+            if ident is None:
+                return []
+            return [dict(project) for project in self._state.crew_projects.get(ident, ())]
+
+    def selection(self) -> Dict[str, Any]:
+        """The Ausgabe picker's part of the rack screen's state."""
+        with self._lock:
+            state = self._state
+            person = _as_user_id(state.assignee)
+            offered = state.crew_projects.get(person, ()) if person is not None else ()
+            return {
+                "projects": [dict(project) for project in offered],
+                "project": dict(state.project) if state.project else None,
+                "project_chosen": state.project_chosen,
+            }
+
+    @property
     def active_screen(self) -> str:
         with self._lock:
             return BOXES if self._state.session is not None else RACK
@@ -563,7 +686,8 @@ class ScanRouter:
         if not text:
             return False
         return (command_for(text) is None and not is_box_code(text)
-                and not is_panel_code(text) and not is_badge_code(text))
+                and not is_panel_code(text) and not is_badge_code(text)
+                and not _dc.is_selection_code(text))
 
     def snapshot(self) -> Dict[str, Any]:
         """A JSON-shaped view for /health and the screen state."""
@@ -584,6 +708,8 @@ class ScanRouter:
                 "idle_timeout_s": self.idle_timeout_s,
                 "assignee": dict(state.assignee) if state.assignee else None,
                 "assignee_timeout_s": self.assignee_timeout_s,
+                "project": dict(state.project) if state.project else None,
+                "project_chosen": state.project_chosen,
             }
 
     def pending(self) -> Optional[Dict[str, Any]]:
@@ -626,12 +752,17 @@ class ScanRouter:
                     box_code: Optional[str] = None,
                     assignee_user_id: Optional[int] = None,
                     panel_code: Optional[str] = None,
-                    panel_id: Optional[int] = None) -> None:
+                    panel_id: Optional[int] = None,
+                    project_id: Optional[int] = None,
+                    undo_request_id: Optional[str] = None,
+                    movement_id: Optional[int] = None) -> None:
         """Record a commit SMPL accepted, so ``ABBRUCH`` can take it back.
 
         The crate is stamped from the open session unless the caller names
         one, so a line written into crate A can never be undone out of crate B.
-        A ``panel_item`` is stamped with its Verteiler the same way.
+        A ``panel_item`` is stamped with its Verteiler the same way, and a rack
+        ``consumption`` with the project bucket SMPL booked it into and the
+        row SMPL answered with.
         """
         with self._lock:
             state = self._state
@@ -648,6 +779,9 @@ class ScanRouter:
                 qty=max(1, int(qty)), box_code=box_code,
                 assignee_user_id=assignee_user_id,
                 panel_code=panel_code, panel_id=panel_id,
+                project_id=_as_user_id({"id": project_id}),
+                undo_request_id=undo_request_id or None,
+                movement_id=_as_user_id({"id": movement_id}),
             )
             self._state = replace(state, last_actions=actions,
                                   pending_article=None, pending_article_qty=1)
@@ -662,6 +796,33 @@ class ScanRouter:
             actions = dict(self._state.last_actions)
             if actions.pop(screen, None) is not None:
                 self._state = replace(self._state, last_actions=actions)
+
+    def keep_request_id(self, key: Tuple[Any, ...], request_id: str,
+                        at: Optional[float] = None) -> None:
+        """Hold the token of a booking SMPL never answered (see kept_requests).
+
+        A re-scan of the same thing gets it back from :meth:`kept_request_id`,
+        so SMPL replays the booking if it landed instead of booking it twice.
+        """
+        with self._lock:
+            now = self._clock() if at is None else float(at)
+            self._state = replace(self._state, kept_request_ids=_kept.keep(
+                self._state.kept_request_ids, key, request_id, now))
+
+    def kept_request_id(self, key: Tuple[Any, ...],
+                        at: Optional[float] = None) -> Optional[str]:
+        """The held token for exactly this booking, or None."""
+        with self._lock:
+            now = self._clock() if at is None else float(at)
+            return _kept.kept(self._state.kept_request_ids, key, now)
+
+    def drop_request_id(self, key: Tuple[Any, ...]) -> None:
+        """SMPL answered this booking -- booked, replayed or refused it."""
+        with self._lock:
+            held = self._state.kept_request_ids
+            kept = _kept.drop(held, key)
+            if kept != held:
+                self._state = replace(self._state, kept_request_ids=kept)
 
     def close_session(self) -> None:
         """Close the session from outside — the screen's own close button."""
@@ -696,18 +857,79 @@ class ScanRouter:
                 self._state = replace(self._state, direction=direction, name_wanted_at=0.0)
 
     def set_assignee(self, person: Optional[Dict[str, Any]], at: Optional[float] = None) -> None:
-        """Tap a name, or clear it. ``person`` is ``{"id", "name"}`` or None."""
+        """Tap a name, or clear it. ``person`` is ``{"id", "name"}`` or None.
+
+        A different person -- or none -- takes the picked project with it: it
+        was picked for the one standing here before.
+        """
         with self._lock:
             now = self._clock() if at is None else float(at)
-            if person is None or _as_user_id(person) is None:
-                self._state = replace(self._state, assignee=None, assignee_at=0.0)
-                return
-            self._state = replace(
-                self._state,
-                assignee={"id": _as_user_id(person), "name": person.get("name")},
-                assignee_at=now,
-                name_wanted_at=0.0,
-            )
+            self._state = self._with_assignee(self._state, person, now)
+
+    @staticmethod
+    def _with_assignee(state: RouterState, person: Optional[Dict[str, Any]],
+                       now: float) -> RouterState:
+        ident = _as_user_id(person) if person is not None else None
+        if ident is None:
+            return replace(state, assignee=None, assignee_at=0.0,
+                           project=None, project_chosen=False)
+        keep = _as_user_id(state.assignee) == ident
+        return replace(
+            state,
+            assignee={"id": ident, "name": person.get("name")},
+            assignee_at=now,
+            name_wanted_at=0.0,
+            project=state.project if keep else None,
+            project_chosen=state.project_chosen if keep else False,
+        )
+
+    def set_crew(self, people: Any) -> None:
+        """The names the screen offers -- the only ones a person code may pick."""
+        with self._lock:
+            self._state = replace(self._state, crew=_dc.clean_crew(people))
+
+    def set_crew_projects(self, people_projects: Any) -> bool:
+        """Each person's project tiles, ``{user_id: [project, ...]}``.
+
+        True when anything changed, so the caller wakes the screen only then.
+        A project already picked stays picked even if the new list no longer
+        offers it: it was valid when the person chose it, and it goes with
+        their name.
+        """
+        with self._lock:
+            cleaned = _dc.clean_project_mapping(people_projects)
+            if cleaned == self._state.crew_projects:
+                return False
+            self._state = replace(self._state, crew_projects=cleaned)
+            return True
+
+    def select_project(self, project_id: Optional[int],
+                       at: Optional[float] = None) -> Optional[str]:
+        """Tap a project tile (None: "ohne Projekt"). The refusal, or None."""
+        with self._lock:
+            now = self._clock() if at is None else float(at)
+            state, error = self._picked_project(self._state, project_id, now)
+            self._state = state
+            return error
+
+    def clear_project(self) -> None:
+        """Back to the project tiles -- "Projekt ändern"."""
+        with self._lock:
+            self._state = replace(self._state, project=None, project_chosen=False)
+
+    def _picked_project(self, state: RouterState, project_id: Optional[int],
+                        now: float) -> Tuple[RouterState, Optional[str]]:
+        """The one rule for a project pick, tapped or scanned."""
+        person = _as_user_id(state.assignee)
+        if person is None:
+            return state, MSG_PROJECT_NEEDS_PERSON
+        if project_id is None:
+            return replace(state, project=None, project_chosen=True, assignee_at=now), None
+        project = _dc.offered(state.crew_projects.get(person, ()), project_id)
+        if project is None:
+            return state, MSG_PROJECT_NOT_OFFERED
+        return replace(state, project=_dc.project_ref(project), project_chosen=True,
+                       assignee_at=now), None
 
     def set_mode(self, mode: str) -> None:
         with self._lock:
@@ -740,7 +962,8 @@ class ScanRouter:
                 return False
             if self._clock() - state.assignee_at <= self.assignee_timeout_s:
                 return False
-            self._state = replace(state, assignee=None, assignee_at=0.0)
+            self._state = replace(state, assignee=None, assignee_at=0.0,
+                                  project=None, project_chosen=False)
             return True
 
     def _expire(self, now: float) -> Optional[str]:
@@ -799,6 +1022,11 @@ class ScanRouter:
             if command is not None:
                 return self._decide_command(command, text, source, now, expired)
 
+            selection = _dc.selection_of(upper)
+            if selection is not None:
+                decision = self._decide_selection(selection, upper, source, now)
+                return replace(decision, **self._expiry_fields(expired))
+
             if is_badge_code(upper):
                 decision = self._decide_badge(text, source, now)
                 return replace(decision, **self._expiry_fields(expired))
@@ -840,6 +1068,15 @@ class ScanRouter:
                 self._state = replace(state, panel=None)
                 return Decision(screen=RACK, action="close_panel",
                                 panel_code=previous, previous_code=previous, **base)
+            if state.assignee is not None or state.project_chosen:
+                # Next in line: the Ausgabe somebody is in the middle of at
+                # the rack. "Fertig" ends it -- name and project go -- so the
+                # next person to walk up starts from the name tiles. A crate
+                # open behind it needs a second FERTIG.
+                person = _as_user_id(state.assignee)
+                self._state = self._with_assignee(state, None, now)
+                return Decision(screen=RACK, action="close_selection",
+                                assignee_user_id=person, **base)
             previous = state.session.code if state.session else None
             self._state = replace(state, session=None, mode="add")
             return Decision(screen=BOXES, action="close_session",
@@ -866,6 +1103,11 @@ class ScanRouter:
             # job is only to say which crate is meant.
             return Decision(screen=BOXES, action="handover",
                             box_code=session.code, box_number=session.box_number, **base)
+
+        if command == CMD_OHNE_PROJEKT:
+            decision = self._decide_selection((_dc.SELECT_NO_PROJECT, None), command,
+                                              source, now)
+            return replace(decision, **self._expiry_fields(expired))
 
         if command in (CMD_EIN, CMD_AUS, CMD_WARENEINGANG):
             direction = {CMD_EIN: "ein", CMD_AUS: "aus", CMD_WARENEINGANG: "wareneingang"}[command]
@@ -942,6 +1184,9 @@ class ScanRouter:
                             undo={"box_id": last.box_id, "article_id": last.article_id,
                                   "qty": last.qty}, **base)
 
+        if last.action == _CONSUMPTION:
+            return self._decide_undo_consumption(last, now, base)
+
         inverse = _INVERSE_MOVEMENT.get(last.movement_type)
         if inverse is None:
             return Decision(screen=RACK, action="cannot_undo", ok=False,
@@ -982,6 +1227,77 @@ class ScanRouter:
                         undo={"article_id": last.article_id, "movement_type": inverse,
                               "qty": last.qty,
                               "assignee_user_id": assignee}, **base)
+
+    def _decide_selection(self, selection: Tuple[str, Optional[int]], code: str,
+                          source: str, now: float) -> Decision:
+        """A person or project code off the rack screen's picker.
+
+        Only what the screen offered is accepted: a person in the crew it
+        drew, a project among the tiles drawn for the person picked. Anything
+        else is refused and changes nothing -- in particular an unknown person
+        code never replaces the person who is standing there.
+        """
+        state = self._state
+        kind, ident = selection
+        base = dict(code=code, source=source, screen=RACK)
+
+        if kind == _dc.SELECT_PERSON:
+            person = next((row for row in state.crew if row["id"] == ident), None)
+            if person is None:
+                return Decision(action="unknown_person", ok=False,
+                                error=MSG_UNKNOWN_PERSON, **base)
+            self._state = self._with_assignee(state, person, now)
+            return Decision(action="select_person", assignee_user_id=person["id"], **base)
+
+        project_id = ident if kind == _dc.SELECT_PROJECT else None
+        if kind == _dc.SELECT_PROJECT and ident is None:
+            # A garbled project code is a project nobody offered.
+            new_state, error = state, (MSG_PROJECT_NEEDS_PERSON
+                                       if state.assignee is None else MSG_PROJECT_NOT_OFFERED)
+        else:
+            new_state, error = self._picked_project(state, project_id, now)
+        if error is not None:
+            return Decision(action="selection_refused", ok=False, error=error,
+                            assignee_user_id=_as_user_id(state.assignee), **base)
+        self._state = new_state
+        return Decision(action="select_project", project_id=project_id,
+                        assignee_user_id=_as_user_id(new_state.assignee), **base)
+
+    def _decide_undo_consumption(self, last: LastAction, now: float,
+                                 base: Dict[str, Any]) -> Decision:
+        """Take a rack consumption back -- out of exactly the bucket it went into.
+
+        The bucket is the project SMPL booked (stamped by note_commit), not the
+        project picked now: an ABBRUCH after switching projects must not move
+        parts between two jobs. Undoing a Rückgabe consumes the parts again,
+        and a consumption names somebody: the recorded name, else the one
+        picked now, else the same refusal as a scanned Ausgabe.
+
+        Taking a consumption back names its row (``undo_of_movement_id``):
+        when the shelf was short SMPL booked a top-up with it, and only an
+        undo that names the consumption reverses that too. Re-consuming a
+        Rückgabe has no top-up to reverse.
+        """
+        inverse = _INVERSE_CONSUMPTION.get(last.movement_type)
+        if inverse is None:
+            return Decision(screen=RACK, action="cannot_undo", ok=False,
+                            error=MSG_NO_INVERSE, **base)
+        undo_of = last.movement_id if inverse == _CONSUMPTION_UNDO else None
+        assignee = last.assignee_user_id
+        if movement_needs_assignee(inverse, assignee):
+            assignee = _as_user_id(self._state.assignee)
+            if assignee is None:
+                self._state = replace(self._state, name_wanted_at=now)
+                return Decision(screen=RACK, action="needs_assignee", ok=False,
+                                error=MSG_NEEDS_ASSIGNEE, qty=last.qty, **base)
+        return Decision(screen=RACK, action="undo_consumption", qty=last.qty,
+                        movement_type=inverse, assignee_user_id=assignee,
+                        project_id=last.project_id,
+                        undo={"article_id": last.article_id, "movement_type": inverse,
+                              "qty": last.qty, "assignee_user_id": assignee,
+                              "project_id": last.project_id,
+                              "request_id": last.undo_request_id,
+                              "undo_of_movement_id": undo_of}, **base)
 
     def _decide_box(self, upper: str, source: str, now: float) -> Decision:
         state = self._state
@@ -1120,9 +1436,32 @@ class ScanRouter:
         direction = state.direction
         assignee = (_as_user_id(state.assignee)
                     if direction in _DIRECTIONS_WITH_ASSIGNEE else None)
+        if kind == KIND_CONSUMABLE and direction in _DIRECTIONS_WITH_ASSIGNEE:
+            return self._decide_consumable(direction, qty, assignee, base)
         return Decision(screen=RACK, action="movement", qty=qty,
                         movement_type=_DIRECTION_MOVEMENT[direction],
                         assignee_user_id=assignee, **base)
+
+    def _decide_consumable(self, direction: str, qty: int, assignee: Optional[int],
+                           base: Dict[str, Any]) -> Decision:
+        """A consumable at the rack is used up, never lent.
+
+        Ausgabe: consumption for the person (the name rule above has already
+        refused a nameless one) and the project picked, if any. Rückgabe:
+        leftovers carried back, taken back out of the project picked -- or, with
+        none picked, out of the bucket SMPL finds it was last consumed into.
+        A Wareneingang never gets here: a delivery is an intake whatever it is.
+        """
+        state = self._state
+        project_id = _as_user_id(state.project) if state.project_chosen else None
+        if direction == _DIRECTION_REQUIRING_ASSIGNEE:
+            return Decision(screen=RACK, action="consumption", qty=qty,
+                            movement_type=_CONSUMPTION, assignee_user_id=assignee,
+                            project_id=project_id, **base)
+        return Decision(screen=RACK, action="consumption_return", qty=qty,
+                        movement_type=_CONSUMPTION_UNDO, assignee_user_id=assignee,
+                        project_id=project_id, pick_project=not state.project_chosen,
+                        **base)
 
     # -- helpers ----------------------------------------------------------
 

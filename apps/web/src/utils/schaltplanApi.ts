@@ -12,6 +12,8 @@ import type {
   DeviceKind,
   PanelDocument,
   PanelMaterial,
+  PanelMaterialManualInput,
+  PanelMaterialManualUpdate,
   PanelMaterialMappingResult,
   PanelMaterialSummary,
   PanelPlan,
@@ -350,6 +352,48 @@ export async function setPanelMaterialMapping(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+}
+
+/** Add material the plan cannot derive — a shelf article or a free text. Answers with the refreshed list. */
+export async function addPanelMaterialManual(
+  token: string | null,
+  panelId: number,
+  body: PanelMaterialManualInput,
+): Promise<PanelMaterial> {
+  return apiFetch<PanelMaterial>(`/schaltplan/panels/${panelId}/material/manual`, token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export async function updatePanelMaterialManual(
+  token: string | null,
+  panelId: number,
+  lineId: number,
+  body: PanelMaterialManualUpdate,
+): Promise<PanelMaterial> {
+  return apiFetch<PanelMaterial>(`/schaltplan/panels/${panelId}/material/manual/${lineId}`, token, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+/** Take a hand-added line off the list. Pieces booked against its article stay booked. */
+export async function deletePanelMaterialManual(
+  token: string | null,
+  panelId: number,
+  lineId: number,
+): Promise<PanelMaterial> {
+  return apiFetch<PanelMaterial>(`/schaltplan/panels/${panelId}/material/manual/${lineId}`, token, {
+    method: "DELETE",
+  });
+}
+
+/** The Materialliste as an A4 PDF — cookie-authenticated like `panelPdfUrl`, no token in the URL. */
+export function panelMaterialPdfUrl(panelId: number): string {
+  return `${API_BASE}/schaltplan/panels/${panelId}/material/pdf`;
 }
 
 /** Every visible panel with its picking progress — the Werkstatt "Verteiler" tab. */

@@ -53,6 +53,10 @@ export interface WerkstattArticleLite {
   /** Out of service. Only ever true in a list fetched with `includeArchived`;
    *  the row carries it so such a list can mark WHICH rows those are. */
   is_archived?: boolean;
+  /** Set when a text search (`q`) found this row through a supplier's
+   *  article number rather than through anything printed on the row — the
+   *  row shows it, or the hit looks like a mismatch. Absent on older APIs. */
+  matched_supplier_article_no?: string | null;
 }
 
 export interface ArticleListOptions {
@@ -197,31 +201,50 @@ export interface CheckoutInput {
   /** Pieces to take out; the server rejects more than `stock_available`. */
   quantity: number;
   projectId: number | null;
-  /** ISO 8601, or null when no return date was picked. */
+  /** ISO 8601, or null when no return date was picked. Ignored by the server
+   *  for a consumable, which is used up rather than lent. */
   expectedReturnAt: string | null;
   notes: string | null;
+  /** Who takes it. Omitted (the default) means the caller themselves. */
+  assigneeUserId?: number | null;
 }
 
 /**
- * Check stock out of the workshop.
+ * What a dispense answers with: the article's counters, plus how the server
+ * booked it. A consumable (`is_serialized == false`) leaves stock for good as
+ * `consumption`; a machine type is lent out as `checkout`. Both extra fields
+ * are absent on an API from before that split, so callers treat them as
+ * optional.
+ */
+export interface WerkstattCheckoutResult extends WerkstattArticleStockSnapshot {
+  booked_as?: "consumption" | "checkout";
+  /** German, set when the shelf held less than was taken and the shortfall
+   *  was booked as a stock-take first. Worth showing verbatim. */
+  stock_warning?: string | null;
+}
+
+/**
+ * Take stock out of the workshop — consumed, or lent for a machine type.
  *
- * Mirrors `CheckoutPayload` in apps/api/app/schemas/werkstatt.py. `assignee_user_id`
- * is omitted, which the endpoint reads as "the caller is taking it themselves" —
- * the desktop inventory list has no one else to assign to.
+ * Mirrors `CheckoutPayload` in apps/api/app/schemas/werkstatt.py.
+ * `assignee_user_id` is only sent when the caller names somebody; omitted, the
+ * endpoint reads it as "the caller is taking it themselves".
  */
 export async function checkoutArticle(
   token: string | null,
   input: CheckoutInput,
-): Promise<WerkstattArticleStockSnapshot> {
-  return apiFetch<WerkstattArticleStockSnapshot>("/werkstatt/mobile/checkout", token, {
+): Promise<WerkstattCheckoutResult> {
+  const body: Record<string, unknown> = {
+    article_id: input.articleId,
+    quantity: input.quantity,
+    project_id: input.projectId,
+    expected_return_at: input.expectedReturnAt,
+    notes: input.notes,
+  };
+  if (input.assigneeUserId != null) body.assignee_user_id = input.assigneeUserId;
+  return apiFetch<WerkstattCheckoutResult>("/werkstatt/mobile/checkout", token, {
     method: "POST",
-    body: JSON.stringify({
-      article_id: input.articleId,
-      quantity: input.quantity,
-      project_id: input.projectId,
-      expected_return_at: input.expectedReturnAt,
-      notes: input.notes,
-    }),
+    body: JSON.stringify(body),
   });
 }
 

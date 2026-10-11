@@ -130,7 +130,10 @@ class ProjectTrackedMaterialOut(BaseModel):
     last_report_date: date | None = None
     # "bericht": summed from the Baustellenberichte; "verteiler": stock the
     # Werkstatt built into one of the project's boards (the ledger's
-    # ``consumption`` rows, see services/schaltplan_material.py).
-    source: Literal["bericht", "verteiler"] = "bericht"
+    # ``consumption`` rows, see services/schaltplan_material.py); "lager":
+    # consumables taken from the Lager for the project without a board — at
+    # the Regal station, the desk or the phone
+    # (services/project_stock_materials.py).
+    source: Literal["bericht", "verteiler", "lager"] = "bericht"
     # The boards ("VT-0007") a verteiler row was scanned for.
     panel_numbers: list[str] = Field(default_factory=list)

@@ -12,6 +12,7 @@ import {
   formatTaskDateRange,
 } from "../../utils/tasks";
 import { fuzzyFilterCustomers } from "../../utils/fuzzyMatch";
+import { isArchivedProjectStatus } from "../../utils/projects";
 import { PartnerMultiSelect } from "../partners/PartnerMultiSelect";
 import { ConstructionBoxPicker } from "../tasks/ConstructionBoxPicker";
 import { TaskAttachments } from "../tasks/TaskAttachments";
@@ -122,6 +123,14 @@ export function TaskModal() {
         : de
           ? "Neues Projekt"
           : "New project";
+  // Opened from a customer's page (or a customer picked here): their open
+  // projects, one tap away — the task may belong to one of them instead.
+  const anchoredCustomerProjects =
+    taskModalForm.customer_id != null && !taskModalForm.project_id
+      ? projects
+          .filter((project) => project.customer_id === taskModalForm.customer_id && !isArchivedProjectStatus(project.status))
+          .slice(0, 6)
+      : [];
   // Same search the customer pages use, over the customers already loaded;
   // nothing to offer once a customer is picked (the chip is the answer).
   const customerSuggestions =
@@ -506,6 +515,29 @@ export function TaskModal() {
                     ))}
                   </div>
                 )}
+              </div>
+            )}
+            {anchoredCustomerProjects.length > 0 && (
+              <div className="task-modal-customer-projects">
+                <small className="muted">
+                  {de ? "Oder für ein Projekt dieses Kunden:" : "Or for one of this customer's projects:"}
+                </small>
+                <div
+                  className="assignee-chip-list"
+                  role="group"
+                  aria-label={de ? "Projekte dieses Kunden" : "This customer's projects"}
+                >
+                  {anchoredCustomerProjects.map((project) => (
+                    <button
+                      key={`task-modal-customer-project-${project.id}`}
+                      type="button"
+                      className="assignee-suggestion-btn"
+                      onClick={() => selectTaskModalProject(project)}
+                    >
+                      {projectSearchLabel(project)}
+                    </button>
+                  ))}
+                </div>
               </div>
             )}
             {!selectedTaskModalProject && taskModalForm.customer_id == null && canCreateProject && (

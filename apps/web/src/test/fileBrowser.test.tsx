@@ -8,6 +8,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { FileBrowser, type FileBrowserProps } from "../components/files/FileBrowser";
+import { isPartnerPortalFolder } from "../components/files/folderGroups";
 import type { StoredFile } from "../types";
 
 const KEYS = {
@@ -228,3 +229,26 @@ describe("FileBrowser", () => {
     expect(onRetry).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("the partner portal folder", () => {
+  it("is the Partnerportal folder and everything below it, whatever the case", () => {
+    expect(isPartnerPortalFolder("Partnerportal")).toBe(true);
+    expect(isPartnerPortalFolder("partnerportal/Pläne")).toBe(true);
+    expect(isPartnerPortalFolder(" Partnerportal / Dach")).toBe(true);
+    expect(isPartnerPortalFolder("Partnerportal-Archiv")).toBe(false);
+    expect(isPartnerPortalFolder("Bilder/Partnerportal")).toBe(false);
+    expect(isPartnerPortalFolder("/")).toBe(false);
+  });
+
+  it("carries the host's note next to the folder name", () => {
+    const plan = file(9, "Dachplan.pdf", "Partnerportal", "application/pdf");
+    renderBrowser({
+      rows: [...ROWS, plan],
+      folderHint: (folder) => (isPartnerPortalFolder(folder) ? "Im Partnerportal sichtbar" : null),
+    });
+    const shared = screen.getByText("Im Partnerportal sichtbar");
+    expect(shared.closest(".file-browser-folder")?.textContent).toContain("Partnerportal");
+    expect(screen.getAllByText("Im Partnerportal sichtbar")).toHaveLength(1);
+  });
+});
+

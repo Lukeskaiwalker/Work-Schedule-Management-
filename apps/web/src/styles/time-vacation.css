@@ -1,0 +1,23 @@
+/* Zeiterfassung, vacation card: the "Vorgemerkt <year>" tile.
+ *
+ * It only appears when next year already holds approved days, so the four
+ * stats become five. The doubled class beats the base rule in styles.css
+ * whatever order the two sheets end up in. */
+
+@media (min-width: 721px) {
+  .time-vacation-stats.time-vacation-stats--with-planned {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  /* Two columns on phones: the fifth tile takes the whole last row. */
+  .time-vacation-stats--with-planned .time-vacation-stat--planned {
+    grid-column: 1 / -1;
+  }
+}
+
+/* Planned, not yet deducted: a dashed edge sets it apart from the balance. */
+.time-vacation-stat.time-vacation-stat--planned {
+  border-style: dashed;
+}

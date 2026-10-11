@@ -45,6 +45,8 @@ export type FileBrowserProps = {
   noMatchText?: string;
   /** Replaces the body while loading or after a failed load. */
   status?: FileBrowserStatus;
+  /** A short note next to a folder's name in the list view. */
+  folderHint?: (folder: string) => string | null;
   children?: ReactNode;
 };
 
@@ -70,6 +72,7 @@ export function FileBrowser({
   emptyText,
   noMatchText,
   status = { kind: "ready" },
+  folderHint,
   children,
 }: FileBrowserProps) {
   const de = language === "de";
@@ -163,6 +166,7 @@ export function FileBrowser({
               onDelete={onDelete}
               emptyText={emptyText ?? (de ? "Keine Dateien vorhanden" : "No files yet")}
               noMatchText={noMatchText}
+              folderHint={folderHint}
             />
           </>
         )}

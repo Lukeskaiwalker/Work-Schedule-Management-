@@ -19,12 +19,14 @@ operations:
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.limits import MAX_STOCK_QUANTITY
 from app.core.time import utcnow
 from app.models.entities import Station, User, WerkstattInventorySession
 from app.schemas.station import StationImportOut, StationSessionListOut, StationSessionOut
@@ -64,6 +66,8 @@ SESSION_TOO_LARGE_DETAIL = (
 
 def _int(value: Any, default: int = 0) -> int:
     if isinstance(value, bool):
+        return default
+    if isinstance(value, float) and not math.isfinite(value):
         return default
     if isinstance(value, (int, float)):
         return int(value)
@@ -185,12 +189,43 @@ def _fetch_agent_session(station: Station, name: str) -> dict[str, Any]:
     return payload
 
 
+def _count(value: Any, code: str) -> int:
+    """A count from the agent, inside what the columns and the ledger take.
+
+    The Pi's rows skip the request schema that bounds a typed import
+    (``InventoryImportRow``), so the same bound is applied here: a number
+    wider than the column used to reach ``db.flush()`` as an OverflowError,
+    and ``Infinity`` / ``NaN`` (what the agent's ``json.dumps`` writes for a
+    broken float) broke ``int()`` before that. Anything that is not a number
+    at all stays 0, as before — those rows are skipped and reported.
+    """
+    if isinstance(value, bool) or value is None:
+        return 0
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise HTTPException(status_code=400, detail=_implausible(code, value))
+        value = int(value)
+    if not isinstance(value, int):
+        return 0
+    if value < 0 or value > MAX_STOCK_QUANTITY:
+        raise HTTPException(status_code=400, detail=_implausible(code, value))
+    return value
+
+
+def _implausible(code: str, value: Any) -> str:
+    return (
+        f"Die Zählung für {code} ist nicht plausibel ({value}) — "
+        f"erlaubt sind 0 bis {MAX_STOCK_QUANTITY}. Bitte auf der Station korrigieren und erneut übernehmen."
+    )
+
+
 def _rows_from_agent(counts: list[Any]) -> list[ImportRow]:
     """The agent's rows as import rows — all of them, or none.
 
     A session past ``MAX_IMPORT_ROWS`` is refused with the sentence that
     says what to do; it is never trimmed, because a trimmed import answers
-    "ok" for an inventory that is missing rows nobody was told about.
+    "ok" for an inventory that is missing rows nobody was told about. An
+    impossible count is refused the same way, naming the code to fix.
     """
     rows: list[ImportRow] = []
     for raw in counts:
@@ -203,8 +238,8 @@ def _rows_from_agent(counts: list[Any]) -> list[ImportRow]:
             ImportRow(
                 code=code[:128],
                 item_name=str(raw.get("item_name") or "")[:500],
-                counted_qty=_int(raw.get("counted_qty")),
-                scan_count=_int(raw.get("scan_count")),
+                counted_qty=_count(raw.get("counted_qty"), code[:128]),
+                scan_count=_count(raw.get("scan_count"), code[:128]),
             )
         )
     if len(rows) > MAX_IMPORT_ROWS:

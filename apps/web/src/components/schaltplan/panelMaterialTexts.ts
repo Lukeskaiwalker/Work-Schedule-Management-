@@ -44,6 +44,32 @@ export type MaterialTexts = {
   labourEndConfirm: string;
   labourEndFailed: string;
   labourSessions: (count: number) => string;
+  searchResults: string;
+  pdf: string;
+  pdfTitle: string;
+  addMaterial: string;
+  addSearchLabel: string;
+  addSearchPlaceholder: string;
+  freeTextHint: (text: string) => string;
+  pickedArticle: string;
+  pickAnother: string;
+  quantity: string;
+  note: string;
+  notePlaceholder: string;
+  quantityInvalid: string;
+  addSubmit: string;
+  close: string;
+  added: (label: string) => string;
+  addFailed: string;
+  manual: string;
+  freeText: string;
+  editManual: string;
+  editManualTitle: string;
+  editManualForm: (label: string) => string;
+  save: string;
+  removeManual: string;
+  removeManualTitle: string;
+  manualFailed: string;
 };
 
 const DE: MaterialTexts = {
@@ -86,6 +112,32 @@ const DE: MaterialTexts = {
   labourEndConfirm: "Speichern",
   labourEndFailed: "Arbeitszeit konnte nicht beendet werden.",
   labourSessions: (count) => (count === 1 ? "1 Einsatz" : `${count} Einsätze`),
+  searchResults: "Gefundene Lagerartikel",
+  pdf: "Als PDF",
+  pdfTitle: "Die Materialliste als PDF öffnen — zum Drucken oder Weitergeben",
+  addMaterial: "Material hinzufügen",
+  addSearchLabel: "Lagerartikel suchen oder Freitext",
+  addSearchPlaceholder: "Lagerartikel suchen oder Freitext eingeben…",
+  freeTextHint: (text) => `Ohne Auswahl wird „${text}“ als Freitext übernommen.`,
+  pickedArticle: "Lagerartikel",
+  pickAnother: "Andere Auswahl",
+  quantity: "Menge",
+  note: "Notiz",
+  notePlaceholder: "optional, z. B. für Reihe 2",
+  quantityInvalid: "Menge: eine ganze Zahl von 1 bis 9999.",
+  addSubmit: "Hinzufügen",
+  close: "Schließen",
+  added: (label) => `„${label}“ hinzugefügt.`,
+  addFailed: "Material konnte nicht hinzugefügt werden.",
+  manual: "manuell",
+  freeText: "Freitext — kein Lagerartikel",
+  editManual: "Ändern",
+  editManualTitle: "Menge oder Notiz ändern",
+  editManualForm: (label) => `${label} ändern`,
+  save: "Speichern",
+  removeManual: "Entfernen",
+  removeManualTitle: "Aus der Liste nehmen — schon gebuchte Stücke bleiben gebucht",
+  manualFailed: "Die Position konnte nicht geändert werden.",
 };
 
 const EN: MaterialTexts = {
@@ -128,6 +180,32 @@ const EN: MaterialTexts = {
   labourEndConfirm: "Save",
   labourEndFailed: "Could not end the session.",
   labourSessions: (count) => (count === 1 ? "1 session" : `${count} sessions`),
+  searchResults: "Matching stock articles",
+  pdf: "As PDF",
+  pdfTitle: "Open the material list as a PDF — to print or pass on",
+  addMaterial: "Add material",
+  addSearchLabel: "Search stock articles or free text",
+  addSearchPlaceholder: "Search stock articles or type free text…",
+  freeTextHint: (text) => `Without a pick, “${text}” is added as free text.`,
+  pickedArticle: "Stock article",
+  pickAnother: "Pick another",
+  quantity: "Quantity",
+  note: "Note",
+  notePlaceholder: "optional, e.g. for row 2",
+  quantityInvalid: "Quantity: a whole number from 1 to 9999.",
+  addSubmit: "Add",
+  close: "Close",
+  added: (label) => `“${label}” added.`,
+  addFailed: "The material could not be added.",
+  manual: "by hand",
+  freeText: "Free text — no stock article",
+  editManual: "Edit",
+  editManualTitle: "Change quantity or note",
+  editManualForm: (label) => `Edit ${label}`,
+  save: "Save",
+  removeManual: "Remove",
+  removeManualTitle: "Take it off the list — pieces already booked stay booked",
+  manualFailed: "The line could not be changed.",
 };
 
 export function materialTexts(language: "de" | "en"): MaterialTexts {

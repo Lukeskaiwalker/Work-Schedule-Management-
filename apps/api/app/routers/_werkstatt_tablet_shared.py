@@ -29,25 +29,22 @@ from app.schemas.werkstatt import (
     WerkstattOrderOut,
     WerkstattOrderSummaryOut,
 )
+from app.services.werkstatt_order_totals import (
+    checked_order_total_cents,
+    sum_order_lines_cents,
+)
 
 
 def compute_total_cents(lines: list[WerkstattOrderLine]) -> int | None:
-    """Sum unit_price_cents × quantity_ordered across priced lines.
+    """The total to store on an order: unit_price_cents × quantity_ordered.
 
     Returns ``None`` when no line has a unit price set, so the UI can
     show "Preis auf Anfrage" instead of a misleading 0-EUR subtotal.
+    Raises ``OrderTotalTooLarge`` when the sum does not fit the int4 column
+    — the same check as ``recompute_total`` (services/werkstatt_order_totals.py).
     """
 
-    if not lines:
-        return None
-    total = 0
-    any_priced = False
-    for line in lines:
-        if line.unit_price_cents is None:
-            continue
-        total += line.unit_price_cents * line.quantity_ordered
-        any_priced = True
-    return total if any_priced else None
+    return checked_order_total_cents(lines)
 
 
 def _order_line_out(
@@ -150,7 +147,9 @@ def load_order_full(db: Session, order: WerkstattOrder) -> WerkstattOrderOut:
         for line in lines
     ]
 
-    total_cents = compute_total_cents(lines)
+    # Unchecked on purpose: a read never refuses, so an order is always
+    # openable and correctable. Every WRITE of the stored total is checked.
+    total_cents = sum_order_lines_cents(lines)
 
     task = db.get(Task, order.task_id) if order.task_id else None
     project = db.get(Project, order.project_id) if order.project_id else None

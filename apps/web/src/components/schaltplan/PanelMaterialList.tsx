@@ -10,23 +10,39 @@
  * article a planned line means (a global mapping, not a per-panel one).
  *
  * Order is the server's: device lines in catalog order, then terminal parts,
- * then extras. A finished line is marked, never moved — a fitter reading the
- * list against the rail expects the rows where they were a minute ago.
+ * then the lines added by hand, then extras. A finished line is marked, never
+ * moved — a fitter reading the list against the rail expects the rows where
+ * they were a minute ago.
+ *
+ * Added by hand (owner, 2026-10-09): what the plan cannot derive — duct,
+ * cable ties, a spare breaker — goes on the list here, a shelf article or a
+ * free text, and the whole list opens as a PDF for anyone who can see it.
  */
 import { useCallback, useEffect, useState } from "react";
 
 import { PanelLabourBlock } from "./PanelLabourBlock";
+import { PanelMaterialAddForm } from "./PanelMaterialAddForm";
 import { PanelMaterialRow } from "./PanelMaterialRow";
 import { materialTexts, type MaterialTexts } from "./panelMaterialTexts";
 import {
+  addPanelMaterialManual,
   bookPanelMaterial,
+  deletePanelMaterialManual,
   endPanelWorkSession,
   getPanelMaterial,
+  panelMaterialPdfUrl,
   setPanelMaterialMapping,
   unbookPanelMaterial,
+  updatePanelMaterialManual,
 } from "../../utils/schaltplanApi";
 import { formatRelativeTime } from "../../utils/werkstattOverviewFormat";
-import type { PanelMaterial, PanelMaterialLine, PanelMaterialPanel } from "../../types/schaltplan";
+import type {
+  PanelMaterial,
+  PanelMaterialLine,
+  PanelMaterialManualInput,
+  PanelMaterialManualUpdate,
+  PanelMaterialPanel,
+} from "../../types/schaltplan";
 import "../../styles/schaltplan-material.css";
 
 export type PanelMaterialListProps = {
@@ -52,6 +68,7 @@ type LoadState =
 
 const LOADING: LoadState = { status: "loading" };
 const BOOK_QUANTITY = 1;
+const ADD_KEY = "manual:add";
 
 function errorMessage(err: unknown, fallback: string): string {
   return err instanceof Error && err.message ? err.message : fallback;
@@ -64,6 +81,40 @@ function panelTitle(panel: PanelMaterialPanel): string {
 function panelSubtitle(panel: PanelMaterialPanel): string {
   const project = [panel.project_number, panel.project_name].filter(Boolean).join(" ");
   return [panel.customer_name, project].filter(Boolean).join(" · ");
+}
+
+function MaterialToolbar({
+  panelId,
+  canEdit,
+  addOpen,
+  t,
+  onToggleAdd,
+}: {
+  panelId: number;
+  canEdit: boolean;
+  addOpen: boolean;
+  t: MaterialTexts;
+  onToggleAdd: () => void;
+}) {
+  return (
+    <div className="sp-mat-toolbar">
+      {canEdit && (
+        <button type="button" className="sp-btn" aria-expanded={addOpen} onClick={onToggleAdd}>
+          <span aria-hidden="true">+ </span>
+          {t.addMaterial}
+        </button>
+      )}
+      <a
+        className="sp-btn sp-btn--ghost sp-mat-pdf"
+        href={panelMaterialPdfUrl(panelId)}
+        target="_blank"
+        rel="noreferrer"
+        title={t.pdfTitle}
+      >
+        {t.pdf}
+      </a>
+    </div>
+  );
 }
 
 function MaterialFooter({ material, t, de }: { material: PanelMaterial; t: MaterialTexts; de: boolean }) {
@@ -100,6 +151,7 @@ export function PanelMaterialList({
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [mappingKey, setMappingKey] = useState<string | null>(null);
+  const [addOpen, setAddOpen] = useState(false);
   // Bumped by "Erneut versuchen"; the load effect keys on it.
   const [attempt, setAttempt] = useState(0);
 
@@ -107,6 +159,7 @@ export function PanelMaterialList({
     let cancelled = false;
     setLoad(LOADING);
     setMappingKey(null);
+    setAddOpen(false);
     setNotice(null);
     getPanelMaterial(token, panelId)
       .then((material) => {
@@ -174,6 +227,54 @@ export function PanelMaterialList({
     [token, busyKey, refresh, onChanged, t.mappingFailed],
   );
 
+  /**
+   * The three writes on hand-added lines share one shape: wait for any other
+   * request, show the server's answer as the new list, say a refusal in the
+   * notice. True once it went through, so a form knows whether to clear.
+   */
+  const writeManual = useCallback(
+    async (key: string, request: () => Promise<PanelMaterial>, fallback: string): Promise<boolean> => {
+      if (busyKey !== null) return false;
+      setBusyKey(key);
+      setNotice(null);
+      try {
+        const material = await request();
+        setLoad({ status: "ready", material });
+        onChanged?.();
+        return true;
+      } catch (err) {
+        setNotice(errorMessage(err, fallback));
+        return false;
+      } finally {
+        setBusyKey(null);
+      }
+    },
+    [busyKey, onChanged],
+  );
+
+  const addManual = useCallback(
+    (body: PanelMaterialManualInput) =>
+      writeManual(ADD_KEY, () => addPanelMaterialManual(token, panelId, body), t.addFailed),
+    [writeManual, token, panelId, t.addFailed],
+  );
+
+  const updateManual = useCallback(
+    (line: PanelMaterialLine, body: PanelMaterialManualUpdate) =>
+      line.manual_id == null
+        ? Promise.resolve(false)
+        : writeManual(line.key, () => updatePanelMaterialManual(token, panelId, line.manual_id as number, body), t.manualFailed),
+    [writeManual, token, panelId, t.manualFailed],
+  );
+
+  const removeManual = useCallback(
+    (line: PanelMaterialLine) => {
+      if (line.manual_id == null) return;
+      const lineId = line.manual_id;
+      void writeManual(line.key, () => deletePanelMaterialManual(token, panelId, lineId), t.manualFailed);
+    },
+    [writeManual, token, panelId, t.manualFailed],
+  );
+
   const endSession = useCallback(
     async (sessionId: number, endedAt: string | null) => {
       if (busyKey !== null) return;
@@ -230,6 +331,24 @@ export function PanelMaterialList({
         </header>
       )}
 
+      <MaterialToolbar
+        panelId={panelId}
+        canEdit={canEdit}
+        addOpen={addOpen}
+        t={t}
+        onToggleAdd={() => setAddOpen((open) => !open)}
+      />
+
+      {canEdit && addOpen && (
+        <PanelMaterialAddForm
+          token={token}
+          t={t}
+          busy={busyKey !== null}
+          onAdd={addManual}
+          onClose={() => setAddOpen(false)}
+        />
+      )}
+
       {notice && (
         <p className="sp-mat-notice" role="alert">
           {notice}
@@ -253,6 +372,8 @@ export function PanelMaterialList({
               onCloseMapping={() => setMappingKey(null)}
               onAssign={(articleId) => void assign(line, articleId)}
               onBook={(direction) => void book(line, direction)}
+              onUpdateManual={(body) => updateManual(line, body)}
+              onRemoveManual={() => removeManual(line)}
             />
           ))}
         </ul>

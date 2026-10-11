@@ -138,6 +138,19 @@ def _article(client: TestClient, admin_token: str, name: str, stock: int = 0) ->
     return article
 
 
+def _as_machine_type(article: dict) -> dict:
+    """A tool is a machine type (``is_serialized``) — only those are LENT.
+
+    Since 2026-10-10 a consumable taken at the desk, the phone or the wall
+    leaves the stock as ``consumption`` (owner: "any item that is not inside
+    the machine tab is a consumable"), so a test about loans needs a tool.
+    """
+    with SessionLocal() as db:
+        db.get(WerkstattArticle, article["id"]).is_serialized = True
+        db.commit()
+    return {**article, "is_serialized": True}
+
+
 def _box(client: TestClient, admin_token: str, label: str) -> dict:
     resp = client.post(
         "/api/werkstatt/boxes", headers=auth_headers(admin_token), json={"label": label}
@@ -212,6 +225,26 @@ def test_a_station_token_reaches_every_station_werkstatt_endpoint(
     crew = client.get(f"{BASE}/crew", headers=head)
     assert crew.status_code == 200, crew.text
 
+    # The consumable routes (routers/workflow_station_consumption.py) are
+    # mounted beside this router and must open with the same token.
+    crew_projects = client.get(f"{BASE}/crew-projects", headers=head)
+    assert crew_projects.status_code == 200, crew_projects.text
+
+    taker = _user_id("admin@example.com")
+    consumed = client.post(
+        f"{BASE}/consumptions",
+        headers=head,
+        json={"article_id": article["id"], "quantity": 1, "assignee_user_id": taker},
+    )
+    assert consumed.status_code == 200, consumed.text
+
+    taken_back = client.post(
+        f"{BASE}/consumptions/undo",
+        headers=head,
+        json={"article_id": article["id"], "quantity": 1, "assignee_user_id": taker, "project_id": None},
+    )
+    assert taken_back.status_code == 200, taken_back.text
+
 
 def test_a_user_token_is_not_a_station_token(
     client: TestClient, admin_token: str
@@ -239,8 +272,19 @@ def test_a_user_token_is_not_a_station_token(
             json={"article_id": 1, "movement_type": "checkout", "quantity": 1},
         ),
         client.get(f"{BASE}/crew", headers=head),
+        client.get(f"{BASE}/crew-projects", headers=head),
+        client.post(
+            f"{BASE}/consumptions",
+            headers=head,
+            json={"article_id": 1, "quantity": 1, "assignee_user_id": 1},
+        ),
+        client.post(
+            f"{BASE}/consumptions/undo",
+            headers=head,
+            json={"article_id": 1, "quantity": 1, "assignee_user_id": 1},
+        ),
     ]
-    assert [r.status_code for r in attempts] == [401] * 6, [r.text for r in attempts]
+    assert [r.status_code for r in attempts] == [401] * 9, [r.text for r in attempts]
 
 
 def test_an_unknown_station_token_is_rejected(client: TestClient) -> None:
@@ -724,7 +768,7 @@ def test_a_nameless_return_carries_the_project_of_the_loan_it_closes(
     monteur = _make_user(client, admin_token, "projektler@example.com", "employee")
     monteur_token = _login(client, monteur["email"])
     project_id = _project(client, admin_token, "2026-RG-1", "Rückgabe Projekt")
-    article = _article(client, admin_token, "Makita Akkuschrauber", stock=2)
+    article = _as_machine_type(_article(client, admin_token, "Makita Akkuschrauber", stock=2))
 
     taken = client.post(
         "/api/werkstatt/mobile/checkout",
@@ -857,7 +901,41 @@ def test_a_checkout_beyond_stock_is_refused_by_the_shared_ledger_rules(
         json={"article_id": article["id"], "movement_type": "checkout", "quantity": 5},
     )
     assert refused.status_code == 400, refused.text
+    # The wall speaks German: the ledger's own English sentence is for logs.
+    assert refused.json()["detail"] == "Nicht genug im Lager: 1 verfügbar, 5 verlangt."
     assert _movements(article["id"])[-1].movement_type == "intake", "nothing was written"
+
+
+def test_a_return_of_something_nobody_has_is_refused_in_german(
+    client: TestClient, admin_token: str, station_token: str
+) -> None:
+    article = _as_machine_type(_article(client, admin_token, "Hilti TE 30", stock=2))
+    head = auth_headers(station_token)
+
+    nothing_out = client.post(
+        f"{BASE}/movements",
+        headers=head,
+        json={"article_id": article["id"], "movement_type": "return", "quantity": 1},
+    )
+    lent = client.post(
+        f"{BASE}/movements",
+        headers=head,
+        json={"article_id": article["id"], "movement_type": "checkout", "quantity": 1},
+    )
+    too_many = client.post(
+        f"{BASE}/movements",
+        headers=head,
+        json={"article_id": article["id"], "movement_type": "return", "quantity": 2},
+    )
+
+    assert (nothing_out.status_code, nothing_out.json()["detail"]) == (
+        400, "Zurückgeben geht nur für Ausgeliehenes: 0 ausgegeben."
+    )
+    assert lent.status_code == 200, lent.text
+    assert (too_many.status_code, too_many.json()["detail"]) == (
+        400, "Zurückgeben geht nur für Ausgeliehenes: 1 ausgegeben."
+    )
+    assert [row.movement_type for row in _movements(article["id"])] == ["intake", "checkout"]
 
 
 def test_a_station_booking_is_marked_as_one_in_the_ledger(
@@ -925,7 +1003,7 @@ def test_a_user_booked_movement_carries_no_station(
     ``station_id IS NOT NULL`` a usable filter for "booked at the wall".
     """
     _ = station_token  # a station exists; this booking still is not one
-    article = _article(client, admin_token, "Fluke T6", stock=4)
+    article = _as_machine_type(_article(client, admin_token, "Fluke T6", stock=4))
     booked = client.post(
         "/api/werkstatt/mobile/checkout",
         headers=auth_headers(admin_token),

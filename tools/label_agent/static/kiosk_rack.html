@@ -361,6 +361,85 @@ body.panel-open .log{max-height:132px}
 .op-img{display:block; flex:none; max-width:none; background:#fff; border-radius:4px}
 .op figcaption{font-size:.72rem; font-weight:800; color:var(--dim); white-space:nowrap}
 .op-img.is-off, .dirqr.is-off{visibility:hidden}
+
+/* ---------- Ausgabe: erst wer, dann wofuer ---------- *
+ * Ohne Namen kein Verbrauch - also steht die Frage dort, wo sonst der
+ * Artikel steht: ein Raster aus Namen, jeder mit seinem Code. Es laeuft
+ * nie in einen Bildlauf: ein Code unter dem Rand ist ein Code, den niemand
+ * scannen kann. Nach dem Namen kommen die Projekte dieser Person (plus
+ * "Ohne Projekt"), dann wieder die Artikelkarte mit "Ausgabe fuer ...".
+ * Die Zeilen sind fest vergeben, damit eine ausgeblendete Namensleiste
+ * nur ihre eigene Zeile leer laesst und nichts verrutscht. */
+.dirband{grid-row:1}
+.crewband{grid-row:2}
+.art, .panel, .picker{grid-row:3}
+.log{grid-row:4}
+.picker{
+  margin:10px var(--pad) 0; min-height:0; overflow:hidden;
+  display:grid; grid-template-rows:auto minmax(0,1fr) auto; gap:10px;
+  padding:12px 16px;
+}
+.pk-head{display:flex; align-items:baseline; gap:6px 16px; flex-wrap:wrap; min-width:0}
+.pk-title{font-size:clamp(1.35rem, 2.1vw, 1.9rem); font-weight:850; letter-spacing:-.02em;
+          color:var(--warn); min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.pk-sub{font-size:var(--t-md); color:var(--dim); font-weight:700; min-width:0}
+.pk-grid{
+  display:grid; grid-template-columns:repeat(auto-fill, minmax(232px, 1fr));
+  grid-auto-rows:max-content; align-content:start; gap:10px;
+  min-height:0; overflow:hidden;
+}
+.pktile{
+  appearance:none; cursor:pointer; min-width:0;
+  display:flex; align-items:center; gap:12px;
+  padding:7px 12px 7px 7px; border-radius:11px;
+  border:2px solid var(--line2); background:var(--surface2); color:var(--fg);
+  font-family:inherit; text-align:left;
+  transition:background .12s ease, border-color .12s ease;
+}
+.pktile:hover{border-color:#4a5a6d; background:var(--surface3)}
+.pktile:disabled{cursor:default; opacity:.55}
+.pktile.none{border-style:dashed}
+/* Weisser Grund, Naturgroesse - dieselben Regeln wie fuer die Richtungen. */
+.pkqr{display:block; flex:none; max-width:none; background:#fff; border-radius:4px}
+.pkqr.is-off{visibility:hidden}
+.pk-lab{display:flex; flex-direction:column; align-items:flex-start; gap:3px; min-width:0}
+.pk-lab b{font-size:clamp(1rem, 1.25vw, 1.25rem); font-weight:850; max-width:100%;
+          overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.pk-lab b .mono{color:var(--ok)}
+.pk-lab small{font-size:var(--t-sm); font-weight:700; color:var(--dim); max-width:100%;
+              overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+.pk-hint{font-size:.68rem; letter-spacing:.12em; text-transform:uppercase; font-weight:850;
+         padding:2px 7px; border-radius:99px; border:1px solid var(--ok-line);
+         background:var(--ok-bg); color:var(--ok)}
+.pk-hint.woche{background:transparent; color:var(--dim); border-color:var(--line2)}
+.pk-hint.zuletzt{background:transparent; color:var(--dim2); border-color:var(--line)}
+/* Viele Namen: enger, aber nie kleiner als der Code - der bleibt m=2. */
+.picker.dense .pk-grid{grid-template-columns:repeat(auto-fill, minmax(196px, 1fr)); gap:7px}
+.picker.dense .pktile{padding:5px 9px 5px 5px; gap:9px}
+.picker.dense .pk-lab b{font-size:.98rem}
+/* Projekte: hoechstens neun Kacheln, also breiter, und der Name darf auf
+   zwei Zeilen - "Sanierung Kindergarten" muss man lesen koennen. */
+.picker.projects .pk-grid{grid-template-columns:repeat(auto-fill, minmax(300px, 1fr))}
+.picker.projects .pk-lab b{white-space:normal; display:-webkit-box;
+                           -webkit-line-clamp:2; -webkit-box-orient:vertical; line-height:1.15}
+.pk-more{margin:0; font-size:var(--t-sm); font-weight:750; color:var(--warn)}
+body.picker-open .log{max-height:132px}
+
+/* "Ausgabe fuer Max · 381 Neubau Schulze" ueber dem Artikel: wer und
+   wofuer, in der Farbe der Ausgabe. Antippen aendert es. */
+.art-for{display:flex; align-items:center; flex-wrap:wrap; gap:6px 10px;
+         margin-bottom:10px; min-width:0}
+.af-lead{font-size:var(--t-md); font-weight:800; color:var(--dim)}
+.af-chip{
+  appearance:none; cursor:pointer; font-family:inherit; min-width:0; max-width:100%;
+  font-size:clamp(1.05rem, 1.5vw, 1.45rem); font-weight:850;
+  padding:5px 13px; border-radius:99px;
+  border:2px solid var(--warn); background:var(--warn-bg); color:var(--warn);
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.af-chip.none{border-color:var(--line2); background:transparent; color:var(--dim)}
+.af-chip:disabled{cursor:default}
+.af-sep{color:var(--dim2); font-weight:900}
 </style>
 </head>
 <body>
@@ -419,6 +498,12 @@ body.panel-open .log{max-height:132px}
 
   <section class="art card" id="art">
     <div class="art-main">
+      <div class="art-for" id="aFor" hidden>
+        <span class="af-lead">Ausgabe f&uuml;r</span>
+        <button class="af-chip" type="button" id="aForName" title="Name &auml;ndern"></button>
+        <span class="af-sep" aria-hidden="true">&middot;</span>
+        <button class="af-chip" type="button" id="aForProj" title="Projekt &auml;ndern"></button>
+      </div>
       <span class="kick" id="aKick">Regal</span>
       <h1 id="aName" class="idle">Bereit &ndash; Artikel scannen</h1>
       <div class="art-sub" id="aSub"><span class="mono" id="aNo"></span><span id="aLoc"></span></div>
@@ -466,6 +551,17 @@ body.panel-open .log{max-height:132px}
     </div>
   </section>
 
+  <section class="picker card" id="picker" hidden>
+    <div class="pk-head">
+      <span class="pk-title" id="pkTitle">Ausgabe &ndash; wer nimmt etwas mit?</span>
+      <span class="pk-sub" id="pkSub"></span>
+      <span class="spacer"></span>
+      <button class="btn small ghost" type="button" id="pkBack" hidden>Name &auml;ndern</button>
+    </div>
+    <div class="pk-grid" id="pkGrid"></div>
+    <p class="pk-more" id="pkMore" hidden></p>
+  </section>
+
   <div class="log card">
     <div class="log-main">
       <div class="log-head">
@@ -479,7 +575,7 @@ body.panel-open .log{max-height:132px}
       <figure class="op"><img class="op-img" alt="" src="/qr.svg?text=SMPL-CMD-MENGE-5&amp;m=2"><figcaption>Menge 5</figcaption></figure>
       <figure class="op"><img class="op-img" alt="" src="/qr.svg?text=SMPL-CMD-MENGE-10&amp;m=2"><figcaption>Menge 10</figcaption></figure>
       <figure class="op"><img class="op-img" alt="" src="/qr.svg?text=SMPL-CMD-MENGE-50&amp;m=2"><figcaption>Menge 50</figcaption></figure>
-      <figure class="op" id="opFertig" hidden><img class="op-img" alt="" src="/qr.svg?text=SMPL-CMD-FERTIG&amp;m=2"><figcaption>Verteiler fertig</figcaption></figure>
+      <figure class="op" id="opFertig" hidden><img class="op-img" alt="" src="/qr.svg?text=SMPL-CMD-FERTIG&amp;m=2"><figcaption id="opFertigCap">Verteiler fertig</figcaption></figure>
     </div>
   </div>
 </main>
@@ -678,6 +774,20 @@ function normDir(v){
   return DIRS[0];
 }
 
+/* Die Codes neben den Kacheln der Ausgabe - dieselben, die der Agent kennt
+   (dispense_codes.py / scan_router.py). Eine Person und ein Projekt ueber
+   ihre feste Nummer, nie ueber die Position auf dem Bildschirm: die Liste
+   wird jede Minute neu geholt und neu sortiert. Ein Ausweis wird hier nie
+   gezeichnet - der ist ein Schluessel, dies ist ein Namensschild. */
+var QR_PERSON = 'SMPL-CMD-PERSON-';
+var QR_PROJECT = 'SMPL-CMD-PROJEKT-';
+var QR_NO_PROJECT = 'SMPL-CMD-OHNE-PROJEKT';
+var QR_ID_RE = /^[1-9][0-9]{0,8}$/;
+/* m=2 wie die Richtungen: ein Code mit hoechstens 26 Zeichen ist dann ein
+   Quadrat von 66 px, das der Imager aus der Hand liest. */
+function qrSrc(text){ return '/qr.svg?text=' + encodeURIComponent(text) + '&m=2'; }
+var HINT_LABEL = {heute:'heute', woche:'diese Woche', zuletzt:'zuletzt'};
+
 /* Maschinenzustaende, wie SMPL sie fuehrt. Unbekanntes wird roh gezeigt -
    lieber ein fremdes Wort als ein erfundenes. */
 var MSTATE = {
@@ -744,6 +854,9 @@ var npHash = '';
 var crewSig = '';          /* Namensreihe nur neu bauen, wenn sie sich aendert */
 var panelBusy = false;     /* eine der beiden Verteiler-Tasten laeuft gerade    */
 var panelSig = '';         /* Liste nur neu bauen, wenn sie sich aendert        */
+var projBusy = false;      /* eine Projektkachel laeuft gerade                  */
+var pickerSig = '';        /* Kacheln nur neu bauen, wenn sie sich aendern      */
+var pickerOverflow = false;/* passen nicht alle Namen, bleibt die Leiste da     */
 
 /* ---------- Optimistische Anzeige ----------------------------------- *
  * Auf einer Wand ist eine Taste, die 300 ms lang nichts tut, kaputt.
@@ -754,6 +867,7 @@ var panelSig = '';         /* Liste nur neu bauen, wenn sie sich aendert        
 var OPT_MS = 3000;
 var pendDir = null;        /* {value:'aus'|'ein'|'wareneingang', at} */
 var pendAss = null;        /* {value: id-String oder null, at}       */
+var pendProj = null;       /* {chosen: bool, project: obj|null, at}  */
 var settleTimer = 0;
 
 function idOf(v){ return (v === undefined || v === null || v === '') ? null : String(v); }
@@ -762,10 +876,18 @@ function liveAss(){ var a = snap && snap.assignee; return a ? idOf(a.id) : null;
 function curDir(){ return pendDir ? pendDir.value : liveDir(); }
 function curAss(){ return pendAss ? pendAss.value : liveAss(); }
 
+function liveChosen(){ return !!(snap && snap.project_chosen); }
+function liveProject(){ var p = snap && snap.project; return (p && typeof p === 'object') ? p : null; }
+function projChosen(){ return pendProj ? pendProj.chosen : liveChosen(); }
+function curProject(){ return pendProj ? pendProj.project : liveProject(); }
+function sameProject(a, b){ return idOf(a && a.id) === idOf(b && b.id); }
+
 function settle(){
   var t = nowMs();
   if(pendDir && (pendDir.value === liveDir() || t - pendDir.at > OPT_MS)) pendDir = null;
   if(pendAss && (pendAss.value === liveAss() || t - pendAss.at > OPT_MS)) pendAss = null;
+  if(pendProj && ((pendProj.chosen === liveChosen() && sameProject(pendProj.project, liveProject()))
+                  || t - pendProj.at > OPT_MS)) pendProj = null;
 }
 function scheduleSettle(){
   if(settleTimer) clearTimeout(settleTimer);
@@ -793,6 +915,34 @@ function curAssName(){
 /* Der Vertrag: eine Ausgabe ohne Namen wird abgewiesen. Das steht deshalb
    im Bildschirm, nicht erst im Fehlerblitz. */
 function needsName(){ return curDir() === 'aus' && curAss() === null; }
+
+/* Die Projektkacheln gelten fuer die Person, die der AGENT gewaehlt sieht.
+   Solange ein Tippen auf einen Namen noch nicht bestaetigt ist, waeren es
+   die der vorigen Person - dann lieber keine. */
+function projectsReady(){ return curAss() !== null && curAss() === liveAss(); }
+function projectsOf(){
+  var p = snap && snap.projects;
+  return (projectsReady() && p && typeof p.length === 'number') ? p : [];
+}
+function findProject(id){
+  var list = projectsOf();
+  for(var i = 0; i < list.length; i++){ if(idOf(list[i] && list[i].id) === idOf(id)) return list[i]; }
+  return null;
+}
+function projLabel(p){
+  if(!p) return 'ohne Projekt';
+  return [str(p.project_number), str(p.name)].filter(Boolean).join(' ') || ('Projekt ' + str(p.id));
+}
+/* Was steht an der Stelle der Artikelkarte? Nur bei einer Ausgabe ohne
+   offenen Verteiler: erst die Namen, dann - wenn die Person welche hat -
+   ihre Projekte. Wer gleich einen Artikel scannt, bucht ohne Projekt. */
+function pickerMode(){
+  if(panelOpen() || curDir() !== 'aus') return '';
+  if(curAss() === null) return crewList().length ? 'people' : '';
+  if(projChosen()) return '';
+  if(!projectsReady()) return 'projects';
+  return projectsOf().length ? 'projects' : '';
+}
 
 /* ================================================================== *
  * Darstellung
@@ -888,6 +1038,9 @@ function renderCrew(){
   var band = $('crewband');
   band.className = 'crewband' + (dimmed ? ' dim' : '');
   band.setAttribute('aria-disabled', dimmed ? 'true' : 'false');
+  /* Bei der Ausgabe waehlt das Raster den Namen; die Leiste kommt nur
+     zurueck, wenn es nicht alle fasst oder die Liste fehlt. */
+  show(band, dimmed || curDir() !== 'aus' || list.length === 0 || pickerOverflow);
   if(sig !== crewSig){
     crewSig = sig;
     clear(row);
@@ -962,7 +1115,7 @@ function idlePrompt(){
   if(d === 'wareneingang') return 'Wareneingang – Artikel scannen';
   if(d === 'ein') return 'Rückgabe – Artikel scannen';
   if(curAss() === null) return 'Ausgabe: Namen antippen oder Ausweis scannen';
-  return 'Ausgabe für ' + (curAssName() || 'ausgewählte Person') + ' – Artikel scannen';
+  return 'Artikel scannen';
 }
 
 /* Felder, die je nach Quelle anders heissen, an einer Stelle einsammeln. */
@@ -1061,11 +1214,20 @@ function renderArticle(a, movement){
    nicht die des Stuecks, das gerade in der Hand liegt. */
 function renderCard(){
   var open = panelOpen();
-  show($('opFertig'), open);
+  var pick = pickerMode();
+  renderOps(open);
   show($('panel'), open);
-  show($('art'), !open);
-  document.body.className = open ? 'panel-open' : '';
+  show($('picker'), !!pick);
+  show($('art'), !open && !pick);
+  document.body.className = open ? 'panel-open' : (pick ? 'picker-open' : '');
   if(open){ renderPanel(snap.panel); return; }
+  if(pick){ renderPicker(pick); return; }
+  if(pickerSig || pickerOverflow){
+    pickerSig = '';
+    pickerOverflow = false;
+    renderCrew();
+  }
+  renderFor();
 
   var last = snap && snap.last;
   var machine = last && last.machine;
@@ -1075,6 +1237,134 @@ function renderCard(){
   if(machine && typeof machine === 'object'){ renderMachine(machine, m); return; }
   if(a){ renderArticle(a, m); return; }
   renderIdle();
+}
+
+/* "Fertig" gilt dem Verteiler, sonst der laufenden Ausgabe (Name und
+   Projekt weg) - dieselbe Reihenfolge wie im Agent. */
+function renderOps(open){
+  var sel = !open && curAss() !== null;
+  show($('opFertig'), open || sel);
+  setText($('opFertigCap'), open ? 'Verteiler fertig'
+                                 : (DIR_LABEL[curDir()] || 'Ausgabe') + ' fertig');
+}
+
+/* ---------- Ausgabe fuer ... ---------- */
+function renderFor(){
+  var on = curDir() === 'aus' && curAss() !== null;
+  show($('aFor'), on);
+  if(!on) return;
+  var name = $('aForName'), proj = $('aForProj');
+  setText(name, curAssName() || 'ausgewählte Person');
+  name.disabled = assBusy;
+  var p = curProject();
+  proj.className = 'af-chip' + (p ? '' : ' none');
+  setText(proj, projLabel(p));
+  /* Aendern heisst: zurueck zu den Kacheln - nur, wenn es welche gibt. */
+  proj.disabled = projBusy || !(projChosen() && projectsOf().length);
+}
+
+/* ---------- Kacheln: Namen, dann Projekte ---------- *
+ * Jede Kachel traegt ihren Code. Getippt wird dasselbe gebucht wie
+ * gescannt; der Agent prueft beides gegen dieselben Listen. */
+function tile(kind, id, code, title, sub, hint){
+  var b = el('button', 'pktile' + (kind === 'none' ? ' none' : ''));
+  b.type = 'button';
+  b.setAttribute('data-kind', kind);
+  if(id !== null) b.setAttribute('data-id', String(id));
+  if(code){
+    var img = el('img', 'pkqr');
+    img.alt = '';
+    img.addEventListener('error', function(){ img.classList.add('is-off'); });
+    img.src = qrSrc(code);
+    b.appendChild(img);
+  }
+  var lab = el('span', 'pk-lab');
+  if(title && title.nodeType) lab.appendChild(title);
+  else lab.appendChild(el('b', '', title));
+  if(sub) lab.appendChild(el('small', '', sub));
+  if(hint) lab.appendChild(el('span', 'pk-hint ' + hint, HINT_LABEL[hint] || hint));
+  b.appendChild(lab);
+  return b;
+}
+function personTile(p){
+  var id = str(p && p.id);
+  return tile('person', id, QR_ID_RE.test(id) ? QR_PERSON + id : '', str(p && p.name) || '–', '', '');
+}
+function projectTile(p){
+  var id = str(p && p.id);
+  var head = el('b');
+  if(str(p.project_number)) head.appendChild(el('span', 'mono', str(p.project_number) + ' '));
+  head.appendChild(document.createTextNode(str(p.name) || ('Projekt ' + id)));
+  var hint = str(p.hint);
+  return tile('project', id, QR_ID_RE.test(id) ? QR_PROJECT + id : '', head, '',
+              HINT_LABEL[hint] ? hint : '');
+}
+function renderPicker(mode){
+  var people = mode === 'people';
+  var list = people ? crewList() : projectsOf();
+  if(people){
+    setText($('pkTitle'), 'Ausgabe – wer nimmt etwas mit?');
+    setText($('pkSub'), 'Namen antippen oder QR-Code scannen');
+  } else {
+    setText($('pkTitle'), 'Ausgabe für ' + (curAssName() || '…'));
+    setText($('pkSub'), projectsReady()
+      ? 'Projekt antippen oder QR-Code scannen – oder gleich den Artikel'
+      : 'Einen Moment …');
+  }
+  show($('pkBack'), !people);
+  $('pkBack').disabled = assBusy;
+
+  var sig = mode + '|' + curAss() + '|' + (projectsReady() ? '1' : '0') + '|' + list.length;
+  for(var i = 0; i < list.length; i++){
+    var r = list[i] || {};
+    sig += '|' + str(r.id) + ':' + str(r.name) + ':' + str(r.project_number) + ':' + str(r.hint);
+  }
+  var grid = $('pkGrid');
+  if(sig !== pickerSig){
+    pickerSig = sig;
+    clear(grid);
+    for(var j = 0; j < list.length; j++){
+      grid.appendChild(people ? personTile(list[j] || {}) : projectTile(list[j] || {}));
+    }
+    if(!people && projectsReady()){
+      grid.appendChild(tile('none', null, QR_NO_PROJECT, 'Ohne Projekt', 'nur aus dem Lager', ''));
+    }
+    fitPicker(mode);
+  }
+  var kids = grid.childNodes;
+  for(var k = 0; k < kids.length; k++){
+    if(kids[k] && kids[k].getAttribute) kids[k].disabled = assBusy || projBusy;
+  }
+}
+/* Kein Bildlauf: was nicht passt, wird erst enger gesetzt, dann
+   weggelassen - und gesagt, wo der Rest ist. Ein halb abgeschnittener
+   Code waere schlimmer als keiner. Gemessen wird in einem Zug, bevor
+   etwas versteckt wird, damit nichts nachrutscht. */
+function fitPicker(mode){
+  var box = $('picker'), grid = $('pkGrid'), more = $('pkMore');
+  var kids = grid.childNodes;
+  var was = pickerOverflow;
+  var base = 'picker card ' + mode;
+  box.className = base;
+  show(more, false);
+  for(var i = 0; i < kids.length; i++){ if(kids[i]) kids[i].hidden = false; }
+  pickerOverflow = false;
+  if(grid.scrollHeight > grid.clientHeight + 2) box.className = base + ' dense';
+  if(grid.scrollHeight > grid.clientHeight + 2){
+    pickerOverflow = true;
+    setText(more, 'Nicht alle passen – weitere Namen in der Leiste oben antippen.');
+    show(more, true);
+    if(!was) renderCrew();
+    var limit = grid.getBoundingClientRect().bottom + 1;
+    var cut = [];
+    for(var j = 0; j < kids.length; j++){
+      if(kids[j] && kids[j].getBoundingClientRect().bottom > limit) cut.push(kids[j]);
+    }
+    for(var k = 0; k < cut.length; k++) cut[k].hidden = true;
+    setText(more, cut.length + ' weitere – in der Leiste oben antippen.');
+  } else if(was){
+    renderCrew();
+  }
 }
 
 /* ---------- Verteiler-Karte ---------- *
@@ -1183,11 +1473,19 @@ function absorbLast(){
      "Verteiler VT-0007 · WAGO 2003-7641 · 1" - sonst liest sich ein
      Verbrauch wie eine Ausgabe an niemanden. */
   var who = str(m.panel_number) ? 'Verteiler ' + str(m.panel_number) + ' · ' : '';
+  /* Verbrauch an der Ausgabe steht mit seinem Projekt im Protokoll:
+     "Kabelbinder → 381 Neubau Schulze" - wohin ist das gegangen? Was
+     zurueckkommt (Reste, oder eine alte Leihe, die SMPL geschlossen hat),
+     kommt von dort: "←". */
+  var type = str(m.movement_type || m.type);
+  var back = type === 'consumption_undo' || type === 'return';
+  var where = str(m.project_label)
+    ? (back ? ' ← ' : ' → ') + str(m.project_label) : '';
   /* Unveraenderlich: neue Liste, nie die alte umbauen. */
   logRows = [{
     key:  key,
     at:   tsToDate(m.created_at || m.at) || new Date(),
-    name: who + (artName(last.article) || '–'),
+    name: who + (artName(last.article) || '–') + where,
     type: str(m.movement_type || m.type),
     qty:  num(m.quantity, num(m.qty, 0)),
     unit: artUnit(last.article)
@@ -1388,16 +1686,41 @@ function setDirection(value){
 }
 
 /* Antippen waehlt, nochmal antippen loescht - "value: null" ist im
-   Vertrag genau dafuer vorgesehen. */
+   Vertrag genau dafuer vorgesehen. Ein anderer Name nimmt das Projekt
+   mit; der Agent macht es genauso. */
 function setAssignee(value){
   if(assBusy || panelOpen()) return;
   assBusy = true;
+  if(idOf(value) !== curAss()) pendProj = {chosen: false, project: null, at: nowMs()};
   pendAss = {value: idOf(value), at: nowMs()};
   beep('tick');
   render();
   api('/screen/action', {method:'POST', timeout: CFG.actionTimeout,
       body:{screen: SCREEN, action:'assignee', value: value}})
     .then(function(){ assBusy = false; render(); });
+  scheduleSettle();
+}
+
+/* Ein Projekt (id), "Ohne Projekt" ('none') oder zurueck zu den Kacheln
+   (null). Optimistisch wie die Namen; der Agent prueft gegen die Liste. */
+function setProject(value, project){
+  if(projBusy || panelOpen()) return;
+  projBusy = true;
+  var body;
+  if(value === 'none'){
+    pendProj = {chosen: true, project: null, at: nowMs()};
+    body = {screen: SCREEN, action:'no_project'};
+  } else if(value === null){
+    pendProj = {chosen: false, project: null, at: nowMs()};
+    body = {screen: SCREEN, action:'project', value: null};
+  } else {
+    pendProj = {chosen: true, project: project, at: nowMs()};
+    body = {screen: SCREEN, action:'project', value: value};
+  }
+  beep('tick');
+  render();
+  api('/screen/action', {method:'POST', timeout: CFG.actionTimeout, body: body})
+    .then(function(){ projBusy = false; render(); });
   scheduleSettle();
 }
 
@@ -1423,6 +1746,20 @@ $('crew').addEventListener('click', function(e){
   var n = num(raw, null);
   setAssignee(n === null ? raw : n);
 });
+$('pkGrid').addEventListener('click', function(e){
+  var b = closestWith(e.target, 'data-kind', 'pktile');
+  if(!b || b.disabled) return;
+  var kind = b.getAttribute('data-kind');
+  var n = num(b.getAttribute('data-id'), null);
+  if(kind === 'person'){ if(n !== null) setAssignee(n); return; }
+  if(kind === 'none'){ setProject('none', null); return; }
+  if(n !== null) setProject(n, findProject(n));
+});
+$('pkBack').addEventListener('click', function(){ setAssignee(null); });
+$('aForName').addEventListener('click', function(){ setAssignee(null); });
+$('aForProj').addEventListener('click', function(){ setProject(null, null); });
+/* Eine andere Fenstergroesse passt anders: Kacheln neu bauen und messen. */
+window.addEventListener('resize', function(){ pickerSig = ''; render(); });
 $('flash').addEventListener('click', function(){
   /* Waehrend der Suche gibt es nichts wegzutippen: das Ergebnis kommt. */
   if(snap && snap.flash && str(snap.flash.level) === 'busy') return;

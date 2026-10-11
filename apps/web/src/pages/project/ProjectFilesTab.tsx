@@ -5,7 +5,7 @@
  */
 import { FileBrowser } from "../../components/files/FileBrowser";
 import { FileLightbox } from "../../components/files/FileLightbox";
-import { folderKeyOf, folderLabel } from "../../components/files/folderGroups";
+import { folderKeyOf, folderLabel, isPartnerPortalFolder } from "../../components/files/folderGroups";
 import { useFileViewer } from "../../components/files/useFileViewer";
 import {
   WebdavHelp,
@@ -79,6 +79,9 @@ export function ProjectFilesTab() {
         onDelete={canManageFiles ? (file) => void deleteFile(file.id) : undefined}
         onUpload={openUploadModal}
         onDropFiles={canManageFiles ? requestFileUploadWithFiles : undefined}
+        folderHint={(folder) =>
+          isPartnerPortalFolder(folder) ? (de ? "Im Partnerportal sichtbar" : "Shown in the partner portal") : null
+        }
         headerExtra={
           <WebdavHelp
             language={language}

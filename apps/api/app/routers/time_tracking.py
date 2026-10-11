@@ -58,6 +58,16 @@ from app.schemas.time import (
 from app.services.audit import log_admin_action
 from app.services.time_entry_backfill import BackfillWindow, self_backfill_window
 from app.services.vacation_day_removal import remove_vacation_day
+from app.services.vacation_years import (
+    charge_planned_days_for_year,
+    days_after,
+    days_up_to,
+    future_year_shortfall,
+    planned_days_of,
+    shortfall_message,
+    vacation_days_by_year,
+    year_shortfall_message,
+)
 
 router = APIRouter(prefix="/time", tags=["time-tracking"])
 
@@ -395,6 +405,11 @@ def _vacation_days_requested(start_date: date, end_date: date) -> int:
     return used_days
 
 
+def _vacation_days_by_year(start_date: date, end_date: date) -> dict[int, int]:
+    """Working days per calendar year; the values sum to ``_vacation_days_requested``."""
+    return vacation_days_by_year(start_date, end_date, _vacation_days_requested)
+
+
 def _split_vacation_deduction(carryover_days: float, available_days: float, used_days: int) -> tuple[int, int]:
     carryover_used = min(int(round(carryover_days)), used_days)
     available_used = max(used_days - carryover_used, 0)
@@ -403,6 +418,20 @@ def _split_vacation_deduction(carryover_days: float, available_days: float, used
 
 def _current_vacation_balance_year() -> int:
     return _local_date_from_utc(utcnow()).year
+
+
+def _approved_requests_with_planned_days(db: Session, user_id: int) -> list[VacationRequest]:
+    return list(
+        db.scalars(
+            select(VacationRequest)
+            .where(
+                VacationRequest.user_id == user_id,
+                VacationRequest.status == "approved",
+                VacationRequest.pending_future_days > 0,
+            )
+            .order_by(VacationRequest.start_date.asc(), VacationRequest.id.asc())
+        ).all()
+    )
 
 
 def _ensure_vacation_balance_year(db: Session, user: User) -> None:
@@ -421,9 +450,21 @@ def _ensure_vacation_balance_year(db: Session, user: User) -> None:
             changed = True
 
     if current_year > balance_year:
-        for _ in range(balance_year + 1, current_year + 1):
+        # Approved days that fall in a later year were only planned; each
+        # year of the gap charges its own share to its own fresh balance.
+        planned_rows = _approved_requests_with_planned_days(db, user.id)
+        for year in range(balance_year + 1, current_year + 1):
             carryover = available
             available = per_year
+            carryover, available = charge_planned_days_for_year(
+                planned_rows,
+                year=year,
+                carryover=carryover,
+                available=available,
+                working_days_between=_vacation_days_requested,
+            )
+        for planned_row in planned_rows:
+            db.add(planned_row)
         balance_year = current_year
         changed = True
 
@@ -443,12 +484,16 @@ def _vacation_balance_out(db: Session, user: User) -> VacationBalanceOut:
     vacation_days_per_year = _sanitized_vacation_balance(user.vacation_days_per_year)
     vacation_days_available = _sanitized_vacation_balance(user.vacation_days_available)
     vacation_days_carryover = _sanitized_vacation_balance(user.vacation_days_carryover)
+    # Approved before deductions were tracked: nothing recorded, nothing
+    # planned. A request lying wholly in a later year also has 0/0 deducted,
+    # but its days are planned (pending) -- it is not legacy.
     legacy_approved_requests = db.scalars(
         select(VacationRequest).where(
             VacationRequest.user_id == user.id,
             VacationRequest.status == "approved",
             VacationRequest.deducted_available_days == 0,
             VacationRequest.deducted_carryover_days == 0,
+            VacationRequest.pending_future_days == 0,
         )
     ).all()
     for request_row in legacy_approved_requests:
@@ -456,12 +501,17 @@ def _vacation_balance_out(db: Session, user: User) -> VacationBalanceOut:
         available_used, carryover_used = _split_vacation_deduction(vacation_days_carryover, vacation_days_available, days_used)
         vacation_days_carryover = max(vacation_days_carryover - carryover_used, 0)
         vacation_days_available = max(vacation_days_available - available_used, 0)
+    balance_year = user.vacation_balance_year or _current_vacation_balance_year()
+    planned = planned_days_of(
+        _approved_requests_with_planned_days(db, user.id), balance_year, _vacation_days_requested
+    )
     return VacationBalanceOut(
         user_id=user.id,
         vacation_days_per_year=vacation_days_per_year,
         vacation_days_available=vacation_days_available,
         vacation_days_carryover=vacation_days_carryover,
         vacation_days_total_remaining=round(vacation_days_available + vacation_days_carryover, 2),
+        vacation_days_planned_next_year=planned.get(balance_year + 1, 0),
     )
 
 
@@ -614,6 +664,7 @@ def current_status(
             vacation_days_available=vacation_balance.vacation_days_available,
             vacation_days_carryover=vacation_balance.vacation_days_carryover,
             vacation_days_total_remaining=vacation_balance.vacation_days_total_remaining,
+            vacation_days_planned_next_year=vacation_balance.vacation_days_planned_next_year,
         )
 
     metrics = _entry_metrics(db, entry, now=now)
@@ -637,6 +688,7 @@ def current_status(
         vacation_days_available=vacation_balance.vacation_days_available,
         vacation_days_carryover=vacation_balance.vacation_days_carryover,
         vacation_days_total_remaining=vacation_balance.vacation_days_total_remaining,
+        vacation_days_planned_next_year=vacation_balance.vacation_days_planned_next_year,
     )
 
 
@@ -760,6 +812,58 @@ def list_vacation_requests(
     return [_vacation_request_out(db, row) for row in rows]
 
 
+def _check_vacation_approval(
+    db: Session,
+    target_user: User,
+    row: VacationRequest,
+    current_balance: VacationBalanceOut,
+) -> tuple[int, dict[int, int]]:
+    """May ``row`` be approved? Returns (days to deduct now, planned days per later year).
+
+    Days up to the balance year are checked against what is left now. Next
+    year's part against next year's allowance plus what this year will carry
+    over -- the rollover turns this year's leftover *available* into carryover
+    (any carryover left over expires) -- and any later year's part against
+    its plain allowance; days other approved requests already planned for a
+    year count against it. Next year is checked even for a request wholly in
+    this year when it spends *available* days: days already planned there may
+    count on them. Refusals name the year that is short, in German.
+    """
+    balance_year = target_user.vacation_balance_year or _current_vacation_balance_year()
+    by_year = _vacation_days_by_year(row.start_date, row.end_date)
+    days_now = days_up_to(by_year, balance_year)
+    future_days = days_after(by_year, balance_year)
+
+    remaining_now = current_balance.vacation_days_total_remaining
+    if remaining_now < days_now:
+        raise HTTPException(
+            status_code=400, detail=shortfall_message(balance_year, remaining_now, days_now)
+        )
+
+    available_now_used, _carryover_now_used = _split_vacation_deduction(
+        current_balance.vacation_days_carryover, current_balance.vacation_days_available, days_now
+    )
+    if not future_days and available_now_used <= 0:
+        # Neither plans a later day nor touches what next year counts on.
+        return days_now, future_days
+    others = [
+        other
+        for other in _approved_requests_with_planned_days(db, target_user.id)
+        if other.id != row.id
+    ]
+    shortfall = future_year_shortfall(
+        future_days=future_days,
+        balance_year=balance_year,
+        per_year=current_balance.vacation_days_per_year,
+        carried_into_next_year=max(current_balance.vacation_days_available - available_now_used, 0.0),
+        planned_by_others=planned_days_of(others, balance_year, _vacation_days_requested),
+        spends_next_years_carry=available_now_used > 0,
+    )
+    if shortfall is not None:
+        raise HTTPException(status_code=400, detail=year_shortfall_message(shortfall))
+    return days_now, future_days
+
+
 @router.patch("/vacation-requests/{request_id}", response_model=VacationRequestOut)
 def review_vacation_request(
     request_id: int,
@@ -779,10 +883,8 @@ def review_vacation_request(
         target_user = db.get(User, row.user_id)
         if not target_user:
             raise HTTPException(status_code=404, detail="User not found")
-        days_used = _vacation_days_requested(row.start_date, row.end_date)
         current_balance = _vacation_balance_out(db, target_user)
-        if current_balance.vacation_days_total_remaining < days_used:
-            raise HTTPException(status_code=400, detail="Not enough vacation days remaining")
+        days_used, future_days = _check_vacation_approval(db, target_user, row, current_balance)
         available_used, carryover_used = _split_vacation_deduction(
             target_user.vacation_days_carryover,
             target_user.vacation_days_available,
@@ -796,11 +898,15 @@ def review_vacation_request(
         )
         row.deducted_available_days = available_used
         row.deducted_carryover_days = carryover_used
+        # Days of later years come off those years' balances at the rollover.
+        row.pending_future_days = sum(future_days.values())
         db.add(target_user)
     elif row.status == "approved" and next_status == "rejected":
         target_user = db.get(User, row.user_id)
         if not target_user:
             raise HTTPException(status_code=404, detail="User not found")
+        # A due rollover first, so what it charged is refunded with the rest.
+        _ensure_vacation_balance_year(db, target_user)
         target_user.vacation_days_available = _sanitized_vacation_balance(
             target_user.vacation_days_available + row.deducted_available_days
         )
@@ -809,6 +915,7 @@ def review_vacation_request(
         )
         row.deducted_available_days = 0
         row.deducted_carryover_days = 0
+        row.pending_future_days = 0
         db.add(target_user)
     row.status = next_status
     row.reviewed_by = current_user.id
@@ -1930,6 +2037,7 @@ def remove_vacation_day_endpoint(
         day=payload.day,
         working_days_between=_vacation_days_requested,
         sanitize_balance=_sanitized_vacation_balance,
+        balance_year=target_user.vacation_balance_year,
     )
     db.commit()
     db.refresh(target_user)
@@ -1940,6 +2048,7 @@ def remove_vacation_day_endpoint(
         refunded_days=result.refunded_days,
         refunded_available_days=result.refunded_available_days,
         refunded_carryover_days=result.refunded_carryover_days,
+        released_planned_days=result.released_planned_days,
         was_deductible=result.was_deductible,
         request_deleted=result.request_deleted,
         split_into_second_request=result.split_into_second_request,

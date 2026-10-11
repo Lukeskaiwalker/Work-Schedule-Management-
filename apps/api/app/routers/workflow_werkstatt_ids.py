@@ -65,6 +65,11 @@ from app.services.ids_connect import (
 from app.services.secret_box import encrypt_secret
 from app.services.werkstatt_order_composition import append_cart_lines, resolve_article
 from app.services.werkstatt_order_send import prepare_order_for_send, require_resolved
+from app.services.werkstatt_order_totals import (
+    ORDER_TOTAL_TOO_LARGE_DETAIL,
+    OrderTotalTooLarge,
+    order_total_refusal,
+)
 from app.services.werkstatt_orders import generate_order_number
 
 router = APIRouter(prefix="/werkstatt/ids", tags=["werkstatt-procurement"])
@@ -588,32 +593,43 @@ def import_cart_xml(
             )
 
     now = utcnow()
-    if order is None:
-        order = WerkstattOrder(
-            order_number=generate_order_number(db, now=now),
-            supplier_id=supplier.id,
-            status="draft",
-            currency=cart.currency or "EUR",
-            title=f"{supplier.name}-Warenkorb {now.strftime('%d.%m.%Y')}",
-            source="ids",
-            external_reference=cart.external_reference,
-            task_id=payload.task_id,
-            project_id=payload.project_id,
-            created_by=current_user.id,
-            created_at=now,
-            updated_at=now,
-        )
-        db.add(order)
-        db.flush()
+    try:
+        # A savepoint, so a refused total takes back the order and its lines
+        # but not the import row: the raw cart stays on file as "failed",
+        # exactly like a cart that could not be parsed.
+        with db.begin_nested():
+            if order is None:
+                order = WerkstattOrder(
+                    order_number=generate_order_number(db, now=now),
+                    supplier_id=supplier.id,
+                    status="draft",
+                    currency=cart.currency or "EUR",
+                    title=f"{supplier.name}-Warenkorb {now.strftime('%d.%m.%Y')}",
+                    source="ids",
+                    external_reference=cart.external_reference,
+                    task_id=payload.task_id,
+                    project_id=payload.project_id,
+                    created_by=current_user.id,
+                    created_at=now,
+                    updated_at=now,
+                )
+                db.add(order)
+                db.flush()
 
-    import_row.order_id = order.id
-    import_row.external_reference = cart.external_reference
-    import_row.parsed_line_count = len(cart.lines)
-    import_row.status = "committed"
-    db.add(import_row)
-    db.flush()
+            import_row.order_id = order.id
+            import_row.external_reference = cart.external_reference
+            import_row.parsed_line_count = len(cart.lines)
+            import_row.status = "committed"
+            db.add(import_row)
+            db.flush()
 
-    append_cart_lines(db, order, cart, import_id=import_row.id, now=now)
+            append_cart_lines(db, order, cart, import_id=import_row.id, now=now)
+    except OrderTotalTooLarge as exc:
+        import_row.status = "failed"
+        import_row.error_message = ORDER_TOTAL_TOO_LARGE_DETAIL
+        db.add(import_row)
+        db.commit()
+        raise order_total_refusal() from exc
     db.commit()
 
     return CartImportResultOut(

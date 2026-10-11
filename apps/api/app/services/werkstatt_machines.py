@@ -155,14 +155,16 @@ def _record(
     assignee_user_id: int | None,
     expected_return_at: datetime | None,
     notes: str | None,
+    quantity: int = 1,
 ) -> WerkstattMovement:
     movement = WerkstattMovement(
         article_id=unit.article_id,
         unit_id=unit.id,
         movement_type=movement_type,
-        # Always 1: a unit is one machine. The column stays for the fungible
+        # 1 for a booking: a unit is one machine. 0 for an audit row that
+        # moves nothing (an inspection). The column stays for the fungible
         # rows that share this table.
-        quantity=1,
+        quantity=quantity,
         from_location_id=from_location_id,
         to_location_id=to_location_id,
         user_id=actor.id,
@@ -311,6 +313,12 @@ def record_inspection(
         unit.status = STATUS_BROKEN
         unit.next_inspection_due_at = moment
 
+    # An audit row, not a write-off: quantity 0, exactly like the article
+    # BG-Prüfung (werkstatt_inspections). At quantity 1 the recompute, which
+    # sums every row of the article, took one machine off the type's total
+    # and out-count per inspection — and a later real "lost" report was then
+    # refused by the ledger's correction bound (fixed 2026-10-10, migration
+    # 20261010_0101 neutralises the old rows).
     _record(
         db,
         unit=unit,
@@ -321,6 +329,7 @@ def record_inspection(
         assignee_user_id=None,
         expected_return_at=None,
         notes=notes or ("DGUV3 bestanden" if passed else "DGUV3 nicht bestanden"),
+        quantity=0,
     )
     db.flush()
     return unit

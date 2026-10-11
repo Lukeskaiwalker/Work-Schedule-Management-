@@ -36,7 +36,7 @@ from sqlalchemy.orm import Session
 
 from app.models.customer import Customer
 from app.models.entities import Project, WerkstattArticle, WerkstattArticleSupplier, WerkstattMovement
-from app.models.schaltplan import PanelMaterialArticle, PanelPlan
+from app.models.schaltplan import PanelMaterialArticle, PanelMaterialManualLine, PanelPlan
 from app.schemas.schaltplan import (
     PanelMaterialArticleOut,
     PanelMaterialLineOut,
@@ -56,6 +56,7 @@ CONSUMPTION_UNDO = "consumption_undo"
 
 LINE_DEVICE = "device"
 LINE_TERMINAL = "terminal"
+LINE_MANUAL = "manual"
 LINE_EXTRA = "extra"
 
 STATUS_OPEN = "open"
@@ -369,24 +370,35 @@ def _status(planned: int, scanned: int) -> str:
     return STATUS_DONE if scanned == planned else STATUS_OVER
 
 
+def allocate_scans(planned: list[int], net: int) -> list[int]:
+    """Spread one article's booked pieces over the lines that name it.
+
+    In list order, each line fills up to its planned count; the last one
+    takes whatever is left, so a surplus shows as "zu viel" exactly once.
+    Two planned LS B16 plus one added by hand, three booked: 2 + 1, both
+    done — not 3 on the first line ("zu viel") and the added one open forever.
+    """
+    remaining = max(net, 0)
+    shares: list[int] = []
+    for index, want in enumerate(planned):
+        take = remaining if index == len(planned) - 1 else min(remaining, max(want, 0))
+        shares.append(take)
+        remaining -= take
+    return shares
+
+
 def material_lines(db: Session, plan: PanelPlan) -> list[PanelMaterialLineOut]:
     planned = planned_lines(plan.document or {})
     articles = resolve_line_articles(db, planned)
     consumed = consumed_by_article(db, plan.id)
-    seen_articles: set[int] = set()
+    # Every line first, without scans: the derived ones, then the lines added
+    # by hand (owner, 2026-10-09) in the order they were added — after the
+    # derived ones and before "nicht geplant".
     lines: list[PanelMaterialLineOut] = []
+    line_articles: list[WerkstattArticle | None] = []
     for line in planned:
         hit = articles.get(line.key)
-        scanned, last_at = 0, None
-        article_out_value, source = None, None
-        if hit is not None:
-            article, source = hit
-            article_out_value = article_out(article)
-            if article.id not in seen_articles:
-                entry = consumed.get(article.id)
-                if entry is not None:
-                    scanned, last_at = max(entry.net, 0), entry.last_at
-                seen_articles.add(article.id)
+        article, source = hit if hit is not None else (None, None)
         lines.append(
             PanelMaterialLineOut(
                 key=line.key,
@@ -394,14 +406,55 @@ def material_lines(db: Session, plan: PanelPlan) -> list[PanelMaterialLineOut]:
                 label=line.label,
                 detail=line.detail,
                 planned=line.planned,
-                scanned=scanned,
-                status=_status(line.planned, scanned),  # type: ignore[arg-type]
-                article=article_out_value,
+                status=_status(line.planned, 0),  # type: ignore[arg-type]
+                article=article_out(article) if article is not None else None,
                 article_source=source,  # type: ignore[arg-type]
-                last_scanned_at=last_at,
             )
         )
-    extra_ids = [article_id for article_id, entry in consumed.items() if entry.net > 0 and article_id not in seen_articles]
+        line_articles.append(article)
+    for row, article in manual_lines(db, plan.id):
+        note = (row.note or "").strip() or None
+        lines.append(
+            PanelMaterialLineOut(
+                key=f"manual:{row.id}",
+                kind=LINE_MANUAL,  # type: ignore[arg-type]
+                label=(article.item_name if article is not None else row.label) or "Material",
+                detail=note or "manuell",
+                planned=int(row.quantity),
+                status=_status(int(row.quantity), 0),  # type: ignore[arg-type]
+                article=article_out(article) if article is not None else None,
+                article_source="manual" if article is not None else None,  # type: ignore[arg-type]
+                manual_id=row.id,
+                note=note,
+            )
+        )
+        line_articles.append(article)
+
+    # Then the scans: a booked article ticks off the lines that name it.
+    indexes_by_article: dict[int, list[int]] = {}
+    for index, article in enumerate(line_articles):
+        if article is not None:
+            indexes_by_article.setdefault(article.id, []).append(index)
+    for article_id, indexes in indexes_by_article.items():
+        entry = consumed.get(article_id)
+        if entry is None:
+            continue
+        shares = allocate_scans([lines[index].planned for index in indexes], entry.net)
+        for position, (index, share) in enumerate(zip(indexes, shares)):
+            line = lines[index]
+            lines[index] = line.model_copy(
+                update={
+                    "scanned": share,
+                    "status": _status(line.planned, share),
+                    # The first line keeps the date even when undo took its
+                    # pieces back; a later one only once something reached it.
+                    "last_scanned_at": entry.last_at if position == 0 or share > 0 else None,
+                }
+            )
+
+    extra_ids = [
+        article_id for article_id, entry in consumed.items() if entry.net > 0 and article_id not in indexes_by_article
+    ]
     if extra_ids:
         extras = db.scalars(select(WerkstattArticle).where(WerkstattArticle.id.in_(extra_ids))).all()
         for article in sorted(extras, key=lambda a: a.item_name.lower()):
@@ -423,12 +476,39 @@ def material_lines(db: Session, plan: PanelPlan) -> list[PanelMaterialLineOut]:
     return lines
 
 
+def manual_lines(db: Session, panel_id: int) -> list[tuple[PanelMaterialManualLine, WerkstattArticle | None]]:
+    """A board's hand-added lines in the order they were added, with their articles."""
+    rows = list(
+        db.scalars(
+            select(PanelMaterialManualLine)
+            .where(PanelMaterialManualLine.panel_id == panel_id)
+            .order_by(PanelMaterialManualLine.id.asc())
+        ).all()
+    )
+    article_ids = {row.article_id for row in rows if row.article_id is not None}
+    articles = (
+        {a.id: a for a in db.scalars(select(WerkstattArticle).where(WerkstattArticle.id.in_(article_ids))).all()}
+        if article_ids
+        else {}
+    )
+    return [(row, articles.get(row.article_id) if row.article_id is not None else None) for row in rows]
+
+
+def counts_toward_picking(line: PanelMaterialLineOut) -> bool:
+    """A line the shelf can tick off. A free text added by hand has no
+    article to scan: it is listed with its quantity but stays out of the
+    picking totals — or a fully picked board would read "1 offen" forever,
+    in the list, the Werkstatt overview and on the Regal screen alike."""
+    return not (line.kind == LINE_MANUAL and line.article is None)
+
+
 def _totals(lines: list[PanelMaterialLineOut]) -> dict[str, Any]:
-    last = [line.last_scanned_at for line in lines if line.last_scanned_at is not None]
+    counted = [line for line in lines if counts_toward_picking(line)]
+    last = [line.last_scanned_at for line in counted if line.last_scanned_at is not None]
     return {
-        "planned_total": sum(line.planned for line in lines),
-        "scanned_total": sum(line.scanned for line in lines),
-        "open_lines": sum(1 for line in lines if line.status == STATUS_OPEN),
+        "planned_total": sum(line.planned for line in counted),
+        "scanned_total": sum(line.scanned for line in counted),
+        "open_lines": sum(1 for line in counted if line.status == STATUS_OPEN),
         "last_scanned_at": max(last) if last else None,
     }
 
@@ -462,11 +542,24 @@ def material_overview(db: Session, plans: list[PanelPlan]) -> list[PanelMaterial
     return rows
 
 
-def line_for_article(material: PanelMaterialOut, article_id: int) -> PanelMaterialLineOut | None:
-    for line in material.lines:
-        if line.article is not None and line.article.id == article_id:
-            return line
-    return None
+def line_for_article(
+    material: PanelMaterialOut, article_id: int, *, undone: bool = False
+) -> PanelMaterialLineOut | None:
+    """The line a booking of this article landed on — after an undo, the one
+    the piece came off. The Regal's flash and row highlight come from it.
+
+    Scans fill the lines naming an article in list order (``allocate_scans``):
+    a booking lands on the LAST line holding any; an undo takes from the
+    first line no longer full, or from the last one when every line is full
+    (the surplus sat there). The first line alone was right only while one
+    article meant one line — a hand-added "one more B16" broke that.
+    """
+    named = [line for line in material.lines if line.article is not None and line.article.id == article_id]
+    if not named:
+        return None
+    if undone:
+        return next((line for line in named if line.scanned < line.planned), named[-1])
+    return next((line for line in reversed(named) if line.scanned > 0), named[0])
 
 
 # ── Bookings ──────────────────────────────────────────────────────────────────

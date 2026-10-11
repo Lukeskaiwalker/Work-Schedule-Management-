@@ -115,8 +115,16 @@ export function PartnerMultiSelect({
                 <PartnerTradePill trade={partner.trade} compact />
                 <span className="partner-multi-suggestion-name">{partner.name}</span>
               </span>
-              {partner.contact_person && (
-                <span className="partner-multi-suggestion-meta">{partner.contact_person}</span>
+              {(partner.contact_person || (partner.portal_user_count ?? 0) > 0) && (
+                <span className="partner-multi-suggestion-meta">
+                  {[
+                    partner.contact_person,
+                    // The task will show up in this partner's portal.
+                    (partner.portal_user_count ?? 0) > 0 ? (de ? "sieht es im Partnerportal" : "sees it in the partner portal") : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </span>
               )}
             </button>
           ))}

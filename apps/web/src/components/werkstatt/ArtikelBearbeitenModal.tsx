@@ -7,14 +7,22 @@
  * until somebody merged them. The endpoints have always existed; what was
  * missing was a way in.
  *
- * Three rules shape the dialog:
+ * Four rules shape the dialog:
  *
  * **It never writes a stock figure.** The counters are derived from the
- * movement ledger, so they are shown read-only with a link to the dialog that
- * can actually book one. A field here would be a number the server discards.
+ * movement ledger. The "Bestand" section books MOVEMENTS — a counted stock, a
+ * Wareneingang — through the same endpoint as "Bestand anpassen", and shows
+ * the row the server answers with (see ArtikelBestandAbschnitt).
  *
  * **It only sends what changed.** A PATCH carrying every field would overwrite
- * a colleague's edit made while this was open (see `toUpdatePatch`).
+ * a colleague's edit made while this was open (see `toUpdatePatch`). Supplier
+ * numbers live on the supplier LINK, so they are PATCHed there
+ * (see artikelLieferanten.ts).
+ *
+ * **It never drops a change silently.** "Speichern" writes everything the
+ * form shows as changed — article fields, link numbers, a picked supplier —
+ * and closing over unsaved changes asks first. It used to close on an empty
+ * article patch while a corrected supplier number sat in the form.
  *
  * **It explains a machine instead of offering to unmake one.** `is_serialized`
  * is not editable: its units have their own labels, histories and inspection
@@ -33,9 +41,12 @@ import {
   removeArticleSupplierLink,
   updateArticle,
   updateArticleSupplierLink,
+  type WerkstattArticleStockSnapshot,
 } from "../../utils/werkstattArticlesApi";
 import { searchWerkstattCatalog } from "../../utils/werkstattCatalogApi";
+import { ArtikelBestandAbschnitt } from "./ArtikelBestandAbschnitt";
 import { ArtikelFormFields } from "./ArtikelFormFields";
+import { ArtikelLieferantenAbschnitt } from "./ArtikelLieferantenAbschnitt";
 import {
   artikelFormError,
   artikelFormFromArticle,
@@ -43,9 +54,18 @@ import {
   toUpdatePatch,
   type ArtikelFormValues,
 } from "./artikelForm";
+import {
+  EMPTY_NEW_LINK,
+  changedLinkNumbers,
+  pendingNewLink,
+  withLinkDraft,
+  type LinkDrafts,
+  type NewLinkDraft,
+} from "./artikelLieferanten";
 import { useArtikelStammdaten } from "./useArtikelStammdaten";
 import { useTaxonomieSchnellanlage } from "./useTaxonomieSchnellanlage";
 import "../../styles/stock.css";
+import "../../styles/stock-edit.css";
 
 export interface ArtikelBearbeitenModalProps {
   open: boolean;
@@ -58,6 +78,9 @@ export interface ArtikelBearbeitenModalProps {
   onArchived: (article: WerkstattArticle) => void;
   onOpenStockDialog?: (articleId: number) => void;
   onOpenMachines?: () => void;
+  /** A booking from the Bestand section — the endpoint's row, so the list
+   *  behind the dialog can show the same figures without a refetch. */
+  onStockChanged?: (snapshot: WerkstattArticleStockSnapshot) => void;
   /** Opened straight from the row's "Archivieren" entry: the dialog loads the
    *  article and shows the confirmation over it, so the sentence naming what
    *  is about to disappear is the same one in both routes. */
@@ -74,6 +97,7 @@ export function ArtikelBearbeitenModal({
   onArchived,
   onOpenStockDialog,
   onOpenMachines,
+  onStockChanged,
   startArchiveConfirm = false,
 }: ArtikelBearbeitenModalProps) {
   const de = language === "de";
@@ -91,12 +115,15 @@ export function ArtikelBearbeitenModal({
    * give it to them after the fact. */
   const [catalogQuery, setCatalogQuery] = useState("");
   const [catalogHits, setCatalogHits] = useState<WerkstattCatalogGroup[]>([]);
-  /* A second supplier for the same article is the normal case, not an edge
-   * one: the workshop buys the same terminal from two wholesalers and each
-   * calls it something different. Without a way to add the second number
-   * here, an order to that supplier resolves to nothing. */
-  const [newSupplierId, setNewSupplierId] = useState<number | null>(null);
-  const [newSupplierNo, setNewSupplierNo] = useState("");
+  /* Supplier numbers as typed, per link, and a supplier picked under
+   * "Lieferant hinzufügen" — both written by "Speichern". */
+  const [linkDrafts, setLinkDrafts] = useState<LinkDrafts>({});
+  const [newLink, setNewLink] = useState<NewLinkDraft>(EMPTY_NEW_LINK);
+  /* A figure typed in the Bestand section and not booked yet. */
+  const [stockPending, setStockPending] = useState(false);
+  /* What to do once "Verwerfen" is confirmed — close, or hand over to the
+   * stock dialog — or null while nothing is being thrown away. */
+  const [discardThen, setDiscardThen] = useState<(() => void) | null>(null);
 
   const taxonomy = useTaxonomieSchnellanlage({
     token,
@@ -120,6 +147,10 @@ export function ArtikelBearbeitenModal({
       setValues(null);
       setError(null);
       setConfirmArchive(false);
+      setLinkDrafts({});
+      setNewLink(EMPTY_NEW_LINK);
+      setStockPending(false);
+      setDiscardThen(null);
       return;
     }
     setConfirmArchive(startArchiveConfirm);
@@ -143,30 +174,92 @@ export function ArtikelBearbeitenModal({
     };
   }, [open, articleId, token, startArchiveConfirm]);
 
+  /* Everything the form shows as changed, computed per render: what Save
+   * writes, and what closing would throw away. */
+  const articlePatch = article && values ? toUpdatePatch(values, article) : {};
+  const linkChanges = article ? changedLinkNumbers(article, linkDrafts) : [];
+  const linkToAdd = article ? pendingNewLink(article, newLink) : null;
+  const dirty =
+    !isEmptyPatch(articlePatch) || linkChanges.length > 0 || linkToAdd !== null || stockPending;
+
   const save = useCallback(async () => {
     if (!article || !values || busy) return;
+    if (stockPending) {
+      // Booking stock is its own, deliberate step; closing over a typed but
+      // unbooked count would lose it without a word.
+      setError(
+        de
+          ? "Im Bestand steht noch eine Eingabe, die nicht gebucht ist — „Zählung buchen“ bzw. „Wareneingang buchen“ drücken oder das Feld leeren."
+          : "The stock section holds an entry that has not been booked — press “Book count” / “Book receipt” or clear the field.",
+      );
+      return;
+    }
     const invalid = artikelFormError(values, de);
     if (invalid) {
       setError(invalid);
       return;
     }
-    const patch = toUpdatePatch(values, article);
-    if (isEmptyPatch(patch)) {
+    if (isEmptyPatch(articlePatch) && linkChanges.length === 0 && linkToAdd === null) {
       onClose();
       return;
     }
     setBusy(true);
     setError(null);
     try {
-      const saved = await updateArticle(token, article.id, patch);
-      onSaved(saved);
+      let current = article;
+      if (!isEmptyPatch(articlePatch)) {
+        current = await updateArticle(token, article.id, articlePatch);
+        setArticle(current);
+      }
+      for (const change of linkChanges) {
+        await updateArticleSupplierLink(token, article.id, change.linkId, {
+          supplier_article_no: change.supplier_article_no,
+        });
+      }
+      if (linkToAdd) await addArticleSupplierLink(token, article.id, linkToAdd);
+      if (linkChanges.length > 0 || linkToAdd) {
+        // The server decides which link is preferred and how a number is
+        // stored; the list is told what it now holds.
+        current = await getArticle(token, article.id);
+      }
+      onSaved(current);
       onClose();
     } catch (err) {
       setError(detailOf(err, de));
+      // Some writes may have landed. Showing the server's row makes the
+      // remaining difference — what is still unsaved — the part still marked.
+      const fresh = await getArticle(token, article.id).catch(() => null);
+      if (fresh) setArticle(fresh);
     } finally {
       setBusy(false);
     }
-  }, [article, values, busy, de, token, onSaved, onClose]);
+  }, [
+    article,
+    values,
+    busy,
+    stockPending,
+    articlePatch,
+    linkChanges,
+    linkToAdd,
+    de,
+    token,
+    onSaved,
+    onClose,
+  ]);
+
+  /** Close, or hand over to another dialog — but ask first when the form
+   *  holds changes that would be lost. */
+  const leave = useCallback(
+    (then: () => void) => {
+      if (busy) return;
+      if (dirty) {
+        setDiscardThen(() => then);
+        return;
+      }
+      then();
+    },
+    [busy, dirty],
+  );
 
   /** Reactivate AND save whatever is in the form, in one PATCH.
    *
@@ -257,15 +350,7 @@ export function ArtikelBearbeitenModal({
          * them. Only what the LINK actually changed is taken over; every
          * field the person has been editing stays theirs. */
         setValues((prev) =>
-          prev === null
-            ? artikelFormFromArticle(linked)
-            : {
-                ...prev,
-                image_url: prev.image_url ?? linked.image_url,
-                supplier_id: prev.supplier_id ?? preferredSupplierId(linked),
-                supplier_article_no:
-                  prev.supplier_article_no.trim() || preferredSupplierNo(linked),
-              },
+          prev === null ? artikelFormFromArticle(linked) : withLinkFills(prev, article, linked),
         );
         setCatalogQuery("");
         setCatalogHits([]);
@@ -286,25 +371,20 @@ export function ArtikelBearbeitenModal({
   }, [article, token]);
 
   const addSupplier = useCallback(async () => {
-    if (!article || busy || newSupplierId == null) return;
+    if (!article || busy) return;
+    const payload = pendingNewLink(article, newLink);
+    if (!payload) return;
     setBusy(true);
     try {
-      await addArticleSupplierLink(token, article.id, {
-        supplier_id: newSupplierId,
-        supplier_article_no: newSupplierNo.trim() || null,
-        // The first link on an article with none has to be preferred, or
-        // every reorder flow has no supplier to target.
-        is_preferred: article.suppliers.length === 0,
-      });
-      setNewSupplierId(null);
-      setNewSupplierNo("");
+      await addArticleSupplierLink(token, article.id, payload);
+      setNewLink(EMPTY_NEW_LINK);
       await refetch();
     } catch (err) {
       setError(detailOf(err, de));
     } finally {
       setBusy(false);
     }
-  }, [article, busy, newSupplierId, newSupplierNo, token, refetch, de]);
+  }, [article, busy, newLink, token, refetch, de]);
 
   const preferSupplier = useCallback(
     async (linkId: number) => {
@@ -340,12 +420,58 @@ export function ArtikelBearbeitenModal({
     [article, busy, token, de],
   );
 
+  /** A booking from the Bestand section: the endpoint's row, folded in. */
+  const applyBooking = useCallback(
+    (snapshot: WerkstattArticleStockSnapshot) => {
+      setArticle((prev) =>
+        prev && prev.id === snapshot.id
+          ? {
+              ...prev,
+              stock_total: snapshot.stock_total,
+              stock_available: snapshot.stock_available,
+              stock_status: snapshot.stock_status,
+            }
+          : prev,
+      );
+      onStockChanged?.(snapshot);
+    },
+    [onStockChanged],
+  );
+
+  /** After a 409 from the Bestand section: the figures on screen are stale. */
+  const refreshCounters = useCallback(async () => {
+    if (!article) return;
+    const fresh = await getArticle(token, article.id).catch(() => null);
+    if (!fresh) return;
+    // Counters only: the master-data fields may hold the person's edits, and
+    // their patch is computed against the row they were seeded from.
+    setArticle((prev) =>
+      prev && prev.id === fresh.id
+        ? {
+            ...prev,
+            stock_total: fresh.stock_total,
+            stock_available: fresh.stock_available,
+            stock_out: fresh.stock_out,
+            stock_repair: fresh.stock_repair,
+            stock_status: fresh.stock_status,
+          }
+        : prev,
+    );
+    onStockChanged?.({
+      id: fresh.id,
+      stock_total: fresh.stock_total,
+      stock_available: fresh.stock_available,
+      stock_status: fresh.stock_status,
+    });
+  }, [article, token, onStockChanged]);
+
   if (!open) return null;
 
   const title = de ? "Artikel bearbeiten" : "Edit article";
+  const close = () => leave(onClose);
 
   return (
-    <div className="werkstatt-modal-backdrop" role="presentation" onClick={onClose}>
+    <div className="werkstatt-modal-backdrop" role="presentation" onClick={close}>
       <div
         className="werkstatt-modal werkstatt-modal--wide stock-modal"
         role="dialog"
@@ -365,7 +491,7 @@ export function ArtikelBearbeitenModal({
           <button
             type="button"
             className="werkstatt-modal-close"
-            onClick={onClose}
+            onClick={close}
             aria-label={de ? "Schließen" : "Close"}
           >
             ✕
@@ -413,105 +539,42 @@ export function ArtikelBearbeitenModal({
               disabled={busy}
               onCreateCategory={taxonomy.openCategory}
               onCreateLocation={taxonomy.openLocation}
-              stock={{
-                total: article.stock_total,
-                available: article.stock_available,
-                unit: article.unit,
-              }}
+            />
+          )}
+
+          {/* A machine type's quantity is its units; those are booked in the
+              Maschinen tab, as the note above says. */}
+          {article && !article.is_serialized && (
+            <ArtikelBestandAbschnitt
+              de={de}
+              token={token}
+              article={article}
+              disabled={busy}
+              onBooked={applyBooking}
+              onStale={refreshCounters}
+              onPendingChange={setStockPending}
               onOpenStockDialog={
-                onOpenStockDialog ? () => onOpenStockDialog(article.id) : undefined
+                onOpenStockDialog
+                  ? () => leave(() => onOpenStockDialog(article.id))
+                  : undefined
               }
             />
           )}
 
-          {article && article.suppliers.length > 0 && (
-            <div className="stock-suppliers">
-              <span className="werkstatt-field-label">
-                {de ? "Verknüpfte Lieferanten" : "Linked suppliers"}
-              </span>
-              <ul className="stock-suppliers-list">
-                {article.suppliers.map((link) => (
-                  <li key={link.id}>
-                    <b>{link.supplier_name}</b>
-                    <span className="muted">
-                      {link.supplier_article_no || (de ? "keine Art.-Nr." : "no article no.")}
-                    </span>
-                    {link.is_preferred ? (
-                      <span className="werkstatt-katalog-preferred">
-                        {de ? "bevorzugt" : "preferred"}
-                      </span>
-                    ) : (
-                      <button
-                        type="button"
-                        className="werkstatt-card-action"
-                        disabled={busy}
-                        onClick={() => void preferSupplier(link.id)}
-                      >
-                        {de ? "Bevorzugen" : "Prefer"}
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      className="werkstatt-card-action"
-                      disabled={busy}
-                      onClick={() => void dropSupplier(link.id)}
-                    >
-                      {de ? "Entfernen" : "Remove"}
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {article && stammdaten.suppliers.length > 0 && (
-            <div className="stock-form-row stock-supplier-add">
-              <label className="werkstatt-field werkstatt-field--grow">
-                <span className="werkstatt-field-label">
-                  {de ? "Lieferant hinzufügen" : "Add a supplier"}
-                </span>
-                <select
-                  className="werkstatt-field-select"
-                  value={newSupplierId == null ? "" : String(newSupplierId)}
-                  disabled={busy}
-                  onChange={(event) =>
-                    setNewSupplierId(event.target.value ? Number(event.target.value) : null)
-                  }
-                >
-                  <option value="">{de ? "— wählen —" : "— pick one —"}</option>
-                  {stammdaten.suppliers
-                    .filter(
-                      (supplier) =>
-                        !article.suppliers.some((link) => link.supplier_id === supplier.id),
-                    )
-                    .map((supplier) => (
-                      <option key={supplier.id} value={supplier.id}>
-                        {supplier.name}
-                      </option>
-                    ))}
-                </select>
-              </label>
-              <label className="werkstatt-field werkstatt-field--grow">
-                <span className="werkstatt-field-label">
-                  {de ? "Lieferanten-Art.-Nr." : "Supplier article no."}
-                </span>
-                <input
-                  type="text"
-                  className="werkstatt-field-input"
-                  value={newSupplierNo}
-                  disabled={busy || newSupplierId == null}
-                  onChange={(event) => setNewSupplierNo(event.target.value)}
-                />
-              </label>
-              <button
-                type="button"
-                className="werkstatt-action-btn"
-                disabled={busy || newSupplierId == null}
-                onClick={() => void addSupplier()}
-              >
-                {de ? "Hinzufügen" : "Add"}
-              </button>
-            </div>
+          {article && (
+            <ArtikelLieferantenAbschnitt
+              de={de}
+              article={article}
+              suppliers={stammdaten.suppliers}
+              drafts={linkDrafts}
+              onDraft={(linkId, value) => setLinkDrafts((prev) => withLinkDraft(prev, linkId, value))}
+              newLink={newLink}
+              onNewLink={setNewLink}
+              busy={busy}
+              onPrefer={(linkId) => void preferSupplier(linkId)}
+              onRemove={(linkId) => void dropSupplier(linkId)}
+              onAdd={() => void addSupplier()}
+            />
           )}
 
           {article && (
@@ -594,7 +657,7 @@ export function ArtikelBearbeitenModal({
             )}
           </div>
           <div className="werkstatt-modal-foot-actions">
-            <button type="button" className="werkstatt-action-btn" onClick={onClose}>
+            <button type="button" className="werkstatt-action-btn" onClick={close}>
               {de ? "Abbrechen" : "Cancel"}
             </button>
             {article?.is_archived ? (
@@ -651,21 +714,69 @@ export function ArtikelBearbeitenModal({
             </div>
           </div>
         )}
+        {discardThen && (
+          <div
+            className="werkstatt-confirm"
+            role="alertdialog"
+            aria-label={de ? "Änderungen verwerfen?" : "Discard changes?"}
+          >
+            <p>
+              {de
+                ? "Es gibt ungespeicherte Änderungen. Verwerfen und schließen?"
+                : "There are unsaved changes. Discard them and close?"}
+            </p>
+            <div className="werkstatt-modal-foot-actions">
+              <button
+                type="button"
+                className="werkstatt-action-btn"
+                onClick={() => setDiscardThen(null)}
+              >
+                {de ? "Weiter bearbeiten" : "Keep editing"}
+              </button>
+              <button
+                type="button"
+                className="werkstatt-action-btn werkstatt-action-btn--danger"
+                onClick={() => {
+                  const then = discardThen;
+                  setDiscardThen(null);
+                  then();
+                }}
+              >
+                {de ? "Verwerfen" : "Discard"}
+              </button>
+            </div>
+          </div>
+        )}
         {taxonomy.modals}
       </div>
     </div>
   );
 }
 
-/** The supplier a freshly linked article would order from, if any. */
-function preferredSupplierId(article: WerkstattArticle): number | null {
-  const link = article.suppliers.find((row) => row.is_preferred) ?? article.suppliers[0];
-  return link?.supplier_id ?? null;
-}
-
-function preferredSupplierNo(article: WerkstattArticle): string {
-  const link = article.suppliers.find((row) => row.is_preferred) ?? article.suppliers[0];
-  return link?.supplier_article_no ?? "";
+/**
+ * The form after "Katalog verknüpfen": the fields the link may fill on the
+ * server — EAN, Hersteller, Einheit, picture, each only where the article had
+ * none — are taken from the linked row wherever the person left them as they
+ * were. Taking the picture alone kept "" for the other three while the row now
+ * held them, so Save PATCHed them back to null and wiped the EAN the link had
+ * just set. A field the person typed in or cleared stays as they left it.
+ */
+function withLinkFills(
+  values: ArtikelFormValues,
+  before: WerkstattArticle,
+  linked: WerkstattArticle,
+): ArtikelFormValues {
+  const was = artikelFormFromArticle(before);
+  const now = artikelFormFromArticle(linked);
+  const untouched = (field: "ean" | "manufacturer" | "unit") =>
+    values[field].trim() === was[field].trim();
+  return {
+    ...values,
+    ean: untouched("ean") ? now.ean : values.ean,
+    manufacturer: untouched("manufacturer") ? now.manufacturer : values.manufacturer,
+    unit: untouched("unit") ? now.unit : values.unit,
+    image_url: values.image_url === was.image_url ? now.image_url : values.image_url,
+  };
 }
 
 function detailOf(err: unknown, de: boolean): string {

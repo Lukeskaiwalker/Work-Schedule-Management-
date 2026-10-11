@@ -11,7 +11,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from app.core.limits import MAX_STOCK_QUANTITY, MAX_UNIT_PRICE_CENTS
 
 
 class _OrmBase(BaseModel):
@@ -197,8 +199,11 @@ class OrderLineCreatePayload(BaseModel):
     manufacturer: str | None = Field(default=None, max_length=255)
     ean: str | None = Field(default=None, max_length=64)
     unit: str | None = Field(default=None, max_length=64)
-    quantity_ordered: int = Field(default=1, ge=1)
-    unit_price_cents: int | None = Field(default=None, ge=0)
+    # Bounded so a line, its delivery (an intake of the same quantity) and the
+    # order total built from it all stay inside their int4 columns — see
+    # core/limits.py and services/werkstatt_order_totals.py.
+    quantity_ordered: int = Field(default=1, ge=1, le=MAX_STOCK_QUANTITY)
+    unit_price_cents: int | None = Field(default=None, ge=0, le=MAX_UNIT_PRICE_CENTS)
     currency: str | None = Field(default=None, min_length=1, max_length=8)
     notes: str | None = None
 
@@ -212,10 +217,19 @@ class OrderLineUpdatePayload(BaseModel):
     manufacturer: str | None = Field(default=None, max_length=255)
     ean: str | None = Field(default=None, max_length=64)
     unit: str | None = Field(default=None, max_length=64)
-    quantity_ordered: int | None = Field(default=None, ge=1)
-    unit_price_cents: int | None = Field(default=None, ge=0)
+    quantity_ordered: int | None = Field(default=None, ge=1, le=MAX_STOCK_QUANTITY)
+    unit_price_cents: int | None = Field(default=None, ge=0, le=MAX_UNIT_PRICE_CENTS)
     currency: str | None = Field(default=None, min_length=1, max_length=8)
     notes: str | None = None
+
+    @model_validator(mode="after")
+    def _not_null_columns_stay_set(self) -> OrderLineUpdatePayload:
+        # Both columns are NOT NULL. "Unset" leaves them alone; an explicit
+        # null would reach the flush as an IntegrityError — a 500.
+        for name in ("quantity_ordered", "currency"):
+            if name in self.model_fields_set and getattr(self, name) is None:
+                raise ValueError(f"{name} darf nicht leer sein")
+        return self
 
 
 class OrderMergePayload(BaseModel):

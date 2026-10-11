@@ -1,0 +1,930 @@
+/* ── Verwaltungszentrum on phones and tablets ─────────────────────────────
+ *
+ * Owner, 2026-10-10: "Mobile version of the admin center is not optimized
+ * for mobile use. I can not even horizontally scroll."
+ *
+ * Measured at 375 × 812: `html, body { overflow-x: clip }` (styles.css) cuts
+ * off anything wider than the screen, and it is there on purpose — it stops
+ * the whole page wobbling sideways under a thumb. But the tab strip was
+ * 782 px, the Rollen matrix 728 px, the Protokoll's fixed 180/140/180 px
+ * columns overflowed every row, and the backup table ran past the edge: all
+ * cut off, none of it reachable.
+ *
+ * So the clip stays, and every wide thing either gets its own sideways scroll
+ * container or reflows:
+ *   - the tab strip scrolls (AdminTabBar keeps the chosen tab in view and
+ *     says which edge has more, for the fade) and is a chip row on a phone;
+ *   - the Rollen matrix scrolls in both directions on a phone, its
+ *     permission column and header row sticky;
+ *   - Protokoll rows, Benutzer rows and backup rows stack into cards, each
+ *     value with its own label (the column heads are gone there);
+ *   - forms go single-column, controls 44 px tall, text fields and select
+ *     menus 16 px (iOS zooms into anything smaller), dialogs a full-width
+ *     sheet.
+ *
+ * The Protokoll and the backup list follow their own width, not the
+ * screen's: beside the 320 px sidebar (900–1279 px screens) they are
+ * narrower than on a 768 px tablet without one — the Protokoll's 180/140/180
+ * px columns left the event column nothing, and the backup table ran past
+ * the page at 900–945 px.
+ *
+ * Four parts: rules for every width (scroll containers that change nothing
+ * while things fit), the container queries of the Protokoll and the backup
+ * list, the ≥ 768 px block that hides the phone-only labels so the desktop
+ * is unchanged, and the ≤ 767 px phone block.
+ *
+ * Scoped to `.admin-center` — the AdminPage section. The Pi-Station page
+ * borrows the `.admin-page` card and form classes, and this file stays loaded
+ * once the admin chunk has been. The restore dialog and the backup list use
+ * classes only AdminBackupsPanel renders, so they are not scoped.
+ * ───────────────────────────────────────────────────────────────────────── */
+
+/* ── Every width ──────────────────────────────────────────────────────── */
+
+/* The page must not take its width from its widest child. `.app-shell` is a
+   `1fr` grid track, i.e. minmax(auto, 1fr), and between 768 and 899 px
+   `.content` keeps `min-width: auto` — so the 782 px tab strip widened the
+   whole column past the viewport and the root clip cut the page off. Inline
+   size containment makes the page's min-content contribution nothing; its
+   own width is still the 100% it always was. */
+.admin-center {
+  contain: inline-size;
+}
+
+/* The tab strip: its own sideways scroller. While the tabs fit (a desktop),
+   nothing scrolls and nothing changes. */
+.admin-center .admin-page-tabs {
+  max-width: 100%;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  scroll-padding-inline: 32px;
+  scrollbar-width: none;
+}
+
+.admin-center .admin-page-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.admin-center .admin-page-tabs .admin-page-tab {
+  flex: none;
+  white-space: nowrap;
+}
+
+/* Inset, so the strip's own overflow cannot clip the ring of an edge tab. */
+.admin-center .admin-page-tabs .admin-page-tab:focus-visible {
+  outline: 2px solid #2f70b7;
+  outline-offset: -2px;
+}
+
+/* "More tabs this way": the strip fades out at an edge that has tabs behind
+   it. A mask, not an overlay, so it works on any background — the phone's
+   chip row sits straight on the page gradient. AdminTabBar sets the classes
+   from the scroll position. */
+.admin-center .admin-page-tabs--more-end {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+}
+
+.admin-center .admin-page-tabs--more-start {
+  -webkit-mask-image: linear-gradient(to left, #000 calc(100% - 28px), transparent);
+  mask-image: linear-gradient(to left, #000 calc(100% - 28px), transparent);
+}
+
+.admin-center .admin-page-tabs--more-start.admin-page-tabs--more-end {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 28px, #000 calc(100% - 28px), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 28px, #000 calc(100% - 28px), transparent);
+}
+
+/* A mouse has no swipe: where the strip can scroll and the pointer is fine,
+   show a thin scrollbar to grab. `scrollbar-width` drives Chromium and
+   Firefox (and makes Chromium ignore the ::-webkit rules); Safari takes the
+   ::-webkit rules. */
+@media (hover: hover) and (pointer: fine) {
+  .admin-center .admin-page-tabs {
+    scrollbar-width: thin;
+    scrollbar-color: #c9d9ea transparent;
+  }
+
+  .admin-center .admin-page-tabs::-webkit-scrollbar {
+    display: block;
+    height: 6px;
+  }
+
+  .admin-center .admin-page-tabs::-webkit-scrollbar-thumb {
+    background: #c9d9ea;
+    border-radius: 3px;
+  }
+}
+
+/* Rollen matrix: it already scrolls sideways inside its card; the permission
+   column stays put while the role columns pass under it. Opaque backgrounds,
+   the same colours the rows already had, or the passing cells show through. */
+.admin-center .admin-roles-table-wrap {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+}
+
+.admin-center .admin-roles-head--label,
+.admin-center .admin-roles-perm-cell {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+}
+
+.admin-center .admin-roles-head--label {
+  z-index: 3;
+}
+
+.admin-center .admin-roles-perm-cell {
+  background-color: #ffffff;
+}
+
+.admin-center .admin-roles-row:nth-child(even) .admin-roles-perm-cell {
+  background-color: #fbfdff;
+}
+
+/* 320 px minimum columns are wider than a phone's page. `min()` keeps them
+   at 320 px wherever 320 px fits, i.e. unchanged on a desktop. */
+.admin-center .admin-page-layout--tools,
+.admin-center .admin-page-layout--system {
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+}
+
+/* Save · Prüfen · Anbindung entfernen did not wrap and ran off a phone. */
+.admin-center .admin-settings-form-actions {
+  flex-wrap: wrap;
+}
+
+/* Backups list (AdminBackupsPanel). These were inline styles; as classes the
+   phone block below can turn the rows into cards. */
+.admin-backups-cell--num,
+.admin-backups-cell--actions {
+  text-align: right;
+}
+
+.row.admin-backups-actions {
+  gap: 4px;
+  justify-content: flex-end;
+}
+
+.admin-backups-filename {
+  font-size: 12px;
+}
+
+.admin-backups-restore {
+  border-color: var(--danger, #b00020);
+}
+
+.admin-backups-restore:not(:disabled) {
+  background: var(--danger-bg, #fee);
+  color: var(--danger, #b00020);
+}
+
+/* Restore confirmation (AdminBackupsPanel) — the look it had inline. */
+.admin-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.6);
+}
+
+.admin-dialog {
+  width: 100%;
+  max-width: 520px;
+  padding: 20px;
+  border-radius: 8px;
+  background: var(--surface, #fff);
+  color: var(--text, #111);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4);
+}
+
+.admin-dialog-title {
+  margin-top: 0;
+}
+
+.admin-dialog-code {
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.admin-dialog-input {
+  width: 100%;
+  padding: 8px;
+  margin-bottom: 12px;
+  font-size: 14px;
+}
+
+.admin-dialog-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.admin-dialog-danger:not(:disabled) {
+  background: var(--danger, #b00020);
+  color: #fff;
+}
+
+/* ── Protokoll: a table while its card is wide, labelled cards when not ─ */
+/* By the card's width, not the screen's. Measured in Chromium with the
+   sidebar showing: card 453 px at a 900 px screen, 577 px at 1024, 653 px at
+   1100 — and the fixed 180/140/180 px columns left the event column (action
+   and target) 0 px up to ~1050 px, clipped by the card. A 768 px tablet has
+   no sidebar and a 673 px card. Inline-size containment only: the card holds
+   nothing position: fixed. */
+.admin-center .admin-audit-card {
+  container: admin-audit / inline-size;
+}
+
+/* The labels belong to the stacked card; the table has its column heads. */
+.admin-center .admin-audit-label {
+  display: none;
+}
+
+/* Action and target go back to being the event column's own flex items. */
+.admin-center .admin-audit-field {
+  display: contents;
+}
+
+/* Narrower columns first (the 768–899 px tablet's), while the event column
+   keeps ~190 px or more. Unchanged from 800 px of card up (1280 px screens). */
+@container admin-audit (max-width: 799px) {
+  .admin-center .admin-audit-table-head,
+  .admin-center .admin-audit-row {
+    grid-template-columns: 140px 110px 140px minmax(0, 1fr);
+    padding-left: 18px;
+    padding-right: 18px;
+  }
+}
+
+/* Below that the four columns do not fit: each row a card, every value
+   under its label. Must stay after the block above. */
+@container admin-audit (max-width: 639px) {
+  .admin-center .admin-audit-table-head {
+    display: none;
+  }
+
+  .admin-center .admin-audit-row {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+    gap: 6px;
+    padding: 12px 16px;
+  }
+
+  .admin-center .admin-audit-col,
+  .admin-center .admin-audit-field {
+    display: grid;
+    grid-template-columns: 5.5rem minmax(0, 1fr);
+    column-gap: 10px;
+    align-items: baseline;
+    overflow: visible;
+    white-space: normal;
+  }
+
+  /* Action and target are separate lines of the card. */
+  .admin-center .admin-audit-col--event {
+    display: contents;
+  }
+
+  .admin-center .admin-audit-label {
+    display: block;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #5c7895;
+  }
+
+  .admin-center .admin-audit-value,
+  .admin-center .admin-audit-target {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .admin-center .admin-audit-code {
+    justify-self: start;
+    max-width: 100%;
+    font-size: 12px;
+    overflow-wrap: anywhere;
+  }
+}
+
+/* ── Backup list: a table while it fits, labelled cards when not ──────── */
+/* By the list's own width. Its table is ~490 px at the narrowest (five
+   columns, three buttons): it ran past the page beside the sidebar at
+   900–945 px screens (list 401–446 px), as on a phone. The wrapper is also a
+   sideways scroller, the fallback for a table that is wider still (a long
+   uploaded file name). Not around the restore dialog, which is
+   position: fixed. */
+.admin-backups-table-wrap {
+  container: admin-backups / inline-size;
+  max-width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+}
+
+/* The labels belong to the stacked card; the table has its column heads. */
+.admin-backups-label {
+  display: none;
+}
+
+@container admin-backups (max-width: 519px) {
+  .admin-backups-table thead {
+    display: none;
+  }
+
+  .admin-backups-table,
+  .admin-backups-table tbody,
+  .admin-backups-table tr,
+  .admin-backups-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .admin-backups-table tr {
+    margin-bottom: 10px;
+    padding: 10px 12px;
+    border: 1px solid #e2ecf7;
+    border-radius: 10px;
+    background-color: #ffffff;
+  }
+
+  .admin-backups-table td {
+    padding: 4px 0;
+    border-bottom: 0;
+  }
+
+  .admin-backups-table td.admin-backups-cell {
+    display: grid;
+    grid-template-columns: 5.5rem minmax(0, 1fr);
+    column-gap: 10px;
+    align-items: baseline;
+    text-align: left;
+  }
+
+  .admin-backups-table td.admin-backups-cell--actions {
+    display: block;
+    padding-top: 8px;
+  }
+
+  .admin-backups-label {
+    display: block;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #5c7895;
+  }
+
+  .admin-backups-filename,
+  .admin-backups-value {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  .row.admin-backups-actions {
+    gap: 8px;
+    justify-content: stretch;
+  }
+
+  .row.admin-backups-actions > button {
+    flex: 1 1 auto;
+  }
+}
+
+/* ── Tablet and desktop: the phone-only labels stay out ───────────────── */
+@media (min-width: 768px) {
+  .admin-center .admin-users-cell-label,
+  .admin-center .admin-users-unit--days,
+  .admin-center .admin-users-action-text {
+    display: none;
+  }
+
+  /* The number and its "h" go back to being the cell's own flex items, as
+     they were before the label wrapped them. */
+  .admin-center .admin-users-cell-value {
+    display: contents;
+  }
+}
+
+/* ── Phone ────────────────────────────────────────────────────────────── */
+@media (max-width: 767px) {
+  /* `.content` already pads the page by 16 px a side here; a second 18 px
+     inside it left ~300 px of a 375 px screen. */
+  .admin-page.admin-center {
+    gap: 16px;
+    padding: 14px 0 24px;
+  }
+
+  .admin-center .admin-page-title {
+    font-size: 22px;
+  }
+
+  .admin-center .admin-page-card--invite,
+  .admin-center .admin-page-card--group-form,
+  .admin-center .admin-group-card,
+  .admin-center .admin-tools-card,
+  .admin-center .admin-settings-block,
+  .admin-center .admin-system-block {
+    padding: 16px;
+  }
+
+  /* Every text field and select menu 16 px: iOS zooms the page into any
+     smaller one on focus, and the page stays zoomed after. The selects need
+     the two classes: `.admin-page .admin-users-select`, `.admin-invite-input`
+     and `.admin-audit-select` set 13 px at 0,2,0 in styles.css, which beat a
+     plain `.admin-center select` (0,1,1); this is 0,2,1. (The input selector
+     is 0,3,1 already.) */
+  .admin-center input:not([type="checkbox"]):not([type="radio"]),
+  .admin-page.admin-center select,
+  .admin-page.admin-center textarea {
+    font-size: 16px;
+  }
+
+  /* Thumb-sized targets. Most admin buttons are 32–34 px with min-height: 0. */
+  .admin-center button {
+    min-height: 44px;
+  }
+
+  /* ── Tab strip → a row of chips ───────────────────────────────────── */
+  /* It snaps: each chip's start rests 32 px in (the scroll-padding above).
+     AdminTabBar reads these back from the computed style and reveals the
+     chosen tab at one of those positions — a scroll that ends between two
+     is pulled to the nearer, which left the tab under the edge fade. */
+  .admin-center .admin-page-tabs {
+    align-self: stretch;
+    display: flex;
+    gap: 8px;
+    padding: 4px 2px;
+    background-color: transparent;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+    scroll-snap-type: x proximity;
+  }
+
+  .admin-center .admin-page-tabs .admin-page-tab {
+    min-height: 44px;
+    height: auto;
+    padding: 0 16px;
+    border: 1px solid #c9d9ea;
+    border-radius: 999px;
+    background-color: #ffffff;
+    font-size: 14px;
+    scroll-snap-align: start;
+  }
+
+  .admin-center .admin-page-tabs .admin-page-tab.active {
+    border-color: #14293d;
+    background-color: #14293d;
+    color: #ffffff;
+  }
+
+  /* ── Benutzer: each row a card ─────────────────────────────────────── */
+  .admin-page.admin-center .admin-users-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas:
+      "user user"
+      "role role"
+      "hours vacation"
+      "actions actions";
+    gap: 10px;
+    padding: 14px 16px;
+  }
+
+  .admin-center .admin-users-col--user {
+    grid-area: user;
+  }
+
+  /* Under the name, past the 34 px avatar and its 12 px gap. */
+  .admin-center .admin-users-col--role {
+    grid-area: role;
+    padding-left: 46px;
+  }
+
+  .admin-center .admin-users-col--hours {
+    grid-area: hours;
+  }
+
+  .admin-center .admin-users-col--vacation {
+    grid-area: vacation;
+  }
+
+  .admin-center .admin-users-col--hours,
+  .admin-center .admin-users-col--vacation {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    min-width: 0;
+    padding: 8px 10px;
+    border: 1px solid #e2ecf7;
+    border-radius: 8px;
+    background-color: #f8fbff;
+  }
+
+  .admin-center .admin-users-cell-label {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #5c7895;
+  }
+
+  .admin-center .admin-users-cell-value {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 3px;
+    font-size: 16px;
+    font-weight: 700;
+    color: #14293d;
+  }
+
+  .admin-center .admin-users-cell-value .admin-users-unit {
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  /* Side by side, two equal halves; a long caption wraps inside its button
+     rather than pushing the other one onto a line of its own. */
+  .admin-center .admin-users-col--actions {
+    grid-area: actions;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .admin-center .admin-users-action-icon {
+    gap: 8px;
+    width: auto;
+    height: auto;
+    min-height: 44px;
+    padding: 6px 10px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    line-height: 1.2;
+    text-align: center;
+  }
+
+  .admin-center .admin-users-action-icon svg {
+    flex: none;
+    width: 16px;
+    height: 16px;
+  }
+
+  .admin-center .admin-users-detail {
+    padding: 0 16px 18px;
+  }
+
+  .admin-page.admin-center .admin-users-select,
+  .admin-page.admin-center .admin-users-input {
+    height: 44px;
+  }
+
+  /* Hours: field · unit · Speichern on one line. Vacation: the three figures
+     side by side, Speichern under them. Neither by fixed widths. */
+  .admin-center .admin-users-inline-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .admin-center .admin-users-inline-row--vac {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    align-items: end;
+  }
+
+  .admin-center .admin-users-inline-row--vac .admin-users-inline-save {
+    grid-column: 1 / -1;
+  }
+
+  .admin-page.admin-center .admin-users-input--short {
+    width: 100%;
+  }
+
+  .admin-center .admin-users-vac-label {
+    min-width: 0;
+  }
+
+  .admin-page.admin-center .admin-users-inline-save,
+  .admin-page.admin-center .admin-users-detail-btn {
+    height: auto;
+    min-height: 44px;
+    padding: 0 16px;
+    font-size: 14px;
+  }
+
+  .admin-page.admin-center .admin-users-detail-btn {
+    flex: 1 1 auto;
+    justify-content: center;
+  }
+
+  /* Individuelle Berechtigungen: no box-in-a-box scroller on a phone (the
+     page scrolls), the name on its own line, Gewähren/Sperren as two wide
+     tappable switches under it. */
+  .admin-center .admin-users-perm-panel {
+    padding: 12px;
+  }
+
+  .admin-center .admin-users-perm-groups {
+    max-height: none;
+    overflow: visible;
+    padding-right: 0;
+  }
+
+  .admin-center .admin-users-perm-group {
+    padding: 8px;
+  }
+
+  .admin-center .admin-users-perm-row {
+    flex-wrap: wrap;
+    row-gap: 6px;
+    padding: 8px;
+  }
+
+  .admin-center .admin-users-perm-label {
+    flex-basis: 100%;
+    font-size: 13px;
+  }
+
+  .admin-center .admin-users-perm-row .admin-users-perm-toggles {
+    width: 100%;
+    margin-left: 0;
+    gap: 8px;
+  }
+
+  .admin-center .admin-users-perm-toggles label {
+    flex: 1 1 0;
+    justify-content: center;
+    gap: 8px;
+    min-height: 44px;
+    padding: 0 12px;
+    border: 1px solid #c9d9ea;
+    border-radius: 8px;
+    background-color: #ffffff;
+    font-size: 14px;
+  }
+
+  .admin-center .admin-users-perm-toggles label input[type="checkbox"] {
+    width: 20px;
+    height: 20px;
+  }
+
+  .admin-center .admin-users-perm-actions > button {
+    flex: 1 1 auto;
+  }
+
+  .admin-center .admin-users-archived {
+    padding: 14px 16px;
+  }
+
+  .admin-center .admin-users-archived-row {
+    flex-wrap: wrap;
+  }
+
+  .admin-center .admin-users-archived-row .admin-users-user-text {
+    flex: 1 1 160px;
+  }
+
+  /* ── Forms (invite, groups, tools, settings, system) ────────────────── */
+  .admin-page.admin-center input.admin-invite-input,
+  .admin-page.admin-center select.admin-invite-input {
+    height: 44px;
+  }
+
+  .admin-page.admin-center input.admin-invite-input--file {
+    height: auto;
+    min-height: 44px;
+  }
+
+  .admin-page.admin-center .admin-invite-submit,
+  .admin-page.admin-center .admin-group-edit-btn,
+  .admin-page.admin-center .admin-group-delete-btn,
+  .admin-page.admin-center .admin-tools-step-btn,
+  .admin-page.admin-center .admin-tools-step-primary,
+  .admin-page.admin-center .admin-tools-upload-btn,
+  .admin-page.admin-center .admin-audit-refresh,
+  .admin-page.admin-center .admin-update-tools button {
+    height: auto;
+    min-height: 44px;
+    font-size: 14px;
+  }
+
+  .admin-center .admin-group-card-head,
+  .admin-center .admin-group-card-actions,
+  .admin-center .admin-group-form-actions {
+    flex-wrap: wrap;
+  }
+
+  /* break-word, not anywhere: it only breaks a word that would overflow and
+     leaves the title's min-content width alone. */
+  .admin-center .admin-group-card-title {
+    min-width: 0;
+    overflow-wrap: break-word;
+  }
+
+  .admin-center .admin-group-form-actions > button {
+    flex: 1 1 auto;
+  }
+
+  .admin-center .admin-group-member-check {
+    min-height: 44px;
+  }
+
+  .admin-center .admin-group-member-check input[type="checkbox"],
+  .admin-center .admin-settings-checkbox input[type="checkbox"] {
+    width: 20px;
+    height: 20px;
+  }
+
+  .admin-center .admin-settings-checkbox {
+    min-height: 44px;
+  }
+
+  .admin-center .admin-settings-checkbox span {
+    line-height: 1.3;
+  }
+
+  .admin-center .admin-settings-form-actions > button {
+    flex: 1 1 auto;
+  }
+
+  .admin-center .admin-settings-material {
+    flex-wrap: wrap;
+  }
+
+  .admin-center .admin-settings-material-main input[type="radio"] {
+    flex: none;
+    width: 20px;
+    height: 20px;
+    margin: 0;
+  }
+
+  .admin-center .admin-tools-step {
+    padding: 12px;
+  }
+
+  .admin-center .admin-tools-upload {
+    padding: 14px;
+  }
+
+  /* Full day names: at their natural width, wrapping onto a second row. */
+  .admin-center .admin-tools-weekday-pill {
+    flex: 1 1 auto;
+    min-height: 44px;
+    padding: 0 12px;
+    font-size: 14px;
+  }
+
+  .admin-center .admin-update-tools small,
+  .admin-center .admin-update-tools code {
+    overflow-wrap: anywhere;
+  }
+
+  .admin-center .admin-update-tools .row.wrap > button {
+    flex: 1 1 auto;
+  }
+
+  /* ── Rollen: a matrix that scrolls both ways, header and names sticky ─ */
+  /* Sticky only works against the box that scrolls, and a sideways scroller
+     scrolls vertically too — so on a phone the matrix gets its own height
+     and scrolls inside it, which is what lets the header row stick. */
+  .admin-center .admin-roles-table-wrap {
+    max-height: calc(100dvh - 200px);
+    overflow: auto;
+  }
+
+  .admin-center .admin-roles-table thead .admin-roles-head {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    padding: 10px 6px;
+    white-space: normal;
+    /* Collapsed table borders do not travel with a sticky cell; a shadow does. */
+    box-shadow: inset 0 -1px 0 #e2ecf7;
+  }
+
+  .admin-center .admin-roles-table thead .admin-roles-head--label {
+    z-index: 3;
+    padding: 10px 12px;
+    box-shadow: inset 0 -1px 0 #e2ecf7, inset -1px 0 0 #e2ecf7;
+  }
+
+  .admin-center .admin-roles-head--role {
+    min-width: 76px;
+  }
+
+  .admin-center .admin-roles-head-inner {
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .admin-page.admin-center .admin-roles-reset-btn {
+    width: 44px;
+    height: 44px;
+  }
+
+  .admin-center .admin-roles-perm-cell {
+    width: 10rem;
+    min-width: 10rem;
+    padding: 8px 12px;
+    font-size: 13px;
+    white-space: normal;
+    box-shadow: inset -1px 0 0 #e2ecf7;
+  }
+
+  .admin-center .admin-roles-perm-key {
+    display: block;
+    width: fit-content;
+    max-width: 100%;
+    margin: 4px 0 0;
+    font-size: 10.5px;
+    overflow-wrap: anywhere;
+  }
+
+  .admin-center .admin-roles-cell {
+    padding: 2px;
+  }
+
+  .admin-page.admin-center .admin-roles-check {
+    width: 44px;
+    height: 44px;
+    font-size: 18px;
+  }
+
+  /* ── Protokoll: the toolbar stacks ─────────────────────────────────── */
+  .admin-center .admin-audit-toolbar {
+    gap: 8px;
+  }
+
+  .admin-center .admin-audit-search-wrap {
+    flex: 1 1 100%;
+    min-width: 0;
+    max-width: none;
+  }
+
+  .admin-page.admin-center .admin-audit-search,
+  .admin-page.admin-center .admin-audit-select {
+    height: 44px;
+  }
+
+  .admin-page.admin-center .admin-audit-select {
+    flex: 1 1 calc(50% - 4px);
+    width: auto;
+    min-width: 0;
+  }
+
+  .admin-page.admin-center .admin-audit-refresh {
+    flex: 1 1 auto;
+  }
+
+  .admin-center .admin-audit-custom-range {
+    flex-wrap: wrap;
+  }
+
+  .admin-center .admin-audit-custom-range label {
+    flex: 1 1 140px;
+    min-width: 0;
+  }
+
+  .admin-page.admin-center .admin-audit-custom-range input {
+    height: 44px;
+  }
+
+  /* The rows themselves stack by the card's width (above). */
+
+  /* ── Backups: the rows stack by the list's width (above) ───────────── */
+
+  /* ── Restore confirmation: a full-width sheet from the bottom ───────── */
+  .admin-dialog-backdrop {
+    align-items: flex-end;
+    padding: 0;
+  }
+
+  .admin-dialog {
+    max-width: none;
+    max-height: calc(100dvh - env(safe-area-inset-top, 0px));
+    overflow-y: auto;
+    padding: 20px 16px calc(16px + env(safe-area-inset-bottom, 0px));
+    border-radius: 14px 14px 0 0;
+  }
+
+  .admin-dialog-input {
+    min-height: 44px;
+    font-size: 16px;
+  }
+
+  .admin-dialog-actions > button {
+    flex: 1 1 0;
+    min-height: 44px;
+  }
+}

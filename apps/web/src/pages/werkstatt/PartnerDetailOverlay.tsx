@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import type { PartnerListItem, Task } from "../../types";
+import { PartnerPortalAccessSection } from "../../components/partners/PartnerPortalAccessSection";
 import { PartnerTradePill } from "../../components/partners/PartnerTradePill";
 import { listPartnerTasks } from "../../utils/partnersApi";
 import { formatTaskDateRange } from "../../utils/tasks";
@@ -30,7 +31,7 @@ function formatWhen(iso: string | null, language: "de" | "en"): string {
  * tasks on mount and offers a small tab switcher for Offen / Abgeschlossen.
  */
 export function PartnerDetailOverlay({ partner, onClose }: Props) {
-  const { language, token, openPartnerModal, archivePartner, unarchivePartner, projects } =
+  const { language, token, openPartnerModal, archivePartner, unarchivePartner, projects, canCreateProject } =
     useAppContext();
   const de = language === "de";
 
@@ -178,6 +179,9 @@ export function PartnerDetailOverlay({ partner, onClose }: Props) {
                 : "Archive"}
           </button>
         </div>
+        {/* Portal logins are managed by whoever may manage partners
+            (projects:manage) — the API refuses everyone else. */}
+        {canCreateProject && <PartnerPortalAccessSection partner={partner} />}
       </section>
 
       <section className="partner-detail-overlay-tasks">

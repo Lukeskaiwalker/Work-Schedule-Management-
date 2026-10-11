@@ -165,9 +165,14 @@ export const OUTGOING_PART_IDS: ReadonlySet<TerminalPartId> = new Set(["2003-764
 export const END_PART_IDS: ReadonlySet<TerminalPartId> = new Set(["2009-305"]);
 
 /**
- * Kinds that may end on a Reihenklemme: MCB-protected outgoing circuits.
- * An RCBO is deliberately absent — its N is its own and must not sit on
- * the FI group's N bus (owner decision). Fuses, contactors, relays and SPDs
+ * Kinds that may end on a Reihenklemme: MCB-protected outgoing circuits, and
+ * a Neozed module that goes straight on to the 16 mm² block (owner,
+ * 2026-10-09: the PV / callbox outputs, "without an extra MCB or other
+ * device between it and the Neozed block") — always the block, see
+ * `isBlockDevice`. Only a fuse that IS an outgoing: as the Vorsicherung of an
+ * FI or the head of a row of LS it is no group child, so it never reaches the
+ * derivation. An RCBO is deliberately absent — its N is its own and must not
+ * sit on the FI group's N bus (owner decision). Contactors, relays and SPDs
  * never get one.
  */
 export const TERMINAL_ELIGIBLE_KINDS: ReadonlySet<DeviceKind> = new Set<DeviceKind>([
@@ -175,6 +180,7 @@ export const TERMINAL_ELIGIBLE_KINDS: ReadonlySet<DeviceKind> = new Set<DeviceKi
   "wallbox",
   "sub_feed",
   "pv",
+  "fuse",
 ]);
 
 export type TerminalVariant = "standard" | "no_rcd";
@@ -234,9 +240,11 @@ export function ratingAmps(rating: string | null | undefined): number | null {
 
 /**
  * A 3- or 4-pole outgoing above 16 A ends on the 16 mm² Block (N feed,
- * L1–L3, PE) instead of the Etagenklemmen.
+ * L1–L3, PE) instead of the Etagenklemmen. A Neozed always does: the
+ * owner's combo block is what it goes straight on to, whatever its rating.
  */
-export function isBlockDevice(device: Pick<PanelDevice, "poles" | "rating">): boolean {
+export function isBlockDevice(device: Pick<PanelDevice, "poles" | "rating"> & { kind?: PanelDevice["kind"] }): boolean {
+  if (device.kind === "fuse") return true;
   const amps = ratingAmps(device.rating);
   return devicePoles(device) >= 3 && amps !== null && amps > BLOCK_MIN_AMPS_EXCLUSIVE;
 }
@@ -287,7 +295,9 @@ export function terminalFindings(groups: PanelGroup[]): PanelFinding[] {
     const children = terminalChildren(group);
     const variant = terminalVariant(group, children);
     if (!variant) continue;
-    if (variant === "no_rcd") {
+    // Only a Leiste lacks the feed terminal; a block brings its own N
+    // (2016-7604), so a group of blocks alone has nothing to report.
+    if (variant === "no_rcd" && children.some((device) => !isBlockDevice(device))) {
       findings.push({
         level: "info",
         scope: group.device?.id ?? "",

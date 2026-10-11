@@ -15,9 +15,11 @@ function escapeCsvCell(value: string | number | null | undefined): string {
 }
 
 /**
- * Where a row's quantity came from: summed from Baustellenberichte, or stock
- * consumed for one or more Verteiler of this project ("Verteiler VT-0007").
- * A row without `source` predates the field and is a report row.
+ * Where a row's quantity came from: summed from Baustellenberichte, stock
+ * consumed for one or more Verteiler of this project ("Verteiler VT-0007"), or
+ * consumables taken off the shelf for the project at the rack, the desk or the
+ * phone ("Lager (Entnahme)"). A row without `source` predates the field and is
+ * a report row.
  */
 export function materialSourceLabel(
   entry: Pick<ProjectTrackedMaterial, "source" | "panel_numbers">,
@@ -28,7 +30,16 @@ export function materialSourceLabel(
     const numbers = (entry.panel_numbers ?? []).join(", ");
     return numbers ? `${word} ${numbers}` : word;
   }
+  if (entry.source === "lager") return de ? "Lager (Entnahme)" : "Stock (dispensed)";
   return de ? "Bericht" : "Report";
+}
+
+/** Ledger rows (Verteiler, Lager) are facts and get their own ink; report rows are estimates. */
+function sourceCellClass(source: ProjectTrackedMaterial["source"]): string {
+  const base = "project-mat-tab-td project-mat-tab-td--source";
+  if (source === "verteiler") return `${base} project-mat-tab-td--source-verteiler`;
+  if (source === "lager") return `${base} project-mat-tab-td--source-lager`;
+  return base;
 }
 
 type SortKey =
@@ -291,8 +302,8 @@ export function ProjectMaterialsTab() {
           {projectTrackedMaterials.length === 0 && (
             <div className="project-mat-tab-empty">
               {de
-                ? "Noch kein Material in Berichten oder Verteilern erfasst."
-                : "No materials tracked in reports or panels yet."}
+                ? "Noch kein Material in Berichten, Verteilern oder Lager-Entnahmen erfasst."
+                : "No materials tracked in reports, panels or stock dispensed yet."}
             </div>
           )}
 
@@ -311,10 +322,7 @@ export function ProjectMaterialsTab() {
               // even when they happen to be equal.
               const countLabel = `${entry.occurrence_count} / ${entry.report_count}`;
               const sourceLabel = materialSourceLabel(entry, de);
-              const sourceClass =
-                entry.source === "verteiler"
-                  ? "project-mat-tab-td project-mat-tab-td--source project-mat-tab-td--source-verteiler"
-                  : "project-mat-tab-td project-mat-tab-td--source";
+              const sourceClass = sourceCellClass(entry.source);
 
               return (
                 <div

@@ -1,7 +1,7 @@
 import {
   movementFamily,
+  movementHeadline,
   movementSubtitle,
-  movementTitle,
 } from "./mobileLabels";
 import type { WerkstattMovement } from "../../../types/werkstatt";
 
@@ -158,7 +158,7 @@ export function MobileArtikelMovements({
                 </span>
                 <span className="werkstatt-mobile-artikel-movement-text">
                   <span className="werkstatt-mobile-artikel-movement-title">
-                    {movementTitle(movement.movement_type, de)}
+                    {movementHeadline(movement, de)}
                   </span>
                   <span className="werkstatt-mobile-artikel-movement-subtitle">
                     {movementSubtitle(movement, de)}

@@ -32,8 +32,11 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
+
+import dispense_codes
 
 __all__ = [
     "WerkstattClient",
@@ -48,7 +51,10 @@ __all__ = [
     "article_id_of",
     "machine_of",
     "kind_of",
+    "scan_kind",
+    "is_outdated",
     "MOVEMENT_TYPES",
+    "SMPL_OUTDATED",
 ]
 
 BASE = "/api/station/werkstatt"
@@ -73,6 +79,14 @@ PATHS = {
     # A person's own badge. SMPL decides what the scan means (identify, clock
     # onto the open board, off it, switch) so two stations always agree.
     "badge": BASE + "/badge",
+    # The rack's Ausgabe of consumables: each crew member's current and recent
+    # projects (the tiles after a name), and the two writes. A consumable
+    # leaves stock as `consumption` for a person and maybe a project, and
+    # comes back as `consumption_undo` -- never through `movements`, which
+    # keeps its three types so an older agent keeps working unchanged.
+    "crew_projects": BASE + "/crew-projects",
+    "consumptions": BASE + "/consumptions",
+    "consumptions_undo": BASE + "/consumptions/undo",
 }
 
 #: What a panel number may look like on its way into a URL. The router has
@@ -109,6 +123,9 @@ DEFAULT_BOX_TTL_S = 15.0
 # The crew changes when somebody is hired, not while a crate is packed, so it
 # is cached far longer than the boxes are.
 DEFAULT_CREW_TTL_S = 300.0
+# A person's projects move when somebody plans the week, which happens during
+# the working day -- shorter than the crew, still nowhere near per poll.
+DEFAULT_CREW_PROJECTS_TTL_S = 120.0
 MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_QTY = 100000
 # The name list is a screen full of buttons, not a directory dump.
@@ -117,6 +134,14 @@ MAX_CREW = 200
 NOT_CONFIGURED = (
     "Keine Verbindung zu SMPL eingerichtet (SMPL_API_URL fehlt)."
 )
+#: A new station against an SMPL that has never heard of the route: it books
+#: nothing, and the wall says what fixes it.
+SMPL_OUTDATED = "SMPL muss aktualisiert werden."
+#: FastAPI's own answers for a route (or verb) it does not have. A 404 that the
+#: route itself sends -- an unknown article -- carries a German sentence.
+_ROUTE_MISSING = {404: "Not Found", 405: "Method Not Allowed"}
+#: What a booking's idempotency token may be (the API column is 64 wide).
+MAX_REQUEST_ID = 64
 
 
 def items_path(box_id: int) -> str:
@@ -167,6 +192,59 @@ def kind_of(payload: Any) -> Optional[str]:
         return None
     kind = payload.get("kind")
     return str(kind) if isinstance(kind, str) and kind else None
+
+
+def scan_kind(payload: Any) -> Optional[str]:
+    """What the rack router needs to know about a resolved code.
+
+    A stocked article is a **consumable** or a **tool**, read off
+    ``article.is_serialized`` -- the Maschinen tab lists exactly the
+    serialized ones, and the owner's rule is that everything else is used up
+    at a site. An article that does not say (a real bool, nothing else counts)
+    keeps SMPL's own kind, and with it today's rule: lent out. Every other
+    answer -- ``machine`` for a unit label, a catalogue hit, nothing -- is
+    passed through as SMPL named it.
+    """
+    kind = kind_of(payload)
+    if kind != "werkstatt_article":
+        return kind
+    article = payload.get("article")
+    flag = article.get("is_serialized") if isinstance(article, dict) else None
+    if flag is True:
+        return dispense_codes.KIND_TOOL
+    if flag is False:
+        return dispense_codes.KIND_CONSUMABLE
+    return kind
+
+
+def is_outdated(result: "Result") -> bool:
+    """True for the answer of an SMPL too old to know a route this station uses."""
+    return (not result.ok) and result.error == SMPL_OUTDATED
+
+
+def unanswered(result: "Result") -> bool:
+    """True when a write failed without SMPL saying whether it booked.
+
+    No connection at all (status 0: a timeout, a refused or reset socket) or a
+    5xx -- the proxy in front of SMPL answers 502/504 while the API may still
+    be committing. A booking that failed like this may have landed, so its
+    ``request_id`` has to outlive the attempt: a re-scan of the same thing
+    then replays it instead of booking it again. Every 4xx is SMPL's own
+    answer, and so is the 404 of an SMPL too old to know the route.
+    """
+    if result.ok:
+        return False
+    return result.status == 0 or result.status >= 500
+
+
+def _route_missing(result: "Result") -> bool:
+    return (not result.ok) and _ROUTE_MISSING.get(result.status) == result.error
+
+
+def _request_id(value: Any) -> str:
+    """The caller's token, capped -- or a fresh one for a fresh attempt."""
+    text = str(value).strip() if value not in (None, "") else ""
+    return text[:MAX_REQUEST_ID] if text else uuid.uuid4().hex
 
 
 def _int_field(source: Any, key: str) -> Optional[int]:
@@ -313,6 +391,7 @@ class WerkstattClient:
                  lookup_timeout: float = DEFAULT_LOOKUP_TIMEOUT_S,
                  box_ttl_s: float = DEFAULT_BOX_TTL_S,
                  crew_ttl_s: float = DEFAULT_CREW_TTL_S,
+                 crew_projects_ttl_s: float = DEFAULT_CREW_PROJECTS_TTL_S,
                  user_agent: str = "smpl-label-agent",
                  clock: Callable[[], float] = time.time,
                  on_auth: Optional[Callable[[int], None]] = None) -> None:
@@ -324,6 +403,7 @@ class WerkstattClient:
         self.lookup_timeout = max(float(lookup_timeout), float(timeout))
         self.box_ttl_s = float(box_ttl_s)
         self.crew_ttl_s = float(crew_ttl_s)
+        self.crew_projects_ttl_s = float(crew_projects_ttl_s)
         self.user_agent = user_agent
         self._clock = clock
         self._on_auth = on_auth
@@ -336,6 +416,9 @@ class WerkstattClient:
         self._crew: List[Dict[str, Any]] = []
         self._crew_at = 0.0
         self._crew_error: Optional[str] = None
+        self._crew_projects: Optional[Dict[int, tuple]] = None
+        self._crew_projects_at = 0.0
+        self._crew_projects_error: Optional[str] = None
         self._last_ok: Optional[bool] = None
         self._last_error = ""
 
@@ -462,6 +545,37 @@ class WerkstattClient:
             self._crew_at = now
             self._crew_error = None
             return list(people)
+
+    def crew_projects(self, *, force: bool = False) -> Dict[int, List[Dict[str, Any]]]:
+        """Each crew member's current and recent projects, ``{user_id: [...]}``.
+
+        The tiles the rack shows after a name, and the only projects a scanned
+        project code may pick. Cached like the crew and refreshed by the
+        kiosk tick, never on a tap. An outage serves the last good list. An
+        SMPL that has no such route (404 "Not Found") is an answer too: no
+        projects, the picker shows nothing, and the status says SMPL needs
+        updating -- and it is not asked again until the TTL runs out.
+        """
+        now = self._clock()
+        with self._lock:
+            cached = self._crew_projects
+            fresh = cached is not None and (now - self._crew_projects_at) < self.crew_projects_ttl_s
+            if (fresh and not force) or not self.configured:
+                return _projects_copy(cached)
+
+        result = self._request("GET", PATHS["crew_projects"])
+        people = dispense_codes.clean_crew_projects(result.data) if result.ok else None
+        with self._lock:
+            if _route_missing(result):
+                self._crew_projects, self._crew_projects_at = {}, now
+                self._crew_projects_error = SMPL_OUTDATED
+            elif people is None:
+                self._crew_projects_error = (
+                    result.error or "SMPL antwortete nicht mit einer Projektliste.")
+            else:
+                self._crew_projects, self._crew_projects_at = people, now
+                self._crew_projects_error = None
+            return _projects_copy(self._crew_projects)
 
     # -- resolve ----------------------------------------------------------
 
@@ -725,6 +839,96 @@ class WerkstattClient:
             payload["panel_id"] = panel
         return self._write(PATHS["badge"], payload, invalidate=False)
 
+    # -- consumables at the rack -------------------------------------------
+
+    def consumption(self, article_id: Any, quantity: int = 1, *, assignee_user_id: Any,
+                    project_id: Any = None, notes: Optional[str] = None,
+                    request_id: Optional[str] = None) -> Result:
+        """Book a consumable as used up, for a person and maybe a project.
+
+        The person is required -- here as on the server: "who took it" is the
+        one question the row has to answer. ``request_id`` identifies one
+        booking attempt; one is minted when the caller has none, and it is
+        reused verbatim on the single retry after a dead connection, so an
+        answer lost on the way back replays the booking instead of consuming
+        the parts twice. A refusal is never retried.
+        """
+        article = _as_id(article_id)
+        qty = _as_qty(quantity)
+        assignee = _as_id(assignee_user_id)
+        if article is None:
+            return Result(False, error="Ungültige Artikel-Nummer.")
+        if qty is None:
+            return Result(False, error="Ungültige Menge.")
+        if assignee is None:
+            return Result(False, error="Verbrauch nur mit Namen.")
+        project, error = _optional_id(project_id, "Ungültiges Projekt.")
+        if error:
+            return Result(False, error=error)
+        payload: Dict[str, Any] = {
+            "article_id": article, "quantity": qty, "assignee_user_id": assignee,
+            "project_id": project, "request_id": _request_id(request_id),
+            "notes": str(notes)[:500] if notes else None,
+        }
+        return self._booking(PATHS["consumptions"], payload)
+
+    def consumption_undo(self, article_id: Any, quantity: int = 1, *,
+                         assignee_user_id: Any = None, project_id: Any = None,
+                         pick_project: bool = False,
+                         request_id: Optional[str] = None,
+                         undo_of_movement_id: Any = None) -> Result:
+        """Take consumed pieces back into stock: an ABBRUCH, or leftovers.
+
+        ``project_id`` names the bucket (None: the one without a project), or
+        ``pick_project`` lets SMPL take the bucket the article was last
+        consumed into -- the person's own first. Never both: they mean two
+        different things, and the server would have to guess which. SMPL
+        refuses more than is still consumed there, in a sentence the wall
+        shows verbatim.
+
+        With ``pick_project`` SMPL may close an old loan of the article
+        instead and answer ``booked_as: "return"`` -- whatever it booked is
+        in the answer, and the caller records that, not what it asked for.
+
+        ``undo_of_movement_id`` is for an ABBRUCH only: the ``consumption``
+        row being taken back, so SMPL also reverses the stock top-up it
+        booked for a short shelf with it. Sent only when given (an SMPL from
+        before the field reads the body it always read), and never with
+        ``pick_project`` -- leftovers carried back never reverse a top-up.
+        """
+        article = _as_id(article_id)
+        qty = _as_qty(quantity)
+        if article is None:
+            return Result(False, error="Ungültige Artikel-Nummer.")
+        if qty is None:
+            return Result(False, error="Ungültige Menge.")
+        project, error = _optional_id(project_id, "Ungültiges Projekt.")
+        assignee, person_error = _optional_id(assignee_user_id, "Ungültige Benutzer-Nummer.")
+        undo_of, undo_error = _optional_id(undo_of_movement_id, "Ungültige Buchungs-Nummer.")
+        if error or person_error or undo_error:
+            return Result(False, error=error or person_error or undo_error)
+        if pick_project and project is not None:
+            return Result(False, error="Projekt oder Auswahl durch SMPL, nicht beides.")
+        if pick_project and undo_of is not None:
+            return Result(False, error="Eine Rückgabe nimmt keine Buchung zurück.")
+        payload: Dict[str, Any] = {
+            "article_id": article, "quantity": qty, "assignee_user_id": assignee,
+            "project_id": project, "pick_project": bool(pick_project),
+            "request_id": _request_id(request_id),
+        }
+        if undo_of is not None:
+            payload["undo_of_movement_id"] = undo_of
+        return self._booking(PATHS["consumptions_undo"], payload)
+
+    def _booking(self, path: str, payload: Dict[str, Any]) -> Result:
+        """POST one booking, retrying a dead connection once under its token."""
+        result = self._write(path, payload, invalidate=False)
+        if not result.ok and result.status == 0 and self.configured:
+            result = self._write(path, payload, invalidate=False)
+        if _route_missing(result):
+            return Result(False, status=result.status, error=SMPL_OUTDATED)
+        return result
+
     def _write(self, path: str, payload: Dict[str, Any],
                *, timeout: Optional[float] = None, invalidate: bool = True) -> Result:
         if not self.configured:
@@ -820,6 +1024,9 @@ class WerkstattClient:
                 "crew_cached": len(self._crew),
                 "crew_fetched_at": self._crew_at or None,
                 "crew_error": self._crew_error,
+                "crew_projects_cached": len(self._crew_projects or {}),
+                "crew_projects_fetched_at": self._crew_projects_at or None,
+                "crew_projects_error": self._crew_projects_error,
                 "token": bool(self.bearer()),
             }
 
@@ -840,6 +1047,20 @@ def _as_id(value: Any) -> Optional[int]:
     except (TypeError, ValueError):
         return None
     return parsed if parsed > 0 else None
+
+
+def _optional_id(value: Any, message: str):
+    """``(id or None, error or None)`` for a field that may be null."""
+    if value is None:
+        return None, None
+    parsed = _as_id(value)
+    return (parsed, None) if parsed is not None else (None, message)
+
+
+def _projects_copy(people: Optional[Dict[int, tuple]]) -> Dict[int, List[Dict[str, Any]]]:
+    """A copy a caller may edit without editing the cache."""
+    return {user: [dict(project) for project in projects]
+            for user, projects in (people or {}).items()}
 
 
 def _as_panel_code(value: Any) -> Optional[str]:

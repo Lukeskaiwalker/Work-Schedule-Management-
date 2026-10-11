@@ -117,6 +117,15 @@ function Glyph({ symbol }: { symbol: SymbolName }) {
           <rect x="16" y="5.5" width="4.5" height="13" rx="1" {...stroke} />
         </>
       );
+    case "distribution":
+      // Verteilerblock: one feed in, a bar, three taps out.
+      return (
+        <>
+          <path d="M12 3v6" {...stroke} />
+          <path d="M5 9h14" {...stroke} strokeWidth={2.4} />
+          <path d="M7 9v11M12 9v11M17 9v11" {...stroke} />
+        </>
+      );
     case "terminal":
       return (
         <>

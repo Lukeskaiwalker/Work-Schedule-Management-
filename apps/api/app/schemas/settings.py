@@ -86,6 +86,8 @@ class CompanySettingsOut(BaseModel):
     navigation_title: str = "SMPL"
     company_name: str = "SMPL"
     company_address: str = ""
+    company_phone: str = ""
+    company_email: str = ""
 
 
 class CompanySettingsUpdate(BaseModel):
@@ -93,6 +95,10 @@ class CompanySettingsUpdate(BaseModel):
     navigation_title: str = "SMPL"
     company_name: str = "SMPL"
     company_address: str = ""
+    # None keeps what is stored, so a client that predates these two fields
+    # does not wipe them by saving the other four; "" clears.
+    company_phone: str | None = Field(default=None, max_length=64)
+    company_email: str | None = Field(default=None, max_length=255)
 
 
 class LabelMaterialOut(BaseModel):

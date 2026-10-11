@@ -14,6 +14,11 @@ Design rules (see WERKSTATT_CONTRACT.md §2.5):
 - ``quantity`` is always positive; the sign is implied by ``movement_type``.
 - Failures (e.g. negative checkout balance) raise ``MovementError`` so the
   router can translate it into an HTTP 400.
+- Every booking is bounded: at most ``MAX_STOCK_QUANTITY`` pieces, and never
+  so many that a snapshot counter (an ``Integer`` column) would pass
+  ``INT32_MAX``. Request schemas bound their own fields; this is the floor
+  under every caller, including the ones that book a stored number (a
+  delivery, a stock-take) rather than a request field.
 
 Movement types and their effect on the four counters:
 
@@ -39,6 +44,7 @@ from typing import Iterable
 from sqlalchemy import and_, case, func, select
 from sqlalchemy.orm import Session
 
+from app.core.limits import INT32_MAX, MAX_STOCK_QUANTITY
 from app.core.time import utcnow
 from app.models.entities import Project, User, WerkstattArticle, WerkstattMovement
 
@@ -91,6 +97,14 @@ _DELTAS: dict[str, dict[str, int]] = {
 }
 
 ALLOWED_MOVEMENT_TYPES: frozenset[str] = frozenset(_DELTAS.keys())
+
+# ``_DELTAS`` counter name → the snapshot column it is stored in.
+_COUNTER_COLUMNS: dict[str, str] = {
+    "total": "stock_total",
+    "available": "stock_available",
+    "out": "stock_out",
+    "repair": "stock_repair",
+}
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -173,6 +187,7 @@ def apply_movement(
         raise MovementError(f"Unknown movement_type: {movement_type!r}")
     if quantity <= 0:
         raise MovementError("quantity must be positive")
+    _assert_within_bounds(article, movement_type, quantity)
 
     # Pre-validate: guard against negative balances for the obvious cases so
     # we surface a clear 400 before touching the DB. The recompute below is
@@ -185,6 +200,14 @@ def apply_movement(
     if movement_type == "return" and quantity > int(article.stock_out or 0):
         raise MovementError(
             f"Return quantity {quantity} exceeds stock_out "
+            f"{article.stock_out} for article {article.article_number}"
+        )
+    # A write-off of something lost: it must have been out. `correction`
+    # decrements `total` AND `out`, so past `stock_out` it would shrink stock
+    # still on the shelf and leave total != available + out + repair.
+    if movement_type == "correction" and quantity > int(article.stock_out or 0):
+        raise MovementError(
+            f"Correction quantity {quantity} exceeds stock_out "
             f"{article.stock_out} for article {article.article_number}"
         )
     if movement_type == "repair_out" and quantity > int(article.stock_out or 0):
@@ -235,6 +258,43 @@ def apply_movement(
 
     recompute_article_stock(db, article)
     return movement
+
+
+def _assert_within_bounds(article: WerkstattArticle, movement_type: str, quantity: int) -> None:
+    """Refuse a booking the columns cannot hold, before anything is written.
+
+    Two limits, both checked here because this is the one write path every
+    caller shares — a request schema bounds its own field, but a delivery
+    books whatever its stored order line says and a stock-take books the
+    difference to a count built up scan by scan:
+
+    * one booking moves at most ``MAX_STOCK_QUANTITY`` pieces;
+    * no snapshot counter a movement *raises* may pass ``INT32_MAX``. Each
+      booking can fit while the ledger's sum does not, and the sum is what
+      ``recompute_article_stock`` writes back into ``Integer`` columns — an
+      OverflowError/DataError at the flush, an unhandled 500, and from then on
+      every booking of that article fails the same way. The snapshot is what
+      is read: it is rebuilt from the ledger after every booking and callers
+      hold the row lock (``load_article_for_update``).
+
+    German, unlike the balance guards' English (which the station translates
+    through ``werkstatt_loans.loan_refusal``): most routes put ``str(exc)``
+    straight into the 400, and these only fire where a request bound is
+    missing — so it is the workshop that reads them.
+    """
+    if quantity > MAX_STOCK_QUANTITY:
+        raise MovementError(
+            f"Menge {quantity} ist zu groß – höchstens {MAX_STOCK_QUANTITY} je Buchung."
+        )
+    for counter, delta in _DELTAS[movement_type].items():
+        if delta <= 0:
+            continue
+        current = int(getattr(article, _COUNTER_COLUMNS[counter]) or 0)
+        if current + quantity > INT32_MAX:
+            raise MovementError(
+                f"Der Bestand von {article.article_number} würde mit {quantity} mehr "
+                f"die Obergrenze {INT32_MAX} überschreiten."
+            )
 
 
 def book_opening_stock(

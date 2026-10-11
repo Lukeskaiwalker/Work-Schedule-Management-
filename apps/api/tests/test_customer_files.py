@@ -140,7 +140,8 @@ def test_creating_a_folder_registers_every_segment(client: TestClient, admin_tok
         json={"path": " Pläne/2026/ "},
     )
     assert created.status_code == 200, created.text
-    assert created.json() == {"path": "Pläne/2026", "is_protected": False}
+    # Same shape as a project folder; a customer folder is never shown in the partner portal.
+    assert created.json() == {"path": "Pläne/2026", "is_protected": False, "portal_shared": False}
     paths = [row["path"] for row in client.get(f"/api/customers/{customer_id}/folders", headers=auth_headers(admin_token)).json()]
     assert "Pläne" in paths and "Pläne/2026" in paths
 
@@ -160,7 +161,7 @@ def test_creating_a_folder_registers_every_segment(client: TestClient, admin_tok
         json={"path": "Verwaltung/Intern"},
     )
     assert admin_protected.status_code == 200, admin_protected.text
-    assert admin_protected.json() == {"path": "Verwaltung/Intern", "is_protected": True}
+    assert admin_protected.json() == {"path": "Verwaltung/Intern", "is_protected": True, "portal_shared": False}
 
 
 def test_uploads_land_on_the_customer_in_the_requested_folder(client: TestClient, admin_token: str):

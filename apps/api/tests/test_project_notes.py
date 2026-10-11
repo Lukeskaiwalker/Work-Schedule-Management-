@@ -2,11 +2,11 @@
 
 What must hold: the feed reads newest first with the author's name; the
 overview carries the latest notes; an empty posting is refused; a posting
-and a deletion each leave an activity row with the note's preview; the
-author or a project manager may delete, another member may not; an
-employee without access to the project sees and posts nothing; paging by
-``before_id`` continues where the last page ended, without overlap; and
-a note of another project is not found under this one.
+leaves an activity row with the note's preview; a note is permanent —
+nobody deletes it, not its author and not a project manager (a correction
+is a new note); an employee without access to the project sees and posts
+nothing; paging by ``before_id`` continues where the last page ended,
+without overlap; and a note of one project never shows under another.
 """
 
 from __future__ import annotations
@@ -135,47 +135,20 @@ def test_posting_records_activity_with_single_line_preview(client: TestClient, a
     assert posted[0]["actor_name"]
 
 
-def test_author_may_delete_own_note(client: TestClient, admin_token: str):
+def test_notes_are_permanent(client: TestClient, admin_token: str):
     employee = _create_user(client, admin_token, "notes-owner@example.com", "employee")
     employee_token = _login(client, employee["email"])
     project_id = _create_project(client, admin_token, "2026-3006")
     note = _post_note(client, employee_token, project_id, "Meine Notiz")
 
-    response = client.delete(f"/api/projects/{project_id}/notes/{note['id']}", headers=auth_headers(employee_token))
-    assert response.status_code == 204, response.text
-    assert _list_notes(client, admin_token, project_id) == []
-
-
-def test_other_member_may_not_delete(client: TestClient, admin_token: str):
-    author = _create_user(client, admin_token, "notes-a@example.com", "employee")
-    other = _create_user(client, admin_token, "notes-b@example.com", "employee")
-    author_token = _login(client, author["email"])
-    other_token = _login(client, other["email"])
-    project_id = _create_project(client, admin_token, "2026-3007")
-    note = _post_note(client, author_token, project_id, "Nicht deine")
-
-    # The other employee can read the feed — the default membership holds …
-    assert [row["id"] for row in _list_notes(client, other_token, project_id)] == [note["id"]]
-    # … but the posting is not theirs to remove.
-    response = client.delete(f"/api/projects/{project_id}/notes/{note['id']}", headers=auth_headers(other_token))
-    assert response.status_code == 403, response.text
-    assert len(_list_notes(client, admin_token, project_id)) == 1
-
-
-def test_manager_may_delete_and_it_is_recorded(client: TestClient, admin_token: str):
-    employee = _create_user(client, admin_token, "notes-c@example.com", "employee")
-    employee_token = _login(client, employee["email"])
-    project_id = _create_project(client, admin_token, "2026-3008")
-    note = _post_note(client, employee_token, project_id, "Bitte löschen, war falsch")
-
-    response = client.delete(f"/api/projects/{project_id}/notes/{note['id']}", headers=auth_headers(admin_token))
-    assert response.status_code == 204, response.text
-    assert _list_notes(client, admin_token, project_id) == []
-
-    deleted = [row for row in _recent_changes(client, admin_token, project_id) if row["event_type"] == "project.note_deleted"]
-    assert len(deleted) == 1
-    assert deleted[0]["message"] == "Bitte löschen, war falsch"
-    assert deleted[0]["details"] == {"note_id": note["id"], "preview": "Bitte löschen, war falsch"}
+    # Neither the author nor a project manager can take a posting back: the
+    # feed is the project's record, and there is no route that removes one.
+    for token in (employee_token, admin_token):
+        response = client.delete(f"/api/projects/{project_id}/notes/{note['id']}", headers=auth_headers(token))
+        assert response.status_code in (404, 405), response.text
+    assert [row["id"] for row in _list_notes(client, admin_token, project_id)] == [note["id"]]
+    changes = _recent_changes(client, admin_token, project_id)
+    assert not [row for row in changes if row["event_type"] == "project.note_deleted"]
 
 
 def test_employee_without_project_access_is_denied(client: TestClient, admin_token: str):
@@ -219,15 +192,10 @@ def test_limit_is_clamped(client: TestClient, admin_token: str):
     assert len(_list_notes(client, admin_token, project_id, "?limit=9999")) == 3
 
 
-def test_note_of_another_project_is_not_found(client: TestClient, admin_token: str):
+def test_a_note_stays_with_its_project(client: TestClient, admin_token: str):
     project_a = _create_project(client, admin_token, "2026-3012")
     project_b = _create_project(client, admin_token, "2026-3013")
     note = _post_note(client, admin_token, project_a, "Gehört zu A")
 
-    response = client.delete(f"/api/projects/{project_b}/notes/{note['id']}", headers=auth_headers(admin_token))
-    assert response.status_code == 404, response.text
-    assert len(_list_notes(client, admin_token, project_a)) == 1
+    assert [row["id"] for row in _list_notes(client, admin_token, project_a)] == [note["id"]]
     assert _list_notes(client, admin_token, project_b) == []
-
-    missing = client.delete(f"/api/projects/{project_a}/notes/999999", headers=auth_headers(admin_token))
-    assert missing.status_code == 404, missing.text

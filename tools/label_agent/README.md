@@ -145,10 +145,13 @@ reasoning and the full matrix.
 
 ### Wall screens: the scanned commands
 
-The two kiosk screens (`/regal`, `/kisten`) have a scanner and no keyboard, so
+The two kiosk screens (`/regal`, `/kisten`) are driven by the scanner, so
 every command is a code the scanner reads. `scan_router.py` owns the
-vocabulary; the box screen draws these four on the glass, and `POST
-/scan/route` routes them before any code is looked up.
+vocabulary (with `dispense_codes.py` for the Ausgabe picker); both screens
+draw the codes they need on the glass, and `POST /scan/route` routes them
+before any code is looked up. `/health` publishes the static codes as
+`scan_router.commands` and the numbered ones' prefixes separately as
+`scan_router.parametric_prefixes`.
 
 The crate screen embeds them as QR codes from `/qr.svg?text=…&m=4`
 (`qrcode_svg.py`, stdlib only): the handheld is a 2D imager and reads a QR
@@ -158,19 +161,55 @@ to be had to be swept level across a reflecting screen above eye height.
 screen that still wants a one-dimensional code; both routes take the same
 `text`, refuse the same lengths, and cache for a day.
 
-| Code | What it does |
-|---|---|
-| `SMPL-CMD-FERTIG` | close the crate session, back to the overview |
-| `SMPL-CMD-ABBRUCH` | take back the last position (or the last booking at the rack) |
-| `SMPL-CMD-ENTNAHME` | toggle between packing into the crate and taking out of it |
-| `SMPL-CMD-MITNEHMEN` | book the handover of the **packed** crate on screen: SMPL checks its contents out of stock under the station's name. Refused when no crate is open, and when the crate is not `gepackt` |
+| Code | Screen | What it does |
+|---|---|---|
+| `SMPL-CMD-FERTIG` | both | ends what is open: the Verteiler on the rack, else the Ausgabe in progress (name and project), else the crate session |
+| `SMPL-CMD-ABBRUCH` | both | take back the last position, or the last booking at the rack — a consumption out of exactly the project it went into |
+| `SMPL-CMD-MENGE-5` / `-10` / `-50` | rack | the quantity for the next scan |
+| `SMPL-CMD-AUS` / `-EIN` / `-WARENEINGANG` | rack | the direction: Ausgabe, Rückgabe, Wareneingang (inside the three direction buttons) |
+| `SMPL-CMD-PERSON-<user id>` | rack | pick that person for the Ausgabe; only somebody in the crew the screen drew. Never printed |
+| `SMPL-CMD-PROJEKT-<project id>` | rack | pick one of that person's offered projects. Never printed |
+| `SMPL-CMD-OHNE-PROJEKT` | rack | book the Ausgabe without a project |
+| `SMPL-CMD-ENTNAHME` | crates | toggle between packing into the crate and taking out of it |
+| `SMPL-CMD-MITNEHMEN` | crates | book the handover of the **packed** crate on screen: SMPL checks its contents out of stock under the station's name. Refused when no crate is open, and when the crate is not `gepackt` |
 
-`SMPL-CMD-MENGE-5` / `-10` / `-50` set the quantity for the next scan and live
-on the printed card beside the rack — a sixth card on the glass would push the
-crate panel off the screen. The rack's direction codes (`SMPL-CMD-EIN`,
-`SMPL-CMD-AUS`) work the same way. The **Mitnehmen** button on the box screen
-posts `{"screen":"kisten","action":"handover"}` to `/screen/action` and ends in
+Every code fits the scanner: `0-9`, `A`–`X` and `-` (no Y or Z — commands are
+never resolved, so the Y/Z retry cannot rescue them), at most 26 characters so
+the symbol stays a version-2 QR code. `tests/test_kiosk_dispense.py` reads
+`kiosk_rack.html` and fails if the page can draw a code the router does not
+implement. The **Mitnehmen** button on the box screen posts
+`{"screen":"kisten","action":"handover"}` to `/screen/action` and ends in
 exactly the same place as the scanned code.
+
+**Ausgabe at the rack.** A resolved article is a *consumable* or a *tool*,
+read off the resolve answer's `article.is_serialized` (`smpl_werkstatt.scan_kind`).
+In Ausgabe a consumable is booked as `consumption` for the person picked and
+the project picked, if any (`POST /api/station/werkstatt/consumptions`); a
+tool stays a `checkout` loan. In Rückgabe a consumable goes back as
+`consumption_undo` (`POST …/consumptions/undo`, `pick_project` when no
+project was picked); never more than SMPL still has consumed in that bucket.
+With `pick_project` SMPL may instead close an old loan of the article (a
+consumable lent out before this change) and answer `booked_as: "return"`; the
+rack records that as a Rückgabe on the borrower SMPL named, flashes
+*Zurück: 10 × Kabelbinder (Leihe beendet)*, and its ABBRUCH is a `checkout`
+onto that borrower. The station never books a loan return of its own after a
+refusal: SMPL decides. Panel and crate sessions decide first, exactly as
+before. The name tiles, then the picked person's project tiles
+(`GET …/crew-projects`, cached and refreshed by the kiosk tick), replace the
+article card until both are chosen; `/screen/state?screen=regal` carries
+`projects`, `project` and `project_chosen`, and the page posts
+`"action":"project"` (an id, or null for back to the tiles) and
+`"action":"no_project"`. The writes carry a `request_id` reused on the one
+retry; one that got no answer at all (status 0 or 5xx,
+`smpl_werkstatt.unanswered`) is kept in the router
+(`ScanRouter.keep_request_id`, rules in `kept_requests.py`, ten minutes) and sent again by a re-scan of the
+same article, quantity, person and project, so a booking that landed unseen is
+replayed rather than repeated. The ABBRUCH of a rack consumption sends
+`undo_of_movement_id` (the `movement_id` SMPL answered with), so SMPL also
+reverses a short-shelf top-up; the flash then adds *Nachbuchung 38
+zurückgenommen*. Against an SMPL without these routes (404 *Not Found*) nothing is
+booked and the wall says *SMPL muss aktualisiert werden*. The side effects
+live in `rack_dispense.py`; `docs/PI_STATION.md` has the operator's version.
 
 **Wareneingang for something nobody stocks.** A code the rack scans at
 Wareneingang that SMPL does not know is no longer a dead end. The agent asks
@@ -365,7 +404,7 @@ python3 server.py --make-fixtures /tmp/cards      # sample Benning + Metrel card
 python3 -m unittest discover -s tests
 ```
 
-755 tests. No hardware, no network, no printing, no fixed ports — the HTTP
+About 1,060 tests. No hardware, no network, no printing, no fixed ports — the HTTP
 tests bind port 0 and the pairing tests run against a stub SMPL that can be
 told to behave like a canonical implementation, like a plausible one with
 different field names, like a server that has never heard of pairing, or like

@@ -1,19 +1,19 @@
 /**
- * CustomerTasksCard — customer-anchored task list (v2.4.5+).
+ * CustomerTasksCard — the customer's open tasks, on the customer page.
  *
- * Sits on the right column of the CustomerDetailPage. Lets operators
- * create lightweight tasks tied to a customer instead of a project —
- * useful for call-back reminders, follow-up tasks, "quote needs to be
- * resent" todos, etc.
+ * Tasks are created here exactly the way they are everywhere else: "+
+ * Aufgabe" opens the full task modal (the weekly planning's), with this
+ * customer already set as the task's anchor — type, dates, crew, partners,
+ * crate and files are all there, and the modal still lets the operator pick
+ * one of the customer's projects instead. There used to be a title-only
+ * quick-add here that skipped all of that; it is gone on purpose.
  *
- * The component is intentionally minimal: title-only quick-add form,
- * compact list with "mark done"/"mark open" toggle. Heavier-weight
- * editing (due-date, assignees, partners) goes through the existing
- * TaskEditModal opened from MyTasks or the planning grid — those
- * surfaces already accept customer-anchored tasks now that the schema
- * supports them.
+ * A row opens the task in the edit modal; the checkbox completes it. The list
+ * re-reads whenever a task changes anywhere (`taskRevision` — the modals and
+ * the event stream move it), so a task saved in the modal shows up here
+ * without a reload.
  */
-import { useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { apiFetch } from "../../api/client";
 import { useAppContext } from "../../context/AppContext";
@@ -29,66 +29,27 @@ type Props = {
 
 
 export function CustomerTasksCard({ customerId }: Props) {
-  const { token, language, setError, setNotice } = useAppContext();
+  const { token, language, setError, openTaskModal, openTaskEditModal, taskRevision } = useAppContext();
   const de = language === "de";
 
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(false);
-  const [draftTitle, setDraftTitle] = useState("");
-  const [creating, setCreating] = useState(false);
 
-  // (Re-)load whenever the customer id changes. Splitting load() out
-  // of the effect lets the create-handler reuse it without a full
-  // useEffect dependency dance.
-  async function load() {
+  const load = useCallback(async () => {
     setLoading(true);
     try {
-      const rows = await apiFetch<Task[]>(
-        `/tasks?view=all_open&customer_id=${customerId}`,
-        token,
-      );
-      // Server returns a mix of completed + open under view=all_open
-      // (it gates by status != "done"), but be defensive against
-      // future backend changes.
-      setTasks(rows);
+      // view=all_open gates on status != "done" server-side.
+      setTasks(await apiFetch<Task[]>(`/tasks?view=all_open&customer_id=${customerId}`, token));
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
-  }
+  }, [customerId, token, setError]);
 
   useEffect(() => {
     void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [customerId, token]);
-
-  async function handleCreate(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (creating) return;
-    const title = draftTitle.trim();
-    if (!title) return;
-    setCreating(true);
-    try {
-      const created = await apiFetch<Task>("/tasks", token, {
-        method: "POST",
-        body: JSON.stringify({
-          customer_id: customerId,
-          title,
-          // task_type=office matches the canonical "call/follow-up"
-          // shape — operators can change it later via TaskEditModal.
-          task_type: "office",
-        }),
-      });
-      setTasks((current) => [created, ...current]);
-      setDraftTitle("");
-      setNotice(de ? "Aufgabe erstellt" : "Task created");
-    } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setCreating(false);
-    }
-  }
+  }, [load, taskRevision]);
 
   async function toggleDone(task: Task) {
     const nextStatus = task.status === "done" ? "open" : "done";
@@ -97,14 +58,11 @@ export function CustomerTasksCard({ customerId }: Props) {
         method: "PATCH",
         body: JSON.stringify({ status: nextStatus }),
       });
-      // Closed task drops out of view=all_open on the next fetch.
-      // For now we replace optimistically and re-fetch on next mount.
+      // A closed task leaves view=all_open; drop it now rather than on the next read.
       if (nextStatus === "done") {
         setTasks((current) => current.filter((t) => t.id !== task.id));
       } else {
-        setTasks((current) =>
-          current.map((t) => (t.id === task.id ? updated : t)),
-        );
+        setTasks((current) => current.map((t) => (t.id === task.id ? updated : t)));
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
@@ -118,65 +76,38 @@ export function CustomerTasksCard({ customerId }: Props) {
           {de ? "Kundenaufgaben" : "Customer tasks"}{" "}
           <span className="customer-projects-count muted">({tasks.length})</span>
         </h3>
+        <button
+          type="button"
+          className="customers-action-btn customers-action-btn--primary"
+          onClick={() => openTaskModal({ customerId })}
+        >
+          {de ? "+ Aufgabe" : "+ Task"}
+        </button>
       </header>
 
-      <form
-        className="customer-tasks-form"
-        onSubmit={handleCreate}
-        style={{ display: "flex", gap: 8, marginBottom: 12 }}
-      >
-        <input
-          type="text"
-          value={draftTitle}
-          onChange={(e) => setDraftTitle(e.target.value)}
-          placeholder={
-            de ? "Neue Aufgabe (z.B. 'Angebot nachfassen')" : "New task (e.g. 'Follow up on quote')"
-          }
-          style={{ flex: "1 1 auto" }}
-          disabled={creating}
-        />
-        <button type="submit" disabled={creating || draftTitle.trim() === ""}>
-          {creating ? (de ? "Erstelle…" : "Adding…") : (de ? "+ Aufgabe" : "+ Task")}
-        </button>
-      </form>
-
-      {loading ? (
+      {loading && tasks.length === 0 ? (
         <small className="muted">{de ? "Lade…" : "Loading…"}</small>
       ) : tasks.length === 0 ? (
         <div className="customers-empty muted">
-          {de
-            ? "Keine offenen Kundenaufgaben."
-            : "No open customer tasks."}
+          {de ? "Keine offenen Kundenaufgaben." : "No open customer tasks."}
         </div>
       ) : (
-        <ul className="customer-tasks-list" style={{ listStyle: "none", padding: 0, margin: 0 }}>
+        <ul className="customer-tasks-list">
           {tasks.map((task) => (
-            <li
-              key={`customer-task-${task.id}`}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                padding: "6px 0",
-                borderBottom: "1px solid var(--line)",
-              }}
-            >
+            <li key={`customer-task-${task.id}`} className="customer-task-row">
               <input
                 type="checkbox"
+                className="customer-task-check"
                 checked={task.status === "done"}
                 onChange={() => void toggleDone(task)}
                 aria-label={de ? "Erledigt" : "Done"}
               />
-              <span style={{ flex: "1 1 auto" }}>
-                {task.title}
+              <button type="button" className="customer-task-open" onClick={() => openTaskEditModal(task)}>
+                <span className="customer-task-title">{task.title}</span>
                 <TerminBadge task={task} language={language} />
                 <TaskAttachmentBadge task={task} language={language} />
-                {task.due_date && (
-                  <small className="muted" style={{ marginLeft: 8 }}>
-                    {formatTaskDateRange(task)}
-                  </small>
-                )}
-              </span>
+                {task.due_date && <small className="muted">{formatTaskDateRange(task)}</small>}
+              </button>
             </li>
           ))}
         </ul>

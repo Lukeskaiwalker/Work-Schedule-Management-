@@ -17,6 +17,8 @@
   - WebDAV file access uses Basic Auth with local app credentials (email/password) for OS mount compatibility.
 - AuthZ:
   - Server-side RBAC for roles: `admin`, `ceo`, `accountant`, `planning`, `employee`.
+  - Partner-portal logins (`external`, a subcontractor's people) hold no permission and are fenced
+    to `/api/portal` by `get_current_user`; see `docs/PARTNER_PORTAL.md`.
   - Permission checks are enforced in API dependencies.
 - Project-scoped access check blocks unauthorized project/file/chat operations.
 - Global chat threads are allowed; project-linked chat threads still enforce project membership checks.

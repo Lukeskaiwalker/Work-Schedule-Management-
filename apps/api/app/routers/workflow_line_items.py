@@ -24,11 +24,13 @@ from sqlalchemy.orm import Session
 from app.core.db import get_db
 from app.core.deps import assert_project_access, get_current_user, require_permission
 from app.core.time import utcnow
-from app.models.entities import Project, ProjectLineItem, User
+from app.models.entities import Project, ProjectLineItem, User, WerkstattSupplier
 from app.schemas.project_line_item import (
+    LINE_TOTAL_TOO_LARGE,
     ProjectLineItemCreate,
     ProjectLineItemOut,
     ProjectLineItemUpdate,
+    line_total_exceeds_column,
 )
 from app.services.audit import log_admin_action
 
@@ -79,6 +81,13 @@ def _get_project_or_404(db: Session, project_id: int) -> Project:
     return project
 
 
+def _require_known_supplier(db: Session, supplier_id: int | None) -> None:
+    """Refuse a supplier id that does not exist before the foreign key does
+    it at flush time (an IntegrityError, i.e. a 500, on PostgreSQL)."""
+    if supplier_id is not None and db.get(WerkstattSupplier, supplier_id) is None:
+        raise HTTPException(status_code=400, detail="Supplier not found")
+
+
 @router.get(
     "/projects/{project_id}/line-items",
     response_model=list[ProjectLineItemOut],
@@ -125,6 +134,7 @@ def create_line_item(
     different bulk-create endpoint (forthcoming) so that one extraction
     review-and-commit equals one transaction across all proposed items."""
     _get_project_or_404(db, project_id)
+    _require_known_supplier(db, payload.supplier_id)
     item = ProjectLineItem(
         project_id=project_id,
         type=payload.type,
@@ -207,6 +217,18 @@ def update_line_item(
         data["description"] = data["description"].strip()
         if not data["description"]:
             raise HTTPException(status_code=400, detail="description cannot be empty")
+    if "supplier_id" in data:
+        _require_known_supplier(db, data["supplier_id"])
+    # A PATCH may carry only one factor of the line total; the other is the
+    # stored one, so the product is checked here rather than in the schema --
+    # and only when a factor changes, so an edit of the notes never trips
+    # over a row stored before the bound.
+    changes_a_factor = "quantity_required" in data or "unit_price_eur" in data
+    if changes_a_factor and line_total_exceeds_column(
+        data.get("quantity_required", item.quantity_required),
+        data.get("unit_price_eur", item.unit_price_eur),
+    ):
+        raise HTTPException(status_code=400, detail=LINE_TOTAL_TOO_LARGE)
 
     for field, value in data.items():
         setattr(item, field, value)

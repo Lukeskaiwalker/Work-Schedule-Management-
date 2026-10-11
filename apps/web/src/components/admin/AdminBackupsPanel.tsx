@@ -1,7 +1,10 @@
-import { ChangeEvent, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, useEffect, useId, useMemo, useState } from "react";
 
 import { useAppContext } from "../../context/AppContext";
 import type { BackupFile, BackupJobProgress } from "../../types";
+// The restore dialog and the backup list's phone cards are styled there; the
+// admin page imports it too, this keeps the panel honest on its own.
+import "../../styles/admin-mobile.css";
 
 
 function formatBytes(bytes: number): string {
@@ -281,7 +284,9 @@ function BackupJobBanner({
 
 
 /** Modal asking the user to type the filename before initiating a restore.
- *  Friction proportional to consequence — this wipes the database. */
+ *  Friction proportional to consequence — this wipes the database.
+ *  Styled by class (admin-mobile.css), not inline, so a phone can make it a
+ *  full-width sheet with a 16 px field iOS does not zoom into. */
 function RestoreConfirmModal({
   filename,
   language,
@@ -294,37 +299,18 @@ function RestoreConfirmModal({
   onConfirm: () => void;
 }) {
   const [typed, setTyped] = useState("");
+  const titleId = useId();
   const matches = typed.trim() === filename;
   return (
     <div
-      role="dialog"
-      aria-modal="true"
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,0.6)",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        zIndex: 1000,
-        padding: 16,
-      }}
+      className="admin-dialog-backdrop"
+      role="presentation"
       onClick={(event) => {
         if (event.target === event.currentTarget) onCancel();
       }}
     >
-      <div
-        style={{
-          background: "var(--surface, #fff)",
-          color: "var(--text, #111)",
-          borderRadius: 8,
-          padding: 20,
-          maxWidth: 520,
-          width: "100%",
-          boxShadow: "0 16px 40px rgba(0,0,0,0.4)",
-        }}
-      >
-        <h3 style={{ marginTop: 0 }}>
+      <div className="admin-dialog" role="dialog" aria-modal="true" aria-labelledby={titleId}>
+        <h3 id={titleId} className="admin-dialog-title">
           {language === "de" ? "Wiederherstellung bestätigen" : "Confirm restore"}
         </h3>
         <p>
@@ -333,28 +319,28 @@ function RestoreConfirmModal({
             : "This action is destructive. The database and uploads will be replaced. Type the filename to continue:"}
         </p>
         <p>
-          <code style={{ fontSize: 13 }}>{filename}</code>
+          <code className="admin-dialog-code">{filename}</code>
         </p>
         <input
           type="text"
+          className="admin-dialog-input"
           value={typed}
           onChange={(event) => setTyped(event.currentTarget.value)}
           autoFocus
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
           aria-label={language === "de" ? "Dateiname zur Bestätigung" : "Filename to confirm"}
-          style={{ width: "100%", padding: 8, fontSize: 14, marginBottom: 12 }}
         />
-        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+        <div className="admin-dialog-actions">
           <button type="button" className="ghost" onClick={onCancel}>
             {language === "de" ? "Abbrechen" : "Cancel"}
           </button>
           <button
             type="button"
+            className="admin-dialog-danger"
             disabled={!matches}
             onClick={onConfirm}
-            style={{
-              background: matches ? "var(--danger, #b00020)" : undefined,
-              color: matches ? "#fff" : undefined,
-            }}
           >
             {language === "de" ? "Wiederherstellen" : "Restore"}
           </button>
@@ -516,86 +502,97 @@ export function AdminBackupsPanel() {
         />
       )}
 
-      <table className="admin-table" style={{ width: "100%", marginTop: 12 }}>
-        <thead>
-          <tr>
-            <th style={{ textAlign: "left" }}>
-              {lang === "de" ? "Datei" : "Filename"}
-            </th>
-            <th style={{ textAlign: "right" }}>
-              {lang === "de" ? "Größe" : "Size"}
-            </th>
-            <th style={{ textAlign: "left" }}>
-              {lang === "de" ? "Erstellt" : "Created"}
-            </th>
-            <th style={{ textAlign: "left" }}>
-              {lang === "de" ? "Quelle" : "Source"}
-            </th>
-            <th style={{ textAlign: "right" }}>
-              {lang === "de" ? "Aktionen" : "Actions"}
-            </th>
-          </tr>
-        </thead>
-        <tbody>
-          {files.length === 0 && !backupsListLoading && (
+      {/* A table on wider screens; on a phone every row stacks into a card and
+          each value shows the label its column head gave it (admin-mobile.css).
+          The wrapper scrolls sideways where the table is wider than its card. */}
+      <div className="admin-backups-table-wrap">
+        <table className="admin-table admin-backups-table" style={{ width: "100%", marginTop: 12 }}>
+          <thead>
             <tr>
-              <td colSpan={5} style={{ padding: 16, textAlign: "center", color: "var(--muted, #888)" }}>
-                {lang === "de"
-                  ? "Noch keine Backups vorhanden."
-                  : "No backups yet."}
-              </td>
+              <th style={{ textAlign: "left" }}>
+                {lang === "de" ? "Datei" : "Filename"}
+              </th>
+              <th style={{ textAlign: "right" }}>
+                {lang === "de" ? "Größe" : "Size"}
+              </th>
+              <th style={{ textAlign: "left" }}>
+                {lang === "de" ? "Erstellt" : "Created"}
+              </th>
+              <th style={{ textAlign: "left" }}>
+                {lang === "de" ? "Quelle" : "Source"}
+              </th>
+              <th style={{ textAlign: "right" }}>
+                {lang === "de" ? "Aktionen" : "Actions"}
+              </th>
             </tr>
-          )}
-          {files.map((file) => (
-            <tr key={file.filename}>
-              <td>
-                <code style={{ fontSize: 12 }}>{file.filename}</code>
-              </td>
-              <td style={{ textAlign: "right" }}>{formatBytes(file.size_bytes)}</td>
-              <td>{formatTimestamp(file.created_at, lang)}</td>
-              <td>
-                {file.is_generated
-                  ? lang === "de" ? "Generiert" : "Generated"
-                  : lang === "de" ? "Hochgeladen" : "Imported"}
-              </td>
-              <td style={{ textAlign: "right" }}>
-                <div className="row wrap" style={{ gap: 4, justifyContent: "flex-end" }}>
-                  {canExport && (
+          </thead>
+          <tbody>
+            {files.length === 0 && !backupsListLoading && (
+              <tr>
+                <td colSpan={5} style={{ padding: 16, textAlign: "center", color: "var(--muted, #888)" }}>
+                  {lang === "de"
+                    ? "Noch keine Backups vorhanden."
+                    : "No backups yet."}
+                </td>
+              </tr>
+            )}
+            {files.map((file) => (
+              <tr key={file.filename}>
+                <td className="admin-backups-cell admin-backups-cell--file">
+                  <span className="admin-backups-label">{lang === "de" ? "Datei" : "Filename"}</span>
+                  <code className="admin-backups-filename">{file.filename}</code>
+                </td>
+                <td className="admin-backups-cell admin-backups-cell--num">
+                  <span className="admin-backups-label">{lang === "de" ? "Größe" : "Size"}</span>
+                  <span className="admin-backups-value">{formatBytes(file.size_bytes)}</span>
+                </td>
+                <td className="admin-backups-cell">
+                  <span className="admin-backups-label">{lang === "de" ? "Erstellt" : "Created"}</span>
+                  <span className="admin-backups-value">{formatTimestamp(file.created_at, lang)}</span>
+                </td>
+                <td className="admin-backups-cell">
+                  <span className="admin-backups-label">{lang === "de" ? "Quelle" : "Source"}</span>
+                  <span className="admin-backups-value">
+                    {file.is_generated
+                      ? lang === "de" ? "Generiert" : "Generated"
+                      : lang === "de" ? "Hochgeladen" : "Imported"}
+                  </span>
+                </td>
+                <td className="admin-backups-cell admin-backups-cell--actions">
+                  <div className="row wrap admin-backups-actions">
+                    {canExport && (
+                      <button
+                        type="button"
+                        className="ghost"
+                        onClick={() => void downloadBackup(file.filename)}
+                      >
+                        {lang === "de" ? "Herunterladen" : "Download"}
+                      </button>
+                    )}
+                    {canRestore && (
+                      <button
+                        type="button"
+                        className="admin-backups-restore"
+                        disabled={backupJobRunning}
+                        onClick={() => setRestoreTarget(file.filename)}
+                      >
+                        {lang === "de" ? "Wiederherstellen" : "Restore"}
+                      </button>
+                    )}
                     <button
                       type="button"
                       className="ghost"
-                      onClick={() => void downloadBackup(file.filename)}
+                      onClick={() => void onDelete(file.filename)}
                     >
-                      {lang === "de" ? "Herunterladen" : "Download"}
+                      {lang === "de" ? "Löschen" : "Delete"}
                     </button>
-                  )}
-                  {canRestore && (
-                    <button
-                      type="button"
-                      disabled={backupJobRunning}
-                      onClick={() => setRestoreTarget(file.filename)}
-                      style={{
-                        background: backupJobRunning ? undefined : "var(--danger-bg, #fee)",
-                        color: backupJobRunning ? undefined : "var(--danger, #b00020)",
-                        borderColor: "var(--danger, #b00020)",
-                      }}
-                    >
-                      {lang === "de" ? "Wiederherstellen" : "Restore"}
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    className="ghost"
-                    onClick={() => void onDelete(file.filename)}
-                  >
-                    {lang === "de" ? "Löschen" : "Delete"}
-                  </button>
-                </div>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
 
       {canRestore && (
         <div style={{ marginTop: 16, paddingTop: 12, borderTop: "1px solid var(--border, #ddd)" }}>

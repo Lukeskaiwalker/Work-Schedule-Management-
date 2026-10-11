@@ -23,6 +23,18 @@ remain, exactly as a fresh approval of those days would have recorded it.
 Weekends and public holidays cost nothing when the request was approved, so
 removing one refunds nothing. That is not an error; the day still leaves the
 range.
+
+**Days of a later year were never deducted.** A request reaching past the
+balance year only *plans* those days (``pending_future_days``, see
+services/vacation_years.py); the rollover charges them later. Removing such a
+day takes it out of the plan rather than refunding the current year, and a
+split hands each half the deducted and planned days of its own dates.
+
+**Some approved days were never covered.** When a rollover found a balance
+cut by hand too small for the days planned for its year, the uncovered days
+stay pending (``uncovered_days``). Removing a day of such a request gives back
+an uncovered day first -- it never cost anything -- before any day that was
+really deducted, the reverse of the order the rollover charged them in.
 """
 
 from __future__ import annotations
@@ -33,6 +45,7 @@ from datetime import date, timedelta
 from sqlalchemy.orm import Session
 
 from app.models.entities import User, VacationRequest
+from app.services.vacation_years import days_after, days_up_to, uncovered_days, vacation_days_by_year
 
 
 @dataclass(frozen=True)
@@ -45,16 +58,66 @@ class VacationDayRemoval:
     request_deleted: bool
     split_into_second_request: bool
     was_deductible: bool
+    # 1 when the day lay after the balance year and was only planned.
+    released_planned_days: int = 0
 
     @property
     def refunded_days(self) -> int:
         return self.refunded_available_days + self.refunded_carryover_days
 
 
-def _allocate(days: int, carryover_pool: int) -> tuple[int, int]:
-    """Split ``days`` into (available, carryover) keeping carryover-first order."""
-    carryover = min(carryover_pool, days)
-    return days - carryover, carryover
+@dataclass(frozen=True)
+class _HalfShare:
+    available: int
+    carryover: int
+    planned: int
+
+
+def _split_shares(
+    request: VacationRequest,
+    head_end: date,
+    *,
+    balance_year: int | None,
+    working_days_between,
+) -> tuple[_HalfShare, _HalfShare]:
+    """Hand each half the deducted and planned days of its own dates.
+
+    The head takes from what is recorded first -- carryover before available,
+    the order approval consumed them, then days left uncovered -- but never
+    more than its own deductible days; the tail gets the rest, so the pair
+    totals exactly what the request held. Planned days likewise go to the
+    half whose later-year days they are, head first (the order the rollover
+    would charge them).
+    """
+    carryover_pool = max(request.deducted_carryover_days or 0, 0)
+    available_pool = max(request.deducted_available_days or 0, 0)
+    planned_pool = max(request.pending_future_days or 0, 0)
+
+    head_by_year = vacation_days_by_year(request.start_date, head_end, working_days_between)
+    if balance_year is None:
+        head_now, head_later = sum(head_by_year.values()), 0
+        uncovered_pool = 0
+    else:
+        head_now = days_up_to(head_by_year, balance_year)
+        head_later = sum(days_after(head_by_year, balance_year).values())
+        # The removed day (head_end + 1) has already left the pools, so only
+        # the two halves' own later days are still planned.
+        tail_by_year = vacation_days_by_year(head_end + timedelta(days=2), request.end_date, working_days_between)
+        tail_later = sum(days_after(tail_by_year, balance_year).values())
+        uncovered_pool = max(planned_pool - head_later - tail_later, 0)
+
+    head_carryover = min(carryover_pool, head_now)
+    head_available = min(available_pool, head_now - head_carryover)
+    head_uncovered = min(uncovered_pool, head_now - head_carryover - head_available)
+    head_planned = min(planned_pool - uncovered_pool, head_later) + head_uncovered
+    return (
+        _HalfShare(head_available, head_carryover, head_planned),
+        _HalfShare(
+            available_pool - head_available,
+            carryover_pool - head_carryover,
+            planned_pool - head_planned,
+        ),
+    )
 
 
 def remove_vacation_day(
@@ -65,12 +128,15 @@ def remove_vacation_day(
     day: date,
     working_days_between,
     sanitize_balance,
+    balance_year: int | None = None,
 ) -> VacationDayRemoval:
     """Take ``day`` out of ``request`` and refund the entitlement it consumed.
 
     ``working_days_between`` and ``sanitize_balance`` are injected rather than
     imported so this module does not depend on the time-tracking router (which
     owns the NRW public-holiday calendar) — that import would be circular.
+    ``balance_year`` is the holder's current balance year; a day after it was
+    only planned (None: treat every day as already deducted).
     """
     if not (request.start_date <= day <= request.end_date):
         raise ValueError("Day is outside the vacation request")
@@ -81,7 +147,23 @@ def remove_vacation_day(
 
     refund_available = 0
     refund_carryover = 0
-    if was_deductible:
+    released_planned = 0
+    planned_day = (
+        balance_year is not None and day.year > balance_year and (request.pending_future_days or 0) > 0
+    )
+    uncovered_day = (
+        balance_year is not None
+        and day.year <= balance_year
+        and uncovered_days(request, balance_year, working_days_between) > 0
+    )
+    if was_deductible and planned_day:
+        # Never deducted: it leaves next year's plan, the balance is untouched.
+        request.pending_future_days -= 1
+        released_planned = 1
+    elif was_deductible and uncovered_day:
+        # Approved but never covered by a balance: nothing to give back.
+        request.pending_future_days -= 1
+    elif was_deductible:
         # Reverse of the consumption order: give back a current-year day first
         # so carryover stays fully consumed across the days that remain.
         if request.deducted_available_days > 0:
@@ -119,14 +201,14 @@ def remove_vacation_day(
         tail_end = request.end_date
         head_end = day - timedelta(days=1)
 
-        head_days = working_days_between(request.start_date, head_end)
-        tail_days = working_days_between(tail_start, tail_end)
-
-        # Re-split what is still deducted across the two halves, carryover
-        # first, so the pair together still totals the original deduction.
-        carryover_pool = request.deducted_carryover_days
-        head_available, head_carryover = _allocate(head_days, carryover_pool)
-        tail_available, tail_carryover = _allocate(tail_days, carryover_pool - head_carryover)
+        # Re-split what is still deducted and planned across the two halves
+        # so the pair together still totals exactly what the request held.
+        head_share, tail_share = _split_shares(
+            request,
+            head_end,
+            balance_year=balance_year,
+            working_days_between=working_days_between,
+        )
 
         tail = VacationRequest(
             user_id=request.user_id,
@@ -134,14 +216,16 @@ def remove_vacation_day(
             end_date=tail_end,
             note=request.note,
             status=request.status,
-            deducted_available_days=tail_available,
-            deducted_carryover_days=tail_carryover,
+            deducted_available_days=tail_share.available,
+            deducted_carryover_days=tail_share.carryover,
+            pending_future_days=tail_share.planned,
             reviewed_by=request.reviewed_by,
             reviewed_at=request.reviewed_at,
         )
         request.end_date = head_end
-        request.deducted_available_days = head_available
-        request.deducted_carryover_days = head_carryover
+        request.deducted_available_days = head_share.available
+        request.deducted_carryover_days = head_share.carryover
+        request.pending_future_days = head_share.planned
         db.add(request)
         db.add(tail)
         split = True
@@ -154,4 +238,5 @@ def remove_vacation_day(
         request_deleted=deleted,
         split_into_second_request=split,
         was_deductible=was_deductible,
+        released_planned_days=released_planned,
     )

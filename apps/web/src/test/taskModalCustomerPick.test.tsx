@@ -21,7 +21,7 @@ const CUSTOMERS = [
   { id: 8, name: "Schmidt Elektro", address: null, phone: null, email: null, contact_person: null },
 ];
 
-function renderModal(form: TaskModalState) {
+function renderModal(form: TaskModalState, extra: Record<string, unknown> = {}) {
   // The stub's setter is a no-op; this one applies the updater so the test
   // can read the form the modal asked for.
   let nextForm: TaskModalState = form;
@@ -51,6 +51,7 @@ function renderModal(form: TaskModalState) {
       projectSearchLabel: (project: { name: string }) => project.name,
       menuUserNameById: (_id: number, fallback?: string) => fallback ?? "",
       assigneeAvailabilityHint: () => "",
+      ...extra,
     },
   });
   render(
@@ -106,5 +107,36 @@ describe("buildTaskAnchorPayload", () => {
 
   it("sends neither when nothing is picked, so the caller can refuse", () => {
     expect(buildTaskAnchorPayload({ customer_id: null }, 0)).toEqual({ project_id: null });
+  });
+});
+
+describe("TaskModal opened from a customer's page", () => {
+  const PROJECTS = [
+    { id: 31, project_number: "2026-0031", name: "Müller Wallbox", status: "in_durchfuehrung", customer_id: 7 },
+    { id: 32, project_number: "2025-0102", name: "Müller Altbau", status: "archived", customer_id: 7 },
+    { id: 33, project_number: "2026-0040", name: "Schmidt Neubau", status: "in_durchfuehrung", customer_id: 8 },
+  ];
+
+  it("starts anchored to that customer — a project given as well wins", () => {
+    expect(buildTaskModalFormState({ customerId: 7 }).customer_id).toBe(7);
+    expect(buildTaskModalFormState({ customerId: 7 }).project_id).toBe("");
+    expect(buildTaskModalFormState({ customerId: 7, projectId: 31 }).customer_id).toBeNull();
+  });
+
+  it("shows the customer and offers only their open projects as one-tap alternatives", () => {
+    const selectTaskModalProject = vi.fn();
+    renderModal(buildTaskModalFormState({ customerId: 7 }), { projects: PROJECTS, selectTaskModalProject });
+    expect(screen.getByRole("button", { name: "Kunde: Müller Haustechnik GmbH ×" })).toBeInTheDocument();
+    const offer = screen.getByRole("group", { name: "Projekte dieses Kunden" });
+    expect(offer).toHaveTextContent("Müller Wallbox");
+    expect(offer).not.toHaveTextContent("Müller Altbau");
+    expect(offer).not.toHaveTextContent("Schmidt Neubau");
+    fireEvent.click(screen.getByRole("button", { name: "Müller Wallbox" }));
+    expect(selectTaskModalProject).toHaveBeenCalledWith(PROJECTS[0]);
+  });
+
+  it("offers nothing extra when the customer has no open project", () => {
+    renderModal(buildTaskModalFormState({ customerId: 8 }), { projects: PROJECTS.slice(0, 2) });
+    expect(screen.queryByRole("group", { name: "Projekte dieses Kunden" })).toBeNull();
   });
 });

@@ -171,8 +171,9 @@ def _open_lot_rows(db: Session, article_ids: set[int]) -> dict[int, list[_Row]]:
     One is an article whose balance stood at zero at no point in its ledger,
     not even before its first checkout — there is simply nothing to skip. The
     other is an article whose running balance goes NEGATIVE, which means a
-    settling row larger than the balance it settles (``correction`` is the one
-    type the write path does not bound against ``stock_out``). After that the
+    settling row larger than the balance it settles (``correction`` rows from
+    before 2026-10-10, when the write path did not yet bound them against
+    ``stock_out``, can still be in a ledger). After that the
     replay's clamp and the raw sum have drifted apart, a raw zero crossing no
     longer marks an empty replay, and the shortcut would silently drop lots
     that are genuinely still out.

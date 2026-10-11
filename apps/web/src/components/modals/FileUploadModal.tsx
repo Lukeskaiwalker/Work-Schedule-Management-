@@ -12,6 +12,7 @@
 import { useEffect } from "react";
 
 import { UploadFilesDialog } from "../files/UploadFilesDialog";
+import { isPartnerPortalFolder } from "../files/folderGroups";
 import { useAppContext } from "../../context/AppContext";
 
 export function FileUploadModal() {
@@ -47,6 +48,13 @@ export function FileUploadModal() {
     if (open && fileUploadPendingFiles.length > 0) setFileUploadPendingFiles([]);
   }, [open, fileUploadPendingFiles, setFileUploadPendingFiles]);
 
+  // The last folder is remembered for the next upload — except the partner
+  // folder: whatever goes there is shown to outside companies, so it is
+  // chosen on purpose every time, never inherited from an earlier upload.
+  useEffect(() => {
+    if (!open && isPartnerPortalFolder(fileUploadFolder)) setFileUploadFolder("");
+  }, [open, fileUploadFolder, setFileUploadFolder]);
+
   return (
     <UploadFilesDialog
       open={open}
@@ -65,6 +73,7 @@ export function FileUploadModal() {
       onClose={() => setFileUploadModalOpen(false)}
       canUseProtectedFolders={canUseProtectedFolders}
       language={language}
+      warnPartnerPortalFolder
     />
   );
 }

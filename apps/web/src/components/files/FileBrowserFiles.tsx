@@ -37,6 +37,8 @@ export type FileBrowserFilesProps = {
   noMatchText?: string;
   /** The column header of the list; a nested set leaves it to its parent. */
   showHead?: boolean;
+  /** A short note next to a folder's name (e.g. "Im Partnerportal sichtbar"). */
+  folderHint?: (folder: string) => string | null;
 };
 
 export function FileBrowserFiles({
@@ -46,6 +48,7 @@ export function FileBrowserFiles({
   emptyText,
   noMatchText,
   showHead = true,
+  folderHint,
 }: FileBrowserFilesProps) {
   const { viewMode, gallerySize, language, query } = useFileBrowserView();
   const de = language === "de";
@@ -113,6 +116,7 @@ export function FileBrowserFiles({
       {groups.map(({ folder, files }) => {
         const collapsed = !openFolders.has(folder);
         const report = isReportFolder(folder);
+        const hint = folderHint?.(folder) ?? null;
         return (
           <div key={folder} className="file-browser-group">
             <button
@@ -124,6 +128,7 @@ export function FileBrowserFiles({
               <span className="file-folder-chevron">{collapsed ? "▶" : "▼"}</span>
               <span className="file-folder-name">📁 {folderLabel(folder, language)}</span>
               <span className="file-folder-count">{fileCountLabel(files.length, language)}</span>
+              {hint && <span className="file-folder-hint file-folder-hint--shared">{hint}</span>}
               {report && collapsed && (
                 <span className="file-folder-hint">
                   {de ? "Automatisch generiert" : "Auto-generated"}

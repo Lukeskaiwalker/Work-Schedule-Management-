@@ -8,7 +8,7 @@ Endpoints:
 - PATCH  /werkstatt/articles/{id}
 - DELETE /werkstatt/articles/{id}            (soft-archive)
 - POST   /werkstatt/articles/{id}/refresh-image
-- POST   /werkstatt/articles/{id}/link-catalog    { catalog_item_id }
+- POST   /werkstatt/articles/{id}/link-catalog    { catalog_item_id }  (+ supplier link)
 - POST   /werkstatt/articles/from-catalog         { catalog_item_id, ... }
 
 Supplier-link CRUD for articles lives in `workflow_werkstatt_article_suppliers.py`.
@@ -63,6 +63,13 @@ from app.schemas.werkstatt import (
 from app.services import gtin
 from app.services.material_catalog import ensure_material_catalog_item_image
 from app.services.werkstatt_article_lookup import external_hit_note
+from app.services.werkstatt_article_search import apply_article_query, matched_supplier_numbers
+from app.services.werkstatt_supplier_links import (
+    CatalogLinkRefused,
+    ean_clash_detail,
+    fold_same_ean_rows,
+    link_catalog_item,
+)
 from app.services.werkstatt_article_dedup import link_catalog_duplicates
 from app.services.werkstatt_movements import book_opening_stock
 from app.services.werkstatt_article_numbers import next_article_number
@@ -136,18 +143,12 @@ def list_articles(
                 )
             )
         )
+    # Every token in some field (supplier numbers, category and Lagerort
+    # included) or the whole query as a code without punctuation — see
+    # services/werkstatt_article_search.py. The Bestand page, the phone search
+    # and the order picker all search through here.
     query = q.strip()
-    if query:
-        escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_").lower()
-        like = f"%{escaped}%"
-        stmt = stmt.where(
-            or_(
-                func.lower(WerkstattArticle.item_name).like(like, escape="\\"),
-                func.lower(WerkstattArticle.article_number).like(like, escape="\\"),
-                func.lower(func.coalesce(WerkstattArticle.ean, "")).like(like, escape="\\"),
-                func.lower(func.coalesce(WerkstattArticle.manufacturer, "")).like(like, escape="\\"),
-            )
-        )
+    stmt = apply_article_query(stmt, query)
     stmt = stmt.order_by(WerkstattArticle.item_name.asc(), WerkstattArticle.id.asc()).limit(limit)
     rows = list(db.scalars(stmt).all())
 
@@ -193,12 +194,21 @@ def list_articles(
             ).all()
         }
 
+    matched_numbers = matched_supplier_numbers(
+        db, rows, query, category_names=categories_by_id, location_names=locations_by_id
+    )
+
     result = [
         article_lite_out(
             r,
             category_name=categories_by_id.get(r.category_id) if r.category_id else None,
             location_name=locations_by_id.get(r.location_id) if r.location_id else None,
-        ).model_copy(update={"supplier_article_no": supplier_numbers.get(r.id)})
+        ).model_copy(
+            update={
+                "supplier_article_no": supplier_numbers.get(r.id),
+                "matched_supplier_article_no": matched_numbers.get(r.id),
+            }
+        )
         for r in rows
     ]
     if status:
@@ -209,26 +219,6 @@ def list_articles(
 # ──────────────────────────────────────────────────────────────────────────
 # POST /articles
 # ──────────────────────────────────────────────────────────────────────────
-
-
-def _ean_clash_detail(clash: WerkstattArticle) -> str:
-    """Why this EAN cannot be used, and what to do instead — in German.
-
-    "EAN already in use by another article" is true and useless: the person is
-    holding the product and has no way to find the row that already has it.
-    Naming it turns a dead end into two clicks, and an ARCHIVED clash gets a
-    different sentence because the fix is different — the row is there, it just
-    has to be brought back rather than found.
-    """
-    if bool(clash.is_archived):
-        return (
-            f"Diese EAN gehört zum archivierten Artikel {clash.article_number} "
-            f"„{clash.item_name}“ — bitte dort „Reaktivieren“ statt neu anlegen."
-        )
-    return (
-        f"Diese EAN gehört bereits zu {clash.article_number} „{clash.item_name}“ — "
-        "dort den Bestand anpassen."
-    )
 
 
 def _notes_with_provenance(notes: str | None, lookup_source: str | None) -> str | None:
@@ -268,7 +258,7 @@ def create_article(
             select(WerkstattArticle).where(WerkstattArticle.ean.in_(gtin.variants(ean)))
         )
         if clash is not None:
-            raise HTTPException(status_code=400, detail=_ean_clash_detail(clash))
+            raise HTTPException(status_code=400, detail=ean_clash_detail(clash))
 
     article = WerkstattArticle(
         article_number=next_article_number(db),
@@ -353,7 +343,7 @@ def update_article(
                 )
             )
             if clash is not None:
-                raise HTTPException(status_code=400, detail=_ean_clash_detail(clash))
+                raise HTTPException(status_code=400, detail=ean_clash_detail(clash))
         data["ean"] = new_ean
     if "category_id" in data and data["category_id"] is not None:
         if db.get(WerkstattCategory, data["category_id"]) is None:
@@ -432,20 +422,13 @@ def link_article_to_catalog(
     catalog_item = db.get(MaterialCatalogItem, payload.catalog_item_id)
     if catalog_item is None:
         raise HTTPException(status_code=404, detail="Catalog item not found")
-    article.source_catalog_item_id = catalog_item.id
-    # Backfill missing fields from the catalog row (non-destructive).
-    if not article.ean and catalog_item.ean:
-        article.ean = catalog_item.ean
-    if not article.manufacturer and catalog_item.manufacturer:
-        article.manufacturer = catalog_item.manufacturer
-    if not article.unit and catalog_item.unit:
-        article.unit = catalog_item.unit
-    if not article.image_url and catalog_item.image_url:
-        article.image_url = catalog_item.image_url
-        article.image_source = "catalog"
-        article.image_checked_at = utcnow()
-    article.updated_at = utcnow()
-    db.add(article)
+    # Backfills the blanks AND writes the supplier link with the row's own
+    # number, then folds the same-EAN rows of other suppliers — without the
+    # link, the number on the box stays unsearchable and unscannable.
+    try:
+        link_catalog_item(db, article, catalog_item)
+    except CatalogLinkRefused as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     db.commit()
     db.refresh(article)
     return article_full_out(db, article)
@@ -532,8 +515,9 @@ def build_article_from_catalog_item(
     # this the article knows only the wholesaler whose catalog row it was
     # created from, and the identical product from a second Datanorm stays a
     # disconnected duplicate. EAN is a global product id, so an exact match is
-    # safe to apply without review.
-    link_catalog_duplicates(db, article)
+    # safe to apply without review. Guarded: a number a third article already
+    # carries drops the fold, never the article being created.
+    fold_same_ean_rows(db, article)
     return article, movement
 
 
@@ -557,7 +541,7 @@ def create_article_from_catalog(
             select(WerkstattArticle).where(WerkstattArticle.ean.in_(gtin.variants(ean)))
         )
         if existing is not None:
-            raise HTTPException(status_code=400, detail=_ean_clash_detail(existing))
+            raise HTTPException(status_code=400, detail=ean_clash_detail(existing))
 
     article, _ = build_article_from_catalog_item(
         db,

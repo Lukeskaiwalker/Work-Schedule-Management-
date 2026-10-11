@@ -9,6 +9,9 @@ from fastapi import APIRouter
 from app.routers.workflow_customers import router as customers_router
 from app.routers.workflow_materials import router as materials_router
 from app.routers.workflow_partners import router as partners_router
+from app.routers.workflow_partner_portal_users import router as partner_portal_users_router
+from app.routers.workflow_project_partners import router as project_partners_router
+from app.routers.workflow_partner_hours import router as partner_hours_router
 from app.routers.workflow_projects import router as projects_router
 from app.routers.workflow_tasks import (
     router as tasks_router,
@@ -60,6 +63,11 @@ router = APIRouter(prefix="", tags=["workflow"])
 router.include_router(materials_router)
 router.include_router(customers_router)
 router.include_router(partners_router)
+# Partner-portal logins live on their partner; projects handed to partners
+# on their project. Both are office-side; the portal itself is routers/portal.py.
+router.include_router(partner_portal_users_router)
+router.include_router(project_partners_router)
+router.include_router(partner_hours_router)
 router.include_router(projects_router)
 router.include_router(tasks_router)
 # v2.5.0: customer-confirmation public endpoints (no JWT required).

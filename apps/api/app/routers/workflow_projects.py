@@ -12,6 +12,7 @@ from app.routers.workflow_project_report import (
 from app.models.entities import Customer
 from app.schemas.customer import CustomerOut
 from app.services.schaltplan_material import project_panel_materials
+from app.services.project_stock_materials import local_day, project_stock_materials
 from app.services.project_membership import add_all_users_to_project
 from app.services.project_status import is_won_project_status, normalize_project_status
 from app.services.customers import (
@@ -528,9 +529,26 @@ def list_project_report_materials(
                 quantity_notes=[],
                 occurrence_count=consumed.bookings,
                 report_count=0,
-                last_report_date=consumed.last_at.date() if consumed.last_at else None,
+                last_report_date=local_day(consumed.last_at),
                 source="verteiler",
                 panel_numbers=consumed.panel_numbers,
+            )
+        )
+    # Consumables taken from the Lager for the project without a Verteiler —
+    # at the Regal station, the desk or the phone. Their own rows too, net of
+    # what was carried back.
+    for taken in project_stock_materials(db, project_id):
+        result.append(
+            ProjectTrackedMaterialOut(
+                item=taken.article.item_name,
+                unit=taken.article.unit,
+                article_no=taken.article.article_number,
+                quantity_total=float(taken.net),
+                quantity_notes=[],
+                occurrence_count=taken.bookings,
+                report_count=0,
+                last_report_date=local_day(taken.last_at),
+                source="lager",
             )
         )
     return result
@@ -897,6 +915,10 @@ def add_project_member(
     user = db.get(User, payload.user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    if is_external_role(user.role):
+        # What a partner sees is the partner's task and project links (see
+        # /projects/{id}/partners), never a membership row.
+        raise HTTPException(status_code=400, detail="Partner logins cannot be project members")
 
     membership = db.scalars(
         select(ProjectMember).where(

@@ -392,27 +392,44 @@ station uses, because the two changes cancel out and the second person to
 
 A laminated card of barcodes lives next to the scanner. It is how you drive
 the station with no keyboard: the scanner is the input device that is always
-in somebody's hand, so the verbs have to be scannable too. Two things are
-deliberately *not* on the card and are chosen at the screen instead — who an
-Ausgabe goes to, and the Wareneingang direction. Both are below.
+in somebody's hand, so the verbs have to be scannable too. Both wall screens
+also draw the codes they need on the glass, as QR symbols (`/qr.svg`), so the
+card is the copy that travels and the screen the copy that is always there.
 
-| Barcode | What it does |
+| Code | What it does | On the glass |
+|---|---|---|
+| `SMPL-CMD-FERTIG` | Ends what is open, in this order: the **Verteiler** on the rack, else the **Ausgabe** in progress at the rack (name and project are dropped), else the open **crate**. Commits nothing — every line was written to SMPL as it was scanned. | rack (*Verteiler fertig* / *Ausgabe fertig*), crate screen |
+| `SMPL-CMD-ABBRUCH` | Undoes the **last** booking on this screen, by writing its opposite to SMPL. Once only. A Wareneingang cannot be undone. | both |
+| `SMPL-CMD-MENGE-5` | the next scanned article counts as 5, not 1 | rack |
+| `SMPL-CMD-MENGE-10` | …as 10 | rack |
+| `SMPL-CMD-MENGE-50` | …as 50 | rack |
+| `SMPL-CMD-AUS` | Regal: **Ausgabe** — a consumable leaves stock for good, a tool goes out on loan, always to a named person | rack (in the *Ausgabe* button) |
+| `SMPL-CMD-EIN` | Regal: **Rückgabe** — a tool comes back, or leftover consumables go back on the shelf | rack (in the *Rückgabe* button) |
+| `SMPL-CMD-WARENEINGANG` | Regal: **Wareneingang** — a delivery arrives | rack (in the *Wareneingang* button) |
+| `SMPL-CMD-OHNE-PROJEKT` | Regal: the Ausgabe for the person picked is booked **without a project** | rack (the *Ohne Projekt* tile) |
+| `SMPL-CMD-ENTNAHME` | Kiste: switch between packing in and taking back out. Stock is never touched. | crate screen |
+| `SMPL-CMD-MITNEHMEN` | Kiste: the open crate is taken to the customer — SMPL books the checkout for every line. Refuses with *Erst die Kiste scannen* when no crate is open, and SMPL refuses unless the crate is **gepackt**. The *Mitnehmen* button posts exactly the same thing. | crate screen |
+
+Two more families of codes exist only on the rack screen and are **never
+printed**, because they carry a number from SMPL:
+
+| Code | What it does |
 |---|---|
-| `SMPL-CMD-FERTIG` | Closes the open crate. Commits nothing — every line was written to SMPL as it was scanned. |
-| `SMPL-CMD-ABBRUCH` | Undoes the **last** booking on this screen, by writing its opposite to SMPL. Once only. A Wareneingang cannot be undone. |
-| `SMPL-CMD-MENGE-5` | the next scanned article counts as 5, not 1 |
-| `SMPL-CMD-MENGE-10` | …as 10 |
-| `SMPL-CMD-MENGE-50` | …as 50 |
-| `SMPL-CMD-AUS` | Regal: book **Ausgabe** — stock leaves with the person tapped on the screen |
-| `SMPL-CMD-EIN` | Regal: book **Rückgabe** — a borrowed item comes back |
-| `SMPL-CMD-ENTNAHME` | Kiste: switch between packing in and taking back out. Stock is never touched. |
-| `SMPL-CMD-MITNEHMEN` | Kiste: the open crate is taken to the customer — SMPL books the checkout for every line. Refuses with *Erst die Kiste scannen* when no crate is open, and SMPL refuses unless the crate is **gepackt**. The crate screen carries this one on the glass too, next to the *Mitnehmen* button, which posts exactly the same thing. |
+| `SMPL-CMD-PERSON-<user id>` | picks that person for the Ausgabe — the same as tapping their tile. Accepted only for somebody in the name list the screen drew; anybody else is refused with *„Diese Person steht nicht in der Namensliste."* and changes nothing. |
+| `SMPL-CMD-PROJEKT-<project id>` | picks that project for the Ausgabe. Accepted only for one of the project tiles drawn for the person picked; with nobody picked it answers *„Erst den Namen wählen, dann das Projekt."* |
 
-**Wareneingang is not on the card.** A delivery is booked by tapping
-*Wareneingang* on the rack screen — see [The rack screen books three
-directions](#the-rack-screen-books-three-directions). It has no barcode on
-purpose: it is the one direction where a mis-scan is expensive, so it costs a
-deliberate tap.
+Both are stable ids, not positions on the screen: the name list is fetched
+again every minute and re-sorted, so "the third tile" could be somebody else
+by the time the imager has focused. An id is no secret — tapping the tile is
+the same act. A personal **badge** (`SMPL-P-…`) is the opposite: a bearer
+token, rotatable, and never drawn on a screen.
+
+Every code uses `0-9`, `A`–`X` and `-` only — no `Y` or `Z`, because a command
+is never sent to `/resolve` and so the Y/Z retry that rescues a scanner in the
+wrong layout cannot rescue it — and is at most 26 characters, which keeps it a
+version-2 QR code (66 px at two pixels a module). `/health` publishes the
+static codes as `scan_router.commands` and the two prefixes separately as
+`scan_router.parametric_prefixes`.
 
 Four things worth knowing before somebody reports a bug:
 
@@ -436,8 +453,8 @@ Four things worth knowing before somebody reports a bug:
   has a second hyphen, so it fails that test on the hyphen alone. Do not print
   anything else with the `SMPL-CMD-` prefix.
 
-`FERTIG` only ever speaks to the crate screen: scanned at the rack it closes
-nothing and simply reports *„Kiste geschlossen"* on the other monitor.
+`FERTIG` with nothing open at the rack — no Verteiler, nobody picked — falls
+through to the crate screen and reports *„Kiste geschlossen"* there.
 
 If the card is lost, any Code-128 generator reproduces it: the payload is the
 literal text in the left column, nothing encoded, nothing prefixed. Print it
@@ -456,6 +473,9 @@ compensating request**:
 | added a line to a crate | removes that line again (`POST …/boxes/<id>/items/remove`) |
 | took a line out of a crate | adds it back (`POST …/boxes/<id>/items`) |
 | booked a stock movement | the opposite movement (`POST …/movements`) — an Ausgabe is compensated with a Rückgabe **onto the same name**, so the loan it created is the loan it clears. A Rückgabe is compensated with an Ausgabe, and that one has a rule of its own — see below. |
+| used up a consumable (Ausgabe) | takes the pieces back (`POST …/consumptions/undo`) out of **exactly the project it was booked to** — not the project picked by the time somebody scans `ABBRUCH`. The undo names the consumption's ledger row (`undo_of_movement_id`, the `movement_id` SMPL answered the booking with — on a replay too), so when the shelf was short and SMPL topped the count up for that consumption, the top-up goes as well: *„Verbrauch zurück: 50 × Kabelbinder · Nachbuchung 38 zurückgenommen"*. A wrong `MENGE-50` scan taken back leaves the count where it was. |
+| took leftovers back (Rückgabe of a consumable) | consumes them again (`POST …/consumptions`) into the same project bucket, onto the name the Rückgabe carried — or, if it carried none, the name picked now, under the same rule as below. Never reverses a top-up. |
+| closed an old loan (a Rückgabe SMPL answered with `booked_as: "return"`, see [The rack screen books three directions](#the-rack-screen-books-three-directions)) | lends exactly that loan out again: a `checkout` (`POST …/movements`) onto the borrower SMPL named — not onto whoever is tapped now. Like every rack checkout it carries no project. |
 
 Three things it cannot take back:
 
@@ -474,7 +494,9 @@ Three things it cannot take back:
 
 Because the undo is itself a booking, it can fail like any other: if SMPL is
 unreachable the screen says *„Abbruch fehlgeschlagen"* and the original
-booking still stands. A failed undo **keeps its record**, so scanning
+booking still stands. The undo of a consumable carries a `request_id` minted
+once per booking, so scanning `ABBRUCH` again after an answer was lost replays
+the first undo instead of taking the pieces back twice. A failed undo **keeps its record**, so scanning
 `ABBRUCH` again once the network is back still works — one blip must not cost
 the operator the ability to undo at all, and the blip is precisely why the
 screen looks wrong. Only an undo SMPL accepted is forgotten. Either way both
@@ -487,7 +509,9 @@ one — a ledger you can delete from is not a ledger.
 That rule has no exception, and least of all one reachable by scanning two
 barcodes — a nameless checkout let in through the undo is exactly the tool
 nobody can find. But a Rückgabe is allowed to carry no name, so the booking
-being taken back frequently has none to hand back.
+being taken back frequently has none to hand back. (The same goes for taking
+back the Rückgabe of a consumable: the undo is a consumption, and a
+consumption names somebody.)
 
 When it does carry one — somebody tapped a name on the way in — that is the
 name the Ausgabe goes back onto, and nothing is asked. When it does not, the
@@ -498,7 +522,8 @@ undo uses the name **tapped on the screen right now**:
   out with, which is the honest answer as well as the convenient one, and
   tapping is still a deliberate human act rather than a guess;
 - nobody is tapped → the undo is **refused**, in the same words as a scanned
-  Ausgabe (*„Bitte zuerst Namen antippen"*), and nothing is written. Tap a
+  Ausgabe (*„Bitte Namen antippen oder Ausweis scannen"*), and nothing is
+  written. Tap a
   name and scan `ABBRUCH` again — the record is still there, because a
   refused undo is not a spent one.
 
@@ -556,8 +581,8 @@ installer with `--no-automount` to remove our rule entirely.
 The station has two monitors on the Pi's two HDMI outputs, each showing one
 page of the station's own web UI, full screen, from boot, with no browser
 chrome. Almost everything is driven by the scanner. What is left to press is
-mostly on the rack screen — the direction and the names, listed under [The
-rack screen books three
+mostly on the rack screen — the direction, the names and the projects of an
+Ausgabe, listed under [The rack screen books three
 directions](#the-rack-screen-books-three-directions) — while the crate screen
 keeps its own two: the pack-in/take-out mode and closing a crate. Each button
 belongs to exactly one screen, and `/screen/action` says so:
@@ -654,14 +679,22 @@ rectangle.
 
 ### The rack screen books three directions
 
-| On screen | What it means | Movement written in SMPL |
-|---|---|---|
-| **Ausgabe** | something leaves the rack with somebody | `checkout` |
-| **Rückgabe** | a borrowed item comes back | `return` |
-| **Wareneingang** | a delivery arrives — this is new stock | `intake` |
+What a scan books depends on the direction **and on what was scanned**. The
+owner's rule (2026-10-10): *anything that is not in the Maschinen tab is a
+consumable* — scanned out, it leaves stock for good and is installed at a
+site. The station reads that off SMPL's resolve answer
+(`article.is_serialized`: the Maschinen tab lists the serialized articles).
 
-`SMPL-CMD-AUS` and `SMPL-CMD-EIN` pick the first two from the command card;
-Wareneingang is picked by tapping it on the screen.
+| On screen | A consumable (not serialized) | A tool (serialized article) | A machine unit label (`M-…`, serial) |
+|---|---|---|---|
+| **Ausgabe** | `consumption` for the person picked and, if one was picked, the project — `POST …/consumptions`. Never refused for a short shelf: the shortfall is booked first as `inventory_plus` and the wall shows SMPL's warning. | `checkout` — a loan onto the person picked (`POST …/movements`) | looked up only, nothing booked |
+| **Rückgabe** | leftovers back (`POST …/consumptions/undo`): `consumption_undo` out of the project picked. With none picked **SMPL decides** what came back, in this order: the named person's own consumption (newest first); else that person's open **loan** of the article — a consumable handed out before this change was booked as a loan — which SMPL closes with a `return` (`booked_as: "return"`); with nobody named, the loan SMPL infers as for any unnamed Rückgabe; else the newest consumption of anybody. The station books nothing of its own on top — not even after a refusal — so nothing comes back twice. Every refusal — above all the bucket limit of a picked project or *Ohne Projekt*, or *Kein Verbrauch dieses Artikels zum Zurücknehmen.* — is shown as SMPL said it. | `return` | looked up only |
+| **Wareneingang** | `intake` | `intake` | looked up only |
+
+An article whose resolve answer does not say whether it is serialized keeps
+the old rule (a loan). The direction codes `SMPL-CMD-AUS`, `SMPL-CMD-EIN` and
+`SMPL-CMD-WARENEINGANG` sit in the three direction buttons on the glass and on
+the card; tapping a button does the same.
 
 **One word per direction, everywhere.** Those three nouns are the whole
 vocabulary: on the screen, in a flash message, in this document. A direction
@@ -679,11 +712,11 @@ in SMPL as holding twenty metres of cable they have never touched. Nobody
 notices until somebody goes looking for stock the ledger says is out with a
 colleague. Check the word on the screen before the first scan of a pallet.
 
-SMPL catches only the loud half of that mistake: it refuses a checkout larger
-than the stock it believes is on the shelf, so booking a pallet of something
-rare as an Ausgabe fails with an error somebody reads. A delivery of something
-already well stocked passes straight through and is wrong in silence. The
-guard is a backstop, not the rule.
+SMPL catches only the loud half of that mistake, and only for tools: it
+refuses a checkout larger than the stock it believes is on the shelf. A
+consumable booked as an Ausgabe is never refused for a short shelf (the count
+was wrong, not the person holding the part), so a delivery scanned in the
+wrong direction is wrong in silence. The guard is a backstop, not the rule.
 
 #### A Wareneingang for something SMPL has never stocked
 
@@ -708,36 +741,80 @@ would otherwise book the same pallet twice; with the token SMPL replays its
 first answer instead. That is also why step 1 is a read: a lookup that times
 out has changed nothing.
 
+#### Ausgabe: first who, then for which project
+
+In **Ausgabe** with nobody picked, the rack screen swaps the article card for
+a grid of **name tiles**, each with its own QR code
+(`SMPL-CMD-PERSON-<id>`): tap the tile or scan its code. The grid never
+scrolls — a code below the edge is a code nobody can scan — so a long list is
+set tighter first, and what still does not fit is left off with a line
+saying so, while the name row above comes back for tapping the rest.
+
+Once a person is picked, the same place shows **their projects** — up to
+eight, each with its code (`SMPL-CMD-PROJEKT-<id>`) and why it is there
+(*heute*: a task of theirs today, *diese Woche*: planned this week,
+*zuletzt*: last week, a report, a Verteiler or a booking in the last 14 days)
+— plus an **Ohne Projekt** tile (`SMPL-CMD-OHNE-PROJEKT`). The list comes
+from `GET /api/station/werkstatt/crew-projects`, fetched with the crew by the
+kiosk tick and never on a tap; it carries a project's id, number and name and
+nothing else, because the wall is unauthenticated. Somebody with no project
+this week skips this step. Picking a project is optional: scanning an article
+straight away books it without one.
+
+Then the article card returns, headed **„Ausgabe für Max Mustermann · 381
+Neubau Schulze"**; tapping either half changes it. Every scan books: a
+consumable flashes *„Verbraucht: 3 × Kabelbinder"* / *„→ 381 Neubau
+Schulze"* (a warning instead when the shelf count was short), a Rückgabe of
+leftovers *„Zurück ins Lager: 2 × Kabelbinder"* / *„← 381 Neubau Schulze"*,
+and one that SMPL booked against an old loan *„Zurück: 10 × Kabelbinder
+(Leihe beendet)"* / *„Ausgeliehen an Max M. · ← 381 Neubau Schulze"*. When a
+re-scan was answered with the booking an earlier, unanswered try had already
+made, the detail ends in *„war schon gebucht"*.
+`SMPL-CMD-FERTIG` — on the glass as *Ausgabe fertig* while somebody is picked
+— ends the Ausgabe; so does the two-minute idle rule below.
+
+The project goes with the name: picking somebody else, the name expiring, or
+`FERTIG` clears it. Switching the direction does not.
+
+A station newer than its SMPL (the routes answer `404 Not Found`) books
+nothing for a consumable and says *„SMPL muss aktualisiert werden"*; the
+project tiles simply do not appear. Tools keep working through the old route.
+
 #### Tap your name first
 
-Before anything goes out, the worker taps their name. The list of names comes
-from SMPL over the station's own token (`GET /api/station/werkstatt/crew`) and
-is cached, so the screen keeps working while the switch reboots; when SMPL has
-never answered, the list is empty and nobody can be selected.
+Before anything goes out, the worker picks their name — the tile above, the
+name row in Rückgabe, or their badge. The list of names comes from SMPL over
+the station's own token (`GET /api/station/werkstatt/crew`) and is cached, so
+the screen keeps working while the switch reboots; when SMPL has never
+answered, the list is empty and nobody can be selected.
 
 A tap is checked against that cached list, and an id outside it is refused
 with a `400` rather than accepted — the buttons were built from the list, so
 an id that is not on it did not come from a finger. Accepting one published a
 name-less chip on the wall and booked a tool out to somebody the station
-could not name.
+could not name. A scanned person code is held to the same list, inside the
+router.
 
-- **An Ausgabe needs a name.** With nobody tapped, the scan is refused with
-  *„Bitte zuerst Namen antippen"* and **nothing is written** — not the
-  movement, not a half of it. That refusal is the whole point of the rule: the
-  ledger has to be able to answer "who has the drill".
+- **An Ausgabe needs a name** — a consumable as much as a tool. With nobody
+  picked, the scan is refused with *„Bitte Namen antippen oder Ausweis
+  scannen"* and **nothing is written** — not the movement, not a half of it.
+  That refusal is the whole point of the rule: the ledger has to be able to
+  answer "who has the drill", and "who took the cable ties to which site".
 - **A Rückgabe may carry one** — the person whose loan it clears — but does
   not require one. A tool coming back is a tool coming back.
 - **A Wareneingang never carries one.** A delivery belongs to the shelf.
 
 **The rule is one rule, at every door.** There are three ways an Ausgabe can
 reach the ledger from this box, and all three ask the same question through
-the same function (`movement_needs_assignee()` in `scan_router.py`):
+the same function (`movement_needs_assignee()` in `scan_router.py`, which
+covers `checkout` and `consumption`; SMPL enforces the person for a
+consumption on its side too):
 
 | Door | What happens with nobody tapped |
 |---|---|
 | a scanned article, direction *Ausgabe* | refused before anything is consumed — the quantity survives, tap a name and scan again |
 | `POST /rack/movement`, which the screen's own buttons use | `400` with the same sentence, and the screen flashes *„Ausgabe nur mit Namen — nichts gebucht."* |
-| the Ausgabe an `ABBRUCH` re-creates when it takes back a Rückgabe | refused, in those same words — see [Undoing a Rückgabe needs a name](#undoing-a-rückgabe-needs-a-name) |
+| the Ausgabe (or consumption) an `ABBRUCH` re-creates when it takes back a Rückgabe | refused, in those same words — see [Undoing a Rückgabe needs a name](#undoing-a-rückgabe-needs-a-name) |
 
 That third door is the one that was open: the undo used to post a checkout
 with no assignee, which walked past the rule by the back way and left a tool
@@ -752,7 +829,9 @@ clock measures idleness, not the length of a job. While a name is set it is on
 the screen in large type, for the same reason the direction is.
 
 Tapping a name is an action of the **rack** screen and only the rack screen,
-and so is setting the direction; the crate screen owns the mode and closing a
+and so are setting the direction and picking a project (`"action":"project"`
+with a project id, or null to go back to the tiles, and
+`"action":"no_project"`); the crate screen owns the mode and closing a
 crate. `/screen/action` checks that the screen a tap claims to come from is
 the one that owns the action, and answers `400` otherwise. (Dismissing a
 message and setting the quantity genuinely belong to both screens, so those
@@ -798,8 +877,12 @@ What the session changes on the rack:
   going into a panel is neither an Ausgabe to a person nor a Rückgabe; it is
   written as `consumption` (total and available both go down), taken back as
   `consumption_undo`, both carrying the panel and its project. Neither kind
-  is accepted through `POST /station/werkstatt/movements` — the two panel
-  routes are the only station writers of them.
+  is accepted through `POST /station/werkstatt/movements`: the two panel
+  routes write them for a Verteiler, and the two consumption routes
+  (`/consumptions`, `/consumptions/undo`) for an Ausgabe without one.
+- **The Ausgabe picker steps aside.** A person or project picked before the
+  session stays picked, and every article still belongs to the panel. `FERTIG`
+  closes the panel first; a second `FERTIG` ends the Ausgabe.
 - **A machine is refused**, as in a crate session, and the panel stays open.
 - **A panel session and a crate session never coexist.** Scanning a `VT-`
   code closes an open crate (the crate screen says so); scanning a `KISTE-`
@@ -811,8 +894,11 @@ What the session changes on the rack:
   *„Verteiler automatisch geschlossen"* — and the card shows a countdown for
   the last 90 s, as the crate screen does.
 
-`/screen/state?screen=regal` carries the session as `panel` (null when none
-is open): the panel's id, number, designation, name, customer, project, the
+`/screen/state?screen=regal` also carries the Ausgabe picker: `projects`
+(the picked person's project tiles, `[]` with nobody picked), `project` (the
+one picked, `{id, project_number, name}`) and `project_chosen` (true once a
+project or *Ohne Projekt* was picked — `project` null then means without
+one). It carries the session as `panel` (null when none is open): the panel's id, number, designation, name, customer, project, the
 material lines with `scanned / planned` and a status per line (`open`,
 `done`, `over`, `unplanned`), the totals, `last_line_key` for the line the
 last scan landed on, `opened_at` / `expires_at`, and `error` when the list
@@ -1159,9 +1245,22 @@ Three of its rules are worth knowing while you are standing at the Pi:
   no keyboard cannot type the reason such a decision needs. Corrections
   belong in SMPL's inventory-session flow, where a named person signs for
   them. The two other kinds a station writes — `consumption` and
-  `consumption_undo`, a part picked for a Verteiler and that pick taken back
-  — go only through the panel routes, which pin them to a panel and its
-  project; the movements route refuses them.
+  `consumption_undo` — go through their own routes: the panel routes, which
+  pin them to a Verteiler and its project, and `POST …/consumptions` /
+  `…/consumptions/undo` for a consumable handed out at the rack, which carry
+  the person and, optionally, a project SMPL checks is open. The movements
+  route refuses both, so an older station keeps booking exactly what it
+  always did. Each consumption write carries a `request_id` minted once per
+  attempt and reused on its one retry, so an answer lost on the way back
+  replays the booking instead of consuming the parts twice. When SMPL never
+  answered at all — the try and its retry timed out, or the proxy answered
+  `5xx` — the booking may still have landed, and the operator reading
+  *„Nicht gebucht · SMPL ist nicht erreichbar"* scans again. So the token is
+  kept (for ten minutes, `KEEP_REQUEST_ID_S`) and a re-scan of the **same
+  article, quantity, person and project** sends it again: SMPL replays the
+  booking if it landed and books it once if it did not. Any answer — booked,
+  replayed or refused — frees the token; a different quantity or project is a
+  different booking with a token of its own.
 
 Quantities are bounded twice on the way: the agent's own routes take at most
 9999 per scan, and SMPL refuses anything above 10 000.

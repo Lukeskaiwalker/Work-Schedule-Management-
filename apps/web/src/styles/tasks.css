@@ -412,3 +412,10 @@
 .task-modal-customer-picker {
   margin-top: 8px;
 }
+
+/* Opened from a customer: their open projects as one-tap alternatives. */
+.task-modal-customer-projects {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}

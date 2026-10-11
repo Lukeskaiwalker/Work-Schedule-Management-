@@ -9,6 +9,7 @@ import { formatHours, clamp } from "../utils/misc";
 import { formatServerDateTime, parseServerDateTime } from "../utils/dates";
 import { AddDayEntryForm, type AddDayEntryValues } from "../components/time/AddDayEntryForm";
 import type { VacationRequest } from "../types";
+import "../styles/time-vacation.css";
 
 // Response of POST /time/vacation-days/remove. Kept local to this page: it is
 // the only caller, and the shared types module is edited by other work.
@@ -18,6 +19,8 @@ type VacationDayRemoveResult = {
   refunded_days: number;
   refunded_available_days: number;
   refunded_carryover_days: number;
+  // 1 when the day lay in a later year: it was only planned, never deducted.
+  released_planned_days?: number;
   was_deductible: boolean;
   request_deleted: boolean;
   split_into_second_request: boolean;
@@ -483,6 +486,14 @@ export function TimePage() {
         ? `Urlaub am ${dayLabel} entfernt. Kein Urlaubstag gutgeschrieben – dieser Tag (Wochenende oder Feiertag) hat nie einen Urlaubstag gekostet.`
         : `Vacation on ${dayLabel} removed. No vacation day credited back — that day (weekend or public holiday) never cost one.`;
     }
+    // A day of a later year (over New Year) was only planned, never taken
+    // from the balance — it leaves that year's plan, nothing is credited.
+    if ((result.released_planned_days ?? 0) > 0) {
+      const plannedYear = result.day.slice(0, 4);
+      return de
+        ? `Urlaub am ${dayLabel} entfernt. Der Tag war für ${plannedYear} vorgemerkt und wird dort nicht mehr abgezogen.`
+        : `Vacation on ${dayLabel} removed. The day was planned for ${plannedYear} and will no longer be deducted there.`;
+    }
     // A working day whose request has no deduction left on record (older
     // bookings). The day still leaves the range, but there is nothing to
     // refund — do not announce a credit the balance card will not show.
@@ -757,6 +768,11 @@ export function TimePage() {
   const monthPercent = monthlyRequiredHours > 0 ? (monthlyWorkedHours / monthlyRequiredHours) * 100 : 0;
   const todayPercent = requiredDailyHours > 0 ? (gaugeNetHours / requiredDailyHours) * 100 : 0;
   const clockedInParsed = parseServerDateTime(timeCurrent?.clock_in);
+  // Approved vacation days of next year: deducted only when the year turns,
+  // so they are shown apart from what is left now. The year follows the
+  // server clock the balance is kept by.
+  const vacationPlannedNextYear = timeCurrent?.vacation_days_planned_next_year ?? 0;
+  const vacationNextYear = (parseServerDateTime(timeCurrent?.server_time) ?? now).getFullYear() + 1;
   const clockedInLabel = clockedInParsed
     ? clockedInParsed.toLocaleTimeString(de ? "de-DE" : "en-US", {
         hour: "2-digit",
@@ -1318,7 +1334,13 @@ export function TimePage() {
       <div className="time-vacation-card">
         <h2 className="time-vacation-title">{de ? "Urlaubsanträge" : "Vacation requests"}</h2>
 
-        <div className="time-vacation-stats">
+        <div
+          className={
+            vacationPlannedNextYear > 0
+              ? "time-vacation-stats time-vacation-stats--with-planned"
+              : "time-vacation-stats"
+          }
+        >
           <div className="time-vacation-stat">
             <span className="time-vacation-stat-label">{de ? "Tage/Jahr" : "Days / year"}</span>
             <span className="time-vacation-stat-value">{timeCurrent?.vacation_days_per_year ?? 0}</span>
@@ -1337,6 +1359,21 @@ export function TimePage() {
               {timeCurrent?.vacation_days_total_remaining ?? 0}
             </span>
           </div>
+          {vacationPlannedNextYear > 0 && (
+            <div
+              className="time-vacation-stat time-vacation-stat--planned"
+              title={
+                de
+                  ? `Genehmigte Urlaubstage in ${vacationNextYear}. Sie werden erst zum Jahreswechsel vom Urlaub für ${vacationNextYear} abgezogen.`
+                  : `Approved vacation days in ${vacationNextYear}. They come off the ${vacationNextYear} allowance when the year turns.`
+              }
+            >
+              <span className="time-vacation-stat-label">
+                {de ? `Vorgemerkt ${vacationNextYear}` : `Planned ${vacationNextYear}`}
+              </span>
+              <span className="time-vacation-stat-value">{vacationPlannedNextYear}</span>
+            </div>
+          )}
         </div>
 
         <form className="time-vacation-form" onSubmit={submitVacationRequest}>

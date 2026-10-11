@@ -85,13 +85,20 @@ export function formatRelativeTime(value: string | null, now: Date, de: boolean)
  *
  * `repair_out` gets its own pip because a tool going to the repair shop is the
  * one movement a workshop chases; the rest collapse into "went out", "came
- * back" and "somebody corrected a number".
+ * back" and "somebody corrected a number". A consumption is stock going out —
+ * every consumable dispensed at the rack, the desk or the phone is one — and
+ * its undo is stock coming back.
  */
 export function movementPipKind(
   movementType: WerkstattMovementType | string,
 ): "out" | "in" | "adjust" | "repair" {
-  if (movementType === "checkout") return "out";
-  if (movementType === "return" || movementType === "intake" || movementType === "repair_back") {
+  if (movementType === "checkout" || movementType === "consumption") return "out";
+  if (
+    movementType === "return" ||
+    movementType === "intake" ||
+    movementType === "repair_back" ||
+    movementType === "consumption_undo"
+  ) {
     return "in";
   }
   if (movementType === "repair_out") return "repair";
@@ -107,16 +114,47 @@ const MOVEMENT_LABELS: Record<string, { de: string; en: string }> = {
   repair_back: { de: "Aus Reparatur", en: "Back from repair" },
   inventory_plus: { de: "Inventur +", en: "Stock-take +" },
   inventory_minus: { de: "Inventur −", en: "Stock-take −" },
-  // Stock built into a Verteiler — scanned at the Regal station or booked from
-  // the panel's Materialliste — and the inverse of one such booking.
-  consumption: { de: "Verbrauch (Verteiler)", en: "Consumed (panel)" },
-  consumption_undo: { de: "Verbrauch storniert", en: "Consumption undone" },
+  // Stock used up for good: a consumable dispensed at the rack, the desk or
+  // the phone (with the project it went into), or built into a Verteiler. The
+  // inverse is an undo or leftovers carried back to the shelf.
+  consumption: { de: "Verbrauch", en: "Consumed" },
+  consumption_undo: { de: "Verbrauch zurück", en: "Consumption returned" },
 };
 
 export function movementTypeLabel(movementType: string, de: boolean): string {
   const entry = MOVEMENT_LABELS[movementType];
   if (!entry) return movementType;
   return de ? entry.de : entry.en;
+}
+
+const CONSUMPTION_TYPES: ReadonlySet<string> = new Set(["consumption", "consumption_undo"]);
+const PANEL_NUMBER = /\bVT-\d+\b/;
+
+/**
+ * The Verteiler a ledger note names ("Regal-Station Werkstatt — Verteiler
+ * VT-0007" → "VT-0007"), or null.
+ *
+ * The movement payload carries no panel field; the board's number reaches the
+ * browser only in the note every panel booking writes
+ * (`schaltplan_material.booking_note`).
+ */
+export function panelNumberInNote(notes: string | null | undefined): string | null {
+  return notes?.match(PANEL_NUMBER)?.[0] ?? null;
+}
+
+/**
+ * The type label, plus the Verteiler for a consumption that went into one:
+ * "Verbrauch · Verteiler VT-0007". The project is not repeated here — the rows
+ * that show this already print the project number next to it.
+ */
+export function movementLabel(
+  movement: { movement_type: string; notes?: string | null },
+  de: boolean,
+): string {
+  const label = movementTypeLabel(movement.movement_type, de);
+  if (!CONSUMPTION_TYPES.has(movement.movement_type)) return label;
+  const panel = panelNumberInNote(movement.notes);
+  return panel ? `${label} · ${de ? "Verteiler" : "Panel"} ${panel}` : label;
 }
 
 /** `null` stays `null` — a missing price must not render as "0,00 €". */

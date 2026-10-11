@@ -250,6 +250,9 @@ export interface WerkstattArticleLite {
   /** Only ever true in a list fetched with `includeArchived` — the row has to
    *  be able to say so, or an out-of-service article sits among live ones. */
   is_archived?: boolean;
+  /** The supplier article number a text search matched on, when that is how
+   *  the row was found. Optional: absent on older APIs and on non-search lists. */
+  matched_supplier_article_no?: string | null;
 }
 
 // ──────────────────────────────────────────────────────────────────────────

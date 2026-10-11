@@ -16,6 +16,10 @@ vi.mock("../utils/schaltplanApi", () => ({
   bookPanelMaterial: vi.fn(),
   unbookPanelMaterial: vi.fn(),
   setPanelMaterialMapping: vi.fn(),
+  addPanelMaterialManual: vi.fn(),
+  updatePanelMaterialManual: vi.fn(),
+  deletePanelMaterialManual: vi.fn(),
+  panelMaterialPdfUrl: (panelId: number) => `/api/schaltplan/panels/${panelId}/material/pdf`,
 }));
 
 vi.mock("../utils/werkstattArticlesApi", () => ({ listArticles: vi.fn() }));

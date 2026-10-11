@@ -22,6 +22,7 @@ from app.services.task_material_settlement import (
     settle_task_materials,
 )
 from app.services.customer_activity import record_customer_activity
+from app.services.partner_hours import live_entries_on_task
 from app.services.task_attachments import (
     attachment_counts,
     delete_task_attachment_rows,
@@ -803,6 +804,14 @@ def delete_task(
     # the customer — ``_record_task_activity`` picks the side.
     if task.project_id is not None:
         assert_project_access(db, current_user, task.project_id, manage_required=True)
+    elif live_entries_on_task(db, task.id):
+        # A project task's partner hours fall back to the project when it goes;
+        # a customer-only task has nowhere to keep them, so it stays until the
+        # office has dealt with them (task modal → Partnerstunden).
+        raise HTTPException(
+            status_code=409,
+            detail="Partner hours were reported on this task; remove them before deleting it",
+        )
     _record_task_activity(
         db,
         task,

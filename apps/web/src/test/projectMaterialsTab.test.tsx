@@ -44,6 +44,19 @@ const PANEL_ROW: ProjectTrackedMaterial = {
   panel_numbers: ["VT-0007"],
 };
 
+const LAGER_ROW: ProjectTrackedMaterial = {
+  item: "Kabelbinder 200 mm",
+  unit: "Stk",
+  article_no: "SP-0311",
+  quantity_total: 40,
+  quantity_notes: [],
+  occurrence_count: 2,
+  report_count: 0,
+  last_report_date: "2026-10-09",
+  source: "lager",
+  panel_numbers: [],
+};
+
 function renderTab(materials: ProjectTrackedMaterial[], overrides: Record<string, unknown> = {}) {
   const loadProjectTrackedMaterials = vi.fn();
   const context = makeAppContextStub({
@@ -87,6 +100,13 @@ describe("materialSourceLabel", () => {
     // A verteiler row that arrives without numbers still says where it is from.
     expect(materialSourceLabel({ source: "verteiler" }, true)).toBe("Verteiler");
   });
+
+  it("calls stock taken off the shelf for the project a Lager row", () => {
+    expect(materialSourceLabel({ source: "lager", panel_numbers: [] }, true)).toBe(
+      "Lager (Entnahme)",
+    );
+    expect(materialSourceLabel({ source: "lager" }, false)).toBe("Stock (dispensed)");
+  });
 });
 
 describe("ProjectMaterialsTab source column", () => {
@@ -100,6 +120,28 @@ describe("ProjectMaterialsTab source column", () => {
       .getByText("WAGO 2003-7641 - TOPJOB S Durchgangsklemme")
       .closest(".project-mat-tab-row");
     expect(within(panelRow as HTMLElement).getByText("Verteiler VT-0007")).toBeTruthy();
+  });
+
+  it("shows Lager (Entnahme) for consumables dispensed to the project", () => {
+    renderTab([REPORT_ROW, PANEL_ROW, LAGER_ROW]);
+
+    const lagerRow = screen.getByText("Kabelbinder 200 mm").closest(".project-mat-tab-row");
+    const cell = within(lagerRow as HTMLElement).getByText("Lager (Entnahme)");
+    // Ledger fact, like a Verteiler row — not a technician's estimate.
+    expect(cell.classList.contains("project-mat-tab-td--source-lager")).toBe(true);
+    expect(rowTexts()).toEqual(["Bericht", "Lager (Entnahme)", "Verteiler VT-0007"]);
+  });
+
+  it("finds the dispensed rows by their source", () => {
+    renderTab([REPORT_ROW, PANEL_ROW, LAGER_ROW]);
+
+    fireEvent.change(screen.getByPlaceholderText("Material suchen…"), {
+      target: { value: "lager" },
+    });
+
+    expect(screen.getByText("Kabelbinder 200 mm")).toBeTruthy();
+    expect(screen.queryByText("Kabel NYM-J 3x1,5")).toBeNull();
+    expect(screen.queryByText("WAGO 2003-7641 - TOPJOB S Durchgangsklemme")).toBeNull();
   });
 
   it("finds a panel's material by its number", () => {
@@ -180,6 +222,18 @@ describe("ProjectMaterialsTab source column", () => {
       expect(
         lines.find((line) => line.includes("WAGO 2003-7641"))?.endsWith(",Verteiler VT-0007"),
       ).toBe(true);
+    });
+
+    it("exports a Lager row with its source", async () => {
+      renderTab([LAGER_ROW]);
+
+      fireEvent.click(screen.getByRole("button", { name: /CSV exportieren/ }));
+
+      const csv = await readBlob(captured as unknown as Blob);
+      const lines = csv.replace(/^\uFEFF/, "").split("\r\n");
+      expect(lines.find((line) => line.includes("Kabelbinder"))?.endsWith(",Lager (Entnahme)")).toBe(
+        true,
+      );
     });
   });
 });

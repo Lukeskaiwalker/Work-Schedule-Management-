@@ -1,14 +1,40 @@
-import React from "react";
+import React, { Suspense, lazy } from "react";
 import { createRoot } from "react-dom/client";
 
-import { App } from "./App";
 import { AppErrorBoundary } from "./components/AppErrorBoundary";
 import { NativeFileViewer } from "./components/shared/NativeFileViewer";
 import { NativeServerGate } from "./native/NativeServerGate";
 import { installNativeFileOpener } from "./native/fileOpen";
 import { installNativeNetworkBridge } from "./native/networkBridge";
 import { IS_NATIVE_SHELL } from "./native/shell";
+import { chooseShell } from "./portal/shellChoice";
 import "./styles.css";
+
+// Two apps share this bundle: the office app and the partner portal for
+// subcontractors' logins. Which one boots is decided before either mounts —
+// the office app starts loading everything the moment it has a session, and
+// the server refuses all of it to a partner login. Both are code-split, so a
+// partner's phone never downloads the office app and the office never waits
+// for the portal.
+const App = lazy(() => import("./App").then((m) => ({ default: m.App })));
+const PortalApp = lazy(() => import("./portal/PortalApp").then((m) => ({ default: m.PortalApp })));
+
+function storedToken(): string | null {
+  try {
+    return localStorage.getItem("smpl_token");
+  } catch {
+    return null;
+  }
+}
+
+function Root() {
+  const shell = chooseShell(window.location.pathname, storedToken());
+  return (
+    <Suspense fallback={<div className="page-loading-spinner" aria-hidden="true" />}>
+      {shell === "portal" ? <PortalApp /> : <App />}
+    </Suspense>
+  );
+}
 
 // Must run before any component can issue a request: in the native shell it is
 // what makes "/api/..." resolve to the server instead of to the app bundle.
@@ -38,7 +64,7 @@ createRoot(document.getElementById("root") as HTMLElement).render(
   <React.StrictMode>
     <AppErrorBoundary>
       <NativeServerGate>
-        <App />
+        <Root />
         {/* Renders null until an /api file link is clicked, and null always in
             a browser. Mounted here so App.tsx stays untouched. */}
         <NativeFileViewer />

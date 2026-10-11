@@ -2,9 +2,10 @@
  * The Reihenklemmen twin, pinned against the backend's own output.
  *
  * `fixtures/terminalFixtures.json` was written by
- * `apps/api/app/services/schaltplan_terminals.py`: for four boards the input
+ * `apps/api/app/services/schaltplan_terminals.py`: for five boards the input
  * document and exactly what the Python derivation returns — groups, strips,
- * the board font size, the Stückliste, the counts, the legend labels. This
+ * the board font size, the Stückliste, the counts, the legend labels (the
+ * fifth, `neozed_block`, is a Neozed straight on the 2016 block). This
  * test walks every board through the TypeScript derivation and demands the
  * same shapes, key for key. A rule changed on one side only turns this red,
  * which is the whole point: a preview that promises a marker the printer
@@ -63,8 +64,8 @@ function toTwinShape(value: Json, parentKey = ""): unknown {
 describe("Reihenklemmen twin — every board of the backend fixture", () => {
   const names = Object.keys(BOARDS);
 
-  it("covers the four boards the backend wrote", () => {
-    expect(names.sort()).toEqual(["block_only", "overrides", "standard", "two_rcd"]);
+  it("covers the five boards the backend wrote", () => {
+    expect(names.sort()).toEqual(["block_only", "neozed_block", "overrides", "standard", "two_rcd"]);
   });
 
   for (const name of names) {

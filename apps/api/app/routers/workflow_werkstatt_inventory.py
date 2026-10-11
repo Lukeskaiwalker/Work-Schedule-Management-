@@ -9,6 +9,9 @@ catalog code creates an article instead of asking a question.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
+
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -37,6 +40,7 @@ from app.schemas.werkstatt import (
 from app.services.werkstatt_article_numbers import next_article_number
 from app.services.werkstatt_inventory import (
     ImportRow,
+    InventoryError,
     finalize_session,
     import_counts,
     looks_like_ean,
@@ -89,6 +93,18 @@ def _session_out(db: Session, session: WerkstattInventorySession) -> InventorySe
         counted_articles=len(counts),
         total_units=sum(c.counted_qty for c in counts),
     )
+
+
+@contextmanager
+def _refused_as_400(db: Session) -> Iterator[None]:
+    """An ``InventoryError`` is the operator's to correct: a 400 carrying its
+    sentence, and nothing of the request kept — a scan's implicit +1 is
+    already flushed when its typed remainder is refused."""
+    try:
+        yield
+    except InventoryError as exc:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
 
 def _require_open(db: Session, session_id: int) -> WerkstattInventorySession:
@@ -155,14 +171,15 @@ def scan(
 ) -> InventoryScanResult:
     """One scan, one answer. Never bounces a resolvable code back as a question."""
 
-    outcome = scan_into_session(
-        db, session_id=session_id, code=payload.code.strip(), user=current_user
-    )
-    # A quantity > 1 means the operator typed it rather than scanning n times.
-    if outcome.article is not None and payload.quantity > 1:
-        outcome_qty = bump_count(db, session_id, outcome.article, payload.quantity - 1)
-    else:
-        outcome_qty = outcome.counted_qty
+    with _refused_as_400(db):
+        outcome = scan_into_session(
+            db, session_id=session_id, code=payload.code.strip(), user=current_user
+        )
+        # A quantity > 1 means the operator typed it rather than scanning n times.
+        if outcome.article is not None and payload.quantity > 1:
+            outcome_qty = bump_count(db, session_id, outcome.article, payload.quantity - 1)
+        else:
+            outcome_qty = outcome.counted_qty
     db.commit()
 
     article_out = None
@@ -212,7 +229,8 @@ def name_new_article(
     )
     db.add(article)
     db.flush()
-    counted = bump_count(db, session_id, article, payload.quantity)
+    with _refused_as_400(db):
+        counted = bump_count(db, session_id, article, payload.quantity)
     db.commit()
     db.refresh(article)
     return InventoryScanResult(
@@ -306,4 +324,6 @@ def finalize(
     """Book the variances. This is the only step that moves real stock."""
 
     session = _require_open(db, session_id)
-    return InventoryFinalizeResult(**finalize_session(db, session=session, user=current_user))
+    with _refused_as_400(db):
+        summary = finalize_session(db, session=session, user=current_user)
+    return InventoryFinalizeResult(**summary)

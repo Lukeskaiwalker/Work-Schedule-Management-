@@ -4,6 +4,11 @@ import { useAppContext } from "../../context/AppContext";
 import { useIsMobileViewport } from "../../hooks/useIsMobileViewport";
 import { BestandAnpassenModal } from "../../components/werkstatt/BestandAnpassenModal";
 import { EntnehmenModal } from "../../components/werkstatt/EntnehmenModal";
+import {
+  dispenseNotice,
+  dispenseProjectOptions,
+  isConsumableArticle,
+} from "../../components/werkstatt/dispense";
 import { KebabMenu } from "../../components/werkstatt/KebabMenu";
 import {
   MobileReturnSheet,
@@ -46,7 +51,10 @@ import "../../styles/mobile.css";
  * Self-gates on mainView + werkstattTab + viewport + a selected article id.
  *
  * Three write paths, all against endpoints that already existed:
- *   Entnehmen        → POST /werkstatt/mobile/checkout
+ *   Entnehmen        → POST /werkstatt/mobile/checkout — a consumable
+ *                      (`is_serialized` false) is booked as used up for the
+ *                      chosen project, a machine type as a loan; the answer's
+ *                      `booked_as` says which, and the notice follows it
  *   Zurückgeben      → POST /werkstatt/mobile/return
  *   Bestand anpassen → POST /werkstatt/articles/{id}/movements (werkstatt:manage)
  *
@@ -104,6 +112,10 @@ export function WerkstattMobileArtikelPage() {
   const [actionError, setActionError] = useState<string | null>(null);
 
   const sequence = useMemo(() => createRequestSequence(), []);
+
+  /* Archived projects are left out (the server refuses them), running jobs
+   * come first — the phone is used on site, for the job in hand. */
+  const projectOptions = useMemo(() => dispenseProjectOptions(projects), [projects]);
 
   const load = useCallback(async () => {
     if (articleId == null) return;
@@ -176,7 +188,7 @@ export function WerkstattMobileArtikelPage() {
     void load();
   }, [active, load]);
 
-  /** Book a checkout, then take the new counters from the server. */
+  /** Book the dispense, then take the new counters from the server. */
   const confirmCheckout = useCallback(
     async (payload: {
       quantity: number;
@@ -189,7 +201,9 @@ export function WerkstattMobileArtikelPage() {
       setActionError(null);
       try {
         const projectId = payload.project_id ? Number(payload.project_id) : null;
-        const snapshot = await checkoutArticle(token, {
+        // The answer says what the server booked (`booked_as`) and whether
+        // the shelf count had to be booked up (`stock_warning`).
+        const result = await checkoutArticle(token, {
           articleId: article.id,
           quantity: payload.quantity,
           projectId: projectId !== null && Number.isFinite(projectId) ? projectId : null,
@@ -198,9 +212,15 @@ export function WerkstattMobileArtikelPage() {
         });
         setCheckoutOpen(false);
         setNotice(
-          de
-            ? `${payload.quantity}× ${article.item_name} entnommen — ${snapshot.stock_available} von ${snapshot.stock_total} noch verfügbar`
-            : `Checked out ${payload.quantity}× ${article.item_name} — ${snapshot.stock_available} of ${snapshot.stock_total} still available`,
+          dispenseNotice(
+            {
+              result,
+              quantity: payload.quantity,
+              itemName: article.item_name,
+              project: projectOptions.find((option) => option.id === payload.project_id) ?? null,
+            },
+            de,
+          ),
         );
         await load();
       } catch (err: unknown) {
@@ -209,7 +229,7 @@ export function WerkstattMobileArtikelPage() {
         setSaving(false);
       }
     },
-    [article, saving, token, de, setNotice, load],
+    [article, saving, token, de, setNotice, load, projectOptions],
   );
 
   const confirmReturn = useCallback(
@@ -367,7 +387,12 @@ export function WerkstattMobileArtikelPage() {
     );
   }
 
-  const canCheckOut = !article.is_archived && article.stock_available > 0 && !saving;
+  /* A consumable is used up, and a short shelf is booked up by the server
+   * rather than refused (the person is holding the part, so the count was
+   * wrong). Only a machine type — a loan — needs something on the shelf. */
+  const consumable = isConsumableArticle(article);
+  const canCheckOut =
+    !article.is_archived && (consumable || article.stock_available > 0) && !saving;
 
   /**
    * Why "Zurückgeben" is off, or null when it is on.
@@ -394,7 +419,7 @@ export function WerkstattMobileArtikelPage() {
     ? de
       ? "Artikel archiviert"
       : "Article archived"
-    : article.stock_available === 0
+    : !consumable && article.stock_available === 0
       ? de
         ? "Nichts verfügbar"
         : "Nothing available"
@@ -557,12 +582,9 @@ export function WerkstattMobileArtikelPage() {
             location_name: article.location_name,
             stock_available: article.stock_available,
             stock_total: article.stock_total,
+            is_serialized: article.is_serialized,
           }}
-          projects={projects.map((project) => ({
-            id: String(project.id),
-            number: project.project_number,
-            title: project.name,
-          }))}
+          projects={projectOptions}
           submitting={saving}
           error={actionError}
           onConfirm={(payload) => void confirmCheckout(payload)}

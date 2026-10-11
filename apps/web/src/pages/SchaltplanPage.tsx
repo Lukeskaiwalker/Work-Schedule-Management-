@@ -39,9 +39,9 @@ import { PANEL_TYPE_LABELS, emptyDocument, makeDevice, newId, nextCircuitNumber 
 import {
   duplicateDevice as duplicateDeviceInDocument,
   rowFromTemplate,
+  setTerminalsEverywhere,
   type RowTemplateId,
 } from "../utils/schaltplanDocumentOps";
-import { isTerminalEligible } from "../utils/schaltplanTerminalRules";
 import { deriveTerminals, setTerminalLabel, terminalCounts } from "../utils/schaltplanTerminals";
 import { buildLegend, findDevice, neighbourDeviceId, validateDocument } from "../utils/schaltplanTopology";
 import {
@@ -82,7 +82,8 @@ const TAB_LABELS: Record<EditorTab, string> = {
   daten: "Daten",
 };
 
-const MATERIAL_HINT = "Geplant aus dem Verteilerplan · gescannt an der Regal-Station oder hier gebucht";
+const MATERIAL_HINT =
+  "Geplant aus dem Verteilerplan oder von Hand ergänzt · gescannt an der Regal-Station oder hier gebucht";
 
 export function SchaltplanPage() {
   const {
@@ -477,22 +478,10 @@ export function SchaltplanPage() {
     [mutate],
   );
 
-  /**
-   * Flag or clear "Reihenklemme am Abgang" on every eligible outgoing at
-   * once. Only devices whose flag actually changes get a new object, so an
-   * untouched breaker keeps its identity for React.
-   */
+  /** Flag or clear "Reihenklemme am Abgang" on the whole board — see `setTerminalsEverywhere`. */
   const setAllTerminals = useCallback(
     (flag: boolean) => {
-      mutate((current) => ({
-        ...current,
-        rows: current.rows.map((row) => ({
-          ...row,
-          devices: row.devices.map((device) =>
-            isTerminalEligible(device) && device.terminal_block !== flag ? { ...device, terminal_block: flag } : device,
-          ),
-        })),
-      }));
+      mutate((current) => setTerminalsEverywhere(current, flag));
     },
     [mutate],
   );

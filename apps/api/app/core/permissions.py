@@ -10,6 +10,18 @@ ROLE_EMPLOYEE = "employee"
 
 ALL_ROLES = [ROLE_ADMIN, ROLE_CEO, ROLE_ACCOUNTANT, ROLE_PLANNING, ROLE_EMPLOYEE]
 
+# A login for a subcontractor's person (roofer, plumber, groundworks), bound to
+# a Partner. Deliberately NOT in ALL_ROLES: nothing that lists, assigns or
+# edits roles — the permission matrix, the user form, chat role groups — may
+# ever offer it, and no permission map or per-user override applies to it.
+# Such a login reaches the partner portal (/api/portal) and nothing else; the
+# fence is enforced in app.core.deps.get_current_user, not by permissions.
+ROLE_EXTERNAL = "external"
+
+
+def is_external_role(role: str | None) -> bool:
+    return (role or "").strip().lower() == ROLE_EXTERNAL
+
 # Every permission string that the system recognises.  Used for input validation.
 ALL_PERMISSIONS: frozenset[str] = frozenset(
     [
@@ -325,6 +337,8 @@ def set_permissions_override(override: dict[str, list[str]] | None) -> None:
 
 
 def has_permission(role: str, permission: str) -> bool:
+    if is_external_role(role):
+        return False
     effective = _effective_role_permissions_map()
     return permission in effective.get(role, set())
 
@@ -359,7 +373,13 @@ def has_permission_for_user(user_id: int, role: str, permission: str) -> bool:
       1. User-level deny  → False
       2. User-level grant → True
       3. Role-level check → has_permission(role, permission)
+
+    A partner login holds nothing, whatever an override says: an admin
+    granting it ``projects:view`` by hand would otherwise open every project
+    in the company to a subcontractor.
     """
+    if is_external_role(role):
+        return False
     with _user_override_lock:
         override = _user_override_map.get(user_id)
     if override:
@@ -377,6 +397,8 @@ def has_global_project_access(user_id: int, role: str, *, manage_required: bool 
     `projects:view` is reserved for non-employee roles; employees remain scoped
     to their explicit project memberships.
     """
+    if is_external_role(role):
+        return False
     if has_permission_for_user(user_id, role, "projects:manage"):
         return True
     if manage_required or role == ROLE_EMPLOYEE:
@@ -399,6 +421,8 @@ def get_user_effective_permissions(user_id: int, role: str) -> list[str]:
 
     Applies role-level permissions first, then user-level extra/denied overrides.
     """
+    if is_external_role(role):
+        return []
     effective = _effective_role_permissions_map()
     role_perms = set(effective.get(role, set()))
 

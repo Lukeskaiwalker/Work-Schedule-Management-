@@ -66,14 +66,17 @@ export function StockFilterBar({
           <circle cx="11" cy="11" r="6.3" stroke="#5C7895" strokeWidth="1.8" />
           <path d="m15.6 15.6 4 4" stroke="#5C7895" strokeWidth="1.8" strokeLinecap="round" />
         </svg>
+        {/* The server searches every one of these, supplier numbers included
+            — the old placeholder promised Lagerort/Kategorie, which the list
+            endpoint never matched, and left out the supplier part number the
+            workshop actually types. */}
         <input
           type="text"
           value={search}
+          aria-label={de ? "Bestand durchsuchen" : "Search stock"}
           onChange={(event) => onSearch(event.target.value)}
           placeholder={
-            de
-              ? "Nach Name, Artikelnummer, Lagerort oder Kategorie suchen…"
-              : "Search by name, number, location or category…"
+            de ? "Name, SP-Nr., EAN, Lieferanten-Nr. …" : "Name, SP no., EAN, supplier no. …"
           }
         />
       </div>

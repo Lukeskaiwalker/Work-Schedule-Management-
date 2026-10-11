@@ -9,6 +9,7 @@
  */
 
 import type { WerkstattMovementType } from "../../../types/werkstatt";
+import { panelNumberInNote } from "../../../utils/werkstattOverviewFormat";
 
 /** Calendar days from `then` to `now`, in local time. Negative when future. */
 function calendarDaysBetween(then: Date, now: Date): number {
@@ -58,15 +59,15 @@ export function projectLabel(
  * The visual family a ledger movement belongs to.
  *
  * Three families exist as CSS variants (`--checkout`, `--return`,
- * `--inspection`); the ledger has eight movement types. Anything that is
- * neither a hand-out nor a hand-back is a stock correction and shares the
- * neutral third look.
+ * `--inspection`); the ledger has ten movement types. A consumption leaves the
+ * shelf like a hand-out and its undo comes back like a hand-back; anything else
+ * is a stock correction and shares the neutral third look.
  */
 export function movementFamily(
   type: WerkstattMovementType,
 ): "checkout" | "return" | "inspection" {
-  if (type === "checkout") return "checkout";
-  if (type === "return" || type === "repair_back") return "return";
+  if (type === "checkout" || type === "consumption") return "checkout";
+  if (type === "return" || type === "repair_back" || type === "consumption_undo") return "return";
   return "inspection";
 }
 
@@ -79,10 +80,10 @@ const MOVEMENT_TITLES: Record<WerkstattMovementType, { de: string; en: string }>
   repair_back: { de: "Aus Reparatur zurück", en: "Back from repair" },
   inventory_plus: { de: "Inventur +", en: "Stock-take +" },
   inventory_minus: { de: "Inventur −", en: "Stock-take −" },
-  // Stock built into a Verteiler (Regal station scan or Materialliste booking)
-  // and the inverse of one such booking.
-  consumption: { de: "Verbrauch (Verteiler)", en: "Consumed (panel)" },
-  consumption_undo: { de: "Verbrauch storniert", en: "Consumption undone" },
+  // Stock used up for good — a consumable taken for a site, or built into a
+  // Verteiler — and its inverse (an undo, or leftovers carried back).
+  consumption: { de: "Verbrauch", en: "Consumed" },
+  consumption_undo: { de: "Verbrauch zurück", en: "Consumption returned" },
 };
 
 /** What a ledger movement is called on screen. */
@@ -92,6 +93,23 @@ export function movementTitle(type: WerkstattMovementType, de: boolean): string 
   // its raw key. Better an unfamiliar word than a blank row in a ledger.
   if (!entry) return type;
   return de ? entry.de : entry.en;
+}
+
+/**
+ * The row's headline: the title, plus the Verteiler a consumption went into
+ * when the ledger note names one ("Verbrauch · Verteiler VT-0007"). The
+ * project is already in the subtitle, so it is not repeated here.
+ */
+export function movementHeadline(
+  movement: { movement_type: WerkstattMovementType; notes?: string | null },
+  de: boolean,
+): string {
+  const title = movementTitle(movement.movement_type, de);
+  if (movement.movement_type !== "consumption" && movement.movement_type !== "consumption_undo") {
+    return title;
+  }
+  const panel = panelNumberInNote(movement.notes);
+  return panel ? `${title} · ${de ? "Verteiler" : "Panel"} ${panel}` : title;
 }
 
 /** "12. Sep, 14:30" — compact enough for a phone row. */

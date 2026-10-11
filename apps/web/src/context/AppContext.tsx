@@ -658,12 +658,16 @@ export interface AppContextValue {
     navigation_title: string;
     company_name: string;
     company_address: string;
+    company_phone: string;
+    company_email: string;
   };
   setCompanySettingsForm: (form: {
     logo_url: string;
     navigation_title: string;
     company_name: string;
     company_address: string;
+    company_phone: string;
+    company_email: string;
   }) => void;
   companySettingsSaving: boolean;
   setCompanySettingsSaving: (saving: boolean) => void;
@@ -997,7 +1001,15 @@ export interface AppContextValue {
   addProjectTaskAssignee: (assigneeId: number) => void;
   removeProjectTaskAssignee: (assigneeId: number) => void;
   addFirstMatchingProjectTaskAssignee: () => void;
-  openTaskModal: (defaults?: { projectId?: number | null; dueDate?: string; taskType?: TaskType }) => void;
+  /** Moves whenever a task is created, saved or deleted (here or via the event stream). */
+  taskRevision: number;
+  openTaskModal: (defaults?: {
+    projectId?: number | null;
+    dueDate?: string;
+    taskType?: TaskType;
+    /** From a customer's page: the new task is anchored to that customer. */
+    customerId?: number | null;
+  }) => void;
   closeTaskModal: () => void;
   onTaskModalBackdropPointerDown: (event: PointerEvent<HTMLDivElement>) => void;
   onTaskModalBackdropPointerUp: (event: PointerEvent<HTMLDivElement>) => void;

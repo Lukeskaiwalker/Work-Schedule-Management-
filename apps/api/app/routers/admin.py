@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.core.deps import require_permission
-from app.core.permissions import ALL_PERMISSIONS, ALL_ROLES, PERMISSION_DESCRIPTIONS, PERMISSION_GROUPS, PERMISSION_LABELS, ROLE_EMPLOYEE, TEMPLATES, get_effective_permissions, get_user_override, has_permission_for_user
+from app.core.permissions import ALL_PERMISSIONS, ALL_ROLES, PERMISSION_DESCRIPTIONS, PERMISSION_GROUPS, PERMISSION_LABELS, ROLE_EMPLOYEE, ROLE_EXTERNAL, TEMPLATES, get_effective_permissions, get_user_override, has_permission_for_user, is_external_role
 from app.core.security import get_password_hash
 from app.core.time import utcnow
 from app.models.entities import AuditLog, EmployeeGroup, EmployeeGroupMember, ProjectClassTemplate, User, UserActionToken
@@ -201,11 +201,28 @@ def _employee_group_out(db: Session, group: EmployeeGroup) -> EmployeeGroupOut:
     )
 
 
+PARTNER_LOGIN_MANAGED_ON_PARTNER = "Partner logins are managed on the partner"
+
+
+def _refuse_partner_login(user: User) -> None:
+    """The generic user screens must not touch a partner-portal login.
+
+    Turning one into an employee, re-inviting it to the office app, granting
+    it a permission template or a station badge would each open the company
+    to a subcontractor. Those logins are created, re-linked and locked on
+    their partner (/partners/{id}/portal-users), where nothing can do that.
+    """
+    if is_external_role(user.role):
+        raise HTTPException(status_code=409, detail=PARTNER_LOGIN_MANAGED_ON_PARTNER)
+
+
 def _sync_employee_group_members(db: Session, group_id: int, member_user_ids: list[int]) -> None:
     normalized_ids = sorted({int(user_id) for user_id in member_user_ids if int(user_id) > 0})
     if normalized_ids:
         users = db.scalars(
-            select(User).where(User.id.in_(normalized_ids), User.is_active.is_(True)).order_by(User.id.asc())
+            select(User)
+            .where(User.id.in_(normalized_ids), User.is_active.is_(True), User.role != ROLE_EXTERNAL)
+            .order_by(User.id.asc())
         ).all()
         valid_ids = {user.id for user in users}
         missing = [user_id for user_id in normalized_ids if user_id not in valid_ids]
@@ -1157,7 +1174,12 @@ def _create_encrypted_database_backup(database_url: str, key_material: bytes) ->
 def list_users(_: User = Depends(require_permission("users:manage")), db: Session = Depends(get_db)):
     from app.routers.time_tracking import _vacation_balance_out
 
-    users = list(db.scalars(select(User).order_by(User.is_active.desc(), User.id)).all())
+    # Partner-portal logins are listed and managed on their partner, not here.
+    users = list(
+        db.scalars(
+            select(User).where(User.role != ROLE_EXTERNAL).order_by(User.is_active.desc(), User.id)
+        ).all()
+    )
     rows: list[UserOut] = []
     for user in users:
         out = UserOut.model_validate(user)
@@ -1325,6 +1347,9 @@ def create_and_send_invite(
     email = _normalize_email(payload.email)
     user = db.scalars(select(User).where(User.email == email)).first()
     if user:
+        # Re-inviting by address would otherwise rewrite a partner login's
+        # role into an office role.
+        _refuse_partner_login(user)
         user.full_name = payload.full_name.strip() or user.full_name
         user.role = role
         user.is_active = True
@@ -1694,6 +1719,7 @@ def send_user_invite(
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    _refuse_partner_login(user)
     if not user.is_active:
         raise HTTPException(status_code=400, detail="Invite can only be sent to active users")
 
@@ -1752,6 +1778,7 @@ def send_password_reset(
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    _refuse_partner_login(user)
     if not user.is_active:
         raise HTTPException(status_code=400, detail="Password reset can only be sent to active users")
 
@@ -1860,6 +1887,7 @@ def update_user(
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    _refuse_partner_login(user)
 
     if payload.role and payload.role not in ALL_ROLES:
         raise HTTPException(status_code=400, detail="Invalid role")
@@ -1954,6 +1982,7 @@ def apply_template(
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    _refuse_partner_login(user)
 
     # Template maps role->permissions; one-click action sets existing role template reference.
     if user.role not in TEMPLATES[template]:
@@ -2523,6 +2552,8 @@ def get_public_company_settings(
         navigation_title=str(effective.get("navigation_title") or "").strip() or "SMPL",
         company_name=str(effective.get("company_name") or "").strip() or "SMPL",
         company_address=str(effective.get("company_address") or "").strip(),
+        company_phone=str(effective.get("company_phone") or "").strip(),
+        company_email=str(effective.get("company_email") or "").strip(),
     )
 
 
@@ -2537,6 +2568,8 @@ def get_company_runtime_settings(
         navigation_title=str(effective.get("navigation_title") or "").strip() or "SMPL",
         company_name=str(effective.get("company_name") or "").strip() or "SMPL",
         company_address=str(effective.get("company_address") or "").strip(),
+        company_phone=str(effective.get("company_phone") or "").strip(),
+        company_email=str(effective.get("company_email") or "").strip(),
     )
 
 
@@ -2550,6 +2583,17 @@ def update_company_runtime_settings(
     navigation_title = (payload.navigation_title or "").strip() or "SMPL"
     company_name = (payload.company_name or "").strip() or "SMPL"
     company_address = (payload.company_address or "").strip()
+    stored = get_company_settings(db)
+    company_phone = (
+        str(stored.get("company_phone") or "").strip()
+        if payload.company_phone is None
+        else payload.company_phone.strip()
+    )
+    company_email = (
+        str(stored.get("company_email") or "").strip()
+        if payload.company_email is None
+        else payload.company_email.strip()
+    )
 
     set_company_settings(
         db,
@@ -2557,6 +2601,8 @@ def update_company_runtime_settings(
         navigation_title=navigation_title,
         company_name=company_name,
         company_address=company_address,
+        company_phone=company_phone,
+        company_email=company_email,
     )
     db.commit()
     log_admin_action(
@@ -2570,6 +2616,8 @@ def update_company_runtime_settings(
             "navigation_title": navigation_title,
             "company_name": company_name,
             "company_address": company_address,
+            "company_phone": company_phone,
+            "company_email": company_email,
         },
     )
     return CompanySettingsOut(
@@ -2577,6 +2625,8 @@ def update_company_runtime_settings(
         navigation_title=navigation_title,
         company_name=company_name,
         company_address=company_address,
+        company_phone=company_phone,
+        company_email=company_email,
     )
 
 
@@ -3204,6 +3254,7 @@ def set_user_permissions(
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    _refuse_partner_login(user)
 
     # Validate all permission strings.
     unknown_extra = [p for p in payload.extra if p not in ALL_PERMISSIONS]

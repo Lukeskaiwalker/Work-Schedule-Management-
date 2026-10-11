@@ -10,6 +10,7 @@ import {
   greeting,
   isOverdue,
   movementFamily,
+  movementHeadline,
   movementSubtitle,
   movementTitle,
   projectLabel,
@@ -83,6 +84,28 @@ describe("movement rows", () => {
     // 500s; a list that renders them must not fall back to a blank row.
     expect(movementTitle("inventory_plus", true)).toBe("Inventur +");
     expect(movementTitle("inventory_minus", false)).toBe("Stock-take −");
+  });
+
+  it("calls a consumption Verbrauch and its undo Verbrauch zurück", () => {
+    expect(movementTitle("consumption", true)).toBe("Verbrauch");
+    expect(movementTitle("consumption_undo", true)).toBe("Verbrauch zurück");
+  });
+
+  it("draws a consumption as going out and its undo as coming back", () => {
+    expect(movementFamily("consumption")).toBe("checkout");
+    expect(movementFamily("consumption_undo")).toBe("return");
+  });
+
+  it("puts the Verteiler in the headline when the ledger note names one", () => {
+    expect(
+      movementHeadline(
+        { movement_type: "consumption", notes: "Regal-Station Werkstatt — Verteiler VT-0007" },
+        true,
+      ),
+    ).toBe("Verbrauch · Verteiler VT-0007");
+    // The project is already in the subtitle, so the headline does not repeat it.
+    expect(movementHeadline({ movement_type: "consumption", notes: null }, true)).toBe("Verbrauch");
+    expect(movementHeadline({ movement_type: "checkout", notes: null }, true)).toBe("Entnommen");
   });
 
   it("joins only the parts that exist", () => {

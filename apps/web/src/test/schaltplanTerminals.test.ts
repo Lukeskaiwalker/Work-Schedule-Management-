@@ -115,11 +115,11 @@ describe("the rules", () => {
     expect(makeDevice("mcb").terminal_block).toBe(false);
   });
 
-  it("only MCB-protected outgoing kinds are eligible; an RCBO keeps its own N", () => {
-    for (const kind of ["mcb", "wallbox", "sub_feed", "pv"] as DeviceKind[]) {
+  it("MCB-protected outgoings and a Neozed are eligible; an RCBO keeps its own N", () => {
+    for (const kind of ["mcb", "wallbox", "sub_feed", "pv", "fuse"] as DeviceKind[]) {
       expect(isTerminalEligible(makeDevice(kind))).toBe(true);
     }
-    for (const kind of ["rcbo", "fuse", "contactor", "rcd", "spd", "blank", "terminal"] as DeviceKind[]) {
+    for (const kind of ["rcbo", "contactor", "rcd", "spd", "blank", "terminal"] as DeviceKind[]) {
       expect(isTerminalEligible(makeDevice(kind))).toBe(false);
     }
   });
@@ -434,7 +434,7 @@ describe("deriveTerminals — group boundaries", () => {
     });
   });
 
-  it("ignores an RCBO and a fuse even when they carry the flag", () => {
+  it("ignores an RCBO even when it carries the flag", () => {
     const document = board([
       {
         id: "r1",
@@ -442,12 +442,70 @@ describe("deriveTerminals — group boundaries", () => {
         devices: [
           makeDevice("rcd", { id: "f1", designation: "F1" }),
           tb("rcbo", { id: "x", designation: "F1.1", circuit: "1" }),
-          tb("fuse", { id: "s", designation: "F9" }),
         ],
       },
     ]);
     expect(deriveTerminals(document)).toEqual([]);
     expect(terminalFindings(buildTopology(document))).toEqual([]);
+  });
+
+  // Owner, 2026-10-09: a Neozed module going straight on to the WAGO 2016
+  // combo block (PV / callbox outputs) — no LS between, always the block.
+  it("ends a flagged Neozed straight on the 2016 block, without a breaker", () => {
+    const document = board([
+      {
+        id: "r1",
+        label: "Reihe 1",
+        devices: [tb("fuse", { id: "n1", designation: "F0", poles: 3, rating: "35 A", label: "PV-Wechselrichter", circuit: "20" })],
+      },
+    ]);
+    const [group] = deriveTerminals(document);
+    expect(group.groupId).toBe("supply");
+    expect(group.strips.map((strip) => strip.kind)).toEqual(["block"]);
+    expect(group.terminals.map((entry) => entry.partId)).toEqual(["2016-7604", "2016-7601", "2016-7601", "2016-7601", "2016-7607"]);
+    expect([group.strips[0].name, group.strips[0].xLabel]).toEqual(["PV-Wechselrichter", "X1"]);
+    // The block brings its own N: nothing to say about a missing feed terminal.
+    expect(terminalFindings(buildTopology(document))).toEqual([]);
+  });
+
+  it("gives a one-pole 16 A Neozed the combo block too", () => {
+    const document = board([
+      {
+        id: "r1",
+        label: "Reihe 1",
+        devices: [
+          makeDevice("rcd", { id: "f1", designation: "F1" }),
+          tb("fuse", { id: "n1", designation: "F1.1", poles: 1, rating: "16 A" }),
+        ],
+      },
+    ]);
+    expect(deriveTerminals(document)[0].strips.map((strip) => strip.kind)).toEqual(["block"]);
+  });
+
+  it("never gives a block to a Neozed that feeds an FI or a row of LS", () => {
+    const preFuse = board([
+      {
+        id: "r1",
+        label: "Reihe 1",
+        devices: [
+          tb("fuse", { id: "n1", designation: "F0", poles: 3, rating: "35 A" }),
+          makeDevice("rcd", { id: "f1", designation: "F1", parent_id: "n1" }),
+          tb("mcb", { id: "a", designation: "F1.1" }),
+        ],
+      },
+    ]);
+    expect(deriveTerminals(preFuse).flatMap((group) => group.terminals.map((entry) => entry.deviceId))).toEqual(["f1", "a", null]);
+    const feeder = board([
+      {
+        id: "r1",
+        label: "Reihe 1",
+        devices: [
+          tb("fuse", { id: "n1", designation: "F0", poles: 3, rating: "35 A", feeds_following: true }),
+          tb("mcb", { id: "a", designation: "F0.1" }),
+        ],
+      },
+    ]);
+    expect(deriveTerminals(feeder).flatMap((group) => group.terminals.map((entry) => entry.deviceId))).toEqual(["a"]);
   });
 });
 
