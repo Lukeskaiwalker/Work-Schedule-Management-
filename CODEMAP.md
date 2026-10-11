@@ -51,6 +51,7 @@ docker-compose.yml            Services: db, api, web, caddy
 | `config.py` | `get_settings()` — Pydantic settings from env vars |
 | `security.py` | `verify_password()`, `get_password_hash()` |
 | `time.py` | `utcnow()` |
+| `log_redaction.py` | `logging.Filter` that strips URL secrets from uvicorn's access log; installed by `main.py` |
 | `events.py` | `notify(db, event_type, payload)` — fires pg_notify; `listen_for_events()` — async SSE generator |
 | `main.py` | FastAPI app + rate-limit middleware. `lifespan` spawns `_image_loop()`: background async task that calls `sync_pending_material_catalog_images(limit=10)` every 30 s via a dedicated `ThreadPoolExecutor`. |
 
@@ -104,7 +105,7 @@ All registered in `main.py` under the `/api` prefix.
 | `auth.py` | Login, logout, `/auth/me`, invite accept, password reset |
 | `admin.py` | User management, runtime settings (weather, SMTP, company branding), system update center |
 | `time_tracking.py` | Clock in/out, break tracking, timesheets, vacations, school absences |
-| `events.py` | `GET /events?token=` — SSE live-update stream |
+| `events.py` | `GET /events` — SSE live-update stream (session cookie, or a single-use ticket from `POST /events/ticket`; see docs/LOG_HYGIENE.md) |
 | `workflow_projects.py` | Project CRUD, finance, members, weather, class templates |
 | `workflow_tasks.py` | Task CRUD, assignment, planning week |
 | `workflow_chat.py` | Threads, messages, attachments, read state |
@@ -136,7 +137,8 @@ All use `conftest.py` fixtures: `client` (TestClient), `admin_token` (str), `res
 | `test_class_templates.py` | Project class template import and task autocreation |
 | `test_construction_report_pdf.py` | PDF report generation |
 | `test_emailer.py` | Email dispatch |
-| `test_events.py` | SSE endpoint auth and stream handshake |
+| `test_events.py` | SSE endpoint auth (cookie, single-use ticket, transitional `?token=`) and stream handshake |
+| `test_log_redaction.py` | Secrets redacted from the uvicorn access log; same pattern as the Caddyfile |
 | `test_files.py` | File upload, preview, WebDAV mount flow, folder visibility |
 | `test_files_service.py` | File service unit tests |
 | `test_material_catalog.py` | Material catalog operations |
@@ -217,7 +219,7 @@ Key state variables in `App.tsx`:
 
 | File | Purpose |
 |------|---------|
-| `useServerEvents.ts` | Manages `EventSource` SSE connection; returns `{ status: SseStatus }` |
+| `useServerEvents.ts` | Manages `EventSource` SSE connection (cookie in browsers, ticket in the iOS shell, own reconnects); returns `{ status: SseStatus }` |
 
 ### Utils (`utils/`)
 
@@ -446,6 +448,14 @@ Owner: "'Waren Ausgabe' only works for tools never for consumables … when we s
 |---|---|
 | `apps/api/app/services/vacation_years.py`; `routers/time_tracking.py` (`_check_vacation_approval`, `_ensure_vacation_balance_year`); migration `20261010_0100` (`vacation_requests.pending_future_days`) | Approval splits a request by calendar year: days in the balance year (or earlier) are checked and deducted now (carryover first); days in a later year are checked against that year's budget (next year: `per_year` + this year's AVAILABLE left after the deduction − other approved plans; carryover left at year end expires, as the rollover does) and kept as `pending_future_days`. The lazy rollover charges each year's planned days when that year begins (one year at a time, never below 0, recorded as deducted). Rejection and single-day removal (`vacation_day_removal.py`) handle planned days; refusals are German and name the year. `vacation_days_planned_next_year` on `/time/current` → TimePage "Vorgemerkt <Jahr>" |
 | `apps/web/src/components/admin/AdminTabBar.tsx` + `adminTabStrip.ts`; `styles/admin-mobile.css`; `pages/AdminPage.tsx` | The page root clips horizontal overflow (`overflow-x: clip`), so every wide admin element lives in its own scroll container or reflows: the tab bar is a sideways-scrolling, snap-aware WAI-ARIA tab list that reveals the active tab; Rollen scrolls in `.admin-roles-table-wrap` with a sticky permission column and header; Protokoll and Backups rows become labelled cards; user cards label every number; forms single-column with 44 px controls and 16 px text (no iOS zoom). Scoped to `.admin-center`; desktop unchanged |
+
+## No bearer secrets in request logs (2026-10-11)
+
+| Module | Role |
+|---|---|
+| `apps/api/app/routers/events.py`; `services/event_stream_tickets.py`; `schemas/events.py` | `GET /events` authenticates from a `?ticket=` (single use, 60 s, hashed in `user_action_tokens` purpose `event_stream`, minted by `POST /events/ticket`), else the session cookie, else the transitional `?token=` (until installed iOS apps are rebuilt) |
+| `apps/web/src/hooks/useServerEvents.ts` | Browser: bare `/api/events` on the cookie, ticket when the cookie fails to open it; iOS shell: always a ticket. Reconnects itself (a ticket is spent; a non-200 closes an EventSource for good) |
+| `apps/api/app/core/log_redaction.py`; `apps/web/Caddyfile` snippet `(log_redaction)` | One regexp, kept identical in both (a test checks): `?token=`/`?ticket=` values, `/confirm/…`, customer-confirmation, IDS hand-over and calendar-feed tokens, in the URI and the Referer; Caddy also replaces `X-Access-Token` / `X-Mfa-Challenge`. docs/LOG_HYGIENE.md |
 
 ## Zugangsdaten and Kalender-Abo (2026-09-24)
 

@@ -7,6 +7,46 @@
 # that file flips the page instantly — no reload, no restart, no dropped
 # connections.
 
+# Secrets out of every log line this proxy writes. Imported by the access log
+# below AND by the default logger in the global options, because a request the
+# upstream fails (api down mid-deploy, a reset) is logged a second time by
+# http.log.error — to the default logger, with the full URI and headers.
+#
+# Caddy only redacts the Cookie, Set-Cookie, Authorization and
+# Proxy-Authorization headers by itself. That left, until 2026-10:
+#
+#   request>uri       ?token=<session JWT> of the live-update stream, the
+#                     calendar feed token, invite / reset / confirmation links
+#   Referer           the same links again, on every request a page opened
+#                     from one makes (Referrer-Policy keeps the full URL
+#                     same-origin)
+#   X-Access-Token    the session JWT the login response hands the client
+#   X-Mfa-Challenge   the half-login token between password and second factor
+#
+# One regexp per field, because a field takes exactly one filter — a second
+# `request>uri` line silently replaces the first (checked with `caddy adapt`
+# on 2.10.2), so query and path rules have to share it. The pattern is the
+# one in apps/api/app/core/log_redaction.py (RE2 and Python read it the same);
+# change both together. Its groups keep what surrounds a secret, so the line
+# still shows method, path shape, status and duration:
+#   1  ?token= / ?ticket= / ?access_token=  value up to the next & or #
+#   2  /confirm/, /api/public/customer-confirmations/,
+#      /api/werkstatt/ids/handoff|hook/     the next path segment
+#   3+4 /api/calendar/<token>/feed.ics      the token, not /api/calendar/feed
+# docs/LOG_HYGIENE.md lists what each secret is and how long it lives.
+(log_redaction) {
+	format filter {
+		wrap json
+		fields {
+			request>uri regexp `([?&](?:access_token|token|ticket)=)[^&#]*|((?:^|://[^/]+|\s)/(?:confirm|api/public/customer-confirmations|api/werkstatt/ids/(?:handoff|hook))/)[^/?#]+|((?:^|://[^/]+|\s)/api/calendar/)[^/?#]+(/feed\.ics)` "${1}${2}${3}REDACTED${4}"
+			request>headers>Referer regexp `([?&](?:access_token|token|ticket)=)[^&#]*|((?:^|://[^/]+|\s)/(?:confirm|api/public/customer-confirmations|api/werkstatt/ids/(?:handoff|hook))/)[^/?#]+|((?:^|://[^/]+|\s)/api/calendar/)[^/?#]+(/feed\.ics)` "${1}${2}${3}REDACTED${4}"
+			request>headers>X-Mfa-Challenge replace REDACTED
+			resp_headers>X-Access-Token replace REDACTED
+			resp_headers>X-Mfa-Challenge replace REDACTED
+		}
+	}
+}
+
 (spa_routing) {
 	encode gzip
 
@@ -14,15 +54,16 @@
 	# Added 2026-09-16 after a user's "Network request failed" on a report
 	# upload could not be investigated: the api had never seen the request
 	# and this proxy kept no record either, so whether it was rejected here,
-	# reset mid-body, or never arrived was unknowable. Caddy redacts
-	# Authorization and Cookie values by default (log_credentials is off),
-	# so bearer tokens do not land in `docker logs`. Note the log lives
-	# with the container: a `--force-recreate` swap starts a fresh one, so
-	# dump it (docker logs smpl-all-web-1 > file) BEFORE deploying if it is
-	# needed as evidence.
+	# reset mid-body, or never arrived was unknowable. Secrets are filtered
+	# out by the log_redaction snippet above — Caddy's own redaction stops at
+	# the Cookie and Authorization headers, and a dump of this log taken
+	# before the snippet existed held session JWTs. Note the log lives with
+	# the container: a `--force-recreate` swap starts a fresh one, so dump it
+	# (docker logs smpl-all-web-1 > file) BEFORE deploying if it is needed as
+	# evidence.
 	log {
 		output stdout
-		format json
+		import log_redaction
 	}
 
 	# Maintenance mode: when /srv/maintenance/.flag exists, every request
@@ -138,6 +179,14 @@
 
 {
 	auto_https disable_redirects
+
+	# The default logger keeps its stderr/JSON shape; only the filter is new.
+	# It carries http.log.error, which repeats a failed request's URI and
+	# headers — see the log_redaction snippet.
+	log default {
+		output stderr
+		import log_redaction
+	}
 }
 
 # Local dev: terminate TLS with an internal cert. The HTTP listener below

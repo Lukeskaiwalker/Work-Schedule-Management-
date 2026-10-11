@@ -51,8 +51,10 @@ route table (~420 login-protected routes) and asserts the 403 on each one.
 
 The other doors are closed explicitly:
 
-* the event stream (`/api/events`) — `get_current_user_from_token` refuses
-  partner logins unless a caller opts in (only logout does, to audit);
+* the event stream (`/api/events`) — `get_current_user_from_token` and, for
+  stream tickets, `get_active_user_by_id` refuse partner logins unless a
+  caller opts in (only logout does, to audit); minting a ticket goes through
+  `get_current_user`, so the fence refuses it first;
 * WebDAV basic auth — a partner login gets the same 401 as a wrong password;
 * permissions — `has_permission_for_user` and friends return nothing for the
   role, and a per-user override cannot grant it anything;
