@@ -22,7 +22,9 @@ python-multipart==0.0.32
 httpx==0.28.1
 cryptography==50.0.2
 python-dotenv==1.2.4
-pytest==8.4.2
+# 9.0.3: PYSEC-2026-1845 (fixed in 9.0.3). Still installed in the production
+# image because scripts/test.sh and docs/TESTING.md run the suite inside it.
+pytest==9.0.3
 pytest-cov==6.2.1
 # Pinned to exact versions (were floating >=) so prod builds are reproducible
 # and can't silently pull an untested release. These are the versions the test
