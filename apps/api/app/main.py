@@ -13,6 +13,7 @@ from sqlalchemy import select
 
 from app.core.config import get_settings
 from app.core.db import SessionLocal
+from app.core.log_redaction import install_access_log_redaction
 from app.core.permissions import ROLE_ADMIN
 from app.core.security import get_password_hash, verify_password
 from app.core.time import utcnow
@@ -63,6 +64,13 @@ async def _image_loop() -> None:
         await asyncio.sleep(IMAGE_INTERVAL_SECONDS)
 
 settings = get_settings()
+
+# uvicorn's access log prints each request line with its query string, and a
+# few of our URLs carry a credential (the calendar feed, the customer's
+# confirmation link, the stream's transitional ?token=). Installed at import,
+# which every uvicorn worker does after configuring its loggers — see
+# core/log_redaction.py.
+install_access_log_redaction()
 
 
 def _initialize_runtime_data() -> None:
@@ -367,7 +375,9 @@ async def basic_rate_limit(request: Request, call_next):
     # WebDAV clients can burst aggressively, so keep separate, higher buckets.
     if request.method == "OPTIONS":
         return await call_next(request)
-    if request.url.path.startswith("/api/events"):
+    # The stream itself only: a reconnect is not a burst worth limiting. Exact
+    # match, so minting a stream ticket (POST /api/events/ticket) still counts.
+    if request.url.path == "/api/events":
         return await call_next(request)
     ip = _rate_limit_client_ip(request)
     scope, limit = _rate_scope(request.url.path, request.headers.get("authorization"))

@@ -116,6 +116,13 @@ def test_the_portal_itself_is_reachable_and_internal_staff_are_kept_out_of_it(cl
 
 def test_the_event_stream_and_webdav_refuse_a_partner_login(client: TestClient, admin_token: str) -> None:
     _, user, token = portal_login(client, admin_token)
+    # Every way into the stream: the session cookie the login just left in
+    # the jar, a stream ticket, and the transitional ?token=.
+    assert client.cookies.get("access_token")
+    assert client.get("/api/events").status_code == 403
+    ticket = client.post("/api/events/ticket", headers=auth_headers(token))
+    assert ticket.status_code == 403 and ticket.json()["detail"] == PORTAL_ONLY_DETAIL
+    client.cookies.clear()
     stream = client.get("/api/events", params={"token": token})
     assert stream.status_code == 403
     dav = TestClient(client.app).request("PROPFIND", "/api/dav/projects", auth=(user["email"], PORTAL_PASSWORD))

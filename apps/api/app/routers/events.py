@@ -1,32 +1,87 @@
 """
 events.py router - Server-Sent Events endpoint for live updates.
 
-Clients connect with:
-  new EventSource(`/api/events?token=${encodeURIComponent(token)}`)
+Clients connect with one of:
+  new EventSource("/api/events")                     browsers: session cookie
+  new EventSource(`/api/events?ticket=${ticket}`)    native shell: a ticket from
+                                                     POST /api/events/ticket
+
+Why not the JWT in the URL, as before: EventSource cannot send an
+Authorization header, so ``?token=<session JWT>`` was the obvious way in —
+and the query string is exactly what the proxy's and uvicorn's access logs
+print. A dump of the production proxy log held 19 JWTs. The cookie puts
+nothing in the URL; a ticket puts in something that is spent by the time
+anyone could read it. docs/LOG_HYGIENE.md has the whole picture.
 """
 from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
 
 from app.core.config import get_settings
-from app.core.db import SessionLocal
-from app.core.deps import get_current_user_from_token
+from app.core.db import SessionLocal, get_db
+from app.core.deps import get_active_user_by_id, get_current_user, get_current_user_from_token
 from app.core.permissions import has_global_project_access
 from app.core.events import listen_for_events
-from app.models.entities import ChatThread, Project, ProjectMember
+from app.models.entities import ChatThread, Project, ProjectMember, User
 from app.routers.workflow_helpers import _thread_visible_to_user
+from app.schemas.events import EventStreamTicketOut
+from app.services.event_stream_tickets import TICKET_TTL_SECONDS, issue_ticket, redeem_ticket
 
 router = APIRouter()
+
+
+@router.post("/events/ticket", response_model=EventStreamTicketOut)
+def create_event_stream_ticket(
+    response: Response,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> EventStreamTicketOut:
+    """A single-use ticket for one connection to /api/events, for a client
+    that has no session cookie to open the stream with.
+
+    Authenticated like any other call, so the partner-portal fence and the
+    CSRF rule apply as usual; a partner login is refused here before it could
+    ever reach the stream.
+    """
+    response.headers["Cache-Control"] = "no-store"
+    return EventStreamTicketOut(ticket=issue_ticket(db, current_user), expires_in=TICKET_TTL_SECONDS)
+
+
+def _resolve_stream_user(db: Session, *, ticket: str | None, cookie: str | None, legacy_token: str | None) -> User:
+    """Who is opening the stream, from the first credential the request names.
+
+    A ticket wins and does not fall back: a client that sends one chose it,
+    and a spent ticket must fail even when the same browser also holds a
+    cookie, or "single use" would mean nothing. Otherwise the session cookie,
+    then the transitional ``?token=``.
+    """
+    if ticket is not None:
+        user_id = redeem_ticket(db, ticket)
+        if user_id is None:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired stream ticket")
+        return get_active_user_by_id(user_id, db)
+    credential = cookie or legacy_token
+    if not credential:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+    return get_current_user_from_token(credential, db)
 
 
 @router.get("/events")
 async def sse_events(
     request: Request,
-    token: str = Query(..., description="JWT access token"),
+    ticket: str | None = Query(default=None, description="Single-use ticket from POST /api/events/ticket"),
+    # TRANSITIONAL — remove once every installed iOS shell runs a bundle that
+    # asks for tickets (docs/LOG_HYGIENE.md, "Removing ?token="). The shell
+    # bundles the SPA, so its old ?token= code keeps running on phones until
+    # the app itself is rebuilt; refusing it now would silently stop live
+    # updates there. Browsers no longer send it, and both access logs redact it.
+    token: str | None = Query(default=None, deprecated=True, description="Deprecated: session JWT"),
+    access_token: str | None = Cookie(default=None),
 ) -> EventSourceResponse:
     """
     SSE stream endpoint.
@@ -38,7 +93,7 @@ async def sse_events(
 
     db = SessionLocal()
     try:
-        user = get_current_user_from_token(token, db)
+        user = _resolve_stream_user(db, ticket=ticket, cookie=access_token, legacy_token=token)
         user_id = int(user.id)
         is_admin = user.role in {"admin", "ceo"}
 

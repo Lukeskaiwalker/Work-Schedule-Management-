@@ -112,6 +112,11 @@
   - Protect encryption keys and backup passphrase.
   - Run periodic restore drills and verify restored data integrity before relying on backups operationally.
 
+## Iteration Security Notes (2026-10-11, bearer secrets out of request logs)
+- The live-update stream no longer takes the session JWT as `?token=`: browsers authenticate it with the session cookie, the iOS shell with a single-use 60-second ticket (`POST /api/events/ticket`). `?token=` is still accepted until installed iOS apps are rebuilt.
+- The proxy (Caddy) and API (uvicorn) access logs redact the URL secrets that remain by design (calendar feed, customer confirmation, IDS hand-over, invite/reset links) plus `X-Access-Token` / `X-Mfa-Challenge`.
+- What leaked, and the production cleanup left for the owner: `docs/LOG_HYGIENE.md`.
+
 ## Iteration Security Notes (2026-03-04, DATANORM material catalog parsing)
 - Material catalog import now uses deterministic DATANORM field parsing instead of heuristic token extraction, reducing risk of incorrect catalog metadata being shown to users.
 - Parser-signature versioning forces a controlled one-time reimport when parser logic changes, preventing stale/misparsed cached catalog data from persisting indefinitely.

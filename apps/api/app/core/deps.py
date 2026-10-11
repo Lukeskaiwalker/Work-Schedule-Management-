@@ -335,8 +335,9 @@ def get_current_user_from_token(token: str, db: Session, *, allow_external: bool
     """
     Validate a raw JWT string and return the active User.
 
-    Used by the SSE endpoint where the token arrives via query parameter
-    (EventSource does not support custom authorization headers).
+    Used by the SSE endpoint, which reads the JWT from the session cookie
+    itself (EventSource does not support custom authorization headers), and
+    by logout.
 
     A partner-portal login is refused unless the caller opts in with
     ``allow_external`` — the same deny-by-default as get_current_user's
@@ -354,6 +355,13 @@ def get_current_user_from_token(token: str, db: Session, *, allow_external: bool
     except (TypeError, ValueError):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid authentication token")
 
+    return get_active_user_by_id(user_id, db, allow_external=allow_external)
+
+
+def get_active_user_by_id(user_id: int, db: Session, *, allow_external: bool = False) -> User:
+    """The active user behind an already-verified credential, under the same
+    partner deny-by-default as get_current_user_from_token. Split out for the
+    event stream's tickets, which carry a user id rather than a JWT."""
     user = db.get(User, user_id)
     if user is None or not user.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
