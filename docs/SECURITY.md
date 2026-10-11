@@ -98,6 +98,7 @@
 ## OWASP Baseline Controls (MVP)
 - Password hashing using bcrypt.
 - Basic request-rate limiting middleware with explicit `429` responses (`Retry-After`) and separate traffic buckets for WebDAV/time-heavy endpoints.
+  Requests with a verified session token are counted per user (the office shares one NAT address); everything else, and always PATs, login and station pairing, per client address. Caddy overwrites `X-Real-Ip` so a client cannot choose its address.
 - CORS restricted by config.
 - CSRF protection for cookie-authenticated mutating requests (`X-CSRF-Token` header must match CSRF cookie).
 - No secrets committed; templates only in repo.

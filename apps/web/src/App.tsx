@@ -178,6 +178,9 @@ import {
 import { buildTaskModalCopyStateFromEditForm, taskCopyNotice } from "./utils/taskCopy";
 import { uploadTaskAttachments } from "./components/tasks/taskAttachmentsApi";
 import { createRequestSequence } from "./utils/latestRequest";
+import { createSingleFlight } from "./utils/singleFlight";
+import { TIME_DATA_POLL_INTERVAL_MS, fetchTimeData } from "./utils/timeData";
+import { startVisiblePolling } from "./utils/visiblePolling";
 import {
   normalizeMaterialNeedStatus,
 } from "./utils/materials";
@@ -1877,6 +1880,14 @@ export function App() {
   const monthCursorISORef = useRef(monthCursorISO);
   useEffect(() => { monthCursorISORef.current = monthCursorISO; });
 
+  // Every time-data refresh goes through one single-flight: the poll, the
+  // saves that await refreshTimeData, SSE events and filter changes used to
+  // start their own and overlap. The ref hands the flight this render's
+  // loader, so a follow-up run reads the current user, month and range.
+  const loadTimeDataRef = useRef(loadTimeDataIntoState);
+  loadTimeDataRef.current = loadTimeDataIntoState;
+  const [timeDataFlight] = useState(() => createSingleFlight(() => loadTimeDataRef.current()));
+
   const monthCursorLabel = useMemo(
     () =>
       timeMonthCursor.toLocaleDateString(language === "de" ? "de-DE" : "en-US", {
@@ -3000,13 +3011,16 @@ export function App() {
     return () => window.cancelAnimationFrame(raf);
   }, [messages, mainView, activeThreadId]);
 
+  // No SSE event carries time data, so this stays a poll — but only while the
+  // tab is visible, and a tick never stacks on a refresh still in flight. A
+  // visible Zeiterfassung tab is ~120 requests a minute (see utils/timeData).
   useEffect(() => {
     if (!token || (mainView !== "time" && mainView !== "overview")) return;
-    void refreshTimeData();
-    const poll = window.setInterval(() => {
-      void refreshTimeData();
-    }, 5000);
-    return () => window.clearInterval(poll);
+    return startVisiblePolling({
+      intervalMs: TIME_DATA_POLL_INTERVAL_MS,
+      refreshNow: () => timeDataFlight.run(),
+      refreshIfIdle: () => timeDataFlight.runIfIdle(),
+    });
   }, [token, mainView, timeTargetUserId, isTimeManager, monthWeekDefs, timeEntriesStartDate, timeEntriesEndDate]);
 
   useEffect(() => {
@@ -3095,7 +3109,9 @@ export function App() {
       }
 
       if (mainView === "time") {
-        await refreshTimeData();
+        // Events here are about tasks, chats and projects, never time data, so
+        // a hidden tab need not answer them: its poll catches up when shown.
+        if (document.visibilityState !== "hidden") await refreshTimeData();
       }
     } catch {
       // Silent by design for background realtime sync.
@@ -4780,7 +4796,14 @@ export function App() {
     }
   }
 
-  async function refreshTimeData() {
+  /** Refresh the time data — or, when a refresh is already running, run one
+   * more right after it and resolve with that, so a caller that just saved
+   * always gets data fetched after its save. Never rejects. */
+  function refreshTimeData(): Promise<void> {
+    return timeDataFlight.run();
+  }
+
+  async function loadTimeDataIntoState() {
     try {
       const currentDefs = monthWeekDefsRef.current;
       // Managers see ALL users' time entries by default when no user_id is
@@ -4795,45 +4818,24 @@ export function App() {
             ? Number(timeTargetUserId)
             : user?.id ?? null
           : null;
-      const userQuery = effectiveTimeUserId != null ? `&user_id=${effectiveTimeUserId}` : "";
-      const currentQuery = effectiveTimeUserId != null ? `?user_id=${effectiveTimeUserId}` : "";
-      const vacationQuery = effectiveTimeUserId != null ? `?user_id=${effectiveTimeUserId}` : "";
-      const schoolQuery = effectiveTimeUserId != null ? `?user_id=${effectiveTimeUserId}` : "";
-      const entriesRangeQuery =
-        timeEntriesStartDate && timeEntriesEndDate
-          ? `&start_date=${timeEntriesStartDate}&end_date=${timeEntriesEndDate}`
-          : "";
-      const monthISO = monthCursorISORef.current;
-      const timesheetRequests =
-        mainView === "time"
-          ? currentDefs.map((row) =>
-              apiFetch<TimesheetSummary>(`/time/timesheet?period=weekly&day=${row.weekStart}${userQuery}`, token),
-            )
-          : [];
-      // One extra request for the strict calendar-month total (avoids double-counting
-      // days from adjacent months that bleed into the first/last ISO week of the month).
-      const monthlyTimesheetRequest =
-        mainView === "time"
-          ? apiFetch<TimesheetSummary>(`/time/timesheet?period=monthly&day=${monthISO}-01${userQuery}`, token)
-          : Promise.resolve(null);
-      const [current, entries, vacationRows, schoolRows, monthlySheet, ...timesheetRows] = await Promise.all([
-        apiFetch<TimeCurrent>(`/time/current${currentQuery}`, token),
-        apiFetch<TimeEntry[]>(`/time/entries?period=weekly${entriesRangeQuery}${userQuery}`, token),
-        apiFetch<VacationRequest[]>(`/time/vacation-requests${vacationQuery}`, token),
-        apiFetch<SchoolAbsence[]>(`/time/school-absences${schoolQuery}`, token),
-        monthlyTimesheetRequest,
-        ...timesheetRequests,
-      ]);
+      const snapshot = await fetchTimeData((path) => apiFetch(path, token), {
+        includeMonthTable: mainView === "time",
+        userId: effectiveTimeUserId,
+        entriesStartDate: timeEntriesStartDate,
+        entriesEndDate: timeEntriesEndDate,
+        monthISO: monthCursorISORef.current,
+        weekStarts: currentDefs.map((row) => row.weekStart),
+      });
+      const { current } = snapshot;
       setTimeCurrent(current);
-      setTimeEntries(entries);
-      setVacationRequests(vacationRows);
-      setSchoolAbsences(schoolRows);
+      setTimeEntries(snapshot.entries);
+      setVacationRequests(snapshot.vacationRequests);
+      setSchoolAbsences(snapshot.schoolAbsences);
       if (mainView === "time") {
-        const monthly = monthlySheet as TimesheetSummary | null;
-        setMonthlyWorkedHours(Number((monthly?.total_hours ?? 0).toFixed(2)));
+        setMonthlyWorkedHours(Number((snapshot.monthlySheet?.total_hours ?? 0).toFixed(2)));
         const requiredHours = current.required_daily_hours > 0 ? current.required_daily_hours : 8;
         const rows = currentDefs.map((row, index) => {
-          const timesheet = timesheetRows[index] as TimesheetSummary | undefined;
+          const timesheet = snapshot.weeklySheets[index] as TimesheetSummary | undefined;
           const workedHours = Number(timesheet?.total_hours ?? 0);
           return {
             ...row,

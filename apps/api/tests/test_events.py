@@ -69,3 +69,24 @@ def test_events_streams_connected_event_first(
         assert first_event.get("type") == "connected", (
             f"Expected type='connected', got: {first_event}"
         )
+
+
+def test_the_sqlite_fallback_tells_the_browser_not_to_reconnect_at_once(
+    client: TestClient, admin_token: str
+) -> None:
+    """Without PostgreSQL the stream says "connected" and ends. A browser's
+    EventSource then reconnects after its default ~3 s, and every reconnect
+    re-runs the client's full refresh of the open view: on a local SQLite run
+    the Zeiterfassung re-fetched its /api/time/* set on every reconnect, on top
+    of its poll (measured 2026-10-11, 8 reconnects in 25 s), which looked like a
+    polling bug and tripped the rate limiter. SQLite never delivers an event
+    anyway, so the fallback asks for a long reconnect delay instead."""
+    with client.stream("GET", f"/api/events?token={admin_token}") as response:
+        assert response.status_code == 200
+        retry_ms = [
+            int(line.split(":", 1)[1])
+            for line in (raw.strip() for raw in response.iter_lines())
+            if line.startswith("retry:")
+        ]
+    assert retry_ms, "no retry: field in the fallback stream"
+    assert retry_ms[0] >= 60_000

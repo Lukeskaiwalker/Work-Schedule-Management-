@@ -22,6 +22,10 @@ from app.routers.workflow_helpers import _thread_visible_to_user
 
 router = APIRouter()
 
+# How long a browser waits before reconnecting to the non-PostgreSQL fallback
+# stream, which ends right after its handshake. See the fallback below.
+_FALLBACK_RECONNECT_MS = 5 * 60 * 1000
+
 
 @router.get("/events")
 async def sse_events(
@@ -93,7 +97,14 @@ async def sse_events(
         # Test/local fallback for non-PostgreSQL environments.
         # Emit the handshake event and end the stream so TestClient requests
         # complete deterministically in SQLite-based test runs.
-        yield json.dumps({"type": "connected"})
+        #
+        # The long `retry` is for a browser on such a run: an ended stream is
+        # reconnected after the EventSource default of ~3 s, and every reconnect
+        # makes the client refresh the whole open view (onReconnect). Nothing
+        # is ever delivered here (notify is a no-op off PostgreSQL), so those
+        # refreshes were pure load — on the Zeiterfassung they read as a
+        # polling storm and tripped the rate limiter (2026-10-11).
+        yield {"data": json.dumps({"type": "connected"}), "retry": _FALLBACK_RECONNECT_MS}
 
     return EventSourceResponse(
         event_generator(),
