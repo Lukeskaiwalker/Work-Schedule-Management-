@@ -68,7 +68,7 @@ settings = get_settings()
 
 # uvicorn's access log prints each request line with its query string, and a
 # few of our URLs carry a credential (the calendar feed, the customer's
-# confirmation link, the stream's transitional ?token=). Installed at import,
+# confirmation link, invite and reset links' ?token=). Installed at import,
 # which every uvicorn worker does after configuring its loggers — see
 # core/log_redaction.py.
 install_access_log_redaction()

@@ -57,9 +57,12 @@ def test_events_without_any_credential_returns_401(client: TestClient) -> None:
     assert response.status_code == 401
 
 
-def test_events_invalid_legacy_token_returns_401(client: TestClient) -> None:
+def test_a_session_token_in_the_url_is_no_way_in(client: TestClient, admin_token: str) -> None:
+    # ?token= was removed (2026-10-11): the iOS shell that needed it is not
+    # in use, and a long-lived JWT in a URL is exactly what access logs keep.
+    # A valid one must not open the stream any more.
     client.cookies.clear()
-    response = client.get("/api/events?token=this.is.not.a.valid.jwt")
+    response = client.get("/api/events", params={"token": admin_token})
     assert response.status_code == 401
 
 
@@ -167,11 +170,12 @@ def test_minting_sweeps_spent_tickets_but_leaves_invites_alone(client: TestClien
 # ── the transitional ?token= ────────────────────────────────────────────────
 
 
-def test_events_still_accept_the_legacy_token_parameter(client: TestClient, admin_token: str) -> None:
-    client.cookies.clear()
-    with client.stream("GET", "/api/events", params={"token": admin_token}) as response:
+def test_a_tab_of_the_old_bundle_still_connects_through_its_cookie(client: TestClient, admin_token: str) -> None:
+    # A tab opened before the deploy still sends ?token=, but EventSource
+    # also sends the same-origin session cookie — that is what lets it in now.
+    assert client.cookies.get("access_token")
+    with client.stream("GET", "/api/events", params={"token": "ignored"}) as response:
         assert response.status_code == 200
-        assert "text/event-stream" in response.headers.get("content-type", "")
         assert _first_event(response) == {"type": "connected"}
 
 
@@ -185,7 +189,8 @@ def test_the_sqlite_fallback_tells_the_browser_not_to_reconnect_at_once(
     of its poll (measured 2026-10-11, 8 reconnects in 25 s), which looked like a
     polling bug and tripped the rate limiter. SQLite never delivers an event
     anyway, so the fallback asks for a long reconnect delay instead."""
-    with client.stream("GET", f"/api/events?token={admin_token}") as response:
+    assert client.cookies.get("access_token")
+    with client.stream("GET", "/api/events") as response:
         assert response.status_code == 200
         retry_ms = [
             int(line.split(":", 1)[1])

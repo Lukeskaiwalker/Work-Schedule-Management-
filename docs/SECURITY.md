@@ -119,7 +119,7 @@
   - Run periodic restore drills and verify restored data integrity before relying on backups operationally.
 
 ## Iteration Security Notes (2026-10-11, bearer secrets out of request logs)
-- The live-update stream no longer takes the session JWT as `?token=`: browsers authenticate it with the session cookie, the iOS shell with a single-use 60-second ticket (`POST /api/events/ticket`). `?token=` is still accepted until installed iOS apps are rebuilt.
+- The live-update stream no longer takes the session JWT as `?token=`: browsers authenticate it with the session cookie, the iOS shell with a single-use 60-second ticket (`POST /api/events/ticket`). `?token=` is no longer accepted (the iOS shell that needed it is not in use).
 - The proxy (Caddy) and API (uvicorn) access logs redact the URL secrets that remain by design (calendar feed, customer confirmation, IDS hand-over, invite/reset links) plus `X-Access-Token` / `X-Mfa-Challenge`.
 - What leaked, and the production cleanup left for the owner: `docs/LOG_HYGIENE.md`.
 

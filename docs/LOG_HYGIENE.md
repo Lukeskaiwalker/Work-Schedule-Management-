@@ -32,7 +32,7 @@ match wins:
    purpose `event_stream` — no migration — because mint and spend can hit
    different uvicorn workers. A spent ticket does not fall back to the cookie.
 2. the `access_token` session cookie — browsers open the bare `/api/events`.
-3. `?token=<JWT>` — transitional, see below.
+A `?token=<JWT>` is not read any more — see below.
 
 The iOS shell cannot send its SameSite=Strict cookie from `capacitor://localhost`,
 so it always uses tickets; a browser whose cookie fails to open the stream
@@ -60,13 +60,15 @@ The calendar, confirmation and IDS URLs keep their tokens by design — a
 calendar app or a customer's mail client cannot send headers. Only the logs
 change for them.
 
-## Removing `?token=`
+## `?token=` is gone
 
-Browsers stop sending it with this release. The iOS shell bundles the SPA, so
-installed apps keep sending `?token=` until the app is rebuilt from this
-commit and installed on every phone. Then delete the `token` parameter in
-`routers/events.py` and `test_events_still_accept_the_legacy_token_parameter`.
-Until then it is accepted, and redacted in both logs.
+Removed before the first deploy of this change (2026-10-11): it was kept only
+for the iOS shell, and the owner confirmed the shell is not installed anywhere.
+A browser tab still running the old bundle sends `?token=` once more after the
+deploy, but EventSource sends the same-origin session cookie with it, and the
+cookie is what lets it in. If the shell is ever rebuilt, its bundle asks for
+tickets. Both logs keep redacting `token=` anyway — invite and reset links
+still carry one.
 
 ## Production cleanup — for the owner to decide
 

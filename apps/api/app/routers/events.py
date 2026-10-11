@@ -12,6 +12,10 @@ and the query string is exactly what the proxy's and uvicorn's access logs
 print. A dump of the production proxy log held 19 JWTs. The cookie puts
 nothing in the URL; a ticket puts in something that is spent by the time
 anyone could read it. docs/LOG_HYGIENE.md has the whole picture.
+
+``?token=`` itself is gone (2026-10-11): it was kept only for the iOS shell,
+which the owner confirmed is not in use. If the shell is ever rebuilt, its
+bundle asks for tickets.
 """
 from __future__ import annotations
 
@@ -56,35 +60,30 @@ def create_event_stream_ticket(
     return EventStreamTicketOut(ticket=issue_ticket(db, current_user), expires_in=TICKET_TTL_SECONDS)
 
 
-def _resolve_stream_user(db: Session, *, ticket: str | None, cookie: str | None, legacy_token: str | None) -> User:
+def _resolve_stream_user(db: Session, *, ticket: str | None, cookie: str | None) -> User:
     """Who is opening the stream, from the first credential the request names.
 
     A ticket wins and does not fall back: a client that sends one chose it,
     and a spent ticket must fail even when the same browser also holds a
-    cookie, or "single use" would mean nothing. Otherwise the session cookie,
-    then the transitional ``?token=``.
+    cookie, or "single use" would mean nothing. Otherwise the session cookie.
+    A ``?token=`` is not read at all (removed 2026-10-11, see the module
+    docstring): a tab of an older bundle still sends one, and gets in through
+    the cookie EventSource sends alongside it.
     """
     if ticket is not None:
         user_id = redeem_ticket(db, ticket)
         if user_id is None:
             raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired stream ticket")
         return get_active_user_by_id(user_id, db)
-    credential = cookie or legacy_token
-    if not credential:
+    if not cookie:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
-    return get_current_user_from_token(credential, db)
+    return get_current_user_from_token(cookie, db)
 
 
 @router.get("/events")
 async def sse_events(
     request: Request,
     ticket: str | None = Query(default=None, description="Single-use ticket from POST /api/events/ticket"),
-    # TRANSITIONAL — remove once every installed iOS shell runs a bundle that
-    # asks for tickets (docs/LOG_HYGIENE.md, "Removing ?token="). The shell
-    # bundles the SPA, so its old ?token= code keeps running on phones until
-    # the app itself is rebuilt; refusing it now would silently stop live
-    # updates there. Browsers no longer send it, and both access logs redact it.
-    token: str | None = Query(default=None, deprecated=True, description="Deprecated: session JWT"),
     access_token: str | None = Cookie(default=None),
 ) -> EventSourceResponse:
     """
@@ -97,7 +96,7 @@ async def sse_events(
 
     db = SessionLocal()
     try:
-        user = _resolve_stream_user(db, ticket=ticket, cookie=access_token, legacy_token=token)
+        user = _resolve_stream_user(db, ticket=ticket, cookie=access_token)
         user_id = int(user.id)
         is_admin = user.role in {"admin", "ceo"}
 

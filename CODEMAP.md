@@ -137,7 +137,7 @@ All use `conftest.py` fixtures: `client` (TestClient), `admin_token` (str), `res
 | `test_class_templates.py` | Project class template import and task autocreation |
 | `test_construction_report_pdf.py` | PDF report generation |
 | `test_emailer.py` | Email dispatch |
-| `test_events.py` | SSE endpoint auth (cookie, single-use ticket, transitional `?token=`) and stream handshake |
+| `test_events.py` | SSE endpoint auth (cookie, single-use ticket; a URL `?token=` is refused) and stream handshake |
 | `test_log_redaction.py` | Secrets redacted from the uvicorn access log; same pattern as the Caddyfile |
 | `test_files.py` | File upload, preview, WebDAV mount flow, folder visibility |
 | `test_files_service.py` | File service unit tests |
@@ -453,7 +453,7 @@ Owner: "'Waren Ausgabe' only works for tools never for consumables … when we s
 
 | Module | Role |
 |---|---|
-| `apps/api/app/routers/events.py`; `services/event_stream_tickets.py`; `schemas/events.py` | `GET /events` authenticates from a `?ticket=` (single use, 60 s, hashed in `user_action_tokens` purpose `event_stream`, minted by `POST /events/ticket`), else the session cookie, else the transitional `?token=` (until installed iOS apps are rebuilt) |
+| `apps/api/app/routers/events.py`; `services/event_stream_tickets.py`; `schemas/events.py` | `GET /events` authenticates from a `?ticket=` (single use, 60 s, hashed in `user_action_tokens` purpose `event_stream`, minted by `POST /events/ticket`), else the session cookie; `?token=` is not read (removed 2026-10-11) |
 | `apps/web/src/hooks/useServerEvents.ts` | Browser: bare `/api/events` on the cookie, ticket when the cookie fails to open it; iOS shell: always a ticket. Reconnects itself (a ticket is spent; a non-200 closes an EventSource for good) |
 | `apps/api/app/core/log_redaction.py`; `apps/web/Caddyfile` snippet `(log_redaction)` | One regexp, kept identical in both (a test checks): `?token=`/`?ticket=` values, `/confirm/…`, customer-confirmation, IDS hand-over and calendar-feed tokens, in the URI and the Referer; Caddy also replaces `X-Access-Token` / `X-Mfa-Challenge`. docs/LOG_HYGIENE.md |
 
