@@ -151,7 +151,10 @@ export function activityEventLabel(eventType: string, language: Language) {
     // Completing a task books the materials it took from the shelves.
     "task.materials_settled": { de: "Material verbucht", en: "Materials booked" },
   };
-  return map[eventType] ? (language === "de" ? map[eventType].de : map[eventType].en) : eventType;
+  if (map[eventType]) return language === "de" ? map[eventType].de : map[eventType].en;
+  // An event this build does not know yet (a newer server): a plain word
+  // instead of the machine key — the message line under it says what happened.
+  return language === "de" ? "Änderung" : "Change";
 }
 
 export function projectUpdatedTimestamp(project: Project) {

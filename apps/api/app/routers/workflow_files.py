@@ -128,7 +128,7 @@ async def upload_project_files(
             project_id=project_id,
             actor_user_id=current_user.id,
             event_type="file.uploaded",
-            message=f"File uploaded: {upload.filename}",
+            message=f"Datei hochgeladen: {upload.filename}",
             details={"file_name": upload.filename, "folder": normalized_folder},
         )
         created.append(attachment)
@@ -284,7 +284,7 @@ def delete_file(
             project_id=attachment.project_id,
             actor_user_id=current_user.id,
             event_type="file.deleted",
-            message=f"File deleted: {attachment.file_name}",
+            message=f"Datei gelöscht: {attachment.file_name}",
             details={"file_name": attachment.file_name, "folder": folder},
         )
     db.delete(attachment)

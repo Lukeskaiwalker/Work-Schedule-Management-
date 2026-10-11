@@ -25,6 +25,7 @@ from datetime import datetime
 from app.models.entities import CustomerActivity, Project, User
 from app.models.project import ProjectActivity
 from app.schemas.customer import CustomerActivityOut
+from app.services.activity_messages import display_activity_message
 
 # The card loads a page at a time; 200 is the ceiling a client may ask for.
 CUSTOMER_ACTIVITY_LIMIT_DEFAULT = 30
@@ -59,7 +60,7 @@ def _activity_out(row: ProjectActivity, project: Project | None, actor_name: str
         actor_user_id=row.actor_user_id,
         actor_name=actor_name,
         event_type=row.event_type,
-        message=row.message,
+        message=display_activity_message(row.event_type, row.message, row.details),
         details=row.details or {},
         created_at=row.created_at,
         project_number=project.project_number if project else None,
@@ -185,7 +186,8 @@ def customer_activity_page(
                     actor_user_id=row.actor_user_id,
                     actor_name=actor_names.get(row.actor_user_id or 0),
                     event_type=row.event_type,
-                    message=row.message,
+                    # A customer-only task logs here, with the same lines.
+                    message=display_activity_message(row.event_type, row.message, row.details),
                     details=row.details or {},
                     created_at=row.created_at,
                     project_number=None,

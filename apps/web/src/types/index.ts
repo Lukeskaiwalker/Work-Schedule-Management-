@@ -1661,11 +1661,17 @@ export type RolePermissionsMap = Record<string, string[]>;
 export type RolePermissionsMeta = {
   permissions: RolePermissionsMap;
   all_permissions: string[];
+  /** German, the product's language. */
   permission_labels: Record<string, string>;
   permission_descriptions: Record<string, string>;
+  /** English twins for the English UI; absent on servers before v2.14.41. */
+  permission_labels_en?: Record<string, string>;
+  permission_descriptions_en?: Record<string, string>;
   permission_groups: Array<{
     key: string;
+    /** German group name; `label_en` is its English twin. */
     label: string;
+    label_en?: string;
     permissions: string[];
   }>;
   all_roles: string[];

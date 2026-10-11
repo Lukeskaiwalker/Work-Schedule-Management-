@@ -18,6 +18,7 @@ import { useEffect, useState } from "react";
 
 import { apiFetch } from "../../api/client";
 import { useAppContext } from "../../context/AppContext";
+import { taskStatusLabel } from "../../utils/tasks";
 
 interface DayActivityTask {
   id: number;
@@ -156,7 +157,7 @@ export function DayActivityPanel({ day, userId }: { day: string; userId: number 
                     <span className="day-activity-row-main">{task.title}</span>
                     {place && <span className="day-activity-row-where">{place}</span>}
                     <span className={`day-activity-status day-activity-status-${task.status}`}>
-                      {task.status}
+                      {taskStatusLabel(task.status, language)}
                     </span>
                   </button>
                 </li>

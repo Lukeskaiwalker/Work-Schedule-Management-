@@ -1,7 +1,13 @@
 import { useAppContext } from "../../context/AppContext";
 import { formatDayLabel, formatServerDateTime } from "../../utils/dates";
 import { statusLabel, projectSiteAccessDisplay, activityEventLabel } from "../../utils/projects";
-import { formatTaskDateRange, formatTaskTimeRange, taskDayCount } from "../../utils/tasks";
+import {
+  formatTaskDateRange,
+  formatTaskTimeRange,
+  normalizeTaskTypeValue,
+  taskDayCount,
+  taskTypeLabel,
+} from "../../utils/tasks";
 import { weatherDescriptionLabel } from "../../utils/weather";
 import { CopyIcon } from "../../components/icons";
 import { ProjectNotesCard } from "../../components/project/ProjectNotesCard";
@@ -131,7 +137,9 @@ export function ProjectOverviewTab() {
                           {language === "de" ? "Zugewiesen" : "Assigned"}: {getTaskAssigneeLabel(task)}
                         </small>
                       </div>
-                      <span className="project-overview-task-type">{task.task_type || (language === "de" ? "Aufgabe" : "Task")}</span>
+                      <span className="project-overview-task-type">
+                        {taskTypeLabel(normalizeTaskTypeValue(task.task_type), language)}
+                      </span>
                     </div>
                   </li>
                 ))}

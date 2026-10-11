@@ -75,7 +75,7 @@ export const TAB_LABELS: Record<Language, Record<ProjectTab, string>> = {
     hours: "Projektstunden",
     materials: "Material",
     line_items: "Positionen",
-    tickets: "Job Tickets",
+    tickets: "Tickets",
     files: "Dateien",
     team: "Team",
     finances: "Finanzen",

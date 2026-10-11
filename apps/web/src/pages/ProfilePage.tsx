@@ -4,6 +4,7 @@ import { ApiTokensSection } from "../components/profile/ApiTokensSection";
 import { CalendarFeedSection } from "../components/profile/CalendarFeedSection";
 import { StationBadgeSection } from "../components/profile/StationBadgeSection";
 import { TwoFactorSection } from "../components/profile/TwoFactorSection";
+import { roleLabel } from "../utils/roles";
 
 export function ProfilePage() {
   const {
@@ -86,7 +87,7 @@ export function ProfilePage() {
               <span className="profile-page-identity-name">{displayName}</span>
               <span className="profile-page-identity-email">{user.email}</span>
               <span className="profile-page-identity-role">
-                {de ? "Rolle" : "Role"}: {user.role}
+                {de ? "Rolle" : "Role"}: {roleLabel(user.role, language)}
               </span>
             </div>
           </div>
@@ -245,7 +246,7 @@ export function ProfilePage() {
               <ol className="profile-page-notif-steps">
                 <li>
                   {de ? "Tippe auf das Teilen-Symbol" : "Tap the Share button"}{" "}
-                  <span className="profile-page-notif-icon" aria-label="share">
+                  <span className="profile-page-notif-icon" aria-label={de ? "Teilen" : "Share"}>
                     ⎋
                   </span>{" "}
                   {de ? "in der Safari-Adressleiste" : "in the Safari toolbar"}

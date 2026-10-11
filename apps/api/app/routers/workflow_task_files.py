@@ -116,7 +116,7 @@ def _store_task_upload(db: Session, *, task: Task, upload: UploadFile, raw: byte
             project_id=task.project_id,
             actor_user_id=user.id,
             event_type="file.uploaded",
-            message=f"File uploaded: {file_name}",
+            message=f"Datei hochgeladen: {file_name}",
             details={"file_name": file_name, "folder": TASK_FILES_FOLDER, "task_id": task.id},
         )
     return attachment

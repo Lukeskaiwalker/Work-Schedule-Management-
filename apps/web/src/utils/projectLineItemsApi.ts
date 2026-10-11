@@ -19,6 +19,23 @@ import type {
 } from "../types";
 
 
+// The extraction job's state as the importer's progress line names it — the
+// stored key ("processing") is a machine value, not a word for the UI.
+const LINE_ITEM_JOB_STATUS_LABELS: Record<string, { de: string; en: string }> = {
+  queued: { de: "In Warteschlange", en: "Queued" },
+  processing: { de: "Wird verarbeitet", en: "Processing" },
+  completed: { de: "Abgeschlossen", en: "Completed" },
+  failed: { de: "Fehlgeschlagen", en: "Failed" },
+};
+
+/** A state the client does not know yet shows as the server sent it. */
+export function lineItemJobStatusLabel(status: string, de: boolean): string {
+  const entry = LINE_ITEM_JOB_STATUS_LABELS[status];
+  if (!entry) return status;
+  return de ? entry.de : entry.en;
+}
+
+
 export async function listProjectLineItems(
   token: string | null,
   projectId: number,

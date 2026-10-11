@@ -35,7 +35,9 @@ class Notification(Base):
         ForeignKey("projects.id", ondelete="CASCADE"), index=True
     )
 
-    # Human-readable message, e.g. "Luca assigned you to 'Install scaffolding'"
+    # Human-readable message, e.g. "Luca hat dir die Aufgabe „Gerüst aufbauen“
+    # zugewiesen" (rows before v2.14.41 are English and are translated when
+    # listed — see app/services/notification_messages.py)
     message: Mapped[str] = mapped_column(String(255), nullable=False)
 
     # Null = unread; set when the panel is opened (mark-all-read).

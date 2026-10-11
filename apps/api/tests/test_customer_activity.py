@@ -143,7 +143,7 @@ def test_customer_activity_unions_the_customer_projects_newest_first(client: Tes
     assert [row["source"] for row in rows] == ["project"] * 6 + ["customer"]
     assert all(row["actor_name"] for row in rows)
     assert all(row["customer_id"] == customer["id"] for row in rows)
-    assert rows[0]["message"] == "Task created: Material bestellen"
+    assert rows[0]["message"] == "Aufgabe erstellt: Material bestellen"
     # Ids only order within a source — the two tables count separately.
     project_ids = [row["id"] for row in rows if row["source"] == "project"]
     assert project_ids == sorted(project_ids, reverse=True)
@@ -162,7 +162,7 @@ def test_customer_activity_excludes_the_projects_of_other_customers(client: Test
 
     assert [row["event_type"] for row in rows] == ["task.created", "project.created", "customer.created"]
     assert {row["project_id"] for row in rows if row["source"] == "project"} == {own_project["id"]}
-    assert rows[0]["message"] == "Task created: Eigene Aufgabe"
+    assert rows[0]["message"] == "Aufgabe erstellt: Eigene Aufgabe"
     assert rows[-1]["message"] == "Kunde angelegt: Eigener Kunde"
 
 
@@ -206,7 +206,7 @@ def test_customer_activity_pages_backwards_by_before_id(client: TestClient, admi
     assert ids == sorted(ids, reverse=True)
     assert len(set(ids)) == 5
     assert [row["message"] for row in first_page + second_page] == [
-        f"Task created: Aufgabe {index}" for index in (3, 2, 1, 0)
+        f"Aufgabe erstellt: Aufgabe {index}" for index in (3, 2, 1, 0)
     ]
     assert last_page[0]["event_type"] == "project.created"
     assert all(row["source"] == "project" for row in first_page + second_page + last_page)

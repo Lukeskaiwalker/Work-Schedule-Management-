@@ -101,6 +101,7 @@ export function LoginPage() {
   const brandTitle = companySettings?.navigation_title?.trim() || "SMPL Workflow";
   const showPasswordLabel = language === "de" ? "Passwort anzeigen" : "Show password";
   const hidePasswordLabel = language === "de" ? "Passwort verbergen" : "Hide password";
+  const logoAlt = language === "de" ? "Firmenlogo" : "Company logo";
   return (
     <main className="login-shell">
       {isPublicTokenFlow ? (
@@ -108,7 +109,7 @@ export function LoginPage() {
           className="card auth-card"
           onSubmit={publicAuthMode === "invite" ? submitPublicInviteAccept : submitPublicPasswordReset}
         >
-          <img src={brandLogoUrl} alt="Company logo" className="brand-logo large" />
+          <img src={brandLogoUrl} alt={logoAlt} className="brand-logo large" />
           <h1>{brandTitle}</h1>
           <p>
             {publicAuthMode === "invite"
@@ -195,7 +196,7 @@ export function LoginPage() {
         </form>
       ) : mfaLoginPending ? (
         <form className="card auth-card" onSubmit={submitMfaLogin}>
-          <img src={brandLogoUrl} alt="Company logo" className="brand-logo large" />
+          <img src={brandLogoUrl} alt={logoAlt} className="brand-logo large" />
           <h1>{brandTitle}</h1>
           <p>{language === "de" ? "Zwei-Faktor-Authentifizierung" : "Two-factor authentication"}</p>
           <label>
@@ -225,11 +226,11 @@ export function LoginPage() {
         </form>
       ) : (
         <form className="card auth-card" onSubmit={onLogin}>
-          <img src={brandLogoUrl} alt="Company logo" className="brand-logo large" />
+          <img src={brandLogoUrl} alt={logoAlt} className="brand-logo large" />
           <h1>{brandTitle}</h1>
           <p>{language === "de" ? "Private, selbst gehostete Workflow-App" : "Private self-hosted workflow app"}</p>
           <label>
-            Email
+            {language === "de" ? "E-Mail" : "Email"}
             {/* iOS applies sentence-case to a bare text input, so a phone
                 keyboard turns "dev@…" into "Dev@…" before the value ever
                 reaches the form. The server lower-cases the address so this

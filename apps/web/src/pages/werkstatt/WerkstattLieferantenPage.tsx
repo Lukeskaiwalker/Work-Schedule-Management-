@@ -86,7 +86,7 @@ export function WerkstattLieferantenPage() {
         if (!cancelled) setSuppliers(rows);
       })
       .catch((err: any) => {
-        if (!cancelled) setError(err?.message ?? "Failed to load suppliers");
+        if (!cancelled) setError(err?.message ?? (de ? "Lieferanten konnten nicht geladen werden" : "Failed to load suppliers"));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);

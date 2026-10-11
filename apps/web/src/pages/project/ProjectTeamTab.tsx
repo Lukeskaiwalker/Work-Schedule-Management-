@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useAppContext } from "../../context/AppContext";
 import { AvatarBadge } from "../../components/shared/AvatarBadge";
+import { isKnownRole, roleLabel } from "../../utils/roles";
 
 /**
  * v2.5.36 — Project Team tab.
@@ -24,20 +25,6 @@ import { AvatarBadge } from "../../components/shared/AvatarBadge";
  *     manage projects (projects:manage). Everyone else sees a
  *     read-only roster. The API enforces the same.
  */
-
-/** Role display names. Module-level so the map isn't rebuilt on every
- *  render, and so the chip helper can check membership against it. */
-const ROLE_LABELS: Record<string, { de: string; en: string }> = {
-  admin: { de: "Admin", en: "Admin" },
-  ceo: { de: "Geschäftsführung", en: "CEO" },
-  accountant: { de: "Buchhaltung", en: "Accountant" },
-  planning: { de: "Planung", en: "Planning" },
-  employee: { de: "Mitarbeiter", en: "Employee" },
-};
-
-function isKnownRole(role: string): boolean {
-  return Object.prototype.hasOwnProperty.call(ROLE_LABELS, role);
-}
 
 /** Colour-coded role chip — reuses the same chip the Admin users list
  *  uses so one role reads identically everywhere in the app. Unknown
@@ -81,11 +68,6 @@ export function ProjectTeamTab() {
   );
 
   if (mainView !== "project" || !activeProject || projectTab !== "team") return null;
-
-  function roleLabel(role: string): string {
-    const entry = ROLE_LABELS[role];
-    return entry ? (de ? entry.de : entry.en) : role;
-  }
 
   function memberCountLabel(count: number): string {
     if (de) return count === 1 ? "1 Mitglied" : `${count} Mitglieder`;
@@ -134,7 +116,7 @@ export function ProjectTeamTab() {
               <option value="">{de ? "Person auswählen…" : "Select a person…"}</option>
               {addableUsers.map((u) => (
                 <option key={u.id} value={String(u.id)}>
-                  {u.display_name} · {roleLabel(u.role)}
+                  {u.display_name} · {roleLabel(u.role, language)}
                 </option>
               ))}
             </select>
@@ -174,7 +156,7 @@ export function ProjectTeamTab() {
               <div className="project-team-row-main">
                 <span className="project-team-row-name">{m.display_name}</span>
                 <span className="project-team-row-meta">
-                  <span className={roleChipClass(m.role)}>{roleLabel(m.role)}</span>
+                  <span className={roleChipClass(m.role)}>{roleLabel(m.role, language)}</span>
                   {m.can_manage && (
                     <span className="project-team-manage-badge">
                       {de ? "Verwalter" : "Manager"}

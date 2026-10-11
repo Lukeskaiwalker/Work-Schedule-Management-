@@ -433,7 +433,7 @@ async def webdav_project_file(
             project_id=project.id,
             actor_user_id=user.id,
             event_type="file.uploaded",
-            message=f"File uploaded: {file_name}",
+            message=f"Datei hochgeladen: {file_name}",
             details={"file_name": file_name, "folder": folder_path},
         )
         db.commit()
@@ -456,7 +456,7 @@ async def webdav_project_file(
             project_id=project.id,
             actor_user_id=user.id,
             event_type="file.deleted",
-            message=f"File deleted: {latest.file_name}",
+            message=f"Datei gelöscht: {latest.file_name}",
             details={"file_name": latest.file_name, "folder": latest.folder_path},
         )
         stored_path = latest.stored_path

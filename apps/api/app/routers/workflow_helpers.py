@@ -40,6 +40,7 @@ from app.services.task_materials import (
     record_reported_usage,
     remove_box_from_task,
 )
+from app.services.activity_messages import display_activity_message
 from app.services.project_status import is_won_project_status
 from app.models.entities import (
     Attachment,
@@ -1929,7 +1930,7 @@ def _recent_project_activities_out(db: Session, project_id: int, *, limit: int =
             actor_user_id=row.actor_user_id,
             actor_name=actor_names_by_id.get(row.actor_user_id or 0),
             event_type=row.event_type,
-            message=row.message,
+            message=display_activity_message(row.event_type, row.message, row.details),
             details=row.details or {},
             created_at=row.created_at,
         )
@@ -2583,7 +2584,7 @@ def _materialise_class_template_tasks(
             project_id=project_id,
             actor_user_id=actor_user_id,
             event_type="task.created",
-            message=f"Task created: {task.title}",
+            message=f"Aufgabe erstellt: {task.title}",
             details={
                 "task_id": task.id,
                 "status": task.status,
@@ -3994,7 +3995,7 @@ def _create_follow_up_task_for_open_subtasks(
         project_id=follow_up_task.project_id,
         actor_user_id=current_user.id,
         event_type="task.created",
-        message=f"Task created: {follow_up_task.title}",
+        message=f"Aufgabe erstellt: {follow_up_task.title}",
         details={
             "task_id": follow_up_task.id,
             "status": follow_up_task.status,
@@ -4323,7 +4324,7 @@ async def _create_construction_report_impl(
             project_id=target_project_id,
             actor_user_id=current_user.id,
             event_type="report.created",
-            message=f"Construction report created ({report_date.isoformat()})",
+            message=f"Baustellenbericht erstellt ({report_date.isoformat()})",
             details={
                 "report_id": report.id,
                 "reported_hours": report_worker_hours,

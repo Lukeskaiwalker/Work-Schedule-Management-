@@ -6,6 +6,7 @@ from sqlalchemy import and_, func, or_
 from app.core.events import notify
 from app.models.notification import Notification
 from app.routers.workflow_helpers import *  # noqa: F401,F403
+from app.services.notification_messages import task_assigned_message
 # Imported from their own modules rather than through the ``*`` above: these
 # names are new with the settlement dialog, and ``schemas/api.py`` — which is
 # what the star import re-exports from — is a shared hub no single area owns.
@@ -125,7 +126,7 @@ def _create_assignment_notifications(
                 entity_type="task",
                 entity_id=task.id,
                 project_id=task.project_id,
-                message=f"{actor_display} assigned you to \"{task.title}\"",
+                message=task_assigned_message(actor_display, task.title),
             )
         )
 
@@ -341,7 +342,7 @@ def create_task(
         task,
         actor_user_id=current_user.id,
         event_type="task.created",
-        message=f"Task created: {task.title}",
+        message=f"Aufgabe erstellt: {task.title}",
         details={"task_id": task.id, "status": task.status},
     )
     db.commit()
@@ -653,8 +654,9 @@ def update_task(
         # moment the appointment deserves to be asked again — the
         # customer declined date X, and nobody has asked about date Y.
         set_task_confirmation_pending(task, reset_status=True)
-    # A completed task is no longer actionable, so the "X assigned you to …"
-    # entries pointing at it must leave the assignees' panels. Resolving at
+    # A completed task is no longer actionable, so the assignment entries
+    # ("X hat dir die Aufgabe … zugewiesen") pointing at it must leave the
+    # assignees' panels. Resolving at
     # write time (rather than only filtering at read time) means the row stops
     # being fetched, and gives us an event to push so an open panel updates
     # live instead of showing a task the user just ticked off.
@@ -704,7 +706,7 @@ def update_task(
             task,
             actor_user_id=current_user.id,
             event_type="task.updated",
-            message=f"Task updated: {task.title}",
+            message=f"Aufgabe aktualisiert: {task.title}",
             details={
                 "task_id": task.id,
                 "status": task.status,
@@ -817,7 +819,7 @@ def delete_task(
         task,
         actor_user_id=current_user.id,
         event_type="task.deleted",
-        message=f"Task deleted: {task.title}",
+        message=f"Aufgabe gelöscht: {task.title}",
         details={"task_id": task.id},
     )
     project_id = task.project_id
@@ -955,7 +957,7 @@ def planning_assign_week(
             task,
             actor_user_id=current_user.id,
             event_type="task.created",
-            message=f"Task created: {task.title}",
+            message=f"Aufgabe erstellt: {task.title}",
             details={"task_id": task.id, "status": task.status},
         )
         created_ids.append(task.id)

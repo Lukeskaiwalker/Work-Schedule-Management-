@@ -354,7 +354,7 @@ def create_project_material_need(
         project_id=payload.project_id,
         actor_user_id=current_user.id,
         event_type="material.created",
-        message=f"Material need added ({item_name[:80]})",
+        message=f"Materialbedarf angelegt ({item_name[:80]})",
         details={
             "material_need_id": row.id,
             "item": row.item,
@@ -472,7 +472,7 @@ def update_project_material_need(
             project_id=row.project_id,
             actor_user_id=current_user.id,
             event_type="material.status_updated",
-            message=f"Material status updated ({row.item[:80]})",
+            message=f"Materialstatus aktualisiert ({row.item[:80]})",
             details={"material_need_id": row.id, "item": row.item, "from": previous_status, "to": next_status},
         )
     if changed_fields:
@@ -481,7 +481,7 @@ def update_project_material_need(
             project_id=row.project_id,
             actor_user_id=current_user.id,
             event_type="material.updated",
-            message=f"Material need updated ({row.item[:80]})",
+            message=f"Materialbedarf bearbeitet ({row.item[:80]})",
             details={"material_need_id": row.id, "item": row.item, "fields": changed_fields},
         )
     db.commit()
@@ -524,7 +524,7 @@ def delete_project_material_need(
         project_id=row.project_id,
         actor_user_id=current_user.id,
         event_type="material.deleted",
-        message=f"Material need deleted ({item_label[:80]})",
+        message=f"Materialbedarf gelöscht ({item_label[:80]})",
         details={
             "material_need_id": row.id,
             "item": item_label,

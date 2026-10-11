@@ -190,6 +190,17 @@ export function shiftMonthStart(source: Date, delta: number) {
   return new Date(source.getFullYear(), source.getMonth() + delta, 1);
 }
 
+/**
+ * A Monday-first month grid's column heads. German is "Mo Di Mi Do Fr Sa So",
+ * not the English two letters the Zeiterfassung calendar used to print in
+ * both languages.
+ */
+export function weekdayShortLabels(language: Language): readonly string[] {
+  return language === "de"
+    ? ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
+    : ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
+}
+
 export function schoolWeekdayLabel(dayIndex: number, language: Language) {
   const en = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"];
   const de = ["Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag"];

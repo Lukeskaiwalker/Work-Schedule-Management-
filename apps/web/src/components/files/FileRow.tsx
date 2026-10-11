@@ -78,7 +78,7 @@ export function FileRow({
           target="_blank"
           rel="noreferrer"
         >
-          Download
+          {de ? "Herunterladen" : "Download"}
         </a>
         {onDelete &&
           (confirming ? (

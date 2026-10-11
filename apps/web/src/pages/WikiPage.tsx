@@ -266,7 +266,7 @@ export function WikiPage() {
                       strokeLinejoin="round"
                     />
                   </svg>
-                  {language === "de" ? "Download" : "Download"}
+                  {language === "de" ? "Herunterladen" : "Download"}
                 </a>
               </div>
             </div>
@@ -276,7 +276,7 @@ export function WikiPage() {
               <span
                 className={`wiki-ext-badge wiki-ext-${getTypeColor(activeWikiFile!.extension)}`}
               >
-                {activeWikiFile!.extension?.toUpperCase() ?? "FILE"}
+                {activeWikiFile!.extension?.toUpperCase() ?? (language === "de" ? "DATEI" : "FILE")}
               </span>
               <span className="wiki-meta-item">
                 <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
@@ -337,7 +337,7 @@ export function WikiPage() {
                     rel="noreferrer"
                     className="wiki-action-btn wiki-action-primary"
                   >
-                    {language === "de" ? "Download" : "Download"}
+                    {language === "de" ? "Herunterladen" : "Download"}
                   </a>
                 </div>
               )}

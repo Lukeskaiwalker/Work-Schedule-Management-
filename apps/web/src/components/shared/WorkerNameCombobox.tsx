@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { AssignableUser } from "../../types";
+import { roleLabel } from "../../utils/roles";
 
 type Props = {
   value: string;
@@ -222,7 +223,7 @@ export function WorkerNameCombobox({
                     <span style={{ color: "#5c7895", marginLeft: 6 }}>· {u.nickname}</span>
                   ) : null}
                 </span>
-                <small style={{ color: "#5c7895", fontSize: 11 }}>{u.role}</small>
+                <small style={{ color: "#5c7895", fontSize: 11 }}>{roleLabel(u.role, language)}</small>
               </li>
             );
           })}

@@ -76,6 +76,19 @@ PROJECT_STATUS_SYNONYMS: dict[str, str] = {
 }
 
 
+# Display names for the four stages (and the archive). German only: the
+# server prints them into German text — the Projektbericht, the change log —
+# while the SPA keeps its own bilingual `statusLabel`.
+PROJECT_STATUS_LABELS: dict[str, str] = {
+    PROJECT_STATUS_ANGEBOT: "Angebotsphase",
+    PROJECT_STATUS_DURCHFUEHRUNG: "In Durchführung",
+    PROJECT_STATUS_RECHNUNG: "Rechnung verschickt",
+    PROJECT_STATUS_ABGESCHLOSSEN: "Abgeschlossen",
+    "archived": "Archiviert",
+    "archiviert": "Archiviert",
+}
+
+
 def normalize_project_status(raw: str | None) -> str:
     """Known synonym → canonical slug; archive and unknown text unchanged.
 
@@ -114,3 +127,12 @@ def is_won_project_status(raw: str | None) -> bool:
     """
 
     return normalize_project_status(raw) in _WON_STATUSES
+
+
+def project_status_label(raw: str | None) -> str:
+    """The German name of a status; "—" for none, unknown free text as it is."""
+    value = (raw or "").strip()
+    if not value:
+        return "—"
+    normalized = normalize_project_status(value)
+    return PROJECT_STATUS_LABELS.get(normalized.lower(), value)

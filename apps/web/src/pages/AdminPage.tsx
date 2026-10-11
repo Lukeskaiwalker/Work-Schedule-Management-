@@ -7,6 +7,9 @@ import { AdminLabelPrinterCard } from "../components/admin/AdminLabelPrinterCard
 import { AdminIdsConnectCard } from "../components/admin/AdminIdsConnectCard";
 import { MailIcon, KeyIcon, ArchiveUserIcon, ShieldIcon, ResetIcon } from "../components/icons";
 import { schoolWeekdayLabel } from "../utils/dates";
+import { permissionDescription, permissionGroupLabel, permissionLabel } from "../utils/permissionLabels";
+import { roleLabel } from "../utils/roles";
+import { auditTargetLabel } from "../components/admin/auditLabels";
 import type { User, EmployeeGroup } from "../types";
 import { UserStationBadge } from "../components/admin/UserStationBadge";
 import { AdminTabBar, adminTabId, adminTabPanelId } from "../components/admin/AdminTabBar";
@@ -85,16 +88,6 @@ function formatAuditPeriodLabel(period: AuditPeriodFilter, de: boolean): string 
   }
 }
 
-function roleLabel(role: string, de: boolean): string {
-  const labels: Record<string, { de: string; en: string }> = {
-    admin: { de: "Admin", en: "Admin" },
-    ceo: { de: "CEO", en: "CEO" },
-    accountant: { de: "Buchhaltung", en: "Accountant" },
-    planning: { de: "Planung", en: "Planning" },
-    employee: { de: "Mitarbeiter", en: "Employee" },
-  };
-  return labels[role]?.[de ? "de" : "en"] ?? role;
-}
 
 /** A tab's panel, wired to its tab in the strip (WAI-ARIA tabs). */
 function tabPanelProps(id: AdminTab) {
@@ -573,7 +566,7 @@ export function AdminPage() {
                           </div>
                           <div className="admin-users-col admin-users-col--role">
                             <span className={`admin-role-chip admin-role-chip--${u.role}`}>
-                              {roleLabel(u.role, de)}
+                              {roleLabel(u.role, language)}
                             </span>
                           </div>
                           {/*
@@ -692,7 +685,7 @@ export function AdminPage() {
                                   }
                                 >
                                   {ALL_ROLES.map((r) => (
-                                    <option key={r} value={r}>{roleLabel(r, de)}</option>
+                                    <option key={r} value={r}>{roleLabel(r, language)}</option>
                                   ))}
                                 </select>
                               </label>
@@ -993,7 +986,7 @@ export function AdminPage() {
                                   {rolePermissionsMeta.permission_groups.map((group) => (
                                     <div key={group.key} className="admin-users-perm-group">
                                       <div className="admin-users-perm-group-title">
-                                        {group.label}
+                                        {permissionGroupLabel(group, language)}
                                       </div>
                                       {group.permissions.map((perm) => {
                                         const roleHas = (
@@ -1001,8 +994,7 @@ export function AdminPage() {
                                         ).includes(perm);
                                         const isExtra = permDraft.extra.has(perm);
                                         const isDenied = permDraft.denied.has(perm);
-                                        const label =
-                                          rolePermissionsMeta.permission_labels[perm] ?? perm;
+                                        const label = permissionLabel(rolePermissionsMeta, perm, language);
                                         return (
                                           <div
                                             key={perm}
@@ -1118,7 +1110,7 @@ export function AdminPage() {
                           <div className="admin-users-user-text">
                             <span className="admin-users-user-name">{u.full_name}</span>
                             <span className="admin-users-user-email">
-                              {u.email} · {roleLabel(u.role, de)}
+                              {u.email} · {roleLabel(u.role, language)}
                             </span>
                           </div>
                           <button
@@ -1159,12 +1151,12 @@ export function AdminPage() {
                   />
                 </label>
                 <label className="admin-invite-field">
-                  <span className="admin-invite-field-label">Email</span>
+                  <span className="admin-invite-field-label">{de ? "E-Mail" : "Email"}</span>
                   <input
                     required
                     type="email"
                     className="admin-invite-input"
-                    placeholder="max@company.de"
+                    placeholder={de ? "max@firma.de" : "max@company.com"}
                     value={inviteCreateForm.email}
                     onChange={(e) =>
                       setInviteCreateForm({ ...inviteCreateForm, email: e.target.value })
@@ -1187,7 +1179,7 @@ export function AdminPage() {
                     }
                   >
                     {(canManagePermissions ? ALL_ROLES : ["employee"]).map((r) => (
-                      <option key={r} value={r}>{roleLabel(r, de)}</option>
+                      <option key={r} value={r}>{roleLabel(r, language)}</option>
                     ))}
                   </select>
                 </label>
@@ -1395,8 +1387,7 @@ export function AdminPage() {
               <p className="admin-page-muted">{de ? "Lade…" : "Loading…"}</p>
             )}
             {rolePermissionsMeta && (() => {
-              const { permissions, permission_groups, permission_labels, permission_descriptions, all_roles } =
-                rolePermissionsMeta;
+              const { permissions, permission_groups, all_roles } = rolePermissionsMeta;
 
               const hasPermission = (role: string, perm: string) =>
                 (permissions[role] ?? []).includes(perm);
@@ -1427,7 +1418,7 @@ export function AdminPage() {
                             className={`admin-roles-head admin-roles-head--role admin-roles-head--${role}`}
                           >
                             <div className="admin-roles-head-inner">
-                              <span>{roleLabel(role, de)}</span>
+                              <span>{roleLabel(role, language)}</span>
                               {role === "admin" ? (
                                 <span className="admin-roles-lock" title={de ? "Admin-Rolle ist schreibgeschützt" : "Admin role is read-only"}>
                                   🔒
@@ -1455,7 +1446,7 @@ export function AdminPage() {
                             <td
                               className="admin-roles-perm-cell"
                               onMouseEnter={(e) => {
-                                const desc = permission_descriptions[perm];
+                                const desc = permissionDescription(rolePermissionsMeta, perm, language);
                                 if (!desc) return;
                                 const rect = e.currentTarget.getBoundingClientRect();
                                 setPermTooltip({ text: desc, x: rect.left + 16, y: rect.bottom + 6 });
@@ -1463,7 +1454,7 @@ export function AdminPage() {
                               onMouseLeave={() => setPermTooltip(null)}
                             >
                               <span className="admin-roles-perm-label">
-                                {permission_labels[perm] ?? perm}
+                                {permissionLabel(rolePermissionsMeta, perm, language)}
                               </span>
                               <code className="admin-roles-perm-key">{perm}</code>
                             </td>
@@ -1475,7 +1466,7 @@ export function AdminPage() {
                                   <button
                                     type="button"
                                     className={`admin-roles-check${on ? " admin-roles-check--on" : ""}`}
-                                    aria-label={on ? "Enabled" : "Disabled"}
+                                    aria-label={on ? (de ? "Erteilt" : "Granted") : de ? "Nicht erteilt" : "Not granted"}
                                     disabled={isLocked}
                                     title={isLocked ? de ? "Schreibgeschützt" : "Read-only" : undefined}
                                     onClick={() => !isLocked && void setRolePermission(role, perm, !on)}
@@ -1503,23 +1494,23 @@ export function AdminPage() {
               <>
                 <div className="admin-page-card admin-tools-card">
                   <h2 className="admin-page-card-title">
-                    {de ? "Projektklassen-Template" : "Project class template"}
+                    {de ? "Projektklassen-Vorlage" : "Project class template"}
                   </h2>
                   <p className="admin-tools-desc">
                     {de
-                      ? "CSV mit Projektklassen, Standard-Materialien und Aufgaben. Template herunterladen, ausfüllen, importieren."
+                      ? "CSV mit Projektklassen, Standard-Materialien und Aufgaben. Vorlage herunterladen, ausfüllen, importieren."
                       : "CSV containing project classes, default materials and tasks. Download the template, fill it in, then import."}
                   </p>
                   <div className="admin-tools-step">
                     <div className="admin-tools-step-label">
-                      {de ? "Schritt 1 — Template herunterladen" : "Step 1 — Download template"}
+                      {de ? "Schritt 1 — Vorlage herunterladen" : "Step 1 — Download template"}
                     </div>
                     <button
                       type="button"
                       className="admin-tools-step-btn"
                       onClick={downloadProjectClassTemplateCsv}
                     >
-                      ↓ {de ? "Template herunterladen" : "Download template"}
+                      ↓ {de ? "Vorlage herunterladen" : "Download template"}
                     </button>
                   </div>
                   <form className="admin-tools-step" onSubmit={importProjectClassTemplateCsv}>
@@ -1548,19 +1539,19 @@ export function AdminPage() {
                   </h2>
                   <p className="admin-tools-desc">
                     {de
-                      ? "Projekte per CSV-Datei importieren. Template herunterladen, um das erwartete Spaltenformat zu sehen."
+                      ? "Projekte per CSV-Datei importieren. Vorlage herunterladen, um das erwartete Spaltenformat zu sehen."
                       : "Bulk-import projects from a CSV file. Download the template to see the required column format."}
                   </p>
                   <div className="admin-tools-step">
                     <div className="admin-tools-step-label">
-                      {de ? "Schritt 1 — Template herunterladen" : "Step 1 — Download template"}
+                      {de ? "Schritt 1 — Vorlage herunterladen" : "Step 1 — Download template"}
                     </div>
                     <button
                       type="button"
                       className="admin-tools-step-btn"
                       onClick={downloadProjectCsvTemplate}
                     >
-                      ↓ {de ? "CSV-Template herunterladen" : "Download CSV template"}
+                      ↓ {de ? "CSV-Vorlage herunterladen" : "Download CSV template"}
                     </button>
                   </div>
                   <form className="admin-tools-step" onSubmit={importProjectsCsv}>
@@ -1879,7 +1870,7 @@ export function AdminPage() {
                         <span className="admin-audit-field admin-audit-field--target">
                           <span className="admin-audit-label">{de ? "Ziel" : "Target"}</span>
                           <span className="admin-audit-target">
-                            {log.target_type}
+                            {auditTargetLabel(log.target_type, de)}
                             {log.target_id != null ? ` · ${log.target_id}` : ""}
                           </span>
                         </span>
@@ -2054,7 +2045,7 @@ export function AdminPage() {
             </div>
 
             <div className="admin-page-card admin-settings-block">
-              <h2 className="admin-page-card-title">Weather API</h2>
+              <h2 className="admin-page-card-title">{de ? "Wetter-API" : "Weather API"}</h2>
               <p className="admin-tools-desc">
                 {de
                   ? "OpenWeatherMap API-Schlüssel verbinden, um Live-Wetter auf Projektseiten anzuzeigen."
@@ -2065,7 +2056,7 @@ export function AdminPage() {
                 onSubmit={(e: FormEvent<HTMLFormElement>) => void saveWeatherSettings(e)}
               >
                 <label className="admin-invite-field">
-                  <span className="admin-invite-field-label">API Key</span>
+                  <span className="admin-invite-field-label">{de ? "API-Schlüssel" : "API key"}</span>
                   <input
                     type="password"
                     className="admin-invite-input"
@@ -2114,7 +2105,7 @@ export function AdminPage() {
                 onSubmit={(e: FormEvent<HTMLFormElement>) => void saveOpenAISettings(e)}
               >
                 <label className="admin-invite-field">
-                  <span className="admin-invite-field-label">API Key</span>
+                  <span className="admin-invite-field-label">{de ? "API-Schlüssel" : "API key"}</span>
                   <input
                     type="password"
                     className="admin-invite-input"
@@ -2161,7 +2152,7 @@ export function AdminPage() {
             </div>
 
             <div className="admin-page-card admin-settings-block">
-              <h2 className="admin-page-card-title">Email (SMTP)</h2>
+              <h2 className="admin-page-card-title">{de ? "E-Mail-Versand (SMTP)" : "Email (SMTP)"}</h2>
               <form
                 className="admin-settings-form"
                 onSubmit={(e: FormEvent<HTMLFormElement>) => void saveSmtpSettings(e)}

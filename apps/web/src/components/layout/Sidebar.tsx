@@ -4,6 +4,16 @@ import { NotificationPanel } from "../NotificationPanel";
 import { BellIcon, SidebarNavIcon } from "../icons";
 import { AvatarBadge } from "../shared/AvatarBadge";
 import type { MainView } from "../../types";
+import { roleLabel } from "../../utils/roles";
+
+/** The live-update dot's tooltip — also its accessible name, so it says the
+ *  state in words rather than the internal status key. */
+function sseStatusText(status: string, de: boolean): string {
+  if (status === "connected") return de ? "Live – Änderungen kommen sofort an" : "Live - updates arrive instantly";
+  if (status === "connecting") return de ? "Live-Verbindung wird aufgebaut …" : "Connecting to live updates...";
+  if (status === "reconnecting") return de ? "Live-Verbindung wird wiederhergestellt …" : "Reconnecting...";
+  return de ? "Live-Aktualisierung getrennt" : "Live updates offline";
+}
 
 export function Sidebar() {
   const {
@@ -125,7 +135,7 @@ export function Sidebar() {
       <div className="sidebar-main">
         <div className="brand-block">
           <div className="brand-header-row">
-            <img src={brandLogoUrl} alt="Company logo" className="brand-logo" />
+            <img src={brandLogoUrl} alt={language === "de" ? "Firmenlogo" : "Company logo"} className="brand-logo" />
             <div className="brand-meta">
               <h2>{brandTitle}</h2>
             </div>
@@ -294,7 +304,7 @@ export function Sidebar() {
                 />
                 <div className="sidebar-user-meta">
                   <b>{menuUserNameById(user!.id, user!.display_name || user!.full_name)}</b>
-                  <small className="role">{user!.role}</small>
+                  <small className="role">{roleLabel(user!.role, language)}</small>
                 </div>
               </div>
             </button>
@@ -302,16 +312,8 @@ export function Sidebar() {
           {token && (
             <span
               className={`sse-status-dot sse-status-dot--${sseStatus}`}
-              title={
-                sseStatus === "connected"
-                  ? "Live - updates arrive instantly"
-                  : sseStatus === "connecting"
-                    ? "Connecting to live updates..."
-                    : sseStatus === "reconnecting"
-                      ? "Reconnecting..."
-                      : "Live updates offline"
-              }
-              aria-label={`Live connection status: ${sseStatus}`}
+              title={sseStatusText(sseStatus, language === "de")}
+              aria-label={sseStatusText(sseStatus, language === "de")}
             />
           )}
           {token && (
@@ -328,7 +330,12 @@ export function Sidebar() {
                 title={language === "de" ? "Benachrichtigungen" : "Notifications"}
               >
                 <BellIcon />
-                {hasTaskNotifications && <span className="notif-bell-badge" aria-label="Unread notifications" />}
+                {hasTaskNotifications && (
+                  <span
+                    className="notif-bell-badge"
+                    aria-label={language === "de" ? "Ungelesene Benachrichtigungen" : "Unread notifications"}
+                  />
+                )}
               </button>
               {notifPanelOpen && (
                 <NotificationPanel
