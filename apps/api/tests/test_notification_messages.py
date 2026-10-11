@@ -98,3 +98,76 @@ def test_an_old_row_is_listed_in_german_and_stored_as_it_was(client: TestClient,
 
     with SessionLocal() as db:
         assert db.get(Notification, row_id).message == 'Initial Admin assigned you to "Abnahme"'
+
+
+# PostgreSQL refuses a VARCHAR overflow at commit, and the notification is
+# added in the task's own transaction — a line wider than the column costs the
+# task, not just the bell. SQLite does not enforce the width, so these tests
+# measure the line instead of waiting for the database to object.
+MESSAGE_WIDTH = Notification.__table__.c["message"].type.length
+
+
+def test_a_long_title_is_cut_so_the_line_fits_the_column() -> None:
+    title = ("Unterverteilung UV-3 umbauen, " * 10)[:230]
+    message = task_assigned_message("Initial Admin", title)
+    assert len(message) <= MESSAGE_WIDTH
+    assert message.startswith("Initial Admin hat dir die Aufgabe „")
+    # The cut is visible and the sentence still closes.
+    assert message.endswith("…“ zugewiesen")
+    kept = message.removeprefix("Initial Admin hat dir die Aufgabe „").removesuffix("…“ zugewiesen")
+    assert kept and title.startswith(kept)
+
+
+def test_a_title_that_fits_is_not_cut() -> None:
+    room = MESSAGE_WIDTH - len(task_assigned_message("Initial Admin", ""))
+    exact = "a" * room
+    assert task_assigned_message("Initial Admin", exact) == f"Initial Admin hat dir die Aufgabe „{exact}“ zugewiesen"
+    assert len(task_assigned_message("Initial Admin", exact)) == MESSAGE_WIDTH
+    one_more = task_assigned_message("Initial Admin", exact + "b")
+    assert len(one_more) == MESSAGE_WIDTH
+    assert one_more.endswith("…“ zugewiesen")
+
+
+def test_an_overlong_name_still_fits_the_column() -> None:
+    # full_name is a 255-character column itself; the line must fit anyway.
+    assert len(task_assigned_message("A" * 255, "Gerüst aufbauen")) <= MESSAGE_WIDTH
+
+
+def test_a_long_title_on_create_and_on_edit_stores_a_line_that_fits(
+    client: TestClient, admin_token: str
+) -> None:
+    employee_id, token = _employee_token(client, admin_token, "erika_long_bell@example.com")
+    project_id = _project(client, admin_token, "2026-BELL-3")
+    title = ("Zählerschrank im Keller tauschen und neu verdrahten; " * 5)[:230]
+
+    created = client.post(
+        "/api/tasks",
+        json={"title": title, "project_id": project_id, "assignee_ids": [employee_id]},
+        headers=auth_headers(admin_token),
+    )
+    assert created.status_code in (200, 201), created.text
+    # The edit path writes its own notification when an assignee is added.
+    later = client.post(
+        "/api/tasks",
+        json={"title": title, "project_id": project_id},
+        headers=auth_headers(admin_token),
+    )
+    assert later.status_code in (200, 201), later.text
+    edited = client.patch(
+        f"/api/tasks/{later.json()['id']}",
+        json={"assignee_ids": [employee_id]},
+        headers=auth_headers(admin_token),
+    )
+    assert edited.status_code == 200, edited.text
+
+    with SessionLocal() as db:
+        stored = [row.message for row in db.query(Notification).filter(Notification.user_id == employee_id)]
+    assert len(stored) == 2
+    for message in stored:
+        assert len(message) <= MESSAGE_WIDTH
+        assert message.startswith("Initial Admin hat dir die Aufgabe „Zählerschrank im Keller")
+        assert message.endswith("…“ zugewiesen")
+
+    listed = client.get("/api/notifications", headers=auth_headers(token))
+    assert listed.status_code == 200, listed.text
+    assert all(len(row["message"]) <= MESSAGE_WIDTH for row in listed.json())
