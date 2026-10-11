@@ -249,7 +249,8 @@ describe("Protokoll rows", () => {
       ["Kategorie", "Projekte"],
       ["Benutzer", "Max"],
       ["Aktion", "project.status_changed"],
-      ["Ziel", "project · 2026-0001"],
+      // The target is a noun, labelled; the action stays the code admins search for.
+      ["Ziel", "Projekt · 2026-0001"],
     ];
     for (const [label, value] of expected) {
       const labelEl = within(row).getByText(label);

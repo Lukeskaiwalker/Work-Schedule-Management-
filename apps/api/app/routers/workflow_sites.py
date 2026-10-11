@@ -46,7 +46,7 @@ def create_job_ticket(
         project_id=project_id,
         actor_user_id=current_user.id,
         event_type="ticket.created",
-        message=f"Job ticket created: {ticket.title}",
+        message=f"Ticket erstellt: {ticket.title}",
         details={"ticket_id": ticket.id},
     )
     db.commit()
@@ -102,7 +102,7 @@ async def upload_job_ticket_attachment(
         project_id=project_id,
         actor_user_id=current_user.id,
         event_type="ticket.updated",
-        message=f"Job ticket updated: #{ticket_id}",
+        message=f"Ticket aktualisiert: #{ticket_id}",
         details={"ticket_id": ticket_id, "file_name": file.filename},
     )
     db.commit()

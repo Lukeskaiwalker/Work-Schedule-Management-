@@ -51,7 +51,7 @@ export function CustomerProjectFolders({
       const rows = await apiFetch<StoredFile[]>(`/projects/${projectId}/files`, token);
       setLoads((current) => ({ ...current, [projectId]: { kind: "ready", rows } }));
     } catch (err: unknown) {
-      const message = err instanceof Error && err.message ? err.message : "Failed to load files";
+      const message = err instanceof Error && err.message ? err.message : de ? "Dateien konnten nicht geladen werden" : "Failed to load files";
       setLoads((current) => ({ ...current, [projectId]: { kind: "error", message } }));
     }
   }

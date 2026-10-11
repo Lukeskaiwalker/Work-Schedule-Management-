@@ -3,6 +3,8 @@ import { AppContext } from "./context/AppContext";
 import type { AppContextValue } from "./context/AppContext";
 
 import { ApiError, apiFetch, apiUploadWithProgress, setUnauthorizedHandler } from "./api/client";
+import { uiText } from "./utils/uiLanguage";
+import { connectionErrorText } from "./utils/connectionError";
 import { apiUrl } from "./native/shell";
 import { taskBoxDisplay } from "./utils/boxes";
 import { MaterialRemainderDialog } from "./components/tasks/MaterialRemainderDialog";
@@ -171,6 +173,7 @@ import {
   customerTaskFallbackLabel,
   isCustomerOnlyTask,
   taskCalendarAnchor,
+  taskCalendarDescriptionLines,
   taskCustomerAddress,
   taskCustomerName,
   type TaskAnchorRef,
@@ -3366,7 +3369,7 @@ export function App() {
         if (projectTab === "materials") await loadProjectTrackedMaterials(activeProjectId);
       }
     } catch (err: any) {
-      setError(err.message ?? "Failed to load data");
+      setError(err.message ?? uiText("Daten konnten nicht geladen werden", "Failed to load data"));
     }
   }
 
@@ -3377,7 +3380,7 @@ export function App() {
       return rows;
     } catch (err: any) {
       setProjectClassTemplatesByProjectId((current) => ({ ...current, [projectId]: [] }));
-      setError(err.message ?? "Failed to load project classes");
+      setError(err.message ?? uiText("Projektklassen konnten nicht geladen werden", "Failed to load project classes"));
       return [];
     }
   }
@@ -3408,7 +3411,7 @@ export function App() {
     } catch (err: unknown) {
       setSelectableBoxesByCustomerKey((current) => ({ ...current, [key]: [] }));
       if (err instanceof ApiError && err.status === 403) return [];
-      setError(err instanceof Error ? err.message : "Failed to load construction boxes");
+      setError(err instanceof Error ? err.message : uiText("Baustellenkisten konnten nicht geladen werden", "Failed to load construction boxes"));
       return [];
     }
   }
@@ -3426,7 +3429,7 @@ export function App() {
       setTasks(taskData);
     } catch (err: any) {
       if (!tasksRequestSequence.isCurrent(ticket)) return;
-      setError(err.message ?? "Failed to load tasks");
+      setError(err.message ?? uiText("Aufgaben konnten nicht geladen werden", "Failed to load tasks"));
     }
   }
 
@@ -3447,7 +3450,7 @@ export function App() {
       setMaterialNeeds(rows);
     } catch (err: any) {
       setMaterialNeeds([]);
-      setError(err.message ?? "Failed to load materials");
+      setError(err.message ?? uiText("Material konnte nicht geladen werden", "Failed to load materials"));
     }
   }
 
@@ -3502,7 +3505,7 @@ export function App() {
           }
         : null;
     } catch (err: any) {
-      setError(err?.message ?? "Image upload failed");
+      setError(err?.message ?? uiText("Bild konnte nicht hochgeladen werden", "Image upload failed"));
       return null;
     }
   }
@@ -3528,7 +3531,7 @@ export function App() {
           : "Image removed. Auto-lookup re-enabled.",
       );
     } catch (err: any) {
-      setError(err?.message ?? "Image removal failed");
+      setError(err?.message ?? uiText("Bild konnte nicht entfernt werden", "Image removal failed"));
     }
   }
 
@@ -3553,7 +3556,7 @@ export function App() {
       if (query.trim() !== materialCatalogQueryRef.current.trim()) return;
       setMaterialCatalogRows([]);
       setMaterialCatalogState(null);
-      setError(err.message ?? "Failed to load material catalog");
+      setError(err.message ?? uiText("Materialkatalog konnte nicht geladen werden", "Failed to load material catalog"));
     } finally {
       if (requestSeq !== materialCatalogRequestSeqRef.current) return;
       setMaterialCatalogLoading(false);
@@ -3781,7 +3784,7 @@ export function App() {
           : `Material added: ${materialCatalogItem.item_name}`,
       );
     } catch (err: any) {
-      setError(err.message ?? "Failed to add material");
+      setError(err.message ?? uiText("Material konnte nicht hinzugefügt werden", "Failed to add material"));
     } finally {
       setMaterialCatalogAdding((current) => {
         const next = { ...current };
@@ -3803,7 +3806,7 @@ export function App() {
       );
       setNotice(language === "de" ? "Materialstatus aktualisiert" : "Material status updated");
     } catch (err: any) {
-      setError(err.message ?? "Failed to update material status");
+      setError(err.message ?? uiText("Materialstatus konnte nicht geändert werden", "Failed to update material status"));
     } finally {
       setMaterialNeedUpdating((current) => {
         const next = { ...current };
@@ -3823,7 +3826,7 @@ export function App() {
         current.map((entry) => (entry.id === materialNeedId ? updated : entry)),
       );
     } catch (err: any) {
-      setError(err.message ?? "Failed to update material note");
+      setError(err.message ?? uiText("Materialnotiz konnte nicht gespeichert werden", "Failed to update material note"));
     }
   }
 
@@ -3847,7 +3850,7 @@ export function App() {
       setProjectOverviewDetails(null);
       setProjectOverviewOpenTasks([]);
       setProjectHoursPlannedInput("");
-      setError(err.message ?? "Failed to load project overview");
+      setError(err.message ?? uiText("Projektübersicht konnte nicht geladen werden", "Failed to load project overview"));
     }
   }
 
@@ -3859,7 +3862,7 @@ export function App() {
       setProjectWeather(payload);
     } catch (err: any) {
       setProjectWeather(null);
-      setError(err.message ?? "Failed to load project weather");
+      setError(err.message ?? uiText("Wetterdaten konnten nicht geladen werden", "Failed to load project weather"));
     } finally {
       setProjectWeatherLoading(false);
     }
@@ -3874,7 +3877,7 @@ export function App() {
     } catch (err: any) {
       setProjectFinance(null);
       setProjectHoursPlannedInput("");
-      setError(err.message ?? "Failed to load project finance");
+      setError(err.message ?? uiText("Projektfinanzen konnten nicht geladen werden", "Failed to load project finance"));
     }
   }
 
@@ -3884,7 +3887,7 @@ export function App() {
       setProjectMembers(rows);
     } catch (err: any) {
       setProjectMembers([]);
-      setError(err.message ?? "Failed to load project members");
+      setError(err.message ?? uiText("Projektmitglieder konnten nicht geladen werden", "Failed to load project members"));
     }
   }
 
@@ -3898,7 +3901,7 @@ export function App() {
       await loadProjectMembers(activeProjectId);
       setNotice(language === "de" ? "Mitglied hinzugefügt" : "Member added");
     } catch (err: any) {
-      setError(err.message ?? "Failed to add member");
+      setError(err.message ?? uiText("Mitglied konnte nicht hinzugefügt werden", "Failed to add member"));
     }
   }
 
@@ -3915,7 +3918,7 @@ export function App() {
       });
       await loadProjectMembers(activeProjectId);
     } catch (err: any) {
-      setError(err.message ?? "Failed to update member");
+      setError(err.message ?? uiText("Mitglied konnte nicht geändert werden", "Failed to update member"));
       await loadProjectMembers(activeProjectId);
     }
   }
@@ -3927,7 +3930,7 @@ export function App() {
       await loadProjectMembers(activeProjectId);
       setNotice(language === "de" ? "Mitglied entfernt" : "Member removed");
     } catch (err: any) {
-      setError(err.message ?? "Failed to remove member");
+      setError(err.message ?? uiText("Mitglied konnte nicht entfernt werden", "Failed to remove member"));
     }
   }
 
@@ -3937,7 +3940,7 @@ export function App() {
       setProjectTrackedMaterials(rows);
     } catch (err: any) {
       setProjectTrackedMaterials([]);
-      setError(err.message ?? "Failed to load project materials");
+      setError(err.message ?? uiText("Projektmaterial konnte nicht geladen werden", "Failed to load project materials"));
     }
   }
 
@@ -3958,7 +3961,7 @@ export function App() {
           : "Weather API settings saved",
       );
     } catch (err: any) {
-      setError(err.message ?? "Failed to save weather settings");
+      setError(err.message ?? uiText("Wetter-Einstellungen konnten nicht gespeichert werden", "Failed to save weather settings"));
     } finally {
       setWeatherSettingsSaving(false);
     }
@@ -3987,7 +3990,7 @@ export function App() {
           : "OpenAI settings saved",
       );
     } catch (err: any) {
-      setError(err.message ?? "Failed to save OpenAI settings");
+      setError(err.message ?? uiText("OpenAI-Einstellungen konnten nicht gespeichert werden", "Failed to save OpenAI settings"));
     } finally {
       setOpenAISettingsSaving(false);
     }
@@ -4048,7 +4051,7 @@ export function App() {
           : "Company settings saved",
       );
     } catch (err: any) {
-      setError(err.message ?? "Failed to save company settings");
+      setError(err.message ?? uiText("Firmendaten konnten nicht gespeichert werden", "Failed to save company settings"));
     } finally {
       setCompanySettingsSaving(false);
     }
@@ -4092,7 +4095,7 @@ export function App() {
           : "SMTP settings saved",
       );
     } catch (err: any) {
-      setError(err.message ?? "Failed to save SMTP settings");
+      setError(err.message ?? uiText("SMTP-Einstellungen konnten nicht gespeichert werden", "Failed to save SMTP settings"));
     } finally {
       setSmtpSettingsSaving(false);
     }
@@ -4129,7 +4132,7 @@ export function App() {
       }
       return result;
     } catch (err: any) {
-      const message = err?.message ?? "SMTP test failed";
+      const message = err?.message ?? uiText("SMTP-Test fehlgeschlagen", "SMTP test failed");
       setError(message);
       setSmtpTestLastResult({
         ok: false,
@@ -4155,7 +4158,7 @@ export function App() {
         );
       }
     } catch (err: any) {
-      setError(err.message ?? "Failed to load update status");
+      setError(err.message ?? uiText("Update-Status konnte nicht geladen werden", "Failed to load update status"));
     } finally {
       setUpdateStatusLoading(false);
     }
@@ -4312,7 +4315,7 @@ export function App() {
       await loadUpdateStatus(false);
       setUpdateInstallRunning(false);
     } catch (err: any) {
-      setError(err.message ?? "Failed to run update");
+      setError(err.message ?? uiText("Update konnte nicht ausgeführt werden", "Failed to run update"));
       setUpdateInstallRunning(false);
     }
   }
@@ -4390,7 +4393,7 @@ export function App() {
       const list = await apiFetch<BackupListResponse>("/admin/backups", token);
       setBackupsList(list);
     } catch (err: any) {
-      setError(err.message ?? "Failed to load backups");
+      setError(err.message ?? uiText("Backups konnten nicht geladen werden", "Failed to load backups"));
     } finally {
       setBackupsListLoading(false);
     }
@@ -4424,7 +4427,7 @@ export function App() {
       });
       void pollBackupJobProgress(result.job_id);
     } catch (err: any) {
-      setError(err.message ?? "Failed to start backup");
+      setError(err.message ?? uiText("Backup konnte nicht gestartet werden", "Failed to start backup"));
       setBackupJobRunning(false);
     }
   }
@@ -4457,7 +4460,7 @@ export function App() {
       });
       void pollBackupJobProgress(result.job_id);
     } catch (err: any) {
-      setError(err.message ?? "Failed to start restore");
+      setError(err.message ?? uiText("Wiederherstellung konnte nicht gestartet werden", "Failed to start restore"));
       setBackupJobRunning(false);
     }
   }
@@ -4479,7 +4482,7 @@ export function App() {
         } catch {
           // no-op
         }
-        throw new Error(detail || "Download failed");
+        throw new Error(detail || uiText("Herunterladen fehlgeschlagen", "Download failed"));
       }
       const blob = await response.blob();
       const blobUrl = URL.createObjectURL(blob);
@@ -4496,7 +4499,7 @@ export function App() {
           : `Backup downloaded: ${filename}`,
       );
     } catch (err: any) {
-      setError(err.message ?? "Failed to download backup");
+      setError(err.message ?? uiText("Backup konnte nicht heruntergeladen werden", "Failed to download backup"));
     }
   }
 
@@ -4521,7 +4524,7 @@ export function App() {
         } catch {
           // no-op
         }
-        throw new Error(detail || "Upload failed");
+        throw new Error(detail || uiText("Hochladen fehlgeschlagen", "Upload failed"));
       }
       setNotice(
         language === "de"
@@ -4530,7 +4533,7 @@ export function App() {
       );
       await loadBackupsList();
     } catch (err: any) {
-      setError(err.message ?? "Failed to upload backup");
+      setError(err.message ?? uiText("Backup konnte nicht hochgeladen werden", "Failed to upload backup"));
     }
   }
 
@@ -4547,7 +4550,7 @@ export function App() {
       );
       await loadBackupsList();
     } catch (err: any) {
-      setError(err.message ?? "Failed to delete backup");
+      setError(err.message ?? uiText("Backup konnte nicht gelöscht werden", "Failed to delete backup"));
     }
   }
 
@@ -4560,7 +4563,7 @@ export function App() {
       const week = await apiFetch<PlanningWeek>(`/planning/week/${weekStart}${query}`, token);
       setPlanningWeek(week);
     } catch (err: any) {
-      setError(err.message ?? "Failed to load weekly planning");
+      setError(err.message ?? uiText("Wochenplanung konnte nicht geladen werden", "Failed to load weekly planning"));
     }
   }
 
@@ -4577,7 +4580,7 @@ export function App() {
       setCalendarWeeks(weeks);
     } catch (err: any) {
       setCalendarWeeks([]);
-      setError(err.message ?? "Failed to load calendar");
+      setError(err.message ?? uiText("Kalender konnte nicht geladen werden", "Failed to load calendar"));
     } finally {
       setCalendarLoading(false);
     }
@@ -4588,7 +4591,7 @@ export function App() {
       const ticketData = await apiFetch<Ticket[]>(`/projects/${projectId}/job-tickets`, token);
       setTickets(ticketData);
     } catch (err: any) {
-      setError(err.message ?? "Failed to load tickets");
+      setError(err.message ?? uiText("Tickets konnten nicht geladen werden", "Failed to load tickets"));
     }
   }
 
@@ -4596,7 +4599,7 @@ export function App() {
     try {
       setFiles(await apiFetch<ProjectFile[]>(`/projects/${projectId}/files`, token));
     } catch (err: any) {
-      setError(err.message ?? "Failed to load files");
+      setError(err.message ?? uiText("Dateien konnten nicht geladen werden", "Failed to load files"));
     }
   }
 
@@ -4612,7 +4615,7 @@ export function App() {
       });
     } catch (err: any) {
       setProjectFolders([]);
-      setError(err.message ?? "Failed to load project folders");
+      setError(err.message ?? uiText("Projektordner konnten nicht geladen werden", "Failed to load project folders"));
     }
   }
 
@@ -4621,7 +4624,7 @@ export function App() {
     try {
       setFiles(await apiFetch<ProjectFile[]>(`/construction-reports/files${query}`, token));
     } catch (err: any) {
-      setError(err.message ?? "Failed to load report files");
+      setError(err.message ?? uiText("Berichtsdateien konnten nicht geladen werden", "Failed to load report files"));
     }
   }
 
@@ -4632,7 +4635,7 @@ export function App() {
     } catch (err: any) {
       setRecentConstructionReports([]);
       if (err?.status !== 403) {
-        setError(err.message ?? "Failed to load recent construction reports");
+        setError(err.message ?? uiText("Letzte Baustellenberichte konnten nicht geladen werden", "Failed to load recent construction reports"));
       }
     }
   }
@@ -4652,7 +4655,7 @@ export function App() {
     } catch (err: any) {
       setReportsWindow([]);
       if (err?.status !== 403) {
-        setError(err.message ?? "Failed to load reports");
+        setError(err.message ?? uiText("Berichte konnten nicht geladen werden", "Failed to load reports"));
       }
     } finally {
       setReportsWindowLoading(false);
@@ -4665,7 +4668,7 @@ export function App() {
       const files = await apiFetch<WikiLibraryFile[]>(`/wiki/library/files${query}`, token);
       setWikiFiles(files);
     } catch (err: any) {
-      setError(err.message ?? "Failed to load wiki files");
+      setError(err.message ?? uiText("Wiki-Dateien konnten nicht geladen werden", "Failed to load wiki files"));
     }
   }
 
@@ -4726,7 +4729,7 @@ export function App() {
       if (data.length === 0) setActiveThreadId(null);
     } catch (err: any) {
       if (err?.status === 403 && mainView !== "messages") return;
-      setError(err.message ?? "Failed to load threads");
+      setError(err.message ?? uiText("Chat-Threads konnten nicht geladen werden", "Failed to load threads"));
     }
   }
 
@@ -4736,7 +4739,7 @@ export function App() {
       setArchivedThreads(data.filter((thread) => isThreadArchived(thread)));
     } catch (err: any) {
       setArchivedThreads([]);
-      setError(err.message ?? "Failed to load archived threads");
+      setError(err.message ?? uiText("Archivierte Chat-Threads konnten nicht geladen werden", "Failed to load archived threads"));
     }
   }
 
@@ -4744,7 +4747,7 @@ export function App() {
     try {
       setMessages(await apiFetch<Message[]>(`/threads/${threadId}/messages`, token));
     } catch (err: any) {
-      setError(err.message ?? "Failed to load messages");
+      setError(err.message ?? uiText("Nachrichten konnten nicht geladen werden", "Failed to load messages"));
     }
   }
 
@@ -4776,7 +4779,7 @@ export function App() {
         messages.map((m) => (m.id === messageId ? { ...m, ...updated } : m)),
       );
     } catch (err: any) {
-      setError(err.message ?? "Failed to update reaction");
+      setError(err.message ?? uiText("Reaktion konnte nicht gespeichert werden", "Failed to update reaction"));
     }
   }
 
@@ -4847,7 +4850,7 @@ export function App() {
         setMonthlyWorkedHours(0);
       }
     } catch (err: any) {
-      setError(err.message ?? "Failed to load time data");
+      setError(err.message ?? uiText("Zeitdaten konnten nicht geladen werden", "Failed to load time data"));
     }
   }
 
@@ -4885,7 +4888,7 @@ export function App() {
       }
       if (!response.ok) {
         const data = await response.json();
-        throw new Error(data.detail ?? "Login failed");
+        throw new Error(data.detail ?? uiText("Anmeldung fehlgeschlagen", "Login failed"));
       }
       // The body is readable only once; read it before touching headers so we
       // can branch on the MFA challenge (which carries no X-Access-Token).
@@ -4903,7 +4906,7 @@ export function App() {
         return;
       }
       const newToken = response.headers.get("X-Access-Token");
-      if (!newToken) throw new Error("No access token returned");
+      if (!newToken) throw new Error(uiText("Anmeldung fehlgeschlagen: kein Zugangstoken erhalten", "No access token returned"));
       const cleanToken = newToken.trim();
       if (!isLikelyJwtToken(cleanToken)) {
         throw new Error(
@@ -4934,7 +4937,7 @@ export function App() {
             : "Login failed (browser URL pattern error). Please reload and try again.",
         );
       } else {
-        setError(message || "Login failed");
+        setError(message || uiText("Anmeldung fehlgeschlagen", "Login failed"));
       }
     }
   }
@@ -4964,7 +4967,7 @@ export function App() {
         );
       }
       const newToken = response.headers.get("X-Access-Token");
-      if (!newToken) throw new Error("No access token returned");
+      if (!newToken) throw new Error(uiText("Anmeldung fehlgeschlagen: kein Zugangstoken erhalten", "No access token returned"));
       const cleanToken = newToken.trim();
       if (!isLikelyJwtToken(cleanToken)) {
         throw new Error(
@@ -5042,7 +5045,7 @@ export function App() {
       resetPublicAuthRoute();
       setNotice(language === "de" ? "Einladung akzeptiert. Bitte anmelden." : "Invite accepted. Please sign in.");
     } catch (err: any) {
-      setError(err.message ?? "Failed to accept invite");
+      setError(err.message ?? uiText("Einladung konnte nicht angenommen werden", "Failed to accept invite"));
     }
   }
 
@@ -5071,7 +5074,7 @@ export function App() {
       resetPublicAuthRoute();
       setNotice(language === "de" ? "Passwort aktualisiert. Bitte anmelden." : "Password updated. Please sign in.");
     } catch (err: any) {
-      setError(err.message ?? "Failed to reset password");
+      setError(err.message ?? uiText("Passwort konnte nicht zurückgesetzt werden", "Failed to reset password"));
     }
   }
 
@@ -5264,7 +5267,7 @@ export function App() {
         {
           id: fallback?.id ?? projectId,
           project_number: fallback?.project_number || String(projectId),
-          name: fallback?.name || `Project ${projectId}`,
+          name: fallback?.name || `${uiText("Projekt", "Project")} ${projectId}`,
           status: fallback?.status || "active",
           customer_name: fallback?.customer_name ?? null,
         },
@@ -5314,6 +5317,7 @@ export function App() {
             address: taskCustomerAddress(task) || String(taskCustomer?.address ?? "").trim(),
           }
         : null,
+      language,
     );
     const dueDateIso = task.due_date || formatDateISOLocal(new Date());
     const startTime = formatTaskStartTime(task.start_time || "") || "";
@@ -5342,18 +5346,22 @@ export function App() {
     }
 
     const summaryBase = anchor.summaryBase;
-    const materialsSummary = taskMaterialsDisplay(task.materials_required, "en");
-    const lines: string[] = [
-      `Task ID: #${task.id}`,
-      `Status: ${taskDisplayStatus(task, todayIso)}`,
-      ...anchor.anchorLines,
-      multiDay ? `From/To: ${formatTaskDateRange(task)}` : `Due: ${task.due_date ?? "-"}`,
-      startTime ? `Time: ${formatTaskTimeRange(task)}${multiDay ? " daily" : ""}` : "",
-      task.description ? `Info: ${task.description}` : "",
-      materialsSummary ? `Materials: ${materialsSummary}` : "",
-      taskBoxDisplay(task) ? `Construction box: ${taskBoxDisplay(task)}` : "",
-      `Assignees: ${getTaskAssigneeLabel(task)}`,
-    ].filter((line) => line.length > 0);
+    const lines = taskCalendarDescriptionLines(
+      {
+        taskId: task.id,
+        status: taskDisplayStatus(task, todayIso),
+        anchorLines: anchor.anchorLines,
+        multiDay,
+        dateRange: formatTaskDateRange(task),
+        dueDate: task.due_date,
+        timeRange: startTime ? formatTaskTimeRange(task) : "",
+        description: task.description,
+        materials: taskMaterialsDisplay(task.materials_required, language),
+        box: taskBoxDisplay(task) ?? "",
+        assignees: getTaskAssigneeLabel(task),
+      },
+      language,
+    );
 
     const location = anchor.location;
     const ics = [
@@ -5999,7 +6007,7 @@ export function App() {
         );
         return;
       }
-      setError(err.message ?? "Failed to save project");
+      setError(err.message ?? uiText("Projekt konnte nicht gespeichert werden", "Failed to save project"));
     }
   }
 
@@ -6052,7 +6060,7 @@ export function App() {
         );
         return;
       }
-      setError(err.message ?? "Failed to save finances");
+      setError(err.message ?? uiText("Finanzen konnten nicht gespeichert werden", "Failed to save finances"));
     }
   }
 
@@ -6095,7 +6103,7 @@ export function App() {
         );
         return;
       }
-      setError(err.message ?? "Failed to save project hours");
+      setError(err.message ?? uiText("Projektstunden konnten nicht gespeichert werden", "Failed to save project hours"));
     }
   }
 
@@ -6124,7 +6132,7 @@ export function App() {
         );
         return;
       }
-      setError(err.message ?? "Failed to archive project");
+      setError(err.message ?? uiText("Projekt konnte nicht archiviert werden", "Failed to archive project"));
     }
   }
 
@@ -6145,7 +6153,7 @@ export function App() {
       setMainView("overview");
       await loadBaseData();
     } catch (err: any) {
-      setError(err.message ?? "Failed to delete project");
+      setError(err.message ?? uiText("Projekt konnte nicht gelöscht werden", "Failed to delete project"));
     }
   }
 
@@ -6173,7 +6181,7 @@ export function App() {
         );
         return;
       }
-      setError(err.message ?? "Failed to restore project");
+      setError(err.message ?? uiText("Projekt konnte nicht wiederhergestellt werden", "Failed to restore project"));
     }
   }
 
@@ -6194,7 +6202,7 @@ export function App() {
       }
       await loadBaseData();
     } catch (err: any) {
-      setError(err.message ?? "Failed to delete project");
+      setError(err.message ?? uiText("Projekt konnte nicht gelöscht werden", "Failed to delete project"));
     }
   }
 
@@ -6259,7 +6267,7 @@ export function App() {
       setOverview(await apiFetch<any[]>("/projects-overview", token));
       setNotice(language === "de" ? "Aufgabe gespeichert" : "Task saved");
     } catch (err: any) {
-      setError(err.message ?? "Failed to create task");
+      setError(err.message ?? uiText("Aufgabe konnte nicht erstellt werden", "Failed to create task"));
     }
   }
 
@@ -6442,7 +6450,7 @@ export function App() {
       }
 
       // Name which step failed so the user sees a useful message
-      // instead of a generic "Failed to create task".
+      // instead of a generic uiText("Aufgabe konnte nicht erstellt werden", "Failed to create task").
       const stepLabel =
         currentStep === "project"
           ? language === "de" ? "Projekt-Erstellung" : "Project creation"
@@ -6555,7 +6563,7 @@ export function App() {
         );
         return;
       }
-      setError(err.message ?? "Failed to update task");
+      setError(err.message ?? uiText("Aufgabe konnte nicht gespeichert werden", "Failed to update task"));
     }
   }
 
@@ -6747,7 +6755,7 @@ export function App() {
         );
         return;
       }
-      setError(err.message ?? "Failed to complete task");
+      setError(err.message ?? uiText("Aufgabe konnte nicht abgeschlossen werden", "Failed to complete task"));
     }
   }
 
@@ -6776,7 +6784,7 @@ export function App() {
       setOverview(await apiFetch<any[]>("/projects-overview", token));
       setNotice(language === "de" ? "Aufgabe gelöscht" : "Task deleted");
     } catch (err: any) {
-      setError(err.message ?? "Failed to delete task");
+      setError(err.message ?? uiText("Aufgabe konnte nicht gelöscht werden", "Failed to delete task"));
     }
   }
 
@@ -6833,7 +6841,7 @@ export function App() {
       await loadProjectOverview(activeProjectId);
       setOverview(await apiFetch<any[]>("/projects-overview", token));
     } catch (err: any) {
-      setError(err.message ?? "Failed to create ticket");
+      setError(err.message ?? uiText("Ticket konnte nicht erstellt werden", "Failed to create ticket"));
     }
   }
 
@@ -6854,7 +6862,7 @@ export function App() {
       setOverview(await apiFetch<any[]>("/projects-overview", token));
       setNotice(language === "de" ? "Anhang hochgeladen" : "Attachment uploaded");
     } catch (err: any) {
-      setError(err.message ?? "Failed to upload ticket attachment");
+      setError(err.message ?? uiText("Ticket-Anhang konnte nicht hochgeladen werden", "Failed to upload ticket attachment"));
     }
   }
 
@@ -6863,7 +6871,7 @@ export function App() {
       await apiFetch("/time/clock-in", token, { method: "POST" });
       await refreshTimeData();
     } catch (err: any) {
-      setError(err.message ?? "Clock in failed");
+      setError(err.message ?? uiText("Einstempeln fehlgeschlagen", "Clock in failed"));
     }
   }
 
@@ -6872,7 +6880,7 @@ export function App() {
       await apiFetch("/time/clock-out", token, { method: "POST" });
       await refreshTimeData();
     } catch (err: any) {
-      setError(err.message ?? "Clock out failed");
+      setError(err.message ?? uiText("Ausstempeln fehlgeschlagen", "Clock out failed"));
     }
   }
 
@@ -6881,7 +6889,7 @@ export function App() {
       await apiFetch("/time/break-start", token, { method: "POST" });
       await refreshTimeData();
     } catch (err: any) {
-      setError(err.message ?? "Break start failed");
+      setError(err.message ?? uiText("Pause konnte nicht gestartet werden", "Break start failed"));
     }
   }
 
@@ -6890,7 +6898,7 @@ export function App() {
       await apiFetch("/time/break-end", token, { method: "POST" });
       await refreshTimeData();
     } catch (err: any) {
-      setError(err.message ?? "Break end failed");
+      setError(err.message ?? uiText("Pause konnte nicht beendet werden", "Break end failed"));
     }
   }
 
@@ -6913,7 +6921,7 @@ export function App() {
       await refreshTimeData();
       setNotice(language === "de" ? "Zeitbuchung aktualisiert" : "Time entry updated");
     } catch (err: any) {
-      setError(err.message ?? "Failed to update time entry");
+      setError(err.message ?? uiText("Zeiteintrag konnte nicht gespeichert werden", "Failed to update time entry"));
     }
   }
 
@@ -7106,7 +7114,7 @@ export function App() {
             : "Thread created",
       );
     } catch (err: any) {
-      setError(err.message ?? (threadModalMode === "edit" ? "Failed to update thread" : "Failed to create thread"));
+      setError(err.message ?? (threadModalMode === "edit" ? uiText("Chat-Thread konnte nicht gespeichert werden", "Failed to update thread") : uiText("Chat-Thread konnte nicht erstellt werden", "Failed to create thread")));
     }
   }
 
@@ -7123,7 +7131,7 @@ export function App() {
       await loadThreads();
       setNotice(language === "de" ? "Chat archiviert" : "Chat archived");
     } catch (err: any) {
-      setError(err.message ?? "Failed to archive thread");
+      setError(err.message ?? uiText("Chat-Thread konnte nicht archiviert werden", "Failed to archive thread"));
     }
   }
 
@@ -7136,7 +7144,7 @@ export function App() {
       await loadMessages(threadId);
       setNotice(language === "de" ? "Chat wiederhergestellt" : "Chat restored");
     } catch (err: any) {
-      setError(err.message ?? "Failed to restore thread");
+      setError(err.message ?? uiText("Chat-Thread konnte nicht wiederhergestellt werden", "Failed to restore thread"));
     }
   }
 
@@ -7160,7 +7168,7 @@ export function App() {
       }
       setNotice(language === "de" ? "Chat gelöscht" : "Chat deleted");
     } catch (err: any) {
-      setError(err.message ?? "Failed to delete thread");
+      setError(err.message ?? uiText("Chat-Thread konnte nicht gelöscht werden", "Failed to delete thread"));
     }
   }
 
@@ -7205,7 +7213,7 @@ export function App() {
       await loadMessages(activeThreadId);
       await loadThreads();
     } catch (err: any) {
-      setError(err.message ?? "Failed to send message");
+      setError(err.message ?? uiText("Nachricht konnte nicht gesendet werden", "Failed to send message"));
     }
   }
 
@@ -7257,7 +7265,8 @@ export function App() {
       // Shown IN the dialog, which stays open. The corner toast is easy to
       // miss while looking at a dialog, and keeping it open preserves the
       // selected files so retrying does not mean picking twelve photos again.
-      const message = err?.message ?? "File upload failed";
+      const message =
+        connectionErrorText(err) ?? err?.message ?? uiText("Dateien konnten nicht hochgeladen werden", "File upload failed");
       setFileUploadError(message);
       setError(message);
     } finally {
@@ -7281,7 +7290,7 @@ export function App() {
       setFileUploadFolder(created.path);
       setNotice(language === "de" ? "Ordner erstellt" : "Folder created");
     } catch (err: any) {
-      setError(err.message ?? "Failed to create folder");
+      setError(err.message ?? uiText("Ordner konnte nicht erstellt werden", "Failed to create folder"));
     }
   }
 
@@ -7440,7 +7449,7 @@ export function App() {
       setNotice(language === "de" ? "Profilbild aktualisiert" : "Profile picture updated");
       closeAvatarModal();
     } catch (err: any) {
-      setError(err.message ?? "Avatar upload failed");
+      setError(err.message ?? uiText("Profilbild konnte nicht hochgeladen werden", "Avatar upload failed"));
     }
   }
 
@@ -7457,7 +7466,7 @@ export function App() {
       closeAvatarModal();
       setNotice(language === "de" ? "Profilbild entfernt" : "Profile picture removed");
     } catch (err: any) {
-      setError(err.message ?? "Avatar delete failed");
+      setError(err.message ?? uiText("Profilbild konnte nicht entfernt werden", "Avatar delete failed"));
     }
   }
 
@@ -7490,7 +7499,7 @@ export function App() {
       setFiles((current) => current.filter((f) => f.id !== fileId));
       return true;
     } catch (err: any) {
-      setError(err.message ?? "Failed to delete file");
+      setError(err.message ?? uiText("Datei konnte nicht gelöscht werden", "Failed to delete file"));
       return false;
     }
   }
@@ -8199,7 +8208,7 @@ export function App() {
       await apiFetch(`/admin/users/${userId}/apply-template`, token, { method: "POST" });
       setNotice(language === "de" ? "Rollen-Template angewendet" : "Permission template applied");
     } catch (err: any) {
-      setError(err.message ?? "Failed to apply template");
+      setError(err.message ?? uiText("Vorlage konnte nicht angewendet werden", "Failed to apply template"));
     }
   }
 
@@ -8211,7 +8220,7 @@ export function App() {
       });
       setUsers(await apiFetch<User[]>("/admin/users", token));
     } catch (err: any) {
-      setError(err.message ?? "Failed to update role");
+      setError(err.message ?? uiText("Rolle konnte nicht geändert werden", "Failed to update role"));
     }
   }
 
@@ -8230,7 +8239,7 @@ export function App() {
         setUser({ ...user, workspace_lock: lock });
       }
     } catch (err: any) {
-      setError(err.message ?? "Failed to update workspace lock");
+      setError(err.message ?? uiText("Sperre des Arbeitsbereichs konnte nicht geändert werden", "Failed to update workspace lock"));
     }
   }
 
@@ -8262,7 +8271,7 @@ export function App() {
             : "API access disabled",
       );
     } catch (err: any) {
-      setError(err.message ?? "Failed to update API access");
+      setError(err.message ?? uiText("API-Zugriff konnte nicht geändert werden", "Failed to update API access"));
     }
   }
 
@@ -8302,7 +8311,7 @@ export function App() {
             : "Apprentice flag removed",
       );
     } catch (err: any) {
-      setError(err.message ?? "Failed to update apprentice settings");
+      setError(err.message ?? uiText("Ausbildungs-Einstellungen konnten nicht gespeichert werden", "Failed to update apprentice settings"));
     }
   }
 
@@ -8334,7 +8343,7 @@ export function App() {
       await refreshTimeData();
       setNotice(language === "de" ? "Sollstunden aktualisiert" : "Required hours updated");
     } catch (err: any) {
-      setError(err.message ?? "Failed to update required hours");
+      setError(err.message ?? uiText("Sollstunden konnten nicht gespeichert werden", "Failed to update required hours"));
     }
   }
 
@@ -8400,7 +8409,7 @@ export function App() {
       await refreshTimeData();
       setNotice(language === "de" ? "Urlaubstage aktualisiert" : "Vacation days updated");
     } catch (err: any) {
-      setError(err.message ?? "Failed to update vacation balance");
+      setError(err.message ?? uiText("Urlaubskonto konnte nicht gespeichert werden", "Failed to update vacation balance"));
     }
   }
 
@@ -8449,8 +8458,8 @@ export function App() {
           payload.nickname = nicknameValue;
         } catch (err: any) {
           setNicknameCheckState("unavailable");
-          setNicknameCheckMessage(err.message ?? "Nickname availability check failed");
-          setError(err.message ?? "Failed to verify nickname availability");
+          setNicknameCheckMessage(err.message ?? uiText("Verfügbarkeit des Nicknames konnte nicht geprüft werden", "Nickname availability check failed"));
+          setError(err.message ?? uiText("Verfügbarkeit des Nicknames konnte nicht geprüft werden", "Failed to verify nickname availability"));
           return;
         }
       }
@@ -8480,7 +8489,7 @@ export function App() {
       }
       setNotice(language === "de" ? "Profil gespeichert" : "Profile updated");
     } catch (err: any) {
-      setError(err.message ?? "Failed to update profile");
+      setError(err.message ?? uiText("Profil konnte nicht gespeichert werden", "Failed to update profile"));
     }
   }
 
@@ -8577,7 +8586,7 @@ export function App() {
       setUsers(await apiFetch<User[]>("/admin/users", token));
       await handleActionLinkResult(result, "invite");
     } catch (err: any) {
-      setError(err.message ?? "Failed to send invite");
+      setError(err.message ?? uiText("Einladung konnte nicht gesendet werden", "Failed to send invite"));
     }
   }
 
@@ -8594,7 +8603,7 @@ export function App() {
       setUsers(await apiFetch<User[]>("/admin/users", token));
       await handleActionLinkResult(result, "reset");
     } catch (err: any) {
-      setError(err.message ?? "Failed to send password reset");
+      setError(err.message ?? uiText("Passwort-Reset konnte nicht gesendet werden", "Failed to send password reset"));
     }
   }
 
@@ -8631,7 +8640,7 @@ export function App() {
             : "User was already archived",
       );
     } catch (err: any) {
-      setError(err.message ?? "Failed to delete user");
+      setError(err.message ?? uiText("Benutzer konnte nicht gelöscht werden", "Failed to delete user"));
     }
   }
 
@@ -8646,7 +8655,7 @@ export function App() {
       setAssignableUsers(await apiFetch<AssignableUser[]>("/users/assignable", token));
       setNotice(language === "de" ? "Benutzer wiederhergestellt" : "User restored");
     } catch (err: any) {
-      setError(err.message ?? "Failed to restore user");
+      setError(err.message ?? uiText("Benutzer konnte nicht wiederhergestellt werden", "Failed to restore user"));
     }
   }
 
@@ -8671,7 +8680,7 @@ export function App() {
       setUsers(await apiFetch<User[]>("/admin/users", token));
       await handleActionLinkResult(result, "invite");
     } catch (err: any) {
-      setError(err.message ?? "Failed to create invite");
+      setError(err.message ?? uiText("Einladung konnte nicht erstellt werden", "Failed to create invite"));
     }
   }
 
@@ -8706,7 +8715,7 @@ export function App() {
         } catch {
           // no-op
         }
-        throw new Error(detail || "Backup export failed");
+        throw new Error(detail || uiText("Backup-Export fehlgeschlagen", "Backup export failed"));
       }
 
       const blob = await response.blob();
@@ -8735,7 +8744,7 @@ export function App() {
           : "Encrypted database backup downloaded.",
       );
     } catch (err: any) {
-      setError(err.message ?? "Failed to export backup");
+      setError(err.message ?? uiText("Backup konnte nicht exportiert werden", "Failed to export backup"));
     } finally {
       setBackupExporting(false);
     }
@@ -8778,7 +8787,7 @@ export function App() {
       const created = await res.json();
       setEmployeeGroups((prev) => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)));
     } else {
-      setError("Failed to create group");
+      setError(uiText("Gruppe konnte nicht erstellt werden", "Failed to create group"));
     }
   };
 
@@ -8802,7 +8811,7 @@ export function App() {
         prev.map((g) => (g.id === id ? updated : g)).sort((a, b) => a.name.localeCompare(b.name)),
       );
     } else {
-      setError("Failed to update group");
+      setError(uiText("Gruppe konnte nicht gespeichert werden", "Failed to update group"));
     }
   };
 
@@ -8815,7 +8824,7 @@ export function App() {
     if (res.ok) {
       setEmployeeGroups((prev) => prev.filter((g) => g.id !== id));
     } else {
-      setError("Failed to delete group");
+      setError(uiText("Gruppe konnte nicht gelöscht werden", "Failed to delete group"));
     }
   };
 
@@ -8878,7 +8887,7 @@ export function App() {
       a.remove();
       URL.revokeObjectURL(url);
     } catch (err: any) {
-      setError(err?.message ?? "Export failed");
+      setError(err?.message ?? uiText("Export fehlgeschlagen", "Export failed"));
     }
   };
 
@@ -9100,7 +9109,7 @@ export function App() {
       await refreshTimeData();
       setNotice(language === "de" ? "Urlaubsantrag gesendet" : "Vacation request submitted");
     } catch (err: any) {
-      setError(err.message ?? "Failed to submit vacation request");
+      setError(err.message ?? uiText("Urlaubsantrag konnte nicht gesendet werden", "Failed to submit vacation request"));
     }
   }
 
@@ -9127,7 +9136,7 @@ export function App() {
             : "Vacation request rejected",
       );
     } catch (err: any) {
-      setError(err.message ?? "Failed to review vacation request");
+      setError(err.message ?? uiText("Urlaubsantrag konnte nicht bearbeitet werden", "Failed to review vacation request"));
     }
   }
 
@@ -9215,7 +9224,7 @@ export function App() {
               : "Absence request submitted",
       );
     } catch (err: any) {
-      setError(err.message ?? "Failed to save absence");
+      setError(err.message ?? uiText("Abwesenheit konnte nicht gespeichert werden", "Failed to save absence"));
     }
   }
 
@@ -9265,7 +9274,7 @@ export function App() {
             : "Absence request rejected",
       );
     } catch (err: any) {
-      setError(err.message ?? "Failed to review absence request");
+      setError(err.message ?? uiText("Abwesenheitsantrag konnte nicht bearbeitet werden", "Failed to review absence request"));
     }
   }
 
@@ -9299,7 +9308,7 @@ export function App() {
       await refreshTimeData();
       setNotice(language === "de" ? "Abwesenheit gelöscht" : "Absence deleted");
     } catch (err: any) {
-      setError(err.message ?? "Failed to delete absence");
+      setError(err.message ?? uiText("Abwesenheit konnte nicht gelöscht werden", "Failed to delete absence"));
     }
   }
 
@@ -9311,7 +9320,7 @@ export function App() {
         credentials: "include",
       });
       if (!response.ok) {
-        throw new Error(response.statusText || "Template download failed");
+        throw new Error(response.statusText || uiText("Vorlage konnte nicht heruntergeladen werden", "Template download failed"));
       }
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
@@ -9326,7 +9335,7 @@ export function App() {
         URL.revokeObjectURL(url);
       }
     } catch (err: any) {
-      setError(err.message ?? "Failed to download CSV template");
+      setError(err.message ?? uiText("CSV-Vorlage konnte nicht heruntergeladen werden", "Failed to download CSV template"));
     }
   }
 
@@ -9338,7 +9347,7 @@ export function App() {
         credentials: "include",
       });
       if (!response.ok) {
-        throw new Error(response.statusText || "Template download failed");
+        throw new Error(response.statusText || uiText("Vorlage konnte nicht heruntergeladen werden", "Template download failed"));
       }
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
@@ -9353,7 +9362,7 @@ export function App() {
         URL.revokeObjectURL(url);
       }
     } catch (err: any) {
-      setError(err.message ?? "Failed to download project class template");
+      setError(err.message ?? uiText("Projektklassen-Vorlage konnte nicht heruntergeladen werden", "Failed to download project class template"));
     }
   }
 
@@ -9394,7 +9403,7 @@ export function App() {
       );
       event.currentTarget.reset();
     } catch (err: any) {
-      setError(err.message ?? "Failed to import CSV");
+      setError(err.message ?? uiText("CSV konnte nicht importiert werden", "Failed to import CSV"));
     }
   }
 
@@ -9427,7 +9436,7 @@ export function App() {
       );
       event.currentTarget.reset();
     } catch (err: any) {
-      setError(err.message ?? "Failed to import class template CSV");
+      setError(err.message ?? uiText("Projektklassen-CSV konnte nicht importiert werden", "Failed to import class template CSV"));
     }
   }
 

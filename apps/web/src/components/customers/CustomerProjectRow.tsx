@@ -1,4 +1,5 @@
 import type { CustomerProjectSummary } from "../../utils/customersApi";
+import { statusLabel } from "../../utils/projects";
 
 type Props = {
   project: CustomerProjectSummary;
@@ -8,7 +9,11 @@ type Props = {
 
 function statusDotColor(status: string): string {
   const normalized = status.toLowerCase();
-  if (normalized === "active" || normalized.includes("durchführung")) return "#6EA54F";
+  // The stored slug is ASCII ("in_durchfuehrung"); the umlaut spelling is
+  // what old imports carry.
+  if (normalized === "active" || normalized.includes("durchführung") || normalized.includes("durchfuehrung")) {
+    return "#6EA54F";
+  }
   if (normalized === "planning" || normalized.includes("angebot")) return "#F5B000";
   if (normalized === "on_hold" || normalized === "hold") return "#8FA2BA";
   if (normalized === "completed" || normalized === "done") return "#2F70B7";
@@ -54,7 +59,7 @@ export function CustomerProjectRow({ project, language, onOpen }: Props) {
           style={{ backgroundColor: statusDotColor(project.status) }}
           aria-hidden="true"
         />
-        <span>{project.status}</span>
+        <span>{statusLabel(project.status, language)}</span>
       </span>
       <span className="customer-project-row-date">
         {de ? "Aktualisiert" : "Updated"}:{" "}

@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.core.db import get_db
 from app.core.deps import require_permission
-from app.core.permissions import ALL_PERMISSIONS, ALL_ROLES, PERMISSION_DESCRIPTIONS, PERMISSION_GROUPS, PERMISSION_LABELS, ROLE_EMPLOYEE, ROLE_EXTERNAL, TEMPLATES, get_effective_permissions, get_user_override, has_permission_for_user, is_external_role
+from app.core.permissions import ALL_PERMISSIONS, ALL_ROLES, PERMISSION_DESCRIPTIONS, PERMISSION_DESCRIPTIONS_EN, PERMISSION_GROUPS, PERMISSION_LABELS, PERMISSION_LABELS_EN, ROLE_EMPLOYEE, ROLE_EXTERNAL, TEMPLATES, get_effective_permissions, get_user_override, has_permission_for_user, is_external_role
 from app.core.security import get_password_hash
 from app.core.time import utcnow
 from app.models.entities import AuditLog, EmployeeGroup, EmployeeGroupMember, ProjectClassTemplate, User, UserActionToken
@@ -3144,8 +3144,12 @@ def get_role_permissions(
     return {
         "permissions": get_effective_permissions(),
         "all_permissions": sorted(ALL_PERMISSIONS),
+        # German (the product's language) under the plain names; the SPA's
+        # English mode reads the *_en twins and the groups' ``label_en``.
         "permission_labels": PERMISSION_LABELS,
         "permission_descriptions": PERMISSION_DESCRIPTIONS,
+        "permission_labels_en": PERMISSION_LABELS_EN,
+        "permission_descriptions_en": PERMISSION_DESCRIPTIONS_EN,
         "permission_groups": PERMISSION_GROUPS,
         "all_roles": ALL_ROLES,
     }

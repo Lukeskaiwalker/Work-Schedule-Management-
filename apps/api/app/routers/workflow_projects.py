@@ -1,9 +1,18 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter
 
 from app.core.events import notify
 from app.routers.workflow_helpers import *  # noqa: F401,F403
+from app.services.activity_messages import status_change_message
+from app.services.weather_messages import (
+    english_error_text,
+    stored_error_message,
+    weather_failure_message,
+    weather_message,
+)
 from app.routers.workflow_project_notes import OVERVIEW_NOTES_PAGE, project_notes_out
 from app.routers.workflow_project_report import (
     finalize_project_report_on_status_change,
@@ -21,6 +30,7 @@ from app.services.customers import (
 )
 
 router = APIRouter(prefix="", tags=["projects"])
+logger = logging.getLogger(__name__)
 
 
 def _project_weather_query_address(project: Project) -> str:
@@ -138,7 +148,7 @@ def create_project(
         project_id=project.id,
         actor_user_id=current_user.id,
         event_type="project.created",
-        message=f"Project created: {project.project_number}",
+        message=f"Projekt erstellt: {project.project_number}",
         details={"project_number": project.project_number, "name": project.name},
     )
     if class_sync["added"] or class_sync["created_tasks"]:
@@ -147,7 +157,7 @@ def create_project(
             project_id=project.id,
             actor_user_id=current_user.id,
             event_type="project.classes_updated",
-            message="Project classes assigned",
+            message="Projektklassen zugewiesen",
             details={
                 "classes_added": class_sync["added"],
                 "classes_removed": class_sync["removed"],
@@ -283,7 +293,7 @@ def update_project(
             project_id=project.id,
             actor_user_id=current_user.id,
             event_type="project.state_changed",
-            message=f"State changed to {next_status or '-'}",
+            message=status_change_message(previous_status, next_status),
             details={"from": previous_status, "to": next_status},
         )
         # Angenommen-gate, funnel edition: deferred template tasks release
@@ -304,7 +314,7 @@ def update_project(
                     project_id=project.id,
                     actor_user_id=current_user.id,
                     event_type="project.classes_updated",
-                    message="Auto-created deferred template tasks",
+                    message="Zurückgestellte Vorlagen-Aufgaben angelegt",
                     details={
                         "auto_created_tasks": deferred_tasks_created,
                         "trigger": "status_transition",
@@ -327,7 +337,7 @@ def update_project(
             project_id=project.id,
             actor_user_id=current_user.id,
             event_type="project.note_updated",
-            message="Internal note updated",
+            message="Interne Notiz aktualisiert",
             details={},
         )
     if class_sync and (class_sync["added"] or class_sync["removed"] or class_sync["created_tasks"]):
@@ -336,7 +346,7 @@ def update_project(
             project_id=project.id,
             actor_user_id=current_user.id,
             event_type="project.classes_updated",
-            message="Project classes updated",
+            message="Projektklassen aktualisiert",
             details={
                 "classes_added": class_sync["added"],
                 "classes_removed": class_sync["removed"],
@@ -377,7 +387,7 @@ def set_project_critical(
             project_id=project.id,
             actor_user_id=current_user.id,
             event_type="project.critical_set",
-            message="Project marked critical",
+            message="Projekt als kritisch markiert",
             details={},
         )
         changed = True
@@ -390,7 +400,7 @@ def set_project_critical(
             project_id=project.id,
             actor_user_id=current_user.id,
             event_type="project.critical_cleared",
-            message="Critical flag cleared",
+            message="Kritisch-Markierung entfernt",
             details={},
         )
         changed = True
@@ -619,7 +629,7 @@ def update_project_finance(
         project_id=project_id,
         actor_user_id=current_user.id,
         event_type="finance.updated",
-        message="Project finances updated",
+        message="Projektfinanzen aktualisiert",
         details=changed_fields,
     )
     db.commit()
@@ -696,7 +706,7 @@ def get_project_weather(
             stale=has_cached_days,
             from_cache=has_cached_days,
             can_refresh=False,
-            message="Project construction site/customer address is missing",
+            message=weather_message("address_missing", weather_language),
         )
 
     api_key = _effective_openweather_api_key(db)
@@ -708,7 +718,7 @@ def get_project_weather(
             stale=has_cached_days,
             from_cache=has_cached_days,
             can_refresh=False,
-            message="OpenWeather API key is not configured",
+            message=weather_message("api_key_missing", weather_language),
         )
 
     now = utcnow()
@@ -756,12 +766,10 @@ def get_project_weather(
                 can_refresh=False,
             )
         except Exception as exc:
-            error_text = str(exc).strip() or "Weather refresh failed"
-            error_lower = error_text.lower()
-            if "invalid api key" in error_lower:
-                error_text = "OpenWeather API key is invalid (or not active yet)"
-            elif "not subscribed" in error_lower:
-                error_text = "OpenWeather forecast API access is not enabled for this key"
+            error_text = english_error_text(str(exc).strip() or "Weather refresh failed")
+            # The upstream text is a diagnostic: the German note leaves it out,
+            # so this is where whoever fixes the key or the address reads it.
+            logger.warning("Weather refresh failed for project %s: %s", project_id, error_text)
             if cache_row is not None and has_cached_days:
                 cache_row.last_error = error_text[:500]
                 db.add(cache_row)
@@ -774,7 +782,7 @@ def get_project_weather(
                     stale=True,
                     from_cache=True,
                     can_refresh=not throttle_blocked,
-                    message=f"Using cached weather values ({error_text[:140]})",
+                    message=weather_failure_message(error_text, weather_language, cached=True),
                 )
             return _project_weather_out(
                 project_id=project_id,
@@ -783,7 +791,7 @@ def get_project_weather(
                 stale=True,
                 from_cache=False,
                 can_refresh=not throttle_blocked,
-                message=f"Weather fetch failed: {error_text[:180]}",
+                message=weather_failure_message(error_text, weather_language, cached=False),
             )
 
     if cache_row is not None and has_cached_days:
@@ -794,7 +802,7 @@ def get_project_weather(
             stale=bool(cache_row.last_error),
             from_cache=True,
             can_refresh=not throttle_blocked,
-            message=cache_row.last_error,
+            message=stored_error_message(cache_row.last_error, weather_language),
         )
 
     return _project_weather_out(
@@ -804,7 +812,7 @@ def get_project_weather(
         stale=False,
         from_cache=False,
         can_refresh=True,
-        message="No cached weather values yet",
+        message=weather_message("no_cache_yet", weather_language),
     )
 
 @router.delete("/projects/{project_id}")

@@ -110,7 +110,7 @@ describe("FileBrowser", () => {
 
   it("keeps a real download link on every row", () => {
     renderBrowser({ query: "notiz" });
-    const link = within(rowOf("Notiz.txt")).getByRole("link", { name: "Download" });
+    const link = within(rowOf("Notiz.txt")).getByRole("link", { name: "Herunterladen" });
     expect(link).toHaveAttribute("href", "/api/files/1/download");
     expect(link).toHaveAttribute("download", "Notiz.txt");
   });

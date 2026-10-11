@@ -41,7 +41,8 @@ from app.models.entities import (
 from app.models.project import Project
 from app.services.construction_report_pdf import format_work_done_for_report
 from app.services.customer_visits import report_visits
-from app.services.project_status import normalize_project_status
+from app.services.activity_messages import display_activity_message
+from app.services.project_status import project_status_label
 
 # The history the Verlauf section tells: how the project came to be, how its
 # status moved, and when a report was stored. Task and file churn stay out —
@@ -57,15 +58,6 @@ VERLAUF_EVENT_TYPES: tuple[str, ...] = (
 # Display names for the machine values the report prints. German only: the
 # report is a document in the product's language, not a UI that follows the
 # reader's setting.
-PROJECT_STATUS_LABELS: dict[str, str] = {
-    "angebotsphase": "Angebotsphase",
-    "in_durchfuehrung": "In Durchführung",
-    "rechnung_verschickt": "Rechnung verschickt",
-    "abgeschlossen": "Abgeschlossen",
-    "archived": "Archiviert",
-    "archiviert": "Archiviert",
-}
-
 TASK_STATUS_LABELS: dict[str, str] = {
     "open": "Offen",
     "in_progress": "In Arbeit",
@@ -290,14 +282,6 @@ def collect_project_report_data(db: Session, project_id: int) -> ProjectReportDa
         files=_files(db, project),
         activities=_activities(db, project.id, names),
     )
-
-
-def project_status_label(raw: str | None) -> str:
-    value = (raw or "").strip()
-    if not value:
-        return "—"
-    normalized = normalize_project_status(value)
-    return PROJECT_STATUS_LABELS.get(normalized.lower(), value)
 
 
 def customer_type_label(raw: str | None) -> str:
@@ -655,8 +639,5 @@ def _activities(db: Session, project_id: int, names: _UserNames) -> tuple[Report
 
 
 def _activity_message(row: ProjectActivity) -> str:
-    """A status change reads as labels, not as the slugs the row stores."""
-    details = row.details if isinstance(row.details, dict) else {}
-    if row.event_type == "project.state_changed" and "to" in details:
-        return f"{project_status_label(details.get('from'))} → {project_status_label(details.get('to'))}"
-    return row.message or ""
+    """A status change reads as labels, an old English line in German."""
+    return display_activity_message(row.event_type, row.message, row.details)

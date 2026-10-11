@@ -117,10 +117,9 @@ function mockActivityForTicket(ticket: Ticket): ActivityItem[] {
       author: "Luca Schmidt",
       kind: "note",
       timestamp: noteAt,
-      body:
-        ticket.notes?.trim().length
-          ? ticket.notes
-          : "Old shower tray cracked — will need extra time for safe removal. Ordered skip bin for 12:00.",
+      // The ticket's own notes or nothing: an invented English sample note
+      // used to stand in here and showed on every ticket without notes.
+      body: ticket.notes?.trim() ? ticket.notes : undefined,
     },
     {
       id: `activity-${ticket.id}-upload`,
@@ -358,7 +357,7 @@ function TicketCreatorForm(props: {
         void props.onSubmit(event);
       }}
     >
-      <h4>{de ? "Neues Job Ticket" : "New job ticket"}</h4>
+      <h4>{de ? "Neues Ticket" : "New job ticket"}</h4>
       <div className="row">
         <label className="tickets-tab-creator-field">
           <span>{de ? "Titel" : "Title"}</span>

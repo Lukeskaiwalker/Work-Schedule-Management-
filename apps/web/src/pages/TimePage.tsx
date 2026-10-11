@@ -4,7 +4,7 @@ import { ApiError, apiFetch } from "../api/client";
 import { DayActivityPanel } from "../components/time/DayActivityPanel";
 import { apiUrl } from "../native/shell";
 import { isoToLocalDateTimeInput, localDateTimeInputToIso } from "../utils/dates";
-import { shiftMonthStart, schoolWeekdayLabel } from "../utils/dates";
+import { shiftMonthStart, schoolWeekdayLabel, weekdayShortLabels } from "../utils/dates";
 import { formatHours, clamp } from "../utils/misc";
 import { formatServerDateTime, parseServerDateTime } from "../utils/dates";
 import { AddDayEntryForm, type AddDayEntryValues } from "../components/time/AddDayEntryForm";
@@ -40,11 +40,13 @@ type TimeBackfillWindow = {
 function TimeKpiDonut({
   worked,
   required,
+  de,
   size = 72,
   stroke = 8,
 }: {
   worked: number;
   required: number;
+  de: boolean;
   size?: number;
   stroke?: number;
 }) {
@@ -54,7 +56,7 @@ function TimeKpiDonut({
   const circumference = 2 * Math.PI * radius;
   const dashOffset = circumference - (percent / 100) * circumference;
   const centerLabel = `${worked.toFixed(worked >= 10 ? 1 : 2)}h`;
-  const subLabel = `of ${required.toFixed(0)}h`;
+  const subLabel = `${de ? "von" : "of"} ${required.toFixed(0)}h`;
   return (
     <div className="time-kpi-donut" style={{ width: size, height: size }}>
       <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
@@ -1025,7 +1027,7 @@ export function TimePage() {
         </div>
 
         <div className="time-kpi-card time-kpi-card--donut">
-          <TimeKpiDonut worked={gaugeNetHours} required={requiredDailyHours} />
+          <TimeKpiDonut worked={gaugeNetHours} required={requiredDailyHours} de={de} />
           <div className="time-kpi-info">
             <span className="time-kpi-info-label">{de ? "Heute" : "Today"}</span>
             <span className="time-kpi-info-value">
@@ -1051,7 +1053,7 @@ export function TimePage() {
         </div>
 
         <div className="time-kpi-card time-kpi-card--donut">
-          <TimeKpiDonut worked={weekWorkedHours} required={weekRequiredHours} />
+          <TimeKpiDonut worked={weekWorkedHours} required={weekRequiredHours} de={de} />
           <div className="time-kpi-info">
             <span className="time-kpi-info-label">
               {de ? "Diese Woche" : "This week"}
@@ -1068,7 +1070,7 @@ export function TimePage() {
         </div>
 
         <div className="time-kpi-card time-kpi-card--donut">
-          <TimeKpiDonut worked={monthlyWorkedHours} required={monthlyRequiredHours} />
+          <TimeKpiDonut worked={monthlyWorkedHours} required={monthlyRequiredHours} de={de} />
           <div className="time-kpi-info">
             <span className="time-kpi-info-label">{monthCursorLabel}</span>
             <span className="time-kpi-info-value">
@@ -1088,7 +1090,7 @@ export function TimePage() {
       {!viewingOwnTime && (
         <small className="muted time-shift-viewer-note">
           {de
-            ? "Sie sehen die Zeitdaten eines Mitarbeiters. Clock-In/Out ist deaktiviert."
+            ? "Sie sehen die Zeitdaten eines Mitarbeiters. Ein- und Ausstempeln ist deaktiviert."
             : "You are viewing another employee. Clock actions are disabled."}
         </small>
       )}
@@ -1151,13 +1153,11 @@ export function TimePage() {
             </a>
           </div>
           <div className="time-calendar-grid">
-            <div className="time-calendar-weekday">Mo</div>
-            <div className="time-calendar-weekday">Tu</div>
-            <div className="time-calendar-weekday">We</div>
-            <div className="time-calendar-weekday">Th</div>
-            <div className="time-calendar-weekday">Fr</div>
-            <div className="time-calendar-weekday">Sa</div>
-            <div className="time-calendar-weekday">Su</div>
+            {weekdayShortLabels(language).map((label) => (
+              <div key={`weekday-${label}`} className="time-calendar-weekday">
+                {label}
+              </div>
+            ))}
             {monthCalendar.map((cell, idx) => {
               if (cell.date === null) {
                 return <div key={`cal-blank-${idx}`} className="time-calendar-cell time-calendar-cell--blank" />;

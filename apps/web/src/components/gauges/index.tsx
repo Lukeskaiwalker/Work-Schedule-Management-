@@ -97,7 +97,7 @@ export function ProjectHoursGauge({
         role="meter"
         aria-valuemin={0}
         aria-valuenow={progressPercent}
-        aria-valuetext={planned > 0 ? `${progressPercent.toFixed(0)}%` : "not set"}
+        aria-valuetext={planned > 0 ? `${progressPercent.toFixed(0)}%` : language === "de" ? "nicht festgelegt" : "not set"}
         style={{ background: ringFillBackground }}
       >
         <div className="work-gauge-ring-inner">

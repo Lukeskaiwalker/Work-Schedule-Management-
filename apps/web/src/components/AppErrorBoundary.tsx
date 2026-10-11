@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { isGerman } from "../utils/uiLanguage";
 
 interface AppErrorBoundaryProps {
   children: ReactNode;
@@ -23,13 +24,20 @@ export class AppErrorBoundary extends Component<AppErrorBoundaryProps, AppErrorB
 
   render() {
     if (this.state.hasError) {
+      // The app's state is gone by now, so the language comes from <html lang>,
+      // which App keeps in step with the UI.
+      const de = isGerman();
       return (
         <main className="app-error-boundary" role="alert" aria-live="assertive">
           <section className="app-error-boundary-card">
-            <h1>Something went wrong.</h1>
-            <p>The page crashed while rendering. Reload to recover.</p>
+            <h1>{de ? "Etwas ist schiefgelaufen." : "Something went wrong."}</h1>
+            <p>
+              {de
+                ? "Die Seite ist beim Anzeigen abgestürzt. Neu laden behebt das."
+                : "The page crashed while rendering. Reload to recover."}
+            </p>
             <button type="button" onClick={() => window.location.reload()}>
-              Reload app
+              {de ? "App neu laden" : "Reload app"}
             </button>
           </section>
         </main>

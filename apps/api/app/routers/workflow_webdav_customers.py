@@ -315,7 +315,7 @@ def _project_level(db: Session, user: User, project: Project, customer_ref: str)
             project_id=project.id,
             actor_user_id=user.id,
             event_type="file.uploaded",
-            message=f"File uploaded: {file_name}",
+            message=f"Datei hochgeladen: {file_name}",
             details={"file_name": file_name, "folder": folder_path},
         )
         return attachment
@@ -326,7 +326,7 @@ def _project_level(db: Session, user: User, project: Project, customer_ref: str)
             project_id=project.id,
             actor_user_id=user.id,
             event_type="file.deleted",
-            message=f"File deleted: {attachment.file_name}",
+            message=f"Datei gelöscht: {attachment.file_name}",
             details={"file_name": attachment.file_name, "folder": attachment.folder_path},
         )
 

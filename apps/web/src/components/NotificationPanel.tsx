@@ -220,7 +220,7 @@ export function NotificationPanel({
               <time
                 className="notification-age"
                 dateTime={n.created_at}
-                title={new Date(n.created_at).toLocaleString()}
+                title={new Date(n.created_at).toLocaleString(language === "de" ? "de-DE" : "en-US")}
               >
                 {formatAge(n.created_at, language)}
               </time>

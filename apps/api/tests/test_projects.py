@@ -93,7 +93,8 @@ def test_project_weather_cache_throttle_and_offline_fallback(client: TestClient,
     assert third_payload["from_cache"] is True
     assert third_payload["stale"] is True
     assert len(third_payload["days"]) == 5
-    assert "cached" in (third_payload.get("message") or "").lower()
+    # Asked in German (lang=de), so the note is German.
+    assert (third_payload.get("message") or "").startswith("Zwischengespeicherte Wetterdaten")
 
 
 def test_project_weather_falls_back_to_customer_address(client: TestClient, admin_token: str, monkeypatch):

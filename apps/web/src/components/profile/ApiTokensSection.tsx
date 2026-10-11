@@ -263,24 +263,24 @@ export function ApiTokensSection() {
                   </div>
                   <div className="api-tokens-row-meta">
                     <span>
-                      {de ? "Erstellt" : "Created"}: {new Date(row.created_at).toLocaleString()}
+                      {de ? "Erstellt" : "Created"}: {new Date(row.created_at).toLocaleString(de ? "de-DE" : "en-US")}
                     </span>
                     {row.last_used_at && (
                       <span>
                         {de ? "Zuletzt verwendet" : "Last used"}:{" "}
-                        {new Date(row.last_used_at).toLocaleString()}
+                        {new Date(row.last_used_at).toLocaleString(de ? "de-DE" : "en-US")}
                       </span>
                     )}
                     {row.expires_at && (
                       <span>
                         {de ? "Läuft ab" : "Expires"}:{" "}
-                        {new Date(row.expires_at).toLocaleString()}
+                        {new Date(row.expires_at).toLocaleString(de ? "de-DE" : "en-US")}
                       </span>
                     )}
                     {row.revoked_at && (
                       <span>
                         {de ? "Widerrufen" : "Revoked"}:{" "}
-                        {new Date(row.revoked_at).toLocaleString()}
+                        {new Date(row.revoked_at).toLocaleString(de ? "de-DE" : "en-US")}
                       </span>
                     )}
                   </div>

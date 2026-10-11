@@ -30,6 +30,7 @@ from app.models.notification import Notification
 from app.models.task import Task
 from app.models.user import User
 from app.schemas.notification import NotificationOut
+from app.services.notification_messages import display_notification_message
 
 router = APIRouter()
 
@@ -47,7 +48,7 @@ def _enrich(notif: Notification, db: Session) -> NotificationOut:
         entity_type=notif.entity_type,
         entity_id=notif.entity_id,
         project_id=notif.project_id,
-        message=notif.message,
+        message=display_notification_message(notif.event_type, notif.message),
         read_at=notif.read_at,
         dismissed_at=notif.dismissed_at,
         created_at=notif.created_at,

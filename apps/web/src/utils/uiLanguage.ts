@@ -22,3 +22,12 @@ export function uiLanguage(): UiLanguage {
 export function isGerman(): boolean {
   return uiLanguage() === "de";
 }
+
+/**
+ * `de` in the German UI, `en` in the English one — for text made outside a
+ * render, like the fallback of an error handler (`err.message ?? uiText(…)`),
+ * where reading the language from <html lang> beats threading it through.
+ */
+export function uiText(de: string, en: string): string {
+  return isGerman() ? de : en;
+}

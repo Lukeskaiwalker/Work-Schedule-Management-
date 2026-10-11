@@ -26,6 +26,7 @@ import {
   confirmLineItemExtraction,
   enqueueLineItemExtraction,
   getLineItemExtractionJob,
+  lineItemJobStatusLabel,
 } from "../../utils/projectLineItemsApi";
 import type {
   ExtractedLineItem,
@@ -519,7 +520,7 @@ function PollingPhase({ de, job, onRetry, onCancel }: PollingPhaseProps) {
     <div style={{ padding: "32px 8px", textAlign: "center" }}>
       <div style={{ fontSize: 14, color: "#475569", marginBottom: 8 }}>
         {de ? "Status:" : "Status:"}{" "}
-        <strong>{job.status}</strong>
+        <strong>{lineItemJobStatusLabel(job.status, de)}</strong>
         {job.attempt_count > 0 && (
           <span style={{ marginLeft: 8 }}>
             ({de ? "Versuch" : "Attempt"} {job.attempt_count}/{job.max_attempts})
@@ -596,7 +597,7 @@ function ReviewPhase({
     <div>
       <div style={{ fontSize: 13, color: "#475569", marginBottom: 12 }}>
         {de
-          ? `Modell: ${job.extracted_by_model ?? "?"} · Tokens: ${job.input_tokens ?? "?"} in / ${job.output_tokens ?? "?"} out · ${rows.length} Position${rows.length === 1 ? "" : "en"} extrahiert`
+          ? `Modell: ${job.extracted_by_model ?? "?"} · Tokens: ${job.input_tokens ?? "?"} Eingabe / ${job.output_tokens ?? "?"} Ausgabe · ${rows.length} Position${rows.length === 1 ? "" : "en"} extrahiert`
           : `Model: ${job.extracted_by_model ?? "?"} · Tokens: ${job.input_tokens ?? "?"} in / ${job.output_tokens ?? "?"} out · ${rows.length} item${rows.length === 1 ? "" : "s"} extracted`}
       </div>
 

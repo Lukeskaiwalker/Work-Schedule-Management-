@@ -27,7 +27,7 @@ export function WebdavHelp({
   const de = language === "de";
   return (
     <div className="webdav-help">
-      <button type="button" className="icon-btn" aria-label="WebDAV info">
+      <button type="button" className="icon-btn" aria-label={de ? "WebDAV-Hinweise" : "WebDAV info"}>
         ⚙
       </button>
       <div className="webdav-tooltip">

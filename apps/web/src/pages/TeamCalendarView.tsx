@@ -1,6 +1,7 @@
 import { useMemo, useRef, useEffect } from "react";
 import { getUserColor } from "../constants/teamCalendarColors";
 import { taskStartTimeMinutes, taskEndTimeMinutes, formatTaskTimeRange } from "../utils/tasks";
+import { roleLabel } from "../utils/roles";
 import type { Language, Task, PlanningDay, AssignableUser } from "../types";
 
 const HOUR_START = 7;
@@ -149,7 +150,7 @@ export function TeamCalendarView({
                 }}
               >
                 {u.display_name || u.full_name}
-                <small className="team-calendar-dropdown-role">{u.role}</small>
+                <small className="team-calendar-dropdown-role">{roleLabel(u.role, language)}</small>
               </button>
             ))}
           </div>

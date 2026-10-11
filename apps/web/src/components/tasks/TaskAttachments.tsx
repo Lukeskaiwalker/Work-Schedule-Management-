@@ -18,6 +18,7 @@ import { useEffect, useState } from "react";
 import type { UploadProgress } from "../../api/client";
 import { useAppContext } from "../../context/AppContext";
 import type { StoredFile } from "../../types";
+import { connectionErrorText } from "../../utils/connectionError";
 import { FileLightbox, type LightboxFile } from "../files/FileLightbox";
 import { TaskAttachmentPicker, type UploadFeedback } from "./TaskAttachmentPicker";
 import { TaskAttachmentTile } from "./TaskAttachmentTile";
@@ -127,7 +128,7 @@ function StoredAttachments({ taskId, taskTitle, canAdd }: StoredProps) {
       setNotice(attachmentsAddedNotice(picked.length, language));
       reload();
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = connectionErrorText(err) ?? (err instanceof Error ? err.message : String(err));
       // Next to the picker AND in the corner: the toast is easy to miss while
       // looking at a modal, and the selection survives for the retry.
       setHeldFiles(picked);

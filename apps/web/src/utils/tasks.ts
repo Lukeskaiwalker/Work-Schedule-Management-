@@ -70,7 +70,7 @@ export type TaskCalendarCustomer = { name: string; address: string };
 export type TaskCalendarAnchor = {
   /** "2026-0412 - Zählerwechsel" / "Müller GmbH - Rückruf" / the bare title. */
   summaryBase: string;
-  /** The Project:/Customer:/Address: lines of the event description. */
+  /** The Projekt:/Kunde:/Adresse: lines of the event description. */
   anchorLines: string[];
   /** The VEVENT LOCATION: the site, else the customer's address. */
   location: string;
@@ -83,18 +83,23 @@ export type TaskCalendarAnchor = {
  * names the project and its customer; a customer-only task names the
  * customer and puts the customer's address on the event, so the entry in the
  * fitter's phone can navigate there exactly as a project entry can.
+ *
+ * The lines are German in the German UI — the words the server's calendar
+ * feed (services/calendar_feed.py) has always used for the same events.
  */
 export function taskCalendarAnchor(
   task: Pick<Task, "id" | "title" | "project_id" | "customer_id">,
   project: Project | null | undefined,
   customer: TaskCalendarCustomer | null,
+  language: Language,
 ): TaskCalendarAnchor {
+  const de = language === "de";
   if (project) {
     return {
       summaryBase: `${project.project_number} - ${task.title}`,
       anchorLines: [
-        `Project: ${formatProjectTitle(project.project_number, project.customer_name, project.name, project.id)}`,
-        project.customer_name ? `Customer: ${project.customer_name}` : "",
+        `${de ? "Projekt" : "Project"}: ${formatProjectTitle(project.project_number, project.customer_name, project.name, project.id)}`,
+        project.customer_name ? `${de ? "Kunde" : "Customer"}: ${project.customer_name}` : "",
       ].filter((line) => line.length > 0),
       location: projectLocationAddress(project),
       fileNameSource: `${project.project_number}-${task.id}`,
@@ -103,9 +108,10 @@ export function taskCalendarAnchor(
   if (task.project_id == null && customer && customer.name) {
     return {
       summaryBase: `${customer.name} - ${task.title}`,
-      anchorLines: [`Customer: ${customer.name}`, customer.address ? `Address: ${customer.address}` : ""].filter(
-        (line) => line.length > 0,
-      ),
+      anchorLines: [
+        `${de ? "Kunde" : "Customer"}: ${customer.name}`,
+        customer.address ? `${de ? "Adresse" : "Address"}: ${customer.address}` : "",
+      ].filter((line) => line.length > 0),
       location: customer.address,
       fileNameSource: `kunde-${task.customer_id ?? 0}-${task.id}`,
     };
@@ -113,10 +119,51 @@ export function taskCalendarAnchor(
   // A project task whose project is not loaded here: the id is all we have.
   return {
     summaryBase: task.title,
-    anchorLines: task.project_id != null ? [`Project ID: ${task.project_id}`] : [],
+    anchorLines: task.project_id != null ? [`${de ? "Projekt-ID" : "Project ID"}: ${task.project_id}`] : [],
     location: "",
     fileNameSource: `task-${task.id}`,
   };
+}
+
+/** What the event description of a task's .ics export is made of. */
+export type TaskCalendarDescriptionInput = {
+  taskId: number;
+  /** The canonical status key (`taskDisplayStatus`); printed as its label. */
+  status: string;
+  anchorLines: string[];
+  multiDay: boolean;
+  /** "2026-10-12 – 2026-10-14", used when `multiDay`. */
+  dateRange: string;
+  dueDate: string | null | undefined;
+  /** "08:00-16:00", or "" for a task without a time. */
+  timeRange: string;
+  description: string | null | undefined;
+  materials: string;
+  box: string;
+  assignees: string;
+};
+
+/**
+ * The DESCRIPTION lines of the exported event, in the UI's language. A
+ * multi-day task is one all-day span, so its daily hours are said here; a
+ * line the task has nothing for is left out rather than printed empty.
+ */
+export function taskCalendarDescriptionLines(input: TaskCalendarDescriptionInput, language: Language): string[] {
+  const de = language === "de";
+  const daily = input.multiDay ? (de ? " täglich" : " daily") : "";
+  return [
+    `${de ? "Aufgabe" : "Task ID"}: #${input.taskId}`,
+    `Status: ${taskStatusLabel(input.status, language)}`,
+    ...input.anchorLines,
+    input.multiDay
+      ? `${de ? "Zeitraum" : "From/To"}: ${input.dateRange}`
+      : `${de ? "Fällig" : "Due"}: ${input.dueDate || "-"}`,
+    input.timeRange ? `${de ? "Uhrzeit" : "Time"}: ${input.timeRange}${daily}` : "",
+    input.description ? `Info: ${input.description}` : "",
+    input.materials ? `${de ? "Material" : "Materials"}: ${input.materials}` : "",
+    input.box ? `${de ? "Baustellenkiste" : "Construction box"}: ${input.box}` : "",
+    `${de ? "Zugewiesen" : "Assignees"}: ${input.assignees}`,
+  ].filter((line) => line.length > 0);
 }
 
 /**

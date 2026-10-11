@@ -1059,7 +1059,7 @@ export function ConstructionPage() {
             ) : null}
             {reportDistance.source === "unset" ? (
               <span className="construction-report-distance-badge error" title={de
-                ? "Auto-Berechnung nicht verfügbar (Projektadresse oder Firmenadresse fehlt, oder OpenWeather-API-Key nicht gesetzt)."
+                ? "Auto-Berechnung nicht verfügbar (Projektadresse oder Firmenadresse fehlt, oder kein OpenWeather-API-Schlüssel hinterlegt)."
                 : "Auto-calculation unavailable (project or company address missing, or OpenWeather API key not set)."}>
                 {de ? "manuell eingeben" : "enter manually"}
               </span>

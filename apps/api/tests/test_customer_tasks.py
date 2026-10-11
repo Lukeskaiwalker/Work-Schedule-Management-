@@ -210,9 +210,9 @@ def test_customer_task_lifecycle_records_customer_activities_only(client: TestCl
     rows = _activity(client, admin_token, customer["id"])
     task_rows = [row for row in rows if row["event_type"].startswith("task.")]
     assert [(row["event_type"], row["message"]) for row in task_rows] == [
-        ("task.deleted", "Task deleted: Angebot nachfassen"),
-        ("task.updated", "Task updated: Angebot nachfassen"),
-        ("task.created", "Task created: Angebot nachfassen"),
+        ("task.deleted", "Aufgabe gelöscht: Angebot nachfassen"),
+        ("task.updated", "Aufgabe aktualisiert: Angebot nachfassen"),
+        ("task.created", "Aufgabe erstellt: Angebot nachfassen"),
     ]
     # Customer rows: no project to name.
     assert all(row["project_id"] is None and row["project_number"] is None for row in task_rows)
@@ -279,7 +279,7 @@ def test_planning_assign_week_accepts_a_customer_only_assignment(client: TestCli
     assert rows[0]["project_id"] is None
 
     activities = _customer_activity_rows(customer["id"])
-    assert [(row.event_type, row.message) for row in activities] == [("task.created", "Task created: Vor-Ort-Termin")]
+    assert [(row.event_type, row.message) for row in activities] == [("task.created", "Aufgabe erstellt: Vor-Ort-Termin")]
     assert _project_activity_rows_for_task(created_ids[0]) == []
 
 

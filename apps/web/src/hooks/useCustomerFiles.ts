@@ -12,7 +12,9 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { apiFetch, apiUploadWithProgress } from "../api/client";
+import { connectionErrorText } from "../utils/connectionError";
 import { listCustomerProjects, type CustomerProjectSummary } from "../utils/customersApi";
+import { uiText } from "../utils/uiLanguage";
 import type { ProjectFolder, StoredFile } from "../types";
 
 export type CustomerFilesLoad =
@@ -30,6 +32,8 @@ export type UploadProgressState = {
 const IDLE_UPLOAD: UploadProgressState = { busy: false, percent: null, phase: null, error: "" };
 
 function errorMessage(err: unknown, fallback: string): string {
+  const connection = connectionErrorText(err);
+  if (connection) return connection;
   return err instanceof Error && err.message ? err.message : fallback;
 }
 
@@ -56,7 +60,7 @@ export function useCustomerFiles(customerId: number, token: string | null) {
       setProjects(await listCustomerProjects(token, customerId));
     } catch (err: unknown) {
       setProjects([]);
-      setProjectsError(errorMessage(err, "Failed to load projects"));
+      setProjectsError(errorMessage(err, uiText("Projekte konnten nicht geladen werden", "Failed to load projects")));
     }
   }, [customerId, token]);
 
@@ -68,7 +72,7 @@ export function useCustomerFiles(customerId: number, token: string | null) {
     } catch (err: unknown) {
       setFiles([]);
       setFolders([]);
-      setLoad({ kind: "error", message: errorMessage(err, "Failed to load files") });
+      setLoad({ kind: "error", message: errorMessage(err, uiText("Dateien konnten nicht geladen werden", "Failed to load files")) });
     }
   }, [reloadFiles]);
 
@@ -136,7 +140,7 @@ export function useCustomerFiles(customerId: number, token: string | null) {
         await reloadFiles();
         setUpload(IDLE_UPLOAD);
       } catch (err: unknown) {
-        const message = errorMessage(err, "File upload failed");
+        const message = errorMessage(err, uiText("Dateien konnten nicht hochgeladen werden", "File upload failed"));
         setUpload({ ...IDLE_UPLOAD, error: message });
         throw err;
       }
