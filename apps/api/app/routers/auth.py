@@ -40,6 +40,14 @@ from app.schemas.user import (
 )
 from app.services import mfa
 from app.services.audit import log_admin_action
+from app.services.login_guard import (
+    DUMMY_PASSWORD_HASH,
+    account_key,
+    audit_client_ip,
+    locked_out_error,
+    login_locked_out,
+    record_failed_login,
+)
 from app.services.runtime_settings import mark_initial_admin_bootstrap_completed
 
 # httpOnly cookie carrying the short-lived MFA challenge token between the two
@@ -85,44 +93,6 @@ def _validate_nickname(value: str) -> str:
 
 def _nickname_normalized(value: str) -> str:
     return value.strip().lower()
-
-
-def _client_ip(request: Request | None) -> str | None:
-    """Best-effort client IP for audit rows.
-    Prefers X-Forwarded-For / X-Real-IP (set by the reverse proxy) over the
-    direct peer — the Docker stack sits behind Caddy so the direct peer is
-    usually the proxy container."""
-    if request is None:
-        return None
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        return forwarded.split(",", 1)[0].strip()
-    real_ip = request.headers.get("x-real-ip")
-    if real_ip:
-        return real_ip.strip()
-    return request.client.host if request.client else None
-
-
-# A fixed bcrypt hash used to equalize login response timing: even when the
-# submitted email doesn't exist we run one verification against this so an
-# attacker can't distinguish "no such account" from "wrong password" by latency.
-_DUMMY_PASSWORD_HASH = get_password_hash("smpl-login-timing-equalization-not-a-real-password")
-
-
-def _login_locked_out(db: Session, email_normalized: str) -> bool:
-    """True when this email has accumulated too many recent failed logins.
-
-    Keyed on the target account so IP rotation can't bypass it. Reuses the
-    ``auth.login_failed`` audit rows already written on every failure.
-    """
-    if not settings.login_lockout_enabled or not email_normalized:
-        return False
-    from app.services.auth_alerts import _recent_failed_login_count_for_email
-
-    count = _recent_failed_login_count_for_email(
-        db, email=email_normalized, window_seconds=settings.login_lockout_window_seconds
-    )
-    return count >= settings.login_lockout_threshold
 
 
 def _issue_session(
@@ -181,12 +151,13 @@ def login(
     db: Session = Depends(get_db),
 ):
     email_normalized = payload.email.strip().lower()
-    client_ip = _client_ip(request)
+    client_ip = audit_client_ip(request)
     user_agent = request.headers.get("user-agent", "")[:255] if request else ""
 
     # Account lockout: block sustained password guessing against a single email
-    # once too many recent failures have accumulated.
-    if _login_locked_out(db, email_normalized):
+    # once too many recent failures have accumulated (on any door, see
+    # services/login_guard.py).
+    if login_locked_out(db, account_key(email_normalized)):
         log_admin_action(
             db,
             None,
@@ -196,11 +167,7 @@ def login(
             details={"email": email_normalized, "ip": client_ip, "user_agent": user_agent},
             category="auth",
         )
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Too many failed attempts. Please try again later.",
-            headers={"Retry-After": str(settings.login_lockout_window_seconds)},
-        )
+        raise locked_out_error()
 
     stmt = select(User).where(User.email == email_normalized)
     user = db.scalars(stmt).first()
@@ -210,45 +177,20 @@ def login(
     if user is not None:
         password_ok = verify_password(payload.password, user.password_hash)
     else:
-        verify_password(payload.password, _DUMMY_PASSWORD_HASH)
+        verify_password(payload.password, DUMMY_PASSWORD_HASH)
         password_ok = False
 
     if user is None or not password_ok or not user.is_active:
         # Distinguish the reason for the audit trail only; the client always sees
         # an identical generic 401 so login can't be used to enumerate accounts.
         reason = "inactive" if (user is not None and password_ok and not user.is_active) else "invalid_credentials"
-        # Record the attempt without an actor — email is preserved in details
-        # so admins can correlate brute-force patterns without exposing
-        # actor_user_id to a user that might not exist.
-        log_admin_action(
+        record_failed_login(
             db,
-            None,
-            "auth.login_failed",
-            "user",
-            email_normalized or "(unknown)",
-            details={
-                "email": email_normalized,
-                "reason": reason,
-                "ip": client_ip,
-                "user_agent": user_agent,
-            },
-            category="auth",
+            account=account_key(email_normalized),
+            reason=reason,
+            client_ip=client_ip,
+            user_agent=user_agent,
         )
-        # Run brute-force evaluation AFTER the audit row commits so the new
-        # failure is included in the threshold count. The service is
-        # feature-flagged off by default; when enabled it dispatches Telegram
-        # / email alerts with audit-log-anchored dedup. Wrapped in a try/except
-        # so the alert path can never block a legitimate login response with
-        # a 500 — the worst case is a missed alert, not a broken login.
-        try:
-            from app.services.auth_alerts import evaluate_after_failed_login
-
-            evaluate_after_failed_login(db, email=email_normalized, ip=client_ip)
-        except Exception:  # noqa: BLE001 — diagnostic only, never crash login
-            import logging
-            logging.getLogger("smpl.auth_alerts").exception(
-                "brute-force evaluator raised; ignored to keep login responsive"
-            )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
     if user.mfa_enabled:
@@ -309,7 +251,7 @@ def login_mfa(
     as the X-Mfa-Challenge header (the native shell, where a SameSite=Strict
     cookie is never sent). Cookie wins when both are present.
     """
-    client_ip = _client_ip(request)
+    client_ip = audit_client_ip(request)
     user_agent = request.headers.get("user-agent", "")[:255] if request else ""
 
     token_payload = decode_token(mfa_challenge or x_mfa_challenge or "")
@@ -326,12 +268,8 @@ def login_mfa(
 
     # Reuse the per-account lockout so the (small) 6-digit code space can't be
     # brute-forced under the cover of a valid challenge cookie.
-    if _login_locked_out(db, user.email):
-        raise HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="Too many failed attempts. Please try again later.",
-            headers={"Retry-After": str(settings.login_lockout_window_seconds)},
-        )
+    if login_locked_out(db, account_key(user.email)):
+        raise locked_out_error()
 
     secret = mfa.decrypt_secret(user.mfa_secret)
     code_ok = bool(secret) and mfa.verify_totp(secret, payload.code)
@@ -396,7 +334,7 @@ def logout(
             str(current_user.id),
             details={
                 "email": current_user.email,
-                "ip": _client_ip(request),
+                "ip": audit_client_ip(request),
             },
             category="auth",
         )

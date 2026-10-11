@@ -15,7 +15,9 @@ keying that replaced it:
     the half-login MFA token) is counted against the address, so nobody can
     mint fresh buckets by inventing tokens;
   * PATs, the login endpoint and the station-pairing endpoints keep their own
-    scopes and stay per address, exactly as before.
+    scopes and stay per address, exactly as before;
+  * an address header counts only when it holds an IP address, and whatever it
+    holds can never reach a person's bucket (``X-Real-Ip: user:1`` once did).
 
 The clock is frozen and every ceiling is shrunk to CEILING, so nothing here
 depends on how fast the suite runs.
@@ -31,7 +33,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import app.main as main
-from app.core.security import create_access_token, create_mfa_challenge_token
+from app.core.security import create_access_token, create_mfa_challenge_token, decode_token
 
 CEILING = 3
 FROZEN_NOW = datetime(2026, 10, 11, 9, 0, 0)
@@ -172,6 +174,39 @@ def test_tokens_that_do_not_verify_count_against_the_address(
     # A real session from the same address is unaffected.
     response = client.get("/api/auth/me", headers=auth_headers(people["employee"]))
     assert response.status_code == 200, response.text
+
+
+@pytest.mark.parametrize("header", ["X-Real-Ip", "X-Forwarded-For"])
+def test_an_address_header_cannot_spend_a_persons_bucket(
+    client: TestClient, people: dict[str, str], small_ceilings: None, header: str
+) -> None:
+    """The address comes from a header the client can send itself whenever
+    nothing in front of the api overwrites it (no Caddy, a site block that does
+    not set it, the api reached directly). Whatever it holds must land in the
+    address key space, never in a person's: "user:<id>" sent as an address
+    would otherwise keep that person at 429 without any credentials."""
+    admin_id = decode_token(people["admin"])["sub"]
+    _spend(lambda: client.get("/api", headers={header: f"user:{admin_id}"}))
+    response = client.get("/api/auth/me", headers=auth_headers(people["admin"]))
+    assert response.status_code == 200, response.text
+
+
+def test_address_headers_that_are_not_addresses_fall_back_to_the_peer(
+    client: TestClient, people: dict[str, str], small_ceilings: None
+) -> None:
+    # Real addresses, as Caddy sets them, are separate clients...
+    _spend(lambda: client.get("/api", headers={"X-Real-Ip": "203.0.113.7"}))
+    assert _is_limited(client.get("/api", headers={"X-Real-Ip": "203.0.113.7"}))
+    assert client.get("/api", headers={"X-Real-Ip": "203.0.113.8"}).status_code == 200
+    # ...the same address spelt another way is the same client...
+    _spend(lambda: client.get("/api", headers={"X-Real-Ip": "2001:db8::1"}))
+    assert _is_limited(client.get("/api", headers={"X-Real-Ip": "2001:db8:0:0:0:0:0:1"}))
+    # ...and anything that is not an address is not a client of its own: every
+    # invented value is the peer, so inventing a new one buys nothing.
+    for index, junk in enumerate(["nobody", "user:1", "", "999.1.1.1", "1.2.3.4:80"]):
+        limited = _is_limited(client.get("/api", headers={"X-Real-Ip": junk, "X-Forwarded-For": junk}))
+        assert limited is (index >= CEILING), f"junk address {junk!r}"
+    assert _is_limited(client.get("/api"))
 
 
 def test_one_person_hammering_is_still_limited_until_the_window_moves_on(

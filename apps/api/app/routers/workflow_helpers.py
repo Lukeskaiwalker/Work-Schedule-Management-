@@ -165,6 +165,14 @@ from app.services.material_catalog import (
     sync_pending_material_catalog_images,
 )
 from app.core.security import verify_password
+from app.services.login_guard import (
+    DUMMY_PASSWORD_HASH,
+    account_key,
+    audit_client_ip,
+    locked_out_error,
+    login_locked_out,
+    record_failed_login,
+)
 from app.services.image_safety import open_untrusted_image
 
 try:
@@ -1261,9 +1269,23 @@ def _thread_visible_to_user(db: Session, user: User, thread: ChatThread) -> bool
     return _thread_is_restricted_visible_to_user(db, user, thread)
 
 
-def _webdav_authenticate(credentials: HTTPBasicCredentials | None, db: Session) -> User:
+def _webdav_authenticate(credentials: HTTPBasicCredentials | None, db: Session, request: Request) -> User:
+    """The account behind a mounted drive's Basic credentials, or 401.
+
+    WebDAV takes the account's main password on every request, which makes it
+    one more door to the same account as the login, and it must not be a
+    cheaper place to guess: a wrong password here is a failed login, counted by
+    the same per-account lockout, and a locked account is refused (429) here
+    and on the login alike, the right password included. See
+    services/login_guard.py.
+
+    No second factor is asked for: a drive cannot answer one. Until WebDAV has
+    passwords of its own, an account with MFA keeps its main password usable
+    on this door, which is why the lockout matters most here.
+    """
     auth_header = {'WWW-Authenticate': 'Basic realm="SMPL WebDAV", charset="UTF-8"'}
     if credentials is None:
+        # How every client opens: a challenge, not a guess, so nothing is counted.
         raise HTTPException(status_code=401, detail="WebDAV authentication required", headers=auth_header)
 
     username_raw = (credentials.username or "").strip()
@@ -1283,14 +1305,51 @@ def _webdav_authenticate(credentials: HTTPBasicCredentials | None, db: Session) 
         if user:
             break
 
-    if not user or not user.is_active or not verify_password(credentials.password, user.password_hash):
+    # Counted against the account the name resolved to, else against the name
+    # without its DOMAIN\ or realm/ prefix: a new prefix must not buy a fresh
+    # count, and a made-up name has to lock like a real one, or the lockout
+    # itself would tell which names have accounts.
+    account = account_key(user.email if user else re.split(r"[\\/]", username_raw)[-1])
+    if login_locked_out(db, account):
+        # Refused before the password is looked at, so a guess learns nothing
+        # and costs no bcrypt. No `auth.login_locked` row as the login writes
+        # one: a drive still mounted with the right password retries on its own
+        # and would fill the audit log for the whole window.
+        raise locked_out_error()
+
+    # One bcrypt verification either way, as the login does, so an unknown
+    # name answers no faster than a wrong password.
+    password_ok = verify_password(credentials.password, user.password_hash if user else DUMMY_PASSWORD_HASH)
+    if not user or not password_ok or not user.is_active:
+        record_failed_login(
+            db,
+            account=account,
+            reason="inactive" if (user and password_ok) else "invalid_credentials",
+            client_ip=audit_client_ip(request),
+            user_agent=request.headers.get("user-agent", "")[:255],
+            channel="webdav",
+        )
         raise HTTPException(status_code=401, detail="Invalid WebDAV credentials", headers=auth_header)
     # A partner-portal login has the same password store as everyone else,
     # and WebDAV is the whole file tree. Same answer as a wrong password, so a
-    # partner learns nothing from trying.
+    # partner learns nothing from trying. Not counted: the password was right.
     if is_external_role(user.role):
         raise HTTPException(status_code=401, detail="Invalid WebDAV credentials", headers=auth_header)
     return user
+
+
+def _dav_options_response() -> Response:
+    """OPTIONS anywhere under /api/dav/, answered before anything looks at
+    credentials.
+
+    It says which methods the server speaks and nothing about an account or a
+    file, so it needs none. Authenticated, it was a password oracle: until
+    2026-10-11 the rate limiter waved every OPTIONS through, and a route that
+    checked the password first answered 401 or 204 depending on whether the
+    guess was right. Windows' and Office's WebDAV clients send it without
+    credentials anyway.
+    """
+    return Response(status_code=204, headers=_dav_headers())
 
 
 def _dav_headers() -> dict[str, str]:

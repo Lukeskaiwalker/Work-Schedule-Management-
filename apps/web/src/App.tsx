@@ -179,6 +179,13 @@ import { buildTaskModalCopyStateFromEditForm, taskCopyNotice } from "./utils/tas
 import { uploadTaskAttachments } from "./components/tasks/taskAttachmentsApi";
 import { createRequestSequence } from "./utils/latestRequest";
 import { createSingleFlight } from "./utils/singleFlight";
+import {
+  REALTIME_REFRESH_MIN_INTERVAL_MS,
+  createRealtimeRefresher,
+  realtimeRefreshesFor,
+  type PacedRealtimeRefresh,
+  type RealtimeRefresher,
+} from "./utils/realtimeRefresh";
 import { TIME_DATA_POLL_INTERVAL_MS, fetchTimeData } from "./utils/timeData";
 import { startVisiblePolling } from "./utils/visiblePolling";
 import {
@@ -3108,47 +3115,44 @@ export function App() {
         return;
       }
 
-      if (mainView === "time") {
-        // Events here are about tasks, chats and projects, never time data, so
-        // a hidden tab need not answer them: its poll catches up when shown.
-        if (document.visibilityState !== "hidden") await refreshTimeData();
-      }
+      // Not the Zeiterfassung: no event carries time data, and its own poll
+      // keeps it current. Refreshing it here cost 9–11 requests per event, for
+      // every event an admin receives (see utils/realtimeRefresh).
     } catch {
       // Silent by design for background realtime sync.
     }
   }
 
+  // Event-driven refetches go through one refresher: each kind at most once per
+  // REALTIME_REFRESH_MIN_INTERVAL_MS while the tab is visible, and held until
+  // it is shown again while it is hidden. Answered one by one, in every open
+  // tab, they were the bulk of an admin's requests. The ref hands the refresher
+  // this render's loaders, so a held or paced run reads the view and filters on
+  // screen when it runs, not those of the event's moment.
+  const realtimeLoaders: Record<PacedRealtimeRefresh, () => unknown> = {
+    projectLists: refreshRealtimeProjectLists,
+    threads: loadThreads,
+    activeView: refreshActiveViewRealtime,
+    taskRevision: () => setTaskRevision((revision) => revision + 1),
+  };
+  const realtimeLoadersRef = useRef(realtimeLoaders);
+  realtimeLoadersRef.current = realtimeLoaders;
+  const realtimeRefresherRef = useRef<RealtimeRefresher<PacedRealtimeRefresh> | null>(null);
+  useEffect(() => {
+    const refresher = createRealtimeRefresher<PacedRealtimeRefresh>({
+      minIntervalMs: REALTIME_REFRESH_MIN_INTERVAL_MS,
+      refresh: (kind) => realtimeLoadersRef.current[kind](),
+    });
+    realtimeRefresherRef.current = refresher;
+    return () => {
+      refresher.stop();
+      if (realtimeRefresherRef.current === refresher) realtimeRefresherRef.current = null;
+    };
+  }, []);
+
   const handleServerEvent = useCallback((event: ServerEvent) => {
     const eventType = String(event.type || "").trim().toLowerCase();
     if (!eventType) return;
-
-    let planningRefreshed = false;
-
-    // Keep project headers/sidebars in sync for task/project mutations.
-    if (eventType.startsWith("task.") || eventType.startsWith("project.")) {
-      void refreshRealtimeProjectLists();
-    }
-
-    if (eventType === "task.created" || eventType === "task.updated" || eventType === "task.deleted") {
-      setTaskRevision((revision) => revision + 1);
-      // Re-fetch planning week if the planning view is currently open.
-      if (mainView === "planning") {
-        void loadPlanningWeek(null, planningWeekStart, planningTaskTypeView === "all" ? null : planningTaskTypeView);
-        planningRefreshed = true;
-      }
-      // Re-fetch calendar weeks if the calendar view is open. Only task
-      // mutations matter here — chat messages, file uploads, etc. should NOT
-      // cause the calendar to flash its loading state.
-      if (mainView === "calendar") {
-        void loadPlanningWindow(null, calendarWeekStart, 4);
-        planningRefreshed = true;
-      }
-    }
-
-    // Keep thread list fresh even outside the messages view.
-    if (eventType.startsWith("message.") || eventType.startsWith("thread.")) {
-      void loadThreads();
-    }
 
     if (eventType === "message.created") {
       // Show a browser notification for incoming messages from others, but
@@ -3166,35 +3170,19 @@ export function App() {
       }
     }
 
-    // `notification.resolved` fires when a task is completed or deleted and its
-    // notifications are retired server-side. Without it here the event would
-    // fall through to the generic view refresh, so a panel that is *already
-    // open* would keep showing an entry for a task somebody else just finished
-    // — the "task is done but the notification is still there" report.
-    if (eventType === "notification.created" || eventType === "notification.resolved") {
-      void loadNotifications();
-      return;
-    }
-
-    // Fallback: refresh the active view for any event not already handled.
-    // Skip calendar and planning — they manage their own refresh above and
-    // shouldn't flash their loading state for unrelated events (e.g. chat).
-    if (!planningRefreshed && mainView !== "calendar" && mainView !== "planning") {
-      void refreshActiveViewRealtime();
+    // Which refreshes an event asks for, per view, is utils/realtimeRefresh's
+    // call. The notifications load at once in every tab, hidden ones too: they
+    // are this user's alone and loading them raises the browser notification.
+    // Everything else goes through the refresher.
+    for (const refresh of realtimeRefreshesFor(eventType, mainView)) {
+      if (refresh === "notifications") void loadNotifications();
+      else realtimeRefresherRef.current?.request(refresh);
     }
   }, [
     activeThreadId,
-    calendarWeekStart,
     language,
     loadNotifications,
-    loadPlanningWeek,
-    loadPlanningWindow,
-    loadThreads,
     mainView,
-    planningTaskTypeView,
-    planningWeekStart,
-    refreshActiveViewRealtime,
-    refreshRealtimeProjectLists,
     showBrowserNotification,
     user?.id,
     userNameById,
@@ -3203,9 +3191,10 @@ export function App() {
   const { status: sseStatus } = useServerEvents(token, {
     onEvent: handleServerEvent,
     onReconnect: () => {
+      // Events may have been missed while the stream was down.
       void loadNotifications();
-      void refreshActiveViewRealtime();
-      void refreshRealtimeProjectLists();
+      realtimeRefresherRef.current?.request("activeView");
+      realtimeRefresherRef.current?.request("projectLists");
     },
   });
 

@@ -15,6 +15,11 @@
   - Password-based login.
   - JWT access token returned and also set as HttpOnly cookie.
   - WebDAV file access uses Basic Auth with local app credentials (email/password) for OS mount compatibility.
+    A wrong WebDAV password is a failed login (`auth.login_failed`, `channel: webdav`) and counts toward the
+    same per-account lockout as the login form (10 in 15 min by default); a locked account gets 429 on both,
+    the right password included (`app/services/login_guard.py`). `OPTIONS` under `/api/dav/` is answered
+    before credentials are looked at. No second factor is asked on WebDAV, so an MFA account's main password
+    stays usable there until WebDAV gets passwords of its own.
 - AuthZ:
   - Server-side RBAC for roles: `admin`, `ceo`, `accountant`, `planning`, `employee`.
   - Partner-portal logins (`external`, a subcontractor's people) hold no permission and are fenced
@@ -98,7 +103,7 @@
 ## OWASP Baseline Controls (MVP)
 - Password hashing using bcrypt.
 - Basic request-rate limiting middleware with explicit `429` responses (`Retry-After`) and separate traffic buckets for WebDAV/time-heavy endpoints.
-  Requests with a verified session token are counted per user (the office shares one NAT address); everything else, and always PATs, login and station pairing, per client address. Caddy overwrites `X-Real-Ip` so a client cannot choose its address.
+  Requests with a verified session token are counted per user (the office shares one NAT address); everything else, and always PATs, login and station pairing, per client address. Caddy overwrites `X-Real-Ip` so a client cannot choose its address; the api also takes an address header only when it holds an IP address, and keeps user and address buckets in separate key spaces. Only real CORS preflights (`Origin` + `Access-Control-Request-Method`) skip the limiter; every other `OPTIONS` is counted.
 - CORS restricted by config.
 - CSRF protection for cookie-authenticated mutating requests (`X-CSRF-Token` header must match CSRF cookie).
 - No secrets committed; templates only in repo.

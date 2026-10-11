@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import ipaddress
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -325,18 +326,33 @@ def _rate_limit_client_ip(request: Request) -> str:
     office arrives through hairpin NAT as the router, so it is one address for
     everyone, which is why signed-in requests are counted per user instead (see
     ``_rate_limit_key``). The non-spoofable per-account login lockout — not
-    this limiter — is the real brute-force control, so header spoofing here
-    can't unlock an account.
+    this limiter — is the real brute-force control, on the login and on WebDAV
+    alike (services/login_guard.py), so header spoofing here can't unlock an
+    account.
+
+    A header value is used only when it is an IP address, and then in its
+    canonical spelling. Wherever nothing in front overwrites the headers (no
+    Caddy, a site block that does not set them, the api reached directly) the
+    client writes them itself, and an invented value must neither be a client
+    of its own nor mean anything else: "user:1" passed straight through once
+    landed in user 1's bucket. Anything else falls through to the next source.
     """
-    real_ip = (request.headers.get("x-real-ip") or "").strip()
+    real_ip = _ip_address_or_none(request.headers.get("x-real-ip"))
     if real_ip:
         return real_ip
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        first = forwarded.split(",", 1)[0].strip()
-        if first:
-            return first
+    forwarded = request.headers.get("x-forwarded-for") or ""
+    first = _ip_address_or_none(forwarded.split(",", 1)[0])
+    if first:
+        return first
     return request.client.host if request.client else "unknown"
+
+
+def _ip_address_or_none(value: str | None) -> str | None:
+    """``value`` as a canonical IP address, or None when it is not one."""
+    try:
+        return str(ipaddress.ip_address((value or "").strip()))
+    except ValueError:
+        return None
 
 
 def _rate_scope(path: str, auth_header: str | None) -> tuple[str, int]:
@@ -410,16 +426,40 @@ def _rate_limit_key(request: Request, scope: str) -> str:
     was spent by everybody's open tabs together — measured 2026-10-11, a visible
     Zeiterfassung tab alone asks /api/time/* about 120 times a minute. A
     signed-in person now has buckets of their own, shared by all of their tabs
-    and sessions (same user id) and by nobody else. The ceilings did not need
-    to move for that: 900/min on /api/time/* is seven such tabs on screen at
-    once for one person, and a hidden tab no longer polls them at all.
+    and sessions (same user id) and by nobody else.
+
+    The ceilings did not need to move for that, once the web client stopped
+    answering every server event in every tab (utils/realtimeRefresh.ts). An
+    admin receives every event in the company, and each event used to refetch
+    the open view: on the Zeiterfassung that was a full time refresh. Measured
+    2026-10-11 on PostgreSQL with live events, one admin tab, production build:
+
+      * Zeiterfassung on screen, 20 events/min: 320 /api/time/* a minute
+        before, 120 after — its 5 s poll alone, whatever the event rate. 900
+        is seven such tabs on screen at once.
+      * project task view on screen, 30 events/min: 80 default-scope requests
+        a minute before, 53 after; event-driven refetches are now at most one
+        per kind per 5 s, about 50 a minute however busy the office is.
+      * the same tab hidden: 80 before, 5 after (the thread poll), and one
+        refetch per kind when it is shown again.
     """
     if scope not in _PER_ADDRESS_SCOPES:
         user_id = _rate_limit_session_user(request)
         if user_id is not None:
-            # "user:" cannot collide with an address, IPv6 colons and all.
             return f"user:{user_id}:{scope}"
-    return f"{_rate_limit_client_ip(request)}:{scope}"
+    # Two key spaces with their own prefixes, so neither can reach into the
+    # other whatever an address header holds (and the peer fallback is no IP
+    # check's business: under TestClient it is "testclient").
+    return f"ip:{_rate_limit_client_ip(request)}:{scope}"
+
+
+def _is_cors_preflight(request: Request) -> bool:
+    """What CORSMiddleware answers on its own, without reaching a route."""
+    return (
+        request.method == "OPTIONS"
+        and "origin" in request.headers
+        and "access-control-request-method" in request.headers
+    )
 
 
 @app.middleware("http")
@@ -429,7 +469,14 @@ async def basic_rate_limit(request: Request, call_next):
     # clients can burst aggressively, so keep separate, higher buckets.
     # In-memory means per worker process: with API_WORKERS=2 a client's requests
     # are spread over two buckets, so the ceiling it meets is up to twice these.
-    if request.method == "OPTIONS":
+    #
+    # A CORS preflight is never refused: CORSMiddleware answers it without
+    # touching a route, and a 429 carries no CORS headers, so the browser would
+    # report the real request behind it as a CORS failure. Only a real
+    # preflight, though. Any other OPTIONS reaches a route and is counted like
+    # any request: when every OPTIONS was waved through, OPTIONS /api/dav/*
+    # with Basic credentials was a password check nothing limited (2026-10-11).
+    if _is_cors_preflight(request):
         return await call_next(request)
     if request.url.path.startswith("/api/events"):
         return await call_next(request)

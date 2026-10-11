@@ -16,10 +16,10 @@ def webdav_projects_root(
     db: Session = Depends(get_db),
     credentials: HTTPBasicCredentials | None = Depends(webdav_security),
 ):
-    user = _webdav_authenticate(credentials, db)
-
     if request.method == "OPTIONS":
-        return Response(status_code=204, headers=_dav_headers())
+        return _dav_options_response()
+    user = _webdav_authenticate(credentials, db, request)
+
     if request.method in {"GET", "HEAD"}:
         return Response(status_code=204, headers=_dav_headers())
 
@@ -82,11 +82,11 @@ def webdav_general_projects_root(
     db: Session = Depends(get_db),
     credentials: HTTPBasicCredentials | None = Depends(webdav_security),
 ):
-    user = _webdav_authenticate(credentials, db)
+    if request.method == "OPTIONS":
+        return _dav_options_response()
+    user = _webdav_authenticate(credentials, db, request)
     _assert_report_access(user, write=False)
 
-    if request.method == "OPTIONS":
-        return Response(status_code=204, headers=_dav_headers())
     if request.method in {"GET", "HEAD"}:
         return Response(status_code=204, headers=_dav_headers())
 
@@ -103,15 +103,14 @@ def webdav_general_projects_file(
     db: Session = Depends(get_db),
     credentials: HTTPBasicCredentials | None = Depends(webdav_security),
 ):
-    user = _webdav_authenticate(credentials, db)
+    if request.method == "OPTIONS":
+        return _dav_options_response()
+    user = _webdav_authenticate(credentials, db, request)
     _assert_report_access(user, write=False)
     normalized_path = _sanitize_dav_relative_path(file_path, allow_empty=True)
     file_map = _latest_general_report_file_by_path(db)
     folder_paths = _general_report_folder_paths(db)
     latest = file_map.get(normalized_path)
-
-    if request.method == "OPTIONS":
-        return Response(status_code=204, headers=_dav_headers())
 
     if request.method == "PROPFIND":
         depth = request.headers.get("Depth", "1")
@@ -156,10 +155,10 @@ def webdav_archive_root(
     db: Session = Depends(get_db),
     credentials: HTTPBasicCredentials | None = Depends(webdav_security),
 ):
-    user = _webdav_authenticate(credentials, db)
-
     if request.method == "OPTIONS":
-        return Response(status_code=204, headers=_dav_headers())
+        return _dav_options_response()
+    user = _webdav_authenticate(credentials, db, request)
+
     if request.method in {"GET", "HEAD"}:
         return Response(status_code=204, headers=_dav_headers())
 
@@ -203,11 +202,11 @@ def webdav_archive_project_root(
     db: Session = Depends(get_db),
     credentials: HTTPBasicCredentials | None = Depends(webdav_security),
 ):
-    user = _webdav_authenticate(credentials, db)
+    if request.method == "OPTIONS":
+        return _dav_options_response()
+    user = _webdav_authenticate(credentials, db, request)
     _assert_archived_project_webdav_access(db, user, project_id)
 
-    if request.method == "OPTIONS":
-        return Response(status_code=204, headers=_dav_headers())
     if request.method in {"GET", "HEAD"}:
         return Response(status_code=204, headers=_dav_headers())
 
@@ -234,12 +233,11 @@ def webdav_archive_project_file(
     db: Session = Depends(get_db),
     credentials: HTTPBasicCredentials | None = Depends(webdav_security),
 ):
-    user = _webdav_authenticate(credentials, db)
+    if request.method == "OPTIONS":
+        return _dav_options_response()
+    user = _webdav_authenticate(credentials, db, request)
     _assert_archived_project_webdav_access(db, user, project_id)
     normalized_path = _sanitize_dav_relative_path(file_path, allow_empty=True)
-
-    if request.method == "OPTIONS":
-        return Response(status_code=204, headers=_dav_headers())
 
     file_map = _latest_project_file_by_path(db, project_id, user)
     folder_paths = _project_folder_paths_for_user(db, project_id, user)
@@ -298,13 +296,13 @@ def webdav_project_root(
     db: Session = Depends(get_db),
     credentials: HTTPBasicCredentials | None = Depends(webdav_security),
 ):
-    user = _webdav_authenticate(credentials, db)
+    if request.method == "OPTIONS":
+        return _dav_options_response()
+    user = _webdav_authenticate(credentials, db, request)
     project = _resolve_project_by_webdav_ref(db, project_ref)
     assert_project_access(db, user, project.id)
     canonical_ref = _project_webdav_ref(project)
 
-    if request.method == "OPTIONS":
-        return Response(status_code=204, headers=_dav_headers())
     if request.method in {"GET", "HEAD"}:
         return Response(status_code=204, headers=_dav_headers())
 
@@ -331,15 +329,14 @@ async def webdav_project_file(
     db: Session = Depends(get_db),
     credentials: HTTPBasicCredentials | None = Depends(webdav_security),
 ):
-    user = _webdav_authenticate(credentials, db)
+    if request.method == "OPTIONS":
+        return _dav_options_response()
+    user = _webdav_authenticate(credentials, db, request)
     project = _resolve_project_by_webdav_ref(db, project_ref)
     assert_project_access(db, user, project.id)
     canonical_ref = _project_webdav_ref(project)
 
     normalized_path = _sanitize_dav_relative_path(file_path, allow_empty=True)
-
-    if request.method == "OPTIONS":
-        return Response(status_code=204, headers=_dav_headers())
 
     file_map = _latest_project_file_by_path(db, project.id, user)
     folder_paths = _project_folder_paths_for_user(db, project.id, user)
