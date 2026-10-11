@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import ipaddress
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
@@ -15,7 +16,7 @@ from app.core.config import get_settings
 from app.core.db import SessionLocal
 from app.core.log_redaction import install_access_log_redaction
 from app.core.permissions import ROLE_ADMIN
-from app.core.security import get_password_hash, verify_password
+from app.core.security import MFA_CHALLENGE_PURPOSE, decode_token, get_password_hash, verify_password
 from app.core.time import utcnow
 from app.models.entities import User
 from app.routers import workflow_station
@@ -231,9 +232,12 @@ Two channels are supported:
 
 ## Rate limiting
 
-Per-IP, 1-minute sliding window. Default 480 req/min; the
-`/api/dav/`, `/api/time/` and PAT-authenticated scopes get higher
-ceilings (2400, 900, and 1200 respectively). 429 responses include
+1-minute sliding window, counted per signed-in user for requests that
+carry a valid session (cookie or Bearer JWT) and per client address
+otherwise. Default 480 req/min; the `/api/dav/`, `/api/time/` and
+PAT-authenticated scopes get higher ceilings (2400, 900, and 1200
+respectively). PAT requests, `/api/auth/login` (60) and the station
+pairing endpoints are always counted per address. 429 responses include
 `Retry-After: 60`.
 
 ## Response shapes
@@ -318,24 +322,45 @@ _rate_bucket: dict[str, deque[datetime]] = defaultdict(deque)
 def _rate_limit_client_ip(request: Request) -> str:
     """Best-effort real client IP for rate-limit bucketing.
 
-    Behind the Traefik/Caddy reverse proxies the direct peer is the proxy, so
+    Behind the reverse proxy the direct peer is the proxy, so
     ``request.client.host`` would collapse every user into a single global
     bucket. Prefer the proxy-set ``X-Real-Ip`` (the client the edge actually
     connected to), then the left-most ``X-Forwarded-For`` hop, then the direct
-    peer. This assumes a trusted edge proxy overwrites these headers (Traefik and
-    Caddy do); the non-spoofable per-account login lockout — not this limiter — is
-    the real brute-force control, and Traefik's edge rate-limit is the real
-    volumetric-DoS boundary, so header spoofing here can't unlock an account.
+    peer. This assumes the edge overwrites both headers. Caddy, the edge since
+    2026-08, replaces ``X-Forwarded-For`` with the peer it saw (no
+    ``trusted_proxies`` is configured) but passes a client's ``X-Real-Ip``
+    through untouched unless told otherwise — which is why apps/web/Caddyfile
+    sets it explicitly. What that address is matters less than it looks: the
+    office arrives through hairpin NAT as the router, so it is one address for
+    everyone, which is why signed-in requests are counted per user instead (see
+    ``_rate_limit_key``). The non-spoofable per-account login lockout — not
+    this limiter — is the real brute-force control, on the login and on WebDAV
+    alike (services/login_guard.py), so header spoofing here can't unlock an
+    account.
+
+    A header value is used only when it is an IP address, and then in its
+    canonical spelling. Wherever nothing in front overwrites the headers (no
+    Caddy, a site block that does not set them, the api reached directly) the
+    client writes them itself, and an invented value must neither be a client
+    of its own nor mean anything else: "user:1" passed straight through once
+    landed in user 1's bucket. Anything else falls through to the next source.
     """
-    real_ip = (request.headers.get("x-real-ip") or "").strip()
+    real_ip = _ip_address_or_none(request.headers.get("x-real-ip"))
     if real_ip:
         return real_ip
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        first = forwarded.split(",", 1)[0].strip()
-        if first:
-            return first
+    forwarded = request.headers.get("x-forwarded-for") or ""
+    first = _ip_address_or_none(forwarded.split(",", 1)[0])
+    if first:
+        return first
     return request.client.host if request.client else "unknown"
+
+
+def _ip_address_or_none(value: str | None) -> str | None:
+    """``value`` as a canonical IP address, or None when it is not one."""
+    try:
+        return str(ipaddress.ip_address((value or "").strip()))
+    except ValueError:
+        return None
 
 
 def _rate_scope(path: str, auth_header: str | None) -> tuple[str, int]:
@@ -369,19 +394,104 @@ def _rate_scope(path: str, auth_header: str | None) -> tuple[str, int]:
     return ("default", 480)
 
 
+# Scopes that stay per address whoever is signed in. The login ceiling is the
+# credential-stuffing backstop (many accounts, few tries each, one source) and
+# the pairing endpoints are called by devices that have no session; a session
+# from somewhere else must not buy either a bucket of its own. PATs keep the
+# per-address bucket they always had: they are recognised by prefix alone,
+# because telling a real one from a made-up one takes a database lookup.
+_PER_ADDRESS_SCOPES = frozenset({"login", "station_pair_start", "station_pair_poll", "api_pat"})
+
+
+def _rate_limit_session_user(request: Request) -> str | None:
+    """The user id of a verified session token on the request, else None.
+
+    Takes the credential get_current_user would — the Bearer header, else the
+    ``access_token`` cookie — and verifies it with the app's own helper (HS256
+    pinned), so only a token this server signed counts. Garbage, a foreign key,
+    alg ``none``, an expired token or the MFA half-login token all give None, and
+    the request is counted against its address: an invented token cannot mint a
+    fresh bucket. Whether the user still exists or is active is the route's
+    business; the limiter only needs to know whose request this is.
+    """
+    authorization = request.headers.get("authorization") or ""
+    bearer = authorization.split(" ", 1)[1].strip() if authorization.lower().startswith("bearer ") else ""
+    token = bearer or request.cookies.get("access_token") or ""
+    if not token:
+        return None
+    payload = decode_token(token)
+    if not payload or payload.get("purpose") == MFA_CHALLENGE_PURPOSE:
+        return None
+    subject = str(payload.get("sub") or "").strip()
+    return subject or None
+
+
+def _rate_limit_key(request: Request, scope: str) -> str:
+    """Whose allowance a request spends: its user's, or else its address's.
+
+    Per address alone made the office one client. It reaches Caddy through
+    hairpin NAT, so every desk arrives as the router, and one shared allowance
+    was spent by everybody's open tabs together — measured 2026-10-11, a visible
+    Zeiterfassung tab alone asks /api/time/* about 120 times a minute. A
+    signed-in person now has buckets of their own, shared by all of their tabs
+    and sessions (same user id) and by nobody else.
+
+    The ceilings did not need to move for that, once the web client stopped
+    answering every server event in every tab (utils/realtimeRefresh.ts). An
+    admin receives every event in the company, and each event used to refetch
+    the open view: on the Zeiterfassung that was a full time refresh. Measured
+    2026-10-11 on PostgreSQL with live events, one admin tab, production build:
+
+      * Zeiterfassung on screen, 20 events/min: 320 /api/time/* a minute
+        before, 120 after — its 5 s poll alone, whatever the event rate. 900
+        is seven such tabs on screen at once.
+      * project task view on screen, 30 events/min: 80 default-scope requests
+        a minute before, 53 after; event-driven refetches are now at most one
+        per kind per 5 s, about 50 a minute however busy the office is.
+      * the same tab hidden: 80 before, 5 after (the thread poll), and one
+        refetch per kind when it is shown again.
+    """
+    if scope not in _PER_ADDRESS_SCOPES:
+        user_id = _rate_limit_session_user(request)
+        if user_id is not None:
+            return f"user:{user_id}:{scope}"
+    # Two key spaces with their own prefixes, so neither can reach into the
+    # other whatever an address header holds (and the peer fallback is no IP
+    # check's business: under TestClient it is "testclient").
+    return f"ip:{_rate_limit_client_ip(request)}:{scope}"
+
+
+def _is_cors_preflight(request: Request) -> bool:
+    """What CORSMiddleware answers on its own, without reaching a route."""
+    return (
+        request.method == "OPTIONS"
+        and "origin" in request.headers
+        and "access-control-request-method" in request.headers
+    )
+
+
 @app.middleware("http")
 async def basic_rate_limit(request: Request, call_next):
-    # Simple in-memory per-IP limiter for baseline OWASP hardening.
-    # WebDAV clients can burst aggressively, so keep separate, higher buckets.
-    if request.method == "OPTIONS":
+    # Simple in-memory limiter for baseline OWASP hardening: per user for
+    # signed-in requests, per address otherwise (see _rate_limit_key). WebDAV
+    # clients can burst aggressively, so keep separate, higher buckets.
+    # In-memory means per worker process: with API_WORKERS=2 a client's requests
+    # are spread over two buckets, so the ceiling it meets is up to twice these.
+    #
+    # A CORS preflight is never refused: CORSMiddleware answers it without
+    # touching a route, and a 429 carries no CORS headers, so the browser would
+    # report the real request behind it as a CORS failure. Only a real
+    # preflight, though. Any other OPTIONS reaches a route and is counted like
+    # any request: when every OPTIONS was waved through, OPTIONS /api/dav/*
+    # with Basic credentials was a password check nothing limited (2026-10-11).
+    if _is_cors_preflight(request):
         return await call_next(request)
     # The stream itself only: a reconnect is not a burst worth limiting. Exact
     # match, so minting a stream ticket (POST /api/events/ticket) still counts.
     if request.url.path == "/api/events":
         return await call_next(request)
-    ip = _rate_limit_client_ip(request)
     scope, limit = _rate_scope(request.url.path, request.headers.get("authorization"))
-    bucket_key = f"{ip}:{scope}"
+    bucket_key = _rate_limit_key(request, scope)
     now = utcnow()
     window = timedelta(minutes=1)
     bucket = _rate_bucket[bucket_key]

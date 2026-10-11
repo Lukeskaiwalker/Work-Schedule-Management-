@@ -218,7 +218,11 @@ mutates state — never share a CEO token with a script.)
 
 ### Rate limits
 
-Per-IP, 1-minute sliding window:
+1-minute sliding window. Requests carrying a valid session (cookie or
+Bearer JWT) are counted per user; everything else per client address.
+PAT requests are always counted per address (any number of PATs used
+from one address share the PAT bucket), as are `/api/auth/login`
+(60/min) and the station-pairing endpoints.
 
 | Scope                            | Limit (req/min) |
 |----------------------------------|-----------------|

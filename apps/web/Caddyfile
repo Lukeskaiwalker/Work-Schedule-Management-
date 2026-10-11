@@ -98,7 +98,18 @@
 	# SMPL_API_UPSTREAM is overrideable for tests but defaults to the
 	# docker-network address of the api service.
 	handle /api* {
-		reverse_proxy {$SMPL_API_UPSTREAM:api:8000}
+		reverse_proxy {$SMPL_API_UPSTREAM:api:8000} {
+			# The api's rate limiter takes the client address from X-Real-Ip
+			# first, then X-Forwarded-For. Caddy rewrites X-Forwarded-For to
+			# the peer it saw (no trusted_proxies is set, so a client's own
+			# value is discarded) but sets no X-Real-Ip and passes a client's
+			# through untouched: checked 2026-10-11 against caddy:2.10.2, a
+			# request sent with "X-Real-Ip: 6.6.6.6" reached the upstream with
+			# exactly that. Anyone could then pick their own bucket, the login
+			# ceiling's included. Overwriting it closes that; {client_ip} is
+			# the peer, and stays right if trusted_proxies is ever configured.
+			header_up X-Real-Ip {client_ip}
+		}
 	}
 
 	handle {

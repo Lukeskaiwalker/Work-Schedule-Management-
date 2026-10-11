@@ -466,8 +466,10 @@ def webdav_customers_root(
     db: Session = Depends(get_db),
     credentials: HTTPBasicCredentials | None = Depends(webdav_security),
 ):
-    user = _webdav_authenticate(credentials, db)
-    if request.method in {"OPTIONS", "GET", "HEAD"}:
+    if request.method == "OPTIONS":
+        return _dav_options_response()
+    user = _webdav_authenticate(credentials, db, request)
+    if request.method in {"GET", "HEAD"}:
         return Response(status_code=204, headers=_dav_headers())
 
     now = _rfc1123(datetime.now(timezone.utc))
@@ -493,10 +495,12 @@ def webdav_customer_root(
     db: Session = Depends(get_db),
     credentials: HTTPBasicCredentials | None = Depends(webdav_security),
 ):
-    user = _webdav_authenticate(credentials, db)
+    if request.method == "OPTIONS":
+        return _dav_options_response()
+    user = _webdav_authenticate(credentials, db, request)
     customer = _resolve_customer_by_webdav_ref(db, customer_ref)
     _assert_customer_files_access(db, user, customer.id)
-    if request.method in {"OPTIONS", "GET", "HEAD"}:
+    if request.method in {"GET", "HEAD"}:
         return Response(status_code=204, headers=_dav_headers())
     level = _customer_level(db, user, customer, customer_webdav_ref(customer))
     return _answer_propfind(request, level, "")
@@ -510,11 +514,11 @@ async def webdav_customer_path(
     db: Session = Depends(get_db),
     credentials: HTTPBasicCredentials | None = Depends(webdav_security),
 ):
-    user = _webdav_authenticate(credentials, db)
+    if request.method == "OPTIONS":
+        return _dav_options_response()
+    user = _webdav_authenticate(credentials, db, request)
     customer = _resolve_customer_by_webdav_ref(db, customer_ref)
     _assert_customer_files_access(db, user, customer.id)
-    if request.method == "OPTIONS":
-        return Response(status_code=204, headers=_dav_headers())
 
     normalized_path = _sanitize_dav_relative_path(file_path, allow_empty=True)
     canonical_ref = customer_webdav_ref(customer)

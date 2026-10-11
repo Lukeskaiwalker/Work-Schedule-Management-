@@ -181,6 +181,16 @@ import {
 import { buildTaskModalCopyStateFromEditForm, taskCopyNotice } from "./utils/taskCopy";
 import { uploadTaskAttachments } from "./components/tasks/taskAttachmentsApi";
 import { createRequestSequence } from "./utils/latestRequest";
+import { createSingleFlight } from "./utils/singleFlight";
+import {
+  REALTIME_REFRESH_MIN_INTERVAL_MS,
+  createRealtimeRefresher,
+  realtimeRefreshesFor,
+  type PacedRealtimeRefresh,
+  type RealtimeRefresher,
+} from "./utils/realtimeRefresh";
+import { TIME_DATA_POLL_INTERVAL_MS, fetchTimeData } from "./utils/timeData";
+import { startVisiblePolling } from "./utils/visiblePolling";
 import {
   normalizeMaterialNeedStatus,
 } from "./utils/materials";
@@ -1880,6 +1890,14 @@ export function App() {
   const monthCursorISORef = useRef(monthCursorISO);
   useEffect(() => { monthCursorISORef.current = monthCursorISO; });
 
+  // Every time-data refresh goes through one single-flight: the poll, the
+  // saves that await refreshTimeData, SSE events and filter changes used to
+  // start their own and overlap. The ref hands the flight this render's
+  // loader, so a follow-up run reads the current user, month and range.
+  const loadTimeDataRef = useRef(loadTimeDataIntoState);
+  loadTimeDataRef.current = loadTimeDataIntoState;
+  const [timeDataFlight] = useState(() => createSingleFlight(() => loadTimeDataRef.current()));
+
   const monthCursorLabel = useMemo(
     () =>
       timeMonthCursor.toLocaleDateString(language === "de" ? "de-DE" : "en-US", {
@@ -3003,13 +3021,16 @@ export function App() {
     return () => window.cancelAnimationFrame(raf);
   }, [messages, mainView, activeThreadId]);
 
+  // No SSE event carries time data, so this stays a poll — but only while the
+  // tab is visible, and a tick never stacks on a refresh still in flight. A
+  // visible Zeiterfassung tab is ~120 requests a minute (see utils/timeData).
   useEffect(() => {
     if (!token || (mainView !== "time" && mainView !== "overview")) return;
-    void refreshTimeData();
-    const poll = window.setInterval(() => {
-      void refreshTimeData();
-    }, 5000);
-    return () => window.clearInterval(poll);
+    return startVisiblePolling({
+      intervalMs: TIME_DATA_POLL_INTERVAL_MS,
+      refreshNow: () => timeDataFlight.run(),
+      refreshIfIdle: () => timeDataFlight.runIfIdle(),
+    });
   }, [token, mainView, timeTargetUserId, isTimeManager, monthWeekDefs, timeEntriesStartDate, timeEntriesEndDate]);
 
   useEffect(() => {
@@ -3097,45 +3118,44 @@ export function App() {
         return;
       }
 
-      if (mainView === "time") {
-        await refreshTimeData();
-      }
+      // Not the Zeiterfassung: no event carries time data, and its own poll
+      // keeps it current. Refreshing it here cost 9–11 requests per event, for
+      // every event an admin receives (see utils/realtimeRefresh).
     } catch {
       // Silent by design for background realtime sync.
     }
   }
 
+  // Event-driven refetches go through one refresher: each kind at most once per
+  // REALTIME_REFRESH_MIN_INTERVAL_MS while the tab is visible, and held until
+  // it is shown again while it is hidden. Answered one by one, in every open
+  // tab, they were the bulk of an admin's requests. The ref hands the refresher
+  // this render's loaders, so a held or paced run reads the view and filters on
+  // screen when it runs, not those of the event's moment.
+  const realtimeLoaders: Record<PacedRealtimeRefresh, () => unknown> = {
+    projectLists: refreshRealtimeProjectLists,
+    threads: loadThreads,
+    activeView: refreshActiveViewRealtime,
+    taskRevision: () => setTaskRevision((revision) => revision + 1),
+  };
+  const realtimeLoadersRef = useRef(realtimeLoaders);
+  realtimeLoadersRef.current = realtimeLoaders;
+  const realtimeRefresherRef = useRef<RealtimeRefresher<PacedRealtimeRefresh> | null>(null);
+  useEffect(() => {
+    const refresher = createRealtimeRefresher<PacedRealtimeRefresh>({
+      minIntervalMs: REALTIME_REFRESH_MIN_INTERVAL_MS,
+      refresh: (kind) => realtimeLoadersRef.current[kind](),
+    });
+    realtimeRefresherRef.current = refresher;
+    return () => {
+      refresher.stop();
+      if (realtimeRefresherRef.current === refresher) realtimeRefresherRef.current = null;
+    };
+  }, []);
+
   const handleServerEvent = useCallback((event: ServerEvent) => {
     const eventType = String(event.type || "").trim().toLowerCase();
     if (!eventType) return;
-
-    let planningRefreshed = false;
-
-    // Keep project headers/sidebars in sync for task/project mutations.
-    if (eventType.startsWith("task.") || eventType.startsWith("project.")) {
-      void refreshRealtimeProjectLists();
-    }
-
-    if (eventType === "task.created" || eventType === "task.updated" || eventType === "task.deleted") {
-      setTaskRevision((revision) => revision + 1);
-      // Re-fetch planning week if the planning view is currently open.
-      if (mainView === "planning") {
-        void loadPlanningWeek(null, planningWeekStart, planningTaskTypeView === "all" ? null : planningTaskTypeView);
-        planningRefreshed = true;
-      }
-      // Re-fetch calendar weeks if the calendar view is open. Only task
-      // mutations matter here — chat messages, file uploads, etc. should NOT
-      // cause the calendar to flash its loading state.
-      if (mainView === "calendar") {
-        void loadPlanningWindow(null, calendarWeekStart, 4);
-        planningRefreshed = true;
-      }
-    }
-
-    // Keep thread list fresh even outside the messages view.
-    if (eventType.startsWith("message.") || eventType.startsWith("thread.")) {
-      void loadThreads();
-    }
 
     if (eventType === "message.created") {
       // Show a browser notification for incoming messages from others, but
@@ -3153,35 +3173,19 @@ export function App() {
       }
     }
 
-    // `notification.resolved` fires when a task is completed or deleted and its
-    // notifications are retired server-side. Without it here the event would
-    // fall through to the generic view refresh, so a panel that is *already
-    // open* would keep showing an entry for a task somebody else just finished
-    // — the "task is done but the notification is still there" report.
-    if (eventType === "notification.created" || eventType === "notification.resolved") {
-      void loadNotifications();
-      return;
-    }
-
-    // Fallback: refresh the active view for any event not already handled.
-    // Skip calendar and planning — they manage their own refresh above and
-    // shouldn't flash their loading state for unrelated events (e.g. chat).
-    if (!planningRefreshed && mainView !== "calendar" && mainView !== "planning") {
-      void refreshActiveViewRealtime();
+    // Which refreshes an event asks for, per view, is utils/realtimeRefresh's
+    // call. The notifications load at once in every tab, hidden ones too: they
+    // are this user's alone and loading them raises the browser notification.
+    // Everything else goes through the refresher.
+    for (const refresh of realtimeRefreshesFor(eventType, mainView)) {
+      if (refresh === "notifications") void loadNotifications();
+      else realtimeRefresherRef.current?.request(refresh);
     }
   }, [
     activeThreadId,
-    calendarWeekStart,
     language,
     loadNotifications,
-    loadPlanningWeek,
-    loadPlanningWindow,
-    loadThreads,
     mainView,
-    planningTaskTypeView,
-    planningWeekStart,
-    refreshActiveViewRealtime,
-    refreshRealtimeProjectLists,
     showBrowserNotification,
     user?.id,
     userNameById,
@@ -3190,9 +3194,10 @@ export function App() {
   const { status: sseStatus } = useServerEvents(token, {
     onEvent: handleServerEvent,
     onReconnect: () => {
+      // Events may have been missed while the stream was down.
       void loadNotifications();
-      void refreshActiveViewRealtime();
-      void refreshRealtimeProjectLists();
+      realtimeRefresherRef.current?.request("activeView");
+      realtimeRefresherRef.current?.request("projectLists");
     },
   });
 
@@ -4783,7 +4788,14 @@ export function App() {
     }
   }
 
-  async function refreshTimeData() {
+  /** Refresh the time data — or, when a refresh is already running, run one
+   * more right after it and resolve with that, so a caller that just saved
+   * always gets data fetched after its save. Never rejects. */
+  function refreshTimeData(): Promise<void> {
+    return timeDataFlight.run();
+  }
+
+  async function loadTimeDataIntoState() {
     try {
       const currentDefs = monthWeekDefsRef.current;
       // Managers see ALL users' time entries by default when no user_id is
@@ -4798,45 +4810,24 @@ export function App() {
             ? Number(timeTargetUserId)
             : user?.id ?? null
           : null;
-      const userQuery = effectiveTimeUserId != null ? `&user_id=${effectiveTimeUserId}` : "";
-      const currentQuery = effectiveTimeUserId != null ? `?user_id=${effectiveTimeUserId}` : "";
-      const vacationQuery = effectiveTimeUserId != null ? `?user_id=${effectiveTimeUserId}` : "";
-      const schoolQuery = effectiveTimeUserId != null ? `?user_id=${effectiveTimeUserId}` : "";
-      const entriesRangeQuery =
-        timeEntriesStartDate && timeEntriesEndDate
-          ? `&start_date=${timeEntriesStartDate}&end_date=${timeEntriesEndDate}`
-          : "";
-      const monthISO = monthCursorISORef.current;
-      const timesheetRequests =
-        mainView === "time"
-          ? currentDefs.map((row) =>
-              apiFetch<TimesheetSummary>(`/time/timesheet?period=weekly&day=${row.weekStart}${userQuery}`, token),
-            )
-          : [];
-      // One extra request for the strict calendar-month total (avoids double-counting
-      // days from adjacent months that bleed into the first/last ISO week of the month).
-      const monthlyTimesheetRequest =
-        mainView === "time"
-          ? apiFetch<TimesheetSummary>(`/time/timesheet?period=monthly&day=${monthISO}-01${userQuery}`, token)
-          : Promise.resolve(null);
-      const [current, entries, vacationRows, schoolRows, monthlySheet, ...timesheetRows] = await Promise.all([
-        apiFetch<TimeCurrent>(`/time/current${currentQuery}`, token),
-        apiFetch<TimeEntry[]>(`/time/entries?period=weekly${entriesRangeQuery}${userQuery}`, token),
-        apiFetch<VacationRequest[]>(`/time/vacation-requests${vacationQuery}`, token),
-        apiFetch<SchoolAbsence[]>(`/time/school-absences${schoolQuery}`, token),
-        monthlyTimesheetRequest,
-        ...timesheetRequests,
-      ]);
+      const snapshot = await fetchTimeData((path) => apiFetch(path, token), {
+        includeMonthTable: mainView === "time",
+        userId: effectiveTimeUserId,
+        entriesStartDate: timeEntriesStartDate,
+        entriesEndDate: timeEntriesEndDate,
+        monthISO: monthCursorISORef.current,
+        weekStarts: currentDefs.map((row) => row.weekStart),
+      });
+      const { current } = snapshot;
       setTimeCurrent(current);
-      setTimeEntries(entries);
-      setVacationRequests(vacationRows);
-      setSchoolAbsences(schoolRows);
+      setTimeEntries(snapshot.entries);
+      setVacationRequests(snapshot.vacationRequests);
+      setSchoolAbsences(snapshot.schoolAbsences);
       if (mainView === "time") {
-        const monthly = monthlySheet as TimesheetSummary | null;
-        setMonthlyWorkedHours(Number((monthly?.total_hours ?? 0).toFixed(2)));
+        setMonthlyWorkedHours(Number((snapshot.monthlySheet?.total_hours ?? 0).toFixed(2)));
         const requiredHours = current.required_daily_hours > 0 ? current.required_daily_hours : 8;
         const rows = currentDefs.map((row, index) => {
-          const timesheet = timesheetRows[index] as TimesheetSummary | undefined;
+          const timesheet = snapshot.weeklySheets[index] as TimesheetSummary | undefined;
           const workedHours = Number(timesheet?.total_hours ?? 0);
           return {
             ...row,
