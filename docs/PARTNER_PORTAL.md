@@ -60,8 +60,10 @@ The other doors are closed explicitly:
   participants, employee groups, station badges and the planning/user lists
   all exclude the role;
 * the generic admin user endpoints (edit, re-invite, password reset,
-  permission template, overrides, badge) answer 409 for a partner login, and
-  `/admin/users` does not list them.
+  permission template, overrides read/set/reset, MFA reset, badge) answer 409
+  for a partner login, and `/admin/users` does not list them. Only the
+  generic deactivation (`DELETE /admin/users/{id}`) still works on one —
+  locking is the safe direction; unlocking is done on the partner.
 
 `external` is deliberately **not** in `ALL_ROLES`, so no role picker, role
 filter or permission matrix can ever offer it.

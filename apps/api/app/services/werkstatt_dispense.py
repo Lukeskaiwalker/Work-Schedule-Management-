@@ -55,8 +55,8 @@ def dispense_article(
     notes: str | None,
 ) -> DispenseResult:
     """Hand ``quantity`` of ``article`` to ``assignee_user_id``. The caller
-    loaded the article with ``load_article_for_update`` and checked the
-    person; ``user_id`` is who booked it."""
+    loaded the article with ``load_article_for_update``, checked the person
+    and that it may book onto ``project_id``; ``user_id`` is who booked it."""
     if is_consumable(article):
         require_bookable_project(db, project_id)
         booked = book_stock_consumption(

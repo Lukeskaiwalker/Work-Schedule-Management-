@@ -305,6 +305,10 @@ list) leaves the stock for good when it is handed out: `checkout` books it as
 the shortfall is booked first as `inventory_plus` and the answer says so
 (`stock_warning`). The answer carries `booked_as: "consumption" | "checkout"`.
 Machine types keep the loan (`checkout` / `return`, bounded by the shelf).
+A `project_id` on the checkout must be a project the caller can open — it
+writes onto that project (Material tab, ledger bucket). Unknown, archived
+(consumables) and not-yours answer the same 400 "Projekt nicht verfügbar.",
+so the answer never tells which ids exist.
 
 ```
 POST /api/werkstatt/mobile/checkout

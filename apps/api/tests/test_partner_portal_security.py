@@ -161,6 +161,11 @@ def test_the_generic_admin_user_endpoints_leave_partner_logins_alone(client: Tes
     _, user, _ = portal_login(client, admin_token)
     head = auth_headers(admin_token)
     uid = user["id"]
+    with SessionLocal() as db:
+        # Whatever second factor the login holds stays the partner's business.
+        row = db.get(User, uid)
+        row.mfa_enabled, row.mfa_secret = True, "JBSWY3DPEHPK3PXP"
+        db.commit()
     refused = [
         client.patch(f"/api/admin/users/{uid}", headers=head, json={"role": "employee"}),
         client.patch(f"/api/admin/users/{uid}", headers=head, json={"full_name": "Umbenannt"}),
@@ -168,6 +173,9 @@ def test_the_generic_admin_user_endpoints_leave_partner_logins_alone(client: Tes
         client.post(f"/api/admin/users/{uid}/send-password-reset", headers=head),
         client.post(f"/api/admin/users/{uid}/apply-template", headers=head),
         client.put(f"/api/admin/user-permissions/{uid}", headers=head, json={"extra": ["projects:view"], "denied": []}),
+        client.get(f"/api/admin/user-permissions/{uid}", headers=head),
+        client.delete(f"/api/admin/user-permissions/{uid}", headers=head),
+        client.post(f"/api/admin/users/{uid}/reset-mfa", headers=head),
         client.post(f"/api/admin/users/{uid}/station-badge/rotate", headers=head),
         client.post("/api/admin/invites", headers=head, json={"email": user["email"], "full_name": "Kollege", "role": "employee"}),
     ]
@@ -175,6 +183,7 @@ def test_the_generic_admin_user_endpoints_leave_partner_logins_alone(client: Tes
     with SessionLocal() as db:
         row = db.get(User, uid)
         assert row.role == ROLE_EXTERNAL and row.full_name == "Andreas Hoffmann"
+        assert row.mfa_enabled and row.mfa_secret == "JBSWY3DPEHPK3PXP"
 
 
 def test_a_partner_token_cannot_be_used_as_a_session_after_deactivation(client: TestClient, admin_token: str) -> None:

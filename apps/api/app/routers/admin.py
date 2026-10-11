@@ -1839,6 +1839,9 @@ def soft_delete_user(
         raise HTTPException(status_code=404, detail="User not found")
     if user.id == admin.id:
         raise HTTPException(status_code=400, detail="You cannot delete your own user")
+    # Deliberately NOT _refuse_partner_login: locking a partner login is the
+    # safe direction and must work from anywhere in an emergency. Unlocking it
+    # again (PATCH is_active) is refused here and only done on the partner.
 
     if not user.is_active:
         log_admin_action(
@@ -1959,6 +1962,7 @@ def reset_user_mfa(
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    _refuse_partner_login(user)
     user.mfa_enabled = False
     user.mfa_secret = None
     user.mfa_enrolled_at = None
@@ -3234,6 +3238,7 @@ def get_user_permissions(
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    _refuse_partner_login(user)
     overrides = get_user_override(user_id)
     return {"user_id": user_id, "extra": overrides["extra"], "denied": overrides["denied"]}
 
@@ -3287,6 +3292,7 @@ def reset_user_permissions(
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    _refuse_partner_login(user)
 
     reset_user_permissions_from_db(db, user_id)
     log_admin_action(db, admin, "user_permissions.reset", "user", str(user_id), {})

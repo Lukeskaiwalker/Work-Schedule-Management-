@@ -10,7 +10,8 @@ as the Regal station (``services/werkstatt_consumption.py``):
   ``checkout`` loan that waits for a return that never comes;
 * a short shelf is not refused: the shortfall is topped up first and the
   answer carries a German ``stock_warning``;
-* the project is checked (unknown and archived answer one sentence);
+* the project is checked: unknown, archived and one the caller cannot open
+  answer one sentence — naming a project writes onto its Material tab;
 * a machine type (``is_serialized`` True) is still lent, exactly as before;
 * the answer stays the article snapshot it always was, plus ``booked_as`` and
   ``stock_warning``.
@@ -23,6 +24,7 @@ from sqlalchemy import select
 
 from app.core.db import SessionLocal
 from app.models.entities import Project, User, WerkstattArticle, WerkstattMovement
+from tests.conftest import auth_headers
 from tests.test_schaltplan import _customer, _project
 from tests.test_schaltplan_material import _article
 
@@ -178,6 +180,66 @@ def test_an_unknown_or_archived_project_is_refused_with_one_sentence(
     assert [answer.status_code for answer in answers] == [400, 400]
     assert [answer.json()["detail"] for answer in answers] == ["Projekt nicht verfügbar."] * 2
     assert [row.movement_type for row in _rows(ties["id"])] == ["intake"], "nothing was booked"
+
+
+def _shut_out(client: TestClient, admin_token: str, project_id: int, user_id: int) -> None:
+    # Everyone is on every project by default, so "no access" is made on
+    # purpose — the same way test_project_report hides a project.
+    removed = client.delete(f"/api/projects/{project_id}/members/{user_id}", headers=auth_headers(admin_token))
+    assert removed.status_code in (200, 204), removed.text
+
+
+def test_a_project_the_caller_cannot_open_is_refused_like_an_unknown_one(
+    client: TestClient, admin_token: str
+) -> None:
+    """A consumption lands on the project's Material tab ("Lager (Entnahme)")
+    and a loan in its ledger bucket, so naming a project is writing to it.
+    Somebody shut out of a project must not plant material on it from the
+    phone — and must not learn that the id exists either."""
+    monteur_id, monteur_token = _user(client, admin_token, "aussen@example.com")
+    customer = _customer(client, admin_token)
+    hidden = _project(client, admin_token, customer, number="383")
+    own = _project(client, admin_token, customer, number="384")
+    _shut_out(client, admin_token, hidden, monteur_id)
+    ties = _article(client, admin_token, "Kabelbinder 250 mm", stock=10)
+    drill = _article(client, admin_token, "Bohrhammer GBH 2-26", stock=2)
+    _make_machine_type(drill["id"])
+
+    answers = [
+        client.post(
+            CHECKOUT,
+            headers=_auth(monteur_token),
+            json={"article_id": article_id, "quantity": 1, "project_id": project_id},
+        )
+        for article_id in (ties["id"], drill["id"])
+        for project_id in (hidden, 999_999)
+    ]
+    assert [answer.status_code for answer in answers] == [400] * 4, [answer.text for answer in answers]
+    assert {answer.json()["detail"] for answer in answers} == {"Projekt nicht verfügbar."}
+    assert [row.movement_type for row in _rows(ties["id"])] == ["intake"], "nothing was booked"
+    assert [row.movement_type for row in _rows(drill["id"])] == ["intake"], "nothing was lent"
+
+    # Their own project still takes it.
+    booked = client.post(
+        CHECKOUT,
+        headers=_auth(monteur_token),
+        json={"article_id": ties["id"], "quantity": 1, "project_id": own},
+    )
+    assert booked.status_code == 200, booked.text
+    assert (_rows(ties["id"])[-1].movement_type, _rows(ties["id"])[-1].project_id) == ("consumption", own)
+
+
+def test_ids_outside_the_id_range_are_a_422_not_a_500(client: TestClient, admin_token: str) -> None:
+    """``db.get`` with an id wider than the column is an OverflowError on
+    SQLite and a DataError on PostgreSQL — an unhandled 500."""
+    ties = _article(client, admin_token, "Kabelbinder 280 mm", stock=10)
+    answers = [
+        client.post(CHECKOUT, headers=_auth(admin_token), json={"article_id": ties["id"], "quantity": 1, field: value})
+        for field in ("project_id", "assignee_user_id")
+        for value in (2**31, 10**20, 0)
+    ]
+    assert [answer.status_code for answer in answers] == [422] * 6, [answer.text for answer in answers]
+    assert [row.movement_type for row in _rows(ties["id"])] == ["intake"]
 
 
 def test_on_behalf_of_books_the_consumption_for_that_person(client: TestClient, admin_token: str) -> None:

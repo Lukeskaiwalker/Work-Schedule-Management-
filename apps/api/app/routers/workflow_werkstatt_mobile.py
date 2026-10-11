@@ -36,9 +36,9 @@ from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
-from app.core.deps import get_current_user
+from app.core.deps import assert_project_access, get_current_user
 from app.core.permissions import has_permission_for_user
-from app.models.entities import User, WerkstattArticle, WerkstattMovement
+from app.models.entities import Project, User, WerkstattArticle, WerkstattMovement
 from app.schemas.werkstatt import (
     MyCheckoutOut,
     ReturnPayload,
@@ -47,7 +47,7 @@ from app.schemas.werkstatt import (
     WerkstattMovementOut,
 )
 from app.schemas.werkstatt_dispense import WerkstattDispenseOut, WerkstattDispensePayload
-from app.services.werkstatt_consumption import ConsumptionError
+from app.services.werkstatt_consumption import PROJECT_NOT_BOOKABLE, ConsumptionError
 from app.services.werkstatt_dispense import dispense_article
 from app.services.werkstatt_movements import (
     MovementError,
@@ -99,6 +99,27 @@ def _resolve_acting_user_id(
             detail="Target user not found",
         )
     return target.id
+
+
+def _require_visible_project(db: Session, user: User, project_id: int | None) -> None:
+    """The caller must be able to open the project a checkout names.
+
+    Naming a project writes to it: a consumable lands on the project's
+    Material tab ("Lager (Entnahme)"), a loan in its ledger bucket. Somebody
+    shut out of a project must not book onto it — and the answer must not
+    tell them the id exists, so unknown and not-yours share the sentence the
+    service gives an archived project (``PROJECT_NOT_BOOKABLE``). Checked for
+    ``current_user``, the principal of the request, also under
+    ``on_behalf_of``.
+    """
+    if project_id is None:
+        return
+    if db.get(Project, project_id) is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=PROJECT_NOT_BOOKABLE)
+    try:
+        assert_project_access(db, user, project_id)
+    except HTTPException as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=PROJECT_NOT_BOOKABLE) from exc
 
 
 def _load_article_or_404(db: Session, article_id: int) -> WerkstattArticle:
@@ -168,12 +189,15 @@ def mobile_checkout(
     ``assignee_user_id`` (optional body field) is who *receives* it;
     ``user_id`` on the ledger is always who *performed* the transaction
     (the caller, or the ``on_behalf_of`` user when an admin acts for them).
+    ``project_id`` must be a project the caller can open
+    (``_require_visible_project``).
     """
 
     article = _load_article_or_404(db, payload.article_id)
     acting_user_id = _resolve_acting_user_id(
         current_user, on_behalf_of=on_behalf_of, db=db
     )
+    _require_visible_project(db, current_user, payload.project_id)
 
     # If assignee_user_id was not provided, the tool goes to whoever is
     # performing the checkout. This matches the field-tech default of

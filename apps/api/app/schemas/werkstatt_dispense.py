@@ -13,6 +13,7 @@ from typing import Literal
 
 from pydantic import Field
 
+from app.core.limits import INT32_MAX
 from app.schemas.station import STATION_MAX_QUANTITY
 from app.schemas.werkstatt import CheckoutPayload, WerkstattArticleOut
 
@@ -34,6 +35,10 @@ class WerkstattDispensePayload(CheckoutPayload):
     """
 
     quantity: int = Field(..., gt=0, le=STATION_MAX_QUANTITY)
+    # Ids are looked up before anything is booked; one wider than the column
+    # is an OverflowError (SQLite) / DataError (PostgreSQL) there — a 500.
+    project_id: int | None = Field(default=None, gt=0, le=INT32_MAX)
+    assignee_user_id: int | None = Field(default=None, gt=0, le=INT32_MAX)
 
 
 class WerkstattDispenseOut(WerkstattArticleOut):
