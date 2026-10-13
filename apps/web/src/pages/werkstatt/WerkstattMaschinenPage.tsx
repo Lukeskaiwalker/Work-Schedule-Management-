@@ -35,6 +35,7 @@ import { MaschineBearbeitenModal } from "../../components/werkstatt/MaschineBear
 import { MaschineBuchenModal } from "../../components/werkstatt/MaschineBuchenModal";
 import { MaschineDetailPanel } from "../../components/werkstatt/MaschineDetailPanel";
 import { NeueMaschineModal } from "../../components/werkstatt/NeueMaschineModal";
+import { LabelPrinterQuickEntry } from "../../components/labelPrinter/LabelPrinterQuickEntry";
 import {
   formatMachineDate,
   machineStatusLabel,
@@ -658,6 +659,7 @@ export function WerkstattMaschinenPage() {
           </p>
         </div>
         <div className="werkstatt-sub-actions">
+          <LabelPrinterQuickEntry />
           {/* Available to everyone: scanning is how field staff find a machine,
               and it is read-only until they choose an action. The decoder is
               only downloaded once this is tapped. */}

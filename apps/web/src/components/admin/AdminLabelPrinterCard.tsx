@@ -5,50 +5,52 @@
  * weather/OpenAI pattern of App.tsx-owned state: App.tsx is a 9k-line file
  * under active parallel work, and this card has no reason to couple to it.
  *
- * Three concerns live here, in the order an admin meets them:
+ * Four concerns live here, in the order an admin meets them:
  *   1. the printer's address (runtime-first, env fallback — `source` says
- *      which is in effect),
+ *      which is in effect), its status on demand, and the staff switch that
+ *      keeps the quick flow admin-only until the physical tests have results,
  *   2. the MATERIAL that is physically loaded: the printer can sense label
  *      gaps but not identity, so this selection is the software's only truth.
- *      Builtins cover the six workshop stocks; anything else is one form away.
- *   3. utilities: Testdruck (adapts to the active material's tier) and free
+ *      Each row opens the quick flow, the full wizard or the profile form
+ *      (docs/LABEL_PRINTER_CALIBRATION.md §7.10),
+ *   3. custom materials, one inline form away,
+ *   4. utilities: Testdruck (adapts to the active material's tier) and free
  *      text for continuous stock (marking strips, shrink tube).
+ *
+ * Every write carries the configuration revision; the radio only selects the
+ * material in SMPL and never sends anything to the printer (critique M2) — it
+ * offers the quick flow instead.
  */
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 
-import { apiFetch } from "../../api/client";
 import { useAppContext } from "../../context/AppContext";
+import { CalibrationChip } from "../labelPrinter/CalibrationChip";
+import { CalibrationWizard } from "../labelPrinter/CalibrationWizard";
+import { LabelMaterialForm } from "../labelPrinter/LabelMaterialForm";
+import { MaterialChangeSheet } from "../labelPrinter/MaterialChangeSheet";
+import { PrinterStatusPanel } from "../labelPrinter/PrinterStatusPanel";
+import type {
+  LabelMaterial,
+  LabelPrinterSettings,
+  LabelPrinterSettingsPatch,
+} from "../../types/labelPrinter";
+import {
+  apiErrorCode,
+  dimensionLabel,
+  formatLocalTime,
+  formatScaleDe,
+} from "../../utils/labelCalibration";
+import {
+  getLabelPrinterSettings,
+  patchLabelPrinterSettings,
+  printFreetext as postFreetext,
+  printTestLabel,
+  updatePrinterSettings,
+} from "../../utils/labelPrinterApi";
+import "../../styles/label-calibration.css";
 
-export interface LabelMaterial {
-  id: string;
-  name: string;
-  part_no: string;
-  width_mm: number;
-  length_mm: number | null;
-  gap_mm: number;
-  x_offset_mm: number;
-  darkness: number | null;
-  builtin: boolean;
-  tier: "voll" | "kompakt" | "mini";
-  continuous: boolean;
-}
-
-export interface LabelPrinterSettings {
-  host: string;
-  port: number;
-  configured: boolean;
-  source: "runtime" | "env" | "none";
-  materials: LabelMaterial[];
-  active_material_id: string;
-  active_material_name: string;
-  active_tier: string;
-}
-
-interface TestResult {
-  ok: boolean;
-  printer: string;
-  detail: string;
-}
+// The types moved to types/labelPrinter.ts; existing importers keep working.
+export type { LabelMaterial, LabelPrinterSettings } from "../../types/labelPrinter";
 
 const TIER_LABELS: Record<string, { de: string; en: string }> = {
   voll: { de: "Voll (Logo + Code)", en: "Full (logo + code)" },
@@ -56,13 +58,16 @@ const TIER_LABELS: Record<string, { de: string; en: string }> = {
   mini: { de: "Mini (nur Nummer)", en: "Mini (number only)" },
 };
 
-/** "99 × 44 mm" or "11 mm Endlos" — how electricians read a box label. */
-function dimensionLabel(material: LabelMaterial, de: boolean): string {
-  if (material.continuous) {
-    return `${material.width_mm} mm ${de ? "Endlos" : "continuous"}`;
-  }
-  return `${material.length_mm} × ${material.width_mm} mm`;
+/** "Walze 258-5006 · Rollenhalter innen · Sensor auf 3,4 der Skala" */
+function loadingLine(material: LabelMaterial, de: boolean): string {
+  const feed = material.feed_path === "external" ? (de ? "Abroller extern" : "external unwinder") : de ? "Rollenhalter innen" : "internal holder";
+  return de
+    ? `Walze ${material.roller} · ${feed} · Sensor auf ${formatScaleDe(material.sensor_scale)} der Skala`
+    : `Roller ${material.roller} · ${feed} · sensor at ${formatScaleDe(material.sensor_scale)} on the scale`;
 }
+
+/** `undefined` = closed; `null` = open without a preselected material. */
+type QuickTarget = string | null | undefined;
 
 export function AdminLabelPrinterCard() {
   const { token, language } = useAppContext();
@@ -74,6 +79,11 @@ export function AdminLabelPrinterCard() {
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [feedback, setFeedback] = useState<{ ok: boolean; text: string } | null>(null);
+  const [rollChanged, setRollChanged] = useState(false);
+
+  const [quickFor, setQuickFor] = useState<QuickTarget>(undefined);
+  const [wizardFor, setWizardFor] = useState<string | null>(null);
+  const [editFor, setEditFor] = useState<string | null>(null);
 
   const [addOpen, setAddOpen] = useState(false);
   const [newName, setNewName] = useState("");
@@ -86,64 +96,50 @@ export function AdminLabelPrinterCard() {
   const [freetextCopies, setFreetextCopies] = useState("1");
   const [freetextBusy, setFreetextBusy] = useState(false);
 
+  const adopt = useCallback((current: LabelPrinterSettings) => {
+    setSettings(current);
+    setHost(current.host);
+    setPort(String(current.port));
+  }, []);
+
   const load = useCallback(async () => {
     try {
-      const current = await apiFetch<LabelPrinterSettings>(
-        "/admin/settings/label-printer",
-        token,
-      );
-      setSettings(current);
-      setHost(current.host);
-      setPort(String(current.port));
+      adopt(await getLabelPrinterSettings(token));
     } catch {
       // The card degrades to an empty form; saving will surface real errors.
       setSettings(null);
     }
-  }, [token]);
+  }, [token, adopt]);
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  /** Every mutation goes through one PATCH so the payload stays consistent. */
+  /** Every list/selection mutation goes through one PATCH with the revision. */
   const patch = useCallback(
-    async (
-      body: Record<string, unknown>,
-      successText: (saved: LabelPrinterSettings) => string,
-    ) => {
+    async (body: LabelPrinterSettingsPatch, successText: (saved: LabelPrinterSettings) => string) => {
       setSaving(true);
       setFeedback(null);
       try {
-        const saved = await apiFetch<LabelPrinterSettings>(
-          "/admin/settings/label-printer",
-          token,
-          {
-            method: "PATCH",
-            body: JSON.stringify({
-              host: host.trim(),
-              port: Number.parseInt(port, 10) || 9100,
-              ...body,
-            }),
-          },
-        );
-        setSettings(saved);
-        setHost(saved.host);
-        setPort(String(saved.port));
+        const saved = await patchLabelPrinterSettings(token, { ...body, revision: settings?.revision ?? null });
+        adopt(saved);
         setFeedback({ ok: true, text: successText(saved) });
         return saved;
       } catch (err: unknown) {
         setFeedback({ ok: false, text: err instanceof Error ? err.message : String(err) });
+        // Someone else saved meanwhile: show their state, the admin repeats the change.
+        if (apiErrorCode(err) === "stale_revision") void load();
         return null;
       } finally {
         setSaving(false);
       }
     },
-    [token, host, port],
+    [token, settings?.revision, adopt, load],
   );
 
   async function saveAddress(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    await patch({}, (saved) =>
+    await patch({ host: host.trim(), port: Number.parseInt(port, 10) || 9100 }, (saved) =>
       saved.configured
         ? de
           ? `Gespeichert — Drucker ${saved.host}:${saved.port}`
@@ -154,23 +150,36 @@ export function AdminLabelPrinterCard() {
     );
   }
 
-  async function activateMaterial(material: LabelMaterial) {
-    await patch({ active_material_id: material.id }, () =>
-      de
-        ? `Aktives Material: ${material.name} — bitte auch physisch einlegen`
-        : `Active material: ${material.name} — remember to load it physically`,
+  async function selectMaterial(material: LabelMaterial) {
+    const saved = await patch({ active_material_id: material.id }, () =>
+      de ? `Gewähltes Material: ${material.name}` : `Selected material: ${material.name}`,
     );
+    setRollChanged(!!saved);
+  }
+
+  async function toggleStaff(enabled: boolean) {
+    if (!settings) return;
+    setSaving(true);
+    setFeedback(null);
+    try {
+      adopt(await updatePrinterSettings(token, { revision: settings.revision, label_calibration_staff_enabled: enabled }));
+    } catch (err: unknown) {
+      setFeedback({ ok: false, text: err instanceof Error ? err.message : String(err) });
+      if (apiErrorCode(err) === "stale_revision") void load();
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function addMaterial(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!settings) return;
     const width = Number.parseFloat(newWidth.replace(",", "."));
-    const length = newLength.trim()
-      ? Number.parseFloat(newLength.replace(",", "."))
-      : null;
+    const length = newLength.trim() ? Number.parseFloat(newLength.replace(",", ".")) : null;
     const slug = `custom-${Date.now().toString(36)}`;
-    const materials = [
+    // Echoing the GET objects back is safe: the server ignores derived fields
+    // and merges the rest, so an unchanged echo changes nothing but the revision.
+    const materials: Partial<LabelMaterial>[] = [
       ...settings.materials.map((m) => ({ ...m })),
       {
         id: slug,
@@ -198,17 +207,13 @@ export function AdminLabelPrinterCard() {
 
   async function removeMaterial(material: LabelMaterial) {
     if (!settings) return;
-    const materials = settings.materials
-      .filter((m) => m.id !== material.id)
-      .map((m) => ({ ...m }));
+    const materials = settings.materials.filter((m) => m.id !== material.id).map((m) => ({ ...m }));
     await patch(
       {
         materials,
         // Deleting the active profile falls back to the default stock.
         active_material_id:
-          settings.active_material_id === material.id
-            ? "wago-210-804"
-            : settings.active_material_id,
+          settings.active_material_id === material.id ? "wago-210-804" : settings.active_material_id,
       },
       () => (de ? `Material „${material.name}“ entfernt` : `Material "${material.name}" removed`),
     );
@@ -218,11 +223,7 @@ export function AdminLabelPrinterCard() {
     setTesting(true);
     setFeedback(null);
     try {
-      const result = await apiFetch<TestResult>(
-        "/admin/settings/label-printer/test",
-        token,
-        { method: "POST" },
-      );
+      const result = await printTestLabel(token);
       setFeedback({ ok: result.ok, text: result.detail });
     } catch (err: unknown) {
       setFeedback({ ok: false, text: err instanceof Error ? err.message : String(err) });
@@ -236,17 +237,7 @@ export function AdminLabelPrinterCard() {
     setFreetextBusy(true);
     setFeedback(null);
     try {
-      const result = await apiFetch<TestResult>(
-        "/admin/settings/label-printer/freetext",
-        token,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            text: freetext.trim(),
-            copies: Number.parseInt(freetextCopies, 10) || 1,
-          }),
-        },
-      );
+      const result = await postFreetext(token, freetext.trim(), Number.parseInt(freetextCopies, 10) || 1);
       setFeedback({ ok: result.ok, text: result.detail });
       if (result.ok) setFreetext("");
     } catch (err: unknown) {
@@ -267,12 +258,12 @@ export function AdminLabelPrinterCard() {
           : "via server environment"
         : null;
 
-  const activeMaterial = settings?.materials.find(
-    (m) => m.id === settings.active_material_id,
-  );
+  const activeMaterial = settings?.materials.find((m) => m.id === settings.active_material_id);
+  const editing = settings?.materials.find((m) => m.id === editFor) ?? null;
+  const running = settings?.session ?? null;
 
   return (
-    <div className="admin-page-card admin-settings-block">
+    <div className="admin-page-card admin-settings-block lc-scope">
       <h2 className="admin-page-card-title">
         {de ? "Etikettendrucker (Werkstatt)" : "Label printer (workshop)"}
       </h2>
@@ -336,6 +327,29 @@ export function AdminLabelPrinterCard() {
         </div>
       </form>
 
+      {settings && (
+        <div className="admin-settings-subsection">
+          <label className="lc-check">
+            <input
+              type="checkbox"
+              checked={settings.label_calibration_staff_enabled}
+              disabled={saving}
+              onChange={(e) => void toggleStaff(e.target.checked)}
+            />
+            <span>
+              {de
+                ? "Schnellablauf „Material gewechselt“ für die Werkstatt freigeben"
+                : "Release the quick flow \"Material changed\" to the workshop"}
+            </span>
+          </label>
+          <p className="lc-small">
+            {de
+              ? "Erst freigeben, wenn die Praxistests T0b, T1, T2 und T5 Ergebnisse haben. Bis dahin sehen nur Administratoren den Schnellablauf."
+              : "Release only once the field tests T0b, T1, T2 and T5 have results. Until then only administrators see the quick flow."}
+          </p>
+        </div>
+      )}
+
       {/* ── Material (what is physically loaded) ─────────────────────────── */}
       {settings && (
         <div className="admin-settings-subsection">
@@ -344,9 +358,17 @@ export function AdminLabelPrinterCard() {
           </h3>
           <p className="admin-tools-desc">
             {de
-              ? "Der Drucker erkennt das Material nicht selbst — nach jedem Rollenwechsel hier umstellen. Das Layout passt sich automatisch an."
-              : "The printer cannot identify its material — switch here after every roll change. Layouts adapt automatically."}
+              ? "Der Drucker erkennt das Material nicht selbst — nach jedem Rollenwechsel hier umstellen und „Material gewechselt“ ausführen. Das Layout passt sich automatisch an."
+              : "The printer cannot identify its material — switch here after every roll change and run \"Material changed\". Layouts adapt automatically."}
           </p>
+          <PrinterStatusPanel compact />
+          {running && (
+            <p className="lc-warn">
+              {de
+                ? `Einrichtung läuft: ${running.user_name} (${running.mode === "full" ? "Vollständig" : "Schnell"}) seit ${formatLocalTime(running.acquired_at)}`
+                : `Setup running: ${running.user_name} (${running.mode === "full" ? "full" : "quick"}) since ${formatLocalTime(running.acquired_at)}`}
+            </p>
+          )}
           <ul className="admin-settings-material-list">
             {settings.materials.map((material) => {
               const active = material.id === settings.active_material_id;
@@ -354,9 +376,7 @@ export function AdminLabelPrinterCard() {
               return (
                 <li
                   key={material.id}
-                  className={`admin-settings-material${
-                    active ? " admin-settings-material--active" : ""
-                  }`}
+                  className={`admin-settings-material lc-material-row${active ? " admin-settings-material--active" : ""}`}
                 >
                   <label className="admin-settings-material-main">
                     <input
@@ -364,7 +384,7 @@ export function AdminLabelPrinterCard() {
                       name="label-material"
                       checked={active}
                       disabled={saving}
-                      onChange={() => void activateMaterial(material)}
+                      onChange={() => void selectMaterial(material)}
                     />
                     <span className="admin-settings-material-name">
                       <b>{material.name}</b>
@@ -373,22 +393,45 @@ export function AdminLabelPrinterCard() {
                         {dimensionLabel(material, de)}
                         {tier ? ` · ${de ? tier.de : tier.en}` : ""}
                       </small>
+                      <small className="lc-row-info">{loadingLine(material, de)}</small>
+                      <span>
+                        <CalibrationChip calibration={material.calibration} de={de} />
+                      </span>
                     </span>
                   </label>
-                  {!material.builtin && (
-                    <button
-                      type="button"
-                      className="werkstatt-card-action"
-                      disabled={saving}
-                      onClick={() => void removeMaterial(material)}
-                    >
-                      {de ? "Entfernen" : "Remove"}
+                  <div className="lc-row-actions">
+                    <button type="button" className="werkstatt-card-action" onClick={() => setQuickFor(material.id)}>
+                      {de ? "Material gewechselt" : "Material changed"}
                     </button>
-                  )}
+                    <button type="button" className="werkstatt-card-action" onClick={() => setWizardFor(material.id)}>
+                      {de ? "Einrichten" : "Set up"}
+                    </button>
+                    <button type="button" className="werkstatt-card-action" onClick={() => setEditFor(material.id)}>
+                      {de ? "Bearbeiten" : "Edit"}
+                    </button>
+                    {!material.builtin && (
+                      <button
+                        type="button"
+                        className="werkstatt-card-action"
+                        disabled={saving}
+                        onClick={() => void removeMaterial(material)}
+                      >
+                        {de ? "Entfernen" : "Remove"}
+                      </button>
+                    )}
+                  </div>
                 </li>
               );
             })}
           </ul>
+          {rollChanged && (
+            <p className="lc-info">
+              {de ? "Rolle gewechselt? " : "Roll changed? "}
+              <button type="button" className="lc-link-btn" onClick={() => setQuickFor(settings.active_material_id)}>
+                {de ? "Material gewechselt …" : "Material changed …"}
+              </button>
+            </p>
+          )}
           {addOpen ? (
             <form className="admin-settings-form" onSubmit={(e) => void addMaterial(e)}>
               <label className="admin-invite-field">
@@ -534,6 +577,57 @@ export function AdminLabelPrinterCard() {
             }`}
           />
           {feedback.text}
+        </div>
+      )}
+
+      {quickFor !== undefined && (
+        <MaterialChangeSheet
+          preselectId={quickFor}
+          onClose={() => {
+            setQuickFor(undefined);
+            setRollChanged(false);
+            void load();
+          }}
+        />
+      )}
+      {wizardFor && settings && (
+        <CalibrationWizard
+          materialId={wizardFor}
+          settings={settings}
+          onSettings={adopt}
+          onClose={() => {
+            setWizardFor(null);
+            void load();
+          }}
+        />
+      )}
+      {editing && settings && (
+        <div className="werkstatt-modal-backdrop lc-backdrop" role="presentation">
+          <div
+            className="werkstatt-modal werkstatt-modal--wide lc-sheet"
+            role="dialog"
+            aria-modal="true"
+            aria-label={de ? `Material bearbeiten: ${editing.name}` : `Edit material: ${editing.name}`}
+          >
+            <header className="werkstatt-modal-head">
+              <h2 className="werkstatt-modal-title">
+                {de ? `Material bearbeiten: ${editing.name}` : `Edit material: ${editing.name}`}
+              </h2>
+            </header>
+            <div className="werkstatt-modal-body">
+              <LabelMaterialForm
+                key={editing.id}
+                material={editing}
+                revision={settings.revision}
+                onSaved={(saved) => {
+                  if (saved) adopt(saved);
+                  setEditFor(null);
+                }}
+                onCancel={() => setEditFor(null)}
+                onReload={() => void load()}
+              />
+            </div>
+          </div>
         </div>
       )}
     </div>

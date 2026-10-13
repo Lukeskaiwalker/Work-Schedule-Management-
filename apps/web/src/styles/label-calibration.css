@@ -1,0 +1,355 @@
+/*
+ * Label printer calibration — quick flow, wizard, diagrams
+ * (docs/LABEL_PRINTER_CALIBRATION.md §7.8).
+ *
+ * Every colour is a token on `.lc-diagram` / `.lc-scope`; classes only read
+ * tokens. Material, roller, carriage and pointer colours are PHYSICAL (what the
+ * person sees in the printer) and stay the same in any theme — they are always
+ * outlined so black on black stays visible.
+ *
+ * SMPL is light-only (`styles.css` sets `color-scheme: light`), so there is
+ * deliberately no `prefers-color-scheme` block: the diagram must not turn dark
+ * inside a light app. `data-theme="dark"` is the hook for a future dark theme.
+ */
+
+.lc-diagram,
+.lc-scope {
+  --lc-bg: var(--surface);  --lc-ink: var(--ink);  --lc-muted: var(--muted);
+  --lc-accent: var(--accent);
+  --lc-housing: #4a5563;  --lc-housing-mark: #f4f6f8;  --lc-slot: #1d232b;
+  --lc-guide: #2f8a4c;  --lc-liner: #efe6cf;
+  --lc-carriage: #15181c;  --lc-pointer: #000000;   /* outlined in --lc-housing-mark */
+  --lc-target: var(--accent);  --lc-actual: #b7791f;
+  --lc-label-silver: #c9ced6;  --lc-label-white: #ffffff;  --lc-mark: #111111;
+  --lc-roller-5006: #1b1b1b;  --lc-roller-5007: #2f6b3a;
+  --lc-ok: #1f8a4c;  --lc-warn: #b7791f;  --lc-bad: var(--danger);
+  --lc-line: #d9e4f2;  --lc-soft: #f3f7fc;  --lc-warn-bg: #fff6e6;  --lc-ok-bg: #e9f7f0;
+  --lc-bad-bg: #fdecec;  --lc-surface: #ffffff;
+}
+:root[data-theme="dark"] .lc-diagram,
+:root[data-theme="dark"] .lc-scope {
+  --lc-bg: #1a2230;  --lc-ink: #e6edf5;  --lc-muted: #9fb0c3;
+  --lc-housing: #2b3440;  --lc-housing-mark: #dfe6ee;  --lc-slot: #0c1016;
+}
+
+/* ── Diagrams ─────────────────────────────────────────────────────────── */
+
+.lc-diagram {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-width: 560px;
+  border-radius: 10px;
+  background: var(--lc-bg);
+}
+.lc-diagram .lc-text {
+  paint-order: stroke;
+  stroke: var(--lc-bg);
+  stroke-width: 0.5px;
+  stroke-linejoin: round;
+  fill: var(--lc-ink);
+  font-family: inherit;
+}
+.lc-bg { fill: var(--lc-bg); }
+.lc-guide { fill: var(--lc-guide); stroke: var(--lc-ink); stroke-width: 0.15; }
+.lc-housing { fill: var(--lc-housing); }
+.lc-tick { stroke: var(--lc-housing-mark); }
+.lc-target-tick { stroke: var(--lc-target); }
+.lc-diagram .lc-scale-number,
+.lc-diagram .lc-scale-approx {
+  fill: var(--lc-housing-mark);
+  stroke: var(--lc-housing);
+  font-weight: 700;
+}
+.lc-slot { fill: var(--lc-slot); }
+.lc-carriage { fill: var(--lc-carriage); stroke: var(--lc-housing-mark); stroke-width: 0.15; }
+.lc-carriage-core { fill: var(--lc-carriage); stroke: var(--lc-housing-mark); stroke-width: 0.25; }
+.lc-pointer path { fill: var(--lc-pointer); stroke: var(--lc-housing-mark); }
+.lc-pointer-window { fill: var(--lc-slot); }
+.lc-callout-box { fill: var(--lc-target); }
+.lc-diagram .lc-callout-text { fill: #ffffff; stroke: none; font-weight: 700; }
+.lc-actual-pointer,
+.lc-actual-carriage {
+  fill: none;
+  stroke: var(--lc-actual);
+  stroke-dasharray: 0.8 0.5;
+}
+.lc-shift-arrow { fill: none; stroke: var(--lc-actual); stroke-linecap: round; stroke-linejoin: round; }
+.lc-actual-callout .lc-callout-box { fill: var(--lc-actual); }
+.lc-media { fill-opacity: 0.6; }
+.lc-liner { fill: var(--lc-liner); stroke: var(--lc-ink); stroke-width: 0.15; }
+.lc-liner--unknown { fill: none; stroke-dasharray: 1 0.7; }
+.lc-label,
+.lc-band { stroke: var(--lc-ink); stroke-width: 0.15; }
+.lc-label--silver { fill: var(--lc-label-silver); }
+.lc-label--white { fill: var(--lc-label-white); }
+.lc-label--mark { fill: var(--lc-label-silver); }
+.lc-mark { fill: var(--lc-mark); fill-opacity: 1; }
+.lc-media-outline { fill: none; stroke: var(--lc-ink); stroke-dasharray: 1.2 0.8; }
+.lc-diagram .lc-legend { fill: var(--lc-muted); font-style: italic; }
+.lc-beam circle,
+.lc-beam--auto { fill: none; stroke: var(--lc-target); }
+.lc-beam--auto { stroke-dasharray: 0.6 0.4; }
+.lc-beam--reflective { fill: none; stroke: var(--lc-target); stroke-linejoin: round; }
+.lc-beam--none { fill: var(--lc-muted); }
+.lc-break { fill: none; stroke: var(--lc-muted); }
+.lc-roller-5006 { fill: var(--lc-roller-5006); stroke: var(--lc-ink); stroke-width: 0.2; }
+.lc-roller-5007 { fill: var(--lc-roller-5007); stroke: var(--lc-ink); stroke-width: 0.2; }
+.lc-roller-groove { stroke: var(--lc-housing-mark); }
+.lc-print-line { stroke: var(--lc-accent); stroke-dasharray: 1 0.6; }
+.lc-tear { fill: none; stroke: var(--lc-ink); }
+/* Outlines are a drawing aid, not a physical width: one screen pixel in the
+   overview and in the 5× "Lupe" alike. */
+.lc-sensor-diagram :is(.lc-guide, .lc-carriage, .lc-carriage-core, .lc-label, .lc-band, .lc-liner, .lc-media-outline, .lc-actual-carriage, .lc-actual-pointer, .lc-pointer path, .lc-roller-5006, .lc-roller-5007) {
+  vector-effect: non-scaling-stroke;
+  stroke-width: 1px;
+}
+/* 16 × 28 mm: at 220 px that is ≈ 14 px/mm — the millimetre ticks are legible
+   without the Lupe taking a whole phone screen. */
+.lc-sensor-diagram--zoom { max-width: 220px; justify-self: center; }
+
+/* side view */
+.lc-side-housing { fill: none; stroke: var(--lc-muted); stroke-dasharray: 1.5 1; }
+.lc-side-path { fill: none; stroke: var(--lc-ink); }
+.lc-side-roll { fill: var(--lc-liner); stroke: var(--lc-ink); }
+.lc-side-unwinder { fill: none; stroke: var(--lc-muted); }
+.lc-side-arrow { fill: none; stroke: var(--lc-accent); stroke-linecap: round; }
+.lc-side-part { fill: var(--lc-housing); stroke: var(--lc-ink); }
+.lc-side-guide { fill: var(--lc-guide); stroke: var(--lc-ink); }
+.lc-side-sensor { fill: var(--lc-carriage); stroke: var(--lc-ink); }
+.lc-side-sensor--none { fill: var(--lc-muted); }
+.lc-side-beam { stroke: var(--lc-target); stroke-dasharray: 1 0.8; fill: none; }
+.lc-side-ribbon { fill: none; stroke: var(--lc-muted); }
+
+/* pattern preview */
+.lc-pattern-label { fill: var(--lc-label-white); stroke: var(--lc-ink); }
+.lc-pattern-line { fill: var(--lc-ink); }
+.lc-pattern-dim { fill: none; stroke: var(--lc-accent); }
+.lc-diagram .lc-pattern-dim-text { fill: var(--lc-accent); font-weight: 700; }
+
+/* ── Sheet / wizard shell ─────────────────────────────────────────────── */
+
+/* styles.css gives every input `width: 100%`; boxes and radios keep their own
+   size here. Zero specificity on the scope so the size rules below still win. */
+:where(.lc-scope) :is(input[type="radio"], input[type="checkbox"]) {
+  width: auto;
+  flex: 0 0 auto;
+  padding: 0;
+}
+
+.lc-sheet .werkstatt-modal-body { gap: 14px; }
+.lc-sheet-sub { margin: 0; font-size: 12px; font-weight: 600; letter-spacing: 0.04em; color: var(--lc-muted); text-transform: uppercase; }
+.lc-steps { margin: 2px 0 0; font-size: 13px; color: var(--lc-muted); }
+.lc-step-title { margin: 0; font-size: 18px; font-weight: 700; color: var(--lc-ink); }
+.lc-subhead { margin: 4px 0 0; font-size: 15px; font-weight: 700; color: var(--lc-ink); }
+.lc-intro { margin: 0; color: var(--lc-ink); line-height: 1.45; }
+.lc-sheet .werkstatt-modal-foot {
+  position: sticky;
+  bottom: 0;
+  background: var(--lc-surface);
+  border-radius: 0 0 18px 18px;
+}
+.lc-btn,
+.lc-scope .werkstatt-action-btn { min-height: 44px; }
+.lc-link-btn {
+  appearance: none;
+  border: none;
+  background: none;
+  padding: 10px 0;
+  min-height: 44px;
+  color: var(--lc-accent);
+  font: inherit;
+  text-decoration: underline;
+  text-align: left;
+  cursor: pointer;
+}
+.lc-link-btn--highlight { font-weight: 700; background: var(--lc-warn-bg); padding: 10px 12px; border-radius: 10px; }
+
+@media (max-width: 640px) {
+  .werkstatt-modal-backdrop.lc-backdrop { padding: 0; align-items: stretch; }
+  .lc-sheet.werkstatt-modal {
+    width: 100%;
+    max-height: none;
+    height: 100dvh;
+    border-radius: 0;
+  }
+  .lc-sheet .werkstatt-modal-foot { border-radius: 0; }
+  .lc-sheet .werkstatt-modal-head,
+  .lc-sheet .werkstatt-modal-body,
+  .lc-sheet .werkstatt-modal-foot { padding-left: 16px; padding-right: 16px; }
+}
+
+/* ── Messages ─────────────────────────────────────────────────────────── */
+
+.lc-info,
+.lc-warn,
+.lc-error,
+.lc-ok {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  line-height: 1.4;
+  font-size: 14px;
+}
+.lc-info { background: var(--lc-soft); color: var(--lc-ink); }
+.lc-warn { background: var(--lc-warn-bg); color: var(--lc-ink); border: 1px solid color-mix(in srgb, var(--lc-warn) 35%, transparent); }
+.lc-error { background: var(--lc-bad-bg); color: var(--lc-bad); border: 1px solid color-mix(in srgb, var(--lc-bad) 30%, transparent); }
+.lc-ok { background: var(--lc-ok-bg); color: var(--lc-ink); border: 1px solid color-mix(in srgb, var(--lc-ok) 30%, transparent); }
+.lc-list { margin: 0; padding-left: 20px; display: grid; gap: 4px; }
+.lc-small { font-size: 12.5px; color: var(--lc-muted); margin: 0; }
+.lc-mono-box {
+  overflow-x: auto;
+  max-width: 100%;
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--lc-soft);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  white-space: pre;
+}
+.lc-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  margin-right: 8px;
+  vertical-align: -2px;
+  border: 2px solid var(--lc-line);
+  border-top-color: var(--lc-accent);
+  border-radius: 50%;
+  animation: lc-spin 0.9s linear infinite;
+}
+@keyframes lc-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .lc-spinner { animation: none; } }
+
+/* ── Step 1: material cards ───────────────────────────────────────────── */
+
+.lc-cards { display: grid; gap: 8px; margin: 0; padding: 0; border: none; }
+.lc-card {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 10px;
+  align-items: start;
+  padding: 12px 14px;
+  min-height: 44px;
+  border: 1px solid var(--lc-line);
+  border-radius: 12px;
+  background: var(--lc-surface);
+  cursor: pointer;
+}
+.lc-card:has(input:checked) { border-color: var(--lc-accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--lc-accent) 25%, transparent); }
+.lc-card input { margin-top: 3px; width: 18px; height: 18px; }
+.lc-card-body { display: grid; gap: 4px; min-width: 0; }
+.lc-card-name { font-weight: 700; color: var(--lc-ink); overflow-wrap: anywhere; }
+.lc-card-meta { font-size: 13px; color: var(--lc-muted); }
+.lc-card-tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.lc-badge { font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 999px; background: var(--lc-soft); color: var(--lc-accent); }
+
+.lc-chip { display: inline-block; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--lc-soft); color: var(--lc-muted); }
+.lc-chip--ok { background: var(--lc-ok-bg); color: var(--lc-ok); }
+.lc-chip--warn,
+.lc-chip--stale { background: var(--lc-warn-bg); color: var(--lc-warn); }
+
+/* ── Step 2: diagram + checklist ──────────────────────────────────────── */
+
+.lc-diagram-area { container-type: inline-size; display: grid; gap: 10px; }
+.lc-diagram-grid { display: grid; gap: 10px; grid-template-columns: 1fr; }
+@container (min-width: 560px) {
+  .lc-diagram-grid { grid-template-columns: 2fr 1fr; align-items: start; }
+}
+.lc-toggle { display: inline-flex; border: 1px solid var(--lc-line); border-radius: 10px; overflow: hidden; align-self: start; justify-self: start; }
+.lc-toggle button {
+  appearance: none;
+  border: none;
+  background: var(--lc-surface);
+  color: var(--lc-ink);
+  padding: 0 16px;
+  min-height: 44px;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
+.lc-toggle button[aria-pressed="true"] { background: var(--lc-accent); color: #ffffff; }
+.lc-target-line { margin: 0; font-size: 20px; font-weight: 700; color: var(--lc-ink); line-height: 1.3; }
+.lc-field { display: grid; gap: 4px; max-width: 320px; }
+.lc-field span { font-size: 13px; font-weight: 600; color: var(--lc-ink); }
+.lc-field input,
+.lc-field select,
+.lc-field textarea {
+  min-height: 44px;
+  padding: 8px 10px;
+  border: 1px solid var(--lc-line);
+  border-radius: 10px;
+  font: inherit;
+  color: var(--lc-ink);
+  background: var(--lc-surface);
+  max-width: 100%;
+}
+.lc-field-error { color: var(--lc-bad); font-size: 13px; margin: 0; }
+.lc-checklist { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.lc-check {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 10px;
+  align-items: start;
+  padding: 10px 12px;
+  min-height: 44px;
+  border-radius: 10px;
+  background: var(--lc-soft);
+  cursor: pointer;
+}
+.lc-check input { width: 20px; height: 20px; margin-top: 1px; }
+.lc-check-info { margin: 4px 0 0 42px; }
+.lc-details summary { cursor: pointer; min-height: 44px; display: flex; align-items: center; font-weight: 600; color: var(--lc-accent); }
+
+/* ── Verdict ──────────────────────────────────────────────────────────── */
+
+.lc-verdict { display: grid; gap: 10px; padding: 14px; border-radius: 14px; border: 1px solid var(--lc-line); background: var(--lc-surface); }
+.lc-verdict-title { margin: 0; font-size: 18px; font-weight: 700; display: flex; gap: 8px; align-items: baseline; color: var(--lc-ink); }
+.lc-verdict-icon { font-size: 20px; }
+.lc-verdict--ok .lc-verdict-icon { color: var(--lc-ok); }
+.lc-verdict--warn .lc-verdict-icon { color: var(--lc-warn); }
+.lc-verdict--bad .lc-verdict-icon { color: var(--lc-bad); }
+.lc-verdict--info .lc-verdict-icon { color: var(--lc-accent); }
+.lc-table-wrap { overflow-x: auto; }
+.lc-table { border-collapse: collapse; width: 100%; font-size: 14px; }
+.lc-table th,
+.lc-table td { padding: 6px 8px; text-align: right; border-bottom: 1px solid var(--lc-line); white-space: nowrap; }
+.lc-table th:first-child,
+.lc-table td:first-child { text-align: left; }
+.lc-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+
+/* ── Admin card additions ─────────────────────────────────────────────── */
+
+.lc-row-info { display: block; font-size: 12.5px; color: var(--lc-muted); margin-top: 2px; }
+.lc-row-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.lc-row-actions .werkstatt-card-action { min-height: 44px; }
+.lc-form-section { display: grid; gap: 10px; margin: 0; padding: 12px; border: 1px solid var(--lc-line); border-radius: 12px; }
+.lc-form-section legend { font-weight: 700; color: var(--lc-ink); padding: 0 4px; }
+.lc-form-grid { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+.lc-tag { font-size: 11px; font-weight: 700; color: var(--lc-warn); margin-left: 6px; }
+.lc-radio-row { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.lc-radio-row label { display: inline-flex; gap: 6px; align-items: center; min-height: 44px; }
+.lc-sr {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.lc-status { display: grid; gap: 8px; }
+.lc-status-line { margin: 0; font-size: 14px; color: var(--lc-warn); font-weight: 600; }
+.lc-status-line--ok { color: var(--lc-ok); }
+.lc-status-lines { font-size: 14px; color: var(--lc-ink); overflow-wrap: anywhere; }
+.admin-settings-material.lc-material-row { flex-direction: column; align-items: stretch; }
+.lc-figure { margin: 0; display: grid; gap: 4px; }
+.lc-material-form { display: grid; gap: 12px; }
+.lc-step-printer,
+.lc-step-pattern,
+.lc-step-finish,
+.lc-apply,
+.lc-sense,
+.lc-loading,
+.lc-pick { display: grid; gap: 12px; min-width: 0; }
+.lc-form-grid .lc-field { max-width: none; }
