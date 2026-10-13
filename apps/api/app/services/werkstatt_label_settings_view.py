@@ -31,11 +31,11 @@ from app.services.werkstatt_label_calibration import read_state
 from app.services.werkstatt_label_jobs import offset_limits
 from app.services.werkstatt_label_materials import get_label_printer_config
 from app.services.werkstatt_label_patterns import pattern_supported
-from app.services.werkstatt_label_profile import DOTS_PER_MM, MaterialProfile, web_to_dict
+from app.services.werkstatt_label_profile import PHYSICAL_DOTS_PER_MM, MaterialProfile, web_to_dict
 
 
 def _mm(dots: Any) -> float | None:
-    return None if dots is None else round(int(dots) / DOTS_PER_MM, 2)
+    return None if dots is None else round(int(dots) / PHYSICAL_DOTS_PER_MM, 2)  # real mm, see the profile
 
 
 def calibration_summary(record: dict[str, Any] | None, profile: MaterialProfile) -> CalibrationSummaryOut | None:

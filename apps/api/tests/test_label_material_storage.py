@@ -344,7 +344,7 @@ def test_sensor_scale_change_makes_the_record_stale(client: TestClient, admin_to
     _put(client, admin_token, "wago-210-804", sensor_scale=3.6)
     calibration = _by_id(settings(client, admin_token))["wago-210-804"]["calibration"]
     assert calibration["stale"] is True
-    assert calibration["measured_length_mm"] == 97.0
+    assert calibration["measured_length_mm"] == 98.55  # 1164 dots at 300 dpi
 
 
 def test_get_shape_and_hints(client: TestClient, admin_token: str) -> None:

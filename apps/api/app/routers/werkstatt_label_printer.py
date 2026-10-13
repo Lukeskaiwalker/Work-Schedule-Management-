@@ -259,8 +259,11 @@ def poll_sensing(
     )
 
 
+from app.services.werkstatt_label_profile import PHYSICAL_DOTS_PER_MM  # noqa: E402
+
+
 def _mm(dots: int | None) -> float | None:
-    return None if dots is None else round(dots / 12, 2)
+    return None if dots is None else round(dots / PHYSICAL_DOTS_PER_MM, 2)
 
 
 @router.post("/session/{session_id}/verify", response_model=VerdictOut)
@@ -292,6 +295,7 @@ def verify_measurement(
         delta_length_mm=verdict.delta_length_mm,
         delta_pitch_mm=verdict.delta_pitch_mm,
         tolerance_mm=verdict.tolerance_mm,
+        dots_per_mm=round(PHYSICAL_DOTS_PER_MM, 2),
         sensor_kind=verdict.sensor_kind,
         sensor_expected=verdict.sensor_expected,
         sensor_ok=verdict.sensor_ok,

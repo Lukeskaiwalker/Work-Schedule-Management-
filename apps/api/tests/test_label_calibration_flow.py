@@ -85,8 +85,11 @@ def test_quick_flow_end_to_end(client: TestClient, admin_token: str, printer) ->
     assert verdict["verdict"] == "match"
     assert (verdict["freshness"], verdict["fresh"], verdict["from_latch"]) == ("busy_seen", True, False)
     assert verdict["title"] == "Passt zu „Typenschilder 99 × 44 (silber)“"
-    assert verdict["detail"] == "Gemessen 97 + 2,5 mm (Teilung 99,5 mm), Abweichung −2,5 mm bei ± 3,1 mm Toleranz."
-    assert (verdict["delta_length_mm"], verdict["delta_pitch_mm"], verdict["tolerance_mm"]) == (-2.0, -2.5, 3.06)
+    # Physical millimetres: the printer's 1164/30 dots at 300 dpi, not its own dots/12 (T4 13.10.2026).
+    assert verdict["detail"] == "Gemessen 98,6 + 2,5 mm (Teilung 101,1 mm), Abweichung −0,9 mm bei ± 3,1 mm Toleranz."
+    assert (verdict["delta_length_mm"], verdict["delta_pitch_mm"], verdict["tolerance_mm"]) == (-0.45, -0.91, 3.06)
+    assert (verdict["measured_length_mm"], verdict["measured_gap_mm"], verdict["measured_pitch_mm"]) == (98.55, 2.54, 101.09)
+    assert verdict["dots_per_mm"] == 11.81
     assert verdict["offers"] == ["save"]
     assert verdict["notes"] == ["210-804 und 210-824 sind gleich groß – die Messung unterscheidet sie nicht."]
     assert _lock()["sense"]["latched"]["freshness"] == "busy_seen"
@@ -342,7 +345,7 @@ def test_no_measurement_is_no_result(client, admin_token, printer) -> None:
 
 
 def test_other_material_is_suggested(client, admin_token, printer) -> None:
-    printer.sense_result_qd = (600, 36)
+    printer.sense_result_qd = (591, 35)  # 50 + 3 mm at 300 dpi (210-812)
     sid, _ = to_sensed(client, admin_token)
     result = _verify(client, admin_token, sid)
     assert result["verdict"] == "other_material"
@@ -406,7 +409,7 @@ def test_latch_survives_a_reapply(client, admin_token, printer) -> None:
 
 
 def test_switch_material_judges_the_latch_not_the_echo(client, admin_token, printer) -> None:
-    printer.sense_result_qd = (610, 30)
+    printer.sense_result_qd = (601, 30)  # a 210-812 read a few dots long (300 dpi)
     printer.q_write_updates_qd = True
     sid, _ = to_sensed(client, admin_token)
     assert _verify(client, admin_token, sid)["verdict"] == "other_material"
@@ -416,7 +419,7 @@ def test_switch_material_judges_the_latch_not_the_echo(client, admin_token, prin
     assert printer.qd == (600, 36)  # the ^Q50,3 write echoed into ^QD
     result = _verify(client, admin_token, sid)
     assert (result["verdict"], result["from_latch"], result["freshness"]) == ("match", True, "busy_seen")
-    assert (result["measured_length_dots"], result["measured_gap_dots"]) == (610, 30)
+    assert (result["measured_length_dots"], result["measured_gap_dots"]) == (601, 30)
 
 
 @pytest.mark.parametrize("echo", [True, False])
@@ -667,7 +670,7 @@ def test_pattern_unsupported_and_quick_only(client, admin_token, printer) -> Non
 
 
 def test_save_needs_acceptance_for_a_non_match(client, admin_token, printer) -> None:
-    printer.sense_result_qd = (600, 36)
+    printer.sense_result_qd = (591, 35)  # 50 + 3 mm at 300 dpi (210-812)
     sid, _ = to_sensed(client, admin_token)
     assert step(client, admin_token, sid, "save", {}, expect=409)["detail"]["message"] == "Zuerst Ergebnis prüfen"
     _verify(client, admin_token, sid)
@@ -675,3 +678,26 @@ def test_save_needs_acceptance_for_a_non_match(client, admin_token, printer) -> 
     assert refused["detail"] == {"code": "accept_required", "message": "Abweichendes Ergebnis muss ausdrücklich bestätigt werden"}
     record = step(client, admin_token, sid, "save", {"accept_verdict": True})
     assert (record["verdict"], record["accepted"]) == ("other_material", True)
+
+
+@pytest.mark.parametrize(("length_dots", "gap_dots"), [(1154, 42), (1150, 44)])
+def test_the_real_210_804_measurements_judge_as_a_match(length_dots: int, gap_dots: int) -> None:
+    """Physical test 13.10.2026: two auto-senses on 210-804 (99 + 2,9 mm by ruler)
+    reported 1154/42 and 1150/44 dots. Read as dots/12 — the printer's own mm —
+    they looked 2,5 mm short and the second fell out of tolerance; the printer
+    really feeds 300 dots per inch (a 80 mm ruler printed 81,5 mm)."""
+    from app.services.werkstatt_label_verdict import _Expected, _deltas, _passes
+
+    expected = _Expected(length_mm=99.0, gap_mm=3.0)
+    d_length, d_pitch = _deltas(expected, length_dots, length_dots + gap_dots)
+    assert abs(d_pitch) < 1.0 and abs(d_length) < 2.0
+    assert _passes(expected, length_dots, length_dots + gap_dots)
+
+
+def test_the_printers_own_millimetres_stay_dots_over_12() -> None:
+    """The printer stores ^QD1154,42 as ^Q96.2,3.5 — its own unit is dots/12.
+    Comparisons with what the printer stores keep that unit."""
+    from app.services.werkstatt_label_verdict import consistent
+
+    assert consistent("96,3", (1154, 42))
+    assert not consistent("98,4", (1154, 42))

@@ -24,7 +24,15 @@ import hashlib
 import json
 from dataclasses import asdict, dataclass, field
 
-DOTS_PER_MM = 12  # 300 dpi head (WAGO 258-51xx datasheet)
+# The PRINTER's own unit: it reports and takes millimetres as dots / 12
+# (it stores ^QD1154,42 as ^Q96.2,3.5). Comparisons with what the printer
+# stores, and every job SMPL renders today, use this.
+DOTS_PER_MM = 12
+# The PHYSICAL feed: 300 dots per inch (the printer's config says "300 Dpi").
+# Physical test 13.10.2026 on 210-804: a 10 → 90 ruler (960 dots) printed
+# 81,5 mm, and a label pitch the owner measured as 99 + 2,9 mm read 1196 dots.
+# Comparisons with REAL millimetres — profile sizes, a ruler — use this.
+PHYSICAL_DOTS_PER_MM = 300 / 25.4
 
 # Printer envelope (WAGO 258-51xx datasheet): 47 mm printable width,
 # 5–762 mm feed length.

@@ -29,7 +29,13 @@ from datetime import datetime
 from typing import Any
 
 from app.services.werkstatt_label_printer_status import PrinterConfig, expected_sensor
-from app.services.werkstatt_label_profile import DOTS_PER_MM, MaterialProfile, format_mm_de, format_scale_de
+from app.services.werkstatt_label_profile import (
+    DOTS_PER_MM,
+    PHYSICAL_DOTS_PER_MM,
+    MaterialProfile,
+    format_mm_de,
+    format_scale_de,
+)
 
 TOLERANCE_MIN_MM = 1.5
 TOLERANCE_SHARE = 0.03  # absorbs a 1.6 % scale error (H1) until T4
@@ -159,7 +165,11 @@ def _expected(profile: MaterialProfile) -> _Expected | None:
 
 
 def _deltas(expected: _Expected, length_dots: int, pitch_dots: int) -> tuple[float, float]:
-    return length_dots / DOTS_PER_MM - expected.length_mm, pitch_dots / DOTS_PER_MM - expected.pitch_mm
+    # Against the profile's REAL millimetres: physical dots, not the printer's dots/12.
+    return (
+        length_dots / PHYSICAL_DOTS_PER_MM - expected.length_mm,
+        pitch_dots / PHYSICAL_DOTS_PER_MM - expected.pitch_mm,
+    )
 
 
 def _passes(expected: _Expected, length_dots: int, pitch_dots: int) -> bool:
@@ -180,7 +190,7 @@ def _suggestions(profile: MaterialProfile, materials: list[MaterialProfile], len
 
 
 def _mm(dots: int | None) -> str:
-    return format_mm_de((dots or 0) / DOTS_PER_MM)
+    return format_mm_de((dots or 0) / PHYSICAL_DOTS_PER_MM)
 
 
 def _offers(verdict: str, rule: str, suggestions: list[MaterialProfile], sensor_ok: bool | None) -> tuple[str, ...]:
