@@ -1,40 +1,52 @@
-"""Werkstatt machine labels — Godex EZPL over raw TCP ("port 9100").
+"""Werkstatt machine labels — GoDEX EZPL over raw TCP ("port 9100").
 
-The workshop's label printer is a WAGO Smart Printer 258-5101. Despite the
-first-generation smartPRINTER (258-5000) being a cab OEM, this generation is a
-**Godex** OEM (telnet banner "GoDEX TELNET Server", WAGO firmware V5.UW0m) and
-speaks Godex's EZPL: line-oriented commands, `^L` … `E` label blocks, one
-socket write per batch, no driver or spooler involved. Jobs in any other
-printer language are swallowed silently — that is the failure mode, not an
-error message.
+The workshop's label printer is a WAGO smartPRINTER 258-5101, a **GoDEX**
+OEM (telnet banner "GoDEX TELNET Server", WAGO firmware V5.UW0m) that speaks
+GoDEX's EZPL: line-oriented commands, `^L` … `E` label blocks, one socket
+write per batch, no driver or spooler involved. Jobs in any other printer
+language are swallowed silently — that is the failure mode, not an error
+message. (Research in 2026-10 found WAGO's own GoDoctor screenshots
+identifying the first generation, 258-5000, as a GoDEX RT230i too; the old
+note that it was a cab OEM was wrong.)
 
 WHAT gets rendered depends on the loaded material (see
 :mod:`werkstatt_label_materials`): the active profile decides sheet geometry
-(`^W`/`^Q`), heat, and the layout *tier* — voll (logo, footer, serial),
-kompakt (DataMatrix + number + name), mini (number only; a DataMatrix under
-~6 mm cannot be scanned, and hand-typing the number is a designed-in fallback
-of the scan cascade). Continuous stock computes its per-label length from
-content. The 4-way split with dashed scissor lines exists only on voll stock —
-smaller die-cut material IS the small label.
+(`^W`/`^Q`), the per-job print values, and the layout *tier* — voll (logo,
+footer, serial), kompakt (DataMatrix + number + name), mini (number only; a
+DataMatrix under ~6 mm cannot be scanned, and hand-typing the number is a
+designed-in fallback of the scan cascade). Continuous stock computes its
+per-label length from content. The 4-way split with dashed scissor lines
+exists only on voll stock — smaller die-cut material IS the small label.
+
+Every job states its baseline in the header (`^H ^S ^E ^C ^P1`, see
+:mod:`werkstatt_label_jobs`) because EZPL settings are permanent and WAGO's
+own software changes them too; a copies job ends with a `^C1` reset. The
+coordinate guard there keeps every element on the material.
 
 Layouts are designed in a "reading frame" (x right along the feed, y down
 across the head, 1 px = 1 dot at 12 dots/mm) and converted per sheet:
 
-    x_machine = sheet_height - y_reading      (validated by physical prints)
+    x_machine = sheet_height - y_reading + across_offset   (validated by physical prints)
     y_machine = x_reading + x_offset
 
 `x_offset` compensates the print origin sitting ~2 mm before the label's
-physical left edge (measured on the first quad proof; per-profile tunable).
+physical left edge (measured on the first quad proof; per-profile tunable);
+`across_offset` (0 by default) moves the print toward the reading-top edge.
 
 The logo is downloaded into printer flash once via `~EB` under a
 content-hashed name, so replacing the logo asset re-uploads automatically; a
 duplicate download is rejected by the firmware, which is harmless because the
 name guarantees identical content.
 
-Every interpolated value is stripped of control characters: EZPL is
-line-oriented, so a newline inside an article name would otherwise terminate
-the text command and let the remainder run as printer commands. The DataMatrix
-data is additionally length-prefixed by the protocol itself.
+Every interpolated value is stripped of control characters and of `~`/`^`:
+EZPL is line-oriented, so a newline inside an article name would otherwise
+terminate the text command and let the remainder run as printer commands, and
+whether `~` acts inside text data is untested (T16). The DataMatrix data is
+additionally length-prefixed by the protocol itself.
+
+`_ship` is the only write path: it refuses while another user's calibration
+session holds the printer, and it holds the one-connection-at-a-time lock
+around exactly one connection.
 """
 
 from __future__ import annotations
@@ -52,6 +64,17 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.services.schaltplan_layout import text_width_em
+from app.services.werkstatt_label_errors import (  # noqa: F401 — re-exported
+    LabelFormatUnsupported,
+    LabelLayoutOutOfBounds,
+    LabelPrinterBusy,
+    LabelPrinterIoBusy,
+    LabelPrinterNotConfigured,
+    LabelPrinterSessionBusy,
+    LabelPrinterUnreachable,
+)
+from app.services.werkstatt_label_io_lock import printer_io_lock
+from app.services.werkstatt_label_jobs import fit_to_media, job_footer, job_header
 from app.services.werkstatt_label_materials import (
     material_by_id,
     TIER_KOMPAKT,
@@ -60,20 +83,9 @@ from app.services.werkstatt_label_materials import (
     active_material,
     get_label_printer_config,
 )
+from app.services.werkstatt_label_profile import DOTS_PER_MM, mm_int
 
 logger = logging.getLogger(__name__)
-
-
-class LabelPrinterNotConfigured(RuntimeError):
-    """No printer address configured — label printing is off for this deployment."""
-
-
-class LabelPrinterUnreachable(RuntimeError):
-    """Connecting or sending to the printer failed; str() is the address."""
-
-
-class LabelFormatUnsupported(RuntimeError):
-    """The requested format does not fit the ACTIVE material; str() is German."""
 
 
 _SEND_TIMEOUT_SECONDS = 5.0
@@ -82,7 +94,7 @@ _SEND_TIMEOUT_SECONDS = 5.0
 # carries the "E" flag; M-numbers and DataMatrix content are plain ASCII.
 _ENCODING = "utf-8"
 
-_DOTS_PER_MM = 12  # 300 dpi head (WAGO 258-51xx datasheet)
+_DOTS_PER_MM = DOTS_PER_MM  # 300 dpi head (WAGO 258-51xx datasheet)
 
 # Deliberately fixed label branding (Luca, 2026-08) — not the runtime company
 # setting, so a reworded admin setting cannot silently change tool labels.
@@ -164,10 +176,11 @@ class _Frame:
     h_px: int  # across the head (reading height)
     w_px: int  # along the feed (reading width)
     x_offset_px: int
+    across_px: int = 0  # + moves the print toward the reading-top edge ("L")
 
     def xm(self, reading_y: int) -> int:
         """Machine x (across the head) for a reading-frame TOP edge."""
-        return self.h_px - reading_y
+        return self.h_px - reading_y + self.across_px
 
     def ym(self, reading_x: int) -> int:
         """Machine y (feed direction) for a reading-frame LEFT edge."""
@@ -199,7 +212,7 @@ def printer_address_source(db: Session) -> str:
 
 
 def _mm(value: float) -> int:
-    return int(round(value))
+    return mm_int(value)
 
 
 def _est_text_w(text: str, size: int) -> int:
@@ -268,18 +281,19 @@ def _sheet(
     length_mm: float | None = None,
     copies: int = 1,
 ) -> list[str]:
-    """Wrap element lines into one complete job for this material."""
+    """Wrap element lines into one complete job for this material.
+
+    The header states the baseline (``job_header``), the elements pass the
+    coordinate guard, and a copies job ends with the ``^C1`` reset.
+    """
     if profile.continuous:
         assert length_mm is not None, "continuous sheets must compute a length"
-        head = [f"^Q{_mm(max(length_mm, _MIN_CONTINUOUS_MM))},0"]
+        form_length_dots = None
     else:
-        head = [f"^Q{_mm(profile.length_mm)},{_mm(profile.gap_mm)}"]
-    head.append(f"^W{_mm(profile.width_mm)}")
-    if profile.darkness is not None:
-        head.append(f"^H{profile.darkness}")
-    if copies > 1:
-        head.append(f"^C{copies}")
-    return [*head, "^L", *lines, "E"]
+        form_length_dots = _mm(profile.length_mm) * _DOTS_PER_MM
+    head = job_header(profile, length_mm=length_mm, copies=copies)
+    body = fit_to_media(profile, lines, form_length_dots=form_length_dots)
+    return [*head, "^L", *body, "E", *job_footer(copies)]
 
 
 def _frame(profile: MaterialProfile, *, w_px: int | None = None) -> _Frame:
@@ -287,6 +301,7 @@ def _frame(profile: MaterialProfile, *, w_px: int | None = None) -> _Frame:
         h_px=_mm(profile.width_mm) * _DOTS_PER_MM,
         w_px=w_px if w_px is not None else _mm(profile.length_mm or 0) * _DOTS_PER_MM,
         x_offset_px=int(round(profile.x_offset_mm * _DOTS_PER_MM)),
+        across_px=int(round(profile.across_offset_mm * _DOTS_PER_MM)),
     )
 
 
@@ -881,26 +896,41 @@ def print_test_label(db: Session) -> str:
     return _ship(db, payload)
 
 
-def _ship(db: Session, payload: bytes) -> str:
+def _ship(db: Session, payload: bytes, *, session_id: str | None = None) -> str:
+    """Send one payload in one connection; returns "host:port".
+
+    Refused while ANOTHER calibration session holds the printer (a print in
+    the middle of an auto-sense would feed the wrong material or mix the
+    measurement up); ``session_id`` names the caller's own session, whose
+    sends pass. The DB is read before the I/O lock and never while holding
+    it, so a slow printer can never hold a database lock.
+    """
+    from app.services.werkstatt_label_session import active_session, busy_message
+
     address = printer_address(db)
     if address is None:
         raise LabelPrinterNotConfigured()
+    holder = active_session(db)
+    if holder is not None and holder.session_id != session_id:
+        raise LabelPrinterSessionBusy(busy_message(holder), holder_name=holder.user_name, since=holder.acquired_at)
     host, port = address
-    try:
-        _send_tcp(host, port, payload)
-    except OSError as exc:
-        logger.warning("Label job to %s:%s failed: %s", host, port, exc)
-        raise LabelPrinterUnreachable(f"{host}:{port}") from exc
+    with printer_io_lock():
+        try:
+            _send_tcp(host, port, payload)
+        except OSError as exc:
+            logger.warning("Label job to %s:%s failed: %s", host, port, exc)
+            raise LabelPrinterUnreachable(f"{host}:{port}") from exc
     return f"{host}:{port}"
 
 
 def _clean(value: str, max_chars: int) -> str:
     """Collapse a value to one line of printable text.
 
-    Control characters (CR, LF, tabs, DEL, …) become spaces, runs of
-    whitespace collapse, and the result is capped — a label field, not prose.
+    Control characters (CR, LF, tabs, DEL, …) and the EZPL command prefixes
+    `~` and `^` become spaces, runs of whitespace collapse, and the result is
+    capped — a label field, not prose.
     """
-    printable = "".join(ch if ch >= " " and ch != "\x7f" else " " for ch in value)
+    printable = "".join(" " if ch < " " or ch in "\x7f~^" else ch for ch in value)
     return " ".join(printable.split())[:max_chars].strip()
 
 

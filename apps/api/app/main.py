@@ -26,6 +26,7 @@ from app.routers import workflow_station_werkstatt
 from app.routers import workflow_station_consumption
 from app.routers import workflow_werkstatt_inventory
 from app.routers import workflow_werkstatt_on_site
+from app.routers import admin_label_printer, werkstatt_label_printer
 from app.routers import admin, api_tokens, auth, calendar_feed, events, portal, portal_documents, portal_hours, station_badge, time_tracking, workflow, workflow_notifications, workflow_schaltplan, workflow_schaltplan_material, workflow_task_packing_list, workflow_training_reports
 from app.services.material_catalog import sync_pending_material_catalog_images
 from app.services.runtime_settings import (
@@ -516,6 +517,11 @@ app.include_router(workflow_werkstatt_inventory.router, prefix="/api")
 # persona routers, so it mounts here beside inventory rather than inside the
 # desktop composite. See routers/workflow_werkstatt_on_site.py.
 app.include_router(workflow_werkstatt_on_site.router, prefix="/api")
+# Label printer calibration (docs/LABEL_PRINTER_CALIBRATION.md): literal
+# paths under /werkstatt/label-printer and /admin/settings/label-printer —
+# no /werkstatt route takes a bare path parameter, so nothing is shadowed.
+app.include_router(werkstatt_label_printer.router, prefix="/api")
+app.include_router(admin_label_printer.router, prefix="/api")
 app.include_router(workflow_station.router, prefix="/api")
 app.include_router(workflow_station_pairing.router, prefix="/api")
 app.include_router(workflow_station_admin.router, prefix="/api")

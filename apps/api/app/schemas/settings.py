@@ -4,6 +4,21 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
+from app.schemas.label_printer import (
+    CalibrationSummaryOut,
+    FeedPath,
+    GuideSetting,
+    JobSettingsOut,
+    LastAppliedOut,
+    MaterialHintOut,
+    MediaType,
+    MediaWebIO,
+    OffsetLimitsOut,
+    Roller,
+    SensorMode,
+    SessionInfoOut,
+)
+
 class WeatherSettingsOut(BaseModel):
     provider: str = "openweather"
     configured: bool = False
@@ -102,7 +117,12 @@ class CompanySettingsUpdate(BaseModel):
 
 
 class LabelMaterialOut(BaseModel):
-    """One printable stock the workshop owns, plus derived facts (tier)."""
+    """One printable stock the workshop owns, plus derived facts.
+
+    ``darkness``/``speed_ips``/``stop_mm`` are the STORED overrides (None =
+    the printer baseline); what jobs send is ``resolved``. Echoing this object
+    back in a PATCH therefore cannot freeze the baseline into the profile.
+    """
 
     id: str
     name: str
@@ -115,19 +135,57 @@ class LabelMaterialOut(BaseModel):
     builtin: bool = False
     tier: str = "mini"
     continuous: bool = False
+    media_type: MediaType = "gap"
+    across_offset_mm: float = 0.0
+    speed_ips: int | None = None
+    stop_mm: int | None = None
+    resolved: JobSettingsOut
+    mark_width_mm: float | None = None
+    mark_offset_mm: float = 0.0
+    mark_inside: bool = False
+    sensor_mode: SensorMode
+    sensor_scale: float  # reading on the housing scale, 0.5–5.5, 3.0 = centre
+    guide: GuideSetting
+    feed_path: FeedPath
+    roller: Roller
+    web: MediaWebIO
+    web_width_mm: float
+    overridden_fields: list[str] = Field(default_factory=list)
+    hints: list[MaterialHintOut] = Field(default_factory=list)
+    calibration: CalibrationSummaryOut | None = None
+    autosense_cost_hint: str
+    pattern_cost_hint: str  # "" when pattern_supported is false
+    pattern_supported: bool
+    offset_limits: OffsetLimitsOut
 
 
 class LabelMaterialIn(BaseModel):
-    """Admin-entered material; `builtin`/`tier` are derived, never accepted."""
+    """One item of the PATCH list; ``builtin``/``tier`` and the other derived
+    fields are ignored. Types only — every range and length check is in
+    ``validate_materials``, so the user reads it in German. Fields in
+    ``model_fields_set`` are merged; an explicit null on a non-nullable field
+    keeps the stored value."""
 
-    id: str = Field(min_length=1, max_length=40)
-    name: str = Field(min_length=1, max_length=60)
-    part_no: str = Field(default="", max_length=40)
-    width_mm: float = Field(gt=0, le=47)  # the print head is 47 mm wide
-    length_mm: float | None = Field(default=None, gt=0, le=762)
-    gap_mm: float = Field(default=3.0, ge=0, le=10)
-    x_offset_mm: float = Field(default=2.0, ge=0, le=10)
-    darkness: int | None = Field(default=None, ge=0, le=19)
+    id: str
+    name: str
+    part_no: str = ""
+    width_mm: float
+    length_mm: float | None = None
+    gap_mm: float = 3.0
+    x_offset_mm: float = 2.0
+    darkness: int | None = None
+    across_offset_mm: float | None = None
+    speed_ips: int | None = None
+    stop_mm: int | None = None
+    mark_width_mm: float | None = None
+    mark_offset_mm: float | None = None
+    mark_inside: bool | None = None
+    sensor_mode: SensorMode | None = None
+    sensor_scale: float | None = None
+    guide: GuideSetting | None = None
+    feed_path: FeedPath | None = None
+    roller: Roller | None = None
+    web: MediaWebIO | None = None
 
 
 class LabelPrinterSettingsOut(BaseModel):
@@ -146,20 +204,41 @@ class LabelPrinterSettingsOut(BaseModel):
     active_material_id: str = ""
     active_material_name: str = ""
     active_tier: str = ""
+    revision: int = 0
+    baseline: JobSettingsOut
+    baseline_overridden: list[str] = Field(default_factory=list)
+    row_offset_dots: int | None = None
+    label_calibration_staff_enabled: bool = False
+    session: SessionInfoOut | None = None
+    last_applied: LastAppliedOut | None = None
 
 
 class LabelPrinterSettingsUpdate(BaseModel):
-    """Empty host clears the runtime override (falls back to env, if set).
+    """Every field optional: an omitted field keeps the stored value, so the
+    address form and the material picker can PATCH independently without
+    clobbering each other. ``host: ""`` clears the runtime address (falls back
+    to env, if set). ``revision`` is an optional compare-and-set (old cached
+    bundles send none; the revision still increments)."""
 
-    ``materials``/``active_material_id`` are optional: omitting them keeps
-    the stored values, so the address form and the material picker can PATCH
-    independently without clobbering each other.
-    """
-
-    host: str = ""
-    port: int = Field(default=9100, ge=1, le=65535)
+    host: str | None = None
+    port: int | None = Field(default=None, ge=1, le=65535)
     materials: list[LabelMaterialIn] | None = None
     active_material_id: str | None = None
+    revision: int | None = None
+
+
+class LabelPrinterOverviewOut(BaseModel):
+    """GET /api/werkstatt/label-printer — DB only, no printer I/O."""
+
+    configured: bool
+    printer: str  # "host:port" or ""
+    active_material_id: str
+    active_material_name: str
+    materials: list[LabelMaterialOut]
+    session: SessionInfoOut | None
+    last_applied: LastAppliedOut | None
+    can_full: bool  # caller holds settings:manage
+    staff_enabled: bool  # label_calibration_staff_enabled
 
 
 class LabelPrinterTestOut(BaseModel):

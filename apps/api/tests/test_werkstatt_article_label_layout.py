@@ -60,7 +60,7 @@ def test_job_places_matrix_code_head_description_and_foot_without_logo_or_footer
     content = al.ArticleLabelContent("SMPL-81JHYT", "WAGO 2016-7607 - TOPJOB S 2L-PE-KL.42GRAD 16QMM GR-GE", "WAGO", "SP-0187", "4045454725112")
     job = al.render_article_label(VOLL, content)
 
-    assert job[:3] == ["^Q99,3", "^W44", "^L"] and job[-1] == "E"
+    assert job[:8] == ["^Q99,3", "^W44", "^H12", "^S2", "^E0", "^C1", "^P1", "^L"] and job[-1] == "E"
     # A 16 × 16 symbol of 11-dot modules, anchored at its reading bottom
     # (528 - (150 + 176) = 202) and its reading left (36 + 2 mm offset = 60).
     assert "XRB202,60,11,0,11" in job

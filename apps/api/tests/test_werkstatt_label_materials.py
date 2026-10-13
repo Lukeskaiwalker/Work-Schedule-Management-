@@ -61,9 +61,16 @@ def _machine(client: TestClient, admin_token: str, name: str) -> dict:
 
 
 def _jobs(payload: bytes) -> list[list[str]]:
-    """Split a shipped batch into jobs (each ends with its `E` line)."""
+    """Split a shipped batch into jobs (each ends with its `E` line).
+
+    A copies job is followed by one standalone `^C1` (the reset that keeps
+    SMPL's copy count from reaching the next client's job); it belongs to
+    the job before it and is stripped here.
+    """
     jobs: list[list[str]] = [[]]
     for line in payload.decode("utf-8").splitlines():
+        if line == "^C1" and not jobs[-1] and len(jobs) > 1:
+            continue
         jobs[-1].append(line)
         if line == "E":
             jobs.append([])
@@ -227,6 +234,8 @@ def test_freetext_on_marking_strip_computes_length_and_copies(
     lines = _jobs(sent[0][2])[0]
     assert "^W11" in lines
     assert "^C3" in lines
+    # The copies job resets ^C after its E, so the next client prints once.
+    assert sent[0][2].decode("utf-8").splitlines()[-2:] == ["E", "^C1"]
     q_line = lines[0]
     assert q_line.startswith("^Q") and q_line.endswith(",0")  # continuous: gap 0
     length_mm = int(q_line[2:].split(",")[0])

@@ -172,3 +172,37 @@ def admin_token(client: TestClient) -> str:
 
 def auth_headers(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _label_printer_io_lock_path(tmp_path_factory: pytest.TempPathFactory) -> Generator[None, None, None]:
+    """The printer I/O lock file lives in this run's tmp dir, not the shared /tmp.
+
+    Session-scoped (one file per run), so another worktree's test run on the
+    same machine can never hold it against this one.
+    """
+    from app.services import werkstatt_label_io_lock
+
+    original = werkstatt_label_io_lock.LOCK_PATH
+    werkstatt_label_io_lock.LOCK_PATH = tmp_path_factory.mktemp("label-printer") / "io.lock"
+    yield
+    werkstatt_label_io_lock.LOCK_PATH = original
+
+
+@pytest.fixture
+def fake_printer(monkeypatch: pytest.MonkeyPatch):
+    """A simulated EZPL printer on 127.0.0.1, with the calibration's waits shrunk.
+
+    Nothing in the suite talks to the real printer; see tests/fake_ezpl_printer.py.
+    """
+    from app.services import werkstatt_label_calibration, werkstatt_label_transport
+    from tests.fake_ezpl_printer import FakeEzplPrinter
+
+    monkeypatch.setattr(werkstatt_label_calibration, "APPLY_SETTLE_S", 0.0)
+    monkeypatch.setattr(werkstatt_label_calibration, "APPLY_CONFIRM_DELAY_S", 0.01)
+    monkeypatch.setattr(werkstatt_label_calibration, "AUTOSENSE_MIN_WAIT_S", 0.0)
+    monkeypatch.setattr(werkstatt_label_transport, "STATUS_DEADLINE_S", 0.6)
+    monkeypatch.setattr(werkstatt_label_transport, "CONFIG_DEADLINE_S", 1.0)
+    fake = FakeEzplPrinter()
+    yield fake
+    fake.stop()
