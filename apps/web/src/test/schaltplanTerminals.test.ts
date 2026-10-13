@@ -730,21 +730,22 @@ describe("terminalStrips", () => {
 });
 
 describe("terminalFontSize", () => {
-  it("uses the 0.5 mm terminal pad: '1.1' on 5.2 mm fits at 36 dots", () => {
+  it("uses the 0.5 mm terminal pad: '1.1' on 5.2 mm fits at 35 dots", () => {
+    // 5,2 mm at 300 dpi = 61,4 dots; minus 2 × 6 = 49,4 dots / 1,39 em = 35,5.
     expect(TERMINAL_SEG_PAD_DOTS).toBe(6);
     expect(fontSizeForSegments([{ text: "1.1", widthMm: 5.2 }], 11, TERMINAL_SEG_PAD_DOTS)).toEqual({
-      sizeDots: 36,
+      sizeDots: 35,
       overflowing: [],
     });
-    // The BMK pad would leave the same text 27 dots — the two are not interchangeable.
-    expect(fontSizeForSegments([{ text: "1.1", widthMm: 5.2 }], 11, 12).sizeDots).toBe(27);
-    expect(terminalFontSize(deriveTerminals(standardBoard()), 11)).toEqual({ sizeDots: 36, overflowing: [] });
+    // The BMK pad would leave the same text 26 dots — the two are not interchangeable.
+    expect(fontSizeForSegments([{ text: "1.1", widthMm: 5.2 }], 11, 12).sizeDots).toBe(26);
+    expect(terminalFontSize(deriveTerminals(standardBoard()), 11)).toEqual({ sizeDots: 35, overflowing: [] });
   });
 
   it("is one size over every Leiste of the board; Blocks size themselves", () => {
-    expect(terminalFontSize(deriveTerminals(twoRcdBoard()), 11)).toEqual({ sizeDots: 36, overflowing: [] });
+    expect(terminalFontSize(deriveTerminals(twoRcdBoard()), 11)).toEqual({ sizeDots: 35, overflowing: [] });
     // A board of only a Block has no Leiste segment: the strip's maximum.
-    expect(terminalFontSize(deriveTerminals(blockOnlyBoard()), 11)).toEqual({ sizeDots: 95, overflowing: [] });
+    expect(terminalFontSize(deriveTerminals(blockOnlyBoard()), 11)).toEqual({ sizeDots: 93, overflowing: [] });
   });
 
   it("reports an override that cannot fit 5.2 mm even at the 2 mm floor", () => {
@@ -753,6 +754,6 @@ describe("terminalFontSize", () => {
   });
 
   it("gives the maximum when nothing carries a text", () => {
-    expect(terminalFontSize([], 11)).toEqual({ sizeDots: 95, overflowing: [] });
+    expect(terminalFontSize([], 11)).toEqual({ sizeDots: 93, overflowing: [] });
   });
 });

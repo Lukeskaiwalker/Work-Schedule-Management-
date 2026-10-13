@@ -22,6 +22,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from app.services.schaltplan_layout import build_legend, font_size_for_fits, validate_document
+from app.services.werkstatt_label_profile import PHYSICAL_DOTS_PER_MM
 from app.services.schaltplan_pdf_terminals import _COLUMNS, column_titles, row_values
 from app.services.schaltplan_terminal_rules import (
     TERMINAL_PARTS,
@@ -453,12 +454,13 @@ def test_strips_honour_the_selection_none_is_all_and_empty_is_none():
 def test_terminal_font_size_is_one_size_over_every_leiste_of_the_board():
     groups = derive_terminals(_standard_board())
     size, overflowing = terminal_font_size(groups, 11.0)
-    # "1.1" inside a 5.2 mm segment minus the half-millimetre pads.
+    # "1.1" inside a 5.2 mm segment minus the half-millimetre pads:
+    # (5.2 × 11.811 − 12) / 1.39 em = 35.5 → 35 dots at 300 dpi.
     expected, _ = font_size_for_fits([("1.1", 5.2)], 11.0, pad_dots=TERMINAL_SEG_PAD_DOTS)
-    assert (size, overflowing) == (expected, []) and size == 36
-    # A board of blocks only has no Leiste text to fit: the maximum.
-    assert terminal_font_size(derive_terminals(_block_only_board()), 11.0) == (95, [])
-    assert terminal_font_size([], 11.0) == (95, [])
+    assert (size, overflowing) == (expected, []) and size == 35
+    # A board of blocks only has no Leiste text to fit: the maximum (130-dot strip → 93).
+    assert terminal_font_size(derive_terminals(_block_only_board()), 11.0) == (93, [])
+    assert terminal_font_size([], 11.0) == (93, [])
 
 
 def test_terminal_font_size_reports_a_text_that_cannot_fit_at_the_floor():
@@ -522,15 +524,17 @@ def test_terminal_strips_print_one_job_per_leiste_at_one_size(client: TestClient
     ]
     assert len(sent) == 1
     first, second = _jobs(sent[0])
-    # 3 mm lead + 12 + 5.2 + 3 mm lead + the material's 2 mm print-origin offset.
-    assert abs(_q_length(first) - 25.2) <= 1 and abs(_q_length(second) - 25.2) <= 1
+    # 3 mm lead + 12 + 5.2 + 3 mm lead + the material's 2 mm print-origin offset,
+    # in the printer's millimetres (dots / 12).
+    printer_mm = 25.2 * PHYSICAL_DOTS_PER_MM / 12
+    assert abs(_q_length(first) - printer_mm) <= 1 and abs(_q_length(second) - printer_mm) <= 1
     assert b"^W11" in first
     # Feed terminal | outgoing: one divider plus the start and end lines.
     assert first.count(b"Lo,") == 1 + 2
     assert b"X1" in first and b"1.1" in first and b"F1.1" not in first
     assert b"X2" in second and b"2.1" in second
     sizes = _at_sizes(first) + _at_sizes(second)
-    assert len(sizes) == 4 and set(sizes) == {body["font_size_dots"]} == {36}
+    assert len(sizes) == 4 and set(sizes) == {body["font_size_dots"]} == {35}
     assert body["overflowing"] == []
 
 
@@ -545,8 +549,8 @@ def test_block_label_prints_as_one_piece_with_three_rows(client: TestClient, adm
     assert body["printed"] == 5 + 5
     assert [(s["row_id"], s["length_mm"], s["part_count"]) for s in body["strips"]] == [("f1:leiste", 32.8, 6), ("w1:block", 60.0, 5)]
     leiste, block = _jobs_strict(sent[0])
-    # 3 + 60 + 3 mm plus the 2 mm offset.
-    assert abs(_q_length(block) - 68) <= 1
+    # 3 + 60 + 3 mm plus the 2 mm offset, in the printer's millimetres (dots / 12).
+    assert abs(_q_length(block) - 68 * PHYSICAL_DOTS_PER_MM / 12) <= 1
     assert b"^W11" in block
     # Name row, X row, five cells — regular weight like the Leiste (both
     # bold variants smeared on the physical strip).
@@ -569,7 +573,7 @@ def test_terminal_strips_can_be_limited_to_one_strip(client: TestClient, admin_t
     assert body["printed"] == 5
     assert len(_jobs_strict(sent[0])) == 1
     # The Leiste size is still fitted over the whole board.
-    assert body["font_size_dots"] == 36
+    assert body["font_size_dots"] == 35
 
 
 def test_terminal_strips_count_blanked_markers_as_skipped(client: TestClient, admin_token: str, monkeypatch):

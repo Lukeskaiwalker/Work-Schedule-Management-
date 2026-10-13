@@ -92,7 +92,7 @@ export const SENSOR_GEOMETRY = {
     // paddings and arrow offsets follow the text size
     textSizeMm: 2.6, textPerLength: 0.045, paddingEm: 2.7, arrowOffsetEm: 1.35, extensionEm: 0.4,
     rulerTickMm: 1.5,
-    // letter placement of the printed pattern (§4.11: 12 / 48 dots = 1 / 4 mm)
+    // letter placement of the printed pattern (§4.11: 1 / 4 mm, physical at 300 dpi)
     letterInsetMm: 1, letterShiftMm: 4, rulerBaselineGapMm: 1, rulerStepMm: 10, crossArmMm: 3,
     continuousLineMm: 0.17,
   },

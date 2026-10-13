@@ -51,7 +51,7 @@ from app.services.werkstatt_label_printer_status import (
     read_status,
     sensor_word,
 )
-from app.services.werkstatt_label_profile import MaterialProfile, format_mm_de, mm_int, q_value
+from app.services.werkstatt_label_profile import MaterialProfile, format_mm_de, printer_width_mm, q_value
 from app.services.werkstatt_label_transport import PrinterQuery, query_printer, send_lines
 from app.services.werkstatt_label_verdict import Verdict, judge
 
@@ -99,10 +99,12 @@ def setup_commands(profile: MaterialProfile) -> list[str]:
     otherwise linger into the next material unseen (T1/T17). Never ``^E``
     (it can feed, EZPL p.4), never ``^H ^S ^C ^P`` (every job states them),
     never ``^L``/``E`` (setup between them is ignored, EZPL p.75).
+    ``^Q``/``^W`` are the printer's millimetres (dots / 12), the same lines
+    every job states: ``^Q97,3 ^W44`` for the 99 + 3 × 44 mm 210-804.
     """
     kind = "continuous" if profile.continuous else "die-cut"
     sensor = _SENSOR_LINES[(kind, profile.sensor_mode)]
-    return [*sensor, f"^Q{q_value(profile)}", f"^W{mm_int(profile.width_mm)}"]
+    return [*sensor, f"^Q{q_value(profile)}", f"^W{printer_width_mm(profile.width_mm)}"]
 
 
 def reprime_lines(profile: MaterialProfile) -> list[str]:
@@ -322,7 +324,8 @@ def _confirm(profile: MaterialProfile, config: PrinterConfig | None) -> tuple[bo
     if config is None:
         return None, []
     mismatches: list[str] = []
-    width = mm_int(profile.width_mm)
+    # Both sides in the printer's millimetres: it stores what it was sent.
+    width = printer_width_mm(profile.width_mm)
     if config.width_mm is None or abs(config.width_mm - width) > 1e-9:
         printed = "?" if config.width_mm is None else format_mm_de(config.width_mm)
         mismatches.append(f"Breite: Drucker {printed} mm, Profil {width} mm")

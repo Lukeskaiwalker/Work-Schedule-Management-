@@ -47,6 +47,7 @@ import { catalogEntry } from "./schaltplanDevices";
 import {
   DOTS_PER_MM,
   fontSizeForSegments,
+  mmToDots,
   textWidthEm,
   trimMarkerText,
   type BoardFontSize,
@@ -141,10 +142,10 @@ export interface TerminalGroup {
 /**
  * Pad between a terminal's cut mark and its text, in dots (0.5 mm). The BMK
  * strip keeps 1 mm on either side, but a 5.2 mm segment minus 2 mm of pad
- * holds nothing: 5.2 × 12 − 12 = 50 dots leave "1.1" at 36 dots — the three
- * characters the owner says are all a 5.2 mm marker can carry.
+ * holds nothing: 61 − 12 = 49 dots (300 dpi) leave "1.1" at 35 dots — the
+ * three characters the owner says are all a 5.2 mm marker can carry.
  */
-export const TERMINAL_SEG_PAD_DOTS = 6;
+export const TERMINAL_SEG_PAD_DOTS = mmToDots(0.5);
 
 /**
  * The Block label sizes its own rows (`werkstatt_labels._render_block_label`):
@@ -155,7 +156,7 @@ export const TERMINAL_SEG_PAD_DOTS = 6;
  */
 export const BLOCK_ROW_SIZE_MAX_DOTS = 34;
 export const BLOCK_ROW_SIZE_MIN_DOTS = 18;
-export const BLOCK_PAD_DOTS = 6;
+export const BLOCK_PAD_DOTS = mmToDots(0.5);
 export const BLOCK_TEXT_GUARD_DOTS = 2;
 
 /** Twin of `_fit_strip_text`: the size at which `text` fills `budgetDots`, clamped to the block's two sizes. */
@@ -166,7 +167,7 @@ function fitBlockText(text: string, budgetDots: number): number {
 
 /** Font size (dots) of a Block's name or X row across a block `lengthMm` wide. */
 export function blockRowSizeDots(text: string, lengthMm: number): number {
-  const bodyDots = Math.round(lengthMm * DOTS_PER_MM);
+  const bodyDots = mmToDots(lengthMm);
   return fitBlockText(text, bodyDots - 2 * BLOCK_TEXT_GUARD_DOTS - 2 * BLOCK_PAD_DOTS);
 }
 

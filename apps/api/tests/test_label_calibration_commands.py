@@ -34,17 +34,20 @@ MARK = MaterialProfile(
 )
 
 
+# ^Q/^W in the printer's millimetres (dots / 12) of the physical 300 dpi dots:
+# 99 mm = 1169 dots → 97, 50 mm = 591 → 49, 38 mm = 449 → 37; a 3 mm gap
+# (35 dots), 44 mm (520 dots, rounded up) and every width here keep their number.
 @pytest.mark.parametrize(
     ("profile", "lines"),
     [
-        (M["wago-210-804"], ["^G1", "^XSET,SENSING,1", "^Q99,3", "^W44"]),
-        (M["wago-210-824"], ["^G1", "^XSET,SENSING,1", "^Q99,3", "^W44"]),
-        (M["wago-210-812"], ["^G1", "^XSET,SENSING,1", "^Q50,3", "^W25"]),
+        (M["wago-210-804"], ["^G1", "^XSET,SENSING,1", "^Q97,3", "^W44"]),
+        (M["wago-210-824"], ["^G1", "^XSET,SENSING,1", "^Q97,3", "^W44"]),
+        (M["wago-210-812"], ["^G1", "^XSET,SENSING,1", "^Q49,3", "^W25"]),
         (M["wago-210-805"], ["^G1", "^XSET,SENSING,1", "^Q15,3", "^W6"]),
         (M["wago-211-501"], ["^G1", "^XSET,SENSING,1", "^Q15,0", "^W5"]),
         (M["wago-2009-110"], ["^G1", "^XSET,SENSING,1", "^Q15,0", "^W11"]),
         (replace(M["wago-211-501"], sensor_mode="none"), ["^XSET,SENSING,2", "^Q15,0", "^W5"]),
-        (CUSTOM, ["^G2", "^XSET,SENSING,1", "^Q38,3", "^W23"]),
+        (CUSTOM, ["^G2", "^XSET,SENSING,1", "^Q37,3", "^W23"]),
         (MARK, ["^G0", "^XSET,SENSING,0", "^Q25,4,3+", "^W40"]),
         (replace(MARK, mark_inside=True), ["^G0", "^XSET,SENSING,0", "^Q25,4,3-", "^W40"]),
     ],
@@ -126,18 +129,19 @@ def test_policy_details() -> None:
 
 
 def test_pattern_worked_example_210_804() -> None:
+    """At 300 dpi: h = 520 (44 mm), w = 1169 (99 mm), inset 24 (2 mm), x_offset 24 (2 mm)."""
     lines, geometry = pattern_job(M["wago-210-804"])
     assert lines[:14] == [
-        "^Q99,3", "^W44", "^H12", "^S2", "^E0", "^C1", "^P1", "^L",
-        "Lo,24,48,504,51",
-        "Lo,24,1185,504,1188",
-        "Lo,501,48,504,1188",
-        "Lo,24,48,27,1188",
-        "Lo,263,582,265,654",
-        "Lo,228,617,300,619",
+        "^Q97,3", "^W44", "^H12", "^S2", "^E0", "^C1", "^P1", "^L",
+        "Lo,24,48,496,51",
+        "Lo,24,1166,496,1169",
+        "Lo,493,48,496,1169",
+        "Lo,24,48,27,1169",
+        "Lo,259,573,261,643",
+        "Lo,225,607,295,609",
     ]
     assert lines[-1] == "E"  # copies 1: no ^C1 reset after the job
-    assert "AT,489,63,24,24,0,1E,0,0,SMPL KAL WAGO 210-804" in lines
+    assert "AT,481,63,24,24,0,1E,0,0,SMPL KAL WAGO 210-804" in lines
     assert (geometry.ruler_from_mm, geometry.ruler_to_mm, geometry.inset_mm, geometry.letters) == (10, 90, 2.0, True)
     assert geometry.across_measurable is False  # guide "max": no across correction
     assert pattern_job(M["wago-210-812"])[1].ruler_to_mm == 40
@@ -178,14 +182,15 @@ def test_pattern_on_two_lane_805_is_unsupported() -> None:
 
 @pytest.mark.parametrize(
     ("width", "ticks", "numbers"),
-    [(4, False, False), (6, False, False), (7, True, False), (8, True, False), (9, True, True), (12, True, True)],
+    [(4, False, False), (6, False, False), (7, True, False), (8, True, False), (9, True, False), (10, True, True), (12, True, True)],
 )
 def test_the_ruler_only_where_the_width_has_room(width: int, ticks: bool, numbers: bool) -> None:
-    """The ruler's numbers sit 66 dots above its baseline and its 10-mm
-    ticks are 36 dots tall: on a narrow label they would run past the top
-    line (ticks, clamped into a smear) or off the material (numbers — the
-    pattern of a 6 × 50 raised at every offset). Each is drawn only below
-    the top line."""
+    """The ruler's numbers sit 5,5 mm (65 dots) above its baseline and its
+    10-mm ticks are 3 mm (35 dots) tall: on a narrow label they would run
+    past the top line (ticks, clamped into a smear) or off the material
+    (numbers — the pattern of a 6 × 50 raised at every offset). Each is
+    drawn only below the top line. A 9 mm label is 106 dots across at
+    300 dpi (108 at the old 12 per mm): its numbers no longer fit by a dot."""
     # x_offset 0: at the default 2 mm, line B of a 1-mm inset lies past the
     # label's end and is dropped — by design (B is never used), not the ruler.
     profile = MaterialProfile(id=f"custom-{width}x50", name="Schmal", part_no="", width_mm=width, length_mm=50, x_offset_mm=0.0)

@@ -37,7 +37,7 @@ const RESULT = {
     { row_id: "f1:leiste", row_label: "X1 · FI F1 · Reihe 1", length_mm: 17.2, part_count: 3 },
     { row_id: "w:block", row_label: "X2 · Block F1.2 Wallbox", length_mm: 60, part_count: 5 },
   ],
-  font_size_dots: 36,
+  font_size_dots: 35, // what the API answers for "1.1" on 5,2 mm at 300 dpi
   overflowing: [],
 };
 
@@ -91,7 +91,7 @@ describe("useLabelPrinting", () => {
   });
 
   it("prints the BMK selection by rail id", async () => {
-    printMock.mockResolvedValue({ ...RESULT, printed: 3, strips: [RESULT.strips[0]], font_size_dots: 92 });
+    printMock.mockResolvedValue({ ...RESULT, printed: 3, strips: [RESULT.strips[0]], font_size_dots: 91 }); // F1.1 on 17,5 mm at 300 dpi
     const { result, deps } = renderPrinting({ panel: PANEL });
     await act(() => result.current.print(["r1"], "wago-2009-110", { target: "bmk" }));
     expect(printMock).toHaveBeenCalledWith("t", 7, { rowIds: ["r1"], materialId: "wago-2009-110", target: "bmk" });

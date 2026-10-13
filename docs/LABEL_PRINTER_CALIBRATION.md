@@ -162,7 +162,7 @@ Also in phase 1, because the three asks need them:
 
 | Item | Gate |
 |---|---|
-| Printer scale `dots_per_mm` (H1: 1164 dots may be 98.6 mm at 11.81 dots/mm) threaded into all renderers and the web `schaltplanStrip.DOTS_PER_MM`; "Messwerte übernehmen" (write measured length/gap into a profile) | T4 + T14 |
+| ~~Printer scale threaded into all renderers and the web `schaltplanStrip.DOTS_PER_MM`~~ — **built** after T4 confirmed H1 (§4.12); "Messwerte übernehmen" (write measured length/gap into a profile) | T4 + T14 (T14 now checks the fix) |
 | 210-805 printed two-lane (width 15, length 6, two texts per row) | T0 + T8 |
 | `^G` / `^XSET,SENSING` inside every job (so `material_by_id` strip jobs always use the right sensor) | T15 |
 | Darkness ladder (one job per level) | owner wish; T5 done |
@@ -853,24 +853,25 @@ to continuous labels, so on die-cut stock it is expected to be ignored ([Inferre
 
 (`gap`+`none` and `continuous`+`auto` cannot exist, §3.8.)
 
-Then exactly one `^Q` and one `^W`, using today's `_mm()` rounding:
+Then exactly one `^Q` and one `^W`, in the PRINTER's millimetres (dots / 12, §4.12) of
+the physical dots — `P(x) = printer_mm(mm_to_dots(x))`, nearest whole printer-mm:
 
-- gap: `^Q{_mm(length)},{_mm(gap)}`
-- mark: `^Q{_mm(length)},{_mm(mark_width)},{_mm(mark_offset)}{'-' if mark_inside else '+'}`
-- continuous: `^Q15,0` (`_MIN_CONTINUOUS_MM`)
-- `^W{_mm(width)}`
+- gap: `^Q{P(length)},{P(gap)}`
+- mark: `^Q{P(length)},{P(mark_width)},{P(mark_offset)}{'-' if mark_inside else '+'}`
+- continuous: `^Q15,0` (`MIN_CONTINUOUS_MM`: 177 dots, rounded up)
+- `^W{printer_width_mm(width)}` — rounded UP so nothing is clipped
 
 Exact outputs (pinned by tests):
 
 | Profile | Lines |
 |---|---|
-| wago-210-804 / -824 | `^G1`, `^XSET,SENSING,1`, `^Q99,3`, `^W44` |
-| wago-210-812 | `^G1`, `^XSET,SENSING,1`, `^Q50,3`, `^W25` |
+| wago-210-804 / -824 | `^G1`, `^XSET,SENSING,1`, `^Q97,3`, `^W44` (1169 + 35 × 520 dots) |
+| wago-210-812 | `^G1`, `^XSET,SENSING,1`, `^Q49,3`, `^W25` (591 + 35 × 295 dots) |
 | wago-210-805 | `^G1`, `^XSET,SENSING,1`, `^Q15,3`, `^W6` |
 | wago-211-501 | `^G1`, `^XSET,SENSING,1`, `^Q15,0`, `^W5` |
 | wago-2009-110 | `^G1`, `^XSET,SENSING,1`, `^Q15,0`, `^W11` |
 | 211-501 with sensor "none" | `^XSET,SENSING,2`, `^Q15,0`, `^W5` |
-| custom die-cut 38 × 23 (length 38, width 23), sensor auto | `^G2`, `^XSET,SENSING,1`, `^Q38,3`, `^W23` |
+| custom die-cut 38 × 23 (length 38, width 23), sensor auto | `^G2`, `^XSET,SENSING,1`, `^Q37,3`, `^W23` |
 | custom mark, length 25, width 40, mark 4, offset 3, outside, reflective | `^G0`, `^XSET,SENSING,0`, `^Q25,4,3+`, `^W40` |
 | same, inside | `^G0`, `^XSET,SENSING,0`, `^Q25,4,3-`, `^W40` |
 
@@ -878,7 +879,7 @@ Exact outputs (pinned by tests):
 them), `^L`/`E` (setup between them is ignored), `~Q`, `^R`, `^XSET,IMMEDIATE`.
 
 `reprime_lines(profile) -> list[str]` = the `^Q` and `^W` lines of `setup_commands` only
-(e.g. `["^Q99,3", "^W44"]`); autosense sends them right before its pre-sense snapshot
+(e.g. `["^Q97,3", "^W44"]`); autosense sends them right before its pre-sense snapshot
 (§4.6 step 4).
 
 ### 4.5 Apply (no paper movement per the manual) — `apply_material(db, session)`
@@ -1036,7 +1037,9 @@ R3 details (exact):
 
 Definitions:
 
-- `dpm = 12` (phase 1 always; H1 is phase 2).
+- `dpm = 300 / 25,4` for every comparison with real millimetres (T4 confirmed H1); only
+  comparisons with the printer's own stored `^Q` (consistency, echo of a `^Q` write) use
+  dots / 12 (§4.12).
 - Expected length = `physical_length_mm` (= `web.label_along_mm ?? length_mm`); expected
   gap = `mark_width_mm` for mark stock, else `gap_mm`; expected pitch = length + gap; all ×
   dpm for dots.
@@ -1118,8 +1121,8 @@ switch) is [Unverified → T1].
 length_mm, copies)`; the output order is fixed:
 
 ```
-^Q…          gap ^Q{L},{G} | mark ^Q{L},{M},{Z}± (new) | continuous ^Q{max(len,15)},0 (unchanged)
-^W{W}
+^Q…          printer-mm (§4.12): gap ^Q{L},{G} | mark ^Q{L},{M},{Z}± | continuous ^Q{⌈content dots / 12⌉},0
+^W{⌈W dots / 12⌉}
 ^H{job.darkness}      always
 ^S{job.speed_ips}     always
 ^E{job.stop_mm}       always (switchable, see below)
@@ -1151,7 +1154,8 @@ E
   prints with SMPL's last values. SMPL does not reset them (it does not know the other
   client's intent); §11 states it.
 - Not in jobs: `^G`, `^XSET,SENSING`, `~Q`, `^R` (T15/T11).
-- `_mm()` rounding is unchanged (critique L2).
+- `^Q`/`^W` are derived from the job's physical dots (§4.12); `mm_int` (banker's) is the
+  nearest-printer-mm rounding, a continuous form and `^W` round up.
 - `material_by_id` jobs (BMK strips on 2009-110) use that profile's resolved values.
 
 **Byte changes accepted explicitly** (and nothing else):
@@ -1164,19 +1168,23 @@ E
 4. `Lo` lines that would leave the media are clamped (§4.9) — no golden job has one at its
    default offsets (checked against the `a9c335f` renderers on 2026-10-13).
 
-Element lines (between `^L` and `E`) stay byte-identical when `across_offset_mm == 0`; a
-golden fixture captured at `a9c335f` pins this (§8.1).
+Element lines (between `^L` and `E`) stayed byte-identical when `across_offset_mm == 0`
+(golden fixture captured at `a9c335f`) until the 300 dpi correction (§4.12), which changed
+them deliberately: `tests/fixtures/label_jobs_300dpi.json` pins the current jobs, and
+`test_the_300_dpi_goldens_are_the_a9c335f_jobs_rescaled` holds every coordinate within
+5 dots of the `a9c335f` one × 0,984 (font sizes, code modules and line weights keep their
+dots; a size fitted to a box shrinks with it).
 
 ### 4.9 Coordinates: across offset and the bounds guard
 
-- `_Frame` gains `across_px: int = 0` (`round(across_offset_mm × 12)`), and
+- `_Frame` gains `across_px: int = 0` (`mm_to_dots(across_offset_mm)`, §4.12), and
   `xm(reading_y) = h_px − reading_y + across_px`. `ym` is unchanged. Positive
   `across_offset_mm` raises machine x, i.e. moves the print toward the reading-top edge,
   which the pattern labels "L".
 - `werkstatt_label_jobs.fit_to_media(profile, lines, *, form_length_dots) -> list[str]`
   runs inside `_sheet` on every job (the element lines between `^L` and `E`). Bounds:
-  machine x within **[0, h_px]** (the `^W` region, `h_px = _mm(width)·12`, not the 564-dot
-  head); machine y ≥ 0, and for die-cut stock y ≤ `form_length_dots = _mm(length)·12`
+  machine x within **[0, h_px]** (the label, `h_px = mm_to_dots(width)`, not the head);
+  machine y ≥ 0, and for die-cut stock y ≤ `form_length_dots = mm_to_dots(length)`
   (continuous: no upper y bound, strips compute their own length). Per element:
   - `Lo,x1,y1,x2,y2` (x1 ≤ x2, y1 ≤ y2 as all renderers emit them): **clamped** —
     x to [0, h_px], y to [0, form length]; a line whose clamped extent is empty
@@ -1206,9 +1214,10 @@ golden fixture captured at `a9c335f` pins this (§8.1).
   - the measuring pattern when `pattern_supported` (§4.11).
 - `offset_limits(profile) -> OffsetLimits(x_min, x_max, across_min, across_max)` (mm,
   rounded inward to 0.1): render every sample with `across 0` and `x_offset 0`; collect
-  the raising elements' x extents (AT em box, XRB/Y anchor) and y anchors; then
-  `across_min = −min_x/12`, `across_max = (h_px − max_x)/12`, `x_min = −min_y/12`,
-  `x_max = (form_length − max_y)/12` for die-cut, `10` for continuous; intersect with the
+  the raising elements' x extents (AT em box, XRB/Y anchor) and y anchors; then (dots →
+  mm at 300 dpi) `across_min = −min_x/11,81`, `across_max = (h_px − max_x)/11,81`,
+  `x_min = −min_y/11,81`, `x_max = (form_length − max_y)/11,81` for die-cut, `10` for
+  continuous; intersect with the
   static ranges (x −5…10, across −5…5). `Lo` lines do not limit (they are clamped). Coordinates
   shift linearly with both offsets, so the limits are exact for the samples. Other content
   (another text length or font size) can still hit the guard at print time; the route then
@@ -1222,14 +1231,14 @@ golden fixture captured at `a9c335f` pins this (§8.1).
   message naming the limits (422 `invalid_material` on PUT, 400 string on PATCH, §6.3).
   `LabelMaterialOut.offset_limits` exposes the same numbers so the wizard can clamp or warn
   before it PUTs (§7.6).
-- Orientation (computed at `a9c335f` with these samples; the code computes them, tests do
-  not pin these values):
+- Orientation (computed at 300 dpi with these samples, without a logo file; the code
+  computes them, only the 210-804 row is pinned by a test):
 
   | Material | across (mm) | x_offset (mm) | Limiting sample |
   |---|---|---|---|
-  | 210-804 / -824 | −2,6 … +1,0 | −2,0 … 10,0 | voll (−), klein quad (+), quad (x) |
-  | 210-812 | −4,0 … +1,2 | −2,0 … 10,0 | kompakt |
-  | 210-805 | −0,5 … +0,5 | −1,0 … 10,0 | mini "F1.1" |
+  | 210-804 / -824 | −2,6 … +1,1 | −2,0 … 10,0 | voll (−), klein quad (+), quad (x) |
+  | 210-812 | −3,9 … +1,2 | −2,0 … 10,0 | kompakt |
+  | 210-805 | −0,5 … +0,5 | −1,1 … 10,0 | mini "F1.1" |
   | 211-501 | −0,7 … +0,6 | −2,0 … 10,0 | mini |
   | 2009-110 | −0,5 … +0,2 | −2,0 … 10,0 | block label (its top row sits 3 dots from the strip edge) |
 
@@ -1265,8 +1274,9 @@ and give meaningless A/B/L/R readings; offering an `x_offset` correction from it
 change 805's printing, which the owner excluded from this build. `pattern_job` raises
 `PatternUnsupported` (→ 422 `pattern_unsupported`, §6.3) for such profiles.
 
-**Die-cut** (h = `_mm(width)·12`, w = `_mm(length)·12`, inset `i = 24` dots (2 mm) when
-`min(W, L) ≥ 12`, else 12 (1 mm)):
+**Die-cut** (h = `mm_to_dots(width)`, w = `mm_to_dots(length)`, inset `i = mm_to_dots(2)` =
+24 dots when `min(W, L) ≥ 12`, else `mm_to_dots(1)` = 12; every other distance below is a
+physical millimetre through `mm_to_dots` — "1 mm" = 12, "3 mm" = 35, "4 mm" = 47 dots):
 
 | Element | Reading-frame placement (dots) | Condition |
 |---|---|---|
@@ -1274,17 +1284,17 @@ change 805's printing, which the owner excluded from this build. `pattern_job` r
 | Trailing line ("B") | x [w−i−t, w−i], y [i, h−i] | always |
 | Top line (edge "L") | y [i, i+t], x [i, w−i] | always |
 | Bottom line ("R") | y [h−i−t, h−i], x [i, w−i] | always |
-| Centre cross | feed arm x [w/2−a, w/2+a], y [h/2−1, h/2+1]; across arm x [w/2−1, w/2+1], y [h/2−a, h/2+a]; a = min(36, h/4, w/4) | always |
-| Letter "A" | `_at` size 36 at (i+t+12, h/2+48) | min(W, L) ≥ 20 |
-| Letter "L" | `_at` size 36 at (w/2+48, i+t+12) | min(W, L) ≥ 20 |
-| Text "SMPL KAL {part}" | `_at` size 24 at (i+t+12, i+t+12) | W ≥ 25 and L ≥ 50 |
-| Ruler | baseline y_r = h−i−t−12; tick k mm at x [12k−1, 12k+1], height 12 (minor) / 24 (k % 5 == 0) / 36 (k % 10 == 0) upward from y_r; numbers "10", "20" … size 24 centred over the 10-mm ticks at y_r−66 | L ≥ 50; k = 10 … `ruler_to` = 10·⌊(L−9)/10⌋ (90 on 210-804, 40 on 210-812) |
+| Centre cross | feed arm x [w/2−a, w/2+a], y [h/2−1, h/2+1]; across arm x [w/2−1, w/2+1], y [h/2−a, h/2+a]; a = min(3 mm, h/4, w/4) | always |
+| Letter "A" | `_at` size 36 at (i+t+1 mm, h/2+4 mm) | min(W, L) ≥ 20 |
+| Letter "L" | `_at` size 36 at (w/2+4 mm, i+t+1 mm) | min(W, L) ≥ 20 |
+| Text "SMPL KAL {part}" | `_at` size 24 at (i+t+1 mm, i+t+1 mm) | W ≥ 25 and L ≥ 50 |
+| Ruler | baseline y_r = h−i−t−1 mm; tick k mm centred on `mm_to_dots(k)`, 2 dots wide, height 1 mm (minor) / 2 mm (k % 5 == 0) / 3 mm (k % 10 == 0) upward from y_r; numbers "10", "20" … size 24 centred over the 10-mm ticks at y_r−5,5 mm. 10 → 90 = 945 dots = 80,0 mm at 300 dpi (it was 960 dots, printed 81,5 mm, T4) | L ≥ 50; k = 10 … `ruler_to` = 10·⌊(L−9)/10⌋ (90 on 210-804, 40 on 210-812) |
 
-Worked example 210-804 (`x_offset 2.0` → 24, `across 0`, h 528, w 1188, i 24) — the first
+Worked example 210-804 (`x_offset 2.0` → 24, `across 0`, h 520, w 1169, i 24) — the first
 lines are pinned exactly:
 
 ```
-^Q99,3
+^Q97,3
 ^W44
 ^H12
 ^S2
@@ -1292,24 +1302,26 @@ lines are pinned exactly:
 ^C1
 ^P1
 ^L
-Lo,24,48,504,51
-Lo,24,1185,504,1188
-Lo,501,48,504,1188
-Lo,24,48,27,1188
-Lo,263,582,265,654
-Lo,228,617,300,619
+Lo,24,48,496,51
+Lo,24,1166,496,1169
+Lo,493,48,496,1169
+Lo,24,48,27,1169
+Lo,259,573,261,643
+Lo,225,607,295,609
 …letters, text, ruler…
 E
 ```
 
-**Continuous** (pattern length `P` = 40 mm, 30 mm for `wago-211-501`; h = W·12,
-pw = P·12):
+**Continuous** (pattern length `P` = 40 mm, 30 mm for `wago-211-501`; h = `mm_to_dots(W)`,
+pw = `mm_to_dots(P)`):
 
-- side lines (2 dots) at y [12, 14] and [h−14, h−12], x [36, pw−36];
-- start/end bars (4 dots) at x [34, 38] and [pw−38, pw−34], y [12, h−12];
-- ticks every 5 mm from 5 to P−5 mm: 2 dots wide, height min(24, h/3) from y = 14 inward;
-- letter "L" size min(36, h−40) at (pw/2, 18) only when W ≥ 10;
-- header `^Q{round((pw + x_offset_px)/12)},0` (same rule as strips: 2009-110 → `^Q42,0`).
+- side lines (2 dots) 1 mm in: y [12, 14] and [h−14, h−12], x [3 mm, pw−3 mm];
+- start/end bars (4 dots) centred 3 mm in: x [33, 37] and [pw−37, pw−33], y [12, h−12];
+- ticks every 5 mm from 5 to P−5 mm: 2 dots wide on `mm_to_dots(k)`, height min(2 mm, h/3)
+  from y = 14 inward;
+- letter "L" size min(36, h−40) at (pw/2, 1,5 mm) only when W ≥ 10;
+- header `^Q{⌈(pw + x_offset_px)/12⌉},0` (same rule as strips: 2009-110 → 472 + 24 dots →
+  `^Q42,0`; tube 354 + 24 → `^Q32,0`).
 
 `PatternGeometry` (returned to the UI):
 `kind ("diecut"|"continuous"), width_mm, length_mm, inset_mm, line_mm 0.25, letters,
@@ -1326,7 +1338,7 @@ raw measurements; all inputs in mm, results rounded to 0.1 mm):
 | guide `fit`, L only | `across_new = across + (L − nominal)` |
 | guide `fit`, L and R | `across_new = across + (L − R)/2`; width check `(L + R) − 2·nominal`, \|…\| > 0.5 → info |
 | guide `max` | no across correction; info shows `L − R` |
-| ruler: nominal N (= `ruler_to − 10`), measured D | `scale = 12 · N / D` (2 decimals), info only |
+| ruler: nominal N (= `ruler_to − 10`), measured D | `scale = mm_to_dots(N) / D` (2 decimals), info only: 11,81 when the printer is true to 300 dpi |
 
 `nominal` = `i_mm` for die-cut, 1.0 mm for continuous. Continuous stock gets no feed
 correction (no edge to register against); `x_offset_mm` stays editable in the profile form.
@@ -1339,6 +1351,53 @@ rejects a value the wizard computed.
 A + B: the trailing line is placed from the profile length; when the real label is shorter
 (the printer measured 97,0 mm for 99 mm stock) B is small or the line falls into the gap —
 which is exactly why B is never used for the offset.
+
+### 4.12 Scale: physical dots and the printer's millimetre (after T4, 2026-10-13)
+
+T4 measured the 10 → 90 ruler drawn as 960 dots at 81,5 mm: the head and the feed are
+300 dpi (`^XGET,CONFIG`: "Y-axis resolution = 300 Dpi"), **11,811 dots per real mm**, not 12.
+The printer's OWN millimetre is dots / 12: it stores an auto-sensed `^QD1154,42` as
+`^Q96.2,3.5`, and every millimetre it RECEIVES in `^Q` and `^W` is converted at 12 dots.
+`^Q`/`^W` are documented with whole millimetres only — SMPL never sends decimals.
+
+Helpers (`services/werkstatt_label_profile.py`; web twin `utils/printerDots.ts`):
+
+| Helper | Meaning |
+|---|---|
+| `mm_to_dots(mm)` | physical mm → dots, `⌊mm × 300/25,4 + ½⌋`, rounded ONCE — sums of mm are converted as a sum (a strip's edge k is `mm_to_dots(lead + Σ widths)`, never a sum of rounded widths) |
+| `dots_to_mm(dots)` | dots → physical mm, unrounded |
+| `printer_mm(dots, cover=)` | dots → whole printer-mm (dots / 12) for `^Q`/`^W` only; `cover` rounds up |
+| `printer_width_mm(width)` | `^W = ⌈mm_to_dots(width) / 12⌉` |
+| `q_value(profile, content_dots=)` | die-cut: nearest printer-mm of length/gap/mark; continuous: `⌈max(content, 15 mm) / 12⌉` |
+
+Classification of every conversion (the guard test
+`test_no_rendering_module_converts_millimetres_with_12` keeps rendering modules off `12`):
+
+| Kind | Converted with | Where |
+|---|---|---|
+| Physical geometry: frame `h_px`/`w_px`, `x_offset`/`across_offset`, margins, insets, layout positions and boxes (voll, kompakt, quad incl. scissor dashes, article, box, type label, logo/QR boxes), strip lead, module pitches, cut marks, block cells, pattern box/ruler/ticks, strip pads | `mm_to_dots` | `werkstatt_labels`, `werkstatt_article_labels`, `werkstatt_box_labels`, `schaltplan_type_label`, `werkstatt_label_patterns`, `schaltplan_layout` / `schaltplan_terminals` (pads, strip height, fit budgets) |
+| Printer unit: `^Q`, `^W` | `printer_mm` from the dot totals | `job_header`, `setup_commands`, the apply readback compare |
+| Printer-unit comparisons: stored `^Q` vs `^QD`, echo of a `^Q` write | `DOTS_PER_MM = 12` | `werkstatt_label_verdict` |
+| Real mm shown or judged: verdict deltas, measured mm, calibration records | `PHYSICAL_DOTS_PER_MM` | verdict, settings view, router, web `labelCalibrationFormat` |
+| Pure dots: font sizes, DataMatrix/QR module sizes, line weights, `~Q`, `^R` | none | — |
+
+Layouts drawn in dots at 12 per mm until 2026-10 were converted once to millimetres
+(old dots / 12, to 0,1 mm), so they keep their proportions on the label; the crate
+sticker's matrix box is 17 mm so its 18 × 18 symbol keeps 11-dot modules. The machine
+label's logo box is now 295 × 109 dots, i.e. a new bitmap under a new content-hashed name
+(downloaded once). The profile semantics are unchanged: `x_offset_mm`/`across_offset_mm`
+are physical mm, the builtins are unchanged, and the saved 210-804 feed offset (−1,0 mm)
+keeps line A on the same dot (inset 24, offset −12).
+
+Effects on the builtins: 210-804/-824 `^Q99,3` → `^Q97,3`; 210-812 `^Q50,3` → `^Q49,3`;
+every `^W`, the 805's `^Q15,3` and the 15 mm minimum keep their numbers; a continuous
+job's `^Q` follows its content (a 12-module strip: 2551 + 24 dots → `^Q215,0` = 2580
+dots, was `^Q218,0` = 2616 dots — ≈ 3 mm less strip per rail, and the cut marks 210,0 mm
+apart instead of 213,4). The 11 mm strip is 130 dots
+across (was 132): the largest BMK font 95 → 93, "F1.1" on 17,5 mm 92 → 91, "1.1" on a
+5,2 mm terminal 36 → 35. The web preview uses the same 11,81 (`schaltplanStrip.DOTS_PER_MM`),
+pinned by `stripParityFixtures.json`, walked by both `test_label_strip_parity.py` and
+`schaltplanStripParity.test.ts`.
 
 ---
 
@@ -2895,7 +2954,7 @@ see the flow; the header change still reaches every print on deploy (§11).
 | **T1** Apply without feed | 804 loaded; owner watches for movement throughout; status full before and after every step, record the `^QD` line each time. (1) Full wizard steps 1–4 apply only, 210-804. (2) **`^Q` echo check**: apply 210-812 (`^Q50,3`, differs from the measured `^QD1164,30`) with 804 still loaded. (3) Profile sensor → Reflex, apply; back to Durchlicht, apply. (4) Apply 2009-110 (804 still loaded). (5) Apply 211-501 with "Kein Sensor" (`^XSET,SENSING,2`). (6) Apply 210-804 again — it sends `^XSET,SENSING,1`, the reset; T1 always ends here. | No movement. (1) `^W44 ^Q99,3`, line `See.…`; (2) **`^QD` unchanged** (still `1164,30`) — if it reads `600,36`, a `^Q` write echoes into `^QD`: record it; SMPL's verdicts do not depend on it (latch, §4.6), the readback shown after a switch does; (3) after `^G0` the line reads `Reflective…`(?); (4) `^W11 ^Q15,0`; (5)/(6) CONFIG cannot show `SENSING` — nothing to read; the effect of the reset is checked by T17 | 0 | Keeps "laut EZPL-Handbuch bewegt dieser Schritt kein Material" (or adds a confirm dialog); makes `sensor_ok` reliable for Reflex; answers the switch/reapply-without-resense readback question |
 | **T2** Auto-sense 210-804, pointer at 3,4 | Quick flow. Pen mark on the liner at the tear edge, run "Einmessen". The session logs `poll_codes`. Measure the fed length. | `^QD ≈ 1164,30`; verdict `match` (Δ −2,5 mm). Record: were 50/60 seen? Did `^Q` change 99,3 → 97,2? Sensor line still `See.` (does `~S,SENSOR` keep `^G`)? | 2–3 labels (≈ 20–30 cm) | Confirms freshness rules (if neither busy nor `^Q` change, only `qd_changed` remains → expect `unchecked` on re-sensing the same roll → phase-2 rule); corrects `AUTOSENSE_COST_HINT` |
 | **T3** Lid behaviour | No commands. Status full; open and close the lid; status full again. | Does `^QD`/`^Q` change? Does it feed? (`^XSET,WHENTOSENSING` cannot be read back) | 0, or 2–3 labels | Phase 1 already shows the ℹ line "kann … einmessen" and re-primes `^Q`/`^W` before the pre-sense snapshot. If closing the lid auto-senses: the ℹ line becomes a firm warning and phase 2 reorders apply before the lid |
-| **T4** Measuring pattern 210-804 | Full wizard step 5: print, measure A/B/L/R, ruler 10 → 90 with a steel rule; apply; reprint. Count labels per print. | A within 0,3 mm after one correction; ruler 80,0 mm (12 dots/mm) or ≈ 81,3 mm (H1); exactly one label per print | 2 labels | H1 decision (phase-2 scale); confirmed 804 offset |
+| **T4** Measuring pattern 210-804 | Full wizard step 5: print, measure A/B/L/R, ruler 10 → 90 with a steel rule; apply; reprint. Count labels per print. | A within 0,3 mm after one correction; ruler 80,0 mm (12 dots/mm) or ≈ 81,3 mm (H1); exactly one label per print. **After the scale fix (§4.12): ruler 80,0 mm** | 2 labels | H1 decision (phase-2 scale); confirmed 804 offset |
 | **T5** Job header, `^C`, `^P` | On 2009-110: (a) admin freetext copies 2 → count pieces (the trailing `^C1` must not shorten it); (b) a **raw** job without `^C`/`^P` (scratch script outside SMPL, owner's OK; e.g. `^Q20,0` `^W11` `^L` `AT,…,T5b` `E`) → count; (c) a raw job with `^P2` and no `^C` → count; (d) an SMPL single Testdruck → count. Watch the stop position of a normal job with `^E0` in its header. | (a) 2 pieces; (b) **exactly 1** (the trailing `^C1` reset SMPL's `^C2`); (c) 2 pieces; (d) **exactly 1** (`^P1` in the header beats the leftover `^P2`); no extra feed from the header | ≈ 6 pieces (≈ 25 cm) | Confirms owner decision 2 incl. `^P1` (§11 D1) and the trailing reset; if `^E` in the header feeds → `JOB_HEADER_SENDS_STOP = False`; if (a) prints fewer than 2 → move the reset (phase 2) |
 | **T6** 210-812 + wrong material | Load 210-812 (pointer at 3,4, guides open). Quick flow with **210-804** chosen. Then [Auf „Typenschilder 50 × 25“ umstellen] → apply → [Ergebnis prüfen]. Status full after the apply. Then one pattern in the full wizard. | `other_material` → 210-812; then `match` without new sensing, judged on the **latched** values (verdict shows `from_latch`); record `^QD` after the 812 apply (compare with T1 step 2) | ≈ 3 labels + 1–2 pattern labels | Confirms tolerance and the switch path; measured 812 gap. The switch/reapply-without-resense path stays [Unverified → T1] for the readback, not for the verdict |
 | **T7** 2009-110 continuous | External unwinder, guides 1 + 11 + 1, pointer at 3. Quick flow; owner's hand on the lid; record `^QD`, `^Q`, sensor line before/after; fed length and duration. Then a 40 mm pattern (L/R). | Expected "Continuous / See-Through"; does `^QD` change, gap 0? does `^Q` change? Does the sense stop by itself, and after how long? | unknown — stop at 70 cm by opening the lid + ≈ 4 cm | Continuous verdict rules (R5); cost hint for continuous (stays "Menge unbekannt" unless measured) |
@@ -2905,7 +2964,7 @@ see the flow; the header change still reaches every print on deploy (§11).
 | **T11** `~Q` write (phase 2) | Phase-2 build: restore sends the pinned `~Q-19`; read back. | `~Q-19`, no movement | 0 | Phase-2 restore action |
 | **T12** Error states | Open the lid → status shows 04 "Druckkopf offen"; close → 00. | 04 / 00 | 0 | Status texts; phase-2 `~S,CANCEL` test |
 | **T13** Readback while printing | Freetext copies 2 while the admin status line is polled. | 50/60 visible; the job prints correctly | 2 pieces | Confirms the I/O lock suffices; optional raw two-socket test needs the owner's OK |
-| **T14** H1 on a real rail | Print an existing 12-module BMK strip (17,5 mm/module); measure end mark to end mark. | 210,0 mm (12 dots/mm) or ≈ 213,4 mm (H1) | ≈ 22 cm | Phase-2 scale, together with T4 |
+| **T14** H1 on a real rail | Print an existing 12-module BMK strip (17,5 mm/module); measure end mark to end mark. | 210,0 mm (12 dots/mm) or ≈ 213,4 mm (H1). **After the scale fix (§4.12): 210,0 mm** | ≈ 22 cm | Confirms the scale fix, together with a T4 re-print |
 | **T15** `^G` inside a job (phase 2) | One job with `^G1` before `^L`. | No extra feed or re-sensing | 1 label | Phase-2 per-job sensor commands |
 | **T16** `~` inside text (optional) | Outside SMPL (scratch script, owner's OK): one job whose AT text contains `~S,STATUS`; read the socket. | A status reply ⇒ `~` is live inside text | 1 label | Documents the risk; SMPL strips `~`/`^` regardless |
 | **T17** `SENSING` carry-over | Right after T2 (804 loaded, pointer at 3,4): apply 211-501 with "Kein Sensor" (`SENSING,2`, no feed), then the quick flow on 210-804 (its apply sends `^XSET,SENSING,1`) and "Einmessen". | Same as T2: normal duration, `^QD ≈ 1164,30`, verdict `match`. A long gap search or 01/02 would mean the reset did not work. | 2–3 labels | Confirms that every apply's explicit `SENSING` (§4.4) resets a "Kein Sensor" apply |
@@ -3004,8 +3063,9 @@ see the flow; the header change still reaches every print on deploy (§11).
   example a tube darkness override, or `^Q15,0` after a strip). Which of these WAGO's
   software states itself is unknown; if the owner sees odd WAGO prints after SMPL jobs,
   this is the first suspect.
-- **H1** (scale 11.81 vs 12 dots/mm) remains open until T4/T14; phase 1 measures, never
-  applies.
+- **H1** (scale 11.81 vs 12 dots/mm) confirmed by T4 (ruler 81,5 mm); the renderers lay out
+  at 300 dpi since the scale fix (§4.12). Owner check still open: re-print the T4 pattern
+  (ruler must read 80,0) and T14 (a 12-module strip 210,0 mm end mark to end mark).
 - **No new dependencies** (`fcntl`, `tempfile`, `socket` are stdlib); no exposure change;
   the dependency audit before deploy still applies (security rules). The one migration
   (§3.1) runs on deploy; take the usual backup first (deploy runbook).

@@ -333,7 +333,7 @@ class PanelLabelsPrintOut(BaseModel):
     # One entry per continuous strip that went out; empty for die-cut labels.
     # Lengths count labelled devices only — blank covers take no strip.
     strips: list[PanelStripOut] = Field(default_factory=list)
-    # The ONE font size (printer dots, 12 per mm) every BMK on the board is
+    # The ONE font size (dots of the 300 dpi head, 11,81 per mm) every BMK on the board is
     # printed at — fitted over the whole board, not just the rails printed now.
     # None for die-cut labels, which are fitted one by one on their own stock.
     font_size_dots: int | None = None

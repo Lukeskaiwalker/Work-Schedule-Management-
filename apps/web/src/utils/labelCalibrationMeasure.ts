@@ -17,6 +17,7 @@
 import { SENSOR_GEOMETRY } from "../components/labelPrinter/sensorGeometry";
 import type { LabelMaterial, PatternGeometry } from "../types/labelPrinter";
 import { formatMmDe, targetOffsetMm, webWidthMm } from "./labelCalibrationFormat";
+import { DOTS_PER_MM, mmToDots } from "./printerDots";
 
 type Geometry = typeof SENSOR_GEOMETRY;
 
@@ -101,9 +102,13 @@ export function sensorTrack(
   return { kind, text, severity: "info" };
 }
 
-/** Dots per mm the printer really uses, from the printed ruler (2 decimals; info only). */
+/**
+ * Dots per mm the printer really feeds, from the printed ruler (2 decimals;
+ * info only). The ruler's `nominalMm` are drawn as `mmToDots(nominalMm)` dots
+ * (80 mm = 945), so a printer true to its 300 dpi reads 11,81.
+ */
 export function scaleFromRuler(nominalMm: number, measuredMm: number): number {
-  return Math.round(((12 * nominalMm) / measuredMm) * 100) / 100;
+  return Math.round((mmToDots(nominalMm) / measuredMm) * 100) / 100;
 }
 
 export interface OffsetInputs {
@@ -208,10 +213,11 @@ export function offsetCorrections(
   if (inputs.rulerMeasured !== null && geometry.ruler_to_mm !== null && geometry.ruler_from_mm !== null) {
     const nominalRuler = geometry.ruler_to_mm - geometry.ruler_from_mm;
     const scale = scaleFromRuler(nominalRuler, inputs.rulerMeasured).toFixed(2).replace(".", ",");
+    const assumed = DOTS_PER_MM.toFixed(2).replace(".", ",");
     infos.push(
       de
-        ? `Maßstab ≈ ${scale} Punkte je mm (SMPL rechnet mit 12) – nur zur Information`
-        : `Scale ≈ ${scale} dots per mm (SMPL uses 12) – for information only`,
+        ? `Maßstab ≈ ${scale} Punkte je mm (SMPL rechnet mit ${assumed}) – nur zur Information`
+        : `Scale ≈ ${scale} dots per mm (SMPL uses ${assumed}) – for information only`,
     );
   }
 

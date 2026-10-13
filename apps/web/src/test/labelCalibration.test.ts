@@ -218,9 +218,11 @@ describe("offsetCorrections", () => {
   });
 
   it("reports the ruler scale as information only", () => {
-    expect(scaleFromRuler(80, 81.3)).toBe(11.81);
+    // The ruler's 80 mm are 945 dots at 300 dpi: a printer true to it reads 80,0.
+    expect(scaleFromRuler(80, 80)).toBe(11.81);
+    expect(scaleFromRuler(80, 81.3)).toBe(11.62);
     const result = offsetCorrections(M804, DIECUT_804, { ...NO_INPUT, rulerMeasured: 81.3 });
-    expect(result.infos.join("\n")).toContain("Maßstab ≈ 11,81 Punkte je mm (SMPL rechnet mit 12)");
+    expect(result.infos.join("\n")).toContain("Maßstab ≈ 11,62 Punkte je mm (SMPL rechnet mit 11,81)");
   });
 });
 

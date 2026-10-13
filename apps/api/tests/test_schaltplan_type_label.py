@@ -154,8 +154,9 @@ def test_print_ships_the_blueprint_with_the_panel_data(client: TestClient, admin
     assert len(re.findall(r"^~EB,QR[0-9A-F]{8},\d+$", text, re.M)) == 1
     assert len(re.findall(r"^Y\d+,\d+,SMPL[0-9A-F]{8}$", text, re.M)) == 1
     assert len(re.findall(r"^Y\d+,\d+,QR[0-9A-F]{8}$", text, re.M)) == 1
-    # The 99 × 44 sheet, printed twice, in the validated rotation/encoding style.
-    assert "^Q99,3\n^W44\n^H12\n^S2\n^E0\n^C2\n^P1\n^L" in text
+    # The 99 × 44 sheet (^Q/^W in printer millimetres, 1169 + 35 × 520 dots),
+    # printed twice, in the validated rotation/encoding style.
+    assert "^Q97,3\n^W44\n^H12\n^S2\n^E0\n^C2\n^P1\n^L" in text
     assert text.rstrip().endswith("\nE\n^C1")
     at_lines = [line for line in text.splitlines() if line.startswith("AT,")]
     assert [line.split(",", 9)[-1] for line in at_lines] == [
@@ -174,9 +175,10 @@ def test_print_ships_the_blueprint_with_the_panel_data(client: TestClient, admin
     assert {parts[2] for parts in block} == {block[0][2]}
     contact = [line.split(",") for line in at_lines[3:5]]
     assert all(int(parts[2]) > int(block[0][2]) for parts in contact)
-    # The board's number: a DataMatrix bottom-left (reading x 41, y 360 → machine
-    # x = 528 - (360 + 120) = 48, y = 41 + 24 = 65) with the number beside it.
-    assert "XRB48,65,10,0,7\nVT-0001\n" in text
+    # The board's number: a DataMatrix bottom-left (reading x 3,4 mm = 40,
+    # y 30 mm = 354 → machine x = 520 - (354 + 120) = 46, y = 40 + 24 = 64)
+    # with the number beside it.
+    assert "XRB46,64,10,0,7\nVT-0001\n" in text
     number = at_lines[5].split(",")
     assert int(number[2]) > int(block[0][2]) and int(number[1]) < int(block[0][1])
 

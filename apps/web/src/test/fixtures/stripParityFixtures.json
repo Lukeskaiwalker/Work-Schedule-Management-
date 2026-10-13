@@ -1,0 +1,433 @@
+{
+  "dots_per_mm": 11.811023622047244,
+  "strip_width_mm": 11,
+  "max_font_dots": 93,
+  "boards": {
+    "twelve_breakers": {
+      "document": {
+        "rows": [
+          {
+            "id": "r1",
+            "devices": [
+              {
+                "id": "f1",
+                "kind": "mcb",
+                "designation": "F1.1",
+                "te": 1,
+                "width_mm": null
+              },
+              {
+                "id": "f2",
+                "kind": "mcb",
+                "designation": "F1.2",
+                "te": 1,
+                "width_mm": null
+              },
+              {
+                "id": "f3",
+                "kind": "mcb",
+                "designation": "F1.3",
+                "te": 1,
+                "width_mm": null
+              },
+              {
+                "id": "f4",
+                "kind": "mcb",
+                "designation": "F1.4",
+                "te": 1,
+                "width_mm": null
+              },
+              {
+                "id": "f5",
+                "kind": "mcb",
+                "designation": "F1.5",
+                "te": 1,
+                "width_mm": null
+              },
+              {
+                "id": "f6",
+                "kind": "mcb",
+                "designation": "F1.6",
+                "te": 1,
+                "width_mm": null
+              },
+              {
+                "id": "f7",
+                "kind": "mcb",
+                "designation": "F1.7",
+                "te": 1,
+                "width_mm": null
+              },
+              {
+                "id": "f8",
+                "kind": "mcb",
+                "designation": "F1.8",
+                "te": 1,
+                "width_mm": null
+              },
+              {
+                "id": "f9",
+                "kind": "mcb",
+                "designation": "F1.9",
+                "te": 1,
+                "width_mm": null
+              },
+              {
+                "id": "f10",
+                "kind": "mcb",
+                "designation": "F1.10",
+                "te": 1,
+                "width_mm": null
+              },
+              {
+                "id": "f11",
+                "kind": "mcb",
+                "designation": "F1.11",
+                "te": 1,
+                "width_mm": null
+              },
+              {
+                "id": "f12",
+                "kind": "mcb",
+                "designation": "F1.12",
+                "te": 1,
+                "width_mm": null
+              }
+            ]
+          }
+        ]
+      },
+      "font": [
+        71,
+        []
+      ],
+      "rails": [
+        {
+          "row_id": "r1",
+          "segments": [
+            {
+              "text": "F1.1",
+              "width_mm": 17.5,
+              "start_mm": 0.0
+            },
+            {
+              "text": "F1.2",
+              "width_mm": 17.5,
+              "start_mm": 17.5
+            },
+            {
+              "text": "F1.3",
+              "width_mm": 17.5,
+              "start_mm": 35.0
+            },
+            {
+              "text": "F1.4",
+              "width_mm": 17.5,
+              "start_mm": 52.5
+            },
+            {
+              "text": "F1.5",
+              "width_mm": 17.5,
+              "start_mm": 70.0
+            },
+            {
+              "text": "F1.6",
+              "width_mm": 17.5,
+              "start_mm": 87.5
+            },
+            {
+              "text": "F1.7",
+              "width_mm": 17.5,
+              "start_mm": 105.0
+            },
+            {
+              "text": "F1.8",
+              "width_mm": 17.5,
+              "start_mm": 122.5
+            },
+            {
+              "text": "F1.9",
+              "width_mm": 17.5,
+              "start_mm": 140.0
+            },
+            {
+              "text": "F1.10",
+              "width_mm": 17.5,
+              "start_mm": 157.5
+            },
+            {
+              "text": "F1.11",
+              "width_mm": 17.5,
+              "start_mm": 175.0
+            },
+            {
+              "text": "F1.12",
+              "width_mm": 17.5,
+              "start_mm": 192.5
+            }
+          ],
+          "length_mm": 210.0,
+          "cuts_dots": [
+            35,
+            242,
+            449,
+            656,
+            862,
+            1069,
+            1276,
+            1482,
+            1689,
+            1896,
+            2102,
+            2309,
+            2516
+          ],
+          "total_dots": 2551
+        }
+      ]
+    },
+    "mixed": {
+      "document": {
+        "rows": [
+          {
+            "id": "r1",
+            "devices": [
+              {
+                "id": "f1",
+                "kind": "rcd",
+                "designation": "F1",
+                "te": 4,
+                "width_mm": 70
+              },
+              {
+                "id": "f11",
+                "kind": "mcb",
+                "designation": "F1.1",
+                "te": 1,
+                "width_mm": null
+              },
+              {
+                "id": "f12",
+                "kind": "mcb",
+                "designation": "F1.2",
+                "te": 1,
+                "width_mm": 18
+              }
+            ]
+          },
+          {
+            "id": "r2",
+            "devices": [
+              {
+                "id": "f13",
+                "kind": "mcb",
+                "designation": "F1.3",
+                "te": 1,
+                "width_mm": null
+              },
+              {
+                "id": "b1",
+                "kind": "blank",
+                "designation": "B1",
+                "te": 1,
+                "width_mm": null
+              },
+              {
+                "id": "f14",
+                "kind": "mcb",
+                "designation": "",
+                "te": 1,
+                "width_mm": null
+              }
+            ]
+          },
+          {
+            "id": "r3",
+            "devices": [
+              {
+                "id": "f110",
+                "kind": "mcb",
+                "designation": "F1.10",
+                "te": 1,
+                "width_mm": null
+              },
+              {
+                "id": "q1",
+                "kind": "hauptschalter",
+                "designation": "Q1",
+                "te": 3,
+                "width_mm": null
+              }
+            ]
+          }
+        ]
+      },
+      "font": [
+        71,
+        []
+      ],
+      "rails": [
+        {
+          "row_id": "r1",
+          "segments": [
+            {
+              "text": "F1",
+              "width_mm": 70,
+              "start_mm": 0.0
+            },
+            {
+              "text": "F1.1",
+              "width_mm": 17.5,
+              "start_mm": 70.0
+            },
+            {
+              "text": "F1.2",
+              "width_mm": 18,
+              "start_mm": 87.5
+            }
+          ],
+          "length_mm": 105.5,
+          "cuts_dots": [
+            35,
+            862,
+            1069,
+            1281
+          ],
+          "total_dots": 1317
+        },
+        {
+          "row_id": "r2",
+          "segments": [
+            {
+              "text": "F1.3",
+              "width_mm": 17.5,
+              "start_mm": 0.0
+            }
+          ],
+          "length_mm": 17.5,
+          "cuts_dots": [
+            35,
+            242
+          ],
+          "total_dots": 278
+        },
+        {
+          "row_id": "r3",
+          "segments": [
+            {
+              "text": "F1.10",
+              "width_mm": 17.5,
+              "start_mm": 0.0
+            },
+            {
+              "text": "Q1",
+              "width_mm": 52.5,
+              "start_mm": 17.5
+            }
+          ],
+          "length_mm": 70.0,
+          "cuts_dots": [
+            35,
+            242,
+            862
+          ],
+          "total_dots": 898
+        }
+      ]
+    }
+  },
+  "blocks": [
+    {
+      "name": "PV Wechselrichter",
+      "x_label": "X1",
+      "cells": [
+        [
+          "N",
+          12
+        ],
+        [
+          "L1",
+          12
+        ],
+        [
+          "L2",
+          12
+        ],
+        [
+          "L3",
+          12
+        ],
+        [
+          "PE",
+          12
+        ]
+      ],
+      "length_mm": 60,
+      "row_sizes": [
+        34,
+        34
+      ],
+      "cell_sizes": [
+        34,
+        34,
+        34,
+        34,
+        34
+      ],
+      "cuts_dots": [
+        35,
+        177,
+        319,
+        461,
+        602,
+        744
+      ]
+    },
+    {
+      "name": "Wallbox Garage Nord",
+      "x_label": "X12",
+      "cells": [
+        [
+          "N",
+          5.2
+        ],
+        [
+          "L1.1",
+          5.2
+        ],
+        [
+          "L2.1",
+          5.2
+        ],
+        [
+          "L3.1",
+          5.2
+        ],
+        [
+          "PE",
+          6.2
+        ]
+      ],
+      "length_mm": 27.0,
+      "row_sizes": [
+        31,
+        34
+      ],
+      "cell_sizes": [
+        34,
+        25,
+        25,
+        25,
+        34
+      ],
+      "cuts_dots": [
+        35,
+        97,
+        158,
+        220,
+        281,
+        354
+      ]
+    }
+  ]
+}

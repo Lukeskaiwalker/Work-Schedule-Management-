@@ -63,16 +63,17 @@ def test_quick_flow_end_to_end(client: TestClient, admin_token: str, printer) ->
 
     applied = step(client, admin_token, sid, "apply")
     printer.wait_for_connections(3)
-    assert printer.received == [b"~S,STATUS\r\n", b"^G1\r\n^XSET,SENSING,1\r\n^Q99,3\r\n^W44\r\n", b"^XGET,CONFIG\r\n"]
-    assert applied["commands"] == ["^G1", "^XSET,SENSING,1", "^Q99,3", "^W44"]
+    # 99 + 3 × 44 mm in the printer's millimetres (dots / 12 of 1169 + 35 × 520 dots).
+    assert printer.received == [b"~S,STATUS\r\n", b"^G1\r\n^XSET,SENSING,1\r\n^Q97,3\r\n^W44\r\n", b"^XGET,CONFIG\r\n"]
+    assert applied["commands"] == ["^G1", "^XSET,SENSING,1", "^Q97,3", "^W44"]
     # The readback shows the profile's ^W/^Q and sensor: confirmed.
     assert (applied["confirmed"], applied["mismatches"], applied["session"]["applied"]) == (True, [], True)
-    assert applied["config"]["stored_q"] == "99,3" and applied["config"]["width_mm"] == 44
+    assert applied["config"]["stored_q"] == "97,3" and applied["config"]["width_mm"] == 44
 
     sensing = step(client, admin_token, sid, "autosense", {"confirm_feed": True})
     printer.wait_for_connections(7)
-    assert printer.received[3:7] == [b"~S,STATUS\r\n", b"^Q99,3\r\n^W44\r\n", b"^XGET,CONFIG\r\n", b"~S,SENSOR\r\n"]
-    assert sensing["presense"] == {"stored_q": "99,3", "measured_length_dots": 1164, "measured_gap_dots": 30, "apply_confirmed": True}
+    assert printer.received[3:7] == [b"~S,STATUS\r\n", b"^Q97,3\r\n^W44\r\n", b"^XGET,CONFIG\r\n", b"~S,SENSOR\r\n"]
+    assert sensing["presense"] == {"stored_q": "97,3", "measured_length_dots": 1164, "measured_gap_dots": 30, "apply_confirmed": True}
     assert sensing["status_answered"] is True
     assert sensing["cost_hint"] == "voraussichtlich 2–3 Etiketten (≈ 20–30 cm, Schätzung)"
     assert sensing["session"]["phase"] == "sensing"
@@ -105,8 +106,8 @@ def test_quick_flow_end_to_end(client: TestClient, admin_token: str, printer) ->
 
         state = read_state(db)
     stored = state["calibrations"]["wago-210-804"]
-    assert stored["by_id"] == 1 and stored["stored_q_before"] == "99,3" and stored["poll_codes"] == ["60", "60", "00"]
-    assert state["last_applied"]["commands"] == ["^G1", "^XSET,SENSING,1", "^Q99,3", "^W44"]
+    assert stored["by_id"] == 1 and stored["stored_q_before"] == "97,3" and stored["poll_codes"] == ["60", "60", "00"]
+    assert state["last_applied"]["commands"] == ["^G1", "^XSET,SENSING,1", "^Q97,3", "^W44"]
     chip = next(m for m in settings(client, admin_token)["materials"] if m["id"] == "wago-210-804")["calibration"]
     assert chip["verdict"] == "match" and chip["kind"] == "quick"
 
@@ -214,7 +215,7 @@ def test_an_apply_is_recorded_although_the_session_was_lost(client, admin_token,
     monkeypatch.setattr(calibration, "_read_config", readback_then_taken_over)
     lost = step(client, admin_token, sid, "apply", expect=409)
     assert lost["detail"]["code"] == "session_lost"
-    commands = ["^G1", "^XSET,SENSING,1", "^Q99,3", "^W44"]
+    commands = ["^G1", "^XSET,SENSING,1", "^Q97,3", "^W44"]
     last = _last_applied()
     # The readback answered, so the record says what the printer confirmed.
     assert (last["material_id"], last["commands"], last["confirmed"]) == ("wago-210-804", commands, True)
@@ -305,7 +306,7 @@ def test_a_cut_presense_read_proves_nothing(client, admin_token, printer, cut_re
     printer.config_cuts = ["^QD1164,3"] * cut_reads
     sensing = step(client, admin_token, sid, "autosense", {"confirm_feed": True})
     if cut_reads == 1:
-        assert sensing["presense"] == {"stored_q": "99,3", "measured_length_dots": 1164, "measured_gap_dots": 30, "apply_confirmed": True}
+        assert sensing["presense"] == {"stored_q": "97,3", "measured_length_dots": 1164, "measured_gap_dots": 30, "apply_confirmed": True}
     else:
         assert sensing["presense"] == {"stored_q": None, "measured_length_dots": None, "measured_gap_dots": None, "apply_confirmed": None}
     assert step(client, admin_token, sid, "poll")["phase"] == "done"
@@ -416,7 +417,7 @@ def test_switch_material_judges_the_latch_not_the_echo(client, admin_token, prin
     switched = step(client, admin_token, sid, "activate", {"material_id": "wago-210-812"})
     assert (switched["applied"], switched["sensed"], switched["verdict"]) == (False, True, None)
     step(client, admin_token, sid, "apply")
-    assert printer.qd == (600, 36)  # the ^Q50,3 write echoed into ^QD
+    assert printer.qd == (588, 36)  # the ^Q49,3 write (50 mm = 591 dots) echoed into ^QD
     result = _verify(client, admin_token, sid)
     assert (result["verdict"], result["from_latch"], result["freshness"]) == ("match", True, "busy_seen")
     assert (result["measured_length_dots"], result["measured_gap_dots"]) == (601, 30)
@@ -600,10 +601,10 @@ def test_pattern_full_flow(client, admin_token, printer) -> None:
     printer.wait_for_jobs(printed + 1)
     assert result["cost_hint"] == "1 Etikett" and result["geometry"]["ruler_to_mm"] == 90
     job = printer.jobs_printed[-1]
-    assert job[:6] == ["Lo,24,48,504,51", "Lo,24,1185,504,1188", "Lo,501,48,504,1188", "Lo,24,48,27,1188", "Lo,263,582,265,654", "Lo,228,617,300,619"]
+    assert job[:6] == ["Lo,24,48,496,51", "Lo,24,1166,496,1169", "Lo,493,48,496,1169", "Lo,24,48,27,1169", "Lo,259,573,261,643", "Lo,225,607,295,609"]
     assert printer.pieces_printed[-1] == 1
     writes = _lock()["sense"]["writes_since_sense"]
-    assert writes[-1]["kind"] == "pattern" and writes[-1]["q"] == "99,3"
+    assert writes[-1]["kind"] == "pattern" and writes[-1]["q"] == "97,3"
     assert result["session"]["phase"] == "judged"
     record = step(client, admin_token, sid, "save", {"pattern": {"lead_mm": 2.4, "left_mm": 2.0}})
     assert record["kind"] == "full" and record["pattern"]["lead_mm"] == 2.4

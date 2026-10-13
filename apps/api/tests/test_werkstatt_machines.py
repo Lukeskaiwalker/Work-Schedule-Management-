@@ -684,8 +684,9 @@ def test_print_label_sends_one_ezpl_job_to_the_printer(
 
     job = payload.decode("utf-8")
     lines = job.splitlines()
-    # A complete EZPL job: media geometry, label block, terminator that prints.
-    assert lines[0] == "^Q99,3"
+    # A complete EZPL job: media geometry (99 + 3 mm in printer millimetres),
+    # label block, terminator that prints.
+    assert lines[0] == "^Q97,3"
     assert "^W44" in lines
     assert "^L" in lines
     assert lines[-1] == "E"

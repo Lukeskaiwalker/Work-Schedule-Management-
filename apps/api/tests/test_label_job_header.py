@@ -1,10 +1,23 @@
 """Every SMPL job states its baseline; the guard keeps it on the material.
 
-The golden jobs were captured from the renderers of a9c335f before this
-change (tests/fixtures/label_jobs_a9c335f.json). Accepted byte changes, and
-nothing else: the header gains ``^H ^S ^E ^C ^P1`` after ``^Q``/``^W``, a
-copies job ends with a ``^C1`` reset, ``_clean`` blanks ``~``/``^``, and
-``Lo`` lines that would leave the media are clamped (none in the goldens).
+Two golden files. ``label_jobs_a9c335f.json`` was captured from the
+renderers of a9c335f, which laid out at 12 dots per mm; it is kept as the
+reference the current jobs are derived from. ``label_jobs_300dpi.json`` pins
+the current jobs byte for byte. Accepted changes between the two, and
+nothing else:
+
+* the header gains ``^H ^S ^E ^C ^P1`` after ``^Q``/``^W``, a copies job ends
+  with a ``^C1`` reset, ``_clean`` blanks ``~``/``^``, and ``Lo`` lines that
+  would leave the media are clamped (none in the goldens);
+* the 300 dpi correction (physical test T4, 13.10.2026): every position is
+  the a9c335f one × 300 / 25,4 / 12 ≈ 0,984 — within 5 dots, because font
+  sizes, code modules and line weights keep their dots (and the crate
+  sticker's text column keeps its place beside its unchanged 18 × 18
+  matrix); a size fitted to a box shrinks with it (≈ 0,984 ×, ±1); and
+  ``^Q``/``^W`` are the printer's millimetres of the physical dots
+  (99 + 3 × 44 mm → ``^Q97,3 ^W44``, 50 + 3 mm → ``^Q49,3``).
+
+``tests/test_label_physical_scale.py`` pins the scale itself.
 """
 
 from __future__ import annotations
@@ -28,11 +41,13 @@ from app.services.werkstatt_label_errors import LabelFormatUnsupported, LabelLay
 from app.services.werkstatt_label_jobs import dry_render_checks, dry_render_samples, fit_to_media, offset_limits
 from app.services.werkstatt_label_materials import get_label_printer_config, material_by_id
 from app.services.werkstatt_label_patterns import pattern_supported
-from app.services.werkstatt_label_profile import MaterialProfile
+from app.services.werkstatt_label_profile import PHYSICAL_DOTS_PER_MM, MaterialProfile, mm_to_dots
 from tests.conftest import auth_headers
 from tests.label_calibration_helpers import A, settings
 
 GOLDEN = json.loads((Path(__file__).parent / "fixtures" / "label_jobs_a9c335f.json").read_text(encoding="utf-8"))
+GOLDEN_300DPI = json.loads((Path(__file__).parent / "fixtures" / "label_jobs_300dpi.json").read_text(encoding="utf-8"))
+SCALE = PHYSICAL_DOTS_PER_MM / 12  # a9c335f dot → 300 dpi dot
 COPIES = {"211_freetext_X1_copies3": 3, "804_type_label_copies2": 2}
 MACHINE = wl.LabelContent("M-0042", "Makita Akkuschrauber DDF485", "Makita", "SN123456")
 
@@ -68,16 +83,61 @@ def _split(job: list[str]) -> tuple[list[str], list[str], list[str]]:
     return job[:start], job[start + 1:end], job[end:]
 
 
-def test_golden_jobs_gain_exactly_the_baseline_header() -> None:
+def test_golden_jobs_are_pinned_at_300_dpi() -> None:
     new = render_golden(list(DEFAULT_MATERIALS))
-    assert set(new) == set(GOLDEN)
-    for name, old in GOLDEN.items():
+    assert set(new) == set(GOLDEN) == set(GOLDEN_300DPI)
+    for name, job in GOLDEN_300DPI.items():
         copies = COPIES.get(name, 1)
-        assert new[name][:2] == old[:2], name
-        assert new[name][2:7] == ["^H12", "^S2", "^E0", f"^C{copies}", "^P1"], name
-        assert new[name][7] == "^L", name
-        assert _split(new[name])[1] == _split(old)[1], f"{name}: element lines changed"
-        assert _split(new[name])[2] == (["E", "^C1"] if copies > 1 else ["E"]), name
+        assert new[name] == job, f"{name}: job changed"
+        assert job[2:7] == ["^H12", "^S2", "^E0", f"^C{copies}", "^P1"], name
+        assert job[7] == "^L", name
+        assert _split(job)[2] == (["E", "^C1"] if copies > 1 else ["E"]), name
+
+
+# The a9c335f header → the 300 dpi one: printer millimetres of the physical dots.
+PRINTER_MM_HEADERS = {
+    ("^Q99,3", "^W44"): ("^Q97,3", "^W44"),  # 1169 + 35 dots, 520 dots
+    ("^Q50,3", "^W25"): ("^Q49,3", "^W25"),  # 591 + 35 dots, 295 dots
+    ("^Q15,3", "^W6"): ("^Q15,3", "^W6"),  # 177 + 35 dots, 71 dots
+    ("^Q60,0", "^W11"): ("^Q60,0", "^W11"),  # strip 58,5 mm + offset: 691 + 24 dots → 59,6 → 60
+    ("^Q33,0", "^W11"): ("^Q33,0", "^W11"),  # block 31 mm + offset: 366 + 24 dots → 32,5 → 33
+    ("^Q15,0", "^W5"): ("^Q15,0", "^W5"),  # the 15 mm minimum: 177 dots → 14,75 → 15
+}
+
+
+def _numbers(line: str) -> tuple[str, list[int], list[int], str]:
+    """(kind, coordinates, sizes, payload) of one element line."""
+    if line.startswith("AT,"):
+        parts = line.split(",", 9)
+        return "AT", [int(parts[1]), int(parts[2])], [int(parts[3]), int(parts[4])], parts[9]
+    if line.startswith("Lo,"):
+        return "Lo", [int(part) for part in line.split(",")[1:]], [], ""
+    if line.startswith("XRB"):
+        parts = line[3:].split(",")
+        return "XRB", [int(parts[0]), int(parts[1])], [int(parts[2])], parts[4]
+    if line.startswith("Y"):
+        parts = line[1:].split(",")
+        return "Y", [int(parts[0]), int(parts[1])], [], parts[2]
+    return "data", [], [], line
+
+
+def test_the_300_dpi_goldens_are_the_a9c335f_jobs_rescaled() -> None:
+    """Deliberate regeneration: nothing moved but by the scale."""
+    for name, old in GOLDEN.items():
+        new = GOLDEN_300DPI[name]
+        assert (new[0], new[1]) == PRINTER_MM_HEADERS[(old[0], old[1])], name
+        old_elements, new_elements = _split(old)[1], _split(new)[1]
+        assert len(old_elements) == len(new_elements), name
+        for old_line, new_line in zip(old_elements, new_elements):
+            old_kind, old_xy, old_sizes, old_payload = _numbers(old_line)
+            new_kind, new_xy, new_sizes, new_payload = _numbers(new_line)
+            assert (new_kind, new_payload) == (old_kind, old_payload), (name, old_line, new_line)
+            for before, after in zip(old_xy, new_xy):
+                assert abs(after - before * SCALE) <= 5, (name, old_line, new_line)
+            if new_kind == "XRB":
+                assert new_sizes == old_sizes, (name, "a code module keeps its dots")
+            for before, after in zip(old_sizes, new_sizes):
+                assert after == before or abs(after - before * SCALE) <= 1, (name, old_line, new_line)
 
 
 def test_baseline_and_override_resolve_into_every_job(client: TestClient, admin_token: str) -> None:
@@ -123,7 +183,7 @@ def test_clean_blanks_command_prefixes() -> None:
 
 
 def test_across_offset_shifts_machine_x() -> None:
-    # +1 mm is inside the limits of 210-804 (+1,0) and 210-812 (+1,2) only.
+    # +1 mm is inside the limits of 210-804 (+1,1) and 210-812 (+1,2) only.
     shifted_materials = [
         replace(profile, across_offset_mm=1.0) if profile.id in ("wago-210-804", "wago-210-812") else profile
         for profile in DEFAULT_MATERIALS
@@ -137,25 +197,28 @@ def test_across_offset_shifts_machine_x() -> None:
         "804_box_label": box.render_box_label(m["wago-210-804"], box.BoxLabelContent("KISTE-BK-2026-0001", "BK-2026-0001", "Kiste Wallbox"))[0],
         "812_kompakt": wl._render_kompakt(m["wago-210-812"], MACHINE),
     }
+    across = mm_to_dots(1.0)
+    assert across == 12
     for name in shifted:
-        old_elements = _split(GOLDEN[name])[1]
+        old_elements = _split(GOLDEN_300DPI[name])[1]
         new_elements = _split(shifted[name])[1]
         assert len(old_elements) == len(new_elements), name
         for old, new in zip(old_elements, new_elements):
             if old.startswith("AT,"):
-                assert int(new.split(",")[1]) == int(old.split(",")[1]) + 12, name
+                assert int(new.split(",")[1]) == int(old.split(",")[1]) + across, name
             elif old.startswith("XRB") or (old.startswith("Y") and re.match(r"^Y\d+,", old)):
-                assert int(re.match(r"^\D+(\d+)", new).group(1)) == int(re.match(r"^\D+(\d+)", old).group(1)) + 12, name
+                assert int(re.match(r"^\D+(\d+)", new).group(1)) == int(re.match(r"^\D+(\d+)", old).group(1)) + across, name
 
 
 # ── The guard ──────────────────────────────────────────────────────────────
 
-P804 = DEFAULT_MATERIALS[0]  # h_px 528, form length 1188
+P804 = DEFAULT_MATERIALS[0]  # h_px 520 (44 mm), form length 1169 (99 mm) at 300 dpi
 
 
 def test_lo_is_clamped_or_dropped() -> None:
-    out = fit_to_media(P804, ["Lo,500,10,540,20", "Lo,600,10,700,20", "Lo,10,1180,20,1200", "Lo,0,0,528,1188"], form_length_dots=1188)
-    assert out == ["Lo,500,10,528,20", "Lo,10,1180,20,1188", "Lo,0,0,528,1188"]
+    assert (mm_to_dots(P804.width_mm), mm_to_dots(P804.length_mm)) == (520, 1169)
+    out = fit_to_media(P804, ["Lo,500,10,540,20", "Lo,600,10,700,20", "Lo,10,1160,20,1200", "Lo,0,0,520,1169"], form_length_dots=1169)
+    assert out == ["Lo,500,10,520,20", "Lo,10,1160,20,1169", "Lo,0,0,520,1169"]
 
 
 def test_text_leaving_the_material_raises() -> None:
@@ -181,8 +244,8 @@ def test_matrix_data_line_passes_untouched() -> None:
 
 def test_no_golden_job_is_clamped_or_raises() -> None:
     new = render_golden(list(DEFAULT_MATERIALS))
-    for name, old in GOLDEN.items():
-        assert _split(new[name])[1] == _split(old)[1], name
+    for name, job in GOLDEN_300DPI.items():
+        assert _split(new[name])[1] == _split(job)[1], name
 
 
 @pytest.mark.parametrize("material_id", ["wago-2009-110", "wago-211-501", "wago-210-812"])

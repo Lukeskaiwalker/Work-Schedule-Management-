@@ -361,5 +361,6 @@ def test_get_shape_and_hints(client: TestClient, admin_token: str) -> None:
     assert by_id["wago-2009-110"]["pattern_cost_hint"] == "≈ 42 mm Streifen (Schätzung)"
     assert by_id["wago-211-501"]["pattern_cost_hint"] == "≈ 32 mm Schlauch (Schätzung)"
     assert by_id["wago-210-804"]["autosense_cost_hint"] == "voraussichtlich 2–3 Etiketten (≈ 20–30 cm, Schätzung)"
-    assert by_id["wago-210-804"]["offset_limits"] == {"x_min": -2.0, "x_max": 10.0, "across_min": -2.6, "across_max": 1.0}
+    # At 300 dpi the quad's top text ends 13 dots (1,1 mm) inside the edge — 12 dots (1,0) at 12 per mm.
+    assert by_id["wago-210-804"]["offset_limits"] == {"x_min": -2.0, "x_max": 10.0, "across_min": -2.6, "across_max": 1.1}
     assert by_id["wago-210-804"]["resolved"] == {"darkness": 12, "speed_ips": 2, "stop_mm": 0}

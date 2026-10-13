@@ -40,6 +40,7 @@ from sqlalchemy.orm import Session
 
 from app.services import werkstatt_labels as wl
 from app.services.werkstatt_label_materials import TIER_VOLL, MaterialProfile, active_material
+from app.services.werkstatt_label_profile import mm_to_dots
 
 # ── Fixed branding (owner's blueprint) ────────────────────────────────────────
 
@@ -51,33 +52,34 @@ TYPE_LABEL_CONTACT_LINES: tuple[str, ...] = ("info@smpl-energy.de", "02302/ 2894
 LOCAL_TZ = ZoneInfo("Europe/Berlin")
 BUILD_MONTH_RE = re.compile(r"^(0[1-9]|1[0-2])\.(\d{4})$")
 
-# ── Blueprint geometry, reading frame in printer dots (12 per mm) ─────────────
+# ── Blueprint geometry: positions in mm, modules and fonts in dots ───────────
 #
-# Positions are the blueprint's, scaled from Smart Script units to dots
-# (x: 99 mm / 1854.5 units, y: 44 mm / 840 units, both × 12 dots/mm).
-_LOGO_X, _LOGO_Y, _LOGO_BOX_W, _LOGO_BOX_H = 35, 25, 388, 178
-# The QR component's box is 268 × 225 dots; the symbol is square and sits
+# Positions are the blueprint's, scaled from Smart Script units to the
+# label's millimetres (x: 99 mm / 1854.5 units, y: 44 mm / 840 units).
+_LOGO_X, _LOGO_Y, _LOGO_BOX_W, _LOGO_BOX_H = mm_to_dots(2.9), mm_to_dots(2.1), mm_to_dots(32.3), mm_to_dots(14.8)
+# The QR component's box is 22,3 × 18,8 mm; the symbol is square and sits
 # centred in the box's width at the box's top.
-_QR_BOX_X, _QR_BOX_Y, _QR_BOX_W = 920, 13, 268
-_QR_MODULE_PX = 7  # 0.58 mm per module — a version-2 symbol prints 19 mm wide
+_QR_BOX_X, _QR_BOX_Y, _QR_BOX_W = mm_to_dots(76.7), mm_to_dots(1.1), mm_to_dots(22.3)
+_QR_MODULE_PX = 7  # dots: 0,59 mm per module — a version-2 symbol prints 19,6 mm wide
 _QR_QUIET_MODULES = 4
 # The three-line block: bold 3.4 mm text in the blueprint; the printer's
 # built-in TTF has no bold, so the size carries the weight. The width budget
 # runs past the blueprint's box to the edge of the contact block: a long
 # customer name then keeps the size instead of shrinking the whole block.
-_TEXT_X, _TEXT_BUDGET = 41, 600
-_TEXT_LINES_Y = (205, 247, 289)
+_TEXT_X, _TEXT_BUDGET = mm_to_dots(3.4), mm_to_dots(50)
+_TEXT_LINES_Y = (mm_to_dots(17.1), mm_to_dots(20.6), mm_to_dots(24.1))
 _TEXT_SIZE_MAX, _TEXT_SIZE_MIN = 42, 26
-# The contact block: centred in the blueprint's box (x 668..1177, y 384..507).
-_CONTACT_CENTER_X, _CONTACT_BUDGET = 922, 500
-_CONTACT_LINES_Y = (404, 446)
+# The contact block: centred in the blueprint's box (x 55,7…98,1 mm, y 32…42,3 mm).
+_CONTACT_CENTER_X, _CONTACT_BUDGET = mm_to_dots(76.8), mm_to_dots(41.7)
+_CONTACT_LINES_Y = (mm_to_dots(33.7), mm_to_dots(37.2))
 _CONTACT_SIZE = 40
-# The board's number, bottom-left under the text block (x 24..668, y 331..504
-# is free there): a 12 × 12 DataMatrix ("VT-0007" is five codewords) at
-# 10 dots a module = 10 mm, the number beside it at the text block's size.
-_NUMBER_DM_X, _NUMBER_DM_Y, _NUMBER_DM_MODULE = 41, 360, 10
-_NUMBER_DM_SIZE = 12 * _NUMBER_DM_MODULE
-_NUMBER_TEXT_X = _NUMBER_DM_X + _NUMBER_DM_SIZE + 24
+# The board's number, bottom-left under the text block (x 2…55,7 mm,
+# y 27,6…42 mm is free there): a 12 × 12 DataMatrix ("VT-0007" is five
+# codewords) at 10 dots a module ≈ 10 mm, the number beside it at the text
+# block's size.
+_NUMBER_DM_X, _NUMBER_DM_Y, _NUMBER_DM_MODULE = mm_to_dots(3.4), mm_to_dots(30), 10
+_NUMBER_DM_SIZE = wl._SYMBOL_MODULES * _NUMBER_DM_MODULE
+_NUMBER_TEXT_X = _NUMBER_DM_X + _NUMBER_DM_SIZE + mm_to_dots(2)
 _NUMBER_TEXT_SIZE = 42
 _NUMBER_TEXT_Y = _NUMBER_DM_Y + (_NUMBER_DM_SIZE - _NUMBER_TEXT_SIZE) // 2
 

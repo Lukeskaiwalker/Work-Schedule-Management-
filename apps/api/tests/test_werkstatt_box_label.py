@@ -16,10 +16,12 @@ from fastapi.testclient import TestClient
 from app.services import werkstatt_box_labels as bl
 from app.services import werkstatt_labels
 from app.services.werkstatt_label_materials import DEFAULT_MATERIALS
+from app.services.werkstatt_label_profile import mm_to_dots
 from tests.conftest import auth_headers
 
 VOLL = DEFAULT_MATERIALS[0]
-FRAME_W = 99 * 12
+# The 99 × 44 sheet in 300 dpi dots; the print origin sits 2 mm (24 dots) early.
+FRAME_W, FRAME_H, X_OFFSET = mm_to_dots(99), mm_to_dots(44), mm_to_dots(2)
 
 
 @pytest.fixture(autouse=True)
@@ -61,21 +63,23 @@ def test_the_matrix_is_anchored_for_its_real_symbol_and_the_code_stays_in_the_le
     job, assets = bl.render_box_label(VOLL, bl.BoxLabelContent("KISTE-BK-2026-0001", "BK-2026-0001", "Kiste Wallbox Müller Garage"))
     module, modules = bl._module_for("KISTE-BK-2026-0001")
     assert (module, modules) == (11, 18)
-    symbol = module * modules  # 198 dots — inside the 200-dot box
-    # Reading bottom = 96 + 198 = 294 → machine x = 528 - 294; reading left 36 → machine y = 36 + 24.
-    assert f"XRB{528 - (bl._DM_Y + symbol)},{bl._DM_X + 24},{module},0,18" in job
-    assert job[job.index(f"XRB{528 - (bl._DM_Y + symbol)},{bl._DM_X + 24},{module},0,18") + 1] == "KISTE-BK-2026-0001"
+    symbol = module * modules  # 198 dots — inside the 17 mm (201-dot) box
+    assert symbol <= bl._DM_BOX == 201
+    # Reading bottom = 94 + 198 = 292 → machine x = 520 - 292; reading left 35 → machine y = 35 + 24.
+    assert (FRAME_W, FRAME_H, X_OFFSET, bl._DM_X, bl._DM_Y) == (1169, 520, 24, 35, 94)
+    assert f"XRB{FRAME_H - (bl._DM_Y + symbol)},{bl._DM_X + X_OFFSET},{module},0,18" in job
+    assert job[job.index(f"XRB{FRAME_H - (bl._DM_Y + symbol)},{bl._DM_X + X_OFFSET},{module},0,18") + 1] == "KISTE-BK-2026-0001"
 
     texts = _at_lines(job)
     assert [t for _, _, _, t in texts] == ["KISTE-BK-2026-0001", "BK-2026-0001", "Kiste Wallbox Müller Garage", "Baustellenkiste"]
     code_x, code_y, code_size, _ = texts[0]
     # The code text starts under the matrix and never reaches the text column.
-    assert code_y == bl._DM_X + 24 and code_x == 528 - (bl._DM_Y + symbol + 14)
+    assert code_y == bl._DM_X + X_OFFSET and code_x == FRAME_H - (bl._DM_Y + symbol + mm_to_dots(1.2))
     assert werkstatt_labels._est_text_w("KISTE-BK-2026-0001", code_size) <= bl._COL_X - bl._DM_X
     # The headline is fitted so it ends before the logo box on the right.
     _, head_y, head_size, head = texts[1]
-    assert head_y == bl._COL_X + 24
-    assert bl._COL_X + werkstatt_labels._est_text_w(head, head_size) <= FRAME_W - bl._LOGO_X - bl._LOGO_BOX_W - 20
+    assert head_y == bl._COL_X + X_OFFSET
+    assert bl._COL_X + werkstatt_labels._est_text_w(head, head_size) <= FRAME_W - bl._LOGO_X - bl._LOGO_BOX_W - mm_to_dots(1.7)
     assert head_size > code_size
     # One logo, placed in the top-right box.
     assert assets[0] is not None and assets[0][2] <= bl._LOGO_BOX_W and assets[0][3] <= bl._LOGO_BOX_H
@@ -128,6 +132,6 @@ def test_preview_is_a_png_of_the_sheet_with_the_symbol_where_the_job_puts_it() -
     png = bl.preview_box_label_png(bl.BoxLabelContent("KISTE-BK-2026-0001", "BK-2026-0001", "Kiste"))
     assert png[:8] == b"\x89PNG\r\n\x1a\n"
     image = Image.open(BytesIO(png))
-    assert image.size == (FRAME_W, 44 * 12)
+    assert image.size == (FRAME_W, FRAME_H)
     module, modules = bl._module_for("KISTE-BK-2026-0001")
     assert image.getpixel((bl._DM_X, bl._DM_Y + module * modules - 1)) == 0  # the finder's bottom-left corner

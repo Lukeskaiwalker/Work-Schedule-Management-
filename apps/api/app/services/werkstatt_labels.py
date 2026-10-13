@@ -24,7 +24,7 @@ own software changes them too; a copies job ends with a `^C1` reset. The
 coordinate guard there keeps every element on the material.
 
 Layouts are designed in a "reading frame" (x right along the feed, y down
-across the head, 1 px = 1 dot at 12 dots/mm) and converted per sheet:
+across the head, 1 px = 1 dot of the 300 dpi head) and converted per sheet:
 
     x_machine = sheet_height - y_reading + across_offset   (validated by physical prints)
     y_machine = x_reading + x_offset
@@ -32,6 +32,13 @@ across the head, 1 px = 1 dot at 12 dots/mm) and converted per sheet:
 `x_offset` compensates the print origin sitting ~2 mm before the label's
 physical left edge (measured on the first quad proof; per-profile tunable);
 `across_offset` (0 by default) moves the print toward the reading-top edge.
+
+Every position, distance and box is a PHYSICAL millimetre converted with
+``mm_to_dots`` (300 / 25,4 dots per mm, rounded once — sums of millimetres
+are converted as a sum, so a 12-module strip cannot drift). Font sizes, code
+module sizes and line weights are dots. The printer's own millimetre is
+dots / 12 (physical test T4, 13.10.2026: a ruler drawn at 12 dots per mm
+printed 1,9 % long), so ``^Q``/``^W`` go out through ``printer_mm`` only.
 
 The logo is downloaded into printer flash once via `~EB` under a
 content-hashed name, so replacing the logo asset re-uploads automatically; a
@@ -83,7 +90,7 @@ from app.services.werkstatt_label_materials import (
     active_material,
     get_label_printer_config,
 )
-from app.services.werkstatt_label_profile import DOTS_PER_MM, mm_int
+from app.services.werkstatt_label_profile import MIN_CONTINUOUS_MM, PHYSICAL_DOTS_PER_MM, dots_to_mm, mm_to_dots
 
 logger = logging.getLogger(__name__)
 
@@ -94,8 +101,6 @@ _SEND_TIMEOUT_SECONDS = 5.0
 # carries the "E" flag; M-numbers and DataMatrix content are plain ASCII.
 _ENCODING = "utf-8"
 
-_DOTS_PER_MM = DOTS_PER_MM  # 300 dpi head (WAGO 258-51xx datasheet)
-
 # Deliberately fixed label branding (Luca, 2026-08) — not the runtime company
 # setting, so a reworded admin setting cannot silently change tool labels.
 _FOOTER_TEXT = "SMPL Energy GmbH · smpl-energy.de"
@@ -104,18 +109,22 @@ _SITE_TEXT = "smpl-energy.de"
 # Empirical width of the printer's proportional TTF, fraction of height.
 _GLYPH_WIDTH_RATIO = 0.58
 
-_MARGIN = 24  # 2 mm breathing room on sheet edges
-_MIN_CONTINUOUS_MM = 15  # shorter strips jam the feed
+_MARGIN = mm_to_dots(2)  # breathing room on sheet edges
+_EDGE = mm_to_dots(1)  # the side margin of stock too small for _MARGIN
+# A short M-number fits the 12 × 12 DataMatrix symbol (five codewords).
+_SYMBOL_MODULES = 12
 
 # ── Voll layout (validated on 99 × 44; requires that class of sheet) ───────
-_V_DM_X, _V_DM_Y, _V_DM_MODULE = 48, 180, 14
-_V_TEXT_X = 264
-_V_NUMBER_Y, _V_NUMBER_SIZE = 78, 150
-_V_NAME_Y, _V_NAME_MAX, _V_NAME_MIN = 292, 64, 24
-_V_SERIAL_Y, _V_SERIAL_SIZE = 380, 52
-_V_FOOTER_Y, _V_FOOTER_SIZE = 452, 44
+# Positions in mm (the layout's dots of 2026-08, drawn at 12 per mm, / 12);
+# the matrix module and the font sizes are dots.
+_V_DM_X, _V_DM_Y, _V_DM_MODULE = mm_to_dots(4), mm_to_dots(15), 14
+_V_TEXT_X = mm_to_dots(22)
+_V_NUMBER_Y, _V_NUMBER_SIZE = mm_to_dots(6.5), 150
+_V_NAME_Y, _V_NAME_MAX, _V_NAME_MIN = mm_to_dots(24.3), 64, 24
+_V_SERIAL_Y, _V_SERIAL_SIZE = mm_to_dots(31.7), 52
+_V_FOOTER_Y, _V_FOOTER_SIZE = mm_to_dots(37.7), 44
 
-# ── Kompakt ratios (from the physically validated quad quadrant, h = 264) ──
+# ── Kompakt ratios (from the physically validated quad quadrant, h = 264 dots at 12 per mm) ──
 #
 # The device name and the site line were doubled at the owner's request: at
 # 0.1515/0.106 of a 264 px quadrant they rendered around 27 px, which is
@@ -150,13 +159,17 @@ _K_BOTTOM_MARGIN = 0.14  # of quadrant height — never draw into this
 _K_NAME_MIN = 20
 _K_NAME_LINES = 2
 _K_NAME_LEADING = 1.10
+_K_TEXT_GAP = mm_to_dots(1.7)  # between the matrix and the text column
+_K_TEXT_END = mm_to_dots(1.3)  # the name stops this far before the block's edge
+_K_SITE_MIN_H = mm_to_dots(20)  # the site line needs this much height to stay legible
 
-_DASH_ON, _DASH_OFF = 14, 10
+# Scissor lines: 1,2 mm dash every 2 mm, laid from the line's start.
+_DASH_ON_MM, _DASH_PERIOD_MM = 1.2, 2.0
 
 # ── Logo (top-right of the voll label) ─────────────────────────────────────
-_LOGO_BOX_W, _LOGO_BOX_H = 300, 110
+_LOGO_BOX_W, _LOGO_BOX_H = mm_to_dots(25), mm_to_dots(9.2)
 _LOGO_THRESHOLD = 170
-_LOGO_READING_Y = 24
+_LOGO_READING_Y = mm_to_dots(2)
 
 
 @dataclass(frozen=True)
@@ -220,10 +233,6 @@ def printer_address_source(db: Session) -> str:
 # ── Command helpers ────────────────────────────────────────────────────────
 
 
-def _mm(value: float) -> int:
-    return mm_int(value)
-
-
 def _est_text_w(text: str, size: int) -> int:
     return int(_GLYPH_WIDTH_RATIO * size * len(text))
 
@@ -276,7 +285,7 @@ def _at(frame: _Frame, reading_x: int, reading_y: int, size: int, text: str) -> 
 
 def _xrb(frame: _Frame, reading_x: int, reading_y: int, module: int, data: str) -> list[str]:
     """DataMatrix at a reading-frame position; anchor is the reading BOTTOM."""
-    symbol = 12 * module  # 12 × 12 symbol for short ASCII payloads
+    symbol = _SYMBOL_MODULES * module
     return [
         f"XRB{frame.xm(reading_y + symbol)},{frame.ym(reading_x)},{module},0,{len(data.encode(_ENCODING))}",
         data,
@@ -287,30 +296,34 @@ def _sheet(
     profile: MaterialProfile,
     lines: list[str],
     *,
-    length_mm: float | None = None,
+    length_dots: int | None = None,
     copies: int = 1,
 ) -> list[str]:
     """Wrap element lines into one complete job for this material.
 
     The header states the baseline (``job_header``), the elements pass the
     coordinate guard, and a copies job ends with the ``^C1`` reset.
+    ``length_dots`` is a continuous job's content length; the header turns
+    it into the printer's millimetres.
     """
     if profile.continuous:
-        assert length_mm is not None, "continuous sheets must compute a length"
+        assert length_dots is not None, "continuous sheets must compute a length"
         form_length_dots = None
     else:
-        form_length_dots = _mm(profile.length_mm) * _DOTS_PER_MM
-    head = job_header(profile, length_mm=length_mm, copies=copies)
+        form_length_dots = mm_to_dots(profile.length_mm)
+    head = job_header(profile, length_dots=length_dots, copies=copies)
     body = fit_to_media(profile, lines, form_length_dots=form_length_dots)
     return [*head, "^L", *body, "E", *job_footer(copies)]
 
 
 def _frame(profile: MaterialProfile, *, w_px: int | None = None) -> _Frame:
+    """The sheet in physical dots: the label's real width and length, the
+    profile's offsets (physical mm)."""
     return _Frame(
-        h_px=_mm(profile.width_mm) * _DOTS_PER_MM,
-        w_px=w_px if w_px is not None else _mm(profile.length_mm or 0) * _DOTS_PER_MM,
-        x_offset_px=int(round(profile.x_offset_mm * _DOTS_PER_MM)),
-        across_px=int(round(profile.across_offset_mm * _DOTS_PER_MM)),
+        h_px=mm_to_dots(profile.width_mm),
+        w_px=w_px if w_px is not None else mm_to_dots(profile.length_mm or 0),
+        x_offset_px=mm_to_dots(profile.x_offset_mm),
+        across_px=mm_to_dots(profile.across_offset_mm),
     )
 
 
@@ -375,8 +388,10 @@ def _logo_asset_for_path(path: str, box_w: int, box_h: int) -> tuple[str, bytes,
     scale = min(box_w / mono.width, box_h / mono.height)
     reading_w = max(1, round(mono.width * scale))
     reading_h = max(1, round(mono.height * scale))
-    # LANCZOS as on the physically validated prints — the bitmap, and with it
-    # the content-hashed name, must stay what the printer already holds.
+    # LANCZOS as on the physically validated prints. Another box size (the
+    # 300 dpi correction of 2026-10 made the machine label's 300 × 110 dots
+    # 295 × 109) is another bitmap under another content-hashed name, which
+    # the next job that places it downloads once.
     return mono_image_asset(mono.resize((reading_w, reading_h), Image.LANCZOS), prefix="SMPL")
 
 
@@ -469,10 +484,10 @@ def _compact_block(
     number = _clean(content.unit_number, 20)
     name = _clean(" ".join(p for p in (content.article_name, content.manufacturer) if p), 40)
 
-    module = max(6, min(9, (block_h - 48) // 12))
-    symbol = 12 * module
+    module = max(6, min(9, (block_h - 2 * _MARGIN) // _SYMBOL_MODULES))
+    symbol = _SYMBOL_MODULES * module
     dm_y = origin_y + (block_h - symbol) // 2
-    text_x = origin_x + _MARGIN + symbol + 20
+    text_x = origin_x + _MARGIN + symbol + _K_TEXT_GAP
 
     lines = _xrb(frame, origin_x + _MARGIN, dm_y, module, number)
     lines.append(
@@ -485,7 +500,7 @@ def _compact_block(
         )
     )
     if name:
-        budget = origin_x + block_w - text_x - 16
+        budget = origin_x + block_w - text_x - _K_TEXT_END
         ceiling = round(block_h * _K_NAME_MAX)
         # Size on the LONGEST wrapped line — the widest line is what has to fit.
         name_lines = _wrap_words(name, _K_NAME_LINES)
@@ -499,7 +514,7 @@ def _compact_block(
         for index, chunk in enumerate(name_lines):
             lines.append(_at(frame, text_x, top + index * step, size, chunk))
     serial = _clean(content.serial_number or "", 24)
-    if serial and block_h >= 240:
+    if serial and block_h >= _K_SITE_MIN_H:
         lines.append(
             _at(
                 frame,
@@ -509,7 +524,7 @@ def _compact_block(
                 f"SN {serial}",
             )
         )
-    if block_h >= 240:  # the site line needs ≥ 20 mm of height to stay legible
+    if block_h >= _K_SITE_MIN_H:
         lines.append(
             _at(
                 frame,
@@ -524,20 +539,20 @@ def _compact_block(
 
 def _render_kompakt(profile: MaterialProfile, content: LabelContent) -> list[str]:
     """One kompakt label as its own sheet (die-cut or continuous)."""
-    h_px = _mm(profile.width_mm) * _DOTS_PER_MM
+    h_px = mm_to_dots(profile.width_mm)
     if profile.continuous:
         number = _clean(content.unit_number, 20)
         name = _clean(" ".join(p for p in (content.article_name, content.manufacturer) if p), 40)
-        module = max(6, min(9, (h_px - 48) // 12))
+        module = max(6, min(9, (h_px - 2 * _MARGIN) // _SYMBOL_MODULES))
         widest = max(
             _est_text_w(number, round(h_px * _K_NUMBER_SIZE)),
             _est_text_w(max(_wrap_words(name, _K_NAME_LINES), key=len), round(h_px * _K_NAME_MAX)),
-            _est_text_w(_SITE_TEXT, round(h_px * _K_SITE_SIZE)) if h_px >= 240 else 0,
+            _est_text_w(_SITE_TEXT, round(h_px * _K_SITE_SIZE)) if h_px >= _K_SITE_MIN_H else 0,
         )
-        w_px = _MARGIN + 12 * module + 20 + widest + _MARGIN
+        w_px = _MARGIN + _SYMBOL_MODULES * module + _K_TEXT_GAP + widest + _MARGIN
         frame = _frame(profile, w_px=w_px)
         lines = _compact_block(frame, 0, 0, w_px, h_px, content)
-        return _sheet(profile, lines, length_mm=w_px / _DOTS_PER_MM)
+        return _sheet(profile, lines, length_dots=w_px)
     frame = _frame(profile)
     lines = _compact_block(frame, 0, 0, frame.w_px, frame.h_px, content)
     return _sheet(profile, lines)
@@ -546,19 +561,19 @@ def _render_kompakt(profile: MaterialProfile, content: LabelContent) -> list[str
 def _render_mini(profile: MaterialProfile, text: str, *, copies: int = 1) -> list[str]:
     """Number/text only, centered — for stock too small for anything more."""
     cleaned = _clean(text, 40) or "?"
-    h_px = _mm(profile.width_mm) * _DOTS_PER_MM
+    h_px = mm_to_dots(profile.width_mm)
 
     if profile.continuous:
-        size = max(16, min(h_px - 12, int(h_px * 0.72)))
-        w_px = max(_MARGIN + _est_text_w(cleaned, size) + _MARGIN, _MIN_CONTINUOUS_MM * 12)
+        size = max(16, min(h_px - _EDGE, int(h_px * 0.72)))
+        w_px = max(_MARGIN + _est_text_w(cleaned, size) + _MARGIN, mm_to_dots(MIN_CONTINUOUS_MM))
         frame = _frame(profile, w_px=w_px)
         lines = [_at(frame, _MARGIN, (h_px - size) // 2, size, cleaned)]
-        return _sheet(profile, lines, length_mm=w_px / _DOTS_PER_MM, copies=copies)
+        return _sheet(profile, lines, length_dots=w_px, copies=copies)
 
     frame = _frame(profile)
-    budget = frame.w_px - 2 * 12  # 1 mm side margins — mini stock is tiny
-    size = max(16, min(h_px - 12, int(budget / (_GLYPH_WIDTH_RATIO * len(cleaned)))))
-    reading_x = max(12, (frame.w_px - _est_text_w(cleaned, size)) // 2)
+    budget = frame.w_px - 2 * _EDGE  # mini stock is tiny
+    size = max(16, min(h_px - _EDGE, int(budget / (_GLYPH_WIDTH_RATIO * len(cleaned)))))
+    reading_x = max(_EDGE, (frame.w_px - _est_text_w(cleaned, size)) // 2)
     lines = [_at(frame, reading_x, (h_px - size) // 2, size, cleaned)]
     return _sheet(profile, lines, copies=copies)
 
@@ -566,11 +581,15 @@ def _render_mini(profile: MaterialProfile, text: str, *, copies: int = 1) -> lis
 def _dashes(
     frame: _Frame, fixed_reading_axis: str, fixed_at: int, start: int, stop: int
 ) -> list[str]:
-    """Dashed scissor line as short `Lo` segments, 2 dots thick."""
+    """Dashed scissor line as short `Lo` segments, 2 dots thick.
+
+    Every dash is placed in millimetres from ``start`` and converted on its
+    own, so a long line does not collect the rounding of every dash.
+    """
     out: list[str] = []
-    pos = start
-    while pos < stop:
-        seg_end = min(pos + _DASH_ON, stop)
+    index = 0
+    while (pos := start + mm_to_dots(index * _DASH_PERIOD_MM)) < stop:
+        seg_end = min(start + mm_to_dots(index * _DASH_PERIOD_MM + _DASH_ON_MM), stop)
         if fixed_reading_axis == "x":  # vertical cut in reading frame
             out.append(
                 f"Lo,{frame.xm(seg_end)},{frame.ym(fixed_at) - 1},{frame.xm(pos)},{frame.ym(fixed_at) + 1}"
@@ -579,7 +598,7 @@ def _dashes(
             out.append(
                 f"Lo,{frame.xm(fixed_at) - 1},{frame.ym(pos)},{frame.xm(fixed_at) + 1},{frame.ym(seg_end)}"
             )
-        pos += _DASH_ON + _DASH_OFF
+        index += 1
     return out
 
 
@@ -593,8 +612,8 @@ def _render_quad(profile: MaterialProfile, entries: list[LabelContent]) -> list[
     lines: list[str] = []
     for (qx, qy), content in zip(origins, entries):
         lines += _compact_block(frame, qx, qy, half_w, half_h, content)
-    lines += _dashes(frame, "x", half_w, 12, frame.h_px - 12)
-    lines += _dashes(frame, "y", half_h, 12, frame.w_px - frame.x_offset_px - 12)
+    lines += _dashes(frame, "x", half_w, _EDGE, frame.h_px - _EDGE)
+    lines += _dashes(frame, "y", half_h, _EDGE, frame.w_px - frame.x_offset_px - _EDGE)
     return _sheet(profile, lines)
 
 
@@ -713,26 +732,26 @@ def _render_rail_strip(
         raise ValueError("a strip needs at least one segment")
     if size < 1:
         raise ValueError("font size must be positive")
-    h_px = _mm(profile.width_mm) * _DOTS_PER_MM
-    lead_px = _STRIP_LEAD_MM * _DOTS_PER_MM
+    h_px = mm_to_dots(profile.width_mm)
     total_mm = sum(width for _, width in segments)
-    w_px = lead_px + int(round(total_mm * _DOTS_PER_MM)) + lead_px
+    w_px = mm_to_dots(_STRIP_LEAD_MM + total_mm + _STRIP_LEAD_MM)
     frame = _frame(profile, w_px=w_px)
     top = _strip_text_top(h_px, size)
 
-    lines: list[str] = [_solid(frame, lead_px, half=_STRIP_END_LINE)]
-    cursor = float(lead_px)
+    # Millimetres accumulate; every mark is converted on its own — never a
+    # sum of rounded segment widths, which drifts along a long rail.
+    edge_mm = float(_STRIP_LEAD_MM)
+    lines: list[str] = [_solid(frame, mm_to_dots(edge_mm), half=_STRIP_END_LINE)]
     for index, (text, width_mm) in enumerate(segments):
-        seg_w = width_mm * _DOTS_PER_MM
         if text:
-            centred = int(round(cursor + (seg_w - _strip_text_w(text, size)) / 2))
-            left = max(int(cursor) + _STRIP_TEXT_GUARD, centred)
+            centred = mm_to_dots(edge_mm + (width_mm - dots_to_mm(_strip_text_w(text, size))) / 2)
+            left = max(mm_to_dots(edge_mm) + _STRIP_TEXT_GUARD, centred)
             lines.append(_at(frame, left, top, size, text))
-        cursor += seg_w
+        edge_mm += width_mm
         if index < len(segments) - 1:
-            lines.append(_solid(frame, int(round(cursor)), half=_STRIP_LINE))
-    lines.append(_solid(frame, int(round(cursor)), half=_STRIP_END_LINE))
-    return _sheet(profile, lines, length_mm=(w_px + frame.x_offset_px) / _DOTS_PER_MM)
+            lines.append(_solid(frame, mm_to_dots(edge_mm), half=_STRIP_LINE))
+    lines.append(_solid(frame, mm_to_dots(edge_mm), half=_STRIP_END_LINE))
+    return _sheet(profile, lines, length_dots=w_px + frame.x_offset_px)
 
 
 # ── Block label (the owner's "PV Block" blueprint on the 2009-110) ──────────
@@ -746,7 +765,7 @@ def _render_rail_strip(
 _BLOCK_ROW_SIZE_MAX = 34
 _BLOCK_ROW_SIZE_MIN = 18
 _BLOCK_ROWS = 3
-TERMINAL_BLOCK_PAD_DOTS = 6
+TERMINAL_BLOCK_PAD_DOTS = mm_to_dots(0.5)  # 6 dots
 # The block's own rules — between the rows and between the cells — are a
 # shade heavier than the strip's dividers (owner, on the first print). Its
 # text is the regular weight like every other strip text: both an
@@ -786,40 +805,42 @@ def _render_block_label(
     """The block label: end marks, three rows, cell marks in the bottom row."""
     if not cells:
         raise ValueError("a block needs at least one cell")
-    h_px = _mm(profile.width_mm) * _DOTS_PER_MM
-    lead_px = _STRIP_LEAD_MM * _DOTS_PER_MM
+    h_px = mm_to_dots(profile.width_mm)
     total_mm = sum(width for _, width in cells)
-    body_px = int(round(total_mm * _DOTS_PER_MM))
-    w_px = lead_px + body_px + lead_px
+    start, end = mm_to_dots(_STRIP_LEAD_MM), mm_to_dots(_STRIP_LEAD_MM + total_mm)
+    w_px = mm_to_dots(_STRIP_LEAD_MM + total_mm + _STRIP_LEAD_MM)
     frame = _frame(profile, w_px=w_px)
     row_h = h_px // _BLOCK_ROWS
-    budget = body_px - 2 * _STRIP_TEXT_GUARD - 2 * TERMINAL_BLOCK_PAD_DOTS
+    # The text rows fit the block's length as one number of dots — the
+    # editor's twin (blockRowSizeDots) sizes against the same one.
+    budget = mm_to_dots(total_mm) - 2 * _STRIP_TEXT_GUARD - 2 * TERMINAL_BLOCK_PAD_DOTS
 
-    lines: list[str] = [_solid(frame, lead_px, half=_STRIP_END_LINE)]
+    lines: list[str] = [_solid(frame, start, half=_STRIP_END_LINE)]
     for row, text in enumerate((name, x_label)):
         text = _clean(text, 40)
         if not text:
             continue
         size = _fit_strip_text(text, budget, _BLOCK_ROW_SIZE_MAX, _BLOCK_ROW_SIZE_MIN)
-        left = int(round(lead_px + (body_px - _strip_text_w(text, size)) / 2))
+        left = mm_to_dots(_STRIP_LEAD_MM + (total_mm - dots_to_mm(_strip_text_w(text, size))) / 2)
         lines.extend(_block_text(frame, left, _row_top(row, row_h, size), size, text))
     # Two rules between the three rows, the width of the block.
     for row in (1, 2):
-        lines.append(_hline(frame, lead_px, lead_px + body_px, row * row_h, half=_BLOCK_LINE))
-    cursor = float(lead_px)
+        lines.append(_hline(frame, start, end, row * row_h, half=_BLOCK_LINE))
+    edge_mm = float(_STRIP_LEAD_MM)
     cell_row_y0 = 2 * row_h
     for index, (text, width_mm) in enumerate(cells):
-        cell_w = width_mm * _DOTS_PER_MM
         text = _clean(text, 12)
         if text:
-            size = _fit_strip_text(text, cell_w - 2 * TERMINAL_BLOCK_PAD_DOTS, _BLOCK_ROW_SIZE_MAX, _BLOCK_ROW_SIZE_MIN)
-            left = max(int(cursor) + _STRIP_TEXT_GUARD, int(round(cursor + (cell_w - _strip_text_w(text, size)) / 2)))
+            cell_dots = width_mm * PHYSICAL_DOTS_PER_MM
+            size = _fit_strip_text(text, cell_dots - 2 * TERMINAL_BLOCK_PAD_DOTS, _BLOCK_ROW_SIZE_MAX, _BLOCK_ROW_SIZE_MIN)
+            centred = mm_to_dots(edge_mm + (width_mm - dots_to_mm(_strip_text_w(text, size))) / 2)
+            left = max(mm_to_dots(edge_mm) + _STRIP_TEXT_GUARD, centred)
             lines.extend(_block_text(frame, left, _row_top(2, row_h, size), size, text))
-        cursor += cell_w
+        edge_mm += width_mm
         if index < len(cells) - 1:
-            lines.append(_vline(frame, int(round(cursor)), cell_row_y0, h_px, half=_BLOCK_LINE))
-    lines.append(_solid(frame, int(round(cursor)), half=_STRIP_END_LINE))
-    return _sheet(profile, lines, length_mm=(w_px + frame.x_offset_px) / _DOTS_PER_MM)
+            lines.append(_vline(frame, mm_to_dots(edge_mm), cell_row_y0, h_px, half=_BLOCK_LINE))
+    lines.append(_solid(frame, end, half=_STRIP_END_LINE))
+    return _sheet(profile, lines, length_dots=w_px + frame.x_offset_px)
 
 
 def print_marking_strips(

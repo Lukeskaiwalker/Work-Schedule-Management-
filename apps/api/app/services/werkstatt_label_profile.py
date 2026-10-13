@@ -22,17 +22,23 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import asdict, dataclass, field
 
 # The PRINTER's own unit: it reports and takes millimetres as dots / 12
-# (it stores ^QD1154,42 as ^Q96.2,3.5). Comparisons with what the printer
-# stores, and every job SMPL renders today, use this.
+# (it stores ^QD1154,42 as ^Q96.2,3.5, and a ^Q99 it receives is 1188 dots).
+# Only what SMPL compares with the printer's stored values, and the ^Q/^W
+# it sends (``printer_mm``), use this.
 DOTS_PER_MM = 12
-# The PHYSICAL feed: 300 dots per inch (the printer's config says "300 Dpi").
-# Physical test 13.10.2026 on 210-804: a 10 → 90 ruler (960 dots) printed
-# 81,5 mm, and a label pitch the owner measured as 99 + 2,9 mm read 1196 dots.
-# Comparisons with REAL millimetres — profile sizes, a ruler — use this.
+# The PHYSICAL head and feed: 300 dots per inch (the printer's config says
+# "300 Dpi", both axes). Physical test 13.10.2026 on 210-804: a 10 → 90
+# ruler drawn as 960 dots printed 81,5 mm, and a label pitch the owner
+# measured as 99 + 2,9 mm read 1196 dots. Every renderer lays out with this
+# (``mm_to_dots``), and real millimetres are judged with it.
 PHYSICAL_DOTS_PER_MM = 300 / 25.4
+
+# Continuous stock: shorter pieces jam the feed (physical millimetres).
+MIN_CONTINUOUS_MM = 15
 
 # Printer envelope (WAGO 258-51xx datasheet): 47 mm printable width,
 # 5–762 mm feed length.
@@ -66,6 +72,41 @@ def mm_int(value: float) -> int:
     half-up switch would move bytes of jobs nobody asked to change.
     """
     return int(round(value))
+
+
+def mm_to_dots(mm: float) -> int:
+    """Physical millimetres → print-head dots (300 dpi), rounded half up, once.
+
+    Every renderer converts millimetres with this and nothing else. Add the
+    millimetres up first and convert the sum: twelve 17,5 mm modules rounded
+    one by one would carry every module's rounding to the end of the rail.
+    Half up (not Python's banker's round) so the editor's ``Math.round``
+    twin agrees on every value.
+    """
+    return math.floor(mm * PHYSICAL_DOTS_PER_MM + 0.5)
+
+
+def dots_to_mm(dots: float) -> float:
+    """Print-head dots → physical millimetres, unrounded."""
+    return dots / PHYSICAL_DOTS_PER_MM
+
+
+def printer_mm(dots: int, *, cover: bool = False) -> int:
+    """Dots → the PRINTER's whole millimetre, for ``^Q`` and ``^W`` only.
+
+    The printer converts every millimetre it receives at 12 dots (and only
+    whole millimetres are documented), so a physical size goes to the
+    printer as its dot total / 12. ``cover`` rounds up — a continuous form or
+    the ``^W`` region must never end inside the content; otherwise to the
+    nearest printer millimetre (``mm_int``), as a die-cut label's length.
+    """
+    value = dots / DOTS_PER_MM
+    return math.ceil(value) if cover else mm_int(value)
+
+
+def printer_width_mm(width_mm: float) -> int:
+    """``^W``: the physical width in printer millimetres, rounded up so nothing is clipped."""
+    return printer_mm(mm_to_dots(width_mm), cover=True)
 
 
 def format_scale_de(reading: float) -> str:
@@ -247,14 +288,24 @@ def resolve_job_settings(profile: MaterialProfile, baseline: JobSettings) -> Job
     )
 
 
-def q_value(profile: MaterialProfile, *, continuous_length_mm: float = 15) -> str:
-    """The ``^Q`` argument for this stock: ``99,3`` / ``25,4,3+`` / ``15,0``."""
+def q_value(profile: MaterialProfile, *, content_dots: int | None = None) -> str:
+    """The ``^Q`` argument in the PRINTER's millimetres (dots / 12).
+
+    Die-cut: the physical length, gap or mark, each to the nearest printer
+    millimetre — the 99 + 3 mm 210-804 is ``97,3`` (1169 + 35 dots).
+    Continuous: the feed for ``content_dots`` (never under
+    ``MIN_CONTINUOUS_MM``), rounded UP so the form covers the content; the
+    apply, which prints nothing, states the minimum (``15,0``).
+    """
     if profile.continuous:
-        return f"{mm_int(continuous_length_mm)},0"
+        dots = max(content_dots or 0, mm_to_dots(MIN_CONTINUOUS_MM))
+        return f"{printer_mm(dots, cover=True)},0"
+    length = printer_mm(mm_to_dots(profile.length_mm))
     if profile.mark_width_mm is not None:
         sign = "-" if profile.mark_inside else "+"
-        return f"{mm_int(profile.length_mm)},{mm_int(profile.mark_width_mm)},{mm_int(profile.mark_offset_mm)}{sign}"
-    return f"{mm_int(profile.length_mm)},{mm_int(profile.gap_mm)}"
+        mark, offset = printer_mm(mm_to_dots(profile.mark_width_mm)), printer_mm(mm_to_dots(profile.mark_offset_mm))
+        return f"{length},{mark},{offset}{sign}"
+    return f"{length},{printer_mm(mm_to_dots(profile.gap_mm))}"
 
 
 # Fields a profile has, in the order of the dataclass (``job`` excluded: it

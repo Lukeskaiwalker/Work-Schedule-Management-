@@ -42,12 +42,14 @@ from app.services.werkstatt_label_errors import (
     MaterialValidationError,
 )
 from app.services.werkstatt_label_profile import (
-    DOTS_PER_MM,
+    MIN_CONTINUOUS_MM,  # noqa: F401 — re-exported
     TIER_KOMPAKT,
     TIER_VOLL,
     MaterialProfile,
+    dots_to_mm,
     format_mm_de,
-    mm_int,
+    mm_to_dots,
+    printer_width_mm,
     q_value,
 )
 
@@ -56,8 +58,6 @@ from app.services.werkstatt_label_profile import (
 JOB_HEADER_SENDS_STOP = True
 # Owner decision D1 is pending: flipping this removes exactly the ``^P1`` line.
 JOB_HEADER_SENDS_P1 = True
-
-MIN_CONTINUOUS_MM = 15  # shorter strips jam the feed
 
 STATIC_X_OFFSET = (-5.0, 10.0)
 STATIC_ACROSS = (-5.0, 5.0)
@@ -70,15 +70,20 @@ DEFAULT_ACROSS_OFFSET_MM: float = _PROFILE_DEFAULTS["across_offset_mm"]
 OUT_OF_BOUNDS_MESSAGE = "Druckbild läge außerhalb des Materials – Versatz im Material-Profil prüfen"
 
 
-def job_header(profile: MaterialProfile, *, length_mm: float | None = None, copies: int = 1) -> list[str]:
-    """The setup lines before ``^L`` — in this order, always."""
+def job_header(profile: MaterialProfile, *, length_dots: int | None = None, copies: int = 1) -> list[str]:
+    """The setup lines before ``^L`` — in this order, always.
+
+    ``^Q``/``^W`` go out in the printer's millimetres (dots / 12) derived
+    from the physical dots the job is laid out in; ``length_dots`` is a
+    continuous job's content length, which the form covers (rounded up).
+    """
     if profile.continuous:
-        assert length_mm is not None, "continuous sheets must compute a length"
-        head = [f"^Q{q_value(profile, continuous_length_mm=max(length_mm, MIN_CONTINUOUS_MM))}"]
+        assert length_dots is not None, "continuous sheets must compute a length"
+        head = [f"^Q{q_value(profile, content_dots=length_dots)}"]
     else:
         head = [f"^Q{q_value(profile)}"]
     job = profile.job_settings
-    head += [f"^W{mm_int(profile.width_mm)}", f"^H{job.darkness}", f"^S{job.speed_ips}"]
+    head += [f"^W{printer_width_mm(profile.width_mm)}", f"^H{job.darkness}", f"^S{job.speed_ips}"]
     if JOB_HEADER_SENDS_STOP:
         head.append(f"^E{job.stop_mm}")
     head.append(f"^C{copies}")
@@ -159,16 +164,18 @@ def _anchor_extent(kind: str, line: str) -> tuple[int, int, int] | None:
 def fit_to_media(profile: MaterialProfile, lines: list[str], *, form_length_dots: int | None) -> list[str]:
     """Keep every element on the material, or refuse the job.
 
-    Machine x must lie within the ``^W`` region [0, h_px] (not the 564-dot
-    head: past the label's edge is bare liner or roller); machine y ≥ 0 and,
-    on die-cut stock, ≤ the form length. Rules are clamped (a cut mark that
-    loses a millimetre is still a cut mark; one printed onto the roller is
-    ribbon wasted on rubber); a line clamped to nothing is dropped. Text,
-    codes and images raise — a clipped number is worse than none.
+    Machine x must lie within the label's physical width [0, h_px] (the
+    ``^W`` region, rounded up to whole printer millimetres, is never
+    narrower; nor the head: past the label's edge is bare liner or roller);
+    machine y ≥ 0 and, on die-cut stock, ≤ the physical label length. Rules
+    are clamped (a cut mark that loses a millimetre is still a cut mark; one
+    printed onto the roller is ribbon wasted on rubber); a line clamped to
+    nothing is dropped. Text, codes and images raise — a clipped number is
+    worse than none.
     """
     if _guard_suspended.get():
         return list(lines)
-    h_px = mm_int(profile.width_mm) * DOTS_PER_MM
+    h_px = mm_to_dots(profile.width_mm)
     out: list[str] = []
     for kind, line in _elements(lines):
         if kind == "Lo":
@@ -284,9 +291,9 @@ def _sample_extents(render: Callable[[MaterialProfile], list[str]], profile: Mat
     except (LabelFormatUnsupported, ValueError):
         return []
     extents = [extent for kind, line in _elements(_job_elements(job)) if (extent := _anchor_extent(kind, line)) is not None]
-    h_px = mm_int(profile.width_mm) * DOTS_PER_MM
-    form_length = None if profile.continuous else mm_int(profile.length_mm) * DOTS_PER_MM
-    dx, dy = round(DEFAULT_ACROSS_OFFSET_MM * DOTS_PER_MM), round(DEFAULT_X_OFFSET_MM * DOTS_PER_MM)
+    h_px = mm_to_dots(profile.width_mm)
+    form_length = None if profile.continuous else mm_to_dots(profile.length_mm)
+    dx, dy = mm_to_dots(DEFAULT_ACROSS_OFFSET_MM), mm_to_dots(DEFAULT_X_OFFSET_MM)
     for x_low, x_high, y in extents:
         if x_low + dx < 0 or x_high + dx > h_px or y + dy < 0 or (form_length is not None and y + dy > form_length):
             return []
@@ -317,19 +324,19 @@ def _limits_for(key: tuple) -> OffsetLimits:
             extents += _sample_extents(render, profile)
     if not extents:
         return OffsetLimits(STATIC_X_OFFSET[0], STATIC_X_OFFSET[1], STATIC_ACROSS[0], STATIC_ACROSS[1])
-    h_px = mm_int(width_mm) * DOTS_PER_MM
+    h_px = mm_to_dots(width_mm)
     min_x = min(low for low, _, _ in extents)
     max_x = max(high for _, high, _ in extents)
     min_y = min(y for _, _, y in extents)
     max_y = max(y for _, _, y in extents)
     x_max = STATIC_X_OFFSET[1]
     if length_mm is not None:
-        x_max = min(x_max, _inward((mm_int(length_mm) * DOTS_PER_MM - max_y) / DOTS_PER_MM, up=False))
+        x_max = min(x_max, _inward(dots_to_mm(mm_to_dots(length_mm) - max_y), up=False))
     return OffsetLimits(
-        x_min=max(STATIC_X_OFFSET[0], _inward(-min_y / DOTS_PER_MM, up=True)),
+        x_min=max(STATIC_X_OFFSET[0], _inward(dots_to_mm(-min_y), up=True)),
         x_max=x_max,
-        across_min=max(STATIC_ACROSS[0], _inward(-min_x / DOTS_PER_MM, up=True)),
-        across_max=min(STATIC_ACROSS[1], _inward((h_px - max_x) / DOTS_PER_MM, up=False)),
+        across_min=max(STATIC_ACROSS[0], _inward(dots_to_mm(-min_x), up=True)),
+        across_max=min(STATIC_ACROSS[1], _inward(dots_to_mm(h_px - max_x), up=False)),
     )
 
 

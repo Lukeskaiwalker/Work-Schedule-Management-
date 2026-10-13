@@ -47,6 +47,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.services.schaltplan_layout import BMK_EDGE_JUNK, DEVICE_CATALOG, build_topology, font_size_for_fits
+from app.services.werkstatt_label_profile import mm_to_dots
 from app.services.schaltplan_terminal_rules import (
     OUTGOING_PART_IDS,
     TERMINAL_PART_ORDER,
@@ -61,9 +62,9 @@ from app.services.schaltplan_terminal_rules import (
 
 # Pad between a terminal's cut mark and its text, in dots (0.5 mm). The BMK
 # strip keeps 1 mm on either side, but a 5.2 mm segment minus 2 mm of pad
-# holds nothing: 5.2 × 12 − 12 = 50 dots leave "1.1" at 31 dots — the
-# three characters the owner says are all a 5.2 mm marker can carry.
-TERMINAL_SEG_PAD_DOTS = 6
+# holds nothing: 61 − 12 = 49 dots leave "1.1" at 35 dots — the three
+# characters the owner says are all a 5.2 mm marker can carry.
+TERMINAL_SEG_PAD_DOTS = mm_to_dots(0.5)
 
 STRIP_KIND_LEISTE = "leiste"
 STRIP_KIND_BLOCK = "block"

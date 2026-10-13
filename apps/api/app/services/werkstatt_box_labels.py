@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 
 from app.services import werkstatt_labels as wl
 from app.services.werkstatt_label_materials import TIER_VOLL, MaterialProfile, active_material
+from app.services.werkstatt_label_profile import mm_to_dots
 
 # ── DataMatrix sizing ─────────────────────────────────────────────────────────
 #
@@ -64,19 +65,22 @@ def datamatrix_symbol_modules(data: str) -> int:
     return _SYMBOL_CAPACITY[-1][0]
 
 
-# ── Layout, reading frame in printer dots (12 per mm) on the 99 × 44 sheet ──
+# ── Layout on the 99 × 44 sheet: positions in mm, modules and fonts in dots ──
 
-_DM_X, _DM_Y = 36, 96
-_DM_BOX = 200  # the symbol, whatever its module count, stays inside this square
+_DM_X, _DM_Y = mm_to_dots(3), mm_to_dots(8)
+# The symbol, whatever its module count, stays inside this square. 17 mm
+# (201 dots) keeps every module the 200-dot box of 2026-09 chose: a crate
+# code's 18 × 18 symbol stays at 11 dots a module.
+_DM_BOX = mm_to_dots(17)
 _DM_MODULE_MAX, _DM_MODULE_MIN = 12, 6
 _CODE_SIZE_MAX, _CODE_SIZE_MIN = 26, 16
 
-_COL_X = _DM_X + _DM_BOX + 32  # 268
-_LOGO_BOX_W, _LOGO_BOX_H = 260, 96
+_COL_X = _DM_X + _DM_BOX + mm_to_dots(2.7)  # 268
+_LOGO_BOX_W, _LOGO_BOX_H = mm_to_dots(21.7), mm_to_dots(8)
 _LOGO_X, _LOGO_Y = wl._MARGIN, wl._MARGIN
-_HEAD_Y, _HEAD_MAX, _HEAD_MIN = 44, 96, 40
-_NAME_Y, _NAME_MAX, _NAME_MIN, _NAME_LINES, _NAME_LEADING = 176, 54, 26, 2, 1.25
-_FOOT_Y, _FOOT_SIZE = 458, 28
+_HEAD_Y, _HEAD_MAX, _HEAD_MIN = mm_to_dots(3.7), 96, 40
+_NAME_Y, _NAME_MAX, _NAME_MIN, _NAME_LINES, _NAME_LEADING = mm_to_dots(14.7), 54, 26, 2, 1.25
+_FOOT_Y, _FOOT_SIZE = mm_to_dots(38.2), 28
 _FOOT_TEXT = "Baustellenkiste"
 
 
@@ -109,14 +113,14 @@ def _layout(frame: wl._Frame, content: BoxLabelContent, symbol: int) -> list[tup
     """The text as (text, reading_x, reading_y, size) — printer job and preview alike."""
     out: list[tuple[str, int, int, int]] = []
     code = wl._clean(content.code, 40)
-    code_size = wl._fit_text_size(code, _COL_X - _DM_X - 12, _CODE_SIZE_MAX, _CODE_SIZE_MIN)
-    out.append((code, _DM_X, _DM_Y + symbol + 14, code_size))
+    code_size = wl._fit_text_size(code, _COL_X - _DM_X - wl._EDGE, _CODE_SIZE_MAX, _CODE_SIZE_MIN)
+    out.append((code, _DM_X, _DM_Y + symbol + mm_to_dots(1.2), code_size))
 
     # The headline stops where the logo box starts.
     logo_left = frame.w_px - _LOGO_X - _LOGO_BOX_W
     head = wl._clean(content.box_number, 24)
     if head:
-        size = wl._fit_text_size(head, logo_left - 20 - _COL_X, _HEAD_MAX, _HEAD_MIN)
+        size = wl._fit_text_size(head, logo_left - mm_to_dots(1.7) - _COL_X, _HEAD_MAX, _HEAD_MIN)
         out.append((head, _COL_X, _HEAD_Y, size))
 
     name = wl._clean(content.label or "", 80)

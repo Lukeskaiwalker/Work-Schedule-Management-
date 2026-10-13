@@ -6,13 +6,19 @@
  */
 import { scaleToX } from "../components/labelPrinter/sensorGeometry";
 import type { LabelMaterial } from "../types/labelPrinter";
+import { DOTS_PER_MM } from "./printerDots";
 
 export const MINUS = "−";
 
-/** Phase 1 always converts printer dots at 12 per mm (300 dpi); the real scale is test T4/T14. */
-export const DOTS_PER_MM = 12;
+/**
+ * Printer dots → real millimetres: the head's 300 dpi (300 / 25,4 ≈ 11,81 per
+ * mm), as the API judges and shows measurements. Physical test T4
+ * (13.10.2026) settled it; the printer's own millimetre (dots / 12, as in its
+ * stored `^Q96.2,3.5`) is never shown as a length.
+ */
+export { DOTS_PER_MM };
 
-/** Printer dots → mm, one decimal ("97", "2,5"). */
+/** Printer dots → mm, one decimal ("97,7", "3,6"). */
 export function dotsToMmDe(dots: number): string {
   return formatMmDe(dots / DOTS_PER_MM);
 }

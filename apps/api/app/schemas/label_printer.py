@@ -247,7 +247,7 @@ class VerdictOut(BaseModel):
     fresh: bool
     freshness: Freshness  # latched.freshness whenever a latch exists
     from_latch: bool  # judged a measurement latched by an earlier verify
-    dots_per_mm: float = 12.0
+    dots_per_mm: float = 11.81  # the head's 300 dpi, as the router states it
     expected_length_mm: float | None
     expected_gap_mm: float | None
     expected_pitch_mm: float | None
