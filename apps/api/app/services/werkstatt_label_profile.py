@@ -96,9 +96,10 @@ def printer_mm(dots: int, *, cover: bool = False) -> int:
 
     The printer converts every millimetre it receives at 12 dots (and only
     whole millimetres are documented), so a physical size goes to the
-    printer as its dot total / 12. ``cover`` rounds up — a continuous form or
-    the ``^W`` region must never end inside the content; otherwise to the
-    nearest printer millimetre (``mm_int``), as a die-cut label's length.
+    printer as its dot total / 12. ``cover`` rounds up — a form (die-cut or
+    continuous) or the ``^W`` region must never end inside the label or the
+    content; otherwise to the nearest printer millimetre (``mm_int``), as a
+    gap, a mark and its offset.
     """
     value = dots / DOTS_PER_MM
     return math.ceil(value) if cover else mm_int(value)
@@ -291,8 +292,12 @@ def resolve_job_settings(profile: MaterialProfile, baseline: JobSettings) -> Job
 def q_value(profile: MaterialProfile, *, content_dots: int | None = None) -> str:
     """The ``^Q`` argument in the PRINTER's millimetres (dots / 12).
 
-    Die-cut: the physical length, gap or mark, each to the nearest printer
-    millimetre — the 99 + 3 mm 210-804 is ``97,3`` (1169 + 35 dots).
+    Die-cut: the physical length rounded UP, so the form never ends before
+    the label — renderers and the coordinate guard lay out to the label's
+    last dot (``mm_to_dots(length)``), and a form one dot short would clip
+    it. Gap, mark and mark offset to the nearest printer millimetre. The
+    99 + 3 mm 210-804 is ``98,3``: 1169 dots of label → a 1176-dot form
+    (``97`` would be 1164), 35 of gap.
     Continuous: the feed for ``content_dots`` (never under
     ``MIN_CONTINUOUS_MM``), rounded UP so the form covers the content; the
     apply, which prints nothing, states the minimum (``15,0``).
@@ -300,7 +305,7 @@ def q_value(profile: MaterialProfile, *, content_dots: int | None = None) -> str
     if profile.continuous:
         dots = max(content_dots or 0, mm_to_dots(MIN_CONTINUOUS_MM))
         return f"{printer_mm(dots, cover=True)},0"
-    length = printer_mm(mm_to_dots(profile.length_mm))
+    length = printer_mm(mm_to_dots(profile.length_mm), cover=True)
     if profile.mark_width_mm is not None:
         sign = "-" if profile.mark_inside else "+"
         mark, offset = printer_mm(mm_to_dots(profile.mark_width_mm)), printer_mm(mm_to_dots(profile.mark_offset_mm))

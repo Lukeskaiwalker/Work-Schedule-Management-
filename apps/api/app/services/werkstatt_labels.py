@@ -310,6 +310,8 @@ def _sheet(
         assert length_dots is not None, "continuous sheets must compute a length"
         form_length_dots = None
     else:
+        # The label's last dot; the header's ^Q form reaches it (``q_value``
+        # rounds the length up).
         form_length_dots = mm_to_dots(profile.length_mm)
     head = job_header(profile, length_dots=length_dots, copies=copies)
     body = fit_to_media(profile, lines, form_length_dots=form_length_dots)

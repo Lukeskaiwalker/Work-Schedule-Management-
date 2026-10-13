@@ -34,20 +34,22 @@ MARK = MaterialProfile(
 )
 
 
-# ^Q/^W in the printer's millimetres (dots / 12) of the physical 300 dpi dots:
-# 99 mm = 1169 dots → 97, 50 mm = 591 → 49, 38 mm = 449 → 37; a 3 mm gap
-# (35 dots), 44 mm (520 dots, rounded up) and every width here keep their number.
+# ^Q/^W in the printer's millimetres (dots / 12) of the physical 300 dpi dots;
+# a label length is rounded UP so the form never ends before the label:
+# 99 mm = 1169 dots → 97,4 → 98, 50 mm = 591 → 49,25 → 50, 38 mm = 449 → 38;
+# a 3 mm gap (35 dots, nearest), 44 mm (520 dots, rounded up) and every width
+# here keep their number.
 @pytest.mark.parametrize(
     ("profile", "lines"),
     [
-        (M["wago-210-804"], ["^G1", "^XSET,SENSING,1", "^Q97,3", "^W44"]),
-        (M["wago-210-824"], ["^G1", "^XSET,SENSING,1", "^Q97,3", "^W44"]),
-        (M["wago-210-812"], ["^G1", "^XSET,SENSING,1", "^Q49,3", "^W25"]),
+        (M["wago-210-804"], ["^G1", "^XSET,SENSING,1", "^Q98,3", "^W44"]),
+        (M["wago-210-824"], ["^G1", "^XSET,SENSING,1", "^Q98,3", "^W44"]),
+        (M["wago-210-812"], ["^G1", "^XSET,SENSING,1", "^Q50,3", "^W25"]),
         (M["wago-210-805"], ["^G1", "^XSET,SENSING,1", "^Q15,3", "^W6"]),
         (M["wago-211-501"], ["^G1", "^XSET,SENSING,1", "^Q15,0", "^W5"]),
         (M["wago-2009-110"], ["^G1", "^XSET,SENSING,1", "^Q15,0", "^W11"]),
         (replace(M["wago-211-501"], sensor_mode="none"), ["^XSET,SENSING,2", "^Q15,0", "^W5"]),
-        (CUSTOM, ["^G2", "^XSET,SENSING,1", "^Q37,3", "^W23"]),
+        (CUSTOM, ["^G2", "^XSET,SENSING,1", "^Q38,3", "^W23"]),
         (MARK, ["^G0", "^XSET,SENSING,0", "^Q25,4,3+", "^W40"]),
         (replace(MARK, mark_inside=True), ["^G0", "^XSET,SENSING,0", "^Q25,4,3-", "^W40"]),
     ],
@@ -132,7 +134,7 @@ def test_pattern_worked_example_210_804() -> None:
     """At 300 dpi: h = 520 (44 mm), w = 1169 (99 mm), inset 24 (2 mm), x_offset 24 (2 mm)."""
     lines, geometry = pattern_job(M["wago-210-804"])
     assert lines[:14] == [
-        "^Q97,3", "^W44", "^H12", "^S2", "^E0", "^C1", "^P1", "^L",
+        "^Q98,3", "^W44", "^H12", "^S2", "^E0", "^C1", "^P1", "^L",
         "Lo,24,48,496,51",
         "Lo,24,1166,496,1169",
         "Lo,493,48,496,1169",

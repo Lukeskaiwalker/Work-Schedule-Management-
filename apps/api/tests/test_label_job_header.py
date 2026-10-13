@@ -14,8 +14,9 @@ nothing else:
   sizes, code modules and line weights keep their dots (and the crate
   sticker's text column keeps its place beside its unchanged 18 × 18
   matrix); a size fitted to a box shrinks with it (≈ 0,984 ×, ±1); and
-  ``^Q``/``^W`` are the printer's millimetres of the physical dots
-  (99 + 3 × 44 mm → ``^Q97,3 ^W44``, 50 + 3 mm → ``^Q49,3``).
+  ``^Q``/``^W`` are the printer's millimetres of the physical dots, a label
+  length rounded up so the form never ends before the label
+  (99 + 3 × 44 mm → ``^Q98,3 ^W44``, 50 + 3 mm → ``^Q50,3``).
 
 ``tests/test_label_physical_scale.py`` pins the scale itself.
 """
@@ -96,8 +97,8 @@ def test_golden_jobs_are_pinned_at_300_dpi() -> None:
 
 # The a9c335f header → the 300 dpi one: printer millimetres of the physical dots.
 PRINTER_MM_HEADERS = {
-    ("^Q99,3", "^W44"): ("^Q97,3", "^W44"),  # 1169 + 35 dots, 520 dots
-    ("^Q50,3", "^W25"): ("^Q49,3", "^W25"),  # 591 + 35 dots, 295 dots
+    ("^Q99,3", "^W44"): ("^Q98,3", "^W44"),  # 1169 dots → 97,4 → 98 (up), 35 → 3, 520 → 44 (up)
+    ("^Q50,3", "^W25"): ("^Q50,3", "^W25"),  # 591 dots → 49,25 → 50 (up), 35 → 3, 295 → 25 (up)
     ("^Q15,3", "^W6"): ("^Q15,3", "^W6"),  # 177 + 35 dots, 71 dots
     ("^Q60,0", "^W11"): ("^Q60,0", "^W11"),  # strip 58,5 mm + offset: 691 + 24 dots → 59,6 → 60
     ("^Q33,0", "^W11"): ("^Q33,0", "^W11"),  # block 31 mm + offset: 366 + 24 dots → 32,5 → 33

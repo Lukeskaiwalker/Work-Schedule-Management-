@@ -76,7 +76,7 @@ wins. Where it leaves something open, it says so and names who decides.
 | M8 | Nothing serialises calibration against other users/workers | DB-backed calibration session lock with TTL; every print path (`_ship`) refuses with 409 while someone else holds it; the loaded material becomes active at the load step; config writes use `with_for_update` + revision compare-and-set; a cross-worker file lock allows one printer connection at a time. | 5 |
 | M9 | T-tests are referenced but undefined | §9 defines T0–T16: steps, expected readback, paper cost, who is at the printer, what each result unlocks; plus a results table. | 9 |
 | M10 | Checklist has the sensor set after threading the media | Order is roller → sensor carriage → roll/thread → guides → ribbon → lid. The diagram's "Sensor" state draws no media. T0 asks whether the housing scale is visible with media loaded. | 7.4, 7.8 |
-| L1 | Negative `x_offset_mm` gives negative coordinates | Every job passes a coordinate guard (machine x within the `^W` region 0…h_px, die-cut y within 0…form length; `Lo` clamped, text/codes/images raise a German `LabelFormatUnsupported` subclass); profile saves run a dry render of every renderer for that material and answer 422; the API exposes the resulting `offset_limits`. | 4.9 |
+| L1 | Negative `x_offset_mm` gives negative coordinates | Every job passes a coordinate guard (machine x within the label width 0…h_px, die-cut y within 0…the label length — the `^Q` form, its length rounded up, never ends before it; `Lo` clamped, text/codes/images raise a German `LabelFormatUnsupported` subclass); profile saves run a dry render of every renderer for that material and answer 422; the API exposes the resulting `offset_limits`. | 4.9 |
 | L2 | Round-half-up breaks byte identity | `_mm` rounding is **not** changed in phase 1. | 4.8 |
 | L3 | "`^W` differs" warning fires after SMPL's own strips | Dropped: every SMPL job states `^Q`/`^W` anyway. | 4.3 |
 | L4 | `POST /row-offset` is a general `~Q` writer | Phase 1 sends no `~Q` at all; it only reads, pins and warns. The phase-2 restore action takes no body. | 1, 4.1 |
@@ -102,7 +102,7 @@ the end of this document.
 | S7 | `^P` leftovers multiply SMPL prints | `^P1` after `^C` in every header (constant `JOB_HEADER_SENDS_P1`); owner confirmation pending. | 4.1, 4.8, 11 |
 | S8 | `^XSET,SENSING,2` never reset | Every apply sends `^XSET,SENSING,n`; T1 ends on the reset; new T17; "Kein Sensor" form hint. | 4.4, 7.9, 9 |
 | S9 | Lid close may auto-sense with old settings | ℹ line on checklist item 6; autosense re-sends `^Q`/`^W` before the pre-sense snapshot. | 4.6, 7.4 |
-| S10 | Guard bounds the head, not the media | Machine x within 0…h_px, die-cut y within 0…form length; `Lo` clamped, `AT` em box / `XRB` / `Y` raise. | 4.9 |
+| S10 | Guard bounds the head, not the media | Machine x within 0…h_px (label width), die-cut y within 0…label length (the `^Q` form is never shorter); `Lo` clamped, `AT` em box / `XRB` / `Y` raise. | 4.9 |
 | S11 | Queries assumed harmless | §2 row + T0b (first test). | 2, 9 |
 | S12 | Prod would run unverified behaviour for staff | `label_calibration_staff_enabled` (default false) hides the quick entry from `werkstatt:manage`-only users and refuses their sessions; physical tests from a local API. | 3.4, 6.2, 7.11, 9, 11 |
 | S13 | `app_settings.value` is VARCHAR(2048) | Migration to `Text`; caps on every list in the blobs; size test. | 3.1, 8.1 |
@@ -854,24 +854,32 @@ to continuous labels, so on die-cut stock it is expected to be ignored ([Inferre
 (`gap`+`none` and `continuous`+`auto` cannot exist, §3.8.)
 
 Then exactly one `^Q` and one `^W`, in the PRINTER's millimetres (dots / 12, §4.12) of
-the physical dots — `P(x) = printer_mm(mm_to_dots(x))`, nearest whole printer-mm:
+the physical dots — `P(x) = printer_mm(mm_to_dots(x))`, nearest whole printer-mm, and
+`U(x) = printer_mm(mm_to_dots(x), cover=True)`, rounded UP:
 
-- gap: `^Q{P(length)},{P(gap)}`
-- mark: `^Q{P(length)},{P(mark_width)},{P(mark_offset)}{'-' if mark_inside else '+'}`
+- gap: `^Q{U(length)},{P(gap)}`
+- mark: `^Q{U(length)},{P(mark_width)},{P(mark_offset)}{'-' if mark_inside else '+'}`
 - continuous: `^Q15,0` (`MIN_CONTINUOUS_MM`: 177 dots, rounded up)
 - `^W{printer_width_mm(width)}` — rounded UP so nothing is clipped
+
+The label length rounds UP because the renderers and the guard (§4.9) lay out to the
+label's last dot, `mm_to_dots(length)`: the form must reach it. Nearest rounding made the
+99 mm label `^Q97` = 1164 dots, 5 short of the 1169 the pattern's line B and the machine
+label's logo end on at the default 2 mm offset; `^Q98` = 1176 lies between that and the
+`^Q99` (1188) every job carried before §4.12, and never more than one printer-mm past the
+label (`test_a_die_cut_form_never_ends_before_its_label`, 5 … 762 mm in tenths).
 
 Exact outputs (pinned by tests):
 
 | Profile | Lines |
 |---|---|
-| wago-210-804 / -824 | `^G1`, `^XSET,SENSING,1`, `^Q97,3`, `^W44` (1169 + 35 × 520 dots) |
-| wago-210-812 | `^G1`, `^XSET,SENSING,1`, `^Q49,3`, `^W25` (591 + 35 × 295 dots) |
+| wago-210-804 / -824 | `^G1`, `^XSET,SENSING,1`, `^Q98,3`, `^W44` (1169 + 35 × 520 dots) |
+| wago-210-812 | `^G1`, `^XSET,SENSING,1`, `^Q50,3`, `^W25` (591 + 35 × 295 dots) |
 | wago-210-805 | `^G1`, `^XSET,SENSING,1`, `^Q15,3`, `^W6` |
 | wago-211-501 | `^G1`, `^XSET,SENSING,1`, `^Q15,0`, `^W5` |
 | wago-2009-110 | `^G1`, `^XSET,SENSING,1`, `^Q15,0`, `^W11` |
 | 211-501 with sensor "none" | `^XSET,SENSING,2`, `^Q15,0`, `^W5` |
-| custom die-cut 38 × 23 (length 38, width 23), sensor auto | `^G2`, `^XSET,SENSING,1`, `^Q37,3`, `^W23` |
+| custom die-cut 38 × 23 (length 38, width 23), sensor auto | `^G2`, `^XSET,SENSING,1`, `^Q38,3`, `^W23` |
 | custom mark, length 25, width 40, mark 4, offset 3, outside, reflective | `^G0`, `^XSET,SENSING,0`, `^Q25,4,3+`, `^W40` |
 | same, inside | `^G0`, `^XSET,SENSING,0`, `^Q25,4,3-`, `^W40` |
 
@@ -879,7 +887,7 @@ Exact outputs (pinned by tests):
 them), `^L`/`E` (setup between them is ignored), `~Q`, `^R`, `^XSET,IMMEDIATE`.
 
 `reprime_lines(profile) -> list[str]` = the `^Q` and `^W` lines of `setup_commands` only
-(e.g. `["^Q97,3", "^W44"]`); autosense sends them right before its pre-sense snapshot
+(e.g. `["^Q98,3", "^W44"]`); autosense sends them right before its pre-sense snapshot
 (§4.6 step 4).
 
 ### 4.5 Apply (no paper movement per the manual) — `apply_material(db, session)`
@@ -896,7 +904,7 @@ them), `^L`/`E` (setup between them is ignored), `~Q`, `^R`, `^XSET,IMMEDIATE`.
    - `True` when stored `^W` == profile `^W` **and** stored `^Q` == profile `^Q` **and**
      (profile expects `see_through`/`reflective` ⇒ sensor kind matches);
    - else `False`, with German `mismatches`, e.g. "Breite: Drucker 34 mm, Profil 44 mm",
-     "Etikett/Spalt: Drucker 97,2, Profil 99,3", "Sensor: Drucker Reflex, Profil Durchlicht".
+     "Etikett/Spalt: Drucker 97,2, Profil 98,3", "Sensor: Drucker Reflex, Profil Durchlicht".
    A mismatch is a warning, not an error: the sensor-line switch on `^G0` is
    [Unverified → T1].
 5. Write `session.apply`, `session.phase = "applied"`, `state.last_applied`; when
@@ -1154,8 +1162,9 @@ E
   prints with SMPL's last values. SMPL does not reset them (it does not know the other
   client's intent); §11 states it.
 - Not in jobs: `^G`, `^XSET,SENSING`, `~Q`, `^R` (T15/T11).
-- `^Q`/`^W` are derived from the job's physical dots (§4.12); `mm_int` (banker's) is the
-  nearest-printer-mm rounding, a continuous form and `^W` round up.
+- `^Q`/`^W` are derived from the job's physical dots (§4.12); a die-cut label length, a
+  continuous form and `^W` round up, gap and mark go to the nearest printer-mm (`mm_int`,
+  banker's).
 - `material_by_id` jobs (BMK strips on 2009-110) use that profile's resolved values.
 
 **Byte changes accepted explicitly** (and nothing else):
@@ -1184,8 +1193,10 @@ dots; a size fitted to a box shrinks with it).
 - `werkstatt_label_jobs.fit_to_media(profile, lines, *, form_length_dots) -> list[str]`
   runs inside `_sheet` on every job (the element lines between `^L` and `E`). Bounds:
   machine x within **[0, h_px]** (the label, `h_px = mm_to_dots(width)`, not the head);
-  machine y ≥ 0, and for die-cut stock y ≤ `form_length_dots = mm_to_dots(length)`
-  (continuous: no upper y bound, strips compute their own length). Per element:
+  machine y ≥ 0, and for die-cut stock y ≤ `form_length_dots = mm_to_dots(length)`, the
+  label's last dot — the `^Q` form, its length rounded up (§4.4), is never shorter, so
+  nothing the guard passes lies past the form the job declares (continuous: no upper y
+  bound, strips compute their own length). Per element:
   - `Lo,x1,y1,x2,y2` (x1 ≤ x2, y1 ≤ y2 as all renderers emit them): **clamped** —
     x to [0, h_px], y to [0, form length]; a line whose clamped extent is empty
     (x1 ≥ x2 or y1 ≥ y2) is dropped. Clamping keeps rules, cut marks and pattern boxes on
@@ -1198,6 +1209,15 @@ dots; a size fitted to a box shrinks with it).
   `werkstatt_label_errors`, §5.0) with "Druckbild läge außerhalb des Materials – Versatz im
   Material-Profil prüfen". At the default offsets no golden job is clamped or raises (test;
   checked against the `a9c335f` renderers on 2026-10-13).
+- Along the feed the guard sees anchors and rule ends only; the layouts keep the rest in
+  the form by their margin. Voll and kompakt keep 2 mm to the trailing edge, so at the
+  builtin 2 mm offset every sample — rules, text by its width estimate, codes by their
+  symbol, bitmaps by their ink — ends by the label's last dot, inside the `^Q` form
+  (`test_every_builtin_die_cut_job_ends_inside_its_form`, 210-804/-824/-812). **Open, not
+  changed by §4.12:** the 210-805's mini labels centre their text 1 mm from the edges, so
+  at 2 mm their estimated text end lies up to 7 dots past `^Q15` (180 dots) — 11 at 12 dots
+  per mm with the same `^Q15`. For the sample texts a measured feed offset of 1,4 mm or
+  less removes it.
 - `DRY_RENDER_SAMPLES` (in `werkstatt_label_jobs.py`): every renderer that can run on the
   material, with fixed sample content:
   - voll tier: machine label (`LabelContent("M-0042", "Makita Akkuschrauber DDF485",
@@ -1294,7 +1314,7 @@ Worked example 210-804 (`x_offset 2.0` → 24, `across 0`, h 520, w 1169, i 24) 
 lines are pinned exactly:
 
 ```
-^Q97,3
+^Q98,3
 ^W44
 ^H12
 ^S2
@@ -1311,6 +1331,9 @@ Lo,225,607,295,609
 …letters, text, ruler…
 E
 ```
+
+B, L and R end on machine y 1169, the label's last dot at this offset — inside the
+1176-dot `^Q98` form (under `^Q97` = 1164, line B would lie wholly past it).
 
 **Continuous** (pattern length `P` = 40 mm, 30 mm for `wago-211-501`; h = `mm_to_dots(W)`,
 pw = `mm_to_dots(P)`):
@@ -1368,7 +1391,7 @@ Helpers (`services/werkstatt_label_profile.py`; web twin `utils/printerDots.ts`)
 | `dots_to_mm(dots)` | dots → physical mm, unrounded |
 | `printer_mm(dots, cover=)` | dots → whole printer-mm (dots / 12) for `^Q`/`^W` only; `cover` rounds up |
 | `printer_width_mm(width)` | `^W = ⌈mm_to_dots(width) / 12⌉` |
-| `q_value(profile, content_dots=)` | die-cut: nearest printer-mm of length/gap/mark; continuous: `⌈max(content, 15 mm) / 12⌉` |
+| `q_value(profile, content_dots=)` | die-cut: length `⌈mm_to_dots(length) / 12⌉` (the form never ends before the label), gap/mark to the nearest printer-mm; continuous: `⌈max(content, 15 mm) / 12⌉` |
 
 Classification of every conversion (the guard test
 `test_no_rendering_module_converts_millimetres_with_12` keeps rendering modules off `12`):
@@ -1389,8 +1412,10 @@ label's logo box is now 295 × 109 dots, i.e. a new bitmap under a new content-h
 are physical mm, the builtins are unchanged, and the saved 210-804 feed offset (−1,0 mm)
 keeps line A on the same dot (inset 24, offset −12).
 
-Effects on the builtins: 210-804/-824 `^Q99,3` → `^Q97,3`; 210-812 `^Q50,3` → `^Q49,3`;
-every `^W`, the 805's `^Q15,3` and the 15 mm minimum keep their numbers; a continuous
+Effects on the builtins: 210-804/-824 `^Q99,3` → `^Q98,3` (1169 dots of label, rounded up
+to a 1176-dot form; to the nearest it was `^Q97` = 1164, short of the label, §4.4);
+210-812 keeps `^Q50,3` (591 → 49,25 → 50), as do every `^W`, the 805's `^Q15,3` and the
+15 mm minimum; a continuous
 job's `^Q` follows its content (a 12-module strip: 2551 + 24 dots → `^Q215,0` = 2580
 dots, was `^Q218,0` = 2616 dots — ≈ 3 mm less strip per rail, and the cut marks 210,0 mm
 apart instead of 213,4). The 11 mm strip is 130 dots
@@ -2899,7 +2924,7 @@ path is monkeypatched into `tmp_path`.
 | `test_label_material_storage.py` | legacy v1 blob (all keys at defaults, 210-804 `x_offset 1.5`) → only that override, sensor fields from code; write → `format 2`, builtins store only overrides, `revision + 1`; **healing**: save once, monkeypatch a builtin default (2009-110 `web.liner_width_mm` 11 → 11.5), read → new value; overridden field keeps the override; malformed `sensor_mode "laser"` → default, profile kept; PATCH list: custom missing → removed, builtin missing → 400, unknown id → created; echo of the **new** GET shape → stored blob unchanged except revision; echo after a baseline change → profile `darkness` stays null; PATCH without `host` keeps host, `""` clears; PUT `reset_fields`; PUT explicit null on `width_mm` → 422; validation messages of §3.8; `dry_render_checks` rejects `x_offset −5` on 2009-110 (422); **format-2 builtin override without `width_mm`** (`{"id": "wago-210-804", "x_offset_mm": 1.6}`) survives a read with `x_offset 1.6` and every other field from code; a custom entry without `width_mm` is dropped; **German ranges through the API**: PUT `x_offset_mm: 12` → 422 `invalid_material` with "Versatz Vorschub muss zwischen −5 und 10 mm liegen", PATCH item `x_offset_mm: 12` → 400 with the same text, PUT printer `speed_ips: 5` → 422 `invalid_printer_settings` German; across `+0,5` on 2009-110 (outside `offset_limits`) → 422 naming the limits; **PATCH error table** (§6.3): stale `revision` → 409 dict with `code`, `revision`; explicit `sensor_mode: null` / `across_offset_mm: null` in a PATCH item → stored values kept; `label_calibration_staff_enabled` default false, PUT printer true → GET shows true, revision + 1; **sensor scale**: builtin `sensor_scale` 3.4 for 210-804/-824/-812/-805 and 3.0 for 211-501/2009-110, custom die-cut default 3.4, custom continuous 3.0; PUT `sensor_scale: 3.44` stores 3.4; PUT 5.6 and 0.4 → 422 `invalid_material` "… Sensorposition muss zwischen 0,5 und 5,5 auf der Skala liegen"; PUT `sensor_scale: null` → 422 "Feld sensor_scale darf nicht leer sein", PATCH item `sensor_scale: null` → stored value kept; malformed stored `sensor_scale` (`"rechts"`, 9.0) → default, profile kept; changing `sensor_scale` changes the fingerprint (record becomes `stale`); no GET object carries `sensor_mark` or `sensor_offset_mm`; every builtin's `sensor_position` hints contain "ca." and "auf die Skala Ihres Druckers übertragen", the four 3.4 builtins also "Foto 13.10.2026: Etiketten werden so korrekt erkannt"; `format_scale_de(3.4) == "3,4"`, `format_scale_de(3.0) == "3"` |
 | `test_label_job_header.py` | every golden job: `new[:2] == old[:2]`, `new[2:7] == ["^H12","^S2","^E0","^C{n}","^P1"]`, element lines identical; jobs with copies > 1 (freetext copies 3, type label copies 2) end `[…, "E", "^C1"]`, single-copy jobs end at `"E"`; baseline darkness 10 via PUT printer → all jobs `^H10`, profile override 8 wins; `material_by_id` strips carry the 2009-110 values; `^C1` on single, `^C3` freetext; mark profile header `^Q25,4,3+`; `JOB_HEADER_SENDS_STOP=False` drops `^E`; `JOB_HEADER_SENDS_P1=False` drops `^P1` and nothing else; fake printer: an SMPL single job after a raw job with `^P2` (no `^C`) prints 1 piece, a raw job without `^C` after an SMPL copies-3 job prints 1 piece; `_clean("A~B^C\r\nD")` == "A B C D"; across offset +1 mm → every machine x +12 vs golden (where not clamped); **guard**: `Lo` beyond the `^W` region is clamped and a fully outside `Lo` dropped; `AT` whose em box leaves [0, h_px] raises; die-cut y beyond the form length raises for `AT`/`XRB`/`Y`; no golden job is clamped or raises at its default offsets; `dry_render_checks` at across ±5 and x_offset −5/+10 on 2009-110, 211-501 and 210-812 raises exactly where `offset_limits` says (and never inside the limits); `offset_limits` of each builtin lies inside the static ranges and contains (0, 2.0) |
 | `test_label_calibration_commands.py` | exact `setup_commands` table of §4.4 (every row incl. `^XSET,SENSING,n` on die-cut) and `reprime_lines`; **allow-list**: every line of `setup_commands` and `pattern_job` for every builtin with `pattern_supported` × every valid sensor mode × offsets at the corners of its `offset_limits` (outside them `pattern_job` raises, never emits) + custom mark (inside/outside) + continuous `none`/`reflective` matches §4.1; never-send prefixes absent (incl. `^XSET,IMMEDIATE`); query enum values; `~S,SENSOR` and `^P1` pass, `^XSET,IMMEDIATE,1` does **not**; pattern worked example lines of §4.11 exact; `part_no "X\r\n~Z"` yields no line starting `~Z` and AT text without `~`; `part_no "Brady® Ø3"` yields the allowed line text `SMPL KAL Brady? ?3`; pattern has no `copies`; `pattern_job` on 210-805 raises `PatternUnsupported` |
-| `test_label_calibration_flow.py` | quick flow end-to-end against the fake: start → activate → apply (bytes `^G1\r\n^XSET,SENSING,1\r\n^Q99,3\r\n^W44\r\n` in one connection, no `^E ^H ^S ^C ^P ^L`) → autosense (one connection `^Q99,3\r\n^W44\r\n`, then CONFIG, then a separate connection with exactly `~S,SENSOR\r\n`) → poll (60, 60, 00 → done) → verify `match` (busy_seen, latched) → save (record from the fake, `by_id` from token, notes cleaned) → lock free; freshness: q_changed only, qd_changed only, none → `unchecked`; `^QD` absent → `no_result`; `^QD600,36` with 804 → `other_material` [`wago-210-812`]; gap 0 die-cut → `no_gap` with the detail "… Zeiger auf 3,4 der Skala stellen und erneut einmessen."; continuous busy-only with stale `^QD1164,30` → `unchecked`, continuous new `^QD` gap 0 → `match`, gap > 0 → `gap_on_continuous`; final status 02 → `printer_error`; **latch**: `sense_sensor_after="reflective"` → `match` with `sensor_ok False` and offer `reapply` → apply → verify → still `match`, `freshness busy_seen`, `from_latch` true; **switch with echo**: `sense_result_qd=(610,30)`, `q_write_updates_qd=True` → `other_material` → activate 812 → apply → verify → `match`, measured 610/30 (not 600/36), `from_latch` true; **write before latch**: sense, activate 812, apply with `q_write_updates_qd=True`, verify → `unchecked` with W1, offers `resense`/`accept_anyway`; same without the echo → W2; requery after W1 stays `unchecked`; a new autosense clears latch and writes; activate resets `applied`/`verdict`, keeps `sensed`; verify after activate without apply → 409; 422 without `confirm_feed`; status 04 → 409 `printer_not_ready` and no `~S,SENSOR` received; apply while status 50 → 409 `printer_not_ready` with message "Drucker nicht bereit: Druckt"; **button fallback**: `requires_immediate` (STATUS silent) + method `command` → 409 `no_status_reply` and no `^XSET` bytes ever; same + method `button` → 200, `sense.method button`, `status_answered false`, no `~S,SENSOR` and no `^XSET` bytes; poll then answers `sensing` with the P3 message (never `error`), verify works; fully silent STATUS → same; **poll**: unknown code `99` → `error` "Unbekannter Status 99"; timeout wins over a simultaneous `60`; a poll in `sensed` replays phase, code and message without a printer query; slow message after `AUTOSENSE_SLOW_S`; poll in `judged` → 409; **pattern**: `confirm_feed` false/missing → 422; status 04 → 409 and nothing printed; phase `sensing` → 409; phase `applied` (no verify yet) → 409; `pattern_pending` already set → 409; two parallel requests (fake `reply_delay_s`) → exactly one job printed; 210-805 → 422 `pattern_unsupported`; full flow pattern → header + box lines and a `writes_since_sense` entry; **activate/apply while sensing** → 409; verify before autosense → 409; save non-match without accept → 422; pattern in quick session → 422; `last_applied` written; audit rows exist |
+| `test_label_calibration_flow.py` | quick flow end-to-end against the fake: start → activate → apply (bytes `^G1\r\n^XSET,SENSING,1\r\n^Q98,3\r\n^W44\r\n` in one connection, no `^E ^H ^S ^C ^P ^L`) → autosense (one connection `^Q98,3\r\n^W44\r\n`, then CONFIG, then a separate connection with exactly `~S,SENSOR\r\n`) → poll (60, 60, 00 → done) → verify `match` (busy_seen, latched) → save (record from the fake, `by_id` from token, notes cleaned) → lock free; freshness: q_changed only, qd_changed only, none → `unchecked`; `^QD` absent → `no_result`; `^QD600,36` with 804 → `other_material` [`wago-210-812`]; gap 0 die-cut → `no_gap` with the detail "… Zeiger auf 3,4 der Skala stellen und erneut einmessen."; continuous busy-only with stale `^QD1164,30` → `unchecked`, continuous new `^QD` gap 0 → `match`, gap > 0 → `gap_on_continuous`; final status 02 → `printer_error`; **latch**: `sense_sensor_after="reflective"` → `match` with `sensor_ok False` and offer `reapply` → apply → verify → still `match`, `freshness busy_seen`, `from_latch` true; **switch with echo**: `sense_result_qd=(610,30)`, `q_write_updates_qd=True` → `other_material` → activate 812 → apply → verify → `match`, measured 610/30 (not 600/36), `from_latch` true; **write before latch**: sense, activate 812, apply with `q_write_updates_qd=True`, verify → `unchecked` with W1, offers `resense`/`accept_anyway`; same without the echo → W2; requery after W1 stays `unchecked`; a new autosense clears latch and writes; activate resets `applied`/`verdict`, keeps `sensed`; verify after activate without apply → 409; 422 without `confirm_feed`; status 04 → 409 `printer_not_ready` and no `~S,SENSOR` received; apply while status 50 → 409 `printer_not_ready` with message "Drucker nicht bereit: Druckt"; **button fallback**: `requires_immediate` (STATUS silent) + method `command` → 409 `no_status_reply` and no `^XSET` bytes ever; same + method `button` → 200, `sense.method button`, `status_answered false`, no `~S,SENSOR` and no `^XSET` bytes; poll then answers `sensing` with the P3 message (never `error`), verify works; fully silent STATUS → same; **poll**: unknown code `99` → `error` "Unbekannter Status 99"; timeout wins over a simultaneous `60`; a poll in `sensed` replays phase, code and message without a printer query; slow message after `AUTOSENSE_SLOW_S`; poll in `judged` → 409; **pattern**: `confirm_feed` false/missing → 422; status 04 → 409 and nothing printed; phase `sensing` → 409; phase `applied` (no verify yet) → 409; `pattern_pending` already set → 409; two parallel requests (fake `reply_delay_s`) → exactly one job printed; 210-805 → 422 `pattern_unsupported`; full flow pattern → header + box lines and a `writes_since_sense` entry; **activate/apply while sensing** → 409; verify before autosense → 409; save non-match without accept → 422; pattern in quick session → 422; `last_applied` written; audit rows exist |
 | `test_label_calibration_lock.py` | second user start → 409 `session_locked` with holder name and `since` equal to the holder's `acquired_at` (ISO UTC); its message shows HH:MM in Europe/Berlin (07:05Z → "09:05" in October); same user → takeover; admin `takeover:true` → ok, staff `takeover:true` on another's → 409; expiry (monkeypatched clock) frees the lock; foreign `session_id` → 409 `session_lost`; during a session: machine print-label → 409 with the German text, BMK labels → 409, admin Testdruck → 200 `ok:false`; the session's own pattern print is allowed; `_ship` from a calibration route whose session was taken over → 409 `session_lost`, I/O lock timeout on a calibration route → 409 `printer_busy`; **DELETE**: after `save` → 204, lock stays free; a stale tab's DELETE while another user holds the lock → 204 and the other session is unchanged; DELETE of an unknown id → 204; PUT material with stale revision → 409 `stale_revision`; PATCH without revision succeeds and bumps; activate on another material bumps revision and returns it in `config_revision`, activate on the same material does not bump; **not configured**: no host → POST session 503 `not_configured` |
 | `test_label_printer_permissions.py` | employee without grants → 403 on every new route; `werkstatt:manage` (via `_employee_with` pattern) with the staff switch **off** → overview 200 with `staff_enabled false`, POST session 403 `staff_flow_disabled`; with the switch **on** → 200 on overview/status/quick session/activate/apply/autosense/poll/verify/save, 403 on `mode:"full"`, pattern, admin GET/PATCH/PUT; `raw_config` null for staff, present for admin; admin → everything regardless of the switch |
 

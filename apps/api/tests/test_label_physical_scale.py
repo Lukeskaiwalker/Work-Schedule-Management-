@@ -12,7 +12,9 @@ and ``^W`` at 12 dots. So SMPL lays out in physical dots
 2. a 12-module BMK strip at 17,5 mm does not drift: every cut mark lands
    within one dot of its millimetre, the last one 210 mm after the first;
 3. ``^Q``/``^W`` in printer millimetres for 210-804, a continuous 2009-110
-   strip and the 211-501 tube — a continuous feed always covers its content;
+   strip and the 211-501 tube — a continuous feed always covers its content,
+   a die-cut form never ends before its label (the guard lets content run to
+   the label's last dot), and no builtin die-cut job reaches past its form;
 4. no rendering module converts millimetres with 12 — only the printer-unit
    helper may, and only for ``^Q``/``^W``.
 """
@@ -21,10 +23,14 @@ from __future__ import annotations
 
 import ast
 import inspect
+import io
 import re
 from collections import Counter
+from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
+from PIL import Image, ImageOps
 
 from app.services import schaltplan_layout
 from app.services import schaltplan_terminals
@@ -39,13 +45,19 @@ from app.services import werkstatt_label_profile
 from app.services import werkstatt_labels as wl
 from app.services.werkstatt_label_builtins import DEFAULT_MATERIALS
 from app.services.werkstatt_label_calibration import setup_commands
-from app.services.werkstatt_label_patterns import pattern_job
+from app.services.werkstatt_label_jobs import dry_render_samples
+from app.services.werkstatt_label_patterns import pattern_job, pattern_supported
 from app.services.werkstatt_label_profile import (
+    DOTS_PER_MM,
+    MAX_LENGTH_MM,
+    MIN_LENGTH_MM,
     PHYSICAL_DOTS_PER_MM,
+    TIER_VOLL,
     MaterialProfile,
     mm_to_dots,
     printer_mm,
     printer_width_mm,
+    q_value,
 )
 
 M = {profile.id: profile for profile in DEFAULT_MATERIALS}
@@ -71,6 +83,11 @@ def _header(job: list[str], prefix: str) -> str:
     return next(line for line in job[: job.index("^L")] if line.startswith(prefix))
 
 
+def _form_dots(job: list[str]) -> int:
+    """The form the job's ``^Q`` declares, in dots (the printer's mm × 12)."""
+    return int(_header(job, "^Q")[2:].split(",")[0]) * DOTS_PER_MM
+
+
 # ── The helpers ──────────────────────────────────────────────────────────────
 
 
@@ -78,9 +95,11 @@ def test_mm_to_dots_is_300_dpi_rounded_once() -> None:
     assert PHYSICAL_DOTS_PER_MM == 300 / 25.4
     assert [mm_to_dots(mm) for mm in (1, 2, 3, 10, 44, 80, 99, 210)] == [12, 24, 35, 118, 520, 945, 1169, 2480]
     assert mm_to_dots(0) == 0 and mm_to_dots(-1) == -12
-    # The printer's millimetre is 12 dots: to the nearest one, or rounded UP
-    # when the printer's form or width must cover the content.
+    # The printer's millimetre is 12 dots: to the nearest one (a gap, a mark),
+    # or rounded UP when the printer's form or width must cover the label or
+    # the content.
     assert printer_mm(1169) == 97 and printer_mm(35) == 3
+    assert printer_mm(1169, cover=True) == 98
     assert printer_mm(2575, cover=True) == 215 and printer_mm(2580, cover=True) == 215
     assert printer_width_mm(44) == 44 and printer_width_mm(11) == 11 and printer_width_mm(5) == 5
 
@@ -117,6 +136,9 @@ def test_the_pattern_box_sits_2_physical_mm_inside_the_label() -> None:
         (h - i - t, i + xo, h - i, w - i + xo),  # L — reading top
         (i, i + xo, i + t, w - i + xo),  # R — reading bottom
     ]
+    # At the 2 mm offset B, L and R end on the label's last dot (1169): the
+    # ^Q form must reach it, or the first pattern prints without B.
+    assert w - i + xo <= _form_dots(job) == 1176
 
 
 def test_the_continuous_pattern_ticks_every_5_physical_mm() -> None:
@@ -155,10 +177,104 @@ def test_the_block_label_cells_sit_on_the_12_mm_terminal_pitch() -> None:
 
 
 def test_210_804_states_its_label_in_printer_millimetres() -> None:
-    """99 + 3 × 44 mm: 1169 + 35 dots × 520 dots → ^Q97,3 ^W44 (97,4 / 2,95 / 43,3 printer-mm)."""
+    """99 + 3 × 44 mm: 1169 + 35 dots × 520 dots → ^Q98,3 ^W44.
+
+    97,4 printer-mm of label rounded UP (a 1176-dot form; ^Q97 would be 1164,
+    5 dots short of the label), 2,9 of gap to the nearest, 43,3 of width up.
+    """
     for job in (wl._render_voll(P804, MACHINE), pattern_job(P804)[0]):
-        assert job[:2] == ["^Q97,3", "^W44"]
-    assert setup_commands(P804)[-2:] == ["^Q97,3", "^W44"]
+        assert job[:2] == ["^Q98,3", "^W44"]
+    assert setup_commands(P804)[-2:] == ["^Q98,3", "^W44"]
+
+
+def test_a_die_cut_form_never_ends_before_its_label() -> None:
+    """The guard lets die-cut content run to the label's last dot
+    (``mm_to_dots(length)``), so the ``^Q`` form must reach it — and it
+    reaches less than one printer millimetre further. Every length the
+    printer takes, in tenths, on gap and on mark stock."""
+    for tenths in range(round(MIN_LENGTH_MM * 10), round(MAX_LENGTH_MM * 10) + 1):
+        length_mm = tenths / 10
+        label = mm_to_dots(length_mm)
+        for profile in (
+            MaterialProfile(id="gap", name="", part_no="", width_mm=40, length_mm=length_mm),
+            MaterialProfile(id="mark", name="", part_no="", width_mm=40, length_mm=length_mm, mark_width_mm=4),
+        ):
+            form = int(q_value(profile).split(",")[0]) * DOTS_PER_MM
+            assert label <= form < label + DOTS_PER_MM, (length_mm, q_value(profile))
+
+
+@pytest.fixture
+def label_logo(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    from app.core.config import get_settings
+
+    logo = Path(__file__).resolve().parents[1] / "app" / "assets" / "logo.jpeg"
+    monkeypatch.setattr(get_settings(), "report_logo_path", str(logo))
+    wl._logo_asset.cache_clear()
+    yield
+    wl._logo_asset.cache_clear()
+
+
+def _ink_lengths() -> dict[str, int]:
+    """Bitmap name → how far its ink reaches along the feed from its anchor.
+
+    Ink, not the bitmap: the QR's quiet zone is white, and white past the
+    form loses nothing.
+    """
+    box, tl = werkstatt_box_labels, schaltplan_type_label
+    assets = [wl._logo_asset()]
+    assets += box.render_box_label(P804, box.BoxLabelContent("KISTE-BK-2026-0001", "BK-2026-0001", "Kiste Wallbox"))[1]
+    assets += tl.render_type_label(P804, tl.TypeLabelContent("Familie Schulze", "381", "09.2026", "VT-0001"))[1]
+    lengths = {}
+    for name, bmp, _, _ in filter(None, assets):
+        # Back from the machine frame (the asset turned it 270°) to reading:
+        # reading x runs along the feed; ink is black.
+        reading = Image.open(io.BytesIO(bmp)).convert("L").transpose(Image.Transpose.ROTATE_90)
+        lengths[name] = ImageOps.invert(reading).getbbox()[2]
+    return lengths
+
+
+def _feed_ends(job: list[str], ink: dict[str, int]) -> list[tuple[int, str]]:
+    """(machine y where it ends, line) per element: a rule's far end, a text's
+    estimated width, a code's symbol, a bitmap's ink."""
+    ends: list[tuple[int, str]] = []
+    elements = iter(_elements(job))
+    for line in elements:
+        if line.startswith("Lo,"):
+            ends.append((int(line.split(",")[4]), line))
+        elif line.startswith("AT,"):
+            parts = line.split(",", 9)
+            ends.append((int(parts[2]) + wl._est_text_w(parts[9], int(parts[3])), line))
+        elif line.startswith("XRB"):
+            _, y, module = (int(part) for part in line[3:].split(",")[:3])
+            data = next(elements)
+            ends.append((y + werkstatt_box_labels.datamatrix_symbol_modules(data) * module, line))
+        elif line.startswith("Y"):
+            _, y, name = line[1:].split(",")
+            ends.append((int(y) + ink[name], line))
+    return ends
+
+
+# The voll and kompakt layouts keep 2 mm to the trailing edge, so at the
+# builtin 2 mm offset they end on the label's last dot. Not the 210-805: its
+# mini labels centre their text 1 mm from the edges, which at a 2 mm offset
+# reaches past ^Q15 by the width estimate — as it did at 12 dots per mm,
+# also with ^Q15; the guard checks text anchors only (§4.9).
+@pytest.mark.parametrize("material_id", ["wago-210-804", "wago-210-824", "wago-210-812"])
+def test_every_builtin_die_cut_job_ends_inside_its_form(material_id: str, label_logo: None) -> None:
+    profile = M[material_id]
+    assert profile.x_offset_mm == 2.0
+    ink = _ink_lengths()
+    placed_images = 0
+    for render in dry_render_samples(profile, pattern=pattern_supported(profile)):
+        job = render(profile)
+        form = _form_dots(job)
+        assert form >= mm_to_dots(profile.length_mm), "the form ends before the label"
+        for end, line in _feed_ends(job, ink):
+            assert end <= form, f"{line} ends at machine y {end}, past the {_header(job, '^Q')} form ({form} dots)"
+        placed_images += sum(line.startswith("Y") for line in _elements(job))
+    assert pattern_supported(profile)
+    if profile.tier == TIER_VOLL:
+        assert placed_images >= 4, "logo, crate logo, type-label logo and QR were all checked"
 
 
 def test_a_continuous_strip_feeds_its_content_rounded_up() -> None:
@@ -186,7 +302,7 @@ def test_the_tube_pattern_and_short_text() -> None:
 
 def test_custom_die_cut_and_mark_stock() -> None:
     custom = MaterialProfile(id="custom-38x23", name="Fremd", part_no="", width_mm=23, length_mm=38)
-    assert wl._render_mini(custom, "X1")[:2] == ["^Q37,3", "^W23"]  # 449 dots → 37,4; 272 dots → 22,7 → 23
+    assert wl._render_mini(custom, "X1")[:2] == ["^Q38,3", "^W23"]  # 449 dots → 37,4 → 38; 272 dots → 22,7 → 23
     mark = MaterialProfile(id="custom-mark", name="Marke", part_no="", width_mm=40, length_mm=25, mark_width_mm=4, mark_offset_mm=3)
     assert wl._render_mini(mark, "X1")[:2] == ["^Q25,4,3+", "^W40"]
 

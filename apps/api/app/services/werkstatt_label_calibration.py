@@ -100,7 +100,7 @@ def setup_commands(profile: MaterialProfile) -> list[str]:
     (it can feed, EZPL p.4), never ``^H ^S ^C ^P`` (every job states them),
     never ``^L``/``E`` (setup between them is ignored, EZPL p.75).
     ``^Q``/``^W`` are the printer's millimetres (dots / 12), the same lines
-    every job states: ``^Q97,3 ^W44`` for the 99 + 3 × 44 mm 210-804.
+    every job states: ``^Q98,3 ^W44`` for the 99 + 3 × 44 mm 210-804.
     """
     kind = "continuous" if profile.continuous else "die-cut"
     sensor = _SENSOR_LINES[(kind, profile.sensor_mode)]

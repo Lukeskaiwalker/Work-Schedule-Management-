@@ -167,7 +167,8 @@ def fit_to_media(profile: MaterialProfile, lines: list[str], *, form_length_dots
     Machine x must lie within the label's physical width [0, h_px] (the
     ``^W`` region, rounded up to whole printer millimetres, is never
     narrower; nor the head: past the label's edge is bare liner or roller);
-    machine y ≥ 0 and, on die-cut stock, ≤ the physical label length. Rules
+    machine y ≥ 0 and, on die-cut stock, ≤ the physical label length (the
+    ``^Q`` form, its length rounded up the same way, is never shorter). Rules
     are clamped (a cut mark that loses a millimetre is still a cut mark; one
     printed onto the roller is ribbon wasted on rubber); a line clamped to
     nothing is dropped. Text, codes and images raise — a clipped number is

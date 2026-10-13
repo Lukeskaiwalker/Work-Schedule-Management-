@@ -122,8 +122,9 @@ def test_switching_active_material_changes_sheet_geometry(
 
     lines = _jobs(sent[0][2])[0]
     # 210-812: 50 × 25 → 25 mm across the head, 50 mm feed, 3 mm gap — sent
-    # in the printer's millimetres (dots / 12): 591 + 35 dots → ^Q49,3, 295 → ^W25.
-    assert lines[0] == "^Q49,3"
+    # in the printer's millimetres (dots / 12): 591 + 35 dots → ^Q50,3 (the
+    # length rounded up: 49,25 → 50), 295 → ^W25.
+    assert lines[0] == "^Q50,3"
     assert "^W25" in lines
     # Kompakt keeps the DataMatrix.
     assert any(line.startswith("XRB") for line in lines)
