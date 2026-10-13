@@ -12,6 +12,10 @@
  *     ending after `save` (which already released it) answers 204 and changes
  *     nothing — errors there are swallowed on purpose: a closing sheet has
  *     nowhere to show them, and a stale lock expires anyway;
+ *   * a start still in flight when `end` runs or the sheet unmounts is ended
+ *     the moment it answers. Nothing else would ever release that lock: no id
+ *     to DELETE yet, no heartbeat later — and for its 600 s every workshop
+ *     print is refused;
  *   * `latestRevision` is the highest configuration revision seen in ANY
  *     response (settings GET/PUT, every session call incl. `activate`). The
  *     wizard sends it with each PUT, so a PUT after `activate` is not stale;
@@ -63,6 +67,22 @@ export function canStartSensing(session: CalibrationSession | null): boolean {
   return !!session && session.applied && ["applied", "sensed", "judged"].includes(session.phase);
 }
 
+/**
+ * Whether the printer may still be moving media (§4.6, critique S2):
+ * "measuring" while the poll reports a running sense; "unknown" when nothing
+ * says it stopped — a silent STATUS (button method), a failed poll, or a poll
+ * that timed out before a verdict. Ending the setup frees the lock, so the
+ * cancel dialog waits out "measuring" and repeats the stop hint for both.
+ */
+export type FeedState = "measuring" | "unknown" | null;
+
+export function feedState(session: CalibrationSession | null, polling: boolean, poll: SensePoll | null): FeedState {
+  if (polling) return "measuring";
+  if (session?.phase === "sensing") return "unknown";
+  if (session?.phase === "sensed" && poll?.phase === "timeout") return "unknown";
+  return null;
+}
+
 export interface UseCalibrationSessionOptions {
   token: string | null;
   initialRevision?: number;
@@ -84,6 +104,8 @@ export function useCalibrationSession({ token, initialRevision = 0, onVerdict }:
 
   const sidRef = useRef<string | null>(null);
   const endedRef = useRef(false);
+  /** Starts awaiting their answer; `end` marks them abandoned. */
+  const startsInFlight = useRef(new Set<{ abandoned: boolean }>());
   const mountedRef = useRef(true);
   const tokenRef = useRef(token);
   const pollTimer = useRef<number | null>(null);
@@ -156,8 +178,11 @@ export function useCalibrationSession({ token, initialRevision = 0, onVerdict }:
     }
   }, [adopt, verify]);
 
+  /** Resolves to null when the setup was ended (or the sheet closed) before the server answered. */
   const start = useCallback(
-    async (mode: SessionMode, materialId: string, takeover = false) => {
+    async (mode: SessionMode, materialId: string, takeover = false): Promise<CalibrationSession | null> => {
+      const attempt = { abandoned: false };
+      startsInFlight.current.add(attempt);
       setBusy("start");
       try {
         const next = await startCalibrationSession(tokenRef.current, {
@@ -165,6 +190,10 @@ export function useCalibrationSession({ token, initialRevision = 0, onVerdict }:
           material_id: materialId,
           ...(takeover ? { takeover: true } : {}),
         });
+        if (attempt.abandoned || !mountedRef.current) {
+          endCalibrationSession(tokenRef.current, next.session_id).catch(() => undefined);
+          return null;
+        }
         endedRef.current = false;
         adopt(next);
         setApplyResult(null);
@@ -173,6 +202,7 @@ export function useCalibrationSession({ token, initialRevision = 0, onVerdict }:
         setVerdict(null);
         return next;
       } finally {
+        startsInFlight.current.delete(attempt);
         if (mountedRef.current) setBusy(null);
       }
     },
@@ -237,6 +267,9 @@ export function useCalibrationSession({ token, initialRevision = 0, onVerdict }:
 
   const end = useCallback(async () => {
     stopPolling();
+    startsInFlight.current.forEach((attempt) => {
+      attempt.abandoned = true;
+    });
     const sid = sidRef.current;
     if (!sid || endedRef.current) return;
     endedRef.current = true;
@@ -282,6 +315,7 @@ export function useCalibrationSession({ token, initialRevision = 0, onVerdict }:
     poll,
     polling,
     pollError,
+    feed: feedState(session, polling, poll),
     verdict,
     busy,
     start,

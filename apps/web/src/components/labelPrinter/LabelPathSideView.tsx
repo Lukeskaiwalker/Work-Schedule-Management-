@@ -7,12 +7,29 @@
  * where the external unwinder stands and which way it unrolls, and which side
  * of the media the sensor looks from. Every position is a constant in
  * `sensorGeometry.ts` (`sideView`).
+ *
+ * The unwinder's arrow and its media path must agree: WAGO's "Abrollrichtung
+ * links, gegen den Uhrzeigersinn" turns the roll counter-clockwise in this
+ * left-to-right view, and such a roll moves toward the printer only on its
+ * lower half — so the strip runs off the lower tangent. (Off the top it would
+ * have to turn clockwise, and a person following the picture would thread the
+ * strip with the wrong face toward the head.) Which side WAGO's sheet is drawn
+ * from is not stated; T7/T9 confirm the direction at the printer.
  */
 import { useId } from "react";
 
 import type { LabelMaterial } from "../../types/labelPrinter";
 import { SENSOR_GEOMETRY } from "./sensorGeometry";
 import "../../styles/label-calibration.css";
+
+type Roll = { cx: number; cy: number; r: number };
+
+/** The point where a line from (x, y) touches the roll on its lower side (SVG y points down). */
+function lowerTangentPoint(roll: Roll, x: number, y: number): [number, number] {
+  const toPoint = Math.atan2(y - roll.cy, x - roll.cx);
+  const angle = toPoint + Math.acos(roll.r / Math.hypot(x - roll.cx, y - roll.cy));
+  return [roll.cx + roll.r * Math.cos(angle), roll.cy + roll.r * Math.sin(angle)];
+}
 
 export interface LabelPathSideViewProps {
   material: LabelMaterial;
@@ -36,9 +53,11 @@ export function LabelPathSideView({ material, de = true }: LabelPathSideViewProp
   const headY = y - s.ribbonDrop - s.headHeight;
   const labelY = hy1 + s.textSize + s.labelGap;
   const arc = roll.r + s.arrowGap;
+  // The internal roll makes no direction claim (no arrow): it pays out over the top.
+  const [payX, payY] = external ? lowerTangentPoint(roll, s.rearSlotX, y) : [roll.cx, roll.cy - roll.r];
   const description = de
-    ? `Materialweg von links nach rechts: ${external ? "externer Abroller, Abrollrichtung links" : "interner Rollenhalter"}, hinterer Schlitz, Führung, Sensor, Andruckwalze unter dem Druckkopf, Abreißkante.`
-    : `Media path left to right: ${external ? "external unwinder, unwinding to the left" : "internal roll holder"}, rear slot, guide, sensor, platen under the head, tear edge.`;
+    ? `Materialweg von links nach rechts: ${external ? "externer Abroller, Abrollrichtung links (gegen den Uhrzeigersinn, das Material läuft unten von der Rolle ab)" : "interner Rollenhalter"}, hinterer Schlitz, Führung, Sensor, Andruckwalze unter dem Druckkopf, Abreißkante.`
+    : `Media path left to right: ${external ? "external unwinder, unwinding to the left (counter-clockwise, the media runs off the bottom of the roll)" : "internal roll holder"}, rear slot, guide, sensor, platen under the head, tear edge.`;
 
   return (
     <figure className="lc-figure">
@@ -56,7 +75,7 @@ export function LabelPathSideView({ material, de = true }: LabelPathSideViewProp
         {external && (
           <g className="lc-side-unwinder-group">
             <path className="lc-side-unwinder" d={`M${roll.cx} ${roll.cy}L${roll.cx} ${hy1}M${roll.cx - roll.r} ${hy1}L${roll.cx + roll.r} ${hy1}`} strokeWidth={stroke} />
-            {/* counter-clockwise arc: the media leaves the roll at the top, toward the printer */}
+            {/* counter-clockwise arc (sweep 0): the top of the roll moves away from the printer */}
             <path
               className="lc-side-arrow"
               d={`M${roll.cx + arc} ${roll.cy}A${arc} ${arc} 0 0 0 ${roll.cx} ${roll.cy - arc}l${s.arrowHead} ${-s.arrowHead}M${roll.cx} ${roll.cy - arc}l${s.arrowHead} ${s.arrowHead}`}
@@ -68,7 +87,7 @@ export function LabelPathSideView({ material, de = true }: LabelPathSideViewProp
           </g>
         )}
         <circle className="lc-side-roll" cx={roll.cx} cy={roll.cy} r={roll.r} strokeWidth={stroke} />
-        <path className="lc-side-path" d={`M${roll.cx} ${roll.cy - roll.r}L${s.rearSlotX} ${y}L${s.tearX} ${y}`} strokeWidth={stroke} />
+        <path className="lc-side-path" d={`M${payX} ${payY}L${s.rearSlotX} ${y}L${s.tearX} ${y}`} strokeWidth={stroke} />
 
         <rect className="lc-side-part" x={s.rearSlotX - s.slotWidth / 2} y={y - s.unitHeight} width={s.slotWidth} height={s.unitHeight * 2} />
         <rect className="lc-side-guide" x={s.guideX - s.guideWidth / 2} y={y - s.unitHeight} width={s.guideWidth} height={s.unitHeight - s.ribbonDrop} strokeWidth={stroke / 2} />

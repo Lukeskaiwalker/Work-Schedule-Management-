@@ -104,7 +104,8 @@ export function MaterialChangeSheet({ onClose, preselectId = null }: MaterialCha
     if (!selectedId) return;
     setStepError(null);
     try {
-      await calibration.start("quick", selectedId, takeover);
+      // null: Abbrechen came before the server answered; the hook released it.
+      if (!(await calibration.start("quick", selectedId, takeover))) return;
       setLockedBy(null);
       setStep(2);
     } catch (err) {
@@ -274,6 +275,7 @@ export function MaterialChangeSheet({ onClose, preselectId = null }: MaterialCha
         <CancelCalibrationDialog
           session={session}
           materialName={subject?.name ?? ""}
+          feed={calibration.feed}
           onEnd={() => void endSetup()}
           onContinue={() => setCancelOpen(false)}
           de={de}

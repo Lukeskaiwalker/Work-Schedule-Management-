@@ -393,6 +393,99 @@ describe("session edges", () => {
     expect(fake.count(DELETE)).toBe(1);
   });
 
+  it("keeps the lock while the printer still senses: the cancel dialog shows the stop hint and ending waits", async () => {
+    let finished = false;
+    fake.on(POLL, () => {
+      if (!finished) {
+        return { phase: "sensing", answered: true, code: "50", code_text: "Misst", message: "", saw_busy: true, elapsed_s: 3, session: fake.session() };
+      }
+      fake.state.phase = "sensed";
+      return { phase: "done", answered: true, code: "00", code_text: "Bereit", message: "", saw_busy: true, elapsed_s: 9, session: fake.session() };
+    });
+    const { onClose } = renderSheet();
+    await toStep2();
+    await toStep3();
+    await toStep4();
+    await startSensing();
+    await screen.findByText(/Drucker misst/);
+    click("Abbrechen");
+    const dialog = () => screen.getByRole("dialog", { name: "Einrichtung abbrechen?" });
+    expect(within(dialog()).getByText(`⚠ ${FEED_STOP_HINT}`)).toBeInTheDocument();
+    expect(within(dialog()).getByText("⚠ Der Drucker misst gerade und kann dabei noch Material einziehen.")).toBeInTheDocument();
+    const end = within(dialog()).getByRole("button", { name: "Einrichtung beenden" });
+    expect(end).toBeDisabled();
+    expect(end).toHaveAccessibleDescription(/sobald das Einmessen abgeschlossen ist/);
+    fireEvent.click(end);
+    expect(fake.count(DELETE)).toBe(0);
+    expect(onClose).not.toHaveBeenCalled();
+    finished = true;
+    await waitFor(() => expect(within(dialog()).getByRole("button", { name: "Einrichtung beenden" })).toBeEnabled());
+    expect(within(dialog()).queryByText(`⚠ ${FEED_STOP_HINT}`)).toBeNull();
+    fireEvent.click(within(dialog()).getByRole("button", { name: "Einrichtung beenden" }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(fake.count(DELETE)).toBe(1);
+  });
+
+  it("lets a silent printer's button run be ended, with the stop hint in the dialog", async () => {
+    fake.on(AUTOSENSE, (body) => {
+      fake.state.phase = "sensing";
+      fake.state.sensed = true;
+      return { printer: "p", method: body.method, cost_hint: "x", status_answered: false, presense: null, session: fake.session() };
+    });
+    const { onClose } = renderSheet();
+    await toStep2();
+    await toStep3();
+    await toStep4();
+    click("Drucker reagiert nicht? Mit der Kalibriertaste einmessen");
+    click("Los");
+    await screen.findByText(/Jetzt die Kalibriertaste/);
+    click("Abbrechen");
+    const dialog = screen.getByRole("dialog", { name: "Einrichtung abbrechen?" });
+    expect(within(dialog).getByText(`⚠ ${FEED_STOP_HINT}`)).toBeInTheDocument();
+    // Nothing is polled here, so nothing would ever unlock the button: it stays usable.
+    fireEvent.click(within(dialog).getByRole("button", { name: "Einrichtung beenden" }));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(fake.count(DELETE)).toBe(1);
+  });
+
+  it("releases a session whose start answers only after Abbrechen and unmount", async () => {
+    let answerStart: () => void = () => undefined;
+    fake.on(`POST ${W}/session`, async (body) => {
+      await new Promise<void>((resolve) => (answerStart = resolve));
+      fake.state.material_id = body.material_id;
+      return fake.session();
+    });
+    const { onClose, unmount } = renderSheet({ preselectId: "wago-210-804" });
+    await screen.findByText("Schritt 1 von 5");
+    click("Weiter");
+    await waitFor(() => expect(fake.count(`POST ${W}/session`)).toBe(1));
+    click("Abbrechen");
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    unmount();
+    await act(async () => answerStart());
+    await waitFor(() => expect(fake.count(DELETE)).toBe(1));
+    expect(fake.calls.filter((call) => call.key === DELETE)[0]?.path).toBe(`${W}/session/sid-1`);
+  });
+
+  it("does not move on to step 2 when Abbrechen came before the start answered", async () => {
+    let answerStart: () => void = () => undefined;
+    fake.on(`POST ${W}/session`, async (body) => {
+      await new Promise<void>((resolve) => (answerStart = resolve));
+      fake.state.material_id = body.material_id;
+      return fake.session();
+    });
+    // The parent keeps the sheet mounted a moment longer than onClose.
+    renderSheet({ preselectId: "wago-210-804" });
+    await screen.findByText("Schritt 1 von 5");
+    click("Weiter");
+    await waitFor(() => expect(fake.count(`POST ${W}/session`)).toBe(1));
+    click("Abbrechen");
+    await act(async () => answerStart());
+    await waitFor(() => expect(fake.count(DELETE)).toBe(1));
+    expect(screen.queryByText("Sensor stellen und Material einlegen")).toBeNull();
+    expect(fake.count(`POST ${W}/session/:sid/heartbeat`)).toBe(0);
+  });
+
   it("ends the session on unmount after save, and a failing DELETE raises nothing", async () => {
     fake.on(DELETE, () => {
       throw apiError(500, "boom");

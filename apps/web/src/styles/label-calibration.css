@@ -104,7 +104,7 @@
   vector-effect: non-scaling-stroke;
   stroke-width: 1px;
 }
-/* 16 × 28 mm: at 220 px that is ≈ 14 px/mm — the millimetre ticks are legible
+/* 16 × 29 mm: at 220 px that is ≈ 14 px/mm — the millimetre ticks are legible
    without the Lupe taking a whole phone screen. */
 .lc-sensor-diagram--zoom { max-width: 220px; justify-self: center; }
 

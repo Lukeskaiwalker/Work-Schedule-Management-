@@ -11,7 +11,7 @@
  * material's limits; German server errors reach the screen verbatim.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import { apiFetch } from "../api/client";
 import { CalibrationWizard } from "../components/labelPrinter/CalibrationWizard";
@@ -241,6 +241,64 @@ describe("CalibrationWizard", () => {
     await waitFor(() => expect(screen.queryByText(/bitte neu laden/)).toBeNull());
     click("Übernehmen");
     expect(await screen.findByText("Gespeichert: Versatz Vorschub 1,6 mm")).toBeInTheDocument();
+  });
+
+  it("waits with [Einrichtung beenden] while the printer still senses", async () => {
+    fake.on(`POST ${W}/session/:sid/poll`, () => ({
+      phase: "sensing", answered: true, code: "50", code_text: "Misst", message: "", saw_busy: true, elapsed_s: 3, session: fake.session(),
+    }));
+    renderWizard();
+    await throughStep2(false);
+    await throughStep3();
+    click("Übertragen");
+    await clickWhenThere("Einmessen starten");
+    click("Einziehen lassen");
+    // The sense panel stays while the printer senses, stop hint included.
+    await screen.findByText(/Drucker misst/);
+    expect(screen.getByText(/Läuft zu viel Material durch: Deckel öffnen/)).toBeInTheDocument();
+    click("Abbrechen");
+    const dialog = screen.getByRole("dialog", { name: "Einrichtung abbrechen?" });
+    expect(within(dialog).getByText(/Läuft zu viel Material durch: Deckel öffnen/)).toBeInTheDocument();
+    expect(within(dialog).getByRole("button", { name: "Einrichtung beenden" })).toBeDisabled();
+    expect(fake.count(`DELETE ${W}/session/:sid`)).toBe(0);
+  });
+
+  it("keeps [Ergebnis abfragen] reachable after a silent printer's button run", async () => {
+    fake.on(`POST ${W}/session/:sid/autosense`, (body) => {
+      fake.state.phase = "sensing";
+      fake.state.sensed = true;
+      return { printer: "p", method: body.method, cost_hint: "x", status_answered: false, presense: null, session: fake.session() };
+    });
+    renderWizard();
+    await throughStep2(false);
+    await throughStep3();
+    click("Übertragen");
+    await clickWhenThere("Drucker reagiert nicht? Mit der Kalibriertaste einmessen");
+    click("Los");
+    expect(await screen.findByText(/Jetzt die Kalibriertaste/)).toBeInTheDocument();
+    await clickWhenThere("Ergebnis abfragen");
+    await waitFor(() => expect(document.querySelector(".lc-verdict")).not.toBeNull());
+  });
+
+  it("releases the session it was still starting when the wizard is closed at once", async () => {
+    let answerStart: () => void = () => undefined;
+    fake.on(`POST ${W}/session`, async (body) => {
+      await new Promise<void>((resolve) => (answerStart = resolve));
+      fake.state.material_id = body.material_id;
+      return fake.session();
+    });
+    const onClose = vi.fn();
+    const view = render(
+      <AppContext.Provider value={makeAppContextStub() as never}>
+        <CalibrationWizard materialId="wago-210-804" settings={settingsFixture({ revision: REVISION })} onSettings={() => undefined} onClose={onClose} />
+      </AppContext.Provider>,
+    );
+    await screen.findByText("Startet …");
+    click("Abbrechen");
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    view.unmount();
+    await act(async () => answerStart());
+    await waitFor(() => expect(fake.count(`DELETE ${W}/session/:sid`)).toBe(1));
   });
 
   it("shows a German range error of the print values above the buttons", async () => {

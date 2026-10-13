@@ -26,7 +26,7 @@ import { CancelCalibrationDialog } from "./CancelCalibrationDialog";
 import { LoadingChecklist } from "./LoadingChecklist";
 import { LockBanner } from "./MaterialPickStep";
 import { SensePanel } from "./SensePanel";
-import { canStartSensing, useCalibrationSession } from "./useCalibrationSession";
+import { useCalibrationSession } from "./useCalibrationSession";
 import { VerdictCard } from "./VerdictCard";
 import { StepFinish } from "./wizard/StepFinish";
 import { StepMaterial } from "./wizard/StepMaterial";
@@ -220,7 +220,11 @@ export function CalibrationWizard({ materialId, settings: initial, onSettings, o
         {step === 4 && (
           <>
             <ApplyPanel material={subject} calibration={calibration} de={de} />
-            {canStartSensing(session) && !verdict && (
+            {/* From the apply on, not only while sensing may START: during phase
+                "sensing" the panel carries the stop hint, the poll line and, for a
+                silent printer, the only [Ergebnis abfragen]. Its own buttons gate
+                on canStartSensing. */}
+            {session.applied && !verdict && (
               <SensePanel material={subject} calibration={calibration} onBackToSensor={() => setStep(3)} de={de} />
             )}
             {verdict && <VerdictCard verdict={verdict} materials={settings.materials} mode="full" busy={!!busy} onOffer={(k, id) => void offer(k, id)} de={de} />}
@@ -300,6 +304,7 @@ export function CalibrationWizard({ materialId, settings: initial, onSettings, o
           session={session}
           materialName={name}
           extra={alreadySaved}
+          feed={calibration.feed}
           onEnd={() => void endAndClose()}
           onContinue={() => setCancelOpen(false)}
           de={de}

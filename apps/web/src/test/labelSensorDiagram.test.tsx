@@ -113,8 +113,45 @@ describe("pointer and callouts", () => {
   });
 
   it("centres the zoom on the target", () => {
-    expect(draw(M804, { zoom: true }).getAttribute("viewBox")).toBe("-4 14 16 28");
-    expect(draw(M2009, { zoom: true }).getAttribute("viewBox")).toBe("-8 14 16 28");
+    expect(draw(M804, { zoom: true }).getAttribute("viewBox")).toBe("-4 14 16 29");
+    expect(draw(M2009, { zoom: true }).getAttribute("viewBox")).toBe("-8 14 16 29");
+  });
+});
+
+/** The y values of a path written as absolute "M x y L x y …" pairs. */
+const pathYs = (d: string): number[] => (d.match(/-?\d+(?:\.\d+)?/g) ?? []).map(Number).filter((_, i) => i % 2 === 1);
+
+describe("the shift arrow stays visible", () => {
+  // The arrow is the one cue for which way to push the carriage; an opaque
+  // callout box drawn after it must never cover it.
+  const g = SENSOR_GEOMETRY;
+  const boxTop = (y: number, size: number) => y - size * g.calloutBoxEm.top;
+  const boxBottom = (y: number, size: number) => boxTop(y, size) + size * g.calloutBoxEm.height;
+
+  it("keeps the arrow band between the carriage and the Ziel box", () => {
+    const half = g.strokeMm.line / 2;
+    expect(g.bands.shiftArrowY + g.arrowHeadMm + half).toBeLessThan(boxTop(g.bands.calloutTarget, g.textSizeMm));
+    expect(g.bands.shiftArrowY - g.arrowHeadMm - half).toBeGreaterThan(g.bands.sensingY + g.carriageDepthMm / 2 + half);
+  });
+
+  it("stacks the Ist box under the Ziel box, inside the housing and the Lupe", () => {
+    for (const size of [g.textSizeMm, g.textSizeMm * g.zoomTextScale]) {
+      expect(boxBottom(g.bands.calloutTarget, size)).toBeLessThanOrEqual(boxTop(g.bands.calloutActual, size));
+    }
+    expect(boxBottom(g.bands.calloutActual, g.textSizeMm)).toBeLessThanOrEqual(g.bands.housing[1]);
+    expect(g.bands.housing[1]).toBeLessThan(g.bands.breakMark - g.breakZigzagMm / 2);
+    expect(boxBottom(g.bands.calloutActual, g.textSizeMm * g.zoomTextScale)).toBeLessThanOrEqual(g.zoomBand[1]);
+  });
+
+  it.each([
+    ["210-804, Ist 2,9", M804, 2.9],
+    ["2009-110, Ist 3,4", M2009, 3.4],
+  ] as const)("draws the arrow clear of the Ziel box in the overview (%s)", (_, material, actual) => {
+    const svg = draw(material, { actualScale: actual });
+    const arrow = svg.querySelector(".lc-shift-arrow");
+    const zielBox = svg.querySelector(".lc-callout .lc-callout-box");
+    const lowest = Math.max(...pathYs(arrow?.getAttribute("d") ?? "")) + num(arrow, "stroke-width") / 2;
+    expect(lowest).toBeLessThan(num(zielBox, "y"));
   });
 });
 

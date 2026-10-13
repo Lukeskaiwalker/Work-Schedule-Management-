@@ -41,13 +41,17 @@ export const SENSOR_GEOMETRY = {
   guideFitClearanceMm: 1,
   guideMaxHalfOpeningMm: 30,      // unknown; 60 mm is the media maximum
   viewBox: { x: -44, y: 0, width: 88, height: 66 },
+  // Below the slot, top to bottom: shift arrow, "Ziel" box, "Ist" box. The
+  // contract's 36,5 / 38,5 / 41 left the opaque "Ziel" box (text 2,6 mm) over
+  // the arrow, so the callouts moved down and the housing and the Lupe grew by
+  // 1 mm to hold them (labelSensorDiagram.test.tsx checks the clearances).
   bands: {
-    guide: [2, 12], housing: [14, 42], scaleNumbers: [15, 17.5], tickBaseline: 24,
-    slot: [25, 35], sensingY: 30, shiftArrowY: 36.5, calloutTarget: 38.5, calloutActual: 41,
+    guide: [2, 12], housing: [14, 43], scaleNumbers: [15, 17.5], tickBaseline: 24,
+    slot: [25, 35], sensingY: 30, shiftArrowY: 36, calloutTarget: 39.4, calloutActual: 42.1,
     breakMark: 44, platen: [47, 53], printLine: 50, tearEdge: 60,
   },
-  zoomHalfWidthMm: 8,             // "Lupe": viewBox (target − 8, 14, 16, 28)
-  zoomBand: [14, 42],
+  zoomHalfWidthMm: 8,             // "Lupe": viewBox (target − 8, 14, 16, 29)
+  zoomBand: [14, 43],
   silverMaterialIds: ["wago-210-804", "wago-210-824", "wago-210-812"],
   sideView: {
     viewBox: { x: 0, y: 0, width: 160, height: 70 },
