@@ -31,6 +31,8 @@ from app.services.werkstatt_label_errors import PatternUnsupported
 from app.services.werkstatt_label_profile import DOTS_PER_MM, MaterialProfile, mm_int
 
 LINE_DOTS = 3  # t: line weight of the die-cut box
+RULER_TICK_DOTS = 36  # the 10-mm ticks, the tallest
+RULER_NUMBER_RISE_DOTS = 66  # the numbers' top edge above the ruler baseline
 _NOT_IN_AT_TEXT = re.compile(r"[^\x20-\x5D\x5F-\x7D]")
 
 
@@ -103,15 +105,20 @@ def _diecut_lines(profile: MaterialProfile) -> tuple[list[str], PatternGeometry]
     if width >= 25 and length >= 50:
         lines.append(wl._at(frame, i + t + 12, i + t + 12, 24, pattern_text(profile)))
     ruler_to = None
-    if length >= 50:
+    baseline = h - i - t - 12
+    # Ticks (up to 36 dots) and numbers (66 dots above the baseline) only
+    # where they stay below the top line: on a narrow label the ticks would
+    # be clamped into a smear and the numbers would leave the material — the
+    # guard then refused the whole pattern at every offset.
+    if length >= 50 and baseline - RULER_TICK_DOTS >= i + t:
         ruler_to = 10 * ((length - 9) // 10)
-        baseline = h - i - t - 12
         for k in range(10, ruler_to + 1):
-            height = 36 if k % 10 == 0 else 24 if k % 5 == 0 else 12
+            height = RULER_TICK_DOTS if k % 10 == 0 else 24 if k % 5 == 0 else 12
             lines.append(_box(frame, 12 * k - 1, 12 * k + 1, baseline - height, baseline))
-        for k in range(10, ruler_to + 1, 10):
-            number = str(k)
-            lines.append(wl._at(frame, 12 * k - wl._est_text_w(number, 24) // 2, baseline - 66, 24, number))
+        if baseline - RULER_NUMBER_RISE_DOTS >= i + t:
+            for k in range(10, ruler_to + 1, 10):
+                number = str(k)
+                lines.append(wl._at(frame, 12 * k - wl._est_text_w(number, 24) // 2, baseline - RULER_NUMBER_RISE_DOTS, 24, number))
     geometry = PatternGeometry(
         kind="diecut",
         width_mm=float(width),

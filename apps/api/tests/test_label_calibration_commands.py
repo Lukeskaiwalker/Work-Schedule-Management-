@@ -16,6 +16,7 @@ from dataclasses import replace
 
 import pytest
 
+from app.services import werkstatt_label_jobs as jobs
 from app.services.werkstatt_label_builtins import DEFAULT_MATERIALS
 from app.services.werkstatt_label_calibration import reprime_lines, setup_commands
 from app.services.werkstatt_label_errors import DisallowedPrinterCommand, LabelLayoutOutOfBounds, PatternUnsupported
@@ -173,3 +174,24 @@ def test_pattern_on_two_lane_805_is_unsupported() -> None:
     assert pattern_supported(M["wago-210-805"]) is False
     with pytest.raises(PatternUnsupported):
         pattern_job(M["wago-210-805"])
+
+
+@pytest.mark.parametrize(
+    ("width", "ticks", "numbers"),
+    [(4, False, False), (6, False, False), (7, True, False), (8, True, False), (9, True, True), (12, True, True)],
+)
+def test_the_ruler_only_where_the_width_has_room(width: int, ticks: bool, numbers: bool) -> None:
+    """The ruler's numbers sit 66 dots above its baseline and its 10-mm
+    ticks are 36 dots tall: on a narrow label they would run past the top
+    line (ticks, clamped into a smear) or off the material (numbers — the
+    pattern of a 6 × 50 raised at every offset). Each is drawn only below
+    the top line."""
+    # x_offset 0: at the default 2 mm, line B of a 1-mm inset lies past the
+    # label's end and is dropped — by design (B is never used), not the ruler.
+    profile = MaterialProfile(id=f"custom-{width}x50", name="Schmal", part_no="", width_mm=width, length_mm=50, x_offset_mm=0.0)
+    lines, geometry = pattern_job(profile)
+    assert (geometry.ruler_from_mm, geometry.ruler_to_mm) == ((10, 40) if ticks else (None, None))
+    assert any(line.startswith("AT,") for line in lines) is numbers  # no letters or text below 20 / 25 mm
+    with jobs._without_guard():
+        assert pattern_job(profile)[0] == lines  # nothing had to be clamped
+    assert_allowed(lines)

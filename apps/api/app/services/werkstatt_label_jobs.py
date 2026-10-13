@@ -32,7 +32,7 @@ import math
 import re
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from functools import lru_cache
 from typing import Callable, Iterator
 
@@ -61,6 +61,11 @@ MIN_CONTINUOUS_MM = 15  # shorter strips jam the feed
 
 STATIC_X_OFFSET = (-5.0, 10.0)
 STATIC_ACROSS = (-5.0, 5.0)
+# What every profile starts with (§3.2) — a new custom material, a builtin:
+# a layout must fit there to count for the offset limits.
+_PROFILE_DEFAULTS = {item.name: item.default for item in fields(MaterialProfile)}
+DEFAULT_X_OFFSET_MM: float = _PROFILE_DEFAULTS["x_offset_mm"]
+DEFAULT_ACROSS_OFFSET_MM: float = _PROFILE_DEFAULTS["across_offset_mm"]
 
 OUT_OF_BOUNDS_MESSAGE = "Druckbild läge außerhalb des Materials – Versatz im Material-Profil prüfen"
 
@@ -271,8 +276,36 @@ def _inward(value: float, *, up: bool) -> float:
     return (math.ceil(scaled - 1e-9) if up else math.floor(scaled + 1e-9)) / 10
 
 
+def _sample_extents(render: Callable[[MaterialProfile], list[str]], profile: MaterialProfile) -> list[tuple[int, int, int]]:
+    """The raising elements' extents of one sample at offsets 0 — none when
+    the sample cannot run here or leaves the material at the default offsets."""
+    try:
+        job = render(profile)
+    except (LabelFormatUnsupported, ValueError):
+        return []
+    extents = [extent for kind, line in _elements(_job_elements(job)) if (extent := _anchor_extent(kind, line)) is not None]
+    h_px = mm_int(profile.width_mm) * DOTS_PER_MM
+    form_length = None if profile.continuous else mm_int(profile.length_mm) * DOTS_PER_MM
+    dx, dy = round(DEFAULT_ACROSS_OFFSET_MM * DOTS_PER_MM), round(DEFAULT_X_OFFSET_MM * DOTS_PER_MM)
+    for x_low, x_high, y in extents:
+        if x_low + dx < 0 or x_high + dx > h_px or y + dy < 0 or (form_length is not None and y + dy > form_length):
+            return []
+    return extents
+
+
 @lru_cache(maxsize=64)
 def _limits_for(key: tuple) -> OffsetLimits:
+    """A sample that leaves the material at the default offsets does not count.
+
+    It is a layout that does not fit this material — the voll layouts were
+    drawn for 44 mm and overhang a 40-mm label — and no offset is to blame;
+    the guard refuses it at print time as before. Counted, it could demand
+    the opposite correction of another layout (40 × 100: across ≥ 1,4 for
+    the machine label, ≤ 1,0 for the quad) and leave an empty range that
+    refused every offset, so the material could not even be renamed. Every
+    counted sample fits at the defaults every profile starts with, so the
+    limits always contain them and are never empty.
+    """
     profile_id, _tier, width_mm, length_mm, gap_mm, mark_width_mm, pattern = key
     profile = MaterialProfile(
         id=profile_id, name=profile_id, part_no="", width_mm=width_mm, length_mm=length_mm,
@@ -281,14 +314,7 @@ def _limits_for(key: tuple) -> OffsetLimits:
     extents: list[tuple[int, int, int]] = []
     with _without_guard():
         for render in dry_render_samples(profile, pattern=pattern):
-            try:
-                job = render(profile)
-            except (LabelFormatUnsupported, ValueError):
-                continue
-            for kind, line in _elements(_job_elements(job)):
-                extent = _anchor_extent(kind, line)
-                if extent is not None:
-                    extents.append(extent)
+            extents += _sample_extents(render, profile)
     if not extents:
         return OffsetLimits(STATIC_X_OFFSET[0], STATIC_X_OFFSET[1], STATIC_ACROSS[0], STATIC_ACROSS[1])
     h_px = mm_int(width_mm) * DOTS_PER_MM
@@ -308,7 +334,9 @@ def _limits_for(key: tuple) -> OffsetLimits:
 
 
 def offset_limits(profile: MaterialProfile) -> OffsetLimits:
-    """The offsets inside which every sample layout stays on the material.
+    """The offsets inside which every sample layout that fits the material
+    (at the default offsets) stays on it; the range always contains the
+    defaults, so it is never empty.
 
     Samples render at offsets 0 and coordinates shift linearly with both
     offsets, so the limits are exact for the samples; other content (a longer

@@ -157,6 +157,22 @@ def test_patch_list_semantics(client: TestClient, admin_token: str) -> None:
     assert unknown.json()["detail"] == "Unbekanntes Material: gibt-es-nicht"
 
 
+@pytest.mark.parametrize(("width", "length"), [(40, 100), (36, 99), (6, 50)])
+def test_ordinary_custom_sizes_can_be_saved_and_renamed(client: TestClient, admin_token: str, width: int, length: int) -> None:
+    """The dry render refused every offset for these sizes (its range was
+    empty), so "+ Eigenes Material" could not save them at all."""
+    body = settings(client, admin_token)
+    custom = {"id": "custom-x", "name": f"Fremd {width}x{length}", "width_mm": width, "length_mm": length}
+    created = client.patch(A, headers=auth_headers(admin_token), json={"materials": body["materials"] + [custom]})
+    assert created.status_code == 200, created.text
+    limits = _by_id(created.json())["custom-x"]["offset_limits"]
+    assert limits["x_min"] <= 0 <= limits["x_max"] and limits["across_min"] <= 0 <= limits["across_max"], limits
+    renamed = [{**item, "name": "Umbenannt"} if item["id"] == "custom-x" else item for item in created.json()["materials"]]
+    again = client.patch(A, headers=auth_headers(admin_token), json={"materials": renamed})
+    assert again.status_code == 200, again.text
+    assert _by_id(again.json())["custom-x"]["name"] == "Umbenannt"
+
+
 def test_echo_of_the_get_shape_changes_nothing_but_the_revision(client: TestClient, admin_token: str) -> None:
     assert _put(client, admin_token, "wago-210-804", x_offset_mm=1.6, sensor_scale=3.6).status_code == 200
     body = settings(client, admin_token)

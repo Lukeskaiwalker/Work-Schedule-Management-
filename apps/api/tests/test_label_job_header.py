@@ -24,7 +24,7 @@ from app.services import werkstatt_box_labels as box
 from app.services import werkstatt_label_jobs as jobs
 from app.services import werkstatt_labels as wl
 from app.services.werkstatt_label_builtins import DEFAULT_MATERIALS
-from app.services.werkstatt_label_errors import LabelLayoutOutOfBounds, MaterialValidationError
+from app.services.werkstatt_label_errors import LabelFormatUnsupported, LabelLayoutOutOfBounds, MaterialValidationError
 from app.services.werkstatt_label_jobs import dry_render_checks, dry_render_samples, fit_to_media, offset_limits
 from app.services.werkstatt_label_materials import get_label_printer_config, material_by_id
 from app.services.werkstatt_label_patterns import pattern_supported
@@ -229,6 +229,57 @@ def test_builtin_limits_are_inside_the_static_ranges_and_contain_the_defaults() 
         limits = offset_limits(profile)
         assert -5 <= limits.x_min <= 2.0 <= limits.x_max <= 10, profile.id
         assert -5 <= limits.across_min <= 0 <= limits.across_max <= 5, profile.id
+
+
+# What "+ Eigenes Material" accepts (§3.8): width 4 … 47 mm, length 5 … 762 mm
+# or continuous; the voll tier starts at 36 × 80, kompakt at 12 × 30.
+CUSTOM_WIDTHS = (4, 5, 6, 7, 8, 9, 11, 12, 20, 23, 25, 30, 35, 36, 38, 40, 44, 47)
+CUSTOM_LENGTHS = (None, 5, 10, 20, 29, 30, 38, 49, 50, 79, 80, 99, 100, 300)
+
+
+def _custom(width: float, length: float | None) -> MaterialProfile:
+    """A new custom material: the default offsets (Vorschub 2 mm, quer 0)."""
+    return MaterialProfile(id=f"custom-{width}x{length}", name=f"Fremd {width}x{length}", part_no="", width_mm=width, length_mm=length)
+
+
+def _fits(render, profile: MaterialProfile) -> bool:
+    try:
+        render(profile)
+    except (LabelFormatUnsupported, ValueError):
+        return False
+    return True
+
+
+def test_every_custom_geometry_has_limits_around_the_default_offsets() -> None:
+    """A layout that leaves the material at the default offsets is a layout
+    that does not fit it; no offset is to blame. Counted anyway, it emptied
+    the range (min > max) on ordinary sizes — 40 × 100 needed across ≥ 1,4
+    for the machine label and ≤ 1,0 for the quad — so such a material could
+    never be saved, not even renamed."""
+    assert (jobs.DEFAULT_X_OFFSET_MM, jobs.DEFAULT_ACROSS_OFFSET_MM) == (2.0, 0.0)
+    for width in CUSTOM_WIDTHS:
+        for length in CUSTOM_LENGTHS:
+            profile = _custom(width, length)
+            limits = offset_limits(profile)
+            assert limits.x_min <= 2.0 <= limits.x_max, (width, length, limits)
+            assert limits.across_min <= 0 <= limits.across_max, (width, length, limits)
+            dry_render_checks(profile)
+
+
+@pytest.mark.parametrize(("width", "length"), [(40, 100), (36, 99), (36, 80), (44, 80), (6, 50), (9, 60), (23, 38), (11, None)])
+def test_custom_limits_keep_every_layout_that_fits_on_the_material(width: float, length: float | None) -> None:
+    """Inside the limits, every layout that fits at the default offsets stays
+    on the material — that is all the limits promise. One that does not fit
+    is refused at print time with the guard's German text."""
+    profile = _custom(width, length)
+    fitting = [render for render in dry_render_samples(profile, pattern=pattern_supported(profile)) if _fits(render, profile)]
+    assert fitting
+    limits = offset_limits(profile)
+    for x_offset in (limits.x_min, limits.x_max):
+        for across in (limits.across_min, limits.across_max):
+            moved = replace(profile, x_offset_mm=x_offset, across_offset_mm=across)
+            for render in fitting:
+                render(moved)
 
 
 def test_send_from_fake_printer_counts_pieces(client: TestClient, admin_token: str, fake_printer) -> None:
