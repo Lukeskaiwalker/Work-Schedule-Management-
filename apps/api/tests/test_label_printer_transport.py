@@ -21,10 +21,10 @@ from app.core.db import SessionLocal
 from app.services import werkstatt_label_io_lock, werkstatt_label_transport
 from app.services import werkstatt_labels as wl
 from app.services.werkstatt_label_errors import LabelPrinterBusy, LabelPrinterIoBusy, LabelPrinterUnreachable
-from app.services.werkstatt_label_printer_status import read_status
+from app.services.werkstatt_label_printer_status import parse_config, read_status
 from app.services.werkstatt_label_transport import PrinterQuery, query_socket
 from tests.conftest import auth_headers
-from tests.fake_ezpl_printer import configure_fake
+from tests.fake_ezpl_printer import FIXTURE, configure_fake
 
 
 def test_split_reply_is_joined(fake_printer) -> None:
@@ -52,6 +52,43 @@ def test_long_dash_line_alone_does_not_terminate() -> None:
     assert reply.complete is False
     # A half-received "--------" must not pass for the "---" terminator either.
     assert _parse(b"Smart Printer\r\n---", PrinterQuery.CONFIG, final=False).complete is False
+
+
+def test_a_closed_reply_keeps_only_whole_lines() -> None:
+    """The deadline, a close or a reset can end a reply inside a line; the
+    piece that arrived is no value. "^W3" of "^W34" is not a width, and "---"
+    of "--------" is not the terminator."""
+    from app.services.werkstatt_label_transport import QueryReply, _parse
+
+    raw = FIXTURE.read_bytes()
+    width = _parse(raw[: raw.index(b"^W34") + len(b"^W3")], PrinterQuery.CONFIG, final=True)
+    assert width.complete is False
+    assert width.text.endswith("14192184 KB FREE MEMORY\n^S2 ^H12 ^R000 ~R255 ~Q-19")
+    config = parse_config(width.text, width.complete)
+    assert (config.width_mm, config.stored_q) == (None, None)
+
+    dashes = _parse(raw[: raw.index(b"--------") + len(b"---")], PrinterQuery.CONFIG, final=True)
+    assert dashes.complete is False
+    assert dashes.text.endswith("Label+Gap = 1194 Dots")
+
+    # A whole STATUS line cannot be the start of anything else: it counts even
+    # when the printer closed without its CRLF. Half of one does not.
+    assert _parse(b"00,00000", PrinterQuery.STATUS, final=True) == QueryReply("00,00000", True, ())
+    assert _parse(b"00,000", PrinterQuery.STATUS, final=True) == QueryReply("", False, ())
+
+
+@pytest.mark.parametrize("closes", [True, False])
+def test_a_reply_cut_inside_qd_is_no_measurement(fake_printer, closes: bool) -> None:
+    """"^QD1164,3" of "^QD1164,30" would read as gap 3 — a measurement
+    nobody made, which the verify could take for a fresh one."""
+    fake_printer.config_cuts = ["^QD1164,3"]
+    fake_printer.config_cut_closes = closes
+    reply = query_socket(fake_printer.host, fake_printer.port, PrinterQuery.CONFIG)
+    assert reply.complete is False
+    assert reply.text.endswith("Y-axis resolution = 300 Dpi")
+    config = parse_config(reply.text, reply.complete)
+    assert (config.measured_length_dots, config.measured_gap_dots, config.measured_pitch_dots) == (None, None, None)
+    assert config.stored_q == "97,2"  # whole lines before the cut still count
 
 
 def test_pushed_errors_are_removed_and_reported(fake_printer) -> None:

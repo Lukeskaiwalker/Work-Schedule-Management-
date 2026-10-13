@@ -355,15 +355,24 @@ def apply_material(db: Session, user: User, session_id: str) -> ApplyResult:
 
 
 def _presense(db: Session, profile: MaterialProfile) -> dict[str, Any] | None:
+    """The pre-sense snapshot freshness is proven against.
+
+    A read that ended before its terminator is retried like a stale ``^Q``;
+    if every retry is cut too, the snapshot is unknown rather than read from
+    a partial reply — "^QD1164,3" of "^QD1164,30" would make an unchanged
+    measurement look new.
+    """
     expected_q = q_value(profile)
     config: PrinterConfig | None = None
     for attempt in range(APPLY_CONFIRM_RETRIES + 1):
         config = _read_config(db)
         if config is None:
             return None
-        if config.stored_q == expected_q or attempt == APPLY_CONFIRM_RETRIES:
+        if (config.complete and config.stored_q == expected_q) or attempt == APPLY_CONFIRM_RETRIES:
             break
         time.sleep(APPLY_CONFIRM_DELAY_S)
+    if not config.complete:
+        return {"stored_q": None, "qd": None, "apply_confirmed": None}
     qd = None
     if config.measured_length_dots is not None and config.measured_gap_dots is not None:
         qd = [config.measured_length_dots, config.measured_gap_dots]

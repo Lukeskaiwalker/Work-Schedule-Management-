@@ -6,7 +6,8 @@ the PREVIOUS roll a perfect match. So a measurement counts only with proof
 that it is new — STATUS reported "busy" while sensing, or the stored ``^Q``
 changed from the pre-sense snapshot to a value consistent with the new
 ``^QD``, or ``^QD`` itself changed. Without proof the verdict is
-``unchecked``, never ``match``.
+``unchecked``, never ``match``. Only a CONFIG reply that reached its
+terminator counts, before and after the sense: a cut one is unknown.
 
 The first fresh verify of a run LATCHES the measurement and every later
 verify of the run judges the latch. Nobody has tested whether a ``^Q`` write
@@ -93,7 +94,16 @@ def consistent(q_after: str | None, qd_after: tuple[int, int] | None) -> bool:
     return abs(numbers[0] - qd_after[0] / DOTS_PER_MM) < 1.0 and abs(numbers[1] - qd_after[1] / DOTS_PER_MM) < 1.0
 
 
+def _measured(config: PrinterConfig | None) -> PrinterConfig | None:
+    """The read, when its values may count: only a reply that reached its
+    terminator. One that ended early (deadline, close, reset) may lack the
+    line that matters, so it can neither prove freshness nor be latched — a
+    requery reads it again."""
+    return config if config is not None and config.complete else None
+
+
 def _qd(config: PrinterConfig | None) -> tuple[int, int] | None:
+    config = _measured(config)
     if config is None or config.measured_length_dots is None or config.measured_gap_dots is None:
         return None
     return config.measured_length_dots, config.measured_gap_dots
@@ -102,7 +112,8 @@ def _qd(config: PrinterConfig | None) -> tuple[int, int] | None:
 def freshness_of(sense: dict[str, Any], config: PrinterConfig | None) -> tuple[str, bool, bool]:
     """(freshness, q_changed, qd_changed) of this read against the snapshot."""
     presense = sense.get("presense") or {}
-    q_after = config.stored_q if config else None
+    measured = _measured(config)
+    q_after = measured.stored_q if measured else None
     qd_after = _qd(config)
     q_before = presense.get("stored_q")
     qd_before = tuple(presense["qd"]) if presense.get("qd") else None
@@ -234,10 +245,11 @@ def judge(
         q_after = latch.get("stored_q_after")
     else:
         freshness, q_changed, qd_changed = freshness_of(sense, config)
-        length = config.measured_length_dots if config else None
-        gap = config.measured_gap_dots if config else None
-        pitch = config.measured_pitch_dots if config else None
-        q_after = config.stored_q if config else None
+        measured = _measured(config)
+        length = measured.measured_length_dots if measured else None
+        gap = measured.measured_gap_dots if measured else None
+        pitch = measured.measured_pitch_dots if measured else None
+        q_after = measured.stored_q if measured else None
 
     expected = _expected(profile)
 
@@ -278,8 +290,8 @@ def judge(
             detail += " Bei durchsichtigem Material hilft eventuell die Sensorart „Kein Sensor“ im Profil."
         return result("printer_error", "R1", f"Drucker meldet: {status_text}", detail.strip())
     if not latch:
-        # R2 — nothing to judge.
-        if config is None or length is None:
+        # R2 — nothing to judge (no reply, no ^QD, or a reply that ended early).
+        if length is None:
             return result("no_result", "R2", "Kein Messergebnis", "Der Drucker meldet kein Messergebnis. Ergebnis am Probedruck prüfen.")
         # R3 — a write between sensing and the first latch: which ^QD is this?
         if sense.get("writes_since_sense"):

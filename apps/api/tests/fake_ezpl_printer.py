@@ -13,7 +13,8 @@ Unverified printer behaviour is a switch here, so a test can ask "what if":
 ``q_write_updates_qd`` (a ``^Q`` write echoes into ``^QD``),
 ``requires_immediate`` (STATUS only after ``^XSET,IMMEDIATE,1`` — SMPL never
 sends it, so this proves the button fallback), ``sense_sensor_after``
-(``~S,SENSOR`` replaces the sensor SMPL set), and so on.
+(``~S,SENSOR`` replaces the sensor SMPL set), ``config_cuts`` (a CONFIG reply
+ends mid-line), and so on.
 """
 
 from __future__ import annotations
@@ -63,6 +64,10 @@ class FakeEzplPrinter:
         self.q_write_updates_qd = False
         self.status_override: list[str] = []
         self.truncate_config = False
+        # Each CONFIG request takes the next marker and its reply ends right
+        # after it — mid-line, the way a deadline, a close or a reset cuts it.
+        self.config_cuts: list[str] = []
+        self.config_cut_closes = True  # False: keep the socket open after the cut
         self.split_reply = False
         self.push_error: str | None = None
         self.refuse = False
@@ -202,8 +207,21 @@ class FakeEzplPrinter:
             self._send(conn, f"{self._status_code()},{self.pending:05d}\r\n")
             return
         if line == "^XGET,CONFIG":
-            if "CONFIG" not in self.silent:
-                self._send(conn, self.config_text())
+            if "CONFIG" in self.silent:
+                return
+            text = self.config_text()
+            if not self.config_cuts:
+                self._send(conn, text)
+                return
+            marker = self.config_cuts.pop(0)
+            cut = text.find(marker)
+            assert cut >= 0, f"fake printer: {marker!r} is not in the CONFIG reply"
+            self._send(conn, text[: cut + len(marker)])
+            if self.config_cut_closes:
+                try:
+                    conn.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
             return
         if line == "~S,SENSOR":
             self._start_sense()

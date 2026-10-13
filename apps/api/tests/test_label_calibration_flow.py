@@ -165,6 +165,53 @@ def test_freshness_without_busy(client, admin_token, printer, rewrites_q, result
         assert _lock()["sense"]["latched"] is None
 
 
+@pytest.mark.parametrize("cut_reads", [1, 3])
+def test_a_cut_presense_read_proves_nothing(client, admin_token, printer, cut_reads) -> None:
+    """The stale-match scenario of a cut reply: the sense changes nothing the
+    printer reports, but the pre-sense CONFIG read ends inside "^QD1164,30".
+    Read as 1164/3, the whole ^QD of the verify would look changed and a
+    stale measurement would be latched as a match. A cut read is retried
+    like a stale ^Q; when every retry is cut too, the snapshot is unknown."""
+    printer.sense_busy_polls = 0
+    printer.sense_rewrites_q = False
+    sid = start(client, admin_token)["session_id"]
+    step(client, admin_token, sid, "activate", {"material_id": "wago-210-804"})
+    step(client, admin_token, sid, "apply")
+    printer.config_cuts = ["^QD1164,3"] * cut_reads
+    sensing = step(client, admin_token, sid, "autosense", {"confirm_feed": True})
+    if cut_reads == 1:
+        assert sensing["presense"] == {"stored_q": "99,3", "measured_length_dots": 1164, "measured_gap_dots": 30, "apply_confirmed": True}
+    else:
+        assert sensing["presense"] == {"stored_q": None, "measured_length_dots": None, "measured_gap_dots": None, "apply_confirmed": None}
+    assert step(client, admin_token, sid, "poll")["phase"] == "done"
+    result = _verify(client, admin_token, sid)
+    assert (result["freshness"], result["verdict"]) == ("none", "unchecked")
+    assert _lock()["sense"]["latched"] is None
+
+
+@pytest.mark.parametrize(
+    ("cut", "freshness"),
+    [("^QD1164,3", "busy_seen"), ("^QD1170,24  ^Q97.5,2.0\r\n", "qd_changed")],
+)
+def test_a_cut_verify_read_latches_nothing(client, admin_token, printer, cut, freshness) -> None:
+    """A verify read that did not reach its terminator is no measurement —
+    cut inside ^QD (1164/3 instead of 1164/30) or after it (the whole line,
+    but nothing proves the rest of the reply). Only a whole read is latched."""
+    if freshness == "qd_changed":
+        printer.sense_busy_polls = 0
+        printer.sense_rewrites_q = False
+        printer.sense_result_qd = (1170, 24)
+    sid, _ = to_sensed(client, admin_token)
+    printer.config_cuts = [cut]
+    first = _verify(client, admin_token, sid)
+    assert (first["verdict"], first["measured_length_dots"], first["measured_gap_dots"]) == ("no_result", None, None)
+    assert "incomplete_reply" in {warning["code"] for warning in first["warnings"]}
+    assert _lock()["sense"]["latched"] is None
+    requery = _verify(client, admin_token, sid)
+    assert (requery["verdict"], requery["freshness"], requery["from_latch"]) == ("match", freshness, False)
+    assert _lock()["sense"]["latched"]["measured_gap_dots"] == (30 if freshness == "busy_seen" else 24)
+
+
 def test_no_measurement_is_no_result(client, admin_token, printer) -> None:
     printer.sense_result_qd = None
     sid, _ = to_sensed(client, admin_token)

@@ -58,13 +58,21 @@ def _is_terminator(query: PrinterQuery, line: str) -> bool:
 
 
 def _parse(raw: bytes, query: PrinterQuery, *, final: bool) -> QueryReply:
-    """Decode what arrived. Only newline-terminated lines can end a reply,
-    unless the connection is over (``final``): a half-received "--" of the
-    "--------" line must not pass for the "---" terminator."""
+    """Decode what arrived; only newline-terminated lines count.
+
+    While reading, the unterminated tail is still arriving. When the read is
+    over (``final``) it is a line the deadline, a close or a reset cut off —
+    and a cut line is a wrong value, not a short one: "^QD1164,3" of
+    "^QD1164,30" reads as gap 3, "^W3" of "^W34" as width 3, and "---" of the
+    "--------" line as the terminator. The every-line-ends-with-CRLF probe
+    reply loses nothing by this. The one tail kept is a whole STATUS line,
+    which cannot be the start of anything longer.
+    """
     decoded = raw.decode("latin-1").replace("\r\n", "\n").replace("\r", "\n")
     pieces = decoded.split("\n")
-    if not final:
-        pieces = pieces[:-1]  # the unterminated tail is still arriving
+    tail = _CONTROL.sub("", pieces.pop())
+    if final and query is PrinterQuery.STATUS and _STATUS_LINE.match(tail):
+        pieces.append(tail)
     kept: list[str] = []
     errors: list[str] = []
     complete = False
