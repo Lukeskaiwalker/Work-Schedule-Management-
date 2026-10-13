@@ -188,10 +188,19 @@ class _Frame:
 
 
 def printer_address(db: Session) -> tuple[str, int] | None:
-    """The effective printer as (host, port): runtime setting, then env."""
+    """The effective printer as (host, port): runtime setting, then env.
+
+    A runtime address the policy refuses (stored before the rule existed) is
+    not dialled — the calibration reads replies back, see
+    werkstatt_label_address. The env address is the operator's own.
+    """
+    from app.services.werkstatt_label_address import address_problem
+
     config = get_label_printer_config(db)
     if config["host"]:
-        return config["host"], config["port"]
+        if address_problem(config["host"], config["port"]) is None:
+            return config["host"], config["port"]
+        logger.warning("label printer: stored runtime address refused by the address policy; not dialled")
     settings = get_settings()
     host = (settings.werkstatt_label_printer_host or "").strip()
     if not host:

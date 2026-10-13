@@ -2360,7 +2360,12 @@ def update_label_printer_runtime_settings(
     ``revision`` (409 with a code, so the client can offer a reload).
     """
     from app.routers.admin_label_printer import stale_revision_error
-    from app.services.werkstatt_label_errors import MaterialValidationError, StaleRevision
+    from app.services.werkstatt_label_address import address_problem
+    from app.services.werkstatt_label_errors import (
+        MaterialValidationError,
+        PrinterSettingsValidationError,
+        StaleRevision,
+    )
     from app.services.werkstatt_label_materials import merge_material_list, update_config
     from app.services.werkstatt_label_settings_view import label_printer_settings_out
 
@@ -2370,6 +2375,13 @@ def update_label_printer_runtime_settings(
             changes["host"] = payload.host.strip()
         if payload.port is not None:
             changes["port"] = payload.port
+        # The combined address is what will be dialled (a port-only change
+        # still points at the stored host) — see werkstatt_label_address.
+        host = changes.get("host", current["host"])
+        if host and ("host" in changes or "port" in changes):
+            problem = address_problem(host, changes.get("port", current["port"]))
+            if problem:
+                raise PrinterSettingsValidationError(problem)
         if payload.materials is not None:
             items = [item.model_dump(exclude_unset=True) for item in payload.materials]
             changes["materials"] = merge_material_list(current["materials"], items)
@@ -2381,7 +2393,7 @@ def update_label_printer_runtime_settings(
         config = update_config(db, mutate, expected_revision=payload.revision)
     except StaleRevision as exc:
         raise stale_revision_error(exc) from exc
-    except MaterialValidationError as exc:
+    except (MaterialValidationError, PrinterSettingsValidationError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     db.commit()
     log_admin_action(

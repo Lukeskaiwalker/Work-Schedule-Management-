@@ -159,7 +159,20 @@ def _stored_q(line: str) -> str | None:
     return f"{_number_text(length)},{_number_text(second)}"
 
 
+# The two setup lines every ^XGET,CONFIG of this printer carries
+# ("^S2 ^H12 ^R000 ~R255 ~Q-19", "^W34 ^Q97,2 ^E0"). A reply without either is
+# not this printer's configuration — whatever answered is neither parsed nor
+# shown raw (werkstatt_label_address: no read-back of other services).
+_SETUP_LINES = (re.compile(r"\^S\d+\s+\^H\d+"), re.compile(r"\^W\d+(?:\.\d+)?\s+\^Q\d"))
+
+
+def looks_like_printer_config(text: str) -> bool:
+    return any(pattern.search(line) for line in (text or "").splitlines() for pattern in _SETUP_LINES)
+
+
 def parse_config(text: str, complete: bool) -> PrinterConfig:
+    if not looks_like_printer_config(text):
+        return PrinterConfig(complete=complete)
     lines = [line.strip() for line in (text or "").splitlines()]
     nonempty = [line for line in lines if line]
     values: dict[str, object] = {}
@@ -299,7 +312,11 @@ def read_status(db: Session, *, full: bool, profile: MaterialProfile | None = No
         action_text=status_action(code),
         pending=pending,
         config=config,
-        raw_config=(config_reply.text[:RAW_CONFIG_MAX_CHARS] if config_reply and config_reply.text else None),
+        raw_config=(
+            config_reply.text[:RAW_CONFIG_MAX_CHARS]
+            if config_reply and looks_like_printer_config(config_reply.text)
+            else None
+        ),
         warnings=tuple(warnings),
         errors_seen=tuple(dict.fromkeys(errors)),
     )

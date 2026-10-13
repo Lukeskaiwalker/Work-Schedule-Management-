@@ -195,9 +195,12 @@ def fake_printer(monkeypatch: pytest.MonkeyPatch):
 
     Nothing in the suite talks to the real printer; see tests/fake_ezpl_printer.py.
     """
-    from app.services import werkstatt_label_calibration, werkstatt_label_transport
+    from app.services import werkstatt_label_address, werkstatt_label_calibration, werkstatt_label_transport
     from tests.fake_ezpl_printer import FakeEzplPrinter
 
+    # The fake listens on 127.0.0.1 on a random port, which the address
+    # policy refuses for a real printer (tests/test_label_printer_address.py).
+    monkeypatch.setattr(werkstatt_label_address, "ALLOW_LOCAL_TEST_PRINTER", True)
     monkeypatch.setattr(werkstatt_label_calibration, "APPLY_SETTLE_S", 0.0)
     monkeypatch.setattr(werkstatt_label_calibration, "APPLY_CONFIRM_DELAY_S", 0.01)
     monkeypatch.setattr(werkstatt_label_calibration, "AUTOSENSE_MIN_WAIT_S", 0.0)
