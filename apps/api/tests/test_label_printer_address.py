@@ -124,3 +124,88 @@ def test_the_real_config_reply_is_still_recognised() -> None:
     assert printer_status.parse_config(text, True).firmware == "Smart Printer V5.UW0m"
     assert not printer_status.looks_like_printer_config("HTTP/1.1 400 Bad Request\nServer: x")
     assert printer_status.parse_config("HTTP/1.1 400 Bad Request\nServer: x", True).firmware is None
+
+
+# ── The check and the connection must agree (review: validator differential) ──
+
+
+@pytest.mark.parametrize(
+    "host",
+    ["127.1", "2130706433", "0x7f000001", "0177.0.0.1", "0x7f.1", "::ffff:127.0.0.1", "::ffff:a9fe:a9fe", "2002:7f00:1::"],
+)
+def test_numeric_spellings_and_mapped_addresses_are_refused(client: TestClient, admin_token: str, host: str) -> None:
+    # The resolver reads "127.1", "2130706433" or "0x7f000001" as 127.0.0.1
+    # (inet_aton), while ipaddress does not parse them; a mapped or 6to4 IPv6
+    # address carries a loopback/link-local IPv4 inside.
+    response = client.patch(SETTINGS, headers=auth_headers(admin_token), json={"host": host, "port": 9100})
+    assert response.status_code == 400, response.text
+
+
+def _resolves_to(monkeypatch: pytest.MonkeyPatch, ip: str) -> list[tuple]:
+    import socket
+
+    attempts: list[tuple] = []
+
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        family = socket.AF_INET6 if ":" in ip else socket.AF_INET
+        return [(family, socket.SOCK_STREAM, 6, "", (ip, port))]
+
+    class RecordingSocket:
+        def __init__(self, *args, **kwargs):
+            attempts.append(args)
+
+        def settimeout(self, _value):
+            pass
+
+        def connect(self, _address):
+            raise AssertionError("must not connect to a refused address")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(address.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(address.socket, "socket", RecordingSocket)
+    return attempts
+
+
+@pytest.mark.parametrize("ip", ["127.0.0.1", "169.254.169.254", "::1", "::ffff:127.0.0.1"])
+def test_a_name_that_resolves_inside_is_not_dialled(monkeypatch: pytest.MonkeyPatch, ip: str) -> None:
+    from app.services import werkstatt_labels
+    from app.services.werkstatt_label_errors import LabelPrinterUnreachable
+    from app.services.werkstatt_label_transport import PrinterQuery, query_socket
+
+    attempts = _resolves_to(monkeypatch, ip)
+    assert address.address_problem("etiketten.buero.lan", 9100) is None  # the name itself is fine
+    with pytest.raises(OSError):
+        werkstatt_labels._send_tcp("etiketten.buero.lan", 9100, b"~S,CHECK\r\n")
+    with pytest.raises(LabelPrinterUnreachable):
+        query_socket("etiketten.buero.lan", 9100, PrinterQuery.STATUS)
+    assert attempts == []
+
+
+def test_a_name_that_resolves_to_the_lan_is_dialled_at_the_checked_address(monkeypatch: pytest.MonkeyPatch) -> None:
+    import socket
+
+    dialled: list[tuple] = []
+
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.168.2.158", port))]
+
+    class Connected:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def settimeout(self, _value):
+            pass
+
+        def connect(self, sockaddr):
+            dialled.append(sockaddr)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(address.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(address.socket, "socket", Connected)
+    conn = address.open_checked("etiketten.buero.lan", 9100, timeout=1.0)
+    assert dialled == [("192.168.2.158", 9100)]
+    conn.close()

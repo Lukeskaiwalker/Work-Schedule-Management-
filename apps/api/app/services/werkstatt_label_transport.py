@@ -24,6 +24,7 @@ from enum import Enum
 
 from sqlalchemy.orm import Session
 
+from app.services.werkstatt_label_address import open_checked
 from app.services.werkstatt_label_errors import LabelPrinterNotConfigured, LabelPrinterUnreachable
 from app.services.werkstatt_label_ezpl_policy import assert_allowed
 from app.services.werkstatt_label_io_lock import printer_io_lock
@@ -98,7 +99,7 @@ def query_socket(host: str, port: int, query: PrinterQuery) -> QueryReply:
         raise ValueError(f"not a printer query: {query!r}")
     deadline = time.monotonic() + (STATUS_DEADLINE_S if query is PrinterQuery.STATUS else CONFIG_DEADLINE_S)
     try:
-        conn = socket.create_connection((host, port), timeout=QUERY_CONNECT_TIMEOUT_S)
+        conn = open_checked(host, port, timeout=QUERY_CONNECT_TIMEOUT_S)
     except OSError as exc:
         raise LabelPrinterUnreachable(f"{host}:{port}") from exc
     raw = b""

@@ -944,5 +944,7 @@ def _clean(value: str, max_chars: int) -> str:
 
 
 def _send_tcp(host: str, port: int, payload: bytes) -> None:
-    with socket.create_connection((host, port), timeout=_SEND_TIMEOUT_SECONDS) as conn:
+    from app.services.werkstatt_label_address import open_checked
+
+    with open_checked(host, port, timeout=_SEND_TIMEOUT_SECONDS) as conn:
         conn.sendall(payload)
