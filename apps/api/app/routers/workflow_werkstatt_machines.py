@@ -420,6 +420,9 @@ def print_machine_label(
         raise HTTPException(status_code=400, detail=str(exc))
     except werkstatt_labels.LabelPrinterNotConfigured:
         raise HTTPException(status_code=503, detail="Kein Etikettendrucker konfiguriert")
+    except werkstatt_labels.LabelPrinterBusy as exc:
+        # A calibration session holds the printer, or another job is on the wire.
+        raise HTTPException(status_code=409, detail=str(exc))
     except werkstatt_labels.LabelPrinterUnreachable as exc:
         raise HTTPException(
             status_code=502, detail=f"Etikettendrucker nicht erreichbar ({exc})"
@@ -479,6 +482,9 @@ def print_machine_labels(
         raise HTTPException(status_code=400, detail=str(exc))
     except werkstatt_labels.LabelPrinterNotConfigured:
         raise HTTPException(status_code=503, detail="Kein Etikettendrucker konfiguriert")
+    except werkstatt_labels.LabelPrinterBusy as exc:
+        # A calibration session holds the printer, or another job is on the wire.
+        raise HTTPException(status_code=409, detail=str(exc))
     except werkstatt_labels.LabelPrinterUnreachable as exc:
         raise HTTPException(
             status_code=502, detail=f"Etikettendrucker nicht erreichbar ({exc})"

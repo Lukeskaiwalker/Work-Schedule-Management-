@@ -155,8 +155,8 @@ def test_print_ships_the_blueprint_with_the_panel_data(client: TestClient, admin
     assert len(re.findall(r"^Y\d+,\d+,SMPL[0-9A-F]{8}$", text, re.M)) == 1
     assert len(re.findall(r"^Y\d+,\d+,QR[0-9A-F]{8}$", text, re.M)) == 1
     # The 99 × 44 sheet, printed twice, in the validated rotation/encoding style.
-    assert "^Q99,3\n^W44\n^C2\n^L" in text
-    assert text.rstrip().endswith("\nE")
+    assert "^Q99,3\n^W44\n^H12\n^S2\n^E0\n^C2\n^P1\n^L" in text
+    assert text.rstrip().endswith("\nE\n^C1")
     at_lines = [line for line in text.splitlines() if line.startswith("AT,")]
     assert [line.split(",", 9)[-1] for line in at_lines] == [
         "Kunde: Familie Schulze",

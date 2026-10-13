@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -24,6 +25,12 @@ ACTIVE_UPDATE_JOB_KEY = "active_update_job"
 # DHCP-moved printer is a settings change, not a redeploy. Env vars remain the
 # fallback for deployments configured the old way.
 WERKSTATT_LABEL_PRINTER_KEY = "werkstatt_label_printer"
+# Label printer calibration (2026-10): the calibration records plus the last
+# no-paper apply, and the one calibration session (``{}`` when free). Kept
+# apart from the configuration so a record or a lock write never bumps the
+# configuration's revision. See docs/LABEL_PRINTER_CALIBRATION.md §3.
+WERKSTATT_LABEL_PRINTER_STATE_KEY = "werkstatt_label_printer_state"
+WERKSTATT_LABEL_PRINTER_LOCK_KEY = "werkstatt_label_printer_lock"
 
 # Default model for ProjectLineItem extraction. Operators can switch to
 # `gpt-4o` (more accurate, more expensive) or any other OpenAI Structured-
@@ -36,6 +43,18 @@ def get_runtime_setting(db: Session, key: str) -> str | None:
     if not row:
         return None
     return row.value
+
+
+def get_runtime_setting_for_update(db: Session, key: str) -> AppSetting | None:
+    """The row under ``SELECT … FOR UPDATE`` (a plain read on SQLite, which
+    has no row locks — like ``werkstatt_movements``), refreshed from the
+    database rather than this session's identity map, so a read-modify-write
+    acts on what the lock returned."""
+    stmt = select(AppSetting).where(AppSetting.key == key).execution_options(populate_existing=True)
+    dialect_name = str(db.bind.dialect.name if db.bind is not None else "").lower()
+    if dialect_name != "sqlite":
+        stmt = stmt.with_for_update()
+    return db.scalars(stmt).first()
 
 
 def set_runtime_setting(db: Session, key: str, value: str) -> None:
@@ -62,40 +81,6 @@ def get_openweather_api_key(db: Session) -> str:
 
 def set_openweather_api_key(db: Session, value: str) -> None:
     set_runtime_setting(db, OPENWEATHER_API_KEY, (value or "").strip())
-
-
-def get_label_printer_settings(db: Session) -> dict[str, Any] | None:
-    """Runtime label-printer address as ``{"host": str, "port": int}``.
-
-    Defensive like :func:`get_active_update_job`: malformed JSON or a blank
-    host reads as "not configured at runtime" so the env fallback applies.
-    """
-    raw = get_runtime_setting(db, WERKSTATT_LABEL_PRINTER_KEY)
-    if not raw:
-        return None
-    try:
-        stored = json.loads(raw)
-    except Exception:
-        return None
-    if not isinstance(stored, dict):
-        return None
-    host = str(stored.get("host") or "").strip()
-    if not host:
-        return None
-    try:
-        port = int(stored.get("port") or 9100)
-    except (TypeError, ValueError):
-        port = 9100
-    return {"host": host, "port": port}
-
-
-def set_label_printer_settings(db: Session, *, host: str, port: int) -> None:
-    """Store the printer address; an empty host clears the runtime override."""
-    set_runtime_setting(
-        db,
-        WERKSTATT_LABEL_PRINTER_KEY,
-        json.dumps({"host": (host or "").strip(), "port": int(port)}),
-    )
 
 
 def get_active_update_job(db: Session) -> dict[str, Any] | None:

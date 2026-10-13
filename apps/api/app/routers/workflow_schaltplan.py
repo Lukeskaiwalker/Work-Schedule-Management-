@@ -546,8 +546,15 @@ def print_panel_labels(
         printed, printer = werkstatt_labels.print_marking_strips(
             db, strips=print_plan.strips, material_id=material_id, size=print_plan.font_size, blocks=print_plan.blocks
         )
+    except werkstatt_labels.LabelFormatUnsupported as exc:
+        # The coordinate guard (a strip offset off the material) or a block
+        # label on die-cut stock: the German reason, not a 500.
+        raise HTTPException(status_code=400, detail=str(exc))
     except werkstatt_labels.LabelPrinterNotConfigured:
         raise HTTPException(status_code=503, detail="Kein Etikettendrucker konfiguriert")
+    except werkstatt_labels.LabelPrinterBusy as exc:
+        # A calibration session holds the printer, or another job is on the wire.
+        raise HTTPException(status_code=409, detail=str(exc))
     except werkstatt_labels.LabelPrinterUnreachable as exc:
         raise HTTPException(status_code=502, detail=f"Etikettendrucker nicht erreichbar ({exc})")
 
@@ -825,6 +832,9 @@ def print_panel_type_label(
         raise HTTPException(status_code=400, detail=str(exc))
     except werkstatt_labels.LabelPrinterNotConfigured:
         raise HTTPException(status_code=503, detail="Kein Etikettendrucker konfiguriert")
+    except werkstatt_labels.LabelPrinterBusy as exc:
+        # A calibration session holds the printer, or another job is on the wire.
+        raise HTTPException(status_code=409, detail=str(exc))
     except werkstatt_labels.LabelPrinterUnreachable as exc:
         raise HTTPException(status_code=502, detail=f"Etikettendrucker nicht erreichbar ({exc})")
     return PanelTypeLabelOut(
