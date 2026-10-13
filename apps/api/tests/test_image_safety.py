@@ -251,4 +251,4 @@ def test_the_module_is_what_the_call_sites_use():
                 offenders.append(f"{path.relative_to(root)}:{number}")
     # The one deliberate exception: the company logo, read from a configured
     # local path, not from anything a user sent.
-    assert offenders == ["services/werkstatt_labels.py:315"], offenders
+    assert offenders == ["services/werkstatt_labels.py:330"], offenders
