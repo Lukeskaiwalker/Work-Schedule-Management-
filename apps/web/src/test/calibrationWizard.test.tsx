@@ -263,6 +263,31 @@ describe("CalibrationWizard", () => {
     expect(fake.count(`DELETE ${W}/session/:sid`)).toBe(0);
   });
 
+  it("reads the result without offering a second sense in between", async () => {
+    // Physical test T2 (13.10.2026): on the real printer the result read
+    // after the last poll takes seconds; meanwhile the panel fell back to an
+    // enabled [Einmessen starten] — a second feed was one click away.
+    let answerVerify: () => void = () => undefined;
+    fake.on(`POST ${W}/session/:sid/verify`, async () => {
+      await new Promise<void>((resolve) => (answerVerify = resolve));
+      fake.state.phase = "judged";
+      const verdict = verdictFixture(fake.session());
+      fake.state.verdict = verdict.verdict;
+      return { ...verdict, session: fake.session() };
+    });
+    renderWizard();
+    await throughStep2(false);
+    await throughStep3();
+    click("Übertragen");
+    await clickWhenThere("Einmessen starten");
+    click("Einziehen lassen");
+    expect(await screen.findByText(/Messergebnis wird gelesen/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Einmessen starten" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Kalibriertaste einmessen/ })).toBeNull();
+    await act(async () => answerVerify());
+    await waitFor(() => expect(document.querySelector(".lc-verdict")).not.toBeNull());
+  });
+
   it("keeps [Ergebnis abfragen] reachable after a silent printer's button run", async () => {
     fake.on(`POST ${W}/session/:sid/autosense`, (body) => {
       fake.state.phase = "sensing";

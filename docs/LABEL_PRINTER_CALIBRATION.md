@@ -2916,9 +2916,9 @@ see the flow; the header change still reaches every print on deploy (§11).
 |---|---|---|---|---|
 | T0b | | | | |
 | T0 | | | | |
-| T1 | | | | |
-| T2 | | | | |
-| T3 | | | | |
+| T1 | 2026-10-13 | Step (1) only (210-804 apply, quick flow). Width taken; **`^Q` NOT taken**: a standalone `^Q99,3` left the stored `^Q97,2` (the printer keeps its own measured size). App showed "Drucker meldet andere Werte" + [Erneut übertragen] as designed. Movement during the apply: owner to confirm. Steps (2)–(6) still open. | before `^W44 ^Q97,2 ^E0`, `See.:0.1 1.7 1.0 [1.6_58]`, `^QD1164,30`; after apply `^W44 ^Q97,2` | `^Q` readback cannot confirm an apply — the freshness proof leans on busy codes / `^Q` change by the sense itself |
+| T2 | 2026-10-13 | 210-804, pointer ≈3,4 (from the photo, not re-read), quick flow on the REAL printer from a local API: auto-sense ran, verdict **match** (fresh, `freshness: q_changed`): measured 96,2 + 3,5 mm (pitch 99,7) vs profile 99 + 3 (pitch 102), Δ pitch −2,3 mm within ±3,1. Saved "eingemessen". Owner: fed exactly 3 labels (estimate 2–3 holds). | after `^W44 ^Q96,3`, `^QD1154,42  ^Q96.2,3.5`, `Label+Gap = 1196`, `See.:0.1 3.2 1.9 [3.2_62]` (sensor contrast up from 1.7/1.0) | `~S,SENSOR` over TCP 9100 works on V5.UW0m and rewrites `^Q` — freshness rule `q_changed` holds; UI: step 4 shows no "misst …" state while polling (fix) |
+| T3 | 2026-10-13 | Lid opened and closed with 210-804 loaded, nothing sent: status 04 → 00 directly, no 50/60 seen (0,5 s polling); measurement unchanged to the dot. Closing the lid does NOT auto-sense on this printer. | after close `^QD1154,42`, `^Q96,3`, `See.:0.1 3.2 1.9 [3.2_62]` | The lid-close hint in the checklist ("kann selbst einmessen") can be softened for this printer; `^XSET,WHENTOSENSING` value still unknown (not readable) |
 | T4 | | | | |
 | T5 | | | | |
 | T6 | | | | |
@@ -2927,7 +2927,7 @@ see the flow; the header change still reaches every print on deploy (§11).
 | T9 | | | | |
 | T10 | | | | |
 | T11 | | | | |
-| T12 | | | | |
+| T12 | 2026-10-13 | Lid open: STATUS `04` "Druckkopf offen", action "Deckel schließen"; no `ERRORxx` pushed on the query socket. With the lid open `^XGET,CONFIG` gave no recognisable config (only STATUS answers). Close → `00`. | `04,00000` → `00,00000` | Status texts confirmed; CONFIG reads must expect no config while the head is open |
 | T13 | | | | |
 | T14 | | | | |
 | T15 | | | | |
@@ -3102,3 +3102,26 @@ picks one of several offered options. Everything else in §0.4 is adopted as wri
    auto-sense takes.
 10. **Incidental fix.** The §4.4 example "custom mark 25 × 50 → `^W50`" was not a valid
     profile (width ≤ 47). It is now length 25, width 40 → `^W40`.
+
+## Security addendum (2026-10-13, after two commit security reviews)
+
+Reading the printer's replies back turned the printer address into a server-side request with
+a read-back: an admin could aim STATUS/CONFIG at the database, the update runner or a metadata
+endpoint and see the answer. `services/werkstatt_label_address.py` closes it:
+
+- An admin-entered address must use port **9100–9109** (nothing inside the deployment listens
+  there) and a host that is not loopback, link-local, unspecified, multicast, reserved, a compose
+  service name (`api`, `api_worker`, `db`, `web`, `update_runner`), `localhost`, a metadata name or
+  `*.internal` / `*.localhost` / `*.local`. Numeric spellings the resolver reads as IPv4 (`127.1`,
+  `2130706433`, `0x7f000001`) are refused; mapped and 6to4 IPv6 are judged by their IPv4.
+  A port-only change is checked against the stored host. German 400 messages.
+- `open_checked` resolves the host once, skips refused addresses and connects to the checked IP,
+  never the name (no resolver/DNS differential). It serves every printer connection, jobs and
+  queries; a refused address answers like an unreachable printer.
+- An address stored before the rule is not dialled; the env fallback is the operator's own
+  (the port rule does not apply to it, the connect-time address check does).
+- A CONFIG reply without this printer's setup lines (`^S… ^H…`, `^W… ^Q…`) is neither parsed nor
+  returned raw — the old "firmware" field was the reply's first line, which would have shown a
+  foreign service's banner even to staff.
+- Tests: `tests/test_label_printer_address.py`; the fake-printer fixture flips
+  `ALLOW_LOCAL_TEST_PRINTER` (127.0.0.1, random port) — never set outside tests.

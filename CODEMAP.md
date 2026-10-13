@@ -457,6 +457,22 @@ Owner: "'Waren Ausgabe' only works for tools never for consumables … when we s
 | `apps/web/src/hooks/useServerEvents.ts` | Browser: bare `/api/events` on the cookie, ticket when the cookie fails to open it; iOS shell: always a ticket. Reconnects itself (a ticket is spent; a non-200 closes an EventSource for good) |
 | `apps/api/app/core/log_redaction.py`; `apps/web/Caddyfile` snippet `(log_redaction)` | One regexp, kept identical in both (a test checks): `?token=`/`?ticket=` values, `/confirm/…`, customer-confirmation, IDS hand-over and calendar-feed tokens, in the URI and the Referer; Caddy also replaces `X-Access-Token` / `X-Mfa-Challenge`. docs/LOG_HYGIENE.md |
 
+## Label printer calibration and IR sensor guide (2026-10-13)
+
+Contract: `docs/LABEL_PRINTER_CALIBRATION.md` (data model, EZPL allow-list, endpoints, German strings, physical test plan T0–T17). Built against a simulated printer; nothing is "verified" until the physical tests.
+
+| Module | Role |
+|---|---|
+| `services/werkstatt_label_builtins.py`, `werkstatt_label_profile.py`, `werkstatt_label_materials.py` | Material profiles: code defaults per WAGO item (sensor mode, `sensor_scale` 3.4 labels / 3.0 strip+tube, roller 258-5006, web geometry incl. 210-805 two lanes), only admin overrides stored (format 2, read-time migration), revision compare-and-set |
+| `services/werkstatt_label_ezpl_policy.py` | Allow-list and never-send list (`~V` prints, `~X*`, `~Z`, `^Z`, `~R`, unlisted `^XSET`) — every calibration send passes `assert_allowed` |
+| `services/werkstatt_label_transport.py`, `werkstatt_label_io_lock.py` | Queries are an Enum (`~S,STATUS`, `^XGET,CONFIG`); a reply ends on its own terminator; one printer connection at a time |
+| `services/werkstatt_label_address.py` | Address policy (SSRF): admin-entered port 9100–9109, no loopback/link-local/metadata/compose names/numeric spellings; `open_checked` resolves once and dials the checked IP |
+| `services/werkstatt_label_printer_status.py` | Parses `^XGET,CONFIG` (sensor line, `^QD` measurement, stored `^Q ^W ^E ^H ^S ~Q`); a reply without this printer's setup lines is neither parsed nor shown raw |
+| `services/werkstatt_label_calibration.py`, `werkstatt_label_session.py`, `werkstatt_label_verdict.py`, `werkstatt_label_patterns.py`, `werkstatt_label_jobs.py` | Apply (no `^E`), auto-sense `~S,SENSOR` with a freshness proof, verdict rules, measuring pattern, DB session lock with TTL (every print path answers 409 meanwhile), per-job baseline `^H ^S ^E ^C` |
+| `routers/werkstatt_label_printer.py`, `routers/admin_label_printer.py`; migration `0102` | Quick flow `werkstatt:manage` (released per printer by an admin switch), wizard + profiles `settings:manage`; `app_settings.value` VARCHAR(2048) → TEXT |
+| `apps/web/src/components/labelPrinter/*` | `MaterialChangeSheet` (quick flow), `CalibrationWizard`, `ConfirmFeedDialog` (cost + stop hint), `VerdictCard`, `LabelSensorDiagram` (printed scale 1–5, ▲▼ pointer, Ziel/Ist), `LabelPathSideView`; ALL diagram geometry in `sensorGeometry.ts` (from the owner's photo 2026-10-13) |
+| `apps/web/src/components/admin/AdminLabelPrinterCard.tsx`, `pages/werkstatt/WerkstattMaschinenPage.tsx` | Admin card: address, staff switch, material rows with chips; Maschinen page: "Etikettendrucker" quick entry |
+
 ## Zugangsdaten and Kalender-Abo (2026-09-24)
 
 | Module | Role |

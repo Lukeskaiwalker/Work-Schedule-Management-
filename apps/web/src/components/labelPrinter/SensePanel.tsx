@@ -87,7 +87,10 @@ export function SensePanel({ material, calibration, onBackToSensor, onError, de 
 
   const buttonMethod = autosense?.method === "button";
   const finished = poll && (poll.phase === "error" || poll.phase === "timeout");
-  const running = polling || (buttonMethod && !finished);
+  // After the last poll the result is still being read (seconds on the real
+  // printer, T2 13.10.2026) — no second feed may be one click away meanwhile.
+  const reading = busy === "verify";
+  const running = polling || reading || (buttonMethod && !finished);
   const startCode = apiErrorCode(error);
 
   return (
@@ -129,6 +132,12 @@ export function SensePanel({ material, calibration, onBackToSensor, onError, de 
         </p>
       )}
       {polling && poll?.message && <p className="lc-warn">⚠ {poll.message}</p>}
+      {reading && !polling && (
+        <p className="lc-info" role="status">
+          <span className="lc-spinner" aria-hidden="true" />
+          {de ? "Messergebnis wird gelesen …" : "Reading the measurement …"}
+        </p>
+      )}
 
       {buttonMethod && !finished && (
         <>

@@ -125,6 +125,11 @@ def test_refused_connection_is_unreachable(fake_printer) -> None:
 def test_reply_is_capped_at_64_kib(monkeypatch) -> None:
     import socket as socket_module
 
+    from app.services import werkstatt_label_address
+
+    # A flooding server of its own on 127.0.0.1, which the address policy
+    # refuses for a real printer — opt in, like the fake-printer fixture.
+    monkeypatch.setattr(werkstatt_label_address, "ALLOW_LOCAL_TEST_PRINTER", True)
     server = socket_module.socket()
     server.bind(("127.0.0.1", 0))
     server.listen(1)
