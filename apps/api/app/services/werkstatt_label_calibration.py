@@ -7,7 +7,10 @@ the measuring pattern. Every step follows the three-phase rule so no row lock
 is ever held across printer I/O: (1) ``require`` + checks + mark + commit,
 (2) printer I/O, (3) ``require`` again + write results + commit — if the
 session vanished in between, the caller gets ``session_lost`` and the printer
-action is audited all the same.
+action is audited all the same. Whatever reached the printer is on record
+however the step ends: an apply writes ``last_applied`` and its audit row
+the moment its lines went out, auto-sense and pattern audit in step 3 even
+when it fails.
 
 Nothing here invents printer behaviour. What the manual says, what the probe
 showed and what is still open (``T…`` in docs/LABEL_PRINTER_CALIBRATION.md
@@ -19,7 +22,10 @@ that it is fresh (``werkstatt_label_verdict``).
 from __future__ import annotations
 
 import json
+import logging
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from typing import Any, Callable
 
@@ -34,7 +40,7 @@ from app.services.runtime_settings import (
     get_runtime_setting_for_update,
     set_runtime_setting,
 )
-from app.services.werkstatt_label_errors import LabelRequestRefused
+from app.services.werkstatt_label_errors import LabelPrinterIoBusy, LabelPrinterUnreachable, LabelRequestRefused
 from app.services.werkstatt_label_printer_status import (
     BUSY_CODES,
     STATUS_TEXT_DE,
@@ -48,6 +54,8 @@ from app.services.werkstatt_label_printer_status import (
 from app.services.werkstatt_label_profile import MaterialProfile, format_mm_de, mm_int, q_value
 from app.services.werkstatt_label_transport import PrinterQuery, query_printer, send_lines
 from app.services.werkstatt_label_verdict import Verdict, judge
+
+logger = logging.getLogger(__name__)
 
 APPLY_SETTLE_S = 0.3
 APPLY_CONFIRM_RETRIES = 2
@@ -190,6 +198,23 @@ def _audit(db: Session, user: User, action: str, target_id: str, details: dict[s
     log_admin_action(db, user, f"werkstatt.label_printer.{action}", AUDIT_TARGET, target_id, details)
 
 
+@contextmanager
+def _audited_after_send(db: Session, user: User, action: str, target_id: str, details: dict[str, Any]) -> Iterator[None]:
+    """Step 3 of a step whose send went out: the audit row is written however
+    the step ends. The sense runs and the pattern is printed whether or not
+    the session survived meanwhile, so a ``session_lost`` answer carries
+    ``session_lost: true`` in the row instead of losing it (§5.4)."""
+    lost = False
+    try:
+        yield
+    except BaseException as exc:
+        lost = isinstance(exc, LabelRequestRefused) and exc.code == "session_lost"
+        db.rollback()
+        raise
+    finally:
+        _audit(db, user, action, target_id, {**details, "session_lost": True} if lost else details)
+
+
 def _read_config(db: Session) -> PrinterConfig | None:
     reply = query_printer(db, PrinterQuery.CONFIG)
     return parse_config(reply.text, reply.complete) if reply.text else None
@@ -310,6 +335,48 @@ def _confirm(profile: MaterialProfile, config: PrinterConfig | None) -> tuple[bo
     return not mismatches, mismatches
 
 
+def _record_apply(
+    db: Session, user: User, session: sessions.CalibrationSession, profile: MaterialProfile,
+    commands: list[str], at: str, printer: str,
+) -> None:
+    """``last_applied`` and the audit row, written as soon as the setup lines
+    went out — before the readback or the session check can fail. The printer
+    has changed either way, and ``SENSING`` cannot be read back: this record
+    is what the cancel dialog names (H3)."""
+    last_applied = {
+        "material_id": profile.id, "at": at, "by_id": user.id, "by_name": session.user_name,
+        "commands": commands, "confirmed": None,
+    }
+    _update_state(db, lambda _state: {"last_applied": last_applied})
+    db.commit()
+    _audit(db, user, "apply", profile.id, {"session_id": session.session_id, "commands": commands, "printer": printer})
+
+
+def _record_confirmation(db: Session, at: str, material_id: str, confirmed: bool) -> None:
+    """The readback's verdict onto ``last_applied`` — if it still names this apply."""
+
+    def mutate(state: dict[str, Any]) -> dict[str, Any]:
+        last = state["last_applied"]
+        if not last or last.get("at") != at or last.get("material_id") != material_id:
+            return {}
+        return {"last_applied": {**last, "confirmed": confirmed}}
+
+    _update_state(db, mutate)
+    db.commit()
+
+
+def _readback(db: Session) -> PrinterConfig | None:
+    """CONFIG after the setup lines. They went out already, so a printer that
+    stops answering now is "no values reported" (``confirmed`` None), not a
+    failed apply — the auto-sense checks the result."""
+    time.sleep(APPLY_SETTLE_S)
+    try:
+        return _read_config(db)
+    except (LabelPrinterUnreachable, LabelPrinterIoBusy) as exc:
+        logger.warning("Label printer readback after apply failed: %s", exc)
+        return None
+
+
 def apply_material(db: Session, user: User, session_id: str) -> ApplyResult:
     session = sessions.require(db, session_id, user)
     if session.phase == "sensing" or session.sense_pending:
@@ -328,12 +395,14 @@ def apply_material(db: Session, user: User, session_id: str) -> ApplyResult:
         raise printer_not_ready(status.code, status.code_text, status.action_text)
     commands = setup_commands(profile)
     printer = send_lines(db, commands, session_id=session_id)
-    time.sleep(APPLY_SETTLE_S)
-    config = _read_config(db)
+    at = sessions.iso(sessions.now_utc())
+    _record_apply(db, user, session, profile, commands, at, printer)
+    config = _readback(db)
     confirmed, mismatches = _confirm(profile, config)
+    if confirmed is not None:
+        _record_confirmation(db, at, profile.id, confirmed)
 
     session = sessions.require(db, session_id, user)
-    at = sessions.iso(sessions.now_utc())
     session = replace(
         session,
         apply={"at": at, "material_id": profile.id, "commands": commands, "confirmed": confirmed},
@@ -341,13 +410,7 @@ def apply_material(db: Session, user: User, session_id: str) -> ApplyResult:
         sense=_with_write(session.sense, "apply", at, q_value(profile)),
     )
     sessions.write(db, session)
-    last_applied = {
-        "material_id": profile.id, "at": at, "by_id": user.id, "by_name": session.user_name,
-        "commands": commands, "confirmed": confirmed,
-    }
-    _update_state(db, lambda _state: {"last_applied": last_applied})
     db.commit()
-    _audit(db, user, "apply", profile.id, {"session_id": session_id, "commands": commands, "confirmed": confirmed, "printer": printer})
     return ApplyResult(printer, commands, confirmed, mismatches, config, session)
 
 
@@ -426,16 +489,17 @@ def start_autosense(db: Session, user: User, session_id: str, *, confirm_feed: b
         _release_pending(db, user, session_id, "sense_pending", reprime)
         raise
 
-    session = sessions.require(db, session_id, user)
-    sense = {
-        "method": method, "started_at": started_at, "status_answered": status.answered, "presense": presense,
-        "saw_busy": False, "poll_codes": [], "no_reply_polls": 0, "result": None, "latched": None,
-        "writes_since_sense": [],
-    }
-    session = replace(session, sense=sense, verify=None, phase="sensing", sense_pending=False)
-    sessions.write(db, session)
-    db.commit()
-    _audit(db, user, "autosense", profile.id, {"session_id": session_id, "method": method, "status_answered": status.answered, "presense": presense})
+    details = {"session_id": session_id, "method": method, "status_answered": status.answered, "presense": presense}
+    with _audited_after_send(db, user, "autosense", profile.id, details):
+        session = sessions.require(db, session_id, user)
+        sense = {
+            "method": method, "started_at": started_at, "status_answered": status.answered, "presense": presense,
+            "saw_busy": False, "poll_codes": [], "no_reply_polls": 0, "result": None, "latched": None,
+            "writes_since_sense": [],
+        }
+        session = replace(session, sense=sense, verify=None, phase="sensing", sense_pending=False)
+        sessions.write(db, session)
+        db.commit()
     return AutosenseResult(printer, method, status.answered, presense, profile, session)
 
 
@@ -585,14 +649,13 @@ def print_pattern(db: Session, user: User, session_id: str, *, confirm_feed: boo
         _release_pending(db, user, session_id, "pattern_pending", None)
         raise
 
-    session = sessions.require(db, session_id, user)
-    q = lines[0][len("^Q"):]
-    session = replace(session, pattern_pending=False, sense=_with_write(session.sense, "pattern", sessions.iso(sessions.now_utc()), q))
-    sessions.write(db, session)
-    db.commit()
-    _audit(db, user, "pattern", profile.id, {
-        "session_id": session_id, "x_offset_mm": profile.x_offset_mm, "across_offset_mm": profile.across_offset_mm, "printer": printer,
-    })
+    details = {"session_id": session_id, "x_offset_mm": profile.x_offset_mm, "across_offset_mm": profile.across_offset_mm, "printer": printer}
+    with _audited_after_send(db, user, "pattern", profile.id, details):
+        session = sessions.require(db, session_id, user)
+        q = lines[0][len("^Q"):]
+        session = replace(session, pattern_pending=False, sense=_with_write(session.sense, "pattern", sessions.iso(sessions.now_utc()), q))
+        sessions.write(db, session)
+        db.commit()
     return PatternResult(printer, lines, geometry, profile, session)
 
 

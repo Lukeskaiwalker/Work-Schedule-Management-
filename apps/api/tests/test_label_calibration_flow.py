@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from datetime import timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -21,10 +22,13 @@ from fastapi.testclient import TestClient
 from app.core.db import SessionLocal
 from app.models.entities import AuditLog
 from app.services import werkstatt_label_calibration as calibration
+from app.services import werkstatt_label_session as sessions
 from app.services.runtime_settings import WERKSTATT_LABEL_PRINTER_LOCK_KEY, get_runtime_setting, set_runtime_setting
+from app.services.werkstatt_label_errors import LabelPrinterIoBusy, LabelPrinterUnreachable
+from app.services.werkstatt_label_io_lock import BUSY_MESSAGE
 from tests.conftest import auth_headers
 from tests.fake_ezpl_printer import configure_fake
-from tests.label_calibration_helpers import W, settings, start, step, to_sensed
+from tests.label_calibration_helpers import A, W, settings, start, step, to_sensed
 
 
 @pytest.fixture
@@ -138,6 +142,124 @@ def test_apply_without_config_reply_is_unconfirmed(client: TestClient, admin_tok
     step(client, admin_token, sid, "activate", {"material_id": "wago-210-804"})
     applied = step(client, admin_token, sid, "apply")
     assert (applied["confirmed"], applied["config"]) == (None, None)
+
+
+# ── What reached the printer is on record ──────────────────────────────────
+
+
+def _audits(action: str) -> list[dict]:
+    with SessionLocal() as db:
+        rows = db.query(AuditLog).filter(AuditLog.action == f"werkstatt.label_printer.{action}").all()
+        return [dict(row.details or {}) for row in rows]
+
+
+def _last_applied() -> dict | None:
+    with SessionLocal() as db:
+        return calibration.read_state(db)["last_applied"]
+
+
+def _taken_over(db) -> None:
+    """Another session replaces the caller's: an admin takeover, the user's
+    second tab, or an expiry followed by someone else's start."""
+    thief = sessions.CalibrationSession(
+        session_id="thief", mode="full", material_id="wago-210-804", user_id=1, user_name="Admin",
+        acquired_at=sessions.now_utc().replace(microsecond=0), expires_at=sessions.now_utc() + timedelta(minutes=5),
+    )
+    sessions.write(db, thief)
+    db.commit()
+
+
+@pytest.mark.parametrize("failure", ["unreachable", "busy"])
+def test_an_apply_whose_readback_fails_is_recorded(client, admin_token, printer, monkeypatch, failure) -> None:
+    """The setup lines went out, so the printer changed. "Kein Sensor"
+    (``^XSET,SENSING,2``) is invisible in CONFIG: if the readback after it
+    fails, the record is the only place it shows. A readback without an
+    answer is "no values reported", not a failed apply."""
+    revision = settings(client, admin_token)["revision"]
+    put = client.put(f"{A}/materials/wago-211-501", headers=auth_headers(admin_token), json={"revision": revision, "sensor_mode": "none"})
+    assert put.status_code == 200, put.text
+    sid = start(client, admin_token, "wago-211-501")["session_id"]
+    step(client, admin_token, sid, "activate", {"material_id": "wago-211-501"})
+    error = LabelPrinterUnreachable(f"{printer.host}:{printer.port}") if failure == "unreachable" else LabelPrinterIoBusy(BUSY_MESSAGE)
+
+    def readback(db):
+        raise error
+
+    monkeypatch.setattr(calibration, "_read_config", readback)
+    applied = step(client, admin_token, sid, "apply")
+    printer.wait_for_connections(2)
+    commands = ["^XSET,SENSING,2", "^Q15,0", "^W5"]
+    assert printer.received[1] == b"^XSET,SENSING,2\r\n^Q15,0\r\n^W5\r\n"
+    assert (applied["confirmed"], applied["mismatches"], applied["config"]) == (None, [], None)
+    assert applied["session"]["phase"] == "applied"
+    assert (_lock()["apply"]["commands"], _lock()["apply"]["confirmed"]) == (commands, None)
+    last = _last_applied()
+    assert (last["material_id"], last["commands"], last["confirmed"]) == ("wago-211-501", commands, None)
+    assert [audit["commands"] for audit in _audits("apply")] == [commands]
+
+
+def test_an_apply_is_recorded_although_the_session_was_lost(client, admin_token, printer, monkeypatch) -> None:
+    sid = start(client, admin_token)["session_id"]
+    step(client, admin_token, sid, "activate", {"material_id": "wago-210-804"})
+    original = calibration._read_config
+
+    def readback_then_taken_over(db):
+        config = original(db)
+        _taken_over(db)
+        return config
+
+    monkeypatch.setattr(calibration, "_read_config", readback_then_taken_over)
+    lost = step(client, admin_token, sid, "apply", expect=409)
+    assert lost["detail"]["code"] == "session_lost"
+    commands = ["^G1", "^XSET,SENSING,1", "^Q99,3", "^W44"]
+    last = _last_applied()
+    # The readback answered, so the record says what the printer confirmed.
+    assert (last["material_id"], last["commands"], last["confirmed"]) == ("wago-210-804", commands, True)
+    assert [audit["commands"] for audit in _audits("apply")] == [commands]
+
+
+def test_a_sense_started_for_a_lost_session_is_audited(client, admin_token, printer, monkeypatch) -> None:
+    sid = start(client, admin_token)["session_id"]
+    step(client, admin_token, sid, "activate", {"material_id": "wago-210-804"})
+    step(client, admin_token, sid, "apply")
+    original = calibration.send_lines
+
+    def send_then_taken_over(db, lines, *, session_id):
+        printer_address = original(db, lines, session_id=session_id)
+        if lines == ["~S,SENSOR"]:
+            _taken_over(db)
+        return printer_address
+
+    monkeypatch.setattr(calibration, "send_lines", send_then_taken_over)
+    lost = step(client, admin_token, sid, "autosense", {"confirm_feed": True}, expect=409)
+    assert lost["detail"]["code"] == "session_lost"
+    assert printer.sense_runs == 1  # the printer is feeding paper all the same
+    audits = _audits("autosense")
+    assert len(audits) == 1 and audits[0]["session_lost"] is True and audits[0]["method"] == "command"
+
+
+def test_a_pattern_printed_for_a_lost_session_is_audited(client, admin_token, printer, monkeypatch) -> None:
+    sid = _judged_full(client, admin_token)
+    printed = len(printer.jobs_printed)
+    original = calibration.send_lines
+
+    def send_then_taken_over(db, lines, *, session_id):
+        printer_address = original(db, lines, session_id=session_id)
+        _taken_over(db)
+        return printer_address
+
+    monkeypatch.setattr(calibration, "send_lines", send_then_taken_over)
+    lost = step(client, admin_token, sid, "pattern", {"confirm_feed": True}, expect=409)
+    assert lost["detail"]["code"] == "session_lost"
+    printer.wait_for_jobs(printed + 1)
+    audits = _audits("pattern")
+    assert len(audits) == 1 and audits[0]["session_lost"] is True
+
+
+def test_the_audit_of_a_step_that_completed_has_no_session_lost(client, admin_token, printer) -> None:
+    sid = _judged_full(client, admin_token)
+    step(client, admin_token, sid, "pattern", {"confirm_feed": True})
+    assert all("session_lost" not in audit for audit in _audits("autosense") + _audits("pattern"))
 
 
 # ── Freshness ──────────────────────────────────────────────────────────────
