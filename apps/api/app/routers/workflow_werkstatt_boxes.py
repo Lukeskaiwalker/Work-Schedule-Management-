@@ -14,9 +14,10 @@ Two routers live here:
 Gating follows the established Werkstatt convention (there is no
 ``werkstatt:view`` permission in this codebase — only ``werkstatt:manage``):
 reads are authenticated-only so field staff can actually use them, mutations
-require ``werkstatt:manage``. The one deliberate exception is packing (adding /
+require ``werkstatt:manage``. The deliberate exceptions are packing (adding /
 removing items), which is authenticated-only for the same reason the mobile
-checkout/return endpoints are: the people packing crates are not admins.
+checkout/return endpoints are: the people packing crates are not admins — and,
+for the same people, creating a Sonderkiste and deleting an empty one.
 """
 from __future__ import annotations
 
@@ -48,6 +49,7 @@ from app.schemas.werkstatt_boxes import (
     WerkstattItemSearchHit,
 )
 from app.services import werkstatt_box_labels, werkstatt_labels
+from app.services.audit import log_admin_action
 from app.services.werkstatt_box_items import (
     add_item_to_box,
     ensure_box_unlocked,
@@ -56,6 +58,7 @@ from app.services.werkstatt_box_items import (
 )
 from app.services.werkstatt_item_search import search_box_items
 from app.services.werkstatt_boxes import (
+    delete_sonderkiste,
     ensure_standard_boxes,
     next_box_number,
     pack_box,
@@ -390,31 +393,37 @@ def update_box(
 @router.delete("/boxes/{box_id}", status_code=204)
 def delete_box(
     box_id: int,
-    _: User = Depends(require_permission("werkstatt:manage")),
+    current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    """Delete an empty Sonderkiste — see ``delete_sonderkiste`` for the rule.
+
+    Authenticated-only since 2026-10-20: creating a Sonderkiste needs only a
+    login, and a crate its creator cannot remove again is how the rack fills
+    up with empty ones. The rule itself (ad-hoc, on the rack, empty, no open
+    task) is what keeps this safe, not the permission.
+    """
     box = get_box_or_404(db, box_id)
-    if box.slot is not None:
-        raise HTTPException(
-            status_code=400,
-            detail="Standard-Kisten sind fest — statt zu löschen bitte leeren.",
-        )
-    # Both states in which a crate is spoken for. ``gepackt`` was unreachable
-    # as a resting state before this wave, so "handed over" used to cover every
-    # crate that had a customer on it; it no longer does, and the crates the
-    # settlement creates for a customer's leftovers are exactly the new shape.
-    # Deleting one cascades its lines away and nulls the settlement's record of
-    # where the rest went.
-    if box.status in ("zugewiesen", "gepackt"):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Die Kiste ist einem Kunden zugewiesen — erst die Zuweisung aufheben "
-                "oder die Kiste zurückbuchen."
-            ),
-        )
-    db.delete(box)
-    db.commit()
+    unlinked_task_ids = delete_sonderkiste(db, box)
+    # Read before the commit expires the row for good; the service re-read it
+    # under its lock, so these are the values the rule was checked against.
+    details = {
+        "box_number": box.box_number,
+        "label": box.label,
+        "status": box.status,
+        "unlinked_finished_task_ids": unlinked_task_ids,
+    }
+    # log_admin_action commits the session, so the crate, its retired number
+    # and the audit row land in one transaction: no crate vanishes without its
+    # entry, and no entry names a crate that is still there.
+    log_admin_action(
+        db,
+        current_user,
+        "werkstatt.box.delete",
+        "werkstatt_construction_box",
+        str(box_id),
+        details,
+    )
 
 
 @router.post("/boxes/{box_id}/status", response_model=WerkstattBoxOut)

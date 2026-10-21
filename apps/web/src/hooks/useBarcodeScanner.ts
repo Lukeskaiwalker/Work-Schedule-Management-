@@ -45,6 +45,13 @@ export interface UseBarcodeScannerResult {
   simulateScan: (code: string) => void;
 }
 
+/**
+ * Default max ms between a scanner's keystrokes. Exported for
+ * KistenQtyControl, which has to tell the same scan apart from typing inside
+ * its own field.
+ */
+export const SCAN_INTER_CHAR_TIMEOUT_MS = 30;
+
 const INPUT_TAG_NAMES = new Set(["INPUT", "TEXTAREA", "SELECT"]);
 
 function isTypingTarget(target: EventTarget | null): boolean {
@@ -57,7 +64,7 @@ function isTypingTarget(target: EventTarget | null): boolean {
 export function useBarcodeScanner({
   enabled = true,
   onScan,
-  interCharTimeoutMs = 30,
+  interCharTimeoutMs = SCAN_INTER_CHAR_TIMEOUT_MS,
   minLength = 3,
   ignoreWhenTyping = true,
 }: UseBarcodeScannerOptions): UseBarcodeScannerResult {

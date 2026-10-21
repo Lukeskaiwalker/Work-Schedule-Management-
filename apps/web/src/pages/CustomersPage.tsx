@@ -1,7 +1,6 @@
-import { useState } from "react";
 import { useAppContext } from "../context/AppContext";
 import { CustomerListRow } from "../components/customers/CustomerListRow";
-import { useCustomerSearch, type CustomerArchiveFilter } from "../hooks/useCustomerSearch";
+import { useCustomerSearch } from "../hooks/useCustomerSearch";
 import type { CustomerListItem } from "../types";
 
 /**
@@ -13,6 +12,10 @@ import type { CustomerListItem } from "../types";
  * the shared customer list the pickers filter — it once replaced it with the
  * hits. The shared list is only the refresh trigger, so a save in the
  * customer form or an archive shows up here too.
+ *
+ * The search text, the archive filter and the last answer are App's
+ * (`useCustomersPageMemory`), like the project list's search: opening a
+ * customer unmounts this page, and "zurück" finds the search as it was left.
  */
 export function CustomersPage() {
   const {
@@ -24,15 +27,25 @@ export function CustomersPage() {
     openCustomerModal,
     archiveCustomer,
     unarchiveCustomer,
+    customersSearch: query,
+    setCustomersSearch: setQuery,
+    customersArchiveFilter: filter,
+    setCustomersArchiveFilter: setFilter,
+    customersSearchCache,
   } = useAppContext();
 
-  const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState<CustomerArchiveFilter>("active");
   const {
     rows: visibleCustomers,
     loading,
     loadError,
-  } = useCustomerSearch({ active: mainView === "customers", token, query, filter, refreshKey: customers });
+  } = useCustomerSearch({
+    active: mainView === "customers",
+    token,
+    query,
+    filter,
+    refreshKey: customers,
+    cache: customersSearchCache,
+  });
 
   if (mainView !== "customers") return null;
 
@@ -177,12 +190,15 @@ export function CustomersPage() {
         </div>
       </div>
 
-      {loadError ? (
+      {/* Above the table, not instead of it: a failed refresh keeps the rows it
+          could not renew, and they stay usable while this says so. */}
+      {loadError && (
         <div className="customers-empty muted" role="alert">
           {de ? `Kunden konnten nicht geladen werden: ${loadError}` : `Failed to load customers: ${loadError}`}
         </div>
-      ) : visibleCustomers.length === 0 ? (
-        <div className="customers-empty muted">{emptyText()}</div>
+      )}
+      {visibleCustomers.length === 0 ? (
+        !loadError && <div className="customers-empty muted">{emptyText()}</div>
       ) : (
         <div className="customers-table-wrap">
           <table className="customers-table">

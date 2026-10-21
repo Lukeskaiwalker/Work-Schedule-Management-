@@ -50,6 +50,54 @@
   line-height: 1.4;
 }
 
+/* ── Typed line quantity (KistenQtyControl) ───────────────────────────── */
+
+/* The number between − and + of `.kisten-qty` (styles.css) is a field now.
+   Same height and corners as its buttons so the three read as one control,
+   a white ground so it reads as editable, and 16px because iOS zooms the
+   whole page into any field set smaller — mid-packing, on a phone. */
+.kisten-qty-input {
+  width: 64px;
+  height: 40px;
+  padding: 0 4px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+  color: var(--ink);
+  font-size: 16px;
+  font-weight: 700;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.kisten-qty-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.kisten-qty-input[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+
+/* A third child of the two-column `.kisten-item` grid: its own row, under
+   the control it is about. */
+.kisten-qty-hint {
+  grid-column: 1 / -1;
+  justify-self: end;
+  margin: 0;
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+/* Phones stack the line (styles.css, max-width 480px): the hint follows the
+   stretched control rather than hanging off its right edge. */
+@media (max-width: 480px) {
+  .kisten-qty-hint {
+    justify-self: center;
+  }
+}
+
 /* ── "Was ist mit dem Rest passiert?" ─────────────────────────────────── */
 
 .boxes-remainder-dialog {

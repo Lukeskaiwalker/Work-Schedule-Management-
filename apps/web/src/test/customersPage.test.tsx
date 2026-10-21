@@ -11,9 +11,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 
-import { AppContext } from "../context/AppContext";
-import { CustomersPage } from "../pages/CustomersPage";
-import { makeAppContextStub } from "./appContextStub";
+import { CustomersShell, SEARCH_PLACEHOLDER, tableRows } from "./fixtures/customersShell";
 import {
   archivedCustomers,
   customerRow,
@@ -22,8 +20,6 @@ import {
   type CustomerServer,
 } from "./fixtures/customerServer";
 import type { CustomerListItem } from "../types";
-
-const SEARCH_PLACEHOLDER = "Name, Adresse, E-Mail, Telefon durchsuchen…";
 
 function directoryActions() {
   return {
@@ -35,22 +31,10 @@ function directoryActions() {
   };
 }
 
+// The search text lives in App now (like the project search), so the page is
+// rendered inside a shell that holds it — a fixed context could not type.
 function page(actions: ReturnType<typeof directoryActions>, customers: CustomerListItem[]) {
-  return (
-    <AppContext.Provider
-      value={
-        makeAppContextStub({
-          overrides: { mainView: "customers", language: "de", token: "t", customers, ...actions },
-        }) as never
-      }
-    >
-      <CustomersPage />
-    </AppContext.Provider>
-  );
-}
-
-function tableRows(): Element[] {
-  return Array.from(document.querySelectorAll(".customers-table tbody tr"));
+  return <CustomersShell customers={customers} overrides={actions} />;
 }
 
 let server: CustomerServer;

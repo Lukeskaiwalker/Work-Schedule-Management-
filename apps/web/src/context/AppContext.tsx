@@ -3,6 +3,7 @@ import type { SseStatus } from "../hooks/useServerEvents";
 import type { BrowserNotifPermission } from "../hooks/useBrowserNotifications";
 import type { AppNotification } from "../components/NotificationPanel";
 import type { CustomerWriteInput } from "../utils/customersApi";
+import type { CustomerArchiveFilter, CustomerSearchCache } from "../hooks/useCustomerSearch";
 import type { PartnerWriteInput } from "../utils/partnersApi";
 import type {
   Language,
@@ -271,6 +272,17 @@ export interface AppContextValue {
   ) => Promise<CustomerListItem>;
   archiveCustomer: (id: number) => Promise<void>;
   unarchiveCustomer: (id: number) => Promise<void>;
+  /**
+   * The Kunden page's search text, archive filter and last answer. App's, like
+   * `projectsAllSearch`, so opening a customer and coming back finds the
+   * search as it was left (hooks/useCustomersPageMemory). Unlike the project
+   * search, cleared when the signed-in user signs out or changes.
+   */
+  customersSearch: string;
+  setCustomersSearch: (search: string) => void;
+  customersArchiveFilter: CustomerArchiveFilter;
+  setCustomersArchiveFilter: (filter: CustomerArchiveFilter) => void;
+  customersSearchCache: CustomerSearchCache;
   openCustomer: (id: number) => void;
   openCustomerModal: (options: CustomerModalOpenOptions) => void;
   closeCustomerModal: () => void;

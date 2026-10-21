@@ -27,19 +27,23 @@ Two responsibilities live here so the routers stay thin:
 """
 from __future__ import annotations
 
+import re
 import threading
 from datetime import datetime
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from app.core.time import utcnow
 from app.models.entities import (
+    AppSetting,
+    Task,
     WerkstattArticle,
     WerkstattConstructionBox,
     WerkstattConstructionBoxItem,
 )
+from app.services.runtime_settings import set_runtime_setting
 from app.services.werkstatt_movements import MovementError, apply_movement
 
 # ── Status FSM ────────────────────────────────────────────────────────────────
@@ -161,31 +165,118 @@ def ensure_standard_boxes(db: Session) -> int:
 
 
 # ── Box numbering ─────────────────────────────────────────────────────────────
+#
+# A number is never issued twice. The crate's sticker encodes
+# ``KISTE-<box_number>`` in its DataMatrix and stickers outlive crates, so if
+# deleting the newest Sonderkiste let the next one take its number, an old
+# sticker would scan as a different crate. "Highest existing + 1" forgets a
+# deleted top number; a per-year high-water mark in ``app_settings`` does not.
+# No migration: a year without a mark falls back to the numbers that exist,
+# and deleting a crate records its number first (see retire_box_number), which
+# covers crates created before the mark did.
 
 _NUMBER_LOCK = threading.Lock()
+_BOX_NUMBER_RE = re.compile(r"^BK-(\d{4})-(\d+)$")
+BOX_NUMBER_HIGH_WATER_KEY = "werkstatt.box_number_high_water.{year}"
+
+
+def _stored_high_water(db: Session, year: int) -> int:
+    """The year's mark as the database holds it now, locked until the caller's
+    transaction ends (off SQLite, which has no row locks).
+
+    Every caller compares and then writes, and a plain ``db.get`` makes that a
+    lost update twice over. It answers from the session's identity map when
+    the row was read before; and on PostgreSQL (READ COMMITTED, two uvicorn
+    workers) it returns the committed mark while another delete's higher one
+    waits to commit — writing 3 over that 4 would let 0004 be issued again.
+    ``FOR UPDATE`` makes the second reader wait and then read 4;
+    ``populate_existing`` makes it act on that read, not on its old copy.
+    ``_NUMBER_LOCK`` cannot do this: it is per process and released before the
+    commit. A year without a row locks nothing — two first writes then collide
+    on the primary key and one request fails, which issues nothing twice.
+    """
+    stmt = (
+        select(AppSetting)
+        .where(AppSetting.key == BOX_NUMBER_HIGH_WATER_KEY.format(year=year))
+        .execution_options(populate_existing=True)
+    )
+    if str(db.bind.dialect.name if db.bind is not None else "").lower() != "sqlite":
+        stmt = stmt.with_for_update()
+    row = db.scalars(stmt).first()
+    try:
+        return int(row.value) if row is not None and row.value else 0
+    except ValueError:
+        return 0
+
+
+def _raise_high_water(db: Session, year: int, seq: int) -> None:
+    """Record ``seq`` as issued for ``year`` unless a higher one already is.
+
+    Flushed at once: the session does not autoflush, so without it a second
+    issue in the same transaction would read the old mark — and add a second
+    ``app_settings`` row under the same key.
+    """
+    if seq <= _stored_high_water(db, year):
+        return
+    set_runtime_setting(db, BOX_NUMBER_HIGH_WATER_KEY.format(year=year), str(seq))
+    db.flush()
 
 
 def next_box_number(db: Session, *, now: datetime | None = None) -> str:
-    """Generate ``BK-<year>-<seq>``, sequence resetting each year.
+    """Issue ``BK-<year>-<seq>``, sequence resetting each year.
 
-    The UNIQUE constraint on ``box_number`` is the real backstop; the lock just
-    narrows the window between two concurrent creates in one process.
+    ``max(highest existing, high-water mark) + 1``, and the mark is raised in
+    the caller's transaction, so it commits with the crate that uses the number
+    (or rolls back with it). Every creator — the Kisten page and the
+    settlement's "Rest in neue Kiste" — goes through here, which is why the
+    mark is written here rather than by each of them.
+
+    The mark is read first: its row lock makes a create in the other worker
+    wait until this one commits, so the highest number read next already
+    includes that crate. The UNIQUE constraint on ``box_number`` stays the
+    backstop (a year's first number has no row to lock yet); ``_NUMBER_LOCK``
+    narrows the window between two creates in one process.
     """
     stamp = now or utcnow()
     prefix = f"BK-{stamp.year}-"
+    # Before _NUMBER_LOCK, not under it: a thread holding the process lock
+    # must not wait on a row lock, since the transaction it waits for could
+    # need the process lock before it can commit.
+    stored = _stored_high_water(db, stamp.year)
     with _NUMBER_LOCK:
         highest = db.scalar(
             select(func.max(WerkstattConstructionBox.box_number)).where(
                 WerkstattConstructionBox.box_number.like(f"{prefix}%")
             )
         )
-        next_seq = 1
+        highest_seq = 0
         if highest:
             try:
-                next_seq = int(str(highest).rsplit("-", 1)[-1]) + 1
+                highest_seq = int(str(highest).rsplit("-", 1)[-1])
             except ValueError:
-                next_seq = 1
+                highest_seq = 0
+        next_seq = max(highest_seq, stored) + 1
+        _raise_high_water(db, stamp.year, next_seq)
         return f"{prefix}{next_seq:04d}"
+
+
+def retire_box_number(db: Session, box_number: str) -> None:
+    """Remember a crate's number before the crate is deleted.
+
+    Raises the mark to ``max(mark, this number)`` in the caller's transaction.
+    A crate that predates the mark (production's BK-2026-0001) has no row
+    behind it, so without this its number would be free again the moment it
+    was the highest one left. ``K1``…``K8`` never get here — standard crates
+    cannot be deleted — and nothing else is issued in another shape.
+
+    No ``_NUMBER_LOCK`` here: the mark's row lock is what keeps two deletes
+    apart, and the caller already holds the crate's row lock, so waiting on
+    the mark while holding the process lock would only stall other creates.
+    """
+    match = _BOX_NUMBER_RE.match(box_number or "")
+    if match is None:
+        return
+    _raise_high_water(db, int(match.group(1)), int(match.group(2)))
 
 
 # ── Stock emission ────────────────────────────────────────────────────────────
@@ -402,3 +493,117 @@ def transition_box(
     box.updated_at = now
     db.add(box)
     return box
+
+
+# ── Deleting a Sonderkiste ────────────────────────────────────────────────────
+#
+# The owner's rule of 2026-10-20: anyone signed in may delete a Sonderkiste —
+# the same people who create one — but only an empty crate standing on the rack
+# that no unfinished task still points at. Each condition is a guard against a
+# delete that would lose something: lines are stock somebody will look for, a
+# crate that is ``gepackt``/``zugewiesen`` is a customer's (the settlement's
+# "Rest in neue Kiste" crates are born ``gepackt``, and deleting one would null
+# the record of where the rest went), and an open task would keep showing a
+# crate that no longer exists.
+
+DELETABLE_BOX_STATUSES = ("offen", "zurueck")
+STANDARD_BOX_DELETE_DETAIL = "Standard-Kisten sind fest — statt zu löschen bitte leeren."
+SPOKEN_FOR_DELETE_DETAIL = (
+    "Die Kiste ist einem Kunden zugewiesen — erst die Zuweisung aufheben "
+    "oder die Kiste zurückbuchen."
+)
+NOT_EMPTY_DELETE_DETAIL = "Die Kiste ist nicht leer — erst leeren, dann löschen."
+# "done" is the one finished value of ``tasks.status`` (routers/workflow_helpers
+# TASK_STATUSES); everything else, the legacy stored "overdue" included, is a
+# job somebody still means to do.
+_TASK_DONE = "done"
+_TASK_TITLES_SHOWN = 3
+
+
+def _linked_open_tasks_detail(titles: list[str]) -> str:
+    shown = ", ".join(f"„{title}“" for title in titles[:_TASK_TITLES_SHOWN])
+    if len(titles) > _TASK_TITLES_SHOWN:
+        shown += f" und {len(titles) - _TASK_TITLES_SHOWN} weitere"
+    which = "einer offenen Aufgabe" if len(titles) == 1 else "offenen Aufgaben"
+    return (
+        f"Die Kiste ist noch mit {which} verknüpft ({shown}) — "
+        "dort erst die Kiste entfernen."
+    )
+
+
+def _lock_box(db: Session, box_id: int) -> WerkstattConstructionBox | None:
+    """Re-read the crate under a row lock, as ``load_article_for_update`` does.
+
+    Packing a line takes a key-share lock on the crate (the item's foreign
+    key), which conflicts with this one: a line added at the same moment
+    either lands before the emptiness check sees the count, or waits and finds
+    the crate gone — it is never cascaded away unseen. SQLite has no row locks;
+    as with the article lock, only the guards are testable there.
+    """
+    stmt = (
+        select(WerkstattConstructionBox)
+        .where(WerkstattConstructionBox.id == box_id)
+        .execution_options(populate_existing=True)
+    )
+    if str(db.bind.dialect.name if db.bind is not None else "").lower() != "sqlite":
+        stmt = stmt.with_for_update()
+    return db.scalars(stmt).first()
+
+
+def delete_sonderkiste(db: Session, box: WerkstattConstructionBox) -> list[int]:
+    """Delete an ad-hoc crate if the rule allows it, else a German 400.
+
+    A finished task's link is dropped here rather than left to the foreign
+    key: the outcome must not depend on the database enforcing it (SQLite only
+    does on a connection that switched it on, and the app never does), and a
+    dangling id on a task is exactly the stale pointer this rule exists to
+    avoid. The ledger is left alone — its rows keep their notes
+    ("Baustellenkiste BK-…"), and ``ON DELETE SET NULL`` clears their link on
+    PostgreSQL; nothing but ``apply_movement`` writes it.
+
+    The number is retired first, in the same transaction, so it is never
+    issued again (see :func:`retire_box_number`). Caller commits. Returns the
+    ids of the finished tasks that let go of the crate, for the audit entry.
+    """
+    locked = _lock_box(db, box.id)
+    if locked is None:
+        # Deleted by somebody else while this request waited for the lock.
+        raise HTTPException(status_code=404, detail="Construction box not found")
+    box = locked
+    if box.slot is not None:
+        raise HTTPException(status_code=400, detail=STANDARD_BOX_DELETE_DETAIL)
+    if (box.status or "offen") not in DELETABLE_BOX_STATUSES:
+        raise HTTPException(status_code=400, detail=SPOKEN_FOR_DELETE_DETAIL)
+    if box_line_count(db, box.id) > 0:
+        raise HTTPException(status_code=400, detail=NOT_EMPTY_DELETE_DETAIL)
+
+    linked = list(
+        db.scalars(
+            select(Task).where(Task.construction_box_id == box.id).order_by(Task.id.asc())
+        ).all()
+    )
+    still_open = [task.title for task in linked if task.status != _TASK_DONE]
+    if still_open:
+        raise HTTPException(status_code=400, detail=_linked_open_tasks_detail(still_open))
+
+    unlinked_ids = [task.id for task in linked]
+    if unlinked_ids:
+        # Both columns, as _apply_task_construction_box writes them (an ad-hoc
+        # crate has no slot, so the legacy mirror is already empty). A plain
+        # UPDATE that sets ``updated_at`` to itself, like the foreign key would:
+        # the ORM's onupdate would stamp it now, and the "my_all" view reads it
+        # as the moment the status flipped — an old finished task would turn
+        # up again under "Erledigt".
+        db.execute(
+            update(Task)
+            .where(Task.id.in_(unlinked_ids))
+            .values(
+                construction_box_id=None,
+                storage_box_number=None,
+                updated_at=Task.updated_at,
+            )
+            .execution_options(synchronize_session=False)
+        )
+    retire_box_number(db, box.box_number)
+    db.delete(box)
+    return unlinked_ids

@@ -1206,12 +1206,19 @@ def test_a_crate_packed_for_a_customer_cannot_be_deleted(
     assert blocked.status_code == 400
     assert "Zuweisung" in blocked.json()["detail"]
 
-    # Freed from the customer it is deletable again.
+    # Freed from the customer and emptied it is deletable again — only an
+    # empty crate is (tests/test_werkstatt_box_delete.py).
     assert (
         client.post(
             f"/api/werkstatt/boxes/{box['id']}/status",
             headers=auth_headers(admin_token),
             json={"status": "offen"},
+        ).status_code
+        == 200
+    )
+    assert (
+        client.delete(
+            f"/api/werkstatt/boxes/{box['id']}/items", headers=auth_headers(admin_token)
         ).status_code
         == 200
     )

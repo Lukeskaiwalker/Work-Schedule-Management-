@@ -20,13 +20,15 @@
  *     Datanorm catalog, instead of typing an article number blind,
  *   * a hardware/Bluetooth barcode scanner that works while that field is
  *     focused (the hook ignores typing by default — see ignoreWhenTyping below),
- *   * tap +/- quantity instead of a numeric text input,
+ *   * − / + for a quick correction, and a number field for a real count
+ *     (KistenQtyControl) — typing 40 beats forty taps; a scan that lands in
+ *     that field still adds its article instead of becoming a quantity,
  *   * a repeat scan of the same article tops up its line rather than adding a
  *     duplicate row.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { ApiError, apiFetch } from "../../api/client";
+import { apiFetch } from "../../api/client";
 import { useAppContext } from "../../context/AppContext";
 import { useBarcodeScanner } from "../../hooks/useBarcodeScanner";
 import {
@@ -38,6 +40,9 @@ import {
   type BoxAssignment,
   type BoxPackPayload,
 } from "../../components/werkstatt/KistenPackForm";
+import { KistenQtyControl } from "../../components/werkstatt/KistenQtyControl";
+import { SonderkisteDeleteCard } from "../../components/werkstatt/SonderkisteDeleteCard";
+import { useKistenQtyWrites } from "../../components/werkstatt/useKistenQtyWrites";
 import { boxProjectLabel, boxStatusLabel } from "../../utils/boxes";
 import { seesEveryProject } from "../../utils/projects";
 import { formatServerDateTime } from "../../utils/dates";
@@ -203,12 +208,8 @@ export function WerkstattKistenPage() {
   const assignmentSourceRef = useRef<string | null>(null);
   const [cameraOpen, setCameraOpen] = useState(false);
   const [printing, setPrinting] = useState(false);
-  /** Optimistic per-item quantities while their PATCH/DELETE is pending. */
-  const [qtyOverrides, setQtyOverrides] = useState<Record<number, number>>({});
-  const qtyOverridesRef = useRef<Record<number, number>>({});
-  qtyOverridesRef.current = qtyOverrides;
-  const qtyTimers = useRef<Record<number, number>>({});
-  const qtyQueue = useRef<Promise<unknown>>(Promise.resolve());
+  /** The crate on screen, or being opened: the only one a crate fetch may paint. */
+  const openBoxIdRef = useRef<number | null>(null);
   /** Serialises scan handling — see runScan. */
   const scanQueueRef = useRef<Promise<unknown>>(Promise.resolve());
 
@@ -236,10 +237,17 @@ export function WerkstattKistenPage() {
     }
   }, [token, setError]);
 
-  const openBox = useCallback(
-    async (boxId: number) => {
+  /**
+   * Fetch a crate again and show it, if it is still the one open. Every write
+   * ends here, and some land after the packer went back to the rack or opened
+   * another crate: painting those brought back the crate that was left —
+   * where the next scan would then have gone. True when it was shown.
+   */
+  const refreshBox = useCallback(
+    async (boxId: number): Promise<boolean> => {
       try {
         const box = await apiFetch<Box>(`/werkstatt/boxes/${boxId}`, token);
+        if (openBoxIdRef.current !== boxId) return false;
         setActiveBox(box);
         // Every added line, quantity tap and scan fetches the crate again.
         // Taking the owner from it each time wiped a customer and project
@@ -251,12 +259,37 @@ export function WerkstattKistenPage() {
           assignmentSourceRef.current = source;
           setAssignment(assignmentOf(box));
         }
+        return true;
       } catch (err: unknown) {
         setError(err instanceof Error ? err.message : String(err));
+        return false;
       }
     },
     [token, setError],
   );
+
+  /** Open a crate: from the rack, or the one just created. */
+  const openBox = useCallback(
+    async (boxId: number) => {
+      openBoxIdRef.current = boxId;
+      // Not fetched: the rack stays, so no later write may paint this crate.
+      if (!(await refreshBox(boxId)) && openBoxIdRef.current === boxId) openBoxIdRef.current = null;
+    },
+    [refreshBox],
+  );
+
+  // − / + and a typed count (KistenQtyControl): shown at once, sent after a
+  // pause, and flushed by every crate action below before it runs.
+  const qty = useKistenQtyWrites({
+    token,
+    onError: setError,
+    // A write that lands after its crate was left refreshes the rack's
+    // counts instead of opening that crate again.
+    onSettled: async (boxId) => {
+      if (openBoxIdRef.current === boxId) await refreshBox(boxId);
+      else await loadBoxes();
+    },
+  });
 
   useEffect(() => {
     if (!isActiveTab) return;
@@ -298,7 +331,7 @@ export function WerkstattKistenPage() {
           method: "POST",
           body: JSON.stringify(payload),
         });
-        await openBox(activeBox.id);
+        await refreshBox(activeBox.id);
         setSearch("");
         setHits([]);
         return true;
@@ -307,7 +340,7 @@ export function WerkstattKistenPage() {
         return false;
       }
     },
-    [activeBox, token, openBox, setError],
+    [activeBox, token, refreshBox, setError],
   );
 
   /**
@@ -394,6 +427,9 @@ export function WerkstattKistenPage() {
   // ignoreWhenTyping:false is REQUIRED here — the hook skips keystrokes while an
   // input is focused, and this screen's whole point is a permanently focused
   // search box. Without it a Bluetooth scanner would silently do nothing.
+  // The same reach covers a scan fired into a line's quantity field: it is
+  // added like any other, and KistenQtyControl drops the digits it left
+  // (keeping a number typed before them).
   // Disabled while the camera sheet is up (it has no focused input, so a
   // hardware scan would be handled twice) and on a handed-over box, where every
   // other write control is already hidden.
@@ -447,59 +483,20 @@ export function WerkstattKistenPage() {
     }
   }
 
-  function changeQty(item: BoxItem, delta: number) {
-    if (!activeBox) return;
-    const boxId = activeBox.id;
-    // Read from the optimistic overlay, never from the last-rendered list, so
-    // rapid taps compound instead of each re-reading the same stale value.
-    const current = qtyOverrides[item.id] ?? item.quantity;
-    const next = Math.max(0, current + delta);
-    setQtyOverrides((prev) => ({ ...prev, [item.id]: next }));
-
-    // One in-flight mutation per item, always sending the LATEST value.
-    if (qtyTimers.current[item.id]) window.clearTimeout(qtyTimers.current[item.id]);
-    qtyTimers.current[item.id] = window.setTimeout(() => {
-      delete qtyTimers.current[item.id];
-      const target = qtyOverridesRef.current[item.id];
-      if (target == null) return;
-      qtyQueue.current = qtyQueue.current
-        .then(async () => {
-          if (target <= 0) {
-            try {
-              await apiFetch(`/werkstatt/boxes/${boxId}/items/${item.id}`, token, {
-                method: "DELETE",
-              });
-            } catch (err: unknown) {
-              // Already gone is the outcome we wanted — only a real failure
-              // deserves a banner.
-              if (!(err instanceof ApiError && err.status === 404)) throw err;
-            }
-          } else {
-            await apiFetch(`/werkstatt/boxes/${boxId}/items/${item.id}`, token, {
-              method: "PATCH",
-              body: JSON.stringify({ quantity: target }),
-            });
-          }
-        })
-        .then(async () => {
-          await openBox(boxId);
-          setQtyOverrides((prev) => {
-            const rest = { ...prev };
-            delete rest[item.id];
-            return rest;
-          });
-        })
-        .catch((err: unknown) => {
-          setError(err instanceof Error ? err.message : String(err));
-          // Drop the optimistic value so the UI snaps back to the truth.
-          setQtyOverrides((prev) => {
-            const rest = { ...prev };
-            delete rest[item.id];
-            return rest;
-          });
-          void openBox(boxId);
-        });
-    }, 350);
+  /** Back to the rack — from the back link, and after the crate was deleted. */
+  function closeBox() {
+    // A count typed a moment ago goes out now, not after its pause; when it
+    // lands it refreshes the rack, not this crate (see onSettled).
+    void qty.flush();
+    openBoxIdRef.current = null;
+    setCameraOpen(false);
+    setActiveBox(null);
+    // Opening this crate again starts from what it holds, not from a
+    // choice left half-made.
+    assignmentSourceRef.current = null;
+    // Counts and statuses on the rack are stale after packing, and a deleted
+    // crate has to leave the list.
+    void loadBoxes();
   }
 
   async function clearBox() {
@@ -510,9 +507,12 @@ export function WerkstattKistenPage() {
         : `Remove all ${activeBox.items.length} items from "${activeBox.label}"?`,
     );
     if (!confirmed) return;
+    // Whatever a waiting count does, it must not land after the crate is
+    // emptied, on a line that is gone.
+    await qty.flush();
     try {
       await apiFetch(`/werkstatt/boxes/${activeBox.id}/items`, token, { method: "DELETE" });
-      await Promise.all([openBox(activeBox.id), loadBoxes()]);
+      await Promise.all([refreshBox(activeBox.id), loadBoxes()]);
       setNotice(de ? "Kiste geleert" : "Box emptied");
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
@@ -523,12 +523,16 @@ export function WerkstattKistenPage() {
    *  callers below only claim success when there was some. */
   async function setStatus(status: string): Promise<boolean> {
     if (!activeBox) return false;
+    // Counts typed a moment ago go first: the handover books what the crate
+    // holds when it arrives and refuses any change after it. One that did
+    // not land stops the move — its banner says why.
+    if (!(await qty.flush())) return false;
     try {
       await apiFetch(`/werkstatt/boxes/${activeBox.id}/status`, token, {
         method: "POST",
         body: JSON.stringify({ status }),
       });
-      await Promise.all([openBox(activeBox.id), loadBoxes()]);
+      await Promise.all([refreshBox(activeBox.id), loadBoxes()]);
       return true;
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
@@ -545,13 +549,15 @@ export function WerkstattKistenPage() {
    */
   async function pack(payload: BoxPackPayload) {
     if (!activeBox) return;
+    // Sealed with the counts the packer typed, as with the handover.
+    if (!(await qty.flush())) return;
     try {
       await apiFetch(`/werkstatt/boxes/${activeBox.id}/pack`, token, {
         method: "POST",
         body: JSON.stringify(payload),
       });
       setNotice(de ? "Kiste gepackt und zugewiesen" : "Box packed and assigned");
-      await Promise.all([openBox(activeBox.id), loadBoxes()]);
+      await Promise.all([refreshBox(activeBox.id), loadBoxes()]);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : String(err));
     }
@@ -787,8 +793,8 @@ export function WerkstattKistenPage() {
                 <h3 className="werkstatt-card-title">{de ? "Sonderkisten" : "Ad-hoc boxes"}</h3>
                 <span className="werkstatt-card-subtitle">
                   {de
-                    ? "Für einzelne Aufträge angelegt — löschbar"
-                    : "Created for a single job — deletable"}
+                    ? "Für einzelne Aufträge angelegt — leer löschbar"
+                    : "Created for a single job — deletable once empty"}
                 </span>
               </div>
             </header>
@@ -840,15 +846,7 @@ export function WerkstattKistenPage() {
       <button
         type="button"
         className="werkstatt-card-action kisten-back"
-        onClick={() => {
-          setCameraOpen(false);
-          setActiveBox(null);
-          // Opening this crate again starts from what it holds, not from a
-          // choice left half-made.
-          assignmentSourceRef.current = null;
-          // Counts and statuses on the rack are stale after packing.
-          void loadBoxes();
-        }}
+        onClick={closeBox}
       >
         ← {de ? "Alle Kisten" : "All boxes"}
       </button>
@@ -1056,26 +1054,13 @@ export function WerkstattKistenPage() {
                         {item.quantity} {item.unit ?? ""}
                       </span>
                     ) : (
-                      <div className="kisten-qty">
-                        <button
-                          type="button"
-                          onClick={() => changeQty(item, -1)}
-                          aria-label={de ? "Menge verringern" : "Decrease quantity"}
-                        >
-                          −
-                        </button>
-                        <span className="kisten-qty-value">
-                          {qtyOverrides[item.id] ?? item.quantity}
-                          {item.unit ? <small>{item.unit}</small> : null}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => changeQty(item, +1)}
-                          aria-label={de ? "Menge erhöhen" : "Increase quantity"}
-                        >
-                          +
-                        </button>
-                      </div>
+                      <KistenQtyControl
+                        value={qty.quantityOf(item)}
+                        unit={item.unit}
+                        itemName={item.item_name}
+                        language={de ? "de" : "en"}
+                        onSet={(next) => qty.setQuantity(activeBox.id, item, next)}
+                      />
                     )}
                   </li>
                 ))}
@@ -1232,6 +1217,22 @@ export function WerkstattKistenPage() {
               </div>
             </article>
           )}
+
+          {/* Renders nothing for a rack crate or one that is spoken for. */}
+          <SonderkisteDeleteCard
+            box={activeBox}
+            itemCount={activeBox.items.length}
+            language={de ? "de" : "en"}
+            token={token}
+            onDeleted={(notice) => {
+              setNotice(notice);
+              closeBox();
+            }}
+            onRefused={async (message) => {
+              setError(message);
+              await Promise.all([refreshBox(activeBox.id), loadBoxes()]);
+            }}
+          />
         </div>
       </div>
 

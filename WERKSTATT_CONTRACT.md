@@ -667,7 +667,22 @@ state**: packed, assigned to a customer, standing in the workshop, contents
 still editable, and **no stock moved**. `POST /werkstatt/boxes/{id}/pack`
 seals it; the handover (`gepackt → zugewiesen`) is what books the checkout, and
 `POST /station/werkstatt/boxes/{id}/handover` lets the wall screen do it.
-`gepackt → offen` is "Zuweisung aufheben" and clears the customer.
+An `offen` crate belongs to nobody: every edge into `offen` ("Zuweisung
+aufheben" from `gepackt`, "Erneut öffnen" from `zurueck`) clears the customer
+and the project, and `POST /werkstatt/boxes` refuses `customer_id` /
+`project_id` — the owner is chosen when packing (`/pack` takes
+`{customer_id, project_id?}`; a new customer without a project drops the old
+one). `PATCH /werkstatt/boxes/{id}` may set a project only on a crate that has
+a customer, and only one of that customer's projects.
+`DELETE /werkstatt/boxes/{id}` is open to anyone signed in (like creating a
+Sonderkiste) but removes only a Sonderkiste (`slot` NULL) that is `offen` or
+`zurueck`, empty, and linked to no unfinished task — a finished task's link is
+dropped — and writes a `werkstatt.box.delete` audit entry; the ledger keeps its
+rows. `BK-<year>-<seq>` numbers are never issued twice: a per-year high-water
+mark in `app_settings` (`werkstatt.box_number_high_water.<year>`) is raised on
+every create and before every delete, read under a row lock so that two
+requests at once cannot lower it, because a sticker's `KISTE-<box_number>`
+outlives its crate.
 
 At task completion `GET /tasks/{id}/material-settlement` previews what is left
 and `TaskUpdate.material_remainder` decides where it goes: `shelf`, `same_box`

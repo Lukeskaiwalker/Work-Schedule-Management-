@@ -11,6 +11,8 @@
  * genuinely cares about is passed in `overrides` and wins over the guesses.
  */
 
+import { createCustomerSearchCache } from "../hooks/useCustomerSearch";
+
 const NOOP = () => undefined;
 
 /**
@@ -110,6 +112,12 @@ export function makeAppContextStub(options: StubOptions = {}): unknown {
     // A function despite its plural name: the customer combobox's server
     // check calls it once something is typed, and the guess would be `[]`.
     searchCustomers: async () => [],
+    // The Kunden page's memory (App's): a search string, a filter the chips
+    // compare against, and a cache it reads on mount — none of which the
+    // name-based guesses get right.
+    customersSearch: "",
+    customersArchiveFilter: "active",
+    customersSearchCache: createCustomerSearchCache(),
     ...options.overrides,
   } as Record<string, unknown>;
 

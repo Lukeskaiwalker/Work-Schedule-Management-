@@ -268,6 +268,7 @@ import type {
 } from "./context/AppContext";
 import { useDynamicFavicon } from "./hooks/useDynamicFavicon";
 import { useCustomerDirectory } from "./hooks/useCustomerDirectory";
+import { useCustomersPageMemory } from "./hooks/useCustomersPageMemory";
 import { SidebarNavIcon, PenIcon, BackIcon, SearchIcon, CopyIcon } from "./components/icons";
 import { WorkHoursGauge, ProjectHoursGauge, WeeklyHoursGauge, MonthlyHoursGauge } from "./components/gauges";
 import { ThreadIconBadge, threadInitials } from "./components/shared/ThreadIconBadge";
@@ -443,6 +444,16 @@ export function App() {
     archiveCustomer,
     unarchiveCustomer,
   } = useCustomerDirectory({ token, language, setError, setNotice });
+  // The Kunden page's search, filter and last answer live here, like the
+  // project search, so opening a customer and coming back keeps them. Keyed
+  // to the signed-in user: a sign-out or another user starts them over.
+  const {
+    customersSearch,
+    setCustomersSearch,
+    customersArchiveFilter,
+    setCustomersArchiveFilter,
+    customersSearchCache,
+  } = useCustomersPageMemory(user?.id ?? null);
   const [activeCustomerId, setActiveCustomerId] = useState<number | null>(null);
   const [customerModalOpen, setCustomerModalOpen] = useState(false);
   const [customerModalDraft, setCustomerModalDraft] = useState<CustomerModalDraft | null>(null);
@@ -9720,6 +9731,11 @@ export function App() {
     saveCustomer,
     archiveCustomer,
     unarchiveCustomer,
+    customersSearch,
+    setCustomersSearch,
+    customersArchiveFilter,
+    setCustomersArchiveFilter,
+    customersSearchCache,
     openCustomer,
     openCustomerModal,
     closeCustomerModal,

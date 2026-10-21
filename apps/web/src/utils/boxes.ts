@@ -30,6 +30,32 @@ export function boxStatusLabel(status: string | null | undefined, de: boolean): 
 }
 
 /**
+ * What an opened crate offers about deleting it.
+ *
+ * - "none": no button at all. The eight rack crates are permanent (emptying
+ *   is their way of starting over), and a packed or handed-over crate belongs
+ *   to a customer until it is freed or comes back.
+ * - "not_empty": a Sonderkiste that could go, but still holds lines. Deleting
+ *   would throw them away unseen, so the server refuses and the page says
+ *   "Erst leeren, dann löschen." next to a disabled button.
+ * - "allowed": an empty Sonderkiste, open or back.
+ *
+ * The server checks one thing more — an unfinished task that still points at
+ * the crate — which the page cannot see; its refusal is shown as it comes.
+ */
+export type SonderkisteDeletion = "none" | "not_empty" | "allowed";
+
+const DELETABLE_BOX_STATUSES: ReadonlySet<string> = new Set(["offen", "zurueck"]);
+
+export function sonderkisteDeletion(
+  box: { slot: number | null; status: string },
+  itemCount: number,
+): SonderkisteDeletion {
+  if (box.slot !== null || !DELETABLE_BOX_STATUSES.has(box.status)) return "none";
+  return itemCount > 0 ? "not_empty" : "allowed";
+}
+
+/**
  * One option line in the picker: identity, then the facts that stop a wrong
  * pick — whether it is packed, how full it is, and (for another customer's
  * crate, which is only reachable by search) whose site it is sitting on.
