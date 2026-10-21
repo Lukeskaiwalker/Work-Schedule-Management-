@@ -55,6 +55,9 @@ class WerkstattBoxOut(BaseModel):
 
 class WerkstattBoxCreate(BaseModel):
     label: str
+    # Declared only so a caller that sends an owner gets a 400 rather than
+    # having the field silently dropped: a new crate is ``offen`` and an open
+    # crate is nobody's. The owner is chosen by ``/pack``. Null is accepted.
     customer_id: int | None = None
     project_id: int | None = None
     notes: str | None = None

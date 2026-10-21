@@ -7,10 +7,12 @@ Two responsibilities live here so the routers stay thin:
 
    ``gepackt`` is where a crate *waits*: packed, already assigned to a
    customer, standing in the workshop until somebody carries it out. That is
-   why sealing it requires a customer and at least one line, why its contents
-   stay editable (only ``zugewiesen`` freezes them), and why the way back to
-   ``offen`` clears the customer — "Zuweisung aufheben" is the only thing that
-   edge can honestly mean.
+   why sealing it requires a customer and at least one line, and why its
+   contents stay editable (only ``zugewiesen`` freezes them).
+
+   ``offen`` is the other end: on the rack, nobody's. Every way back to it
+   clears the customer and the project, whichever status it comes from — the
+   same as :func:`release_box_after_task`, the settlement's way back.
 
 2. **Stock movements.** Packing deliberately does NOT touch stock — a packed
    crate is still standing in the workshop, so what is in it is still stock on
@@ -387,14 +389,14 @@ def transition_box(
         # Re-opening clears the seal timestamp; stock was already unwound by
         # the return transition (or never moved, coming back from ``gepackt``).
         box.packed_at = None
-        if current == "gepackt":
-            # "Zuweisung aufheben". A packed crate is packed FOR somebody, so
-            # taking it back to the packing bench with the customer still on it
-            # would leave a crate that claims to be reserved and is not — and
-            # the office would have no way to tell the two apart. The contents
-            # stay: this undoes the assignment, not the packing.
-            box.customer_id = None
-            box.project_id = None
+        # And the owner, from either side. From ``gepackt`` this is "Zuweisung
+        # aufheben"; from ``zurueck`` it is "Erneut öffnen", which used to keep
+        # the last customer. That left open crates (K7 and BK-2026-0001 in
+        # production) that every other customer's task form hid as somebody
+        # else's, and that their old customer's page still listed as current.
+        # The contents stay: this undoes the assignment, not the packing.
+        box.customer_id = None
+        box.project_id = None
 
     box.status = target_status
     box.updated_at = now

@@ -107,6 +107,9 @@ export function makeAppContextStub(options: StubOptions = {}): unknown {
     // Called on every task row; the guesser cannot tell a label helper from a
     // value, and undefined() would take the page down with it.
     taskCustomerLabel: () => "",
+    // A function despite its plural name: the customer combobox's server
+    // check calls it once something is typed, and the guess would be `[]`.
+    searchCustomers: async () => [],
     ...options.overrides,
   } as Record<string, unknown>;
 

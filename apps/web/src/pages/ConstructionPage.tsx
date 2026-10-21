@@ -24,6 +24,7 @@ export function ConstructionPage() {
     reportCustomerId,
     applyReportCustomerSelection,
     customers,
+    searchCustomers,
     projects,
     reportDraft,
     updateReportDraftField,
@@ -332,8 +333,11 @@ export function ConstructionPage() {
             language={de ? "de" : "en"}
             customers={customers}
             value={{ customerId: reportCustomerId, customerName: reportDraft.customer }}
-            onChange={(next) => applyReportCustomerSelection(next.customerId, next.customerName)}
-            onRequestCreate={() => undefined}
+            onChange={(next, picked) => applyReportCustomerSelection(next.customerId, next.customerName, picked)}
+            // No create row: a report does not create customers (free text
+            // files it without a customer record). The server check still
+            // finds a customer created since this list loaded.
+            searchRemote={searchCustomers}
             placeholder={de ? "Kunde suchen oder eintippen…" : "Search or type a customer…"}
           />
           {reportCustomerId == null && reportDraft.customer.trim().length > 0 && (

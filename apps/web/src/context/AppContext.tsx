@@ -242,15 +242,29 @@ export interface AppContextValue {
   setProjectSidebarSearchQuery: (query: string) => void;
 
   // ── Customers ───────────────────────────────────────────────────────────────
+  /**
+   * Every ACTIVE customer — always the complete list (hooks/useCustomerDirectory
+   * pages it in), in the server's order. Pickers filter it locally. There is
+   * deliberately no setter: only the directory writes it.
+   */
   customers: CustomerListItem[];
-  setCustomers: (
-    customers: CustomerListItem[] | ((current: CustomerListItem[]) => CustomerListItem[]),
-  ) => void;
   activeCustomerId: number | null;
   setActiveCustomerId: (id: number | null) => void;
   customerModalOpen: boolean;
   customerModalDraft: CustomerModalDraft | null;
-  loadCustomers: (query?: string, archived?: boolean) => Promise<void>;
+  /**
+   * Fetch the complete active list again. No search parameter on purpose: a
+   * search result written into `customers` would leave every picker holding
+   * only the hits. Only the newest reload lands; a failed one keeps the list.
+   */
+  reloadCustomers: () => Promise<void>;
+  /**
+   * Server-side search over active customers (20 hits, or all of them when 20
+   * do not settle an exact name); stores nothing. The CustomerCombobox's
+   * `searchRemote` — its duplicate guard before it offers "+ Neuen Kunden
+   * anlegen". A hit the directory lacks triggers a reload.
+   */
+  searchCustomers: (query: string) => Promise<CustomerListItem[]>;
   saveCustomer: (
     data: CustomerWriteInput,
     id?: number,
@@ -1087,7 +1101,12 @@ export interface AppContextValue {
   /** Customer the report is filed against (null = free-text only, no link). */
   reportCustomerId: number | null;
   setReportCustomerId: (customerId: number | null) => void;
-  applyReportCustomerSelection: (nextCustomerId: number | null, typedName: string) => void;
+  /** `pickedRow`: the row the combobox picked, so a customer the directory does not hold yet still fills the form. */
+  applyReportCustomerSelection: (
+    nextCustomerId: number | null,
+    typedName: string,
+    pickedRow?: CustomerListItem | null,
+  ) => void;
   toggleReportTaskChecklistItem: (itemId: string, checked: boolean) => void;
   updateReportDraftField: (field: keyof ReportDraft, value: string) => void;
   updateReportMaterialRow: (index: number, field: keyof Omit<ReportMaterialRow, "id">, value: string) => void;

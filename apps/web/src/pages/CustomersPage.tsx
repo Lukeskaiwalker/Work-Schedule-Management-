@@ -1,22 +1,25 @@
-import { useEffect, useMemo, useState } from "react";
+import { useState } from "react";
 import { useAppContext } from "../context/AppContext";
 import { CustomerListRow } from "../components/customers/CustomerListRow";
+import { useCustomerSearch, type CustomerArchiveFilter } from "../hooks/useCustomerSearch";
 import type { CustomerListItem } from "../types";
-
-type ArchivedFilter = "all" | "active" | "archived";
 
 /**
  * Top-level "Kunden" list page. Self-gates on `mainView !== "customers"` so
  * it participates in App.tsx's flat render branch without triggering effects
- * when hidden. Drives its own search + archived-filter local state and uses
- * AppContext for the customer collection and actions.
+ * when hidden.
+ *
+ * Its rows are its own (`useCustomerSearch`): searching here never touches
+ * the shared customer list the pickers filter — it once replaced it with the
+ * hits. The shared list is only the refresh trigger, so a save in the
+ * customer form or an archive shows up here too.
  */
 export function CustomersPage() {
   const {
     mainView,
     language,
+    token,
     customers,
-    loadCustomers,
     openCustomer,
     openCustomerModal,
     archiveCustomer,
@@ -24,24 +27,24 @@ export function CustomersPage() {
   } = useAppContext();
 
   const [query, setQuery] = useState("");
-  const [filter, setFilter] = useState<ArchivedFilter>("active");
-
-  // Refresh the list whenever we enter the page or change filters — the
-  // server query is cheap and this keeps archived toggles in sync.
-  useEffect(() => {
-    if (mainView !== "customers") return;
-    void loadCustomers(query, filter === "archived");
-  }, [mainView, filter, query, loadCustomers]);
-
-  const visibleCustomers = useMemo<CustomerListItem[]>(() => {
-    if (filter === "all") return customers;
-    if (filter === "archived") return customers.filter((row) => row.archived_at);
-    return customers.filter((row) => !row.archived_at);
-  }, [customers, filter]);
+  const [filter, setFilter] = useState<CustomerArchiveFilter>("active");
+  const {
+    rows: visibleCustomers,
+    loading,
+    loadError,
+  } = useCustomerSearch({ active: mainView === "customers", token, query, filter, refreshKey: customers });
 
   if (mainView !== "customers") return null;
 
   const de = language === "de";
+
+  // "Noch keine Kunden" only once the answer is in: before that the table is
+  // empty because it is loading, not because there are none.
+  function emptyText(): string {
+    if (loading) return de ? "Kunden werden geladen…" : "Loading customers…";
+    if (query) return de ? `Keine Kunden für "${query}" gefunden.` : `No customers found for "${query}".`;
+    return de ? "Noch keine Kunden angelegt." : "No customers yet.";
+  }
 
   function handleArchiveToggle(customer: CustomerListItem) {
     if (customer.archived_at) {
@@ -52,8 +55,8 @@ export function CustomersPage() {
   }
 
   function handleExport() {
-    // Stub: real export will go through the backend. For now we generate a
-    // CSV client-side from what's on screen so the button is functional.
+    // Generated client-side from the rows on screen — the complete result of
+    // the current search and filter, not the first page of it.
     const header = [
       "id",
       "name",
@@ -174,16 +177,12 @@ export function CustomersPage() {
         </div>
       </div>
 
-      {visibleCustomers.length === 0 ? (
-        <div className="customers-empty muted">
-          {query
-            ? de
-              ? `Keine Kunden für "${query}" gefunden.`
-              : `No customers found for "${query}".`
-            : de
-              ? "Noch keine Kunden angelegt."
-              : "No customers yet."}
+      {loadError ? (
+        <div className="customers-empty muted" role="alert">
+          {de ? `Kunden konnten nicht geladen werden: ${loadError}` : `Failed to load customers: ${loadError}`}
         </div>
+      ) : visibleCustomers.length === 0 ? (
+        <div className="customers-empty muted">{emptyText()}</div>
       ) : (
         <div className="customers-table-wrap">
           <table className="customers-table">

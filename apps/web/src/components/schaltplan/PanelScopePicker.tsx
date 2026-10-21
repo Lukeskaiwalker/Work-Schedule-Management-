@@ -32,6 +32,12 @@ type Props = {
   onCustomerChange: (customerId: number | null) => void;
   onProjectChange: (projectId: number | null) => void;
   onRequestCreateCustomer: (prefillName: string) => void;
+  /**
+   * Server search (AppContext `searchCustomers`): the combobox's duplicate
+   * guard — "+ Neuen Kunden anlegen" is offered only once the server confirms
+   * no customer of that name exists. Absent = local list only.
+   */
+  searchCustomers?: (query: string) => Promise<CustomerListItem[]>;
   panels: PanelPlanSummary[];
   activePanelId: number | null;
   onSelectPanel: (panelId: number) => void;
@@ -90,6 +96,7 @@ export function PanelScopePicker({
   onCustomerChange,
   onProjectChange,
   onRequestCreateCustomer,
+  searchCustomers,
   panels,
   activePanelId,
   onSelectPanel,
@@ -135,6 +142,7 @@ export function PanelScopePicker({
             value={{ customerId, customerName: picked?.name ?? "" }}
             onChange={(next) => onCustomerChange(next.customerId)}
             onRequestCreate={onRequestCreateCustomer}
+            searchRemote={searchCustomers}
             placeholder="Kunde suchen…"
             leadingItems={leadingItems}
           />

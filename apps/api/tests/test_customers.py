@@ -712,3 +712,64 @@ def test_archive_and_unarchive_are_recorded_once(client: TestClient, admin_token
     rows = _activity(client, admin_token, customer["id"])
     assert [row["event_type"] for row in rows] == ["customer.unarchived", "customer.archived", "customer.created"]
     assert [row["message"] for row in rows[:2]] == ["Archivierung aufgehoben", "Kunde archiviert"]
+
+
+def test_list_customers_pages_by_limit_and_offset_in_name_order(
+    client: TestClient, admin_token: str
+):
+    """The contract the web's complete customer list is built on.
+
+    Every picker filters ONE shared list locally, and that list used to be the
+    first 200 names — the default page — so the alphabetically last customers
+    simply did not exist on the Kisten page. The web now pages with
+    ``limit=1000`` until a short page. That only yields every row exactly once
+    if the server keeps the contract pinned here: the default stays 200 (the
+    server is unchanged; the client has to ask for its page size), 1000 is the
+    ceiling, offset pages through, and the order is total — name, then id — so
+    two customers with the same name cannot swap places between two pages and
+    leave a gap. This passed before the fix; it is a guard, not a repro.
+    """
+    from app.core.db import SessionLocal
+    from app.core.time import utcnow
+    from app.models.customer import Customer
+
+    # Inserted in reverse so the ids run against the name order: a server that
+    # fell back to id order would fail the comparison below, not pass it by
+    # accident. The twins share a name and differ only by id.
+    names = [f"Kunde {n:03d}" for n in range(203)] + ["Zwilling", "Zwilling"]
+    with SessionLocal() as db:
+        db.add_all([Customer(name=name) for name in reversed(names)])
+        db.commit()
+        archived = Customer(name="Kunde 100 archiviert", archived_at=utcnow())
+        db.add(archived)
+        db.commit()
+        archived_id = archived.id
+
+    def page(**params) -> list[dict]:
+        response = client.get("/api/customers", headers=auth_headers(admin_token), params=params)
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    assert len(page()) == 200, "the default page stays 200 rows"
+
+    everything = page(limit=1000)
+    assert len(everything) == len(names)
+    assert archived_id not in {row["id"] for row in everything}
+    expected = sorted(everything, key=lambda row: (row["name"], row["id"]))
+    assert [row["id"] for row in everything] == [row["id"] for row in expected]
+    twins = [row["id"] for row in everything if row["name"] == "Zwilling"]
+    assert twins == sorted(twins), "a tie is broken by id"
+
+    too_many = client.get(
+        "/api/customers", headers=auth_headers(admin_token), params={"limit": 1001}
+    )
+    assert too_many.status_code == 422, "1000 is the ceiling, not a suggestion"
+
+    # Pages of 100 cross two page boundaries; joined, they must be the full
+    # list — no gap, no row twice — and a page past the end is empty, which is
+    # what ends the client's loop.
+    joined: list[int] = []
+    for offset in range(0, len(names) + 100, 100):
+        joined.extend(row["id"] for row in page(limit=100, offset=offset))
+    assert joined == [row["id"] for row in everything]
+    assert page(limit=100, offset=len(names)) == []

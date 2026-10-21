@@ -5,7 +5,8 @@
  * CustomerBoxesCard; they move here now that a third surface (the task forms)
  * needs them, so the three cannot drift apart.
  */
-import type { SelectableConstructionBox, Task } from "../types";
+import type { Project, SelectableConstructionBox, Task } from "../types";
+import { isArchivedProjectStatus } from "./projects";
 
 /**
  * ``gepackt`` reads "Gepackt – bereit" and not just "Gepackt" because the
@@ -81,4 +82,45 @@ export function taskBoxSummary(task: Task, de: boolean): string | null {
   if (!display) return null;
   const status = boxStatusLabel(task.construction_box_status, de);
   return status ? `${display} · ${status}` : display;
+}
+
+/**
+ * The projects a crate can be packed for: the chosen customer's open jobs.
+ *
+ * By `customer_id` only. The handover books its checkout under the crate's
+ * project, so a job of somebody else would put the material on the wrong
+ * site (the server refuses it), and a legacy job that carries only a free-text
+ * customer name is not reliably this customer's. Archived jobs are no longer a
+ * site anybody drives to.
+ */
+export function openProjectsForCustomer(projects: Project[], customerId: number | null): Project[] {
+  if (customerId == null) return [];
+  return projects.filter(
+    (project) => project.customer_id === customerId && !isArchivedProjectStatus(project.status),
+  );
+}
+
+/** The project to preselect: the customer's only open job, or none when there is a choice. */
+export function soleOpenProjectId(projects: Project[], customerId: number | null): number | null {
+  const open = openProjectsForCustomer(projects, customerId);
+  return open.length === 1 ? open[0].id : null;
+}
+
+/** "367 · Wallbox Garage" — the same line the project pickers show. */
+export function projectOptionLabel(project: Project): string {
+  return [project.project_number, project.name].filter(Boolean).join(" · ");
+}
+
+/**
+ * How a crate names its site. The project list gives the number as well; the
+ * crate's own `project_name` covers a job the list does not hold (archived
+ * since, or not loaded), so a packed crate never reads as having no site.
+ */
+export function boxProjectLabel(
+  box: { project_id: number | null; project_name: string | null },
+  projects: Project[],
+): string {
+  if (box.project_id == null) return "";
+  const known = projects.find((project) => project.id === box.project_id);
+  return known ? projectOptionLabel(known) : (box.project_name ?? "");
 }

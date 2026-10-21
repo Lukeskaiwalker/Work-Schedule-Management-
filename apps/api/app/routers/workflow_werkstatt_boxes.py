@@ -316,6 +316,22 @@ def get_box(
     return box_out(db, get_box_or_404(db, box_id), with_items=True)
 
 
+# A new crate is ``offen``, and an open crate is nobody's (see the FSM in
+# services/werkstatt_boxes.py). No client sends an owner on create; refusing
+# one loudly keeps a caller from writing the stale "open but owned" shape that
+# migration 0102 had to repair — and from skipping the customer/project check
+# that packing applies.
+CREATE_WITH_OWNER_DETAIL = (
+    "Eine neue Kiste ist offen und gehört noch niemandem — Kunde und Projekt "
+    "werden beim Packen gewählt."
+)
+PROJECT_WITHOUT_CUSTOMER_DETAIL = (
+    "Die Kiste hat keinen Kunden — das Projekt wird beim Packen zusammen mit "
+    "dem Kunden gewählt."
+)
+PROJECT_OTHER_CUSTOMER_DETAIL = "Das Projekt gehört nicht zum gewählten Kunden."
+
+
 @router.post("/boxes", response_model=WerkstattBoxOut)
 def create_box(
     payload: WerkstattBoxCreate,
@@ -325,15 +341,13 @@ def create_box(
     label = payload.label.strip()
     if not label:
         raise HTTPException(status_code=400, detail="label is required")
-    if payload.customer_id is not None and db.get(Customer, payload.customer_id) is None:
-        raise HTTPException(status_code=400, detail=f"Unknown customer id: {payload.customer_id}")
+    if payload.customer_id is not None or payload.project_id is not None:
+        raise HTTPException(status_code=400, detail=CREATE_WITH_OWNER_DETAIL)
 
     box = WerkstattConstructionBox(
         box_number=next_box_number(db),
         label=label,
         status="offen",
-        customer_id=payload.customer_id,
-        project_id=payload.project_id,
         notes=payload.notes,
         created_by=current_user.id,
     )
@@ -352,6 +366,17 @@ def update_box(
 ):
     box = get_box_or_404(db, box_id)
     data = payload.model_dump(exclude_unset=True)
+    # The handover books its checkout under the crate's project, so a project
+    # of somebody else — or on a crate that belongs to nobody — puts goods onto
+    # the wrong site. Stricter than ``/pack``: the project must name the
+    # crate's customer (see _ensure_project_fits_customer). Taking the project
+    # off (null) is always fine.
+    if data.get("project_id") is not None:
+        if box.customer_id is None:
+            raise HTTPException(status_code=400, detail=PROJECT_WITHOUT_CUSTOMER_DETAIL)
+        _ensure_project_fits_customer(
+            db, data["project_id"], customer_id=box.customer_id, allow_without_customer=False
+        )
     for field in ("label", "notes", "project_id"):
         if field in data:
             setattr(box, field, data[field])
@@ -416,6 +441,29 @@ REPACK_OTHER_CUSTOMER_DETAIL = (
 )
 
 
+def _ensure_project_fits_customer(
+    db: Session, project_id: int, *, customer_id: int, allow_without_customer: bool = True
+) -> None:
+    """The rule for a crate's project, shared by packing and ``PATCH``.
+
+    ``/pack`` accepts a project without a customer for any customer, as
+    packing always has: such projects exist (a deleted customer leaves them),
+    and refusing them would leave their crates without a site at all.
+
+    ``PATCH`` passes ``allow_without_customer=False`` — the owner's rule of
+    2026-10-20: it may set a project only when that project belongs to the
+    crate's customer. It moves a site onto a crate that is already somebody's,
+    and a project naming no customer is not shown to be theirs.
+    """
+    project = db.get(Project, project_id)
+    if project is None:
+        raise HTTPException(status_code=400, detail=f"Unknown project id: {project_id}")
+    if project.customer_id is None and allow_without_customer:
+        return
+    if project.customer_id != customer_id:
+        raise HTTPException(status_code=400, detail=PROJECT_OTHER_CUSTOMER_DETAIL)
+
+
 def _apply_box_owner(
     db: Session, box: WerkstattConstructionBox, payload: WerkstattBoxAssignPayload
 ) -> bool:
@@ -429,6 +477,11 @@ def _apply_box_owner(
     ``updated_at``: re-packing a crate for the customer it is already packed
     for is a no-op edge in the FSM, and a project moved on that call would
     otherwise be written with a timestamp that still points at the last change.
+
+    A new customer without a project drops the old project: it was a site of
+    the previous customer, and the handover books its checkout under it. The
+    same customer without a project keeps it — that call says nothing new
+    about the site.
     """
     if db.get(Customer, payload.customer_id) is None:
         raise HTTPException(status_code=400, detail=f"Unknown customer id: {payload.customer_id}")
@@ -438,18 +491,15 @@ def _apply_box_owner(
         and box.customer_id != payload.customer_id
     ):
         raise HTTPException(status_code=400, detail=REPACK_OTHER_CUSTOMER_DETAIL)
-    changed = box.customer_id != payload.customer_id
-    box.customer_id = payload.customer_id
+    customer_changed = box.customer_id != payload.customer_id
     if payload.project_id is not None:
-        project = db.get(Project, payload.project_id)
-        if project is None:
-            raise HTTPException(status_code=400, detail=f"Unknown project id: {payload.project_id}")
-        if project.customer_id is not None and project.customer_id != payload.customer_id:
-            raise HTTPException(
-                status_code=400, detail="Das Projekt gehört nicht zum gewählten Kunden."
-            )
-        changed = changed or box.project_id != payload.project_id
-        box.project_id = payload.project_id
+        _ensure_project_fits_customer(db, payload.project_id, customer_id=payload.customer_id)
+        project_id = payload.project_id
+    else:
+        project_id = None if customer_changed else box.project_id
+    changed = customer_changed or box.project_id != project_id
+    box.customer_id = payload.customer_id
+    box.project_id = project_id
     return changed
 
 

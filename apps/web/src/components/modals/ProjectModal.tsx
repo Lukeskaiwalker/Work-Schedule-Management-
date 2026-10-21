@@ -39,6 +39,7 @@ export function ProjectModal() {
     activeProject,
     unarchiveProject,
     customers,
+    searchCustomers,
     openCustomerModal,
   } = useAppContext();
 
@@ -228,9 +229,12 @@ export function ProjectModal() {
                   customerId: projectForm.customer_id,
                   customerName: projectForm.customer_name,
                 }}
-                onChange={(next) => {
+                onChange={(next, pickedRow) => {
                   if (next.customerId !== null) {
-                    const picked = customers.find((row) => row.id === next.customerId);
+                    // The picked row first: one found by the server check is
+                    // not in `customers` yet, and must not fall through to the
+                    // free-text path (that is match-or-create on save).
+                    const picked = pickedRow ?? customers.find((row) => row.id === next.customerId);
                     if (picked) {
                       updateProjectFormField("customer_id", picked.id);
                       updateProjectFormField("customer_name", picked.name);
@@ -260,8 +264,13 @@ export function ProjectModal() {
                     },
                   });
                 }}
+                // The duplicate guard: "+ Neuen Kunden anlegen" waits until
+                // the server confirms no customer of that name exists.
+                searchRemote={searchCustomers}
               />
-              {!linkedCustomer && projectForm.customer_name && (
+              {/* By id: a linked customer the list has not caught up with yet
+                  is still linked, not free text. */}
+              {projectForm.customer_id === null && projectForm.customer_name && (
                 <small className="task-modal-field-hint">
                   {de
                     ? "Freitext: beim Speichern wird der Kunde erstellt oder verknüpft."

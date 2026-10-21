@@ -1,5 +1,5 @@
 import { PROJECT_SITE_ACCESS_PRESETS, PROJECT_SITE_ACCESS_WITH_NOTE } from "../constants";
-import type { Language, Project, ProjectClassTemplate, ProjectTitleParts, ProjectFormState } from "../types";
+import type { Language, Project, ProjectClassTemplate, ProjectTitleParts, ProjectFormState, User } from "../types";
 import { parseServerDateTime, localDateTimeInputToIso } from "./dates";
 import { normalizeAddressInput } from "./misc";
 
@@ -335,4 +335,21 @@ export function projectPayloadFromForm(form: ProjectFormState) {
       : null,
     class_template_ids: form.class_template_ids,
   };
+}
+
+/**
+ * Whether GET /projects gives this user every project, or only their own.
+ *
+ * The server's rule (has_global_project_access, apps/api/app/core/permissions.py):
+ * `projects:manage` sees everything; `projects:view` does too, except for the
+ * employee role, which sees the projects it is a member of or has a task on.
+ * A list that may be such a slice cannot say which jobs a customer has — so a
+ * form must not pick "the" job from it, nor claim the customer has none.
+ * Unknown permissions count as the slice: the safe reading.
+ */
+export function seesEveryProject(user: Pick<User, "role" | "effective_permissions"> | null | undefined): boolean {
+  const permissions = user?.effective_permissions ?? [];
+  if (permissions.includes("projects:manage")) return true;
+  if (!user || user.role === "employee") return false;
+  return permissions.includes("projects:view");
 }

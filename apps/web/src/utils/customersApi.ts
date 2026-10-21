@@ -2,7 +2,7 @@
 // `partnersApi.ts` — `apiFetch<T>` with `token` as the first argument.
 //
 // Endpoint plan (implemented in `apps/api/app/routers/workflow_customers.py`):
-//   GET    /customers?q=&archived=          → listCustomers
+//   GET    /customers?q=&archived=&limit=&offset= → listCustomers (one page), listAllCustomers (every page)
 //   GET    /customers/{id}                  → getCustomer
 //   GET    /customers/{id}/projects         → listCustomerProjects
 //   POST   /customers                       → saveCustomer (create; may carry the first `visit`)
@@ -23,6 +23,7 @@
 //   POST   /customers/{id}/credentials/{cid}/reveal → revealCustomerCredential (audited)
 
 import { apiFetch } from "../api/client";
+import { fetchAllPages } from "./fetchAllPages";
 import type {
   Customer,
   CustomerCredential,
@@ -121,24 +122,67 @@ export type CustomerProjectSummary = Pick<
 /** The server's page size for the note feed: a page this long may have more behind it. */
 export const CUSTOMER_NOTES_PAGE = 20;
 
-function buildQuery(params: Record<string, string | boolean | null | undefined>): string {
+/**
+ * The most rows GET /customers answers per request (`le=1000` on the server).
+ * Asked for explicitly on every request: the server's own default is 200, and
+ * relying on it is what hid every customer after the 200th, alphabetically,
+ * from every picker in the app (2026-09-29 to 2026-10-20).
+ */
+export const CUSTOMER_PAGE_LIMIT = 1000;
+
+/**
+ * Pages `listAllCustomers` fetches before it gives up with an error — 50 000
+ * customers, far past anything this business will have. A ceiling, not a cap:
+ * reaching it throws instead of returning the first 50 000.
+ */
+export const CUSTOMER_MAX_PAGES = 50;
+
+export type CustomerPage = {
+  /** Rows per request; at most CUSTOMER_PAGE_LIMIT. */
+  limit?: number;
+  offset?: number;
+};
+
+function buildQuery(params: Record<string, string | number | boolean | null | undefined>): string {
   const entries: string[] = [];
   Object.entries(params).forEach(([key, rawValue]) => {
     if (rawValue === null || rawValue === undefined) return;
-    const value = typeof rawValue === "boolean" ? (rawValue ? "true" : "false") : rawValue;
+    const value = typeof rawValue === "boolean" ? (rawValue ? "true" : "false") : String(rawValue);
     if (typeof value === "string" && value.length === 0) return;
     entries.push(`${encodeURIComponent(key)}=${encodeURIComponent(value)}`);
   });
   return entries.length > 0 ? `?${entries.join("&")}` : "";
 }
 
+/**
+ * ONE page of customers, ordered by name, then id. Anything that needs the
+ * whole list — a picker, the Kunden table, an export — uses
+ * `listAllCustomers`; a page is for a bounded search (the combobox's server
+ * check asks for 20).
+ */
 export async function listCustomers(
   token: string | null,
   query: string = "",
   archived: boolean = false,
+  { limit = CUSTOMER_PAGE_LIMIT, offset = 0 }: CustomerPage = {},
 ): Promise<CustomerListItem[]> {
-  const qs = buildQuery({ q: query.trim(), archived });
+  const qs = buildQuery({ q: query.trim(), archived, limit, offset });
   return apiFetch<CustomerListItem[]>(`/customers${qs}`, token);
+}
+
+/**
+ * EVERY customer matching the filter: pages through GET /customers until a
+ * short page. Complete or rejected — a failing page or the page ceiling
+ * throws, so a caller never mistakes a partial list for the whole one.
+ */
+export async function listAllCustomers(
+  token: string | null,
+  { query = "", archived = false }: { query?: string; archived?: boolean } = {},
+): Promise<CustomerListItem[]> {
+  return fetchAllPages(
+    (offset, limit) => listCustomers(token, query, archived, { limit, offset }),
+    { pageSize: CUSTOMER_PAGE_LIMIT, maxPages: CUSTOMER_MAX_PAGES },
+  );
 }
 
 export async function getCustomer(

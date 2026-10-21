@@ -91,6 +91,7 @@ export function SchaltplanPage() {
     language,
     user,
     customers,
+    searchCustomers,
     projects,
     openCustomerModal,
     setNotice,
@@ -644,6 +645,7 @@ export function SchaltplanPage() {
             onSaved: (customer) => setCustomerId(customer.id),
           })
         }
+        searchCustomers={searchCustomers}
         panels={panels}
         activePanelId={panel?.id ?? null}
         onSelectPanel={(panelId) => void openPanel(panelId)}

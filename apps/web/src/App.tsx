@@ -227,6 +227,7 @@ import {
   consumedMaterialsPayload,
   storedMaterialRowSnapshot,
 } from "./utils/reports";
+import { pickedReportCustomer, reportDraftWithCustomer } from "./utils/reportCustomer";
 import {
   projectFinanceToFormState,
   parseNullableDecimalInput,
@@ -253,13 +254,6 @@ import {
   roleOptionLabel,
 } from "./utils/misc";
 import {
-  listCustomers as apiListCustomers,
-  saveCustomer as apiSaveCustomer,
-  archiveCustomer as apiArchiveCustomer,
-  unarchiveCustomer as apiUnarchiveCustomer,
-  type CustomerWriteInput,
-} from "./utils/customersApi";
-import {
   listPartners as apiListPartners,
   savePartner as apiSavePartner,
   archivePartner as apiArchivePartner,
@@ -273,6 +267,7 @@ import type {
   PartnerModalOpenOptions,
 } from "./context/AppContext";
 import { useDynamicFavicon } from "./hooks/useDynamicFavicon";
+import { useCustomerDirectory } from "./hooks/useCustomerDirectory";
 import { SidebarNavIcon, PenIcon, BackIcon, SearchIcon, CopyIcon } from "./components/icons";
 import { WorkHoursGauge, ProjectHoursGauge, WeeklyHoursGauge, MonthlyHoursGauge } from "./components/gauges";
 import { ThreadIconBadge, threadInitials } from "./components/shared/ThreadIconBadge";
@@ -438,9 +433,16 @@ export function App() {
     ...DEFAULT_THREAD_PARTICIPANT_ROLES,
   ]);
   const [projects, setProjects] = useState<Project[]>([]);
-  // ── Customers (Kunden) — mock-backed today, backend swap is a one-file ─
-  // change to `utils/customersApi.ts`. See the TODO(customers) banner there.
-  const [customers, setCustomers] = useState<CustomerListItem[]>([]);
+  // ── Customers (Kunden) — the complete active list every picker filters.
+  // Loaded, reloaded and written only by the hook (see its header for why).
+  const {
+    customers,
+    reloadCustomers,
+    searchCustomers,
+    saveCustomer,
+    archiveCustomer,
+    unarchiveCustomer,
+  } = useCustomerDirectory({ token, language, setError, setNotice });
   const [activeCustomerId, setActiveCustomerId] = useState<number | null>(null);
   const [customerModalOpen, setCustomerModalOpen] = useState(false);
   const [customerModalDraft, setCustomerModalDraft] = useState<CustomerModalDraft | null>(null);
@@ -7549,26 +7551,19 @@ export function App() {
     clearReportImages();
   }
 
-  /** Customer picked in the report form's first field. */
-  function applyReportCustomerSelection(nextCustomerId: number | null, typedName: string) {
+  /**
+   * Customer picked in the report form's first field. `pickedRow` is the row
+   * the combobox picked — the server check can find a customer the directory
+   * does not hold yet, and the master data must still be filled in.
+   */
+  function applyReportCustomerSelection(
+    nextCustomerId: number | null,
+    typedName: string,
+    pickedRow?: CustomerListItem | null,
+  ) {
     setReportCustomerId(nextCustomerId);
-    const picked = nextCustomerId == null
-      ? null
-      : customers.find((entry) => entry.id === nextCustomerId) ?? null;
-    setReportDraft((current) => ({
-      ...current,
-      // A linked customer fills the master data; free text only sets the name so
-      // a manually-typed address is never silently overwritten.
-      customer: picked?.name ?? typedName,
-      ...(picked
-        ? {
-            customer_address: picked.address ?? current.customer_address,
-            customer_contact: picked.contact_person ?? current.customer_contact,
-            customer_email: picked.email ?? current.customer_email,
-            customer_phone: picked.phone ?? current.customer_phone,
-          }
-        : {}),
-    }));
+    const picked = pickedReportCustomer(nextCustomerId, pickedRow, customers);
+    setReportDraft((current) => reportDraftWithCustomer(current, picked, typedName));
     // Drop a project that belongs to a different customer.
     if (nextCustomerId != null && reportProjectId) {
       const current = projects.find((project) => String(project.id) === reportProjectId) ?? null;
@@ -9431,86 +9426,6 @@ export function App() {
     }
   }
 
-  // ── Customers (Kunden) helpers ────────────────────────────────────────────
-  // Thin wrappers around the real `/api/customers` endpoints that keep
-  // `customers` in state and surface user-facing errors through `setError`.
-  // Token passed explicitly, matching `loadPartners` / `savePartner` shape.
-  const loadCustomers = useCallback(
-    async (query: string = "", archived: boolean = false): Promise<void> => {
-      try {
-        const rows = await apiListCustomers(token, query, archived);
-        setCustomers(rows);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        setError(
-          message ||
-            (language === "de"
-              ? "Kunden konnten nicht geladen werden"
-              : "Failed to load customers"),
-        );
-      }
-    },
-    [language, token],
-  );
-
-  const saveCustomer = useCallback(
-    async (data: CustomerWriteInput, id?: number): Promise<CustomerListItem> => {
-      const saved = await apiSaveCustomer(token, data, id);
-      setCustomers((current) => {
-        const existingIndex = current.findIndex((row) => row.id === saved.id);
-        if (existingIndex >= 0) {
-          return current.map((row) => (row.id === saved.id ? saved : row));
-        }
-        return [...current, saved];
-      });
-      setNotice(
-        language === "de"
-          ? id
-            ? "Kunde aktualisiert"
-            : "Kunde angelegt"
-          : id
-            ? "Customer updated"
-            : "Customer created",
-      );
-      return saved;
-    },
-    [language, token],
-  );
-
-  const archiveCustomer = useCallback(
-    async (id: number): Promise<void> => {
-      try {
-        const updated = await apiArchiveCustomer(token, id);
-        setCustomers((current) =>
-          current.map((row) => (row.id === id ? updated : row)),
-        );
-        setNotice(language === "de" ? "Kunde archiviert" : "Customer archived");
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        setError(message);
-      }
-    },
-    [language, token],
-  );
-
-  const unarchiveCustomer = useCallback(
-    async (id: number): Promise<void> => {
-      try {
-        const updated = await apiUnarchiveCustomer(token, id);
-        setCustomers((current) =>
-          current.map((row) => (row.id === id ? updated : row)),
-        );
-        setNotice(
-          language === "de" ? "Kunde wiederhergestellt" : "Customer restored",
-        );
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        setError(message);
-      }
-    },
-    [language, token],
-  );
-
   const openCustomer = useCallback((id: number) => {
     setActiveCustomerId(id);
     setProjectBackView(null);
@@ -9628,13 +9543,6 @@ export function App() {
     },
     [partners],
   );
-
-  // Initial mock-data hydration — the backend swap removes the need for this
-  // because the real API will stream via SSE like the rest of the app.
-  useEffect(() => {
-    if (!token) return;
-    void loadCustomers("", false);
-  }, [token, loadCustomers]);
 
   // Partners load on login. The Werkstatt → Partner tab re-triggers with
   // specific filters; this initial pull keeps the TaskModal multi-select
@@ -9803,12 +9711,12 @@ export function App() {
 
     // ── Customers ─────────────────────────────────────────────────────────────
     customers,
-    setCustomers,
     activeCustomerId,
     setActiveCustomerId,
     customerModalOpen,
     customerModalDraft,
-    loadCustomers,
+    reloadCustomers,
+    searchCustomers,
     saveCustomer,
     archiveCustomer,
     unarchiveCustomer,

@@ -29,12 +29,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, apiFetch } from "../../api/client";
 import { useAppContext } from "../../context/AppContext";
 import { useBarcodeScanner } from "../../hooks/useBarcodeScanner";
-import { CustomerCombobox } from "../../components/customers/CustomerCombobox";
 import {
   CameraScannerSheet,
   type ScanOutcome,
 } from "../../components/werkstatt/CameraScannerSheet";
-import { boxStatusLabel } from "../../utils/boxes";
+import {
+  KistenPackForm,
+  type BoxAssignment,
+  type BoxPackPayload,
+} from "../../components/werkstatt/KistenPackForm";
+import { boxProjectLabel, boxStatusLabel } from "../../utils/boxes";
+import { seesEveryProject } from "../../utils/projects";
 import { formatServerDateTime } from "../../utils/dates";
 import "../../styles/boxes.css";
 
@@ -132,6 +137,22 @@ const SIZE_LABELS: Record<string, { de: string; en: string }> = {
 
 const RACK_SLOTS = [1, 2, 3, 4, 5, 6, 7, 8] as const;
 
+const NO_ASSIGNMENT: BoxAssignment = { customerId: null, customerName: "", projectId: null };
+
+/** The assign card's starting point: whoever the crate already belongs to. */
+function assignmentOf(box: Box): BoxAssignment {
+  return {
+    customerId: box.customer_id,
+    customerName: box.customer_name ?? "",
+    projectId: box.project_id,
+  };
+}
+
+/** What the card's choice was taken from — identity, state and owner of the crate. */
+function assignmentSource(box: Box): string {
+  return [box.id, box.status, box.customer_id, box.project_id].join("|");
+}
+
 function SearchIcon() {
   return (
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -156,8 +177,19 @@ function CameraIcon() {
 }
 
 export function WerkstattKistenPage() {
-  const { mainView, werkstattTab, language, token, setError, setNotice, customers, loadCustomers } =
-    useAppContext();
+  const {
+    mainView,
+    werkstattTab,
+    language,
+    token,
+    setError,
+    setNotice,
+    customers,
+    reloadCustomers,
+    searchCustomers,
+    projects,
+    user,
+  } = useAppContext();
   const de = language === "de";
 
   const [boxes, setBoxes] = useState<Box[]>([]);
@@ -167,7 +199,8 @@ export function WerkstattKistenPage() {
   const [newLabel, setNewLabel] = useState("");
   const [search, setSearch] = useState("");
   const [hits, setHits] = useState<SearchHit[]>([]);
-  const [assignCustomerId, setAssignCustomerId] = useState<number | null>(null);
+  const [assignment, setAssignment] = useState<BoxAssignment>(NO_ASSIGNMENT);
+  const assignmentSourceRef = useRef<string | null>(null);
   const [cameraOpen, setCameraOpen] = useState(false);
   const [printing, setPrinting] = useState(false);
   /** Optimistic per-item quantities while their PATCH/DELETE is pending. */
@@ -208,7 +241,16 @@ export function WerkstattKistenPage() {
       try {
         const box = await apiFetch<Box>(`/werkstatt/boxes/${boxId}`, token);
         setActiveBox(box);
-        setAssignCustomerId(box.customer_id);
+        // Every added line, quantity tap and scan fetches the crate again.
+        // Taking the owner from it each time wiped a customer and project
+        // picked a moment earlier (the field still showed the name, the
+        // button went dead), so the card follows the crate only when it is
+        // another crate or its state or owner changed on the server.
+        const source = assignmentSource(box);
+        if (source !== assignmentSourceRef.current) {
+          assignmentSourceRef.current = source;
+          setAssignment(assignmentOf(box));
+        }
       } catch (err: unknown) {
         setError(err instanceof Error ? err.message : String(err));
       }
@@ -220,10 +262,11 @@ export function WerkstattKistenPage() {
     if (!isActiveTab) return;
     void loadBoxes();
     // Refresh the customer list too: it is otherwise loaded only once at login,
-    // so a customer created since then — or a load that failed quietly — left
-    // the assign picker unable to find people who plainly exist.
-    void loadCustomers("", false);
-  }, [isActiveTab, loadBoxes, loadCustomers]);
+    // so a customer created since then — or a load that failed quietly — would
+    // be missing from the picker. The list is complete (every page of it); the
+    // picker's server check covers whoever is created while the tab is open.
+    void reloadCustomers();
+  }, [isActiveTab, loadBoxes, reloadCustomers]);
 
   // Debounced unified search across stocked articles + Datanorm catalog.
   useEffect(() => {
@@ -500,12 +543,12 @@ export function WerkstattKistenPage() {
    * the building at this moment, so nothing leaves the shelf either. The
    * checkout happens when somebody actually carries the crate out.
    */
-  async function pack() {
-    if (!activeBox || assignCustomerId == null) return;
+  async function pack(payload: BoxPackPayload) {
+    if (!activeBox) return;
     try {
       await apiFetch(`/werkstatt/boxes/${activeBox.id}/pack`, token, {
         method: "POST",
-        body: JSON.stringify({ customer_id: assignCustomerId }),
+        body: JSON.stringify(payload),
       });
       setNotice(de ? "Kiste gepackt und zugewiesen" : "Box packed and assigned");
       await Promise.all([openBox(activeBox.id), loadBoxes()]);
@@ -788,6 +831,8 @@ export function WerkstattKistenPage() {
 
   /* ── Detail view ───────────────────────────────────────────────────────── */
 
+  const projectLabel = boxProjectLabel(activeBox, projects);
+
   return (
     <section className="werkstatt-tab-page kisten-page">
       {/* Kept out of the head block so the status pill lines up with the title
@@ -798,6 +843,9 @@ export function WerkstattKistenPage() {
         onClick={() => {
           setCameraOpen(false);
           setActiveBox(null);
+          // Opening this crate again starts from what it holds, not from a
+          // choice left half-made.
+          assignmentSourceRef.current = null;
           // Counts and statuses on the rack are stale after packing.
           void loadBoxes();
         }}
@@ -1075,6 +1123,11 @@ export function WerkstattKistenPage() {
                     {de ? "Beim Kunden" : "With the customer"}
                     {activeBox.customer_name ? `: ${activeBox.customer_name}` : ""}
                   </p>
+                  {projectLabel && (
+                    <p className="kisten-note kisten-note--muted">
+                      {de ? "Projekt" : "Project"}: {projectLabel}
+                    </p>
+                  )}
                   <button
                     type="button"
                     className="werkstatt-action-btn werkstatt-action-btn--primary"
@@ -1091,6 +1144,11 @@ export function WerkstattKistenPage() {
                         ? `Gepackt für ${activeBox.customer_name ?? "–"} – bereit zur Mitnahme`
                         : `Packed for ${activeBox.customer_name ?? "–"} – ready to take`}
                     </strong>
+                    {projectLabel && (
+                      <small>
+                        {de ? "Projekt" : "Project"}: {projectLabel}
+                      </small>
+                    )}
                     {activeBox.packed_at && (
                       <small>
                         {de ? "Gepackt" : "Packed"}:{" "}
@@ -1121,63 +1179,24 @@ export function WerkstattKistenPage() {
                   </p>
                 </>
               ) : (
-                <>
-                  <CustomerCombobox
-                    language={de ? "de" : "en"}
-                    customers={customers}
-                    value={{
-                      customerId: assignCustomerId,
-                      customerName: customers.find((c) => c.id === assignCustomerId)?.name ?? "",
-                    }}
-                    onChange={(next) => setAssignCustomerId(next.customerId)}
-                    onRequestCreate={() => undefined}
-                    placeholder={de ? "Kunde wählen…" : "Choose a customer…"}
-                  />
-                  <div className="kisten-action-row">
-                    <button
-                      type="button"
-                      className="werkstatt-action-btn werkstatt-action-btn--primary"
-                      onClick={() => void pack()}
-                      disabled={
-                        !isOpen || assignCustomerId == null || activeBox.items.length === 0
-                      }
-                    >
-                      {de ? "Packen & zuweisen" : "Pack & assign"}
-                    </button>
-                    {returned && (
-                      <button
-                        type="button"
-                        className="werkstatt-action-btn"
-                        onClick={() => void setStatus("offen")}
-                      >
-                        {de ? "Erneut öffnen" : "Re-open"}
-                      </button>
-                    )}
-                  </div>
-                  {returned ? (
-                    /* A returned crate cannot be packed — the FSM has no
-                       zurueck → gepackt edge, so the only honest button here
-                       is the one that re-opens it. */
-                    <p className="kisten-action-hint">
-                      {de
-                        ? "Die Kiste ist zurück – erst „Erneut öffnen“, dann packen."
-                        : "The box is back — re-open it before packing it again."}
-                    </p>
-                  ) : (
-                    <p className="kisten-action-hint">
-                      {de
-                        ? "Beim Zuweisen wird noch kein Bestand gebucht – erst bei der Übergabe."
-                        : "Assigning books no stock — the handover does."}
-                    </p>
-                  )}
-                  {isOpen && activeBox.items.length === 0 && (
-                    <p className="kisten-note kisten-note--muted">
-                      {de
-                        ? "Erst packen, dann zuweisen."
-                        : "Pack the box before assigning it."}
-                    </p>
-                  )}
-                </>
+                <KistenPackForm
+                  // A fresh card for another crate or another state of this
+                  // one ("Erneut öffnen" frees it): nothing typed into the
+                  // last one's field may stay behind as if it were chosen.
+                  key={`${activeBox.id}|${activeBox.status}`}
+                  language={de ? "de" : "en"}
+                  customers={customers}
+                  projects={projects}
+                  allProjectsVisible={seesEveryProject(user)}
+                  searchCustomers={searchCustomers}
+                  value={assignment}
+                  onChange={setAssignment}
+                  packable={isOpen && activeBox.items.length > 0}
+                  onPack={(payload) => void pack(payload)}
+                  returned={returned}
+                  onReopen={() => void setStatus("offen")}
+                  empty={isOpen && activeBox.items.length === 0}
+                />
               )}
             </div>
           </article>

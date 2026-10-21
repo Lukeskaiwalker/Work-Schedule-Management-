@@ -1025,8 +1025,15 @@ def test_a_sealed_crate_cannot_be_emptied(client: TestClient, admin_token: str):
 def test_an_empty_crate_cannot_be_sealed_through_the_status_endpoint(
     client: TestClient, admin_token: str
 ):
-    """The reachable hole: a returned crate keeps its customer, so ``/status``
-    could seal it with nothing in it — and the wall screen would advertise it."""
+    """``/status`` is held to the sealing rule exactly as ``/pack`` is.
+
+    This was a reachable hole: a returned crate kept its customer, so
+    ``/status`` could seal it with nothing in it — and the wall screen would
+    advertise it. Re-opening frees a crate now, so the same walk ends in the
+    "no customer" refusal instead. The empty-crate rule itself is then driven
+    on the one open crate that can still carry an owner: a row the old
+    re-open edge left behind (production's K7 until migration 0102), seeded
+    directly."""
     customer_id = _customer(client, admin_token, "Kunde Rückläufer")
     box = _box(client, admin_token, "Kiste Rückläufer")
     client.post(
@@ -1053,8 +1060,6 @@ def test_an_empty_crate_cannot_be_sealed_through_the_status_endpoint(
             ).status_code
             == 200
         )
-    # Coming back from ``zurueck`` keeps the customer — only the gepackt → offen
-    # edge is "Zuweisung aufheben".
     assert (
         client.delete(
             f"/api/werkstatt/boxes/{box['id']}/items", headers=auth_headers(admin_token)
@@ -1062,17 +1067,35 @@ def test_an_empty_crate_cannot_be_sealed_through_the_status_endpoint(
         == 200
     )
 
-    sealed = client.post(
-        f"/api/werkstatt/boxes/{box['id']}/status",
-        headers=auth_headers(admin_token),
-        json={"status": "gepackt"},
-    )
-    assert sealed.status_code == 400
-    assert "leer" in sealed.json()["detail"]
-    state = client.get(
-        f"/api/werkstatt/boxes/{box['id']}", headers=auth_headers(admin_token)
-    ).json()
-    assert state["status"] == "offen"
+    def seal():
+        return client.post(
+            f"/api/werkstatt/boxes/{box['id']}/status",
+            headers=auth_headers(admin_token),
+            json={"status": "gepackt"},
+        )
+
+    def state() -> dict:
+        return client.get(
+            f"/api/werkstatt/boxes/{box['id']}", headers=auth_headers(admin_token)
+        ).json()
+
+    # The re-opened crate is nobody's, so there is nothing to seal it for.
+    freed = seal()
+    assert freed.status_code == 400
+    assert "Kunde" in freed.json()["detail"]
+    assert state()["status"] == "offen" and state()["customer_id"] is None
+
+    from app.core.db import SessionLocal
+    from app.models.entities import WerkstattConstructionBox
+
+    with SessionLocal() as db:
+        db.get(WerkstattConstructionBox, box["id"]).customer_id = customer_id
+        db.commit()
+
+    empty = seal()
+    assert empty.status_code == 400
+    assert "leer" in empty.json()["detail"]
+    assert state()["status"] == "offen"
 
 
 def test_handing_an_empty_crate_over_is_still_allowed(client: TestClient, admin_token: str):
