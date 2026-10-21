@@ -62,6 +62,22 @@ describe("DashboardMovementsCard", () => {
     expect(titles()[0]).toContain("Verdrahtungskanal");
   });
 
+  it("files a Rücklauf aus Verteiler under Rückgaben and its Storno under Entnahmen", () => {
+    const movements = [
+      movement(6, "salvage", "Hauptschalter 3-polig", "Rücklauf — Verteiler VT-0009"),
+      movement(7, "salvage_undo", "HLAK 3-polig"),
+    ];
+    render(<DashboardMovementsCard movements={movements} phase={null} language="de" now={new Date("2026-10-10T09:00:00Z")} />);
+
+    fireEvent.click(screen.getByRole("tab", { name: "Rückgaben" }));
+    expect(titles()).toHaveLength(1);
+    expect(titles()[0]).toContain("Hauptschalter 3-polig");
+
+    fireEvent.click(screen.getByRole("tab", { name: "Entnahmen" }));
+    expect(titles()).toHaveLength(1);
+    expect(titles()[0]).toContain("HLAK 3-polig");
+  });
+
   it("names the board a consumption went into", () => {
     render(<DashboardMovementsCard movements={MOVEMENTS} phase={null} language="de" now={new Date("2026-10-10T09:00:00Z")} />);
     const board = titles().find((row) => row.includes("Klemme 2016")) ?? "";

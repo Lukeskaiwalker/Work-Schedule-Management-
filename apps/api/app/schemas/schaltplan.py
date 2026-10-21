@@ -7,15 +7,25 @@ What *is* enforced is structure: device kinds must exist in the catalogue,
 counts are bounded so one tablet cannot post a 40 MB document, and ids are
 required because the topology derivation and the editor both key on them.
 
-The bounds (60 rows × 96 devices) are far above any real board — the biggest
-Hauptverteiler on site is ~8 rows — and exist only as a denial-of-service
-ceiling, not as a modelling opinion.
+The bounds (120 rows × 96 devices) are far above any hand-drawn board — the
+biggest Hauptverteiler on site is ~8 rows — and exist only as a
+denial-of-service ceiling, not as a modelling opinion. 120 rather than 60
+because a board in a cabinet gets one row per used DIN rail, and a full
+five-field 1400 mm cabinet has about 45 of them (docs/PANEL_ENCLOSURE.md D15).
+
+Two keys belong to the cabinet layer (docs/PANEL_ENCLOSURE.md) and are passed
+through untouched here: ``document.enclosure`` and ``device.supplied_by``.
+They ship one release before the feature that writes them, so that rolling
+the feature back is an image swap — an image that dropped unknown keys would
+strip the cabinet from every board on its next autosave. Only their size is
+bounded until the feature release types them.
 """
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -26,9 +36,15 @@ PanelStatus = Literal["draft", "final"]
 SupplySystem = Literal["TN-S", "TN-C-S", "TT", "IT"]
 PhaseLabel = Literal["L1", "L2", "L3", "L1-L3", "L1/N", "N", "-"]
 
-MAX_ROWS = 60
+# Same constant as MAX_ROWS in apps/web/src/utils/schaltplanDevices.ts (a test
+# reads both).
+MAX_ROWS = 120
 MAX_TERMINAL_OVERRIDES = 2000
 MAX_DEVICES_PER_ROW = 96
+# Pass-through ceilings for the cabinet keys (see the module docstring).
+MAX_ENCLOSURE_JSON_BYTES = 64 * 1024
+MAX_SUPPLIED_BY_KEYS = 4
+MAX_SUPPLIED_BY_TEXT = 64
 
 
 class PanelSupply(BaseModel):
@@ -72,12 +88,26 @@ class PanelDevice(BaseModel):
     # Real mounted width in mm, when it is not `te` × the module pitch. The
     # BMK strip is cut to this, so a 70 mm Hager FI must not be labelled 72.
     width_mm: float | None = Field(default=None, gt=0, le=600)
+    # {"module": <module id>, "part": <fitting key>} — this device came
+    # pre-fitted in a cabinet module. Kept as written; see the module docstring.
+    supplied_by: dict[str, str] | None = None
 
     @field_validator("kind")
     @classmethod
     def _known_kind(cls, value: str) -> str:
         if value not in DEVICE_KINDS:
             raise ValueError(f"Unbekannter Gerätetyp: {value}")
+        return value
+
+    @field_validator("supplied_by")
+    @classmethod
+    def _small_supplied_by(cls, value: dict[str, str] | None) -> dict[str, str] | None:
+        if value is None:
+            return None
+        if len(value) > MAX_SUPPLIED_BY_KEYS:
+            raise ValueError("Herkunftsangabe des Geräts zu groß")
+        if any(len(text) > MAX_SUPPLIED_BY_TEXT for pair in value.items() for text in pair):
+            raise ValueError("Herkunftsangabe des Geräts zu lang")
         return value
 
 
@@ -96,6 +126,9 @@ class PanelDocument(BaseModel):
     # text (see services/schaltplan_terminals.override_key). A blank text
     # is "print nothing here"; a missing key is the derived default.
     terminal_labels: dict[str, str] = Field(default_factory=dict)
+    # The cabinet the rows are mounted in (docs/PANEL_ENCLOSURE.md §2); null =
+    # rails only. Opaque here, kept as written; see the module docstring.
+    enclosure: dict[str, Any] | None = None
 
     @field_validator("terminal_labels")
     @classmethod
@@ -103,6 +136,17 @@ class PanelDocument(BaseModel):
         if len(labels) > MAX_TERMINAL_OVERRIDES:
             raise ValueError("Zu viele Klemmenbeschriftungen")
         return {str(key)[:80]: str(value)[:40] for key, value in labels.items()}
+
+    @field_validator("enclosure")
+    @classmethod
+    def _bounded_enclosure(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        # Counted the way it is stored: compact JSON, UTF-8 bytes.
+        if value is None:
+            return None
+        size = len(json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+        if size > MAX_ENCLOSURE_JSON_BYTES:
+            raise ValueError("Schrankdaten zu groß (max. 64 KB)")
+        return value
 
     @field_validator("rows")
     @classmethod

@@ -127,6 +127,17 @@ DEVICE_CATALOG: dict[str, dict[str, Any]] = {
         "te": 4, "poles": 4, "group": True, "circuit": False, "symbol": "distribution",
         "rating_hint": "",
     },
+    "hlak": {
+        # Hauptleitungsabzweigklemme: comes pre-fitted in several Hager meter
+        # fields (docs/PANEL_ENCLOSURE.md D13). It taps the main line and
+        # protects nothing, so it is neither a group (the LS after it stay on
+        # their FI) nor a circuit (no legend line). The editor offers it only
+        # on boards with a cabinet.
+        "label": "Hauptleitungsabzweigklemme (HLAK)",
+        "short": "HLAK",
+        "te": 4, "poles": 3, "group": False, "circuit": False, "symbol": "terminal",
+        "rating_hint": "",
+    },
     "rcd": {
         "label": "FI-Schutzschalter (RCD)",
         "short": "FI",

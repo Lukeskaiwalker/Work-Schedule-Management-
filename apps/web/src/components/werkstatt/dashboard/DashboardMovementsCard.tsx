@@ -39,13 +39,15 @@ const FILTERS: ReadonlyArray<MovementFilter> = [
     label_en: "Out",
     // A consumable handed out is a `consumption` since 2026-10-10 — the bulk
     // of what leaves the shelf, so it belongs under "Entnahmen".
-    types: ["checkout", "consumption", "repair_out"],
+    // A Storno of a Rücklauf takes the part off the shelf again.
+    types: ["checkout", "consumption", "repair_out", "salvage_undo"],
   },
   {
     key: "in",
     label_de: "Rückgaben",
     label_en: "Returns",
-    types: ["return", "consumption_undo", "repair_back"],
+    // `salvage`: a part taken out of a Verteiler's module, back on the shelf.
+    types: ["return", "consumption_undo", "repair_back", "salvage"],
   },
   {
     key: "intake",

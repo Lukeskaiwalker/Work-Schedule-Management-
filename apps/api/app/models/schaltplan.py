@@ -39,6 +39,7 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     DateTime,
     ForeignKey,
     Index,
@@ -228,3 +229,39 @@ class PanelWorkSession(Base):
     ended_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
 
+
+class PanelCatalogEntry(Base):
+    """An admin's entry in the cabinet catalogue (Hager univers Z, docs/PANEL_ENCLOSURE.md §3.3).
+
+    The built-in cabinets and field modules are Python data, reviewed in pull
+    requests (``services/panel_enclosure_catalog_data*.py``). A row here is
+    either an entry an admin added (a code the built-ins do not know) or an
+    override of a built-in one (a corrected spec, or archived). ``spec`` is
+    null when the row only archives a built-in and its built-in spec stands.
+
+    Its own table, not ``app_settings``: a module spec with its zones, rails
+    and fittings runs to kilobytes, and ``app_settings.value`` holds 2048
+    characters. A code is never deleted — stored boards name it, and every
+    board must keep resolving its codes — so ``is_archived`` is how an entry
+    leaves the pickers.
+
+    Shipped empty and unread in the preparatory release, so that the feature
+    release can be rolled back by swapping images (§16): an image only starts
+    against an Alembic head it knows.
+    """
+
+    __tablename__ = "panel_catalog_entries"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # "ZH3EH16" — upper-case catalogue code, the key every document refers to.
+    code: Mapped[str] = mapped_column(String(40), nullable=False, unique=True, index=True)
+    # enclosure | module; fixed once created (a cabinet never becomes a module).
+    entry_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    spec: Mapped[dict | None] = mapped_column(JSON)
+    is_archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    updated_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=utcnow, onupdate=utcnow, nullable=False
+    )

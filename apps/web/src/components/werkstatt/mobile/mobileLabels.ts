@@ -59,15 +59,18 @@ export function projectLabel(
  * The visual family a ledger movement belongs to.
  *
  * Three families exist as CSS variants (`--checkout`, `--return`,
- * `--inspection`); the ledger has ten movement types. A consumption leaves the
- * shelf like a hand-out and its undo comes back like a hand-back; anything else
- * is a stock correction and shares the neutral third look.
+ * `--inspection`); the ledger has twelve movement types. A consumption leaves
+ * the shelf like a hand-out and its undo comes back like a hand-back; a
+ * Rücklauf from a Verteiler (`salvage`) comes back too and its Storno leaves;
+ * anything else is a stock correction and shares the neutral third look.
  */
 export function movementFamily(
   type: WerkstattMovementType,
 ): "checkout" | "return" | "inspection" {
-  if (type === "checkout" || type === "consumption") return "checkout";
-  if (type === "return" || type === "repair_back" || type === "consumption_undo") return "return";
+  if (type === "checkout" || type === "consumption" || type === "salvage_undo") return "checkout";
+  if (type === "return" || type === "repair_back" || type === "consumption_undo" || type === "salvage") {
+    return "return";
+  }
   return "inspection";
 }
 
@@ -84,6 +87,10 @@ const MOVEMENT_TITLES: Record<WerkstattMovementType, { de: string; en: string }>
   // Verteiler — and its inverse (an undo, or leftovers carried back).
   consumption: { de: "Verbrauch", en: "Consumed" },
   consumption_undo: { de: "Verbrauch zurück", en: "Consumption returned" },
+  // A pre-fitted part taken out of a Verteiler's cabinet module and shelved,
+  // and the Storno of one such return.
+  salvage: { de: "Rücklauf aus Verteiler", en: "Returned from a panel" },
+  salvage_undo: { de: "Rücklauf storniert", en: "Panel return reversed" },
 };
 
 /** What a ledger movement is called on screen. */

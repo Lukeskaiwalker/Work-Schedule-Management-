@@ -820,7 +820,11 @@ var MOVE = {
   /* Ein Teil fuer einen Verteiler: Bestand sinkt, ohne dass jemand es
      "hat" - es ist verbaut. Der Rueckweg ist die Stornierung davon. */
   consumption:     {label:'Verbrauch',      tone:'out'},
-  consumption_undo:{label:'Verbrauch zurück', tone:'in'}
+  consumption_undo:{label:'Verbrauch zurück', tone:'in'},
+  /* Ein vorbestuecktes Teil aus einem Schrankmodul, zurueck ins Regal -
+     gebucht in der Materialliste, nie an der Station. */
+  salvage:         {label:'Rücklauf aus Verteiler', tone:'in'},
+  salvage_undo:    {label:'Rücklauf storniert',     tone:'out'}
 };
 function moveOf(raw){
   var m = MOVE[str(raw)];

@@ -24,9 +24,22 @@ export interface DeviceCatalogEntry {
   circuit: boolean;
   symbol: DeviceSymbol;
   ratingHint: string;
-  /** Palette grouping so the picker is scannable rather than a wall of 19. */
-  section: "schutz" | "abgang" | "funktion" | "sonstiges";
+  /**
+   * Palette grouping so the picker is scannable rather than a wall of 19.
+   * `schrank` has no entry in PALETTE_SECTIONS, so its kinds are not offered
+   * anywhere yet: they belong to boards with a cabinet, and the palette that
+   * shows them there comes with the cabinet editor (docs/PANEL_ENCLOSURE.md).
+   */
+  section: "schutz" | "abgang" | "funktion" | "sonstiges" | "schrank";
 }
+
+/**
+ * Most rows a board may have. Same constant as `MAX_ROWS` in
+ * apps/api/app/schemas/schaltplan.py (a server test reads both): a board in a
+ * cabinet gets one row per used DIN rail, about 45 for a full 1400 mm
+ * five-field cabinet, so the old 60 was too tight.
+ */
+export const MAX_ROWS = 120;
 
 export const DEVICE_CATALOG: Record<DeviceKind, DeviceCatalogEntry> = {
   hauptschalter: { kind: "hauptschalter", label: "Hauptschalter", short: "HS", te: 3, poles: 3, group: true, circuit: false, symbol: "switch", ratingHint: "63 A", section: "schutz" },
@@ -35,6 +48,9 @@ export const DEVICE_CATALOG: Record<DeviceKind, DeviceCatalogEntry> = {
   // to distribute to the next components" — opens a group like a
   // Hauptschalter and feeds the FIs that name it.
   distribution_block: { kind: "distribution_block", label: "Verteilerblock (Hensel KKL 54)", short: "VB", te: 4, poles: 4, group: true, circuit: false, symbol: "distribution", ratingHint: "", section: "schutz" },
+  // Hauptleitungsabzweigklemme, pre-fitted in several Hager meter fields:
+  // taps the main line, protects nothing — neither a group nor a circuit.
+  hlak: { kind: "hlak", label: "Hauptleitungsabzweigklemme (HLAK)", short: "HLAK", te: 4, poles: 3, group: false, circuit: false, symbol: "terminal", ratingHint: "", section: "schrank" },
   rcd: { kind: "rcd", label: "FI-Schutzschalter (RCD)", short: "FI", te: 4, poles: 4, group: true, circuit: false, symbol: "rcd", ratingHint: "40 A", section: "schutz" },
   rcbo: { kind: "rcbo", label: "FI/LS kombiniert", short: "FI/LS", te: 2, poles: 2, group: false, circuit: true, symbol: "rcbo", ratingHint: "B16", section: "abgang" },
   mcb: { kind: "mcb", label: "Leitungsschutzschalter", short: "LS", te: 1, poles: 1, group: false, circuit: true, symbol: "mcb", ratingHint: "B16", section: "abgang" },
