@@ -70,7 +70,7 @@ from app.models.station import (
 )
 from app.models.training import TrainingWeekReport
 from app.models.calendar import CalendarFeed
-from app.models.schaltplan import PanelMaterialArticle, PanelPlan, PanelWorkSession
+from app.models.schaltplan import PanelCatalogEntry, PanelMaterialArticle, PanelPlan, PanelWorkSession
 from app.models.wiki import WikiPage
 from app.models.files import Attachment, CustomerFolder, ProjectFolder
 from app.models.time_models import ClockEntry, BreakEntry, VacationRequest, SchoolAbsence
@@ -108,6 +108,7 @@ __all__ = [
     "Notification",
     "CalendarFeed",
     "CustomerCredential",
+    "PanelCatalogEntry",
     "PanelMaterialArticle",
     "PanelPlan",
     "PanelWorkSession",

@@ -48,6 +48,8 @@ const MOVEMENT_LABELS: Record<string, { de: string; en: string }> = {
   // rather than shown as its raw key.
   consumption: { de: "Verbrauch", en: "Consumed" },
   consumption_undo: { de: "Verbrauch zurück", en: "Consumption returned" },
+  salvage: { de: "Rücklauf aus Verteiler", en: "Returned from a panel" },
+  salvage_undo: { de: "Rücklauf storniert", en: "Panel return reversed" },
 };
 
 /** Statuses a machine can come back in. `ausgemustert` is not a return. */

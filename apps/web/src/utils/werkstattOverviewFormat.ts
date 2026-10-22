@@ -87,17 +87,21 @@ export function formatRelativeTime(value: string | null, now: Date, de: boolean)
  * one movement a workshop chases; the rest collapse into "went out", "came
  * back" and "somebody corrected a number". A consumption is stock going out —
  * every consumable dispensed at the rack, the desk or the phone is one — and
- * its undo is stock coming back.
+ * its undo is stock coming back. A Rücklauf from a Verteiler (`salvage`) is
+ * stock coming in; its Storno takes it off the shelf again.
  */
 export function movementPipKind(
   movementType: WerkstattMovementType | string,
 ): "out" | "in" | "adjust" | "repair" {
-  if (movementType === "checkout" || movementType === "consumption") return "out";
+  if (movementType === "checkout" || movementType === "consumption" || movementType === "salvage_undo") {
+    return "out";
+  }
   if (
     movementType === "return" ||
     movementType === "intake" ||
     movementType === "repair_back" ||
-    movementType === "consumption_undo"
+    movementType === "consumption_undo" ||
+    movementType === "salvage"
   ) {
     return "in";
   }
@@ -119,6 +123,10 @@ const MOVEMENT_LABELS: Record<string, { de: string; en: string }> = {
   // inverse is an undo or leftovers carried back to the shelf.
   consumption: { de: "Verbrauch", en: "Consumed" },
   consumption_undo: { de: "Verbrauch zurück", en: "Consumption returned" },
+  // A part taken out of a cabinet module on the bench and put on the shelf,
+  // booked from the board's Materialliste; and the Storno of one such return.
+  salvage: { de: "Rücklauf aus Verteiler", en: "Returned from a panel" },
+  salvage_undo: { de: "Rücklauf storniert", en: "Panel return reversed" },
 };
 
 export function movementTypeLabel(movementType: string, de: boolean): string {

@@ -133,6 +133,21 @@ describe("movementPipKind", () => {
   });
 });
 
+describe("salvage — a part taken out of a Verteiler module", () => {
+  it("draws the return as stock coming in and its Storno as stock going out", () => {
+    // Booked from a board's Materialliste ("Ins Lager", docs/PANEL_ENCLOSURE.md §6).
+    expect(movementPipKind("salvage")).toBe("in");
+    expect(movementPipKind("salvage_undo")).toBe("out");
+  });
+
+  it("names both rows in German and English", () => {
+    expect(movementTypeLabel("salvage", true)).toBe("Rücklauf aus Verteiler");
+    expect(movementTypeLabel("salvage_undo", true)).toBe("Rücklauf storniert");
+    expect(movementTypeLabel("salvage", false)).toBe("Returned from a panel");
+    expect(movementTypeLabel("salvage_undo", false)).toBe("Panel return reversed");
+  });
+});
+
 describe("consumption labels", () => {
   it("calls a consumption Verbrauch — it is no longer only a Verteiler's", () => {
     expect(movementTypeLabel("consumption", true)).toBe("Verbrauch");

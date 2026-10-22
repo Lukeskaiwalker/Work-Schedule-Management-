@@ -16,6 +16,8 @@ export type DeviceKind =
   | "hauptschalter"
   | "sls"
   | "distribution_block"
+  // Hauptleitungsabzweigklemme — placed by the cabinet layer (docs/PANEL_ENCLOSURE.md).
+  | "hlak"
   | "rcd"
   | "rcbo"
   | "mcb"

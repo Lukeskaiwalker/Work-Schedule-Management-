@@ -80,7 +80,8 @@ def _article_near_the_column(headroom: int) -> int:
 
 
 @pytest.mark.parametrize(
-    "movement_type", ["intake", "inventory_plus", "consumption", "consumption_undo", "checkout"]
+    "movement_type",
+    ["intake", "inventory_plus", "consumption", "consumption_undo", "checkout", "salvage", "salvage_undo"],
 )
 def test_the_ledger_refuses_a_booking_past_the_bound(client: TestClient, movement_type: str) -> None:
     with SessionLocal() as db:
@@ -113,7 +114,7 @@ def test_the_ledger_books_the_bound_itself(client: TestClient) -> None:
 # ── a sum past the column ────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("movement_type", ["intake", "inventory_plus", "consumption_undo"])
+@pytest.mark.parametrize("movement_type", ["intake", "inventory_plus", "consumption_undo", "salvage"])
 def test_the_ledger_refuses_a_booking_that_would_overflow_the_stock_counter(
     client: TestClient, movement_type: str
 ) -> None:
@@ -144,6 +145,54 @@ def test_a_loan_moving_within_the_counters_is_not_refused_near_the_column(client
         apply_movement(db, article=article, movement_type="checkout", quantity=10, user_id=_admin_id(db))
         db.commit()
         assert (article.stock_total, article.stock_out) == (INT32_MAX, 10)
+
+
+# ── salvage: a part taken out of a Verteiler module, back on the shelf ───────
+#
+# docs/PANEL_ENCLOSURE.md §6. A return raises stock that no earlier booking
+# took off, so its undo is the one place the ledger could be driven below
+# zero by a part that has since left the shelf again.
+
+
+def _counters(article: WerkstattArticle) -> tuple[int, int, int, int]:
+    return (
+        int(article.stock_total),
+        int(article.stock_available),
+        int(article.stock_out),
+        int(article.stock_repair),
+    )
+
+
+def test_salvage_keeps_total_equal_to_available_out_and_repair(client: TestClient) -> None:
+    with SessionLocal() as db:
+        article = _new_article(db, "SP-SALV-1")
+        user_id = _admin_id(db)
+        for movement_type, quantity in (
+            ("intake", 4),
+            ("checkout", 2),
+            ("salvage", 3),
+            ("repair_out", 1),
+            ("salvage_undo", 2),
+        ):
+            apply_movement(db, article=article, movement_type=movement_type, quantity=quantity, user_id=user_id)
+            total, available, out, repair = _counters(article)
+            assert total == available + out + repair, (movement_type, _counters(article))
+        assert _counters(article) == (5, 3, 1, 1)
+        db.commit()
+
+
+def test_a_salvaged_part_used_elsewhere_cannot_be_taken_back(client: TestClient) -> None:
+    """Salvage 1, the Regal hands it out for another board, undo refused."""
+    with SessionLocal() as db:
+        article = _new_article(db, "SP-SALV-2")
+        user_id = _admin_id(db)
+        apply_movement(db, article=article, movement_type="salvage", quantity=1, user_id=user_id)
+        apply_movement(db, article=article, movement_type="consumption", quantity=1, user_id=user_id)
+        with pytest.raises(MovementError, match="stock_available"):
+            apply_movement(db, article=article, movement_type="salvage_undo", quantity=1, user_id=user_id)
+        db.commit()
+        article_id = int(article.id)
+    assert _ledger(article_id) == [("salvage", 1), ("consumption", 1)]
 
 
 # ── the 400 at the boundary ──────────────────────────────────────────────────

@@ -99,4 +99,12 @@ describe("MaschineDetailPanel — log labels", () => {
     expect(screen.getByText("Consumed")).toBeInTheDocument();
     expect(screen.getByText("Consumption returned")).toBeInTheDocument();
   });
+
+  it("names a Rücklauf rather than printing its ledger key", () => {
+    // A machine is refused at the Materialliste, but the ledger is one table:
+    // a row of either type on a machine must still read as words.
+    renderPanel([movement(1, "salvage"), movement(2, "salvage_undo")]);
+    expect(screen.getByText("Rücklauf aus Verteiler")).toBeInTheDocument();
+    expect(screen.getByText("Rücklauf storniert")).toBeInTheDocument();
+  });
 });

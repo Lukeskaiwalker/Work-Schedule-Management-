@@ -59,6 +59,9 @@ WerkstattMovementType = Literal[
     # Built into a Verteiler (scanned at the Regal station or booked from the
     # board's Materialliste), and the inverse of one such booking.
     "consumption", "consumption_undo",
+    # A pre-fitted part taken out of a Verteiler's cabinet module and put on
+    # the shelf ("Rücklauf aus Verteiler"), and the inverse of one such return.
+    "salvage", "salvage_undo",
 ]
 
 WerkstattOrderStatus = Literal[

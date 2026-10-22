@@ -42,7 +42,12 @@ export type WerkstattMovementType =
   // the panel's Materialliste) and the inverse of one such booking. Like the
   // stock-take pair they move `total` and `available` together.
   | "consumption"
-  | "consumption_undo";
+  | "consumption_undo"
+  // A pre-fitted part taken out of a Verteiler's cabinet module and put on the
+  // shelf ("Rücklauf aus Verteiler"), and the inverse of one such return. The
+  // return raises `total` and `available`; its undo lowers both.
+  | "salvage"
+  | "salvage_undo";
 
 export type WerkstattOrderStatus =
   | "draft"

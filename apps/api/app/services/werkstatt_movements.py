@@ -33,6 +33,8 @@ Movement types and their effect on the four counters:
     inventory_minus : total -= qty, available -= qty    (stock-take: counted less)
     consumption     : total -= qty, available -= qty    (built into a Verteiler)
     consumption_undo: total += qty, available += qty    (one such booking taken back)
+    salvage         : total += qty, available += qty    (taken out of a Verteiler module)
+    salvage_undo    : total -= qty, available -= qty    (one such return taken back)
 """
 
 from __future__ import annotations
@@ -94,6 +96,16 @@ _DELTAS: dict[str, dict[str, int]] = {
     # response carries a warning instead, and a stock-take fixes the count.
     "consumption":      {"total": -1, "available": -1},
     "consumption_undo": {"total": +1, "available": +1},
+    # A part that came pre-fitted in a cabinet module (a Hauptschalter, an
+    # HLAK) and was taken out on the bench: it goes onto the shelf without
+    # ever having been booked off it (docs/PANEL_ENCLOSURE.md §6). Not
+    # `consumption_undo`, which takes back a booking that happened, and not
+    # `inventory_plus`, which is a counting difference: a stock-take report
+    # must not read a return as a miscount, and the board's Materialliste
+    # finds its returns by kind. The undo is bounded by `stock_available`
+    # below — the returned part may have left the shelf again since.
+    "salvage":      {"total": +1, "available": +1},
+    "salvage_undo": {"total": -1, "available": -1},
 }
 
 ALLOWED_MOVEMENT_TYPES: frozenset[str] = frozenset(_DELTAS.keys())
@@ -235,6 +247,14 @@ def apply_movement(
             f"inventory_minus quantity {quantity} exceeds stock_available "
             f"{article.stock_available} for article {article.article_number}"
         )
+    # Same hole, same guard: a return raised `available` with no decrement
+    # before it, so taking it back after the part was handed out or built in
+    # elsewhere would push the ledger below zero.
+    if movement_type == "salvage_undo" and quantity > int(article.stock_available or 0):
+        raise MovementError(
+            f"salvage_undo quantity {quantity} exceeds stock_available "
+            f"{article.stock_available} for article {article.article_number}"
+        )
 
     now = utcnow()
     movement = WerkstattMovement(
@@ -348,7 +368,7 @@ def recompute_article_stock(db: Session, article: WerkstattArticle) -> None:
 
     # Sum ± qty per counter using a CASE per movement_type, built from
     # ``_DELTAS`` so a movement type added there is aggregated here without
-    # anyone remembering to. Eight types × four counters is small and readable;
+    # anyone remembering to. A dozen types × four counters is small and readable;
     # a SQL aggregate is cheaper than loading every row into Python.
     def _sum(counter: str) -> func.coalesce:
         branches: list = []

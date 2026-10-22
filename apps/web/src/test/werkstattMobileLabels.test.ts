@@ -96,6 +96,14 @@ describe("movement rows", () => {
     expect(movementFamily("consumption_undo")).toBe("return");
   });
 
+  it("calls a part back from a Verteiler Rücklauf and files it with the returns", () => {
+    expect(movementTitle("salvage", true)).toBe("Rücklauf aus Verteiler");
+    expect(movementTitle("salvage_undo", true)).toBe("Rücklauf storniert");
+    expect(movementTitle("salvage", false)).toBe("Returned from a panel");
+    expect(movementFamily("salvage")).toBe("return");
+    expect(movementFamily("salvage_undo")).toBe("checkout");
+  });
+
   it("puts the Verteiler in the headline when the ledger note names one", () => {
     expect(
       movementHeadline(
