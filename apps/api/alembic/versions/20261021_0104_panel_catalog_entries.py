@@ -9,11 +9,15 @@ Additive, no backfill: the table ships empty and unread in the preparatory
 release, ahead of the feature that uses it, so the feature can be rolled
 back by swapping images -- an image only starts against an Alembic head it
 knows (the api image runs ``alembic upgrade head``). Rolling back past this
-release needs ``alembic downgrade 20261020_0102`` first, which drops the
+release needs ``alembic downgrade 20261022_0105`` first, which drops the
 table; built-in codes keep working without it.
 
+Chain (2026-10-22): written on ``20261020_0102``; release v2.14.42 shipped
+``20261022_0105`` on top of 0102, so release v2.14.43 re-points this onto
+0105 and Alembic keeps a single head.
+
 Revision ID: 20261021_0104
-Revises: 20261020_0102
+Revises: 20261022_0105
 Create Date: 2026-10-21 00:00:00.000000
 """
 
@@ -26,7 +30,7 @@ import sqlalchemy as sa
 
 
 revision: str = "20261021_0104"
-down_revision: Union[str, Sequence[str], None] = "20261020_0102"
+down_revision: Union[str, Sequence[str], None] = "20261022_0105"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

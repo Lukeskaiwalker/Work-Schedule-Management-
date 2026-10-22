@@ -539,3 +539,5 @@ def test_migration_0104_is_on_the_chain_to_head() -> None:
     chain = [revision.revision for revision in script.iterate_revisions(head, "base")]
     assert "20261021_0104" in chain
     assert chain.index("20261021_0104") < chain.index("20261020_0102")
+    # v2.14.43 chains it after 0105 (app_settings.value TEXT), not beside it.
+    assert chain.index("20261021_0104") < chain.index("20261022_0105")
