@@ -22,7 +22,6 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.core.db import SessionLocal
-from app.core.permissions import get_all_user_overrides, set_user_permissions_override
 from app.models.entities import PanelPlan, User, WerkstattArticle, WerkstattMovement
 from tests.panel_enclosure_helpers import (
     article,
@@ -194,19 +193,22 @@ def test_a_return_only_a_manager_who_sees_the_board_can_book(client: TestClient,
         db.commit()
     with SessionLocal() as db:
         user_id = db.scalars(select(User.id).where(User.email == "lagerleitung@example.com")).one()
-    previous = get_all_user_overrides()
-    set_user_permissions_override({**previous, user_id: {"extra": ["werkstatt:manage"], "denied": []}})
-    try:
-        assert _book(client, token, panel["id"], "salvage", hs).status_code in (403, 404)
-        assert _book(client, token, panel["id"], "unsalvage", hs).status_code in (403, 404)
-        assert _ledger(panel["id"]) == []
-        # The same manager on a board without a project: the grant itself works.
-        with SessionLocal() as db:
-            db.get(PanelPlan, panel["id"]).project_id = None
-            db.commit()
-        assert _book(client, token, panel["id"], "salvage", hs).status_code == 200
-    finally:
-        set_user_permissions_override(previous)
+    # Granted through the permission store, as an admin grants it: every
+    # request reads the stored overrides through (app.services.permission_store).
+    granted = client.put(
+        f"/api/admin/user-permissions/{user_id}",
+        headers=auth(admin_token),
+        json={"extra": ["werkstatt:manage"], "denied": []},
+    )
+    assert granted.status_code == 200, granted.text
+    assert _book(client, token, panel["id"], "salvage", hs).status_code in (403, 404)
+    assert _book(client, token, panel["id"], "unsalvage", hs).status_code in (403, 404)
+    assert _ledger(panel["id"]) == []
+    # The same manager on a board without a project: the grant itself works.
+    with SessionLocal() as db:
+        db.get(PanelPlan, panel["id"]).project_id = None
+        db.commit()
+    assert _book(client, token, panel["id"], "salvage", hs).status_code == 200
 
 
 # ── Taking a return back ─────────────────────────────────────────────────────
