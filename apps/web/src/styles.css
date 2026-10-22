@@ -12194,6 +12194,23 @@ li {
   text-align: center;
 }
 
+/* The list is cut off: say so under the last row, with the way to the rest. */
+.admin-audit-more {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px 14px;
+  padding: 14px 22px;
+  text-align: center;
+}
+
+.admin-audit-error {
+  color: #b91c1c;
+  font-family: "Source Sans 3", system-ui, sans-serif;
+  font-size: 13px;
+}
+
 /* ── Settings layout ───────────────────────────────────────────────── */
 .admin-page-layout--settings {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);

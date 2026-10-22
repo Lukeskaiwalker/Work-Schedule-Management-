@@ -1923,7 +1923,7 @@
   - Add audit-log time-period filtering with preset ranges and an optional custom from/to date range, applied client-side over the loaded audit rows.
 - Tradeoffs:
   - Pros: the audit UI is simpler to scan, supports realistic cross-category investigations, and makes recency-based review easier without another dedicated control.
-  - Cons: date filtering is limited to the currently loaded audit-log page (`/api/admin/audit-logs` still returns the latest 300 rows), so very old matching entries outside that window still require a backend pagination/filtering expansion later.
+  - Cons: date filtering is limited to the currently loaded audit-log page (`/api/admin/audit-logs` still returns the latest 300 rows), so very old matching entries outside that window still require a backend pagination/filtering expansion later. Resolved 2026-10-20: see "The audit log is filtered and paged by the server".
 
 ## 2026-03-20 - Safe updates should expose a maintenance landing page instead of transient proxy errors
 - Status: accepted
@@ -1935,3 +1935,15 @@
 - Tradeoffs:
   - Pros: users see a controlled status page during updates, update downtime becomes intentional and understandable, and the switching logic stays inside the existing safe-update path.
   - Cons: `safe_update.sh` now owns a little more orchestration logic and depends on one temporary env file plus an extra lightweight container during maintenance windows.
+
+## 2026-10-20 - The audit log is filtered and paged by the server
+- Status: accepted
+- Context: in production on 2026-10-20 the table held 2864 rows, 1292 of them in the last 90 days, while the Protokoll filtered only the newest 300 in the browser; "Letzte 90 Tage" reached back to 2026-10-05 and nothing said the list was cut off.
+- Decision:
+  - `GET /api/admin/audit-logs` takes `from`/`to` (ISO, inclusive; an offset is converted to UTC), repeatable `category`, `q` (action code or actor nickname/full name; "System" for rows without an actor), `limit` (default 300, max 2000) and a `before_id` keyset cursor, through the same `_audit_log_query_with_filters` helper as the CSV export, which now also takes `q`.
+  - The cursor is anchored on the cursor row's own `(created_at, id)`, the display order, not on `id < before_id`, so pages neither skip nor repeat rows when ids and timestamps disagree.
+  - The web (`useAuditLogFeed`) sends the tab's filters, asks for one row more than it shows, and when that row exists says the list is cut off and offers "Ältere anzeigen". Category options come from `GET /api/admin/audit-logs/categories` (distinct over the whole table).
+  - Periods are local days sent as UTC ISO bounds (`auditLogQuery.ts`), for the list and the CSV export alike; timestamps are shown in local time via `parseServerDateTime`.
+- Tradeoffs:
+  - Pros: every period and custom range is complete, a truncated list is visibly truncated, and no response envelope changed: without parameters the endpoint still answers the newest 300 rows as a plain list.
+  - Cons: each filter change is a request (search is debounced by 250 ms); the search matches the full name as well as the nickname, a superset of what the tab displays.

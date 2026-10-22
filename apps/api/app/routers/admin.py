@@ -8,7 +8,7 @@ import re
 import secrets
 import subprocess
 import tempfile
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from io import StringIO
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote
@@ -21,7 +21,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Upl
 from pydantic import BaseModel
 from fastapi.responses import Response, StreamingResponse
 from sqlalchemy.engine import make_url
-from sqlalchemy import delete, select, update
+from sqlalchemy import and_, delete, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -64,6 +64,7 @@ from app.schemas.api import (
 )
 from app.services import update_runner_client
 from app.services.audit import log_admin_action
+from app.services.search_matching import escape_like
 from app.routers.workflow_helpers import _content_disposition
 from app.services.emailer import send_email_detailed, send_email_message
 from app.services.project_import import import_projects_from_csv
@@ -2003,22 +2004,125 @@ def apply_template(
     return {"ok": True, "template": template, "role": user.role}
 
 
+# The Protokoll's page size. 300 stays the default so a caller that sends no
+# parameters gets exactly what it always got; the web asks for one row more
+# than it shows to learn whether older rows exist.
+AUDIT_LOG_PAGE_DEFAULT = 300
+AUDIT_LOG_PAGE_MAX = 2000
+AUDIT_LOG_QUERY_MAX_LENGTH = 200
+
+
+def _audit_log_out(log: AuditLog) -> dict:
+    return {
+        "id": log.id,
+        "actor_user_id": log.actor_user_id,
+        "category": log.category,
+        "action": log.action,
+        "target_type": log.target_type,
+        "target_id": log.target_id,
+        "details": log.details,
+        "created_at": log.created_at,
+    }
+
+
 @router.get("/audit-logs")
-def audit_logs(_: User = Depends(require_permission("audit:view")), db: Session = Depends(get_db)):
-    logs = list(db.scalars(select(AuditLog).order_by(AuditLog.created_at.desc()).limit(300)).all())
-    return [
-        {
-            "id": log.id,
-            "actor_user_id": log.actor_user_id,
-            "category": log.category,
-            "action": log.action,
-            "target_type": log.target_type,
-            "target_id": log.target_id,
-            "details": log.details,
-            "created_at": log.created_at,
-        }
-        for log in logs
-    ]
+def audit_logs(
+    from_: str | None = Query(default=None, alias="from"),
+    to: str | None = Query(default=None),
+    category: list[str] | None = Query(default=None),
+    q: str | None = Query(default=None, max_length=AUDIT_LOG_QUERY_MAX_LENGTH),
+    limit: int = Query(default=AUDIT_LOG_PAGE_DEFAULT, ge=1, le=AUDIT_LOG_PAGE_MAX),
+    before_id: int | None = Query(default=None, ge=1),
+    _: User = Depends(require_permission("audit:view")),
+    db: Session = Depends(get_db),
+):
+    """One page of the audit log, newest first, filtered by the server.
+
+    The Protokoll used to load the newest 300 rows and filter those in the
+    browser, so on 2026-10-20 "Letzte 90 Tage" reached back only to
+    2026-10-05. Every filter now runs here, over the whole table:
+
+        from, to    ISO datetimes, both inclusive; an offset ("…Z") is
+                    converted to UTC, a bare value is taken as UTC
+        category    repeatable; OR'd together
+        q           the action code or the actor's name (see _audit_text_filter)
+        limit       page size, default 300
+        before_id   keyset cursor: the rows after this one in display order
+    """
+    rows = _audit_log_query_with_filters(
+        db,
+        from_iso=from_,
+        to_iso=to,
+        categories=category,
+        query=q,
+        before_id=before_id,
+        limit=limit,
+    )
+    return [_audit_log_out(log) for log in rows]
+
+
+@router.get("/audit-logs/categories")
+def audit_log_categories(_: User = Depends(require_permission("audit:view")), db: Session = Depends(get_db)):
+    """Every category present in the table, for the Protokoll's category menu.
+
+    Taken from the whole table rather than from the loaded page, so a category
+    whose rows are all older than the newest page can still be chosen.
+    """
+    return list(db.scalars(select(AuditLog.category).distinct().order_by(AuditLog.category)).all())
+
+
+def _audit_bound(value: str | None, name: str) -> datetime | None:
+    """An ISO date bound as naive UTC, the way ``created_at`` is stored.
+
+    The web sends ``Date.toISOString()`` ("…Z"): a German midnight is 22:00 or
+    23:00 UTC the evening before, so an offset must be converted, not dropped.
+    A bound without an offset is taken as UTC, as it always was.
+    """
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid '{name}' date: {exc}") from exc
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(timezone.utc).replace(tzinfo=None)
+    return parsed
+
+
+def _audit_text_filter(query: str):
+    """The Protokoll's search box: the action code, or the actor's name.
+
+    The tab shows an actor by nickname when there is one, else by full name;
+    both are matched, so either finds the row. A row without an actor is
+    labelled "System" there, so a query that is part of that word finds those
+    too. LIKE wildcards in the box are literal text.
+    """
+    pattern = f"%{escape_like(query)}%"
+    actor_ids = select(User.id).where(
+        or_(User.full_name.ilike(pattern, escape="\\"), User.nickname.ilike(pattern, escape="\\"))
+    )
+    conditions = [AuditLog.action.ilike(pattern, escape="\\"), AuditLog.actor_user_id.in_(actor_ids)]
+    if query.lower() in "system":
+        conditions.append(AuditLog.actor_user_id.is_(None))
+    return or_(*conditions)
+
+
+def _audit_older_than(db: Session, before_id: int):
+    """The keyset after row ``before_id`` in display order (created_at DESC, id DESC).
+
+    Anchored on that row's own timestamp rather than on ``id < before_id``:
+    ids and timestamps need not grow together (two workers writing at once),
+    and a cursor that disagrees with the sort order skips some rows and repeats
+    others. If the anchor has been pruned meanwhile, ids are the best order
+    left.
+    """
+    anchor_at = db.scalar(select(AuditLog.created_at).where(AuditLog.id == before_id))
+    if anchor_at is None:
+        return AuditLog.id < before_id
+    return or_(
+        AuditLog.created_at < anchor_at,
+        and_(AuditLog.created_at == anchor_at, AuditLog.id < before_id),
+    )
 
 
 def _audit_log_query_with_filters(
@@ -2028,24 +2132,25 @@ def _audit_log_query_with_filters(
     to_iso: str | None,
     categories: list[str] | None,
     limit: int | None,
+    query: str | None = None,
+    before_id: int | None = None,
 ):
     """Shared query helper for audit-log list + CSV export. Filters mirror
-    the Audit tab's UI controls: ISO date range + multi-category."""
-    stmt = select(AuditLog).order_by(AuditLog.created_at.desc())
-    if from_iso:
-        try:
-            from_dt = datetime.fromisoformat(from_iso)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid 'from' date: {exc}") from exc
+    the Audit tab's UI controls: ISO date range, multi-category, search text."""
+    stmt = select(AuditLog).order_by(AuditLog.created_at.desc(), AuditLog.id.desc())
+    from_dt = _audit_bound(from_iso, "from")
+    if from_dt is not None:
         stmt = stmt.where(AuditLog.created_at >= from_dt)
-    if to_iso:
-        try:
-            to_dt = datetime.fromisoformat(to_iso)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid 'to' date: {exc}") from exc
+    to_dt = _audit_bound(to_iso, "to")
+    if to_dt is not None:
         stmt = stmt.where(AuditLog.created_at <= to_dt)
     if categories:
         stmt = stmt.where(AuditLog.category.in_(categories))
+    needle = (query or "").strip()
+    if needle:
+        stmt = stmt.where(_audit_text_filter(needle))
+    if before_id is not None:
+        stmt = stmt.where(_audit_older_than(db, before_id))
     if limit is not None:
         stmt = stmt.limit(limit)
     return list(db.scalars(stmt).all())
@@ -2056,6 +2161,7 @@ def export_audit_logs_csv(
     from_: str | None = Query(default=None, alias="from"),
     to: str | None = Query(default=None),
     category: list[str] | None = Query(default=None),
+    q: str | None = Query(default=None, max_length=AUDIT_LOG_QUERY_MAX_LENGTH),
     _: User = Depends(require_permission("audit:view")),
     db: Session = Depends(get_db),
 ):
@@ -2065,6 +2171,7 @@ def export_audit_logs_csv(
         from        ISO datetime (inclusive lower bound) — e.g. 2026-04-01
         to          ISO datetime (inclusive upper bound) — e.g. 2026-04-30T23:59:59
         category    repeatable; multiple categories OR'd together
+        q           the search box's text, matched as in the list
 
     No row cap on the export — operators downloading for compliance need
     the full slice. Streaming output keeps memory bounded for multi-million
@@ -2075,6 +2182,7 @@ def export_audit_logs_csv(
         from_iso=from_,
         to_iso=to,
         categories=category,
+        query=q,
         limit=None,
     )
 

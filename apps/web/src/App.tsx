@@ -68,7 +68,6 @@ import type {
   SmtpSettings,
   CompanySettings,
   EmployeeGroup,
-  AuditLogEntry,
   UpdateStatus,
   UpdateInstallResponse,
   UpdateProgress,
@@ -606,8 +605,6 @@ export function App() {
   const [backupExporting, setBackupExporting] = useState(false);
   const [employeeGroups, setEmployeeGroups] = useState<EmployeeGroup[]>([]);
   const [employeeGroupsLoading, setEmployeeGroupsLoading] = useState(false);
-  const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
-  const [auditLogsLoading, setAuditLogsLoading] = useState(false);
   const [rolePermissionsMeta, setRolePermissionsMeta] = useState<RolePermissionsMeta | null>(null);
   const [rolePermissionsLoading, setRolePermissionsLoading] = useState(false);
   const rolePermissionsMetaRef = useRef<RolePermissionsMeta | null>(null);
@@ -8825,26 +8822,8 @@ export function App() {
     }
   };
 
-  const loadAuditLogs = async () => {
-    if (!token || !canViewAudit) return;
-    setAuditLogsLoading(true);
-    try {
-      const res = await fetch("/api/admin/audit-logs", {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (res.ok) {
-        const data = await res.json();
-        setAuditLogs(data);
-      }
-    } catch {
-      // silently ignore
-    } finally {
-      setAuditLogsLoading(false);
-    }
-  };
-
   /** Download the full filtered audit log as CSV. Mirrors the in-page
-   *  filters: ISO date range + selected categories. We POST through fetch
+   *  filters: ISO date range, selected categories, search text. We POST through fetch
    *  so we can attach the auth bearer header — a plain `<a href>` would
    *  hit the endpoint without auth. The blob is then handed to a synthetic
    *  anchor for the actual save-as dialog. */
@@ -8852,6 +8831,7 @@ export function App() {
     fromIso?: string | null;
     toIso?: string | null;
     categories?: string[];
+    query?: string;
   }) => {
     if (!token || !canViewAudit) return;
     const params = new URLSearchParams();
@@ -8860,6 +8840,7 @@ export function App() {
     for (const c of options?.categories ?? []) {
       params.append("category", c);
     }
+    if (options?.query) params.set("q", options.query);
     const qs = params.toString();
     try {
       const res = await fetch(
@@ -10111,13 +10092,10 @@ export function App() {
     employeeGroups,
     setEmployeeGroups,
     employeeGroupsLoading,
-    auditLogs,
-    auditLogsLoading,
     loadEmployeeGroups,
     createEmployeeGroup,
     updateEmployeeGroup,
     deleteEmployeeGroup,
-    loadAuditLogs,
     exportAuditLogsCsv,
     rolePermissionsMeta,
     rolePermissionsLoading,
