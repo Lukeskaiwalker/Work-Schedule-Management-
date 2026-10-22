@@ -117,6 +117,7 @@ Construction report processing/runtime knobs:
 - `REPORT_JOB_MAX_ATTEMPTS` (default `3`)
 - `REPORT_WORKER_POLL_SECONDS` (default `1.0`)
 - `API_WORKERS` (default `2`) for concurrent API request handling
+- `DB_POOL_SIZE` / `DB_MAX_OVERFLOW` (default `10` / `20`, per process) size the PostgreSQL pool. `API_WORKERS × (DB_POOL_SIZE + DB_MAX_OVERFLOW + 1)` plus `DB_RESERVED_CONNECTIONS` (default `20`: the api_worker container's pool, psql, pg_dump, alembic) must stay within `DB_MAX_CONNECTIONS` (default `100`, Postgres's own default). Each api worker logs a `[db]` line at startup saying whether it does; adding workers means shrinking the pool. See `apps/api/app/core/db_pool.py`.
 
 ## One-command validation
 - `./scripts/test.sh`

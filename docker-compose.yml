@@ -15,6 +15,11 @@ services:
     image: postgres:16-alpine
     restart: unless-stopped
     logging: *default-logging
+    # max_connections stays at the postgres default of 100, and the app is
+    # sized to fit under it (DB_POOL_SIZE / DB_MAX_OVERFLOW per process, one
+    # shared LISTEN per api worker; tests/test_db_pool_budget.py holds this
+    # file to it). Raising it here would not reach production on its own:
+    # scripts/staged_deploy.sh recreates api, api_worker and web, never db.
     environment:
       POSTGRES_DB: smpl
       POSTGRES_USER: smpl
@@ -133,6 +138,12 @@ services:
     mem_limit: 2000m
     memswap_limit: 2000m
     command: ["python", "-m", "app.worker"]
+    # The worker runs one job at a time and needs a connection or two, not
+    # the api's pool. Wins over the env_file layers below, so an api pool
+    # tuned in apps/api/.env does not multiply here.
+    environment:
+      DB_POOL_SIZE: "2"
+      DB_MAX_OVERFLOW: "3"
     # See env_file layering rationale on the api service above. Worker shares
     # the same env layout because it runs the same Python app code paths.
     env_file:

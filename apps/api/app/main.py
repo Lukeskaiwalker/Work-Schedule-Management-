@@ -14,6 +14,7 @@ from sqlalchemy import select
 
 from app.core.config import get_settings
 from app.core.db import SessionLocal
+from app.core.db_pool import api_connection_ceiling, connection_budget_problem
 from app.core.log_redaction import install_access_log_redaction
 from app.core.permissions import ROLE_ADMIN
 from app.core.security import MFA_CHALLENGE_PURPOSE, decode_token, get_password_hash, verify_password
@@ -181,12 +182,40 @@ def _log_release_metadata_on_startup() -> None:
     )
 
 
+def _log_connection_budget_on_startup() -> None:
+    """One `[db]` line per api worker: the pool in effect and whether the
+    workers together still fit under Postgres's max_connections.
+
+    Logged, not enforced: an over-budget pool still serves every ordinary
+    day, and refusing to boot over it would turn an .env edit into an outage.
+    The committed defaults are held to the budget by tests/test_db_pool_budget.py.
+    """
+    if settings.database_url.startswith("sqlite"):
+        return
+    ceiling = api_connection_ceiling(
+        workers=settings.api_workers,
+        pool_size=settings.db_pool_size,
+        max_overflow=settings.db_max_overflow,
+    )
+    print(
+        f"[db] pool_size={settings.db_pool_size} max_overflow={settings.db_max_overflow} "
+        f"pool_timeout={settings.db_pool_timeout_seconds}s api_workers={settings.api_workers} "
+        f"api_ceiling={ceiling} reserved={settings.db_reserved_connections} "
+        f"max_connections={settings.db_max_connections}",
+        flush=True,
+    )
+    problem = connection_budget_problem(settings)
+    if problem:
+        print(f"[db] WARNING {problem}", flush=True)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     _initialize_runtime_data()
     _load_role_permissions()
     _load_user_permissions()
     _log_release_metadata_on_startup()
+    _log_connection_budget_on_startup()
     image_task = asyncio.create_task(_image_loop())
     try:
         yield

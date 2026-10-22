@@ -5,15 +5,16 @@ Notify side: synchronous, runs inside existing SQLAlchemy transactions.
   pg_notify fires when the surrounding transaction commits.
   If the transaction rolls back, the notification is silently cancelled.
 
-Listen side: async, one asyncpg connection per connected SSE client.
-  Filters events by the user's project memberships and thread visibility.
+Listen side: async, one asyncpg LISTEN connection per api process, shared
+  by every SSE client that process serves (ListenerHub). Filters events by
+  the user's project memberships and thread visibility.
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 
 import asyncpg
 from sqlalchemy import text
@@ -65,48 +66,135 @@ def _to_asyncpg_dsn(sqlalchemy_url: str) -> str:
     return url
 
 
+# Put on a stream's queue when the shared connection is gone: the stream ends,
+# and the browser's reconnect refetches the view it was showing.
+_CONNECTION_LOST = object()
+_HEARTBEAT_SECONDS = 25.0
+
+
+class _Subscription:
+    __slots__ = ("user_id", "queue")
+
+    def __init__(self, user_id: int, queue_size: int) -> None:
+        self.user_id = user_id
+        self.queue: asyncio.Queue[object] = asyncio.Queue(maxsize=queue_size)
+
+
+def _put_dropping_oldest(queue: asyncio.Queue[object], item: object) -> None:
+    try:
+        queue.put_nowait(item)
+    except asyncio.QueueFull:
+        queue.get_nowait()
+        queue.put_nowait(item)
+
+
+class ListenerHub:
+    """One LISTEN connection per process, fanned out to every open stream.
+
+    Each stream used to open its own asyncpg connection, outside the
+    SQLAlchemy pool and outside any limit, so the api's share of Postgres's
+    max_connections grew with every open tab, phone and kiosk. Sharing one
+    makes the event stream cost exactly one connection per api worker (see
+    app/core/db_pool.py). It is opened by the first stream and kept for the
+    life of the process; when it is lost, every stream on it ends and the
+    next stream opens a new one.
+    """
+
+    def __init__(
+        self,
+        connect: Callable[[str], Awaitable[asyncpg.Connection]] = asyncpg.connect,
+        *,
+        queue_size: int = 256,
+    ) -> None:
+        self._connect = connect
+        self._queue_size = queue_size
+        self._connection: asyncpg.Connection | None = None
+        self._subscriptions: set[_Subscription] = set()
+        self._lock = asyncio.Lock()
+
+    @property
+    def subscriber_count(self) -> int:
+        return len(self._subscriptions)
+
+    async def subscribe(self, dsn: str, user_id: int) -> _Subscription:
+        async with self._lock:
+            if self._connection is not None and self._connection.is_closed():
+                # Closed, and asyncpg has not called back yet: end the streams
+                # that were on it now, so none outlives its connection.
+                self._on_terminated(self._connection)
+            if self._connection is None:
+                self._connection = await self._open(dsn)
+            subscription = _Subscription(user_id, self._queue_size)
+            self._subscriptions.add(subscription)
+            return subscription
+
+    def unsubscribe(self, subscription: _Subscription) -> None:
+        # Synchronous on purpose: it runs in a stream's finally, where a
+        # cancelled task cannot be relied on to complete an await.
+        self._subscriptions.discard(subscription)
+
+    async def _open(self, dsn: str) -> asyncpg.Connection:
+        connection = await self._connect(dsn)
+        try:
+            connection.add_termination_listener(self._on_terminated)
+            await connection.add_listener(_CHANNEL, self._on_notify)
+        except BaseException:
+            connection.terminate()
+            raise
+        return connection
+
+    def _on_notify(self, connection: asyncpg.Connection, pid: int, channel: str, payload: str) -> None:
+        del connection, pid, channel
+        for subscription in tuple(self._subscriptions):
+            try:
+                subscription.queue.put_nowait(payload)
+            except asyncio.QueueFull:
+                logger.warning("SSE queue full for user %d; dropping event", subscription.user_id)
+
+    def _on_terminated(self, connection: asyncpg.Connection) -> None:
+        if connection is not self._connection:
+            return  # an older connection, already replaced
+        self._connection = None
+        lost, self._subscriptions = self._subscriptions, set()
+        for subscription in lost:
+            _put_dropping_oldest(subscription.queue, _CONNECTION_LOST)
+        logger.warning("SSE listener connection lost; ending %d stream(s) so they reconnect", len(lost))
+
+
+_hub = ListenerHub()
+
+
 async def listen_for_events(
     database_url: str,
     user_id: int,
     project_ids: set[int],
     thread_ids: set[int],
     is_admin: bool,
+    *,
+    hub: ListenerHub | None = None,
 ) -> AsyncGenerator[str, None]:
     """
     Listen on PostgreSQL NOTIFY and yield SSE formatted chunks.
 
-    One asyncpg connection is opened per connected SSE client.
+    Rides on the process's shared LISTEN connection (ListenerHub).
     A heartbeat comment is emitted every 25 seconds.
     """
-    dsn = _to_asyncpg_dsn(database_url)
-    queue: asyncio.Queue[str] = asyncio.Queue(maxsize=256)
-
-    def _on_notify(
-        connection: asyncpg.Connection,
-        pid: int,
-        channel: str,
-        payload: str,
-    ) -> None:
-        del connection, pid, channel
-        try:
-            queue.put_nowait(payload)
-        except asyncio.QueueFull:
-            logger.warning("SSE queue full for user %d; dropping event", user_id)
-
-    conn = await asyncpg.connect(dsn)
-    await conn.add_listener(_CHANNEL, _on_notify)
-
+    hub = hub or _hub
+    subscription = await hub.subscribe(_to_asyncpg_dsn(database_url), user_id)
     try:
         # Handshake event for the client.
         yield json.dumps({"type": "connected"})
 
         while True:
             try:
-                raw = await asyncio.wait_for(queue.get(), timeout=25.0)
+                raw = await asyncio.wait_for(subscription.queue.get(), timeout=_HEARTBEAT_SECONDS)
             except asyncio.TimeoutError:
                 # App-level heartbeat payload (EventSourceResponse also emits ping comments).
                 yield json.dumps({"type": "heartbeat"})
                 continue
+
+            if raw is _CONNECTION_LOST:
+                return
 
             try:
                 event = json.loads(raw)
@@ -121,11 +209,7 @@ async def listen_for_events(
                 yield raw
 
     finally:
-        try:
-            await conn.remove_listener(_CHANNEL, _on_notify)
-            await conn.close()
-        except Exception:
-            logger.exception("Error closing SSE listener for user %d", user_id)
+        hub.unsubscribe(subscription)
 
 
 def _should_deliver(
