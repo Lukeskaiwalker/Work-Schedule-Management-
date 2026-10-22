@@ -29,10 +29,9 @@ from app.routers import workflow_werkstatt_inventory
 from app.routers import workflow_werkstatt_on_site
 from app.routers import admin, api_tokens, auth, calendar_feed, events, portal, portal_documents, portal_hours, station_badge, time_tracking, workflow, workflow_notifications, workflow_schaltplan, workflow_schaltplan_material, workflow_task_packing_list, workflow_training_reports
 from app.services.material_catalog import sync_pending_material_catalog_images
+from app.services.permission_store import load_permissions_from_db
 from app.services.runtime_settings import (
     is_initial_admin_bootstrap_completed,
-    load_role_permissions_from_db,
-    load_user_permissions_from_db,
     mark_initial_admin_bootstrap_completed,
 )
 
@@ -114,23 +113,15 @@ def _initialize_runtime_data() -> None:
         ) from exc
 
 
-def _load_role_permissions() -> None:
-    """Load any custom role-permission overrides from the DB into the in-process
-    cache so that has_permission() uses them on the very first request."""
+def _load_permissions() -> None:
+    """Load the role and per-user permission overrides into this process's
+    copy. Not the only load: every request's auth checks the stored revision
+    and reloads when another process saved since (app.services.permission_store)."""
     try:
         with SessionLocal() as db:
-            load_role_permissions_from_db(db)
+            load_permissions_from_db(db)
     except (OperationalError, ProgrammingError):
         pass  # DB not yet migrated — silently fall back to hard-coded defaults
-
-
-def _load_user_permissions() -> None:
-    """Load per-user permission overrides from the DB into the in-process cache."""
-    try:
-        with SessionLocal() as db:
-            load_user_permissions_from_db(db)
-    except (OperationalError, ProgrammingError):
-        pass  # DB not yet migrated — silently start with empty user overrides
 
 
 def _log_release_metadata_on_startup() -> None:
@@ -212,8 +203,7 @@ def _log_connection_budget_on_startup() -> None:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     _initialize_runtime_data()
-    _load_role_permissions()
-    _load_user_permissions()
+    _load_permissions()
     _log_release_metadata_on_startup()
     _log_connection_budget_on_startup()
     image_task = asyncio.create_task(_image_loop())

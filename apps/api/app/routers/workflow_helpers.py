@@ -41,6 +41,7 @@ from app.services.task_materials import (
     remove_box_from_task,
 )
 from app.services.activity_messages import display_activity_message
+from app.services.permission_store import refresh_permissions_if_changed
 from app.services.project_status import is_won_project_status
 from app.models.entities import (
     Attachment,
@@ -1348,6 +1349,7 @@ def _webdav_authenticate(credentials: HTTPBasicCredentials | None, db: Session, 
     # partner learns nothing from trying. Not counted: the password was right.
     if is_external_role(user.role):
         raise HTTPException(status_code=401, detail="Invalid WebDAV credentials", headers=auth_header)
+    refresh_permissions_if_changed(db)
     return user
 
 

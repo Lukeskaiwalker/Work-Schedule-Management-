@@ -40,12 +40,15 @@ pyotp==2.9.0
 qrcode==7.4.2
 reportlab==4.2.5
 openpyxl==3.1.5
-# 13.0.0: 24 advisories against 12.3.0 (JPEG decoder overflow, stale native
-# storage after mode transitions, TIFF/PDF/WMF parser bugs, several
-# decompression-bomb bypasses), all fixed only in 13.0.0. Needs Python >= 3.11.
+# Pillow 13.0.0 (2026-10-22): pip-audit flagged 24 advisories against 12.3.0,
+# all fixed only in 13.0.0 -- two critical JPEG decoder overflows, stale native
+# storage after mode transitions, TIFF/PDF/WMF out-of-bounds reads and several
+# decompression-bomb bypasses, all reachable through uploaded images. 13 needs
+# Python >= 3.11 (the image is 3.12).
 Pillow==13.0.0
-# 1.8.1 carries libheif 1.23.6 and has no Pillow ceiling; 1.9.0 will require
-# Pillow 13 outright. tools/label_agent pins its own Pillow -- keep them level.
+# 1.8.1 carries libheif 1.23.6 and supports Pillow 11-13 (no ceiling); 1.9.0
+# will require Pillow 13 outright. tools/label_agent pins its own Pillow --
+# keep them level.
 pillow-heif==1.8.1
 
 # v2.4.0: OpenAI Structured Outputs for line-item extraction.
