@@ -13,22 +13,30 @@ denial-of-service ceiling, not as a modelling opinion. 120 rather than 60
 because a board in a cabinet gets one row per used DIN rail, and a full
 five-field 1400 mm cabinet has about 45 of them (docs/PANEL_ENCLOSURE.md D15).
 
-Two keys belong to the cabinet layer (docs/PANEL_ENCLOSURE.md) and are passed
-through untouched here: ``document.enclosure`` and ``device.supplied_by``.
-They ship one release before the feature that writes them, so that rolling
-the feature back is an image swap — an image that dropped unknown keys would
-strip the cabinet from every board on its next autosave. Only their size is
-bounded until the feature release types them.
+Two keys belong to the cabinet layer (docs/PANEL_ENCLOSURE.md):
+``document.enclosure`` and ``device.supplied_by``, typed in
+``schemas/panel_enclosure.py``. The release before the feature passed them
+through opaque and size-capped, so that rolling the feature back is an image
+swap; the types here accept nothing that release refused (the 64 KB ceiling
+on the block stays), so a board the feature saved still saves after such a
+rollback.
 """
 
 from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.schemas.panel_enclosure import (
+    CatalogEntryOut,
+    DeviceSuppliedBy,
+    EnclosureCatalogOut,
+    PanelEnclosure,
+    UncataloguedArticleOut,
+)
 from app.services.schaltplan_layout import DEVICE_KINDS, PANEL_STATUSES, PANEL_TYPES, SUPPLY_SYSTEMS
 
 PanelType = Literal["main", "sub", "meter"]
@@ -41,10 +49,9 @@ PhaseLabel = Literal["L1", "L2", "L3", "L1-L3", "L1/N", "N", "-"]
 MAX_ROWS = 120
 MAX_TERMINAL_OVERRIDES = 2000
 MAX_DEVICES_PER_ROW = 96
-# Pass-through ceilings for the cabinet keys (see the module docstring).
+# Ceiling of the cabinet block as stored (compact UTF-8 JSON). Kept from the
+# release before the feature, which refuses anything larger (module docstring).
 MAX_ENCLOSURE_JSON_BYTES = 64 * 1024
-MAX_SUPPLIED_BY_KEYS = 4
-MAX_SUPPLIED_BY_TEXT = 64
 
 
 class PanelSupply(BaseModel):
@@ -88,26 +95,15 @@ class PanelDevice(BaseModel):
     # Real mounted width in mm, when it is not `te` × the module pitch. The
     # BMK strip is cut to this, so a 70 mm Hager FI must not be labelled 72.
     width_mm: float | None = Field(default=None, gt=0, le=600)
-    # {"module": <module id>, "part": <fitting key>} — this device came
-    # pre-fitted in a cabinet module. Kept as written; see the module docstring.
-    supplied_by: dict[str, str] | None = None
+    # This device came pre-fitted in a cabinet module (docs/PANEL_ENCLOSURE.md
+    # §2.1): which module instance, which of its fittings.
+    supplied_by: DeviceSuppliedBy | None = None
 
     @field_validator("kind")
     @classmethod
     def _known_kind(cls, value: str) -> str:
         if value not in DEVICE_KINDS:
             raise ValueError(f"Unbekannter Gerätetyp: {value}")
-        return value
-
-    @field_validator("supplied_by")
-    @classmethod
-    def _small_supplied_by(cls, value: dict[str, str] | None) -> dict[str, str] | None:
-        if value is None:
-            return None
-        if len(value) > MAX_SUPPLIED_BY_KEYS:
-            raise ValueError("Herkunftsangabe des Geräts zu groß")
-        if any(len(text) > MAX_SUPPLIED_BY_TEXT for pair in value.items() for text in pair):
-            raise ValueError("Herkunftsangabe des Geräts zu lang")
         return value
 
 
@@ -127,8 +123,8 @@ class PanelDocument(BaseModel):
     # is "print nothing here"; a missing key is the derived default.
     terminal_labels: dict[str, str] = Field(default_factory=dict)
     # The cabinet the rows are mounted in (docs/PANEL_ENCLOSURE.md §2); null =
-    # rails only. Opaque here, kept as written; see the module docstring.
-    enclosure: dict[str, Any] | None = None
+    # rails only.
+    enclosure: PanelEnclosure | None = None
 
     @field_validator("terminal_labels")
     @classmethod
@@ -139,11 +135,14 @@ class PanelDocument(BaseModel):
 
     @field_validator("enclosure")
     @classmethod
-    def _bounded_enclosure(cls, value: dict[str, Any] | None) -> dict[str, Any] | None:
-        # Counted the way it is stored: compact JSON, UTF-8 bytes.
+    def _bounded_enclosure(cls, value: PanelEnclosure | None) -> PanelEnclosure | None:
+        # Measured as it will be stored — compact UTF-8 JSON, defaults filled
+        # in — because that is what an older image gets sent back after a
+        # rollback. Unknown keys inside the block are kept, and this bounds them.
         if value is None:
             return None
-        size = len(json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+        stored = value.model_dump()
+        size = len(json.dumps(stored, separators=(",", ":"), ensure_ascii=False, default=str).encode("utf-8"))
         if size > MAX_ENCLOSURE_JSON_BYTES:
             raise ValueError("Schrankdaten zu groß (max. 64 KB)")
         return value
@@ -225,6 +224,9 @@ class PanelFinding(BaseModel):
     level: str
     scope: str
     message: str
+    # "encl.overlap", "vde.nar_sls", … for the cabinet findings
+    # (docs/PANEL_ENCLOSURE.md §5); "" for every finding that predates them.
+    rule: str = ""
 
 
 class PanelPlanSummary(BaseModel):
@@ -392,7 +394,9 @@ class PanelLabelsPrintOut(BaseModel):
 # (services/schaltplan_material.py); scanned quantities are sums over the
 # Werkstatt ledger.
 
-PanelMaterialLineKind = Literal["device", "terminal", "manual", "extra"]
+# "enclosure": the cabinet, its modules and accessories; "removed": a fitting
+# taken out of a module, on its way back to the shelf (docs/PANEL_ENCLOSURE.md §6).
+PanelMaterialLineKind = Literal["device", "terminal", "manual", "extra", "enclosure", "removed"]
 PanelMaterialLineStatus = Literal["open", "done", "over", "unplanned"]
 PanelMaterialArticleSource = Literal["mapping", "auto", "manual"]
 
@@ -521,6 +525,9 @@ class PanelMaterialOut(BaseModel):
     planned_total: int = 0
     scanned_total: int = 0
     open_lines: int = 0
+    # Pieces of "removed" lines not yet booked back into stock. Returns are
+    # not picks, so they stay out of the three totals above.
+    returns_open: int = 0
     last_scanned_at: datetime | None = None
     # The Arbeitszeit block under the parts. Kept OUT of ``lines`` on purpose:
     # the totals above count pieces, and an hours row among them would quietly
@@ -537,6 +544,7 @@ class PanelMaterialSummaryOut(BaseModel):
     planned_total: int = 0
     scanned_total: int = 0
     open_lines: int = 0
+    returns_open: int = 0
     last_scanned_at: datetime | None = None
 
 
@@ -554,3 +562,10 @@ class PanelMaterialMappingRequest(BaseModel):
 class PanelMaterialMappingOut(BaseModel):
     key: str
     article: PanelMaterialArticleOut | None = None
+
+
+# The catalogue answer names PanelMaterialArticleOut, but schemas.panel_enclosure
+# is imported above for the document parts, so its models are completed here
+# once the article shape exists (the schemas.project/customer idiom).
+for _model in (CatalogEntryOut, UncataloguedArticleOut, EnclosureCatalogOut):
+    _model.model_rebuild(_types_namespace={"PanelMaterialArticleOut": PanelMaterialArticleOut})

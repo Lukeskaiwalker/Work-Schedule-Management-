@@ -9,10 +9,17 @@ same access rules — reading follows the plan's visibility, writing needs
 The Regal station's own endpoints live in ``workflow_station_werkstatt``;
 both call the same ``services/schaltplan_material`` functions, so a scan at
 the wall and a "+1" in the browser write the identical ledger row.
+
+Returns are the exception to ``reports:create``: booking a part taken out of
+a cabinet module back onto the shelf ("Ins Lager", the ``salvage`` ledger
+type) raises stock without an earlier decrement, so it — and saying which
+article a removed line means — needs ``werkstatt:manage``, the grant
+``inventory_plus`` needs (docs/PANEL_ENCLOSURE.md D6, D11, §15).
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -23,7 +30,7 @@ from app.core.db import get_db
 from app.core.deps import assert_project_access, get_current_user, require_permission
 from app.core.permissions import has_permission_for_user
 from app.core.time import to_naive_utc
-from app.models.entities import User, WerkstattArticle
+from app.models.entities import User, WerkstattArticle, WerkstattMovement
 from app.models.schaltplan import PanelMaterialManualLine, PanelPlan, PanelWorkSession
 from app.routers.workflow_helpers import _content_disposition
 from app.routers.workflow_schaltplan import _assert_readable, _get_plan_or_404, _load_names, _summary
@@ -38,10 +45,12 @@ from app.schemas.schaltplan import (
     PanelPlanSummary,
     PanelWorkSessionEndRequest,
 )
+from app.services import panel_enclosure_material as enclosure_material
 from app.services import panel_work
 from app.services import schaltplan_material as material
 from app.services.runtime_settings import get_company_settings
 from app.services.schaltplan_material_pdf import build_material_pdf
+from app.services.werkstatt_movements import load_article_for_update
 
 router = APIRouter(prefix="/schaltplan", tags=["schaltplan"])
 
@@ -49,6 +58,11 @@ RECENT_LIMIT_MAX = 25
 #: Lines added by hand per board. A real list stays far below (a board's whole
 #: Materialliste is rarely 50 lines); the cap stops a runaway client.
 MAX_MANUAL_LINES = 200
+#: Line keys a mapping may name: the derived planned lines. ``article:`` (an
+#: unplanned booking) and ``salvage:`` (an orphaned return) name an article
+#: already and are refused.
+MAPPABLE_PREFIXES = ("device:", "part:", "enclosure:", "module:", "accessory:")
+RETURN_PREFIX = "removed:"
 
 
 def _visible_plans(db: Session, current_user: User, plans: list[PanelPlan]) -> list[PanelPlan]:
@@ -154,6 +168,50 @@ def unbook_material(
             user_id=current_user.id,
             notes=material.booking_note(plan, "Storno"),
         )
+    except material.MaterialError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    db.commit()
+    return material.panel_material(db, plan)
+
+
+# ── Returns: parts taken out of a cabinet module (docs/PANEL_ENCLOSURE.md §6) ──
+
+
+@router.post("/panels/{plan_id}/material/salvage", response_model=PanelMaterialOut)
+def salvage_material(
+    plan_id: int,
+    payload: PanelMaterialBookRequest,
+    current_user: User = Depends(require_permission("werkstatt:manage")),
+    db: Session = Depends(get_db),
+) -> PanelMaterialOut:
+    """Book a part taken out of a module back into stock — "Ins Lager"."""
+    return _book_return(db, current_user, plan_id, payload, enclosure_material.book_salvage)
+
+
+@router.post("/panels/{plan_id}/material/unsalvage", response_model=PanelMaterialOut)
+def unsalvage_material(
+    plan_id: int,
+    payload: PanelMaterialBookRequest,
+    current_user: User = Depends(require_permission("werkstatt:manage")),
+    db: Session = Depends(get_db),
+) -> PanelMaterialOut:
+    """Take a return back — bounded by the board's returns and by the shelf."""
+    return _book_return(db, current_user, plan_id, payload, enclosure_material.undo_salvage)
+
+
+def _book_return(
+    db: Session, user: User, plan_id: int, payload: PanelMaterialBookRequest, book: Callable[..., WerkstattMovement]
+) -> PanelMaterialOut:
+    plan = _get_plan_or_404(db, plan_id)
+    _assert_readable(db, user, plan)
+    # Locked: the shelf bound of a take-back reads the very counter a booking
+    # elsewhere may be changing (werkstatt_movements.load_article_for_update).
+    article = load_article_for_update(db, payload.article_id)
+    if article is None:
+        raise HTTPException(status_code=404, detail="Artikel nicht gefunden")
+    try:
+        book(db, plan=plan, article=article, quantity=payload.quantity, user_id=user.id)
     except material.MaterialError as exc:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -273,12 +331,20 @@ def set_material_mapping(
     """Tell every board which stock article a planned line means.
 
     Global by design (see ``models.schaltplan.PanelMaterialArticle``);
-    ``article_id: null`` forgets it, after which a WAGO part falls back to
-    the automatic match and anything else shows the assign control again.
+    ``article_id: null`` forgets it, after which a WAGO part or a cabinet
+    line falls back to the automatic match and anything else shows the
+    assign control again. A removed line's article is what a return books
+    into stock, so only the Werkstatt says (or forgets) which one it is.
     """
     key = payload.key.strip()
-    if not (key.startswith("device:") or key.startswith("part:")):
-        raise HTTPException(status_code=400, detail="Nur geplante Positionen (device:… / part:…) können zugeordnet werden.")
+    if key.startswith(RETURN_PREFIX):
+        if not has_permission_for_user(current_user.id, current_user.role, "werkstatt:manage"):
+            raise HTTPException(status_code=403, detail="Rückläufe ordnet die Werkstatt zu.")
+    elif not key.startswith(MAPPABLE_PREFIXES):
+        raise HTTPException(
+            status_code=400,
+            detail="Nur geplante Positionen (Gerät, Klemme, Schrank, Modul, Zubehör, Rücklauf) können zugeordnet werden.",
+        )
     article = _article_or_404(db, payload.article_id) if payload.article_id is not None else None
     if article is not None and bool(article.is_archived):
         raise HTTPException(status_code=400, detail="Artikel ist archiviert.")

@@ -6,6 +6,8 @@
  * domain is self-contained.
  */
 
+import type { DeviceSuppliedBy, PanelEnclosure } from "./panelEnclosure";
+
 export type PanelType = "main" | "sub" | "meter";
 export type PanelStatus = "draft" | "final";
 export type SupplySystem = "TN-S" | "TN-C-S" | "TT" | "IT";
@@ -95,6 +97,12 @@ export interface PanelDevice {
    */
   terminal_block: boolean;
   note: string;
+  /**
+   * Pre-fitted in a cabinet module (docs/PANEL_ENCLOSURE.md §2.1): which
+   * module instance, which of its fittings. Absent or null on every device
+   * that came from the palette, and on every board without a cabinet.
+   */
+  supplied_by?: DeviceSuppliedBy | null;
 }
 
 export interface PanelRow {
@@ -125,6 +133,12 @@ export interface PanelDocument {
    * value means "no text". Absent on every document written before 2026-09-23.
    */
   terminal_labels?: Record<string, string>;
+  /**
+   * The cabinet the rows are mounted in (docs/PANEL_ENCLOSURE.md §2); null or
+   * absent = rails only. With one, `rows` follows the electrical reading
+   * order of the cabinet (`utils/enclosureLayout.ts`).
+   */
+  enclosure?: PanelEnclosure | null;
 }
 
 export interface PanelLegendRow {
@@ -149,6 +163,8 @@ export interface PanelFinding {
   level: string;
   scope: string;
   message: string;
+  /** "encl.overlap", "vde.nar_sls", … for the cabinet findings; "" or absent for every older one. */
+  rule?: string;
 }
 
 export interface PanelPlanSummary {
@@ -225,7 +241,9 @@ export interface PanelGroup {
 
 // "manual": added by hand on this board (owner, 2026-10-09) — a shelf article
 // or a free text, between the derived lines and the extras.
-export type PanelMaterialLineKind = "device" | "terminal" | "manual" | "extra";
+// "enclosure": the cabinet, its modules and accessories; "removed": a fitting
+// taken out of a module, on its way back to the shelf (docs/PANEL_ENCLOSURE.md §6).
+export type PanelMaterialLineKind = "device" | "terminal" | "manual" | "extra" | "enclosure" | "removed";
 export type PanelMaterialLineStatus = "open" | "done" | "over" | "unplanned";
 export type PanelMaterialArticleSource = "mapping" | "auto" | "manual";
 
@@ -309,6 +327,8 @@ export interface PanelMaterial {
   planned_total: number;
   scanned_total: number;
   open_lines: number;
+  /** Pieces of "removed" lines not yet booked back into stock — returns are not picks, so not in the totals above. */
+  returns_open?: number;
   last_scanned_at: string | null;
   /** The hours beside the parts — never among `lines`, whose totals count pieces. */
   labour?: PanelLabourLine[];
@@ -322,6 +342,7 @@ export interface PanelMaterialSummary {
   planned_total: number;
   scanned_total: number;
   open_lines: number;
+  returns_open?: number;
   last_scanned_at: string | null;
 }
 

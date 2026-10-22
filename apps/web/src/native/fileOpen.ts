@@ -57,6 +57,17 @@ export type OpenFileRequest = {
 
 type OpenHandler = (request: OpenFileRequest) => void;
 
+/**
+ * Marks an API link whose own click handler opens it (through
+ * `openServerFile`) once something else has happened first — the
+ * Verteilerplan PDFs wait for the editor's autosave. The interceptor below
+ * runs in the capture phase, ahead of that handler, and would otherwise open
+ * the file at once: the PDF of the board as it was before the last edit.
+ * Spread onto the anchor: `<a {...OWN_OPENER_PROPS} onClick={…}>`.
+ */
+export const OWN_OPENER_ATTR = "data-own-opener";
+export const OWN_OPENER_PROPS: Readonly<Record<typeof OWN_OPENER_ATTR, string>> = { [OWN_OPENER_ATTR]: "" };
+
 let handler: OpenHandler | null = null;
 let installed = false;
 
@@ -130,6 +141,7 @@ export function installNativeFileOpener(): void {
       }
       const anchor = (event.target as Element | null)?.closest?.("a");
       if (!anchor) return;
+      if (anchor.hasAttribute(OWN_OPENER_ATTR)) return;
 
       const href = anchor.getAttribute("href");
       if (!href) return;

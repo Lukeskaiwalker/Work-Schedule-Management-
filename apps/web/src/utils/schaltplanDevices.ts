@@ -161,19 +161,34 @@ export function makeDevice(kind: DeviceKind, overrides: Partial<PanelDevice> = {
   };
 }
 
-export function emptyDocument(): PanelDocument {
-  return {
-    version: 1,
-    supply: {
-      system: "TN-S",
-      voltage: "400/230 V",
-      incoming: "",
-      fuse: "",
-      meter_number: "",
-      note: "",
-    },
-    rows: [{ id: newId("row"), label: "Reihe 1", slots: 12, devices: [] }],
+/**
+ * A new board. With a cabinet it starts without rows: rail rows are created
+ * lazily as the cabinet's rails get devices (docs/PANEL_ENCLOSURE.md D15),
+ * and a "Reihe 1" outside the cabinet would only be a finding to clear.
+ */
+export function emptyDocument(options: { enclosureCode?: string | null } = {}): PanelDocument {
+  const supply = {
+    system: "TN-S" as const,
+    voltage: "400/230 V",
+    incoming: "",
+    fuse: "",
+    meter_number: "",
+    note: "",
   };
+  const code = (options.enclosureCode ?? "").trim().toUpperCase();
+  if (code) return { version: 1, supply, rows: [], enclosure: { code, modules: [] } };
+  return { version: 1, supply, rows: [{ id: newId("row"), label: "Reihe 1", slots: 12, devices: [] }] };
+}
+
+/**
+ * The palette/inspector name of a kind on this board. On a board with a
+ * cabinet a `meter` on a DIN rail is a Zwischenzähler: the eHZ / 3-Punkt
+ * meters sit on the cabinet's meter places (D7), and calling the rail
+ * device "Zähler / eHZ" there invites placing the main meter twice.
+ */
+export function deviceLabel(kind: DeviceKind, document: Pick<PanelDocument, "enclosure"> | null): string {
+  if (kind === "meter" && document?.enclosure) return "Zwischenzähler (Hutschiene)";
+  return catalogEntry(kind).label;
 }
 
 export function rowUsedSlots(row: { devices: PanelDevice[] }): number {

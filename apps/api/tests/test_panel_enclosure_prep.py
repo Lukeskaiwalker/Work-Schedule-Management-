@@ -229,7 +229,8 @@ def test_a_legacy_board_round_trips_with_only_the_two_null_defaults(client: Test
     assert build_legend(stored) == build_legend(legacy)
     assert [row["designation"] for row in body["legend"]] == ["F1.1", "F1.2"]
     assert validate_document(stored) == validate_document(legacy)
-    assert body["findings"] == validate_document(legacy)
+    # The feature release gives every finding a "rule" id; the old ones keep "".
+    assert body["findings"] == [{**finding, "rule": ""} for finding in validate_document(legacy)]
     assert terminal_bom(derive_terminals(stored)) == terminal_bom(derive_terminals(legacy))
     assert planned_lines(stored) == planned_lines(legacy)
     # The topology carries the device dicts themselves, null key included.
@@ -292,7 +293,12 @@ def test_a_cabinet_board_written_by_the_feature_release_reads_and_keeps(client: 
 
     copied = client.post(f"/api/schaltplan/panels/{panel['id']}/duplicate", headers=_auth(admin_token))
     assert copied.status_code == 200, copied.text
-    assert copied.json()["document"]["enclosure"] == document["enclosure"]
+    # The copy keeps the cabinet; only the meter numbers stay behind, because
+    # a number names one physical meter (docs/PANEL_ENCLOSURE.md §2.1).
+    expected = copy.deepcopy(document["enclosure"])
+    for module in expected["modules"]:
+        module["meters"] = [{**meter, "number": ""} for meter in module["meters"]]
+    assert copied.json()["document"]["enclosure"] == expected
 
 
 def test_the_enclosure_block_is_capped_at_64_kib_of_json(client: TestClient, admin_token: str) -> None:
@@ -303,17 +309,23 @@ def test_the_enclosure_block_is_capped_at_64_kib_of_json(client: TestClient, adm
         document["enclosure"] = enclosure
         return document
 
-    # Measured as compact UTF-8 JSON: '{"note":""}' is 11 bytes before the text.
-    at_cap = {"note": "x" * (ENCLOSURE_KIB - 11)}
+    # The feature release types the block (docs/PANEL_ENCLOSURE.md §2.2) and
+    # keeps keys it does not know, so a valid cabinet padded with such a key
+    # measures the ceiling: still compact UTF-8 JSON, envelope included.
+    def padded(text: str) -> dict:
+        return {"code": "ZB33S", "modules": [], "note": text}
+
+    envelope = len(json.dumps(padded(""), separators=(",", ":")).encode())
+    at_cap = padded("x" * (ENCLOSURE_KIB - envelope))
     assert len(json.dumps(at_cap, separators=(",", ":")).encode()) == ENCLOSURE_KIB
     assert _patch(client, admin_token, panel["id"], {"document": document_with(at_cap)}).status_code == 200
 
-    over = {"note": "x" * (ENCLOSURE_KIB - 10)}
+    over = padded("x" * (ENCLOSURE_KIB - envelope + 1))
     refused = _patch(client, admin_token, panel["id"], {"document": document_with(over)})
     assert refused.status_code == 422, refused.text
     assert "64 KB" in refused.text
     # Multi-byte text counts in bytes, not characters.
-    umlauts = {"note": "ä" * (ENCLOSURE_KIB // 2)}
+    umlauts = padded("ä" * (ENCLOSURE_KIB // 2))
     assert _patch(client, admin_token, panel["id"], {"document": document_with(umlauts)}).status_code == 422
 
     # An object or nothing — never a list or a scalar.
@@ -343,14 +355,20 @@ def test_supplied_by_is_a_small_string_map(client: TestClient, admin_token: str,
     assert resp.status_code == 422, resp.text
 
 
-def test_supplied_by_takes_four_keys_of_up_to_64_characters(client: TestClient, admin_token: str) -> None:
+def test_supplied_by_takes_a_module_id_and_a_fitting_key(client: TestClient, admin_token: str) -> None:
+    # Typed by the feature release (§2.2): module ≤ 64, part ≤ 40, nothing
+    # else — inside the ceiling this release enforced, so a board the feature
+    # saves still saves after an image rollback.
     panel = _create_panel(client, admin_token)
     document = _legacy_document()
-    widest = {"module": "m" * 64, "part": "p" * 64, "x" * 64: "", "note": "n"}
+    widest = {"module": "m" * 64, "part": "p" * 40}
     document["rows"][0]["devices"][0]["supplied_by"] = widest
     resp = _patch(client, admin_token, panel["id"], {"document": document})
     assert resp.status_code == 200, resp.text
     assert resp.json()["document"]["rows"][0]["devices"][0]["supplied_by"] == widest
+    for too_much in ({**widest, "note": "n"}, {"module": "m", "part": "p" * 41}):
+        document["rows"][0]["devices"][0]["supplied_by"] = too_much
+        assert _patch(client, admin_token, panel["id"], {"document": document}).status_code == 422
 
 
 # ── hlak: a device kind the cabinet places, not a circuit, not a group ───────

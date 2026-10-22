@@ -1,0 +1,561 @@
+/* ── Schrank (Verteilerplan cabinet, docs/PANEL_ENCLOSURE.md §11) ───────────
+ *
+ * Page-local sheet like schaltplan-terminals.css: imported by the enclosure
+ * components themselves, scoped under .sp-encl-*, colours from the --sp-*
+ * tokens of the Schaltplan block in styles.css.
+ *
+ * Workshop tablets and gloves: every control here is at least 56 px, the
+ * drawing scrolls natively in its own container (the app root clips
+ * overflow-x, so anything wide needs its own scroller) and zooms in steps
+ * by buttons — nothing depends on a pinch.
+ *
+ * Sections: drawing · drawing targets · field bar · toolbar.
+ */
+
+:root {
+  --sp-encl-steel: #e4e9ef;
+  --sp-encl-steel-line: #8394a7;
+  --sp-encl-frame: #6b7e92;
+  --sp-encl-rail: #c6ced8;
+  --sp-encl-rail-line: #9ba8b6;
+  --sp-encl-copper: #e8c9a3;
+  --sp-encl-copper-line: #ad7a45;
+  --sp-encl-device-line: #43566b;
+  --sp-encl-hit-tint: rgba(47, 112, 183, 0.1);
+  --sp-encl-hit-press: rgba(47, 112, 183, 0.18);
+}
+
+/* ── Drawing ─────────────────────────────────────────────────────────────── */
+
+.sp-encl-scroll {
+  max-width: 100%;
+  max-height: 75vh;
+  max-height: 75dvh;
+  overflow: auto;
+  border: 1px solid var(--sp-line);
+  border-radius: 12px;
+  background: var(--surface);
+  /* No double-tap zoom delay on a tap; pan and pinch stay the browser's. */
+  touch-action: manipulation;
+  -webkit-overflow-scrolling: touch;
+}
+
+.sp-encl-svg {
+  display: block;
+  /* Centred while it is narrower than the scroller; flush left once it scrolls. */
+  margin: 0 auto;
+  font-family: inherit;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.sp-encl-svg rect,
+.sp-encl-svg line,
+.sp-encl-svg circle {
+  vector-effect: non-scaling-stroke;
+}
+
+.sp-encl-picture,
+.sp-encl-picture * {
+  pointer-events: none;
+}
+
+.sp-encl-shell-body {
+  fill: var(--sp-encl-steel);
+  stroke: var(--sp-encl-steel-line);
+  stroke-width: 1.5px;
+}
+
+.sp-encl-field-body {
+  fill: none;
+  stroke: #b3c1d0;
+  stroke-width: 1px;
+  stroke-dasharray: 6 4;
+}
+
+.sp-encl-module-body {
+  fill: #f8fafc;
+  stroke: var(--sp-encl-frame);
+  stroke-width: 1.25px;
+}
+
+.sp-encl-module.is-selected .sp-encl-module-body {
+  stroke: var(--sp-accent);
+  stroke-width: 3px;
+}
+
+.sp-encl-module--unknown .sp-encl-module-body {
+  fill: var(--sp-warn-bg);
+  stroke: var(--sp-warn);
+  stroke-dasharray: 5 3;
+}
+
+/* Zone tints: the sealed pre-meter area cool grey, the meter field warm,
+   the supply rails green, the customer side white — the order an
+   electrician reads a Zählerschrank in. */
+.sp-encl-zone-body {
+  fill: #fff;
+  stroke: #cdd7e2;
+  stroke-width: 1px;
+}
+
+.sp-encl-zone--nar .sp-encl-zone-body,
+.sp-encl-zone--sas .sp-encl-zone-body {
+  fill: #eceff6;
+}
+
+.sp-encl-zone--zf .sp-encl-zone-body {
+  fill: #fbf6e8;
+}
+
+.sp-encl-zone--rfz .sp-encl-zone-body,
+.sp-encl-zone--apz .sp-encl-zone-body {
+  fill: #ecf5f0;
+}
+
+.sp-encl-zone--aar .sp-encl-zone-body {
+  fill: #f1f5fb;
+}
+
+.sp-encl-zone--mm .sp-encl-zone-body {
+  fill: #f4f1fa;
+}
+
+.sp-encl-zone--cover .sp-encl-zone-body {
+  fill: #e8ecf1;
+}
+
+.sp-encl-rail-body {
+  fill: var(--sp-encl-rail);
+  stroke: var(--sp-encl-rail-line);
+  stroke-width: 1px;
+}
+
+.sp-encl-rail-line {
+  stroke: var(--sp-encl-rail-line);
+  stroke-width: 1px;
+}
+
+.sp-encl-busbar .sp-encl-rail-body {
+  fill: var(--sp-encl-copper);
+  stroke: var(--sp-encl-copper-line);
+}
+
+.sp-encl-busbar .sp-encl-rail-line {
+  stroke: var(--sp-encl-copper-line);
+  opacity: 0.55;
+}
+
+.sp-encl-rail--retired {
+  opacity: 0.6;
+}
+
+.sp-encl-rail--retired .sp-encl-rail-body {
+  stroke-dasharray: 4 3;
+}
+
+.sp-encl-rail.is-active .sp-encl-rail-body,
+.sp-encl-busbar.is-active .sp-encl-rail-body {
+  stroke: var(--sp-accent);
+  stroke-width: 2.5px;
+}
+
+.sp-encl-device-body {
+  fill: #fff;
+  stroke: var(--sp-encl-device-line);
+  stroke-width: 1px;
+}
+
+.sp-encl-device--supplied .sp-encl-device-body {
+  fill: var(--sp-tint);
+  stroke: var(--sp-accent-deep);
+}
+
+.sp-encl-device--overflow .sp-encl-device-body {
+  fill: #fbe9e9;
+  stroke: var(--danger);
+  stroke-width: 1.5px;
+}
+
+.sp-encl-device.is-highlight .sp-encl-device-body,
+.sp-encl-front.is-highlight .sp-encl-device-body {
+  stroke: var(--sp-accent);
+  stroke-width: 3.5px;
+}
+
+.sp-encl-front .sp-encl-device-body {
+  fill: #fdfdfe;
+}
+
+.sp-encl-meter-body {
+  fill: #fff;
+  stroke: var(--sp-encl-device-line);
+  stroke-width: 1.25px;
+}
+
+.sp-encl-meter-display {
+  fill: #26384a;
+  stroke: none;
+}
+
+.sp-encl-meter-place-body,
+.sp-encl-blind-body,
+.sp-encl-gap-body {
+  stroke-width: 1px;
+  stroke-dasharray: 5 4;
+}
+
+.sp-encl-meter-place-body {
+  fill: #fbfcfd;
+  stroke: #93a3b5;
+}
+
+.sp-encl-blind-body {
+  fill: #e8ecf1;
+  stroke: var(--sp-encl-steel-line);
+  stroke-dasharray: none;
+}
+
+.sp-encl-gap-body {
+  fill: rgba(255, 255, 255, 0.55);
+  stroke: #9fb0c2;
+}
+
+.sp-encl-hatch {
+  stroke: none;
+}
+
+.sp-encl-hatch-line {
+  stroke: #cfd8e2;
+  stroke-width: 1px;
+}
+
+.sp-encl-cover-body {
+  fill: #fbfcfd;
+  stroke: #98a7b7;
+  stroke-width: 1px;
+}
+
+/* The lead seal (Plombe) of a sealable cover. */
+.sp-encl-seal {
+  fill: var(--sp-warn-bg);
+  stroke: var(--sp-warn);
+  stroke-width: 1.5px;
+}
+
+.sp-encl-slot-body {
+  fill: #dbe2ea;
+  stroke: var(--sp-encl-rail-line);
+  stroke-width: 1px;
+}
+
+.sp-encl-window-body {
+  fill: #dce8f3;
+  stroke: var(--sp-encl-frame);
+  stroke-width: 1.25px;
+}
+
+.sp-encl-door-body {
+  fill: none;
+  stroke: var(--sp-encl-frame);
+  stroke-width: 1.5px;
+  stroke-dasharray: 10 6;
+}
+
+.sp-encl-handle-body {
+  fill: var(--sp-encl-device-line);
+  stroke: none;
+}
+
+/* Text: sizes come from the component in screen px (converted per zoom). */
+.sp-encl-text {
+  fill: var(--sp-ink);
+  font-family: inherit;
+  font-variant-numeric: tabular-nums;
+}
+
+.sp-encl-text--device,
+.sp-encl-text--meter {
+  font-weight: 700;
+}
+
+.sp-encl-text--zone,
+.sp-encl-text--rail,
+.sp-encl-text--gap,
+.sp-encl-text--free,
+.sp-encl-text--blind {
+  fill: var(--muted);
+  font-weight: 600;
+}
+
+.sp-encl-text--module {
+  fill: var(--sp-accent-deep);
+  font-weight: 700;
+}
+
+.sp-encl-text--unknown {
+  fill: var(--sp-warn);
+}
+
+.sp-encl-text--field {
+  fill: var(--muted);
+  font-weight: 700;
+}
+
+/* ── Drawing targets ─────────────────────────────────────────────────────── */
+
+.sp-encl-hit {
+  fill: transparent;
+  stroke: none;
+  pointer-events: all;
+  cursor: pointer;
+  outline: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.sp-encl-hit:focus-visible {
+  stroke: var(--sp-accent);
+  stroke-width: 3px;
+}
+
+.sp-encl-hit--rail:active,
+.sp-encl-hit--slot:active,
+.sp-encl-hit--device:active {
+  fill: var(--sp-encl-hit-press);
+}
+
+@media (hover: hover) {
+  .sp-encl-hit--rail:hover,
+  .sp-encl-hit--slot:hover {
+    fill: var(--sp-encl-hit-tint);
+  }
+
+  .sp-encl-hit--device:hover {
+    stroke: var(--sp-accent);
+    stroke-width: 2px;
+  }
+}
+
+/* ── Field bar ───────────────────────────────────────────────────────────── */
+
+.sp-encl-fieldbar {
+  display: flex;
+  gap: 12px;
+  overflow-x: auto;
+  padding: 2px 2px 8px;
+  scroll-snap-type: x proximity;
+  -webkit-overflow-scrolling: touch;
+}
+
+.sp-encl-fieldbar-group {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+  padding-right: 12px;
+  border-right: 1px solid var(--sp-line);
+  scroll-snap-align: start;
+}
+
+.sp-encl-fieldbar-group:last-child {
+  padding-right: 0;
+  border-right: 0;
+}
+
+.sp-encl-fieldbar-btn {
+  appearance: none;
+  min-height: 56px;
+  min-width: 136px;
+  max-width: 220px;
+  padding: 8px 14px;
+  border: 1px solid var(--sp-line);
+  border-radius: 12px;
+  background: #fff;
+  color: var(--sp-ink);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 2px;
+  -webkit-tap-highlight-color: transparent;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.sp-encl-fieldbar-title {
+  font-size: 15px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.sp-encl-fieldbar-sub {
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 12.5px;
+  color: var(--muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.sp-encl-fieldbar-btn:hover {
+  border-color: var(--sp-accent);
+}
+
+.sp-encl-fieldbar-btn:focus-visible {
+  outline: 2px solid var(--sp-accent);
+  outline-offset: 2px;
+}
+
+.sp-encl-fieldbar-btn:active {
+  background: var(--sp-tint);
+}
+
+.sp-encl-fieldbar-btn.is-current {
+  border-color: var(--sp-accent);
+  background: var(--sp-tint);
+  box-shadow: inset 0 -3px 0 var(--sp-accent);
+}
+
+.sp-encl-fieldbar-btn--add {
+  border-style: dashed;
+  background: transparent;
+}
+
+.sp-encl-fieldbar-btn--add .sp-encl-fieldbar-title {
+  color: var(--sp-accent-deep);
+}
+
+.sp-encl-fieldbar-btn--unknown {
+  border-color: var(--sp-warn-line);
+  background: var(--sp-warn-bg);
+}
+
+/* ── Toolbar ─────────────────────────────────────────────────────────────── */
+
+.sp-encl-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.sp-encl-views {
+  display: inline-flex;
+  gap: 3px;
+  padding: 3px;
+  background: var(--surface-2);
+  border: 1px solid var(--sp-line);
+  border-radius: 14px;
+}
+
+.sp-encl-view {
+  appearance: none;
+  min-height: 56px;
+  min-width: 72px;
+  padding: 0 16px;
+  border: 0;
+  border-radius: 11px;
+  background: transparent;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.sp-encl-view.is-on {
+  background: #fff;
+  color: var(--sp-accent-deep);
+  box-shadow: 0 1px 3px rgba(20, 41, 61, 0.14);
+}
+
+.sp-encl-view:focus-visible {
+  outline: 2px solid var(--sp-accent);
+  outline-offset: 1px;
+}
+
+.sp-encl-zoom {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sp-encl-zoom-step {
+  min-width: 44px;
+  text-align: center;
+  font-size: 14px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+
+.sp-encl-tool {
+  appearance: none;
+  min-height: 56px;
+  min-width: 56px;
+  padding: 0 18px;
+  border: 1px solid var(--sp-line);
+  border-radius: 12px;
+  background: #fff;
+  color: var(--sp-ink);
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  text-decoration: none;
+  -webkit-tap-highlight-color: transparent;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.sp-encl-tool--icon {
+  width: 56px;
+  padding: 0;
+  font-size: 26px;
+  line-height: 1;
+}
+
+.sp-encl-tool:hover:not(:disabled) {
+  border-color: var(--sp-accent);
+  color: var(--sp-accent);
+}
+
+.sp-encl-tool:focus-visible {
+  outline: 2px solid var(--sp-accent);
+  outline-offset: 2px;
+}
+
+.sp-encl-tool:active:not(:disabled) {
+  background: var(--sp-tint);
+}
+
+.sp-encl-tool:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.sp-encl-tool--pdf {
+  color: var(--sp-accent-deep);
+}
+
+.sp-encl-toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-left: auto;
+}
+
+@media (max-width: 640px) {
+  .sp-encl-toolbar-actions {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .sp-encl-toolbar-actions > * {
+    flex: 1 1 0;
+  }
+}

@@ -102,6 +102,16 @@ function openLinesChip(row: PanelMaterialSummary, de: boolean): { text: string; 
   return { text: de ? "keine Positionen" : "no lines", tone: "none" };
 }
 
+/** Pieces taken out of a cabinet module that still have to go back on the
+ *  shelf (docs/PANEL_ENCLOSURE.md §6). Optional: an API from before the
+ *  cabinet layer does not send it. Returns are not picks, so the chip stands
+ *  beside the picking chip instead of changing it. */
+export function returnsOpenChip(row: PanelMaterialSummary, de: boolean): string | null {
+  const open = row.returns_open ?? 0;
+  if (open <= 0) return null;
+  return de ? `${open} × ins Lager offen` : `${open} × to return to stock`;
+}
+
 function progressPercent(row: PanelMaterialSummary): number {
   if (row.planned_total <= 0) return 0;
   return Math.min(100, Math.round((row.scanned_total / row.planned_total) * 100));
@@ -361,6 +371,7 @@ export function WerkstattVerteilerPage() {
             {visibleRows.map((row) => {
               const panel = row.panel;
               const chip = openLinesChip(row, de);
+              const returns = returnsOpenChip(row, de);
               const meta = customerProjectLine(row);
               return (
                 <li key={panel.id} className="verteiler-row">
@@ -399,6 +410,9 @@ export function WerkstattVerteilerPage() {
                       <span className={`verteiler-open verteiler-open--${chip.tone}`}>
                         {chip.text}
                       </span>
+                      {returns && (
+                        <span className="verteiler-open verteiler-open--open">{returns}</span>
+                      )}
                       {row.last_scanned_at && (
                         <span className="verteiler-scanned">
                           {de ? "zuletzt gescannt" : "last scanned"}{" "}

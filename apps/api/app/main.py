@@ -27,6 +27,8 @@ from app.routers import workflow_station_werkstatt
 from app.routers import workflow_station_consumption
 from app.routers import workflow_werkstatt_inventory
 from app.routers import workflow_werkstatt_on_site
+from app.routers import workflow_schaltplan_catalog
+from app.routers import workflow_schaltplan_enclosure, workflow_schaltplan_type_label
 from app.routers import admin, api_tokens, auth, calendar_feed, events, portal, portal_documents, portal_hours, station_badge, time_tracking, workflow, workflow_notifications, workflow_schaltplan, workflow_schaltplan_material, workflow_task_packing_list, workflow_training_reports
 from app.services.material_catalog import sync_pending_material_catalog_images
 from app.services.permission_store import load_permissions_from_db
@@ -543,6 +545,11 @@ app.include_router(workflow_station_consumption.router, prefix="/api")
 # The material router first: its static "/panels/recent" must be matched
 # before the plan router's "/panels/{plan_id}" swallows the word.
 app.include_router(workflow_schaltplan_material.router, prefix="/api")
+# The cabinet catalogue, the Aufbau PDF and the Schrank-Etikett
+# (docs/PANEL_ENCLOSURE.md §7), before the plan router too.
+app.include_router(workflow_schaltplan_catalog.router, prefix="/api")
+app.include_router(workflow_schaltplan_enclosure.router, prefix="/api")
+app.include_router(workflow_schaltplan_type_label.router, prefix="/api")
 app.include_router(workflow_schaltplan.router, prefix="/api")
 app.include_router(calendar_feed.router, prefix="/api")
 app.include_router(station_badge.router, prefix="/api")

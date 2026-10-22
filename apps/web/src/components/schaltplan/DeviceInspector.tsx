@@ -15,6 +15,13 @@
  * The header carries previous/next. Filling in a rail of twelve breakers is
  * tap, type, close, tap the next one — twelve times; two arrows in the sheet
  * make it type, next, type, next.
+ *
+ * On a board with a cabinet (docs/PANEL_ENCLOSURE.md §11) a device that
+ * came pre-fitted in a field module says so at the top: deleting it takes
+ * it out of the module, and the Materialliste then lists it as a part that
+ * goes back on the shelf. Inside the Schrank tab's sheet stack the
+ * inspector has no backdrop of its own (`embedded`) — the stack has one —
+ * and takes the stack's 56 px glove targets (`sp-sheet--glove`).
  */
 import { useEffect, useState } from "react";
 
@@ -26,6 +33,7 @@ import {
   RCD_TYPE_OPTIONS,
   RESIDUAL_CURRENT_SUGGESTIONS,
   catalogEntry,
+  deviceLabel,
 } from "../../utils/schaltplanDevices";
 import { deviceWidthMm, formatMm, widthSuggestionsMm } from "../../utils/schaltplanStrip";
 import {
@@ -39,6 +47,7 @@ import { overrideKey } from "../../utils/schaltplanTerminals";
 import { allDevices, buildTopology, isGroupDevice, opensGroup, terminalOffered } from "../../utils/schaltplanTopology";
 import { isFeeder } from "../../utils/schaltplanTopologyCore";
 import type { PanelDevice, PanelDocument, PhaseLabel } from "../../types/schaltplan";
+import "../../styles/schaltplan-enclosure-tab.css";
 
 /** The one-line rule table under the hint — the same three cases the derivation knows. */
 const TERMINAL_RULE_LINE = `1-polig → WAGO 2003-7641 · 3-polig → WAGO 2003-7641 + 2003-7642 · 3-polig über ${BLOCK_MIN_AMPS_EXCLUSIVE} A → 16-mm²-Block. Einspeise- und Endklemme der FI-Gruppe werden automatisch ergänzt.`;
@@ -112,7 +121,28 @@ type Props = {
   hasPrevious?: boolean;
   hasNext?: boolean;
   onNavigate?: (direction: -1 | 1) => void;
+  /** A cabinet module's pre-fitted part: its module's article and what the catalogue has not checked. */
+  suppliedBy?: SuppliedBanner | null;
+  /** "Auf andere Hutschiene…" (cabinet boards). Without it the action is not offered. */
+  onMoveToRail?: () => void;
+  /** Inside a sheet stack that renders the one backdrop itself. */
+  embedded?: boolean;
 };
+
+export type SuppliedBanner = { article: string; unverifiedNote: string | null };
+
+/** "Vorbestückt in ZH3EH16 — Löschen heißt: …" — what deleting a pre-fitted part means. */
+function SuppliedNote({ banner }: { banner: SuppliedBanner }) {
+  return (
+    <div className="sp-inspector-supplied" role="note">
+      <p>
+        <b>Vorbestückt in {banner.article}</b> — Löschen heißt: aus dem Modul entfernen; es kommt als „ins Lager“ auf die
+        Materialliste.
+      </p>
+      {banner.unverifiedNote ? <p className="sp-inspector-supplied-note">Katalog ungeprüft: {banner.unverifiedNote}</p> : null}
+    </div>
+  );
+}
 
 function Chips({
   values,
@@ -167,6 +197,9 @@ export function DeviceInspector({
   hasPrevious = false,
   hasNext = false,
   onNavigate,
+  suppliedBy = null,
+  onMoveToRail,
+  embedded = false,
 }: Props) {
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -195,6 +228,8 @@ export function DeviceInspector({
   const widthChips = widthSuggestionsMm(device.te);
 
   const entry = catalogEntry(device.kind);
+  // "Zwischenzähler (Hutschiene)" on a cabinet board: the eHZ sits on the meter place there.
+  const kindLabel = deviceLabel(device.kind, document);
   // A fuse that feeds circuits directly heads a group of its own. Its
   // parent_id is then not read at all — neither as "Eingespeist von" (it is
   // no load any more) nor as a Vorsicherung (a fuse-headed group has no
@@ -237,15 +272,15 @@ export function DeviceInspector({
 
   return (
     <>
-      <div className="sp-sheet-backdrop" onClick={onClose} aria-hidden="true" />
-      <div className="sp-sheet sp-sheet--inspector" role="dialog" aria-modal="true" aria-label={entry.label}>
+      {embedded ? null : <div className="sp-sheet-backdrop" onClick={onClose} aria-hidden="true" />}
+      <div className={embedded ? "sp-sheet sp-sheet--inspector sp-sheet--glove" : "sp-sheet sp-sheet--inspector"} role="dialog" aria-modal="true" aria-label={kindLabel}>
         <div className="sp-sheet-head">
           <div className="sp-inspector-head">
             <span className="sp-inspector-icon">
               <DeviceSymbol kind={device.kind} size={24} />
             </span>
             <div>
-              <h3>{entry.label}</h3>
+              <h3>{kindLabel}</h3>
               <small>
                 {entry.te === device.te ? `${device.te} TE` : `${device.te} TE (Standard ${entry.te})`}
                 {` · ${formatMm(deviceWidthMm(device))} mm`}
@@ -279,6 +314,7 @@ export function DeviceInspector({
         </div>
 
         <div className="sp-sheet-body">
+          {suppliedBy ? <SuppliedNote banner={suppliedBy} /> : null}
           <div className="sp-field-grid">
             {entry.circuit &&
               field(
@@ -626,6 +662,11 @@ export function DeviceInspector({
             >
               Duplizieren
             </button>
+            {onMoveToRail ? (
+              <button type="button" className="sp-btn" onClick={onMoveToRail} title="Auf eine andere Hutschiene im Schrank setzen">
+                Auf andere Hutschiene…
+              </button>
+            ) : null}
             <button
               type="button"
               className={confirmDelete ? "sp-btn sp-btn--danger sp-btn--armed" : "sp-btn sp-btn--danger"}
