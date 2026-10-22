@@ -6,7 +6,13 @@
  * fields save on blur through `onSaveMeta`, because a designation is
  * unique per customer and a keystroke-by-keystroke PATCH would race the
  * 409. Deleting confirms here and lets the page do the request.
+ *
+ * On a board with a cabinet the meters live on its meter places
+ * (docs/PANEL_ENCLOSURE.md §2.1, D7): the free-text "Zählernummer" is not
+ * offered there — two places to type a meter number are two places to
+ * disagree — and the cabinet's meters are listed read-only instead.
  */
+import { meterSummary } from "./enclosure/enclosureEditorModel";
 import { PANEL_TYPE_LABELS, SUPPLY_SYSTEMS } from "../../utils/schaltplanDevices";
 import type { UpdatePanelPayload } from "../../utils/schaltplanApi";
 import type { PanelDocument, PanelPlan, PanelPlanSummary, PanelSupply, PanelType } from "../../types/schaltplan";
@@ -72,16 +78,21 @@ export function PanelDataTab({ panel, document, panels, readOnly, canEdit, onPat
               onChange={(event) => onPatchSupply({ fuse: event.target.value })}
             />
           </label>
-          <label className="sp-field">
-            <span className="sp-field-label">Zählernummer</span>
-            <input
-              type="text"
-              value={document.supply.meter_number}
-              disabled={readOnly}
-              onChange={(event) => onPatchSupply({ meter_number: event.target.value })}
-            />
-          </label>
+          {document.enclosure ? null : (
+            <label className="sp-field">
+              <span className="sp-field-label">Zählernummer</span>
+              <input
+                type="text"
+                value={document.supply.meter_number}
+                disabled={readOnly}
+                onChange={(event) => onPatchSupply({ meter_number: event.target.value })}
+              />
+            </label>
+          )}
         </div>
+        {document.enclosure ? (
+          <p className="sp-field-hint">{`Zähler im Schrank: ${meterSummary(document)} — im Tab Schrank bearbeiten.`}</p>
+        ) : null}
       </section>
 
       <section className="sp-data-block">

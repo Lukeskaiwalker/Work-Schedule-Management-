@@ -953,7 +953,10 @@ def _preferred_catalog_row(db: Session, found) -> MaterialCatalogItem | None:
 # it is open is booked as built into that board. The list is derived on every
 # read (services/schaltplan_material.py), so these three endpoints hold no
 # state of their own: open = read, scan = one ledger row + read, undo = the
-# inverse row + read.
+# inverse row + read. A part taken out of a cabinet module goes back to the
+# shelf, it is not picked: the rack gets the list without those lines
+# (``picking_view``), and a scan of a part only they name is refused, so a
+# return cannot be booked as built in (docs/PANEL_ENCLOSURE.md §6).
 
 
 def _panel_or_404(db: Session, plan_id: int) -> PanelPlan:
@@ -972,7 +975,7 @@ def _panel_scan_out(
     *,
     undone: bool = False,
 ) -> StationPanelScanOut:
-    material = panel_material.panel_material(db, plan)
+    material = panel_material.picking_view(panel_material.panel_material(db, plan))
     line = panel_material.line_for_article(material, article.id, undone=undone)
     if line is None:
         # Fully undone: the article no longer appears on the list. Report the
@@ -1014,7 +1017,7 @@ def station_panel(
         raise HTTPException(
             status_code=404, detail=f"Kein Verteiler mit der Nummer „{normalize_panel_code(code)}“."
         )
-    return panel_material.panel_material(db, plan)
+    return panel_material.picking_view(panel_material.panel_material(db, plan))
 
 
 @router.post("/panels/{plan_id}/scan", response_model=StationPanelScanOut)
@@ -1042,6 +1045,8 @@ def station_panel_scan(
     article = db.get(WerkstattArticle, article_id)
     if article is None:
         raise HTTPException(status_code=404, detail="Artikel nicht gefunden")
+    if panel_material.removed_only(panel_material.panel_material(db, plan), article.id):
+        raise HTTPException(status_code=409, detail=panel_material.RETURN_SCAN_REFUSED)
 
     user_id = resolve_station_user_id(db, station)
     try:

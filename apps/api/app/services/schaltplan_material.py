@@ -23,6 +23,11 @@ Matching a planned line to a stock article, in this order:
 A scanned article that matches no planned line is still booked and shows
 as an ``extra`` line ("nicht geplant"): the person at the rack holds the
 part, and the list's job is to say what really went in.
+
+A board in a cabinet adds the cabinet, its modules and accessories in front
+and the parts taken out of a module behind; ``panel_enclosure_material``
+derives those and books the returns (docs/PANEL_ENCLOSURE.md §6). Returns
+are not picks: no picking total, Regal screen or consumption ever counts them.
 """
 
 from __future__ import annotations
@@ -44,7 +49,9 @@ from app.schemas.schaltplan import (
     PanelMaterialPanelOut,
     PanelMaterialSummaryOut,
 )
+from app.services import panel_enclosure_material as enclosure_material
 from app.services import panel_work
+from app.services.panel_enclosure_catalog import EnclosureCatalog, builtin_catalog, load_catalog
 from app.services.schaltplan_layout import DEVICE_CATALOG, iter_devices
 from app.services.schaltplan_terminal_rules import TERMINAL_PARTS
 from app.services.schaltplan_terminals import derive_terminals, terminal_bom
@@ -58,6 +65,11 @@ LINE_DEVICE = "device"
 LINE_TERMINAL = "terminal"
 LINE_MANUAL = "manual"
 LINE_EXTRA = "extra"
+LINE_ENCLOSURE = "enclosure"
+LINE_REMOVED = "removed"
+#: What consumption ticks off — never ``removed``: that part goes back, not in.
+CONSUMPTION_KINDS = frozenset({LINE_ENCLOSURE, LINE_DEVICE, LINE_TERMINAL, LINE_MANUAL})
+RETURN_SCAN_REFUSED = "Rücklauf: in der Materialliste „Ins Lager“ buchen, nicht scannen."
 
 STATUS_OPEN = "open"
 STATUS_DONE = "done"
@@ -107,10 +119,30 @@ def _normalize_rating(rating: str) -> str:
     return "".join((rating or "").lower().split())
 
 
-def planned_lines(document: dict[str, Any]) -> list[PlannedLine]:
-    """The board's parts: device types in catalog order, then the WAGO terminals."""
+def planned_lines(document: dict[str, Any], catalog: EnclosureCatalog | None = None) -> list[PlannedLine]:
+    """The board's parts: device types in catalog order, then the WAGO terminals.
+
+    In a cabinet: the cabinet, modules and accessories first, the parts taken
+    out of a module last, and a pre-fitted device is not a device line (the
+    module counts it). ``catalog`` defaults to the built-ins for pure callers;
+    ``material_lines`` passes the merged one.
+    """
+    if not enclosure_material.has_enclosure(document):
+        return [*_device_lines(document), *_terminal_lines(document)]
+    catalog = catalog if catalog is not None else builtin_catalog()
+    return [
+        *enclosure_material.enclosure_planned_lines(document, catalog),
+        *_device_lines(document, skip=enclosure_material.supplied_device_ids(document, catalog), cabinet=True),
+        *_terminal_lines(document),
+        *enclosure_material.removed_planned_lines(document, catalog),
+    ]
+
+
+def _device_lines(document: dict[str, Any], *, skip: set[str] | None = None, cabinet: bool = False) -> list[PlannedLine]:
     devices: dict[str, dict[str, Any]] = {}
     for _row, device in iter_devices(document):
+        if skip and str(device.get("id") or "") in skip:
+            continue
         kind = str(device.get("kind") or "")
         catalog = DEVICE_CATALOG.get(kind)
         if catalog is None:
@@ -141,10 +173,11 @@ def planned_lines(document: dict[str, Any]) -> list[PlannedLine]:
         ),
     ):
         catalog = DEVICE_CATALOG[entry["kind"]]
+        name = enclosure_material.METER_ON_CABINET if cabinet and entry["kind"] == "meter" else str(catalog["label"])
         label = " ".join(
             part
             for part in (
-                str(catalog["label"]),
+                name,
                 entry["rating"],
                 entry["residual"],
                 f"Typ {entry['rcd_type']}" if entry["rcd_type"] else "",
@@ -160,17 +193,20 @@ def planned_lines(document: dict[str, Any]) -> list[PlannedLine]:
                 planned=int(entry["count"]),
             )
         )
-    for row in terminal_bom(derive_terminals(document)):
-        lines.append(
-            PlannedLine(
-                key=f"part:{row['part_id']}",
-                kind=LINE_TERMINAL,
-                label=str(row["part_no"]),
-                detail=str(row["name"]),
-                planned=int(row["count"]),
-            )
-        )
     return lines
+
+
+def _terminal_lines(document: dict[str, Any]) -> list[PlannedLine]:
+    return [
+        PlannedLine(
+            key=f"part:{row['part_id']}",
+            kind=LINE_TERMINAL,
+            label=str(row["part_no"]),
+            detail=str(row["name"]),
+            planned=int(row["count"]),
+        )
+        for row in terminal_bom(derive_terminals(document))
+    ]
 
 
 def _residual_sort_key(residual: str) -> tuple[int, str]:
@@ -253,10 +289,20 @@ def auto_match_part(db: Session, part_no: str) -> WerkstattArticle | None:
     return supplier_row[0] if supplier_row is not None else None
 
 
-def resolve_line_articles(db: Session, lines: list[PlannedLine]) -> dict[str, tuple[WerkstattArticle, str]]:
-    """key → (article, "mapping" | "auto") for every planned line that has one."""
+def resolve_line_articles(
+    db: Session, lines: list[PlannedLine], numbers: dict[str, str] | None = None
+) -> dict[str, tuple[WerkstattArticle, str]]:
+    """key → (article, "mapping" | "auto") for every planned line that has one.
+
+    ``numbers`` (line key → article number) is what the cabinet's lines are
+    matched by when nobody mapped them; all of them in one batched lookup.
+    """
     resolved: dict[str, tuple[WerkstattArticle, str]] = {}
     mapped = explicit_mappings(db, [line.key for line in lines])
+    wanted = {line.key: numbers[line.key].strip() for line in lines if numbers and line.key in numbers}
+    matched = enclosure_material.match_articles_by_number(
+        db, [number for key, number in wanted.items() if key not in mapped]
+    )
     for line in lines:
         article = mapped.get(line.key)
         if article is not None:
@@ -265,8 +311,10 @@ def resolve_line_articles(db: Session, lines: list[PlannedLine]) -> dict[str, tu
         if line.kind == LINE_TERMINAL:
             part = TERMINAL_PARTS.get(line.key.removeprefix("part:"))
             article = auto_match_part(db, part.part_no if part is not None else line.label)
-            if article is not None:
-                resolved[line.key] = (article, "auto")
+        else:
+            article = matched.get(wanted.get(line.key, ""))
+        if article is not None:
+            resolved[line.key] = (article, "auto")
     return resolved
 
 
@@ -290,14 +338,19 @@ def set_mapping(db: Session, *, key: str, article: WerkstattArticle | None, user
 
 
 @dataclass
-class _Consumed:
+class LedgerSum:
     net: int = 0
     bookings: int = 0
     last_at: datetime | None = None
 
 
-def consumed_by_article(db: Session, panel_id: int) -> dict[int, _Consumed]:
+def consumed_by_article(db: Session, panel_id: int) -> dict[int, LedgerSum]:
     """article id → what the ledger says was built into this board."""
+    return ledger_by_article(db, panel_id, CONSUMPTION, CONSUMPTION_UNDO)
+
+
+def ledger_by_article(db: Session, panel_id: int, booking: str, undo: str) -> dict[int, LedgerSum]:
+    """article id → net of one booking type and its undo for this board."""
     rows = db.execute(
         select(
             WerkstattMovement.article_id,
@@ -307,26 +360,30 @@ def consumed_by_article(db: Session, panel_id: int) -> dict[int, _Consumed]:
         )
         .where(
             WerkstattMovement.panel_id == panel_id,
-            WerkstattMovement.movement_type.in_((CONSUMPTION, CONSUMPTION_UNDO)),
+            WerkstattMovement.movement_type.in_((booking, undo)),
         )
         .order_by(WerkstattMovement.id.asc())
     ).all()
-    out: dict[int, _Consumed] = {}
+    out: dict[int, LedgerSum] = {}
     for article_id, movement_type, quantity, created_at in rows:
-        entry = out.setdefault(int(article_id), _Consumed())
-        qty = int(quantity or 0)
-        if movement_type == CONSUMPTION:
-            entry.net += qty
-            entry.bookings += 1
-        else:
-            entry.net -= qty
-        if created_at is not None and (entry.last_at is None or created_at > entry.last_at):
-            entry.last_at = created_at
+        _add(out.setdefault(int(article_id), LedgerSum()), movement_type == booking, quantity, created_at)
     return out
 
 
+def _add(entry: LedgerSum, is_booking: bool, quantity: Any, created_at: datetime | None) -> None:
+    # The running sum is local to one read; nothing shared is changed.
+    qty = int(quantity or 0)
+    if is_booking:
+        entry.net += qty
+        entry.bookings += 1
+    else:
+        entry.net -= qty
+    if created_at is not None and (entry.last_at is None or created_at > entry.last_at):
+        entry.last_at = created_at
+
+
 def net_consumed(db: Session, panel_id: int, article_id: int) -> int:
-    return consumed_by_article(db, panel_id).get(article_id, _Consumed()).net
+    return consumed_by_article(db, panel_id).get(article_id, LedgerSum()).net
 
 
 # ── Composition ───────────────────────────────────────────────────────────────
@@ -387,15 +444,18 @@ def allocate_scans(planned: list[int], net: int) -> list[int]:
     return shares
 
 
-def material_lines(db: Session, plan: PanelPlan) -> list[PanelMaterialLineOut]:
-    planned = planned_lines(plan.document or {})
-    articles = resolve_line_articles(db, planned)
+def material_lines(db: Session, plan: PanelPlan, catalog: EnclosureCatalog | None = None) -> list[PanelMaterialLineOut]:
+    document = plan.document or {}
+    if catalog is None and enclosure_material.has_enclosure(document):
+        catalog = load_catalog(db)  # once per board, and only for a board in a cabinet
+    planned = planned_lines(document, catalog)
+    numbers = enclosure_material.line_article_numbers(document, catalog) if catalog is not None else {}
+    articles = resolve_line_articles(db, planned, numbers)
     consumed = consumed_by_article(db, plan.id)
     # Every line first, without scans: the derived ones, then the lines added
     # by hand (owner, 2026-10-09) in the order they were added — after the
     # derived ones and before "nicht geplant".
     lines: list[PanelMaterialLineOut] = []
-    line_articles: list[WerkstattArticle | None] = []
     for line in planned:
         hit = articles.get(line.key)
         article, source = hit if hit is not None else (None, None)
@@ -411,7 +471,6 @@ def material_lines(db: Session, plan: PanelPlan) -> list[PanelMaterialLineOut]:
                 article_source=source,  # type: ignore[arg-type]
             )
         )
-        line_articles.append(article)
     for row, article in manual_lines(db, plan.id):
         note = (row.note or "").strip() or None
         lines.append(
@@ -428,52 +487,61 @@ def material_lines(db: Session, plan: PanelPlan) -> list[PanelMaterialLineOut]:
                 note=note,
             )
         )
-        line_articles.append(article)
 
-    # Then the scans: a booked article ticks off the lines that name it.
+    # Then the scans: a booked article ticks off the lines that name it —
+    # consumption the parts going in, returns (salvage) the removed ones.
     indexes_by_article: dict[int, list[int]] = {}
-    for index, article in enumerate(line_articles):
-        if article is not None:
-            indexes_by_article.setdefault(article.id, []).append(index)
+    for index, line in enumerate(lines):
+        if line.article is not None and line.kind in CONSUMPTION_KINDS:
+            indexes_by_article.setdefault(line.article.id, []).append(index)
     for article_id, indexes in indexes_by_article.items():
         entry = consumed.get(article_id)
-        if entry is None:
-            continue
-        shares = allocate_scans([lines[index].planned for index in indexes], entry.net)
-        for position, (index, share) in enumerate(zip(indexes, shares)):
-            line = lines[index]
-            lines[index] = line.model_copy(
-                update={
-                    "scanned": share,
-                    "status": _status(line.planned, share),
-                    # The first line keeps the date even when undo took its
-                    # pieces back; a later one only once something reached it.
-                    "last_scanned_at": entry.last_at if position == 0 or share > 0 else None,
-                }
-            )
-
+        if entry is not None:
+            lines = tick_lines(lines, indexes, entry)
+    lines, orphans = enclosure_material.apply_salvage(db, plan.id, lines)
     extra_ids = [
         article_id for article_id, entry in consumed.items() if entry.net > 0 and article_id not in indexes_by_article
     ]
-    if extra_ids:
-        extras = db.scalars(select(WerkstattArticle).where(WerkstattArticle.id.in_(extra_ids))).all()
-        for article in sorted(extras, key=lambda a: a.item_name.lower()):
-            entry = consumed[article.id]
-            lines.append(
-                PanelMaterialLineOut(
-                    key=f"article:{article.id}",
-                    kind=LINE_EXTRA,
-                    label=article.item_name,
-                    detail="nicht geplant",
-                    planned=0,
-                    scanned=entry.net,
-                    status=STATUS_UNPLANNED,
-                    article=article_out(article),
-                    article_source=None,
-                    last_scanned_at=entry.last_at,
-                )
-            )
-    return lines
+    return [*lines, *orphans, *_extra_lines(db, consumed, extra_ids)]
+
+
+def tick_lines(lines: list[PanelMaterialLineOut], indexes: list[int], entry: LedgerSum) -> list[PanelMaterialLineOut]:
+    """The lines with one article's booked pieces spread over those at ``indexes``."""
+    shares = allocate_scans([lines[index].planned for index in indexes], entry.net)
+    out = list(lines)
+    for position, (index, share) in enumerate(zip(indexes, shares)):
+        line = out[index]
+        out[index] = line.model_copy(
+            update={
+                "scanned": share,
+                "status": _status(line.planned, share),
+                # The first line keeps the date even when undo took its
+                # pieces back; a later one only once something reached it.
+                "last_scanned_at": entry.last_at if position == 0 or share > 0 else None,
+            }
+        )
+    return out
+
+
+def _extra_lines(db: Session, consumed: dict[int, LedgerSum], extra_ids: list[int]) -> list[PanelMaterialLineOut]:
+    if not extra_ids:
+        return []
+    extras = db.scalars(select(WerkstattArticle).where(WerkstattArticle.id.in_(extra_ids))).all()
+    return [
+        PanelMaterialLineOut(
+            key=f"article:{article.id}",
+            kind=LINE_EXTRA,
+            label=article.item_name,
+            detail="nicht geplant",
+            planned=0,
+            scanned=consumed[article.id].net,
+            status=STATUS_UNPLANNED,
+            article=article_out(article),
+            article_source=None,
+            last_scanned_at=consumed[article.id].last_at,
+        )
+        for article in sorted(extras, key=lambda a: a.item_name.lower())
+    ]
 
 
 def manual_lines(db: Session, panel_id: int) -> list[tuple[PanelMaterialManualLine, WerkstattArticle | None]]:
@@ -498,7 +566,10 @@ def counts_toward_picking(line: PanelMaterialLineOut) -> bool:
     """A line the shelf can tick off. A free text added by hand has no
     article to scan: it is listed with its quantity but stays out of the
     picking totals — or a fully picked board would read "1 offen" forever,
-    in the list, the Werkstatt overview and on the Regal screen alike."""
+    in the list, the Werkstatt overview and on the Regal screen alike.
+    A part taken out of a module is not picked either: it goes back."""
+    if line.kind == LINE_REMOVED:
+        return False
     return not (line.kind == LINE_MANUAL and line.article is None)
 
 
@@ -509,12 +580,13 @@ def _totals(lines: list[PanelMaterialLineOut]) -> dict[str, Any]:
         "planned_total": sum(line.planned for line in counted),
         "scanned_total": sum(line.scanned for line in counted),
         "open_lines": sum(1 for line in counted if line.status == STATUS_OPEN),
+        "returns_open": sum(max(line.planned - line.scanned, 0) for line in lines if line.kind == LINE_REMOVED),
         "last_scanned_at": max(last) if last else None,
     }
 
 
-def panel_material(db: Session, plan: PanelPlan) -> PanelMaterialOut:
-    lines = material_lines(db, plan)
+def panel_material(db: Session, plan: PanelPlan, catalog: EnclosureCatalog | None = None) -> PanelMaterialOut:
+    lines = material_lines(db, plan, catalog)
     # The hours ride beside the parts, never among them: _totals counts pieces.
     labour_lines, labour_minutes, labour_running = panel_work.labour(db, plan.id)
     return PanelMaterialOut(
@@ -531,7 +603,9 @@ def material_overview(db: Session, plans: list[PanelPlan]) -> list[PanelMaterial
     """Every board with its picking progress: boards somebody scanned for
     first (newest scan first), then the rest by last edit."""
     refs = panel_refs(db, plans)
-    rows = [PanelMaterialSummaryOut(panel=refs[plan.id], **_totals(material_lines(db, plan))) for plan in plans]
+    # One catalogue for every board, loaded only if one of them has a cabinet.
+    catalog = load_catalog(db) if any(enclosure_material.has_enclosure(plan.document) for plan in plans) else None
+    rows = [PanelMaterialSummaryOut(panel=refs[plan.id], **_totals(material_lines(db, plan, catalog))) for plan in plans]
     rows.sort(
         key=lambda row: (
             row.last_scanned_at is None,
@@ -553,13 +627,31 @@ def line_for_article(
     first line no longer full, or from the last one when every line is full
     (the surplus sat there). The first line alone was right only while one
     article meant one line — a hand-added "one more B16" broke that.
+    A removed line never: no scan lands on a part going back to the shelf.
     """
-    named = [line for line in material.lines if line.article is not None and line.article.id == article_id]
+    named = [
+        line
+        for line in material.lines
+        if line.article is not None and line.article.id == article_id and line.kind != LINE_REMOVED
+    ]
     if not named:
         return None
     if undone:
         return next((line for line in named if line.scanned < line.planned), named[-1])
     return next((line for line in reversed(named) if line.scanned > 0), named[0])
+
+
+def picking_view(material: PanelMaterialOut) -> PanelMaterialOut:
+    """The list as the Regal shows it: returns are booked in the Materialliste, never picked."""
+    return material.model_copy(update={"lines": [line for line in material.lines if line.kind != LINE_REMOVED]})
+
+
+def removed_only(material: PanelMaterialOut, article_id: int) -> bool:
+    """Only "aus Modul entfernt" lines plan it: a Regal scan would book a return as built in."""
+    named = [line for line in material.lines if line.article is not None and line.article.id == article_id]
+    return any(line.key.startswith(enclosure_material.REMOVED_PREFIX) for line in named) and not any(
+        line.kind in CONSUMPTION_KINDS for line in named
+    )
 
 
 # ── Bookings ──────────────────────────────────────────────────────────────────
@@ -646,10 +738,22 @@ class ProjectPanelMaterial:
     bookings: int
     last_at: datetime | None
     panel_numbers: list[str]
+    # What the tab calls the row: the article's name, or for a part that went
+    # back "Rücklauf ins Lager · …" with a negative ``net``.
+    label: str = ""
 
 
 def project_panel_materials(db: Session, project_id: int) -> list[ProjectPanelMaterial]:
-    """What was built into this project's boards, one row per article."""
+    """What was built into this project's boards, one row per article, then
+    what came back out of them as negative rows (owner, 2026-10-21: a return
+    reduces the project's material, quantity only)."""
+    built = project_ledger_rows(db, project_id, CONSUMPTION, CONSUMPTION_UNDO)
+    return [*built, *enclosure_material.project_panel_returns(db, project_id)]
+
+
+def project_ledger_rows(db: Session, project_id: int, booking: str, undo: str) -> list[ProjectPanelMaterial]:
+    """One booking type net of its undo over the project's boards: a row per
+    article with something left, by name."""
     rows = db.execute(
         select(
             WerkstattMovement.article_id,
@@ -659,45 +763,30 @@ def project_panel_materials(db: Session, project_id: int) -> list[ProjectPanelMa
             PanelPlan.panel_number,
         )
         .join(PanelPlan, PanelPlan.id == WerkstattMovement.panel_id)
-        .where(
-            PanelPlan.project_id == project_id,
-            WerkstattMovement.movement_type.in_((CONSUMPTION, CONSUMPTION_UNDO)),
-        )
+        .where(PanelPlan.project_id == project_id, WerkstattMovement.movement_type.in_((booking, undo)))
         .order_by(WerkstattMovement.id.asc())
     ).all()
     if not rows:
         return []
-    per_article: dict[int, dict[str, Any]] = {}
+    per_article: dict[int, LedgerSum] = {}
+    panels: dict[int, set[str]] = {}
     for article_id, movement_type, quantity, created_at, panel_number in rows:
-        entry = per_article.setdefault(
-            int(article_id), {"net": 0, "bookings": 0, "last_at": None, "panels": []}
-        )
-        qty = int(quantity or 0)
-        if movement_type == CONSUMPTION:
-            entry["net"] += qty
-            entry["bookings"] += 1
-        else:
-            entry["net"] -= qty
-        if created_at is not None and (entry["last_at"] is None or created_at > entry["last_at"]):
-            entry["last_at"] = created_at
-        if panel_number not in entry["panels"]:
-            entry["panels"].append(str(panel_number))
+        _add(per_article.setdefault(int(article_id), LedgerSum()), movement_type == booking, quantity, created_at)
+        panels.setdefault(int(article_id), set()).add(str(panel_number))
     articles = {
         a.id: a for a in db.scalars(select(WerkstattArticle).where(WerkstattArticle.id.in_(per_article)))
     }
-    out: list[ProjectPanelMaterial] = []
-    for article_id, entry in per_article.items():
-        article = articles.get(article_id)
-        if article is None or entry["net"] <= 0:
-            continue
-        out.append(
-            ProjectPanelMaterial(
-                article=article,
-                net=int(entry["net"]),
-                bookings=int(entry["bookings"]),
-                last_at=entry["last_at"],
-                panel_numbers=sorted(entry["panels"]),
-            )
+    out = [
+        ProjectPanelMaterial(
+            article=articles[article_id],
+            net=entry.net,
+            bookings=entry.bookings,
+            last_at=entry.last_at,
+            panel_numbers=sorted(panels[article_id]),
+            label=articles[article_id].item_name,
         )
+        for article_id, entry in per_article.items()
+        if article_id in articles and entry.net > 0
+    ]
     out.sort(key=lambda row: row.article.item_name.lower())
     return out

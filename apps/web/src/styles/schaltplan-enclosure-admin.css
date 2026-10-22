@@ -1,0 +1,351 @@
+/* ── Schrankkatalog admin (docs/PANEL_ENCLOSURE.md §9 Slice F, §11) ──────────
+ *
+ * The catalogue list and the entry form, inside the Schrank tab's sheet
+ * stack. Builds on the Schaltplan sheet (.sp-sheet*, .sp-btn, .sp-field,
+ * .sp-check from styles.css) and the enclosure sheets
+ * (schaltplan-enclosure-sheets.css: .sp-encl-target, -section, -segmented,
+ * -confirm, -badge). Imported by EnclosureCatalogAdmin, CatalogEntryForm
+ * and CatalogAccessories. Every class here is .sp-encl-admin*.
+ *
+ * Workshop tablets: 56 px targets and inputs, nothing needs a drag. The
+ * form is long, so its save row sticks to the bottom of the sheet body. The
+ * preview scrolls in its own container (.sp-encl-scroll): the page root
+ * clips horizontal overflow, so a wide drawing must never widen the sheet.
+ */
+
+/* ── Sheet ───────────────────────────────────────────────────────────────── */
+
+@media (min-width: 768px) {
+  .sp-sheet.sp-encl-admin {
+    width: min(980px, calc(100vw - 48px));
+  }
+}
+
+.sp-encl-admin .sp-field input[type="text"],
+.sp-encl-admin .sp-field input[type="search"],
+.sp-encl-admin .sp-field input[type="number"],
+.sp-encl-admin .sp-field select {
+  min-height: 56px;
+}
+
+.sp-encl-admin .sp-field input[type="search"] {
+  width: 100%;
+  padding: 10px 12px;
+  border: 1px solid var(--sp-line);
+  border-radius: 10px;
+  background: var(--surface, #fff);
+  color: var(--sp-ink);
+  font-family: inherit;
+  /* 16 px: iOS Safari zooms the viewport on focus below that. */
+  font-size: 16px;
+}
+
+.sp-encl-admin .sp-field input[type="search"]:focus-visible {
+  outline: 2px solid var(--sp-accent);
+  outline-offset: 1px;
+}
+
+/* ── List ────────────────────────────────────────────────────────────────── */
+
+.sp-encl-admin-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.sp-encl-admin-toolbar > .sp-btn {
+  flex: 0 0 auto;
+}
+
+.sp-encl-admin-search {
+  flex: 1 1 220px;
+}
+
+.sp-encl-admin-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sp-encl-admin-item {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--sp-line);
+  border-radius: 11px;
+  background: var(--surface, #fff);
+}
+
+.sp-encl-admin-item--archived {
+  background: var(--surface-2);
+}
+
+.sp-encl-admin-item--archived .sp-palette-text b {
+  color: var(--muted);
+}
+
+.sp-encl-admin-item-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sp-encl-admin-item-head .sp-palette-text {
+  min-width: 0;
+}
+
+.sp-encl-admin-item-head small {
+  overflow-wrap: anywhere;
+}
+
+.sp-encl-admin-facts {
+  color: var(--muted);
+}
+
+.sp-encl-admin-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.sp-encl-admin-actions .sp-btn {
+  flex: 1 1 140px;
+}
+
+@media (min-width: 768px) {
+  /* Tablet and up: one line per entry — what it is on the left, what to do on the right. */
+  .sp-encl-admin-item {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px 16px;
+  }
+
+  .sp-encl-admin-item-head {
+    flex: 1 1 260px;
+    min-width: 0;
+  }
+
+  .sp-encl-admin-actions {
+    flex: 0 1 auto;
+    justify-content: flex-end;
+  }
+
+  .sp-encl-admin-actions .sp-btn {
+    flex: 0 0 auto;
+    padding: 0 16px;
+  }
+
+  .sp-encl-admin-item .sp-encl-confirm {
+    flex: 1 1 100%;
+  }
+}
+
+/* ── Messages ────────────────────────────────────────────────────────────── */
+
+.sp-encl-admin-message {
+  /* Stays in view at the top of the list: the entry just archived may be far down (and moves to the end). */
+  position: sticky;
+  top: -14px; /* the sheet body's top padding */
+  z-index: 2;
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--sp-line);
+  border-radius: 10px;
+  background: var(--sp-tint);
+  color: var(--sp-ink);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+/* The status line is a live region: it stays in the tree, just takes no room while empty. */
+.sp-encl-admin-message:empty {
+  padding: 0;
+  border: 0;
+}
+
+.sp-encl-admin-message--error {
+  border-color: #e0b4b4;
+  background: #fdf6f6;
+  color: var(--danger);
+}
+
+/* ── Form ────────────────────────────────────────────────────────────────── */
+
+.sp-encl-admin-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+}
+
+.sp-encl-admin-form-main,
+.sp-encl-admin-form-side {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+@media (min-width: 900px) {
+  /* Wide screens: the preview beside the fields, staying in view while the Aufbau is typed. */
+  .sp-encl-admin-form {
+    grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .sp-encl-admin-form-side {
+    position: sticky;
+    top: 0;
+  }
+
+  .sp-encl-admin-form-actions {
+    grid-column: 1 / -1;
+  }
+}
+
+/* Family, field height, width, height: always two by two, never three and one. */
+@media (min-width: 480px) {
+  .sp-encl-admin-sizes {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.sp-encl-admin-used {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--sp-warn-line);
+  border-radius: 10px;
+  background: var(--sp-warn-bg);
+}
+
+.sp-encl-admin-used-count {
+  margin: 0;
+  font-weight: 700;
+  color: var(--sp-warn);
+}
+
+/* Font size stays the field's 16 px: below that iOS Safari zooms on focus. */
+.sp-encl-admin-json {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  line-height: 1.45;
+  min-height: 280px;
+  tab-size: 2;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.sp-encl-admin-aufbau--invalid .sp-encl-admin-json {
+  border-color: var(--danger);
+}
+
+.sp-encl-admin-aufbau--invalid .sp-field-hint {
+  color: var(--danger);
+}
+
+.sp-encl-admin-preview .sp-encl-scroll {
+  max-height: 60vh;
+  max-height: 60dvh;
+}
+
+.sp-encl-admin-form-actions {
+  position: sticky;
+  bottom: -18px; /* the sheet body's bottom padding */
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0 -16px -18px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--sp-line);
+  background: var(--surface, #fff);
+}
+
+.sp-encl-admin-form-buttons {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+/* ── Accessories ─────────────────────────────────────────────────────────── */
+
+.sp-encl-admin-accessories {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sp-encl-admin-accessory {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid var(--sp-line);
+  border-radius: 11px;
+  min-width: 0;
+}
+
+@media (min-width: 640px) {
+  /* Article number | name, then quantity | checked + remove. */
+  .sp-encl-admin-accessory {
+    /* 200 px: the quantity stepper (3 × 56 px + gaps) lives in the first column. */
+    grid-template-columns: minmax(200px, 1fr) minmax(0, 2fr);
+  }
+}
+
+.sp-encl-admin-legend {
+  padding: 0 4px;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+}
+
+.sp-encl-admin-stepper {
+  display: grid;
+  grid-template-columns: 56px minmax(56px, 1fr) 56px;
+  gap: 6px;
+}
+
+.sp-encl-admin-stepper .sp-btn {
+  min-width: 56px;
+  padding: 0;
+  font-size: 22px;
+}
+
+.sp-encl-admin-stepper input[type="number"] {
+  text-align: center;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+.sp-encl-admin-stepper input[type="number"]::-webkit-inner-spin-button,
+.sp-encl-admin-stepper input[type="number"]::-webkit-outer-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
+}
+
+.sp-encl-admin-accessory-tail {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sp-encl-admin .sp-btn {
+    transition: none;
+  }
+}

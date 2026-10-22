@@ -10,25 +10,36 @@
  * The Bezeichnung is pre-filled from the type ("HV" / "UV1") and made unique
  * against the boards already on file for this customer, so the common case is
  * two taps.
+ *
+ * Optionally the board starts in a Hager univers Z cabinet
+ * (docs/PANEL_ENCLOSURE.md §11). The default stays "ohne Schrank": most
+ * boards on file are rows of breakers, and a cabinet can be added later.
  */
 import { useMemo, useState } from "react";
 
+import type { CabinetChoiceGroup } from "./enclosure/enclosureEditorModel";
 import { PANEL_TYPE_LABELS } from "../../utils/schaltplanDevices";
 import type { PanelPlanSummary, PanelType } from "../../types/schaltplan";
+
+export type NewPanelPayload = {
+  name: string;
+  designation: string;
+  panel_type: PanelType;
+  location: string;
+  fed_from_panel_id: number | null;
+  /** The cabinet the board starts in, or null for plain rows. */
+  enclosure_code: string | null;
+};
 
 type Props = {
   customerName: string;
   projectLabel: string | null;
   existing: PanelPlanSummary[];
   busy: boolean;
+  /** Cabinets to start in, by height. Empty (catalogue not loaded): no choice is offered. */
+  cabinets?: readonly CabinetChoiceGroup[];
   onCancel: () => void;
-  onCreate: (payload: {
-    name: string;
-    designation: string;
-    panel_type: PanelType;
-    location: string;
-    fed_from_panel_id: number | null;
-  }) => void;
+  onCreate: (payload: NewPanelPayload) => void;
 };
 
 function suggestDesignation(type: PanelType, existing: PanelPlanSummary[]): string {
@@ -47,6 +58,7 @@ export function NewPanelDialog({
   projectLabel,
   existing,
   busy,
+  cabinets = [],
   onCancel,
   onCreate,
 }: Props) {
@@ -56,6 +68,7 @@ export function NewPanelDialog({
   const [name, setName] = useState("");
   const [location, setLocation] = useState("");
   const [fedFrom, setFedFrom] = useState<string>("");
+  const [cabinet, setCabinet] = useState("");
 
   const mainPanels = useMemo(
     () => existing.filter((panel) => panel.panel_type !== "sub"),
@@ -96,6 +109,7 @@ export function NewPanelDialog({
               panel_type: panelType,
               location: location.trim(),
               fed_from_panel_id: fedFrom ? Number(fedFrom) : null,
+              enclosure_code: cabinets.length > 0 && cabinet ? cabinet : null,
             });
           }}
         >
@@ -160,6 +174,24 @@ export function NewPanelDialog({
                   <option key={panel.id} value={panel.id}>
                     {panel.designation} — {panel.name}
                   </option>
+                ))}
+              </select>
+            </label>
+          )}
+
+          {cabinets.length > 0 && (
+            <label className="sp-field">
+              <span className="sp-field-label">Schrank</span>
+              <select value={cabinet} onChange={(event) => setCabinet(event.target.value)}>
+                <option value="">ohne Schrank (nur Hutschienen)</option>
+                {cabinets.map((group) => (
+                  <optgroup key={group.height} label={`${group.height} mm hoch`}>
+                    {group.options.map((option) => (
+                      <option key={option.code} value={option.code}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </optgroup>
                 ))}
               </select>
             </label>

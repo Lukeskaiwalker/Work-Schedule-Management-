@@ -94,6 +94,8 @@ export function duplicateDevice(
     id: newId("dev"),
     designation: nextDesignation(original.designation, takenDesignations(document)),
     circuit: numbered && isCircuitDevice(original) ? nextCircuitNumber(document) : "",
+    // A copy is bought, not pre-fitted: only the original is the module's part.
+    ...(original.supplied_by ? { supplied_by: null } : {}),
   };
 
   const devices = [...row.devices.slice(0, index + 1), copy, ...row.devices.slice(index + 1)];
@@ -106,6 +108,34 @@ export function duplicateDevice(
     },
     deviceId: copy.id,
   };
+}
+
+/**
+ * Delete devices — the one way devices leave a board (docs/PANEL_ENCLOSURE.md
+ * §10.2): the inspector, the cabinet's fitting toggle, removing a module and
+ * turning a `meter` device into a meter place all come through here, so they
+ * all clean up the same way. Anything that named a deleted device as its
+ * feed goes back to positional derivation rather than pointing at a ghost,
+ * and the deleted devices' Reihenklemmen overrides (`"<id>:<slot>"`) go too.
+ * Unknown ids are ignored; nothing to delete returns the input itself.
+ */
+export function removeDevices(document: PanelDocument, ids: Iterable<string>): PanelDocument {
+  const gone = new Set(ids);
+  const present = document.rows.some((row) => row.devices.some((device) => gone.has(device.id)));
+  if (!present) return document;
+  const rows = document.rows.map((row) => {
+    const touched = row.devices.some((device) => gone.has(device.id) || (device.parent_id !== null && gone.has(device.parent_id)));
+    if (!touched) return row;
+    const devices = row.devices
+      .filter((device) => !gone.has(device.id))
+      .map((device) => (device.parent_id !== null && gone.has(device.parent_id) ? { ...device, parent_id: null } : device));
+    return { ...row, devices };
+  });
+  const labels = document.terminal_labels;
+  if (!labels) return { ...document, rows };
+  const prefixes = [...gone].map((id) => `${id}:`);
+  const kept = Object.entries(labels).filter(([key]) => !prefixes.some((prefix) => key.startsWith(prefix)));
+  return { ...document, rows, terminal_labels: Object.fromEntries(kept) };
 }
 
 // ── Rail templates ───────────────────────────────────────────────────────────

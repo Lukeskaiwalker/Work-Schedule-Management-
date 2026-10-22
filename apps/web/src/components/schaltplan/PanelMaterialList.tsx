@@ -9,21 +9,35 @@
  * it books against a stock article, and it tells every panel which stock
  * article a planned line means (a global mapping, not a per-panel one).
  *
- * Order is the server's: device lines in catalog order, then terminal parts,
- * then the lines added by hand, then extras. A finished line is marked, never
- * moved — a fitter reading the list against the rail expects the rows where
- * they were a minute ago.
+ * Order is the server's: the cabinet and its modules (boards with a cabinet),
+ * device lines in catalog order, then terminal parts, then the lines added by
+ * hand, then extras. A finished line is marked, never moved — a fitter
+ * reading the list against the rail expects the rows where they were a
+ * minute ago.
  *
  * Added by hand (owner, 2026-10-09): what the plan cannot derive — duct,
  * cable ties, a spare breaker — goes on the list here, a shelf article or a
  * free text, and the whole list opens as a PDF for anyone who can see it.
+ *
+ * Returns (docs/PANEL_ENCLOSURE.md §6): a part taken out of a pre-fitted
+ * module goes back on the shelf. It is not a pick, so the `removed` lines
+ * stand in their own block after the list, as on the PDF, and their open
+ * count sits apart from the picking totals ("{n} × ins Lager offen"). Only
+ * the Werkstatt books them; everybody else sees why the buttons are off.
+ *
+ * The PDF is drawn from the SAVED board: on the Schaltplan page the link
+ * waits for the editor's autosave (`settleSaves`), elsewhere there is no
+ * editor and it opens at once — always through `savedPdfClick`, so the
+ * in-app viewer on the app surfaces gets it the same way.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useId, useState, type ReactNode } from "react";
 
 import { PanelLabourBlock } from "./PanelLabourBlock";
 import { PanelMaterialAddForm } from "./PanelMaterialAddForm";
-import { PanelMaterialRow } from "./PanelMaterialRow";
+import { PanelMaterialRow, isReturnLine } from "./PanelMaterialRow";
 import { materialTexts, type MaterialTexts } from "./panelMaterialTexts";
+import { OWN_OPENER_PROPS, savedPdfClick } from "../../utils/openAfterSave";
+import { salvagePanelMaterial, unsalvagePanelMaterial } from "../../utils/schaltplanEnclosureApi";
 import {
   addPanelMaterialManual,
   bookPanelMaterial,
@@ -57,8 +71,14 @@ export type PanelMaterialListProps = {
   hideHeader?: boolean;
   /** Who is looking: they may end their OWN running session in the Arbeitszeit block. */
   currentUserId?: number | null;
-  /** werkstatt:manage — may end anybody's running session. */
+  /** werkstatt:manage — may end anybody's running session, and books returns "Ins Lager". */
   canManageWerkstatt?: boolean;
+  /**
+   * The editor's `settleSaves` (true once the server holds the latest
+   * edits): the PDF link waits for it. Without an editor (the Werkstatt
+   * page) there is nothing to wait for.
+   */
+  settleSaves?: () => Promise<boolean>;
 };
 
 type LoadState =
@@ -69,6 +89,7 @@ type LoadState =
 const LOADING: LoadState = { status: "loading" };
 const BOOK_QUANTITY = 1;
 const ADD_KEY = "manual:add";
+const NOTHING_TO_SAVE = (): Promise<boolean> => Promise.resolve(true);
 
 function errorMessage(err: unknown, fallback: string): string {
   return err instanceof Error && err.message ? err.message : fallback;
@@ -88,14 +109,19 @@ function MaterialToolbar({
   canEdit,
   addOpen,
   t,
+  settleSaves,
   onToggleAdd,
+  onPdfRefused,
 }: {
   panelId: number;
   canEdit: boolean;
   addOpen: boolean;
   t: MaterialTexts;
+  settleSaves: () => Promise<boolean>;
   onToggleAdd: () => void;
+  onPdfRefused: (message: string) => void;
 }) {
+  const href = panelMaterialPdfUrl(panelId);
   return (
     <div className="sp-mat-toolbar">
       {canEdit && (
@@ -104,12 +130,15 @@ function MaterialToolbar({
           {t.addMaterial}
         </button>
       )}
+      {/* OWN_OPENER_PROPS: on the app surfaces the in-app viewer must not open it before the saves settled. */}
       <a
         className="sp-btn sp-btn--ghost sp-mat-pdf"
-        href={panelMaterialPdfUrl(panelId)}
+        href={href}
         target="_blank"
         rel="noreferrer"
         title={t.pdfTitle}
+        {...OWN_OPENER_PROPS}
+        onClick={savedPdfClick(href, settleSaves, onPdfRefused, t.pdfName)}
       >
         {t.pdf}
       </a>
@@ -124,12 +153,32 @@ function MaterialFooter({ material, t, de }: { material: PanelMaterial; t: Mater
         <b>{`${material.scanned_total} / ${material.planned_total}`}</b> {t.scannedOfPlanned}
       </span>
       <span className="sp-mat-foot-open">{t.openLines(material.open_lines)}</span>
+      {(material.returns_open ?? 0) > 0 && (
+        <span className="sp-mat-foot-returns">{t.returnsOpen(material.returns_open ?? 0)}</span>
+      )}
       {material.last_scanned_at && (
         <span className="sp-mat-foot-last">
           {`${t.lastScanned} ${formatRelativeTime(material.last_scanned_at, new Date(), de)}`}
         </span>
       )}
     </footer>
+  );
+}
+
+/** The returns block: its own heading, what it is, and who books it. */
+function ReturnsBlock({ t, canManage, children }: { t: MaterialTexts; canManage: boolean; children: ReactNode }) {
+  const headingId = useId();
+  return (
+    <section className="sp-mat-returns" aria-labelledby={headingId}>
+      <h5 id={headingId} className="sp-mat-returns-title">
+        {t.returnsTitle}
+      </h5>
+      <p className="sp-mat-returns-hint">{t.returnsHint}</p>
+      {!canManage && <p className="sp-mat-returns-perm">{t.returnsNeedManage}</p>}
+      <ul className="sp-mat-rows" aria-label={t.returnsTitle}>
+        {children}
+      </ul>
+    </section>
   );
 }
 
@@ -142,6 +191,7 @@ export function PanelMaterialList({
   hideHeader = false,
   currentUserId = null,
   canManageWerkstatt = false,
+  settleSaves = NOTHING_TO_SAVE,
 }: PanelMaterialListProps): JSX.Element {
   const de = language === "de";
   const t = materialTexts(language);
@@ -185,28 +235,6 @@ export function PanelMaterialList({
     }
   }, [token, panelId, t.loadFailed]);
 
-  const book = useCallback(
-    async (line: PanelMaterialLine, direction: 1 | -1) => {
-      if (!line.article || busyKey !== null) return;
-      setBusyKey(line.key);
-      setNotice(null);
-      const body = { article_id: line.article.id, quantity: BOOK_QUANTITY };
-      try {
-        const material =
-          direction > 0
-            ? await bookPanelMaterial(token, panelId, body)
-            : await unbookPanelMaterial(token, panelId, body);
-        setLoad({ status: "ready", material });
-        onChanged?.();
-      } catch (err) {
-        setNotice(errorMessage(err, t.bookFailed));
-      } finally {
-        setBusyKey(null);
-      }
-    },
-    [token, panelId, busyKey, onChanged, t.bookFailed],
-  );
-
   const assign = useCallback(
     async (line: PanelMaterialLine, articleId: number | null) => {
       if (busyKey !== null) return;
@@ -228,11 +256,12 @@ export function PanelMaterialList({
   );
 
   /**
-   * The three writes on hand-added lines share one shape: wait for any other
-   * request, show the server's answer as the new list, say a refusal in the
-   * notice. True once it went through, so a form knows whether to clear.
+   * Every write that answers with the whole list shares one shape: wait for
+   * any other request, show the server's answer as the new list, say a
+   * refusal in the notice. True once it went through, so a form knows
+   * whether to clear.
    */
-  const writeManual = useCallback(
+  const write = useCallback(
     async (key: string, request: () => Promise<PanelMaterial>, fallback: string): Promise<boolean> => {
       if (busyKey !== null) return false;
       setBusyKey(key);
@@ -252,45 +281,58 @@ export function PanelMaterialList({
     [busyKey, onChanged],
   );
 
+  const book = useCallback(
+    (line: PanelMaterialLine, direction: 1 | -1) => {
+      if (!line.article) return;
+      const body = { article_id: line.article.id, quantity: BOOK_QUANTITY };
+      const request = () =>
+        direction > 0 ? bookPanelMaterial(token, panelId, body) : unbookPanelMaterial(token, panelId, body);
+      void write(line.key, request, t.bookFailed);
+    },
+    [write, token, panelId, t.bookFailed],
+  );
+
+  /** A removed part back on the shelf (+1), or that return taken back (−1). The Werkstatt's alone. */
+  const bookReturn = useCallback(
+    (line: PanelMaterialLine, direction: 1 | -1) => {
+      if (!line.article || !canManageWerkstatt) return;
+      const articleId = line.article.id;
+      const request = () =>
+        direction > 0
+          ? salvagePanelMaterial(token, panelId, articleId, BOOK_QUANTITY)
+          : unsalvagePanelMaterial(token, panelId, articleId, BOOK_QUANTITY);
+      void write(line.key, request, t.returnFailed);
+    },
+    [write, token, panelId, canManageWerkstatt, t.returnFailed],
+  );
+
   const addManual = useCallback(
     (body: PanelMaterialManualInput) =>
-      writeManual(ADD_KEY, () => addPanelMaterialManual(token, panelId, body), t.addFailed),
-    [writeManual, token, panelId, t.addFailed],
+      write(ADD_KEY, () => addPanelMaterialManual(token, panelId, body), t.addFailed),
+    [write, token, panelId, t.addFailed],
   );
 
   const updateManual = useCallback(
     (line: PanelMaterialLine, body: PanelMaterialManualUpdate) =>
       line.manual_id == null
         ? Promise.resolve(false)
-        : writeManual(line.key, () => updatePanelMaterialManual(token, panelId, line.manual_id as number, body), t.manualFailed),
-    [writeManual, token, panelId, t.manualFailed],
+        : write(line.key, () => updatePanelMaterialManual(token, panelId, line.manual_id as number, body), t.manualFailed),
+    [write, token, panelId, t.manualFailed],
   );
 
   const removeManual = useCallback(
     (line: PanelMaterialLine) => {
       if (line.manual_id == null) return;
       const lineId = line.manual_id;
-      void writeManual(line.key, () => deletePanelMaterialManual(token, panelId, lineId), t.manualFailed);
+      void write(line.key, () => deletePanelMaterialManual(token, panelId, lineId), t.manualFailed);
     },
-    [writeManual, token, panelId, t.manualFailed],
+    [write, token, panelId, t.manualFailed],
   );
 
   const endSession = useCallback(
-    async (sessionId: number, endedAt: string | null) => {
-      if (busyKey !== null) return;
-      setBusyKey(`labour:${sessionId}`);
-      setNotice(null);
-      try {
-        const material = await endPanelWorkSession(token, panelId, sessionId, endedAt);
-        setLoad({ status: "ready", material });
-        onChanged?.();
-      } catch (err) {
-        setNotice(errorMessage(err, t.labourEndFailed));
-      } finally {
-        setBusyKey(null);
-      }
-    },
-    [token, panelId, busyKey, onChanged, t.labourEndFailed],
+    (sessionId: number, endedAt: string | null) =>
+      void write(`labour:${sessionId}`, () => endPanelWorkSession(token, panelId, sessionId, endedAt), t.labourEndFailed),
+    [write, token, panelId, t.labourEndFailed],
   );
 
   if (load.status === "loading") {
@@ -319,6 +361,27 @@ export function PanelMaterialList({
   }
 
   const { material } = load;
+  const picks = material.lines.filter((line) => !isReturnLine(line));
+  const returns = material.lines.filter(isReturnLine);
+  const renderRow = (line: PanelMaterialLine) => (
+    <PanelMaterialRow
+      key={line.key}
+      line={line}
+      token={token}
+      canEdit={canEdit}
+      canManageReturns={canManageWerkstatt}
+      t={t}
+      busy={busyKey !== null}
+      mappingOpen={mappingKey === line.key}
+      onOpenMapping={() => setMappingKey(line.key)}
+      onCloseMapping={() => setMappingKey(null)}
+      onAssign={(articleId) => void assign(line, articleId)}
+      onBook={(direction) => book(line, direction)}
+      onReturn={(direction) => bookReturn(line, direction)}
+      onUpdateManual={(body) => updateManual(line, body)}
+      onRemoveManual={() => removeManual(line)}
+    />
+  );
 
   return (
     <div className="sp-mat">
@@ -336,7 +399,9 @@ export function PanelMaterialList({
         canEdit={canEdit}
         addOpen={addOpen}
         t={t}
+        settleSaves={settleSaves}
         onToggleAdd={() => setAddOpen((open) => !open)}
+        onPdfRefused={setNotice}
       />
 
       {canEdit && addOpen && (
@@ -355,28 +420,18 @@ export function PanelMaterialList({
         </p>
       )}
 
-      {material.lines.length === 0 ? (
+      {picks.length === 0 ? (
         <p className="sp-mat-empty">{t.empty}</p>
       ) : (
         <ul className="sp-mat-rows" aria-label={t.listLabel}>
-          {material.lines.map((line) => (
-            <PanelMaterialRow
-              key={line.key}
-              line={line}
-              token={token}
-              canEdit={canEdit}
-              t={t}
-              busy={busyKey !== null}
-              mappingOpen={mappingKey === line.key}
-              onOpenMapping={() => setMappingKey(line.key)}
-              onCloseMapping={() => setMappingKey(null)}
-              onAssign={(articleId) => void assign(line, articleId)}
-              onBook={(direction) => void book(line, direction)}
-              onUpdateManual={(body) => updateManual(line, body)}
-              onRemoveManual={() => removeManual(line)}
-            />
-          ))}
+          {picks.map(renderRow)}
         </ul>
+      )}
+
+      {returns.length > 0 && (
+        <ReturnsBlock t={t} canManage={canManageWerkstatt}>
+          {returns.map(renderRow)}
+        </ReturnsBlock>
       )}
 
       <MaterialFooter material={material} t={t} de={de} />
@@ -388,7 +443,7 @@ export function PanelMaterialList({
         currentUserId={currentUserId}
         canManageWerkstatt={canManageWerkstatt}
         busy={busyKey !== null}
-        onEnd={(sessionId, endedAt) => void endSession(sessionId, endedAt)}
+        onEnd={endSession}
       />
     </div>
   );

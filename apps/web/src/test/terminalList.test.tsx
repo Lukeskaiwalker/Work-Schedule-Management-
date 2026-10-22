@@ -152,6 +152,16 @@ describe("TerminalList", () => {
     );
   });
 
+  it("hands the PDF link's click to the page, which waits for the autosave", () => {
+    const onPdfClick = vi.fn();
+    renderList({ onPdfClick });
+    const link = screen.getByRole("link", { name: "Klemmenliste als PDF" });
+    fireEvent.click(link);
+    expect(onPdfClick).toHaveBeenCalledTimes(1);
+    // Still a real link: a long-press "in neuem Tab öffnen" keeps working.
+    expect(link).toHaveAttribute("href", "/api/schaltplan/panels/7/pdf?terminals_only=true");
+  });
+
   it("fires onPrint and disables it while printing", () => {
     const { onPrint } = renderList();
     fireEvent.click(screen.getByRole("button", { name: "Klemmen-Etiketten drucken" }));

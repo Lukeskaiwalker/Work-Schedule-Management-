@@ -1,0 +1,205 @@
+/* ── Schrank tab and the editor around it (docs/PANEL_ENCLOSURE.md §11) ─────
+ *
+ * Page-local sheet like schaltplan-enclosure.css: the tab's own frame
+ * (cabinet line, empty state, findings), the pre-fitted banner of the
+ * device inspector, the module groups of the Aufbau tab and the cabinet
+ * chip of the "Prüfen:" banner. Colours come from the app and --sp-*
+ * tokens, so light and dark follow styles.css. Every control is 56 px.
+ */
+
+/* ── Tab frame ───────────────────────────────────────────────────────────── */
+
+.sp-encl-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.sp-encl-tab-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+
+.sp-encl-tab-cabinet {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.sp-encl-tab-cabinet b {
+  font-size: 15px;
+  color: var(--sp-ink);
+  overflow-wrap: anywhere;
+}
+
+.sp-encl-tab-cabinet small,
+.sp-encl-tab-state {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.sp-encl-tab-state {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.sp-encl-tab-state p {
+  margin: 0;
+}
+
+.sp-encl-tab-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 20px 16px;
+  border: 1px dashed var(--sp-line);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--muted);
+}
+
+.sp-encl-tab-empty p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.sp-encl-tab-empty-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--sp-ink);
+}
+
+/* ── Findings ────────────────────────────────────────────────────────────── */
+
+.sp-encl-findings {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border: 1px solid var(--sp-line);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.sp-encl-findings h4 {
+  margin: 0;
+  font-size: 14px;
+  color: var(--sp-ink);
+}
+
+.sp-encl-findings-disclaimer,
+.sp-encl-findings-unchecked,
+.sp-encl-findings-none {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.sp-encl-findings-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sp-encl-finding {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--sp-ink);
+}
+
+.sp-encl-finding-level {
+  flex: 0 0 auto;
+  min-width: 56px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-align: center;
+  background: var(--surface-2);
+  color: var(--muted);
+}
+
+.sp-encl-finding--warn .sp-encl-finding-level {
+  background: var(--sp-warn-bg);
+  color: var(--sp-warn);
+}
+
+.sp-encl-finding-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* ── Device inspector: pre-fitted part ───────────────────────────────────── */
+
+.sp-inspector-supplied {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--sp-line);
+  border-radius: 10px;
+  background: var(--surface-2);
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--sp-ink);
+}
+
+.sp-inspector-supplied p {
+  margin: 0;
+}
+
+.sp-inspector-supplied-note {
+  margin-top: 4px !important;
+  color: var(--sp-warn);
+}
+
+/* ── Aufbau tab: rows grouped by module ──────────────────────────────────── */
+
+.sp-rail-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sp-rail-group + .sp-rail-group {
+  margin-top: 6px;
+}
+
+.sp-rail-group-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+/* ── "Prüfen:" banner: one chip for the cabinet ──────────────────────────── */
+
+.sp-warnings-chip {
+  margin-top: 6px;
+  min-height: 56px;
+  padding: 6px 12px;
+  border: 1px solid var(--sp-warn-line, var(--sp-line));
+  border-radius: 999px;
+  background: var(--surface);
+  color: inherit;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}

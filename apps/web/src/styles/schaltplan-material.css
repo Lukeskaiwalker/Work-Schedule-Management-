@@ -563,6 +563,73 @@
   color: var(--sp-warn);
 }
 
+/* Open returns: counted apart from the picks, so in the accent ink rather
+   than the "still to pick" amber. */
+.sp-mat-foot-returns {
+  font-weight: 700;
+  color: var(--sp-accent-deep);
+}
+
+/* ── Returns: parts taken out of a module, back to the shelf ────────────────
+ * docs/PANEL_ENCLOSURE.md §6. Not picks, so their own block under the list
+ * (as on the PDF) under their own heading, and buttons at the 56 px the
+ * workshop tablets need: the Werkstatt books these at the board, often in
+ * gloves. */
+.sp-mat-returns {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+  padding-top: 10px;
+  border-top: 1px solid var(--sp-line);
+}
+
+.sp-mat-returns-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--sp-ink);
+}
+
+.sp-mat-returns-hint,
+.sp-mat-returns-perm {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+
+/* Who books it: said once, plainly, because the buttons below are off. */
+.sp-mat-returns-perm {
+  font-weight: 600;
+  color: var(--sp-ink);
+}
+
+.sp-mat-return-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+}
+
+.sp-mat-chip--return {
+  color: var(--sp-accent-deep);
+  border-color: var(--sp-accent);
+  background: var(--sp-tint);
+}
+
+.sp-mat-chip--stored {
+  color: var(--sp-ok);
+  border-color: #cfe8d6;
+  background: #f3faf5;
+}
+
+.sp-mat-return-btn {
+  min-height: 56px;
+  padding: 0 18px;
+  white-space: nowrap;
+}
+
 /* ── Phone ───────────────────────────────────────────────────────────────── */
 
 @media (max-width: 767px) {

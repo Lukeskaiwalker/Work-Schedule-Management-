@@ -12,15 +12,28 @@
  * Each device tile is sized by its TE width so the row reads like the real
  * rail — a 4 TE FI is visibly four times an LS — with a slot meter showing
  * how full the rail is.
+ *
+ * On a board with a cabinet (docs/PANEL_ENCLOSURE.md §11) the rows are
+ * grouped by the module whose rail they sit on ("Feld {n} · {art} {name}",
+ * rails top to bottom), and rows on no rail of the cabinet come last under
+ * "Nicht im Schrank". A row on a cabinet rail IS that rail: its width is
+ * the rail's PLE and the module owns it, so its slots are shown but not
+ * edited and it cannot be removed here (removing the module or emptying
+ * the rail does that). Devices on it are edited as everywhere else.
  */
 import { DeviceSymbol } from "./DeviceSymbol";
-import { catalogEntry, rowUsedSlots } from "../../utils/schaltplanDevices";
+import { railEditorGroups } from "./enclosure/enclosureEditorModel";
+import type { CatalogIndex } from "../../utils/enclosureCatalog";
+import { catalogEntry, deviceLabel, rowUsedSlots } from "../../utils/schaltplanDevices";
 import { hasTerminal } from "../../utils/schaltplanTerminalRules";
 import { isCircuitDevice, isGroupDevice } from "../../utils/schaltplanTopology";
 import type { PanelDocument, PanelRow } from "../../types/schaltplan";
+import "../../styles/schaltplan-enclosure-tab.css";
 
 type Props = {
   document: PanelDocument;
+  /** The cabinet catalogue: with it, a cabinet board's rows are grouped by module. */
+  index?: CatalogIndex | null;
   selectedDeviceId: string | null;
   readOnly: boolean;
   onSelectDevice: (deviceId: string) => void;
@@ -35,7 +48,18 @@ type Props = {
   onPrintRowLabels?: (rowId: string) => void;
 };
 
-function RailRow({
+export type RailRowProps = {
+  row: PanelRow;
+  /** Position in `document.rows`, for the row's accessible names. */
+  index: number;
+  canRemove: boolean;
+  /** A cabinet rail's row: slots read-only, never removed here. */
+  linked?: boolean;
+  /** The board, for names that depend on it: a DIN-rail meter on a cabinet board is a Zwischenzähler (D7). */
+  board?: Pick<PanelDocument, "enclosure"> | null;
+} & Omit<Props, "document" | "index" | "onAddRow" | "onAddRowFromTemplate">;
+
+export function RailRow({
   row,
   index,
   selectedDeviceId,
@@ -47,11 +71,9 @@ function RailRow({
   onChangeSlots,
   onPrintRowLabels,
   canRemove,
-}: {
-  row: PanelRow;
-  index: number;
-  canRemove: boolean;
-} & Omit<Props, "document" | "onAddRow" | "onAddRowFromTemplate">) {
+  linked = false,
+  board = null,
+}: RailRowProps) {
   const used = rowUsedSlots(row);
   const over = used > row.slots;
   const fill = Math.min(100, (used / Math.max(1, row.slots)) * 100);
@@ -70,17 +92,19 @@ function RailRow({
           <span className={over ? "sp-rail-slots sp-rail-slots--over" : "sp-rail-slots"}>
             {used} / {row.slots} TE
           </span>
-          <label className="sp-rail-slot-input">
-            <span className="visually-hidden">Plätze der Reihe {index + 1}</span>
-            <input
-              type="number"
-              min={1}
-              max={96}
-              value={row.slots}
-              disabled={readOnly}
-              onChange={(event) => onChangeSlots(row.id, Number(event.target.value) || 1)}
-            />
-          </label>
+          {linked ? null : (
+            <label className="sp-rail-slot-input">
+              <span className="visually-hidden">Plätze der Reihe {index + 1}</span>
+              <input
+                type="number"
+                min={1}
+                max={96}
+                value={row.slots}
+                disabled={readOnly}
+                onChange={(event) => onChangeSlots(row.id, Number(event.target.value) || 1)}
+              />
+            </label>
+          )}
           {onPrintRowLabels && (
             <button
               type="button"
@@ -92,7 +116,7 @@ function RailRow({
               BMK
             </button>
           )}
-          {!readOnly && canRemove && (
+          {!readOnly && canRemove && !linked && (
             <button
               type="button"
               className="sp-rail-remove"
@@ -128,7 +152,7 @@ function RailRow({
               // a 1 TE tile readable; TE only ever adds width, never removes it.
               style={{ width: `${device.te * 44}px` }}
               onClick={() => onSelectDevice(device.id)}
-              title={`${entry.label} — ${device.label || "ohne Bezeichnung"}`}
+              title={`${deviceLabel(device.kind, board)} — ${device.label || "ohne Bezeichnung"}`}
             >
               <span className="sp-tile-icon">
                 <DeviceSymbol kind={device.kind} size={20} />
@@ -168,6 +192,7 @@ function RailRow({
 
 export function RailEditor({
   document,
+  index = null,
   selectedDeviceId,
   readOnly,
   onSelectDevice,
@@ -179,24 +204,30 @@ export function RailEditor({
   onChangeSlots,
   onPrintRowLabels,
 }: Props) {
+  const groups = index ? railEditorGroups(document, index) : null;
+  const shared = { selectedDeviceId, readOnly, onSelectDevice, onAddDevice, onRemoveRow, onRenameRow, onChangeSlots, onPrintRowLabels };
+  const position = new Map(document.rows.map((row, at) => [row.id, at] as const));
+  const renderRow = (row: PanelRow, linked: boolean) => (
+    <RailRow
+      key={row.id}
+      row={row}
+      index={position.get(row.id) ?? 0}
+      canRemove={document.rows.length > 1}
+      linked={linked}
+      board={document}
+      {...shared}
+    />
+  );
   return (
     <div className="sp-rails">
-      {document.rows.map((row, index) => (
-        <RailRow
-          key={row.id}
-          row={row}
-          index={index}
-          canRemove={document.rows.length > 1}
-          selectedDeviceId={selectedDeviceId}
-          readOnly={readOnly}
-          onSelectDevice={onSelectDevice}
-          onAddDevice={onAddDevice}
-          onRemoveRow={onRemoveRow}
-          onRenameRow={onRenameRow}
-          onChangeSlots={onChangeSlots}
-          onPrintRowLabels={onPrintRowLabels}
-        />
-      ))}
+      {groups
+        ? groups.map((group) => (
+            <section key={group.key} className="sp-rail-group" aria-label={group.title}>
+              <h4 className="sp-rail-group-title">{group.title}</h4>
+              {group.rows.map((row) => renderRow(row, group.linked))}
+            </section>
+          ))
+        : document.rows.map((row) => renderRow(row, false))}
       {!readOnly && (
         <div className="sp-add-rail">
           <button type="button" className="sp-btn sp-btn--ghost" onClick={onAddRow}>

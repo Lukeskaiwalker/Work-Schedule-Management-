@@ -1,0 +1,313 @@
+/* ── Schrank sheets (docs/PANEL_ENCLOSURE.md §11) ────────────────────────────
+ *
+ * The stacked sheets of the Schrank tab: Schrank wählen, Modul wählen,
+ * Modul, Hutschiene, Hutschiene wählen, Einspeisung bestätigen. They reuse
+ * the Schaltplan sheet (.sp-sheet*, .sp-palette-*, .sp-btn, .sp-field) from
+ * styles.css; this file only adds what the cabinet needs. Imported by
+ * EnclosureSheetFrame, which every one of these sheets renders.
+ *
+ * Workshop tablets and gloves: every target is at least 56 px, nothing
+ * needs a drag, and the destructive step is always a second tap in place.
+ */
+
+/* ── Targets ─────────────────────────────────────────────────────────────── */
+
+.sp-encl-target {
+  min-height: 56px;
+}
+
+.sp-sheet-nav.sp-encl-target,
+.sp-sheet-close.sp-encl-target {
+  width: 56px;
+  min-width: 56px;
+  height: 56px;
+  font-size: 24px;
+}
+
+/* The DeviceInspector and the device palette are the Plan tab's sheets (40 px
+   ‹ › ×, 48 px actions there). Inside the Schrank stack they carry
+   `sp-sheet--glove` and get the stack's 56 px: rail → tile → inspector → ×
+   back to the rail is the stack's core path. */
+.sp-sheet--glove .sp-sheet-nav,
+.sp-sheet--glove .sp-sheet-close {
+  width: 56px;
+  min-width: 56px;
+  height: 56px;
+  min-height: 56px;
+  font-size: 24px;
+}
+
+.sp-sheet--glove .sp-btn,
+.sp-sheet--glove .sp-sheet-actions--grid .sp-btn {
+  min-height: 56px;
+}
+
+/* ── Frame ───────────────────────────────────────────────────────────────── */
+
+.sp-encl-sheet .sp-sheet-head {
+  align-items: center;
+}
+
+.sp-encl-sheet-title {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.sp-encl-sheet-title h3 {
+  overflow-wrap: anywhere;
+}
+
+.sp-encl-sheet-title small {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.sp-encl-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sp-encl-empty,
+.sp-encl-hint {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+/* ── Items (cabinets, modules, rails, templates) ─────────────────────────── */
+
+.sp-encl-item {
+  min-height: 56px;
+  justify-content: space-between;
+}
+
+.sp-encl-item:disabled {
+  cursor: not-allowed;
+  background: var(--surface-2);
+  color: var(--muted);
+}
+
+.sp-encl-item:disabled:hover {
+  border-color: var(--sp-line);
+  background: var(--surface-2);
+}
+
+.sp-encl-item .sp-palette-text small {
+  line-height: 1.35;
+}
+
+.sp-encl-item--current,
+.sp-encl-item--current:disabled {
+  border-color: var(--sp-accent);
+  background: var(--sp-tint);
+  color: var(--sp-ink);
+}
+
+.sp-encl-item-claims {
+  color: var(--sp-accent-deep);
+  font-weight: 600;
+}
+
+.sp-encl-item-refusal {
+  color: var(--sp-warn);
+}
+
+.sp-encl-item--tight {
+  border-color: var(--sp-warn-line);
+  background: var(--sp-warn-bg);
+}
+
+/* Why a control is off, said under it: a workshop tablet shows no title tooltip. */
+.sp-encl-reasons {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+.sp-encl-reasons b {
+  color: var(--sp-ink);
+  font-weight: 600;
+}
+
+.sp-encl-reason {
+  margin: -4px 0 0;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+.sp-encl-badge {
+  flex-shrink: 0;
+  align-self: flex-start;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 700;
+  line-height: 1.5;
+  white-space: nowrap;
+}
+
+.sp-encl-badge--unverified {
+  border: 1px solid var(--sp-warn-line);
+  background: var(--sp-warn-bg);
+  color: var(--sp-warn);
+}
+
+.sp-encl-switches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 20px;
+}
+
+/* ── Lists (fittings, shelf articles) ────────────────────────────────────── */
+
+.sp-encl-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sp-encl-list-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 56px;
+  padding: 8px 12px;
+  border: 1px solid var(--sp-line);
+  border-radius: 11px;
+  background: #fff;
+}
+
+.sp-encl-list-row .sp-btn {
+  flex-shrink: 0;
+}
+
+.sp-encl-state {
+  font-weight: 600;
+}
+
+.sp-encl-state--removed {
+  color: var(--sp-warn);
+}
+
+.sp-encl-note {
+  color: var(--sp-warn);
+}
+
+/* ── Module sheet ────────────────────────────────────────────────────────── */
+
+.sp-encl-button-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+@media (min-width: 640px) {
+  .sp-encl-button-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+.sp-encl-sheet-meter {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--sp-line);
+  border-radius: 11px;
+}
+
+.sp-encl-segmented {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.sp-encl-segmented .sp-btn[aria-pressed="true"] {
+  background: var(--sp-accent);
+  border-color: var(--sp-accent);
+  color: #fff;
+}
+
+.sp-encl-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #e0b4b4;
+  border-radius: 11px;
+  background: #fdf6f6;
+}
+
+.sp-encl-confirm p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--sp-ink);
+}
+
+.sp-encl-confirm-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+/* ── Rail sheet ──────────────────────────────────────────────────────────── */
+
+.sp-encl-rail-track {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 4px;
+}
+
+.sp-encl-tile-cell {
+  display: flex;
+  flex-shrink: 0;
+}
+
+.sp-encl-tile {
+  min-height: 92px;
+}
+
+.sp-encl-tile-supplied {
+  margin-top: auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--sp-tint);
+  color: var(--sp-accent-deep);
+  font-size: 10.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.sp-encl-rail-sheet .sp-sheet-actions .sp-btn {
+  flex: 1 1 100%;
+}
+
+/* ── Regroup confirm ─────────────────────────────────────────────────────── */
+
+.sp-encl-regroup-list {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 14px;
+  line-height: 1.4;
+  color: var(--sp-ink);
+}

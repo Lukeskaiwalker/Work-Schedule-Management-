@@ -3,6 +3,9 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .venv/
+# pytest --cov data: SQLite with absolute local paths, never for a public repo
+.coverage
+.coverage.*
 
 # Dev / smoke / test databases (broad glob covers *.db.backup-* etc.)
 apps/api/test.db

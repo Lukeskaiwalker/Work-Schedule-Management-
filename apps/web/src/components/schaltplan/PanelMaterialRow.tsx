@@ -6,6 +6,15 @@
  * The search is inline rather than a sheet: assigning an article is a
  * one-off per line kind ("device:mcb:1p:b16" means SP-0152 for every panel
  * from now on), so it should cost one tap and one word, not a dialog.
+ *
+ * A `removed` line (docs/PANEL_ENCLOSURE.md §6) is a part taken out of a
+ * pre-fitted cabinet module: it goes back on the shelf, the other way from
+ * every pick. So it never gets the consumption buttons; it gets "Ins Lager"
+ * and "Zurücknehmen" (a `salvage` / `salvage_undo` row), says "eingelagert"
+ * instead of "vollständig", and both its buttons and its mapping belong to
+ * the Werkstatt (`werkstatt:manage`) — a return raises stock, and the server
+ * refuses everybody else. An orphan (`salvage:<id>`, planned 0) is a return
+ * the plan no longer names: it can only be taken back.
  */
 import { useState } from "react";
 
@@ -14,10 +23,20 @@ import { PanelMaterialManualEditor } from "./PanelMaterialManualEditor";
 import type { PanelMaterialLine, PanelMaterialLineStatus, PanelMaterialManualUpdate } from "../../types/schaltplan";
 import type { MaterialTexts } from "./panelMaterialTexts";
 
+const REMOVED_PREFIX = "removed:";
+const ORPHAN_PREFIX = "salvage:";
+
+/** A part on its way back to the shelf — never a pick (its own block, its own buttons). */
+export function isReturnLine(line: Pick<PanelMaterialLine, "kind">): boolean {
+  return line.kind === "removed";
+}
+
 type RowProps = {
   line: PanelMaterialLine;
   token: string | null;
   canEdit: boolean;
+  /** werkstatt:manage — books returns "Ins Lager" / takes them back, and maps `removed:` keys. */
+  canManageReturns: boolean;
   t: MaterialTexts;
   /** A request is running somewhere in the list; every write waits for it. */
   busy: boolean;
@@ -26,6 +45,8 @@ type RowProps = {
   onCloseMapping: () => void;
   onAssign: (articleId: number | null) => void;
   onBook: (direction: 1 | -1) => void;
+  /** A removed line only: +1 books a piece back into stock, −1 takes one back. */
+  onReturn: (direction: 1 | -1) => void;
   /** A hand-added line only: change its quantity or note; resolves true once saved. */
   onUpdateManual: (body: PanelMaterialManualUpdate) => Promise<boolean>;
   onRemoveManual: () => void;
@@ -42,6 +63,33 @@ function StatusMark({ status, t }: { status: PanelMaterialLineStatus; t: Materia
   if (status === "over") return <span className="sp-mat-chip sp-mat-chip--over">{t.over}</span>;
   if (status === "unplanned") return <span className="sp-mat-chip sp-mat-chip--extra">{t.unplanned}</span>;
   return null;
+}
+
+/** A return's own words: back on the shelf is "eingelagert"; more than was taken out is the anomaly. */
+function ReturnStatus({ status, t }: { status: PanelMaterialLineStatus; t: MaterialTexts }) {
+  if (status === "done") {
+    return (
+      <span className="sp-mat-chip sp-mat-chip--stored">
+        <span aria-hidden="true">✓ </span>
+        {t.returnDone}
+      </span>
+    );
+  }
+  if (status === "open") return <span className="sp-mat-chip">{t.returnOpen}</span>;
+  return <span className="sp-mat-chip sp-mat-chip--over">{t.returnOver}</span>;
+}
+
+/**
+ * Who may point a line at a stock article. An extra line IS an article, a
+ * hand-added one names its own, and an orphan return IS an article too: none
+ * is a planned line the global mapping could mean. The mapping route needs
+ * reports:create, and for a `removed:` key werkstatt:manage on top (the
+ * server answers 403 otherwise).
+ */
+function isMappable(line: PanelMaterialLine, canEdit: boolean, canManageReturns: boolean): boolean {
+  if (!canEdit || line.kind === "extra" || line.kind === "manual") return false;
+  if (isReturnLine(line)) return canManageReturns && line.key.startsWith(REMOVED_PREFIX);
+  return true;
 }
 
 type SearchProps = {
@@ -79,16 +127,12 @@ function ArticleSearch({ token, t, busy, onPick, onCancel }: SearchProps) {
 
 function ArticleCell({
   line,
-  canEdit,
+  mappable,
   t,
   busy,
   onOpenMapping,
   onAssign,
-}: Pick<RowProps, "line" | "canEdit" | "t" | "busy" | "onOpenMapping" | "onAssign">) {
-  // An extra line IS an article, and a hand-added one names its own: neither
-  // key is a planned line the global mapping could mean.
-  const mappable = canEdit && line.kind !== "extra" && line.kind !== "manual";
-
+}: Pick<RowProps, "line" | "t" | "busy" | "onOpenMapping" | "onAssign"> & { mappable: boolean }) {
   if (!line.article) {
     return (
       <div className="sp-mat-article sp-mat-article--none">
@@ -144,6 +188,20 @@ function LineText({
   onEdit: () => void;
   onRemove: () => void;
 }) {
+  if (isReturnLine(line)) {
+    // The way the part goes, as a signed count: the board gives it back. An
+    // orphan plans nothing any more; what it shows is what came back.
+    const pieces = line.planned > 0 ? line.planned : line.scanned;
+    return (
+      <div className="sp-mat-main">
+        <b>{line.label}</b>
+        {line.detail && <small>{line.detail}</small>}
+        <small className="sp-mat-return-meta">
+          <span className="sp-mat-chip sp-mat-chip--return">{t.returnChip(pieces)}</span>
+        </small>
+      </div>
+    );
+  }
   if (line.kind !== "manual") {
     return (
       <div className="sp-mat-main">
@@ -175,10 +233,58 @@ function LineText({
   );
 }
 
+/**
+ * "Ins Lager" / "Zurücknehmen". Shown to everybody who sees the line, so the
+ * fitter knows the part is still to go back; enabled only for the Werkstatt,
+ * and the hint says so. Bounds mirror the server's refusals: nothing in
+ * beyond what was taken out, nothing back that never came in.
+ */
+function ReturnActions({
+  line,
+  t,
+  busy,
+  canManage,
+  onReturn,
+}: {
+  line: PanelMaterialLine;
+  t: MaterialTexts;
+  busy: boolean;
+  canManage: boolean;
+  onReturn: (direction: 1 | -1) => void;
+}) {
+  if (!line.article) return null;
+  const orphan = line.key.startsWith(ORPHAN_PREFIX);
+  return (
+    <>
+      {!orphan && (
+        <button
+          type="button"
+          className="sp-btn sp-btn--primary sp-mat-return-btn"
+          disabled={!canManage || busy || line.scanned >= line.planned}
+          title={canManage ? t.toStockTitle : t.returnsNeedManage}
+          onClick={() => onReturn(1)}
+        >
+          {t.toStock}
+        </button>
+      )}
+      <button
+        type="button"
+        className="sp-btn sp-mat-return-btn"
+        disabled={!canManage || busy || line.scanned <= 0}
+        title={canManage ? t.takeBackTitle : t.returnsNeedManage}
+        onClick={() => onReturn(-1)}
+      >
+        {t.takeBack}
+      </button>
+    </>
+  );
+}
+
 export function PanelMaterialRow({
   line,
   token,
   canEdit,
+  canManageReturns,
   t,
   busy,
   mappingOpen,
@@ -186,10 +292,12 @@ export function PanelMaterialRow({
   onCloseMapping,
   onAssign,
   onBook,
+  onReturn,
   onUpdateManual,
   onRemoveManual,
 }: RowProps) {
-  const canBook = canEdit && line.article !== null;
+  const returning = isReturnLine(line);
+  const canBook = canEdit && line.article !== null && !returning;
   const editable = canEdit && line.kind === "manual" && line.manual_id != null;
   // A free text has no article to scan: its quantity, no "0 /" that never
   // moves (the server leaves it out of the picking totals too).
@@ -213,12 +321,12 @@ export function PanelMaterialRow({
       </div>
 
       <div className="sp-mat-state">
-        <StatusMark status={line.status} t={t} />
+        {returning ? <ReturnStatus status={line.status} t={t} /> : <StatusMark status={line.status} t={t} />}
       </div>
 
       <ArticleCell
         line={line}
-        canEdit={canEdit}
+        mappable={isMappable(line, canEdit, canManageReturns)}
         t={t}
         busy={busy}
         onOpenMapping={onOpenMapping}
@@ -226,6 +334,7 @@ export function PanelMaterialRow({
       />
 
       <div className="sp-mat-actions">
+        {returning && <ReturnActions line={line} t={t} busy={busy} canManage={canManageReturns} onReturn={onReturn} />}
         {canBook && (
           <>
             <button

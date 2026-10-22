@@ -8,12 +8,13 @@
  * land on the same numbering a hand-built one would have reached.
  */
 import { describe, expect, it } from "vitest";
-import { emptyDocument, makeDevice, rowUsedSlots } from "../utils/schaltplanDevices";
+import { deviceLabel, emptyDocument, makeDevice, rowUsedSlots } from "../utils/schaltplanDevices";
 import {
   ROW_TEMPLATES,
   bumpDesignation,
   duplicateDevice,
   nextDesignation,
+  removeDevices,
   rowFromTemplate,
   takenDesignations,
 } from "../utils/schaltplanDocumentOps";
@@ -232,5 +233,52 @@ describe("rowFromTemplate", () => {
 
   it("offers the rails the user asked for", () => {
     expect(ROW_TEMPLATES.map((t) => t.id)).toEqual(["empty", "rcd-6mcb", "rcd-8mcb", "mcb-12"]);
+  });
+});
+
+// ── Cabinet layer (docs/PANEL_ENCLOSURE.md §10.2) ────────────────────────────
+
+describe("cabinet-aware document ops", () => {
+  it("a copy of a pre-fitted device is an ordinary device", () => {
+    const doc: PanelDocument = {
+      ...emptyDocument(),
+      rows: [{ id: "r1", label: "F1 · AAR 1", slots: 12, devices: [makeDevice("hauptschalter", { id: "hs", supplied_by: { module: "m1", part: "hs" } })] }],
+    };
+    const { document, deviceId } = duplicateDevice(doc, "hs");
+    const copy = document.rows[0].devices.find((d) => d.id === deviceId)!;
+    expect(copy.supplied_by).toBeNull();
+    expect(document.rows[0].devices[0].supplied_by).toEqual({ module: "m1", part: "hs" });
+    // A device without the key keeps not having it (legacy documents stay byte-identical).
+    const plain = duplicateDevice(panelWithGroup(), "c1");
+    expect("supplied_by" in plain.document.rows[0].devices[2]).toBe(false);
+  });
+
+  it("removeDevices clears feeds and Reihenklemmen overrides of what it deletes", () => {
+    const doc: PanelDocument = {
+      ...panelWithGroup(),
+      terminal_labels: { "fi:feed": "X7", "c1:1": "1.1", "c2:1": "1.2", "fix:1": "keep" },
+    };
+    const withParent = {
+      ...doc,
+      rows: doc.rows.map((row) => ({ ...row, devices: row.devices.map((d) => (d.id === "c2" ? { ...d, parent_id: "fi" } : d)) })),
+    };
+    const out = removeDevices(withParent, ["fi", "c1"]);
+    expect(out.rows[0].devices.map((d) => d.id)).toEqual(["c2"]);
+    expect(out.rows[0].devices[0].parent_id).toBeNull();
+    expect(out.terminal_labels).toEqual({ "c2:1": "1.2", "fix:1": "keep" });
+    expect(withParent.rows[0].devices).toHaveLength(3);
+    expect(removeDevices(withParent, ["nope"])).toBe(withParent);
+  });
+
+  it("a new board with a cabinet starts without rows", () => {
+    expect(emptyDocument({ enclosureCode: " zb33s " })).toMatchObject({ rows: [], enclosure: { code: "ZB33S", modules: [] } });
+    expect(emptyDocument().rows).toHaveLength(1);
+    expect("enclosure" in emptyDocument()).toBe(false);
+  });
+
+  it("calls a rail meter a Zwischenzähler on cabinet boards only", () => {
+    expect(deviceLabel("meter", { enclosure: { code: "ZB33S", modules: [] } })).toBe("Zwischenzähler (Hutschiene)");
+    expect(deviceLabel("meter", { enclosure: null })).toBe("Zähler / eHZ");
+    expect(deviceLabel("mcb", { enclosure: { code: "ZB33S", modules: [] } })).toBe("Leitungsschutzschalter");
   });
 });

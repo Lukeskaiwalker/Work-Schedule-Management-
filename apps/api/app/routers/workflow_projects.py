@@ -528,11 +528,13 @@ def list_project_report_materials(
     # What the Werkstatt built into the project's Verteiler — scanned at the
     # Regal station or booked from a board's Materialliste. Its own rows,
     # never merged into a report bucket: a report row is somebody's typed
-    # estimate, a verteiler row is a ledger fact, and the tab says which.
+    # estimate, a verteiler row is a ledger fact, and the tab says which. A
+    # part taken out of a cabinet module and booked back into stock follows
+    # as a negative "Rücklauf ins Lager" row (owner, 2026-10-21).
     for consumed in project_panel_materials(db, project_id):
         result.append(
             ProjectTrackedMaterialOut(
-                item=consumed.article.item_name,
+                item=consumed.label or consumed.article.item_name,
                 unit=consumed.article.unit,
                 article_no=consumed.article.article_number,
                 quantity_total=float(consumed.net),

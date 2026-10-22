@@ -42,20 +42,17 @@ from app.models.entities import Project, User
 from app.models.schaltplan import PanelMaterialManualLine, PanelPlan
 from app.routers.workflow_helpers import _content_disposition
 from app.schemas.schaltplan import (
-    PanelTypeLabelInfoOut,
-    PanelTypeLabelOut,
-    PanelTypeLabelPrintRequest,
     PanelLabelsPrintOut,
     PanelStripOut,
     PanelLabelsPrintRequest,
     PanelTerminalBomRow,
     DeviceCatalogEntry,
-    PanelDocument,
     PanelPlanCreate,
     PanelPlanOut,
     PanelPlanSummary,
     PanelPlanUpdate,
 )
+from app.services import panel_enclosure_service as enclosure
 from app.services.audit import log_admin_action
 from app.services.runtime_settings import get_company_settings
 from app.services.schaltplan_layout import (
@@ -75,7 +72,6 @@ from app.services.schaltplan_terminals import (
     terminal_font_size,
     terminal_strips,
 )
-from app.services import schaltplan_type_label as type_label
 from app.services.schaltplan_panel_numbers import assign_panel_number, provisional_panel_number
 from app.services import werkstatt_labels
 from app.services.werkstatt_label_materials import MaterialProfile, MaterialValidationError
@@ -162,13 +158,15 @@ def _summary(plan: PanelPlan, names: dict[str, dict]) -> PanelPlanSummary:
 def _detail(db: Session, plan: PanelPlan) -> PanelPlanOut:
     names = _load_names(db, [plan])
     summary = _summary(plan, names)
-    document = plan.document or empty_document()
+    # Tolerant of a cabinet block Slice P stored and the feature's types refuse (D14).
+    document, typed, unreadable = enclosure.readable_document(plan.document or empty_document())
     return PanelPlanOut(
         **summary.model_dump(),
-        document=PanelDocument.model_validate(document),
+        document=typed,
         notes=plan.notes,
         legend=build_legend(document),  # type: ignore[arg-type]
-        findings=validate_document(document),  # type: ignore[arg-type]
+        # The cabinet's findings (docs/PANEL_ENCLOSURE.md §5) after the board's own.
+        findings=[*validate_document(document), *enclosure.detail_findings(db, document), *unreadable],  # type: ignore[arg-type]
         terminal_bom=[PanelTerminalBomRow(**row) for row in terminal_bom(derive_terminals(document))],
         created_at=plan.created_at,
         created_by_name=names["users"].get(plan.created_by),
@@ -344,6 +342,7 @@ def create_panel(
     _assert_feeder(db, None, payload.fed_from_panel_id, payload.customer_id)
 
     document = payload.document.model_dump() if payload.document else empty_document()
+    enclosure.assert_known_codes(db, document, stored=None)
     plan = PanelPlan(
         panel_number=provisional_panel_number(),
         customer_id=payload.customer_id,
@@ -572,6 +571,11 @@ def update_panel(
     plan = _get_plan_or_404(db, plan_id)
     _assert_readable(db, current_user, plan)
     fields = payload.model_fields_set
+    document = payload.document.model_dump() if payload.document is not None else None
+    if document is not None:
+        # Only codes this save introduces: a code the stored board already
+        # names always saves, whatever the catalogue says today (D14).
+        enclosure.assert_known_codes(db, document, stored=plan.document)
 
     if "project_id" in fields:
         _assert_project_belongs(db, current_user, payload.project_id, plan.customer_id)
@@ -591,8 +595,8 @@ def update_panel(
         plan.status = payload.status
     if "notes" in fields:
         plan.notes = payload.notes
-    if payload.document is not None:
-        plan.document = payload.document.model_dump()
+    if document is not None:
+        plan.document = document
         # A document change is a new revision unless the client already
         # supplied a higher number. Monotonic on purpose: the title block
         # prints "Rev. n" and a revision going backwards would make two
@@ -681,7 +685,8 @@ def duplicate_panel(
         fed_from_panel_id=source.fed_from_panel_id,
         status="draft",
         revision=1,
-        document=source.document,
+        # No code check: it copies a stored board. Meter numbers stay behind.
+        document=enclosure.without_meter_numbers(source.document),
         notes=source.notes,
         created_by=current_user.id,
         updated_by=current_user.id,
@@ -757,100 +762,4 @@ def panel_pdf(
         content=pdf,
         media_type="application/pdf",
         headers={"Content-Disposition": _content_disposition(file_name, inline=True)},
-    )
-
-
-# ── Schrank-Etikett ───────────────────────────────────────────────────────────
-
-
-def _type_label_content(db: Session, plan: PanelPlan, build_month: str) -> tuple[type_label.TypeLabelContent, Project | None]:
-    """The customer from the panel's customer row (the project's snapshot
-    as the fallback), the number from its project."""
-    customer = db.get(Customer, plan.customer_id)
-    project = db.get(Project, plan.project_id) if plan.project_id else None
-    name = (getattr(customer, "name", None) or getattr(project, "customer_name", None) or "").strip()
-    content = type_label.TypeLabelContent(
-        customer=name or "—",
-        project_number=(project.project_number or "").strip() or None if project is not None else None,
-        build_month=build_month,
-        panel_number=plan.panel_number,
-    )
-    return content, project
-
-
-@router.get("/panels/{plan_id}/type-label", response_model=PanelTypeLabelInfoOut)
-def panel_type_label_info(
-    plan_id: int,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> PanelTypeLabelInfoOut:
-    """What the Schrank-Etikett would print right now, for the dialog."""
-    plan = _get_plan_or_404(db, plan_id)
-    _assert_readable(db, current_user, plan)
-    content, project = _type_label_content(db, plan, type_label.current_build_month())
-    profile = werkstatt_labels.active_material(db)
-    return PanelTypeLabelInfoOut(
-        panel_number=plan.panel_number,
-        customer=content.customer,
-        project_number=content.project_number,
-        project_name=(project.name if project is not None else None),
-        build_month=content.build_month,
-        url=type_label.TYPE_LABEL_URL,
-        contact_lines=list(type_label.TYPE_LABEL_CONTACT_LINES),
-        material=profile.name,
-        material_ok=type_label.material_supports_type_label(profile),
-    )
-
-
-@router.post("/panels/{plan_id}/type-label", response_model=PanelTypeLabelOut)
-def print_panel_type_label(
-    plan_id: int,
-    payload: PanelTypeLabelPrintRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-) -> PanelTypeLabelOut:
-    """Print the panel's type label — the owner's blueprint filled with the
-    customer, the project number and the build month — on the 99 × 44 stock.
-    Anyone who may read the plan may print it, as with the marking strips."""
-    plan = _get_plan_or_404(db, plan_id)
-    _assert_readable(db, current_user, plan)
-    try:
-        build_month = type_label.normalize_build_month(payload.build_month)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    content, _ = _type_label_content(db, plan, build_month)
-    try:
-        printer, profile = type_label.print_type_label(db, content, copies=payload.copies)
-    except werkstatt_labels.LabelFormatUnsupported as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except werkstatt_labels.LabelPrinterNotConfigured:
-        raise HTTPException(status_code=503, detail="Kein Etikettendrucker konfiguriert")
-    except werkstatt_labels.LabelPrinterUnreachable as exc:
-        raise HTTPException(status_code=502, detail=f"Etikettendrucker nicht erreichbar ({exc})")
-    return PanelTypeLabelOut(
-        printer=printer,
-        material=profile.name,
-        sheets=payload.copies,
-        customer=content.customer,
-        project_number=content.project_number,
-        build_month=build_month,
-    )
-
-
-@router.get("/type-label/logo.png")
-def type_label_logo(_: User = Depends(get_current_user)) -> Response:
-    """The logo as it prints, for the dialog's preview."""
-    png = type_label.logo_png()
-    if png is None:
-        raise HTTPException(status_code=404, detail="Kein Logo hinterlegt")
-    return Response(content=png, media_type="image/png", headers={"Cache-Control": "private, max-age=3600"})
-
-
-@router.get("/type-label/qr.svg")
-def type_label_qr(_: User = Depends(get_current_user)) -> Response:
-    """The QR code as it prints, for the dialog's preview."""
-    return Response(
-        content=type_label.qr_svg(type_label.TYPE_LABEL_URL),
-        media_type="image/svg+xml",
-        headers={"Cache-Control": "private, max-age=3600"},
     )

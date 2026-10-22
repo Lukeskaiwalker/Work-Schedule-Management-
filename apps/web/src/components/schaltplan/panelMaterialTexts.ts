@@ -70,6 +70,24 @@ export type MaterialTexts = {
   removeManual: string;
   removeManualTitle: string;
   manualFailed: string;
+  /** What the in-app viewer calls the PDF until the file names itself. */
+  pdfName: string;
+  // Parts taken out of a cabinet module, on their way back to the shelf
+  // (docs/PANEL_ENCLOSURE.md §6). Returns, not picks: their own block, their
+  // own buttons, their own status words.
+  returnsTitle: string;
+  returnsHint: string;
+  returnsNeedManage: string;
+  returnChip: (pieces: number) => string;
+  toStock: string;
+  toStockTitle: string;
+  takeBack: string;
+  takeBackTitle: string;
+  returnOpen: string;
+  returnDone: string;
+  returnOver: string;
+  returnsOpen: (count: number) => string;
+  returnFailed: string;
 };
 
 const DE: MaterialTexts = {
@@ -138,6 +156,20 @@ const DE: MaterialTexts = {
   removeManual: "Entfernen",
   removeManualTitle: "Aus der Liste nehmen — schon gebuchte Stücke bleiben gebucht",
   manualFailed: "Die Position konnte nicht geändert werden.",
+  pdfName: "Materialliste",
+  returnsTitle: "Aus Modulen entfernt → ins Lager",
+  returnsHint: "Aus vorbestückten Modulen herausgenommen: Diese Teile gehen zurück ins Regal und werden nicht kommissioniert.",
+  returnsNeedManage: "Ins Lager bucht die Werkstatt.",
+  returnChip: (pieces) => `Rücklauf ins Lager −${pieces}`,
+  toStock: "Ins Lager",
+  toStockTitle: "Ein Stück als eingelagert buchen — Rücklauf aus diesem Verteiler",
+  takeBack: "Zurücknehmen",
+  takeBackTitle: "Eine Einlagerung zurücknehmen",
+  returnOpen: "offen",
+  returnDone: "eingelagert",
+  returnOver: "zu viel eingelagert",
+  returnsOpen: (count) => `${count} × ins Lager offen`,
+  returnFailed: "Rücklauf konnte nicht gebucht werden.",
 };
 
 const EN: MaterialTexts = {
@@ -206,6 +238,20 @@ const EN: MaterialTexts = {
   removeManual: "Remove",
   removeManualTitle: "Take it off the list — pieces already booked stay booked",
   manualFailed: "The line could not be changed.",
+  pdfName: "Material list",
+  returnsTitle: "Taken out of modules → back to stock",
+  returnsHint: "Taken out of pre-fitted modules: these parts go back on the shelf and are not picked.",
+  returnsNeedManage: "The workshop books returns to stock.",
+  returnChip: (pieces) => `Return to stock −${pieces}`,
+  toStock: "To stock",
+  toStockTitle: "Book one piece back into stock — returned from this panel",
+  takeBack: "Take back",
+  takeBackTitle: "Take one return back",
+  returnOpen: "open",
+  returnDone: "in stock",
+  returnOver: "too many returned",
+  returnsOpen: (count) => `${count} × to return to stock`,
+  returnFailed: "The return could not be booked.",
 };
 
 export function materialTexts(language: "de" | "en"): MaterialTexts {

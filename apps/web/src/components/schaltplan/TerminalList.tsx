@@ -14,9 +14,10 @@
  * not be confirmed is said out loud above the list, because a wrong pitch
  * shifts every following marker on the strip.
  */
-import { useMemo } from "react";
+import { useMemo, type MouseEvent } from "react";
 
 import { TerminalStripCard } from "./TerminalGroupCard";
+import { OWN_OPENER_PROPS } from "../../utils/openAfterSave";
 import { formatMm } from "../../utils/schaltplanStrip";
 import { isTerminalEligible, terminalFindings } from "../../utils/schaltplanTerminalRules";
 import {
@@ -38,6 +39,8 @@ type Props = {
   /** Open the label sheet in Reihenklemmen mode. */
   onPrint: () => void;
   pdfHref: string;
+  /** The page's "wait for the autosave" handler for the PDF link: the server draws the list from the saved board. */
+  onPdfClick?: (event: MouseEvent<HTMLAnchorElement>) => void;
   printing?: boolean;
 };
 
@@ -86,7 +89,7 @@ function TerminalBom({ bom, counts }: { bom: TerminalBomRow[]; counts: TerminalC
   );
 }
 
-export function TerminalList({ document, readOnly, onSetAllTerminals, onPrint, pdfHref, printing = false }: Props) {
+export function TerminalList({ document, readOnly, onSetAllTerminals, onPrint, pdfHref, onPdfClick, printing = false }: Props) {
   const groups = useMemo(() => deriveTerminals(document), [document]);
   const bom = useMemo(() => terminalBom(groups), [groups]);
   // The same info findings `validateDocument` reports. Shown here because
@@ -138,7 +141,16 @@ export function TerminalList({ document, readOnly, onSetAllTerminals, onPrint, p
             {printing ? "Drucke…" : "Klemmen-Etiketten drucken"}
           </button>
           {hasTerminals && (
-            <a className="sp-btn" href={pdfHref} target="_blank" rel="noreferrer">
+            // Only with a handler that opens it itself (after the saves): without one the
+            // in-app viewer's interceptor must still catch it on the app surfaces.
+            <a
+              className="sp-btn"
+              href={pdfHref}
+              target="_blank"
+              rel="noreferrer"
+              {...(onPdfClick ? OWN_OPENER_PROPS : {})}
+              onClick={onPdfClick}
+            >
               Klemmenliste als PDF
             </a>
           )}
